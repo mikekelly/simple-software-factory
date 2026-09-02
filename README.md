@@ -1,16 +1,21 @@
 # Simple Software Factory (ssf)
 
-Assign a GitHub issue to your bot account and an agent starts working on it in
-[Orca](https://onorca.dev/). Comment on the issue and the agent hears about it.
-Close the issue and the agent wraps up.
+Assign a GitHub issue or pull request to your bot account, @mention it, or
+request its review, and an agent starts working on it in
+[Orca](https://onorca.dev/). Comment and the agent hears about it. Close it
+and the agent wraps up.
 
 `ssf` is a small Rust daemon packaged for [Omarchy](https://omarchy.org/). It
-watches the repositories you tell it about, and for every open issue assigned
-to the bot it:
+watches the repositories you tell it about, and for every open issue or pull
+request that involves the bot (assigned to it, @mentioning it, or requesting
+its review) it:
 
 1. makes sure Orca has a project for the repository (cloning it if needed),
-2. creates an Orca workspace (git worktree) linked to the issue and launches
-   the agent you configured for that repository (Claude Code, Codex, ...),
+2. creates an Orca workspace (git worktree) linked to the issue or PR and
+   launches the agent you configured for that repository (Claude Code,
+   Codex, ...). A pull request's workspace is checked out on the PR's branch,
+   so pushes update the PR; if the bot's own issue workspace already holds
+   that branch, the PR joins that agent instead,
 3. sends the agent the issue, its description and everything that has happened
    on it so far, plus instructions on how to report back,
 4. keeps polling the issue timeline and pastes new activity (comments, label
@@ -74,7 +79,8 @@ Click the factory icon in the bar, or open the Omarchy menu and pick
 - **Manage repositories**: change the agent for a repository or stop watching it.
 - The toggle in the panel header enables or disables the service.
 
-Then assign an issue to the bot on GitHub. Within a poll interval (10 s by
+Then assign an issue or PR to the bot on GitHub, @mention it, or request its
+review. Within a poll interval (10 s by
 default) a workspace shows up in Orca, and in the widget under "Issues in
 progress".
 
@@ -139,10 +145,13 @@ turns that off). `ssf token` still prints the token for any other use.
 
 ## How it works
 
-- **Polling, not webhooks.** Every `poll_interval_secs` ssf lists open issues
-  assigned to the bot per repository, using ETags so unchanged listings cost
-  no rate limit. Only issues whose `updated_at` moved get their timeline
-  re-fetched.
+- **Polling, not webhooks.** Every `poll_interval_secs` ssf makes three
+  listings per repository (assigned to the bot, mentioning the bot, review
+  requested from the bot), using ETags so unchanged listings cost no rate
+  limit. Only items whose `updated_at` moved get their timeline re-fetched.
+- **Pull requests.** Review comments, reviews, force-pushes and merges are
+  rendered like issue activity. A PR from a fork gets a workspace on the base
+  branch and the agent is told it cannot push to the fork.
 - **One workspace per issue.** The binding lives in
   `~/.local/state/ssf/state.json` and is also recoverable from Orca (the
   worktree is linked to the issue number), so a lost state file re-attaches
@@ -212,7 +221,6 @@ Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
 - Session resume (and therefore memory across relaunches) is implemented for
   Claude Code and Codex; other harnesses are restarted with the full issue
   context instead.
-- Pull requests assigned to the bot are ignored; only issues create workspaces.
 - One agent per issue; a second assignee is not coordinated with.
 - The bar widget and menu entries are installed per user on first service
   start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
