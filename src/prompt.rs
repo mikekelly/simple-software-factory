@@ -596,6 +596,8 @@ mod tests {
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            pr: None,
+            triggers: &[],
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("o/r#3: Add thing"));
