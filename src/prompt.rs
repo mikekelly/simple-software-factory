@@ -603,7 +603,8 @@ mod tests {
         assert!(p.contains("o/r#3: Add thing"));
         assert!(p.contains("Labels: feature"));
         assert!(p.contains("(no activity yet)"));
-        assert!(p.contains("gh issue comment 3 --repo o/r"));
+        assert!(p.contains("Closes #3"));
+        assert!(p.contains("it was assigned to @bot"));
         assert!(p.contains("GH_TOKEN"));
         assert!(p.trim_end().ends_with("Run the tests."));
     }
