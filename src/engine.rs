@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
 use crate::config::{Config, RepoConfig};
-use crate::github::{Conditional, GitHub, Issue};
+use crate::github::{Conditional, GitHub, Issue, PrInfo};
 use crate::orca::{Delivery, Orca, Worktree};
 use crate::prompt::{self, PromptContext, Rendered, actor_of, event_key, render_event};
 use crate::sessions;
@@ -112,28 +112,136 @@ impl Engine {
 
     async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
         let (owner, name) = repo.split()?;
-        let etag = self.state.repo_mut(&repo.name).issues_etag.clone();
-        let listing = self
+        let rs = self.state.repo_mut(&repo.name).clone();
+
+        // Three listings, one per trigger. Each carries its own ETag; a 304
+        // means that listing (and every item on it) is exactly as last time,
+        // so its cached numbers stand in for the contents.
+        let assigned = self
             .gh
-            .assigned_issues(owner, name, &self.login, etag.as_deref())
+            .items(
+                owner,
+                name,
+                "assignee",
+                &self.login,
+                rs.issues_etag.as_deref(),
+            )
             .await?;
-        let (issues, new_etag) = match listing {
-            Conditional::NotModified => {
-                debug!(repo = repo.name, "assigned issues unchanged");
-                return Ok(());
+        let mentioned = self
+            .gh
+            .items(
+                owner,
+                name,
+                "mentioned",
+                &self.login,
+                rs.mentioned_etag.as_deref(),
+            )
+            .await?;
+        let reviews = self
+            .gh
+            .review_requested(owner, name, &self.login, rs.pulls_etag.as_deref())
+            .await?;
+        if matches!(assigned, Conditional::NotModified)
+            && matches!(mentioned, Conditional::NotModified)
+            && matches!(reviews, Conditional::NotModified)
+        {
+            debug!(repo = repo.name, "nothing changed");
+            return Ok(());
+        }
+
+        // number -> (fresh item if we have one, pr info, triggers)
+        let mut items: BTreeMap<u64, (Option<Issue>, Option<PrInfo>, Vec<String>)> =
+            BTreeMap::new();
+        let mut note = |n: u64, issue: Option<Issue>, pr: Option<PrInfo>, trigger: &str| {
+            let e = items.entry(n).or_insert((None, None, Vec::new()));
+            if issue.is_some() {
+                e.0 = issue;
             }
-            Conditional::Modified { value, etag } => (value, etag),
+            if pr.is_some() {
+                e.1 = pr;
+            }
+            if !e.2.iter().any(|t| t == trigger) {
+                e.2.push(trigger.to_string());
+            }
+        };
+        let (assigned_numbers, issues_etag) = match assigned {
+            Conditional::Modified { value, etag } => {
+                let nums: Vec<u64> = value.iter().map(|i| i.number).collect();
+                for i in value {
+                    note(i.number, Some(i), None, "assigned");
+                }
+                (nums, Some(etag))
+            }
+            Conditional::NotModified => {
+                for n in &rs.assigned_numbers {
+                    note(*n, None, None, "assigned");
+                }
+                (rs.assigned_numbers.clone(), None)
+            }
+        };
+        let (mentioned_numbers, mentioned_etag) = match mentioned {
+            Conditional::Modified { value, etag } => {
+                let nums: Vec<u64> = value.iter().map(|i| i.number).collect();
+                for i in value {
+                    note(i.number, Some(i), None, "mentioned");
+                }
+                (nums, Some(etag))
+            }
+            Conditional::NotModified => {
+                for n in &rs.mentioned_numbers {
+                    note(*n, None, None, "mentioned");
+                }
+                (rs.mentioned_numbers.clone(), None)
+            }
+        };
+        let (review_numbers, pulls_etag) = match reviews {
+            Conditional::Modified { value, etag } => {
+                let nums: Vec<u64> = value.iter().map(|(i, _)| i.number).collect();
+                for (i, pr) in value {
+                    note(i.number, Some(i), Some(pr), "review_requested");
+                }
+                (nums, Some(etag))
+            }
+            Conditional::NotModified => {
+                for n in &rs.review_numbers {
+                    note(*n, None, None, "review_requested");
+                }
+                (rs.review_numbers.clone(), None)
+            }
         };
         debug!(
             repo = repo.name,
-            count = issues.len(),
-            "assigned open issues"
+            count = items.len(),
+            "open items involving the bot"
         );
 
         let mut all_ok = true;
-        let assigned: BTreeSet<u64> = issues.iter().map(|i| i.number).collect();
-        for issue in &issues {
-            if let Err(e) = self.reconcile_issue(repo, owner, name, issue).await {
+        let present: BTreeSet<u64> = items.keys().copied().collect();
+        for (number, (fresh, pr, triggers)) in items {
+            let tracked = self
+                .state
+                .repo_mut(&repo.name)
+                .issues
+                .get(&number)
+                .map(|s| s.seeded && s.active)
+                .unwrap_or(false);
+            // An unchanged listing only matters for items we already handle.
+            let issue = match fresh {
+                Some(i) => i,
+                None if tracked => continue,
+                None => match self.gh.issue(owner, name, number).await {
+                    Ok(i) => i,
+                    Err(e) => {
+                        all_ok = false;
+                        self.note_failure(repo, number, &e);
+                        continue;
+                    }
+                },
+            };
+            if let Err(e) = self
+                .reconcile_issue(repo, owner, name, &issue, pr, triggers)
+                .await
+            {
                 all_ok = false;
                 self.note_failure(repo, issue.number, &e);
             } else {
@@ -146,7 +254,7 @@ impl Engine {
             .repo_mut(&repo.name)
             .issues
             .values()
-            .filter(|s| s.active && !assigned.contains(&s.number))
+            .filter(|s| s.active && !present.contains(&s.number))
             .map(|s| s.number)
             .collect();
         for number in stale {
@@ -156,9 +264,27 @@ impl Engine {
             }
         }
 
-        // Only trust the ETag when every issue was handled; otherwise the next
-        // pass must see the full listing again to retry.
-        self.state.repo_mut(&repo.name).issues_etag = if all_ok { new_etag } else { None };
+        // Only trust the ETags when every item was handled; otherwise the next
+        // pass must see the full listings again to retry.
+        let rs = self.state.repo_mut(&repo.name);
+        if all_ok {
+            if let Some(t) = issues_etag {
+                rs.issues_etag = t;
+                rs.assigned_numbers = assigned_numbers;
+            }
+            if let Some(t) = mentioned_etag {
+                rs.mentioned_etag = t;
+                rs.mentioned_numbers = mentioned_numbers;
+            }
+            if let Some(t) = pulls_etag {
+                rs.pulls_etag = t;
+                rs.review_numbers = review_numbers;
+            }
+        } else {
+            rs.issues_etag = None;
+            rs.mentioned_etag = None;
+            rs.pulls_etag = None;
+        }
         Ok(())
     }
 
@@ -186,11 +312,13 @@ impl Engine {
         }
     }
 
-    fn ctx<'a>(&'a self, repo: &'a RepoConfig) -> PromptContext<'a> {
+    fn ctx<'a>(&'a self, repo: &'a RepoConfig, st: &'a IssueState) -> PromptContext<'a> {
         PromptContext {
             repo,
             daemon: &self.cfg.daemon,
             bot_login: &self.login,
+            pr: st.pr.as_ref(),
+            triggers: &st.triggers,
         }
     }
 
@@ -239,6 +367,8 @@ impl Engine {
         owner: &str,
         name: &str,
         issue: &Issue,
+        pr: Option<PrInfo>,
+        triggers: Vec<String>,
     ) -> Result<()> {
         let existing = self
             .state
@@ -246,6 +376,12 @@ impl Engine {
             .issues
             .get(&issue.number)
             .cloned();
+        if let Some(st) = &existing {
+            if st.seeded && st.triggers != triggers {
+                let e = self.entry(repo, issue.number);
+                e.triggers = triggers.clone();
+            }
+        }
         match existing {
             Some(st) if st.seeded && !st.active => {
                 self.reactivate(repo, owner, name, issue, st).await
@@ -256,7 +392,7 @@ impl Engine {
                 }
                 self.follow_up(repo, owner, name, issue, st).await
             }
-            _ => self.onboard(repo, owner, name, issue).await,
+            _ => self.onboard(repo, owner, name, issue, pr, triggers).await,
         }
     }
 
@@ -283,19 +419,26 @@ impl Engine {
     }
 
     /// First contact: make sure the project and a workspace exist, then send
-    /// the full issue context to a fresh agent.
+    /// the full context to a fresh agent. Pull requests get a workspace on
+    /// their own branch, or share the workspace of the issue that produced
+    /// the branch.
     async fn onboard(
         &mut self,
         repo: &RepoConfig,
         owner: &str,
         name: &str,
         issue: &Issue,
+        pr: Option<PrInfo>,
+        triggers: Vec<String>,
     ) -> Result<()> {
+        let is_pr = issue.is_pull_request();
         info!(
             repo = repo.name,
             issue = issue.number,
             title = issue.title,
-            "onboarding issue"
+            pr = is_pr,
+            ?triggers,
+            "onboarding"
         );
         let setup = self
             .orca
@@ -307,10 +450,13 @@ impl Engine {
                 &self.cfg.projects_dir(),
             )
             .await?;
+        let pr = match (is_pr, pr) {
+            (true, Some(p)) => Some(p),
+            (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
+            (false, _) => None,
+        };
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
         let diff = self.diff(&BTreeMap::new(), &timeline);
-        let ctx = self.ctx(repo);
-        let text = prompt::initial_prompt(issue, &diff.rendered, &ctx);
 
         let prior = self
             .state
@@ -318,6 +464,79 @@ impl Engine {
             .issues
             .get(&issue.number)
             .cloned();
+        let wt_name = prior
+            .as_ref()
+            .and_then(|s| s.worktree_name.clone())
+            .unwrap_or_else(|| prompt::worktree_name_for(issue.number, &issue.title, is_pr));
+        {
+            let e = self.entry(repo, issue.number);
+            e.title = issue.title.clone();
+            e.html_url = issue.html_url.clone();
+            e.repo_id = Some(setup.repo_id.clone());
+            e.worktree_name = Some(wt_name.clone());
+            e.kind = Some(if is_pr {
+                "pull_request".into()
+            } else {
+                "issue".into()
+            });
+            e.triggers = triggers.clone();
+            e.pr = pr.clone();
+            e.shares_workspace_of = None;
+        }
+        let snapshot = self.entry(repo, issue.number).clone();
+        let ctx = self.ctx(repo, &snapshot);
+        let text = prompt::initial_prompt(issue, &diff.rendered, &ctx);
+
+        // A same-repo PR whose branch already has a live workspace (the issue
+        // the agent opened it from) joins that agent instead of forking a
+        // second checkout of the same branch.
+        if let Some(p) = pr.as_ref().filter(|p| p.same_repo(&repo.name)) {
+            let head = format!("refs/heads/{}", p.head_ref);
+            let owner_issue = self
+                .state
+                .repo_mut(&repo.name)
+                .issues
+                .values()
+                .find(|s| {
+                    s.active
+                        && s.number != issue.number
+                        && s.shares_workspace_of.is_none()
+                        && s.branch.as_deref() == Some(head.as_str())
+                })
+                .cloned();
+            if let Some(o) = owner_issue {
+                if let Some(id) = o.worktree_id.as_deref() {
+                    if self.orca.worktree_exists(id).await.unwrap_or(false) {
+                        info!(
+                            repo = repo.name,
+                            issue = issue.number,
+                            via = o.number,
+                            "pull request joins the issue's workspace"
+                        );
+                        let e = self.entry(repo, issue.number);
+                        e.worktree_id = o.worktree_id.clone();
+                        e.worktree_path = o.worktree_path.clone();
+                        e.branch = o.branch.clone();
+                        e.terminal_handle = o.terminal_handle.clone();
+                        e.agent_session_id = o.agent_session_id.clone();
+                        e.launched_at = o.launched_at.clone();
+                        e.shares_workspace_of = Some(o.number);
+                        let d = self.deliver_to(repo, issue.number, &text, None).await?;
+                        let e = self.entry(repo, issue.number);
+                        e.terminal_handle = Some(d.handle);
+                        e.updated_at = Some(issue.updated_at.clone());
+                        e.seen = diff.seen;
+                        e.seeded = true;
+                        e.active = true;
+                        e.bound_at = Some(now_iso());
+                        e.last_prompt_at = Some(now_iso());
+                        e.prompts_sent += 1;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let mut existing: Option<Worktree> = None;
         if let Some(id) = prior.as_ref().and_then(|s| s.worktree_id.clone()) {
             if self.orca.worktree_exists(&id).await? {
@@ -338,19 +557,11 @@ impl Engine {
                 .await?;
         }
 
-        let comment = format!("ssf: bound to issue #{}", issue.number);
-        let wt_name = prior
-            .as_ref()
-            .and_then(|s| s.worktree_name.clone())
-            .unwrap_or_else(|| prompt::worktree_name(issue.number, &issue.title));
-        {
-            let e = self.entry(repo, issue.number);
-            e.title = issue.title.clone();
-            e.html_url = issue.html_url.clone();
-            e.repo_id = Some(setup.repo_id.clone());
-            e.worktree_name = Some(wt_name.clone());
-        }
-
+        let comment = format!(
+            "ssf: bound to {} #{}",
+            if is_pr { "PR" } else { "issue" },
+            issue.number
+        );
         let handle = match existing {
             Some(wt) => {
                 info!(
@@ -366,14 +577,13 @@ impl Engine {
             }
             None => {
                 let created = self
-                    .orca
-                    .create_worktree(
+                    .create_workspace(
+                        repo,
                         &setup.repo_id,
                         &wt_name,
                         issue.number,
-                        None,
                         &comment,
-                        repo.base_branch.as_deref(),
+                        pr.as_ref(),
                     )
                     .await?;
                 info!(
@@ -404,8 +614,9 @@ impl Engine {
                     repo = repo.name,
                     issue = issue.number,
                     handle,
-                    "launched {} and sent the issue",
-                    repo.harness
+                    "launched {} and sent the {}",
+                    repo.harness,
+                    if is_pr { "pull request" } else { "issue" }
                 );
                 handle
             }
@@ -427,6 +638,80 @@ impl Engine {
         tokio::time::sleep(Duration::from_secs(3)).await;
         self.capture_sessions(repo);
         Ok(())
+    }
+
+    /// Create the git worktree for an item. Pull requests from this repo are
+    /// checked out on their head branch so pushes update the PR; anything
+    /// else starts from the configured base.
+    async fn create_workspace(
+        &mut self,
+        repo: &RepoConfig,
+        repo_id: &str,
+        wt_name: &str,
+        number: u64,
+        comment: &str,
+        pr: Option<&PrInfo>,
+    ) -> Result<Worktree> {
+        let mut base = repo.base_branch.clone();
+        let mut checkout: Option<String> = None;
+        if let Some(p) = pr.filter(|p| p.same_repo(&repo.name) && !p.head_ref.is_empty()) {
+            let main = self.orca.repo_path(repo_id).await?;
+            if let Err(e) = git(&main, &["fetch", "origin", &p.head_ref]).await {
+                warn!(
+                    repo = repo.name,
+                    issue = number,
+                    "fetching PR branch failed: {e:#}"
+                );
+            }
+            if self
+                .orca
+                .existing_branch_ref(repo_id, &p.head_ref)
+                .await?
+                .is_some()
+            {
+                base = Some(format!("origin/{}", p.head_ref));
+                checkout = Some(p.head_ref.clone());
+            }
+        }
+        let created = match self
+            .orca
+            .create_worktree(repo_id, wt_name, number, None, comment, base.as_deref())
+            .await
+        {
+            Ok(w) => w,
+            Err(e) if checkout.is_some() => {
+                warn!(
+                    repo = repo.name,
+                    issue = number,
+                    "creating from the PR branch failed ({e:#}); using the default base"
+                );
+                checkout = None;
+                self.orca
+                    .create_worktree(
+                        repo_id,
+                        wt_name,
+                        number,
+                        None,
+                        comment,
+                        repo.base_branch.as_deref(),
+                    )
+                    .await?
+            }
+            Err(e) => return Err(e),
+        };
+        let mut created = created;
+        if let Some(branch) = checkout {
+            match checkout_branch(&created.path, &branch).await {
+                Ok(()) => created.branch = Some(format!("refs/heads/{branch}")),
+                Err(e) => warn!(
+                    repo = repo.name,
+                    issue = number,
+                    branch,
+                    "could not check out the PR branch: {e:#}"
+                ),
+            }
+        }
+        Ok(created)
     }
 
     /// The issue changed since we last looked: deliver whatever is new.
@@ -458,7 +743,7 @@ impl Engine {
             events = diff.rendered.len(),
             "delivering new activity"
         );
-        let ctx = self.ctx(repo);
+        let ctx = self.ctx(repo, &st);
         let text = prompt::followup_prompt(issue, &diff.rendered, &ctx);
         // A harness started from scratch has lost its memory, so it gets the
         // whole story rather than just the delta.
@@ -496,7 +781,7 @@ impl Engine {
         );
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
         let diff = self.diff(&st.seen, &timeline);
-        let ctx = self.ctx(repo);
+        let ctx = self.ctx(repo, &st);
         let text = prompt::reassigned_prompt(issue, &diff.rendered, &ctx);
         let all = self.diff(&BTreeMap::new(), &timeline).rendered;
         let relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
@@ -519,7 +804,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Issue left the assigned-and-open set: tell the agent to stop.
+    /// Item left the set of open things involving the bot: tell the agent to stop.
     async fn retire_issue(
         &mut self,
         repo: &RepoConfig,
@@ -533,23 +818,31 @@ impl Engine {
             .issues
             .get(&number)
             .cloned()
-            .context("retiring unknown issue")?;
+            .context("retiring unknown item")?;
         let issue = self.gh.issue(owner, name, number).await?;
         let closed = issue.state == "closed";
-        let still_assigned = issue.is_assigned_to(&self.login);
-        if !closed && still_assigned {
-            // Listing lag; leave it alone.
-            return Ok(());
+        if !closed {
+            // Listing lag: still assigned, or still requested for review.
+            if issue.is_assigned_to(&self.login) {
+                return Ok(());
+            }
+            if issue.is_pull_request() {
+                if let Ok(info) = self.gh.pull(owner, name, number).await {
+                    if info.merged {
+                        // handled as closed below on the next pass
+                    }
+                }
+            }
         }
         info!(
             repo = repo.name,
             issue = number,
             closed,
-            "issue no longer active for the bot"
+            "item no longer active for the bot"
         );
         let timeline = self.gh.timeline(owner, name, number).await?;
         let diff = self.diff(&st.seen, &timeline);
-        let ctx = self.ctx(repo);
+        let ctx = self.ctx(repo, &st);
         let text = if closed {
             prompt::closed_prompt(&issue, &diff.rendered, &ctx)
         } else {
@@ -576,12 +869,13 @@ impl Engine {
         } else {
             None
         };
-        if closed && workspace_alive {
+        let shared = st.shares_workspace_of.is_some();
+        if closed && workspace_alive && !shared {
             if let Some(id) = &st.worktree_id {
                 let _ = self.orca.set_status(id, "completed").await;
             }
         }
-        let cleanup = closed && workspace_alive && self.cfg.daemon.cleanup_on_close;
+        let cleanup = closed && workspace_alive && !shared && self.cfg.daemon.cleanup_on_close;
         let e = self.entry(repo, number);
         e.active = false;
         e.updated_at = Some(issue.updated_at.clone());
@@ -764,6 +1058,24 @@ impl Engine {
             }
             Err(e) => return Err(e),
         };
+        let mut created = created;
+        if let Some(branch) = st
+            .branch
+            .as_deref()
+            .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string())
+        {
+            if base.is_some() {
+                match checkout_branch(&created.path, &branch).await {
+                    Ok(()) => created.branch = Some(format!("refs/heads/{branch}")),
+                    Err(e) => warn!(
+                        repo = repo.name,
+                        issue = number,
+                        branch,
+                        "could not check out the old branch: {e:#}"
+                    ),
+                }
+            }
+        }
         self.remember_worktree(repo, number, &created);
         let e = self.entry(repo, number);
         e.terminal_handle = None;
@@ -813,6 +1125,11 @@ impl Engine {
             .cloned()
             .collect();
         for st in pending {
+            if st.shares_workspace_of.is_some() {
+                let e = self.entry(repo, st.number);
+                e.cleanup_pending = false;
+                continue;
+            }
             let Some(id) = st.worktree_id.clone() else {
                 self.entry(repo, st.number).cleanup_pending = false;
                 continue;
@@ -876,4 +1193,56 @@ impl Engine {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Run git in `path`, returning stdout.
+async fn git(path: &str, args: &[&str]) -> Result<String> {
+    let out = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .await
+        .context("running git")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Switch a fresh worktree onto `branch`, tracking `origin/branch` when it
+/// exists, so the agent's pushes land where the pull request lives.
+async fn checkout_branch(path: &str, branch: &str) -> Result<()> {
+    let _ = git(path, &["fetch", "origin", branch]).await;
+    let remote = git(
+        path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}"),
+        ],
+    )
+    .await
+    .is_ok();
+    if remote {
+        git(
+            path,
+            &[
+                "checkout",
+                "-B",
+                branch,
+                "--track",
+                &format!("origin/{branch}"),
+            ],
+        )
+        .await?;
+    } else {
+        git(path, &["checkout", branch]).await?;
+    }
+    Ok(())
 }

@@ -23,9 +23,19 @@ pub struct State {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RepoState {
-    /// ETag of the last successful assigned-issues listing.
+    /// ETags and contents of the last successful listings, per trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issues_etag: Option<String>,
+    #[serde(default)]
+    pub assigned_numbers: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mentioned_etag: Option<String>,
+    #[serde(default)]
+    pub mentioned_numbers: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pulls_etag: Option<String>,
+    #[serde(default)]
+    pub review_numbers: Vec<u64>,
     #[serde(default)]
     pub issues: BTreeMap<u64, IssueState>,
 }
@@ -83,6 +93,19 @@ pub struct IssueState {
     pub last_prompt_at: Option<String>,
     #[serde(default)]
     pub prompts_sent: u64,
+    /// `issue` or `pull_request`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Why the bot got involved: assigned, mentioned, review_requested.
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    /// Pull request branch details.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<crate::github::PrInfo>,
+    /// This PR reuses the workspace of that issue (same branch); the
+    /// workspace lifecycle belongs to the issue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shares_workspace_of: Option<u64>,
 }
 
 pub fn state_path() -> PathBuf {

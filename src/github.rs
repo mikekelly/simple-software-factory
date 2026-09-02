@@ -86,6 +86,37 @@ impl Issue {
     }
 }
 
+/// Where a pull request's code lives.
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+pub struct PrInfo {
+    pub head_ref: String,
+    pub head_repo: String,
+    pub base_ref: String,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub merged: bool,
+}
+
+impl PrInfo {
+    pub fn from_value(v: &Value) -> Self {
+        Self {
+            head_ref: value_str(v, &["head", "ref"]).unwrap_or("").to_string(),
+            head_repo: value_str(v, &["head", "repo", "full_name"])
+                .unwrap_or("")
+                .to_string(),
+            base_ref: value_str(v, &["base", "ref"]).unwrap_or("").to_string(),
+            draft: v.get("draft").and_then(Value::as_bool).unwrap_or(false),
+            merged: v.get("merged").and_then(Value::as_bool).unwrap_or(false)
+                || v.get("merged_at").is_some_and(|m| !m.is_null()),
+        }
+    }
+
+    pub fn same_repo(&self, full_name: &str) -> bool {
+        self.head_repo.eq_ignore_ascii_case(full_name)
+    }
+}
+
 /// Result of a conditional GET.
 pub enum Conditional<T> {
     NotModified,
@@ -231,47 +262,123 @@ impl GitHub {
         resp.json::<User>().await.context("decoding /user")
     }
 
-    /// Open issues assigned to `login`. Pull requests are filtered out.
-    pub async fn assigned_issues(
+    /// Open issues and pull requests matching one list filter
+    /// (`assignee=<login>` or `mentioned=<login>`), with ETag support.
+    pub async fn items(
         &self,
         owner: &str,
         repo: &str,
+        filter: &str,
         login: &str,
         etag: Option<&str>,
     ) -> Result<Conditional<Vec<Issue>>> {
         let first = format!(
-            "{}?assignee={}&state=open&per_page=100&sort=updated&direction=asc",
-            self.url(&format!("repos/{owner}/{repo}/issues")),
-            login
+            "{}?{filter}={login}&state=open&per_page=100&sort=updated&direction=asc",
+            self.url(&format!("repos/{owner}/{repo}/issues"))
         );
         let mut req = self.get(&first);
         if let Some(tag) = etag {
             req = req.header(IF_NONE_MATCH, tag);
         }
         let resp = req.send().await.with_context(|| format!("GET {first}"))?;
-        let resp = Self::check(resp, &format!("listing issues for {owner}/{repo}")).await?;
+        let resp = Self::check(resp, &format!("listing {filter} items for {owner}/{repo}")).await?;
         if resp.status() == StatusCode::NOT_MODIFIED {
             return Ok(Conditional::NotModified);
         }
         let new_etag = header_str(&resp, ETAG);
         let mut next = next_link(&resp);
-        let mut issues: Vec<Issue> = resp.json().await.context("decoding issue list")?;
+        let mut issues: Vec<Issue> = resp.json().await.context("decoding item list")?;
         while let Some(url) = next.take() {
             let resp = self
                 .get(&url)
                 .send()
                 .await
                 .with_context(|| format!("GET {url}"))?;
-            let resp = Self::check(resp, "paging issue list").await?;
+            let resp = Self::check(resp, "paging item list").await?;
             next = next_link(&resp);
-            let page: Vec<Issue> = resp.json().await.context("decoding issue page")?;
+            let page: Vec<Issue> = resp.json().await.context("decoding item page")?;
             issues.extend(page);
         }
-        issues.retain(|i| !i.is_pull_request());
         Ok(Conditional::Modified {
             value: issues,
             etag: new_etag,
         })
+    }
+
+    /// Open pull requests that currently request a review from `login`.
+    pub async fn review_requested(
+        &self,
+        owner: &str,
+        repo: &str,
+        login: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Vec<(Issue, PrInfo)>>> {
+        let first = format!(
+            "{}?state=open&per_page=100&sort=updated&direction=asc",
+            self.url(&format!("repos/{owner}/{repo}/pulls"))
+        );
+        let mut req = self.get(&first);
+        if let Some(tag) = etag {
+            req = req.header(IF_NONE_MATCH, tag);
+        }
+        let resp = req.send().await.with_context(|| format!("GET {first}"))?;
+        let resp = Self::check(resp, &format!("listing pull requests for {owner}/{repo}")).await?;
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Conditional::NotModified);
+        }
+        let new_etag = header_str(&resp, ETAG);
+        let mut next = next_link(&resp);
+        let mut pulls: Vec<Value> = resp.json().await.context("decoding pull list")?;
+        while let Some(url) = next.take() {
+            let resp = self
+                .get(&url)
+                .send()
+                .await
+                .with_context(|| format!("GET {url}"))?;
+            let resp = Self::check(resp, "paging pull list").await?;
+            next = next_link(&resp);
+            let page: Vec<Value> = resp.json().await.context("decoding pull page")?;
+            pulls.extend(page);
+        }
+        let mut out = Vec::new();
+        for pr in pulls {
+            let requested = pr
+                .get("requested_reviewers")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter().any(|r| {
+                        r.get("login")
+                            .and_then(Value::as_str)
+                            .is_some_and(|l| l.eq_ignore_ascii_case(login))
+                    })
+                })
+                .unwrap_or(false);
+            if !requested {
+                continue;
+            }
+            let info = PrInfo::from_value(&pr);
+            let mut v = pr.clone();
+            v["pull_request"] = serde_json::json!({});
+            let issue: Issue = serde_json::from_value(v).context("decoding pull as issue")?;
+            out.push((issue, info));
+        }
+        Ok(Conditional::Modified {
+            value: out,
+            etag: new_etag,
+        })
+    }
+
+    /// Branch details of a pull request.
+    pub async fn pull(&self, owner: &str, repo: &str, number: u64) -> Result<PrInfo> {
+        let url = self.url(&format!("repos/{owner}/{repo}/pulls/{number}"));
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let resp = Self::check(resp, &format!("fetching {owner}/{repo} PR #{number}")).await?;
+        let v: Value = resp.json().await.context("decoding pull request")?;
+        Ok(PrInfo::from_value(&v))
     }
 
     pub async fn issue(&self, owner: &str, repo: &str, number: u64) -> Result<Issue> {

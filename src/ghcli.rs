@@ -9,7 +9,12 @@ use std::process::{Command, Stdio};
 
 /// Scopes the bot token needs: issues/PRs/pushes, Projects boards, plus key
 /// enrollment.
-pub const REQUIRED_SCOPES: &[&str] = &["repo", "project", "admin:public_key", "admin:ssh_signing_key"];
+pub const REQUIRED_SCOPES: &[&str] = &[
+    "repo",
+    "project",
+    "admin:public_key",
+    "admin:ssh_signing_key",
+];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Account {
@@ -22,12 +27,20 @@ pub struct Account {
 
 impl Account {
     pub fn scopes(&self) -> Vec<String> {
-        self.scopes.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        self.scopes
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     }
 
     pub fn missing_scopes(&self) -> Vec<&'static str> {
         let have = self.scopes();
-        REQUIRED_SCOPES.iter().copied().filter(|s| !have.iter().any(|h| h == s)).collect()
+        REQUIRED_SCOPES
+            .iter()
+            .copied()
+            .filter(|s| !have.iter().any(|h| h == s))
+            .collect()
     }
 }
 
@@ -60,7 +73,8 @@ pub fn accounts(host: &str) -> Result<Vec<Account>> {
             return Ok(Vec::new());
         }
     }
-    let parsed: StatusJson = serde_json::from_slice(&out.stdout).context("decoding gh auth status")?;
+    let parsed: StatusJson =
+        serde_json::from_slice(&out.stdout).context("decoding gh auth status")?;
     Ok(parsed.hosts.get(host).cloned().unwrap_or_default())
 }
 
@@ -88,7 +102,10 @@ pub fn switch_to(host: &str, login: &str) -> Result<()> {
         .output()
         .context("running gh auth switch")?;
     if !out.status.success() {
-        bail!("gh auth switch --user {login} failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        bail!(
+            "gh auth switch --user {login} failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(())
 }
@@ -100,7 +117,11 @@ fn git_protocol(host: &str) -> Option<String> {
         .output()
         .ok()?;
     let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if out.status.success() && !v.is_empty() { Some(v) } else { None }
+    if out.status.success() && !v.is_empty() {
+        Some(v)
+    } else {
+        None
+    }
 }
 
 /// Interactive browser sign-in; the account is whoever signs in. gh makes
@@ -140,7 +161,14 @@ pub fn login_web(host: &str, scopes: &[&str]) -> Result<()> {
 /// Interactive scope upgrade for the *active* account.
 pub fn refresh_scopes(host: &str, scopes: &[&str]) -> Result<()> {
     let status = Command::new("gh")
-        .args(["auth", "refresh", "--hostname", host, "--scopes", &scopes.join(",")])
+        .args([
+            "auth",
+            "refresh",
+            "--hostname",
+            host,
+            "--scopes",
+            &scopes.join(","),
+        ])
         .status()
         .context("running gh auth refresh")?;
     if !status.success() {

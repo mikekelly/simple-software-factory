@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use crate::config::{DaemonConfig, RepoConfig};
-use crate::github::{Issue, value_str, value_u64};
+use crate::github::{Issue, PrInfo, value_str, value_u64};
 
 /// A timeline event that should be shown to the agent.
 #[derive(Debug, Clone)]
@@ -164,6 +164,65 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rend
             }
             s
         }
+        "line-commented" => {
+            let comments = ev
+                .get("comments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut out = Vec::new();
+            for c in &comments {
+                let who = value_str(c, &["user", "login"]).unwrap_or("someone");
+                let path = value_str(c, &["path"]).unwrap_or("?");
+                let line = c
+                    .get("line")
+                    .or_else(|| c.get("original_line"))
+                    .and_then(Value::as_u64);
+                let body = value_str(c, &["body"]).unwrap_or("");
+                let url = value_str(c, &["html_url"]).unwrap_or("");
+                let at = value_str(c, &["created_at"]).unwrap_or(&at);
+                out.push(format!(
+                    "- [{at}] @{who} commented on `{path}`{} ({url}):\n{}",
+                    line.map(|l| format!(" line {l}")).unwrap_or_default(),
+                    quote(body, cfg.max_body_chars)
+                ));
+            }
+            if out.is_empty() {
+                return None;
+            }
+            out.join("\n")
+        }
+        "commit-commented" => {
+            let comments = ev
+                .get("comments")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            let mut out = Vec::new();
+            for c in &comments {
+                let who = value_str(c, &["user", "login"]).unwrap_or("someone");
+                let sha = value_str(c, &["commit_id"]).unwrap_or("");
+                let body = value_str(c, &["body"]).unwrap_or("");
+                out.push(format!(
+                    "- [{at}] @{who} commented on commit {}:\n{}",
+                    short(sha),
+                    quote(body, cfg.max_body_chars)
+                ));
+            }
+            if out.is_empty() {
+                return None;
+            }
+            out.join("\n")
+        }
+        "review_request_removed" => {
+            let who = value_str(ev, &["requested_reviewer", "login"]).unwrap_or("someone");
+            head(&format!("withdrew the review request for @{who}"))
+        }
+        "merged" => head("merged the pull request"),
+        "head_ref_force_pushed" => head("force-pushed the pull request branch"),
+        "head_ref_deleted" => head("deleted the pull request branch"),
+        "ready_for_review" => head("marked the pull request ready for review"),
+        "convert_to_draft" => head("converted the pull request to a draft"),
         "locked" => head("locked the issue"),
         "unlocked" => head("unlocked the issue"),
         "pinned" => head("pinned the issue"),
@@ -187,6 +246,39 @@ pub struct PromptContext<'a> {
     pub repo: &'a RepoConfig,
     pub daemon: &'a DaemonConfig,
     pub bot_login: &'a str,
+    /// Set when the item is a pull request.
+    pub pr: Option<&'a PrInfo>,
+    /// Why the bot is involved: assigned, mentioned, review_requested.
+    pub triggers: &'a [String],
+}
+
+impl PromptContext<'_> {
+    pub fn kind(&self) -> &'static str {
+        if self.pr.is_some() {
+            "pull request"
+        } else {
+            "issue"
+        }
+    }
+
+    fn because(&self) -> String {
+        let bot = self.bot_login;
+        let parts: Vec<String> = self
+            .triggers
+            .iter()
+            .map(|t| match t.as_str() {
+                "assigned" => format!("it was assigned to @{bot}"),
+                "mentioned" => format!("@{bot} was mentioned on it"),
+                "review_requested" => format!("a review was requested from @{bot}"),
+                other => other.to_string(),
+            })
+            .collect();
+        if parts.is_empty() {
+            format!("it was assigned to @{bot}")
+        } else {
+            parts.join(" and ")
+        }
+    }
 }
 
 fn short(sha: &str) -> String {
@@ -195,15 +287,34 @@ fn short(sha: &str) -> String {
 
 fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
-    let mut s = format!(
-        "# GitHub issue {}#{}: {}\n{}\n\nOpened by @{} on {}.",
-        ctx.repo.name,
-        issue.number,
-        issue.title,
-        issue.html_url,
-        issue.author(),
-        issue.created_at
-    );
+    let mut s = match ctx.pr {
+        Some(pr) => format!(
+            "# GitHub pull request {}#{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{} on {}.",
+            ctx.repo.name,
+            issue.number,
+            issue.title,
+            issue.html_url,
+            pr.head_ref,
+            pr.base_ref,
+            if pr.same_repo(&ctx.repo.name) {
+                ""
+            } else {
+                " (from a fork)"
+            },
+            if pr.draft { ", draft" } else { "" },
+            issue.author(),
+            issue.created_at
+        ),
+        None => format!(
+            "# GitHub issue {}#{}: {}\n{}\n\nOpened by @{} on {}.",
+            ctx.repo.name,
+            issue.number,
+            issue.title,
+            issue.html_url,
+            issue.author(),
+            issue.created_at
+        ),
+    };
     if !labels.is_empty() {
         s.push_str(&format!(" Labels: {}.", labels.join(", ")));
     }
@@ -237,33 +348,56 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let n = issue.number;
     let repo = &ctx.repo.name;
     let bot = ctx.bot_login;
+    let kind = ctx.kind();
+    let because = ctx.because();
     let mut s = format!(
         "\n## How to work on this\n\n\
 You are the coding agent for the GitHub bot account @{bot}. This workspace was created by \
-Simple Software Factory (ssf) because the issue above was assigned to @{bot}. Work on the issue \
-in this worktree, on its branch; commit as you go. New activity on the issue (comments, label \
-changes, closure) will be delivered to you here as further messages prefixed with `[ssf]`, so \
-re-read them and adjust course when they arrive.\n\n\
-- Talk to the humans through the issue, as the bot account. The bot's GitHub credentials are \
+Simple Software Factory (ssf) because {because}. Work on the {kind} in this worktree, on its \
+branch; commit as you go. New activity on the {kind} (comments, reviews, label changes, closure) \
+will be delivered to you here as further messages prefixed with `[ssf]`, so re-read them and \
+adjust course when they arrive.\n\n\
+- Talk to the humans through the {kind}, as the bot account. The bot's GitHub credentials are \
 already in your environment (`GH_TOKEN`, `GITHUB_TOKEN`, and a git credential helper for HTTPS), so \
-plain `gh issue comment {n} --repo {repo} --body \"...\"` and `git push` act as @{bot}, and commits are \
-authored and signed as @{bot} automatically. `SSF_REPO` and `SSF_ISSUE` name this issue. Only ever act as \
-@{bot}: never use another GitHub account, token or key you find on this machine, even if @{bot} lacks a \
-permission; say so on the issue instead. Post a short comment when you start, when you need a decision, and when \
-you finish.\n\
-- Ask questions on the issue rather than guessing when the request is ambiguous; you will be \
-woken up when someone answers.\n\
-- When the work is done, push the branch and open a pull request that references the issue \
+plain `gh` commands and `git push` act as @{bot}, and commits are authored and signed as @{bot} \
+automatically. `SSF_REPO` and `SSF_ISSUE` name this {kind}. Only ever act as @{bot}: never use \
+another GitHub account, token or key you find on this machine, even if @{bot} lacks a permission; \
+say so on the {kind} instead. Post a short comment when you start, when you need a decision, and \
+when you finish.\n\
+- Ask questions on the {kind} rather than guessing when the request is ambiguous; you will be \
+woken up when someone answers.\n"
+    );
+    match ctx.pr {
+        Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
+            "- This worktree is checked out on the pull request's branch `{}`. To change the PR, commit here and \
+`git push` that branch; the PR updates itself. Reply to review comments and questions with \
+`gh pr comment {n} --repo {repo} --body \"...\"` (or `gh api` for inline replies). If you were asked \
+to review rather than to change anything, review with `gh pr review {n} --repo {repo}` \
+(--comment, --approve or --request-changes) and be specific.\n\
+- Do not merge the pull request; a human does that.\n",
+            pr.head_ref
+        )),
+        Some(pr) => s.push_str(&format!(
+            "- This pull request comes from a fork ({}), so you cannot push to its branch. Review it, answer \
+questions with `gh pr comment {n} --repo {repo} --body \"...\"`, and if changes are needed describe \
+them in a review (`gh pr review {n} --repo {repo} --request-changes --body \"...\"`) or open a \
+separate PR from this worktree against `{}`.\n\
+- Do not merge the pull request; a human does that.\n",
+            pr.head_repo, pr.base_ref
+        )),
+        None => s.push_str(&format!(
+            "- When the work is done, push the branch and open a pull request that references the issue \
 (`Closes #{n}`), then comment on the issue with the PR link.\n\
 - Do not close the issue yourself; a human reviews the PR.\n"
-    );
+        )),
+    }
     if let Some(extra) = ctx.daemon.instructions.as_deref() {
-        s.push_str("\n");
+        s.push('\n');
         s.push_str(extra.trim());
         s.push('\n');
     }
     if let Some(extra) = ctx.repo.instructions.as_deref() {
-        s.push_str("\n");
+        s.push('\n');
         s.push_str(extra.trim());
         s.push('\n');
     }
@@ -306,18 +440,26 @@ and leave a short final comment on the issue. You will not receive further updat
 }
 
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let mut s = format!(
-        "[ssf] @{} has been unassigned from {}#{} \"{}\".\n\n",
-        ctx.bot_login, ctx.repo.name, issue.number, issue.title
-    );
+    let what = if ctx.triggers.iter().any(|t| t == "review_requested")
+        && !ctx.triggers.iter().any(|t| t == "assigned")
+    {
+        "the review request for @{bot} on {repo}#{n} \"{title}\" has been fulfilled or withdrawn"
+    } else {
+        "@{bot} is no longer assigned to or requested on {repo}#{n} \"{title}\""
+    };
+    let what = what
+        .replace("{bot}", ctx.bot_login)
+        .replace("{repo}", &ctx.repo.name)
+        .replace("{n}", &issue.number.to_string())
+        .replace("{title}", &issue.title);
+    let mut s = format!("[ssf] {what}.\n\n");
     for e in events {
         s.push_str(&e.text);
         s.push('\n');
     }
     s.push_str(
-        "\nStop working on this issue. Commit anything worth keeping and leave a short final \
-comment summarising where things stand. You will not receive further updates unless it is \
-assigned back.",
+        "\nStop working on this. Commit anything worth keeping and leave a short final comment \
+summarising where things stand. You will not receive further updates unless you are brought back in.",
     );
     s
 }
@@ -340,6 +482,15 @@ about it:\n\n",
 }
 
 /// Short, filesystem-safe name for the worktree.
+pub fn worktree_name_for(number: u64, title: &str, is_pr: bool) -> String {
+    let base = worktree_name(number, title);
+    if is_pr {
+        base.replacen("issue-", "pr-", 1)
+    } else {
+        base
+    }
+}
+
 pub fn worktree_name(number: u64, title: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;

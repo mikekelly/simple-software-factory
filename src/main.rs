@@ -463,7 +463,11 @@ async fn auth(command: AuthCommand) -> Result<()> {
             let interactive = std::io::stdin().is_terminal();
             let mut previous_active: Option<String> = None;
             let (login, token, source) = if let Some(t) = token {
-                let t = if t == "-" { read_stdin_token(interactive)? } else { t.trim().to_string() };
+                let t = if t == "-" {
+                    read_stdin_token(interactive)?
+                } else {
+                    t.trim().to_string()
+                };
                 if t.is_empty() {
                     bail!("no token provided");
                 }
@@ -479,7 +483,9 @@ async fn auth(command: AuthCommand) -> Result<()> {
                 (me.login, t, "token file")
             } else {
                 if !ghcli::available() {
-                    bail!("the GitHub CLI (gh) is not installed; install github-cli or pass --token");
+                    bail!(
+                        "the GitHub CLI (gh) is not installed; install github-cli or pass --token"
+                    );
                 }
                 let mut accounts = ghcli::accounts(&host)?;
                 previous_active = accounts.iter().find(|a| a.active).map(|a| a.login.clone());
@@ -494,7 +500,9 @@ async fn auth(command: AuthCommand) -> Result<()> {
                         ),
                     }
                 } else if !interactive {
-                    bail!("no terminal to pick an account in; pass --user <login> (an account gh knows) or --web");
+                    bail!(
+                        "no terminal to pick an account in; pass --user <login> (an account gh knows) or --web"
+                    );
                 } else {
                     pick_account(&accounts)?
                 };
@@ -506,7 +514,8 @@ async fn auth(command: AuthCommand) -> Result<()> {
                         );
                         ghcli::login_web(&host, ghcli::REQUIRED_SCOPES)?;
                         accounts = ghcli::accounts(&host)?;
-                        let now_active = accounts.iter().find(|a| a.active).map(|a| a.login.clone());
+                        let now_active =
+                            accounts.iter().find(|a| a.active).map(|a| a.login.clone());
                         match now_active {
                             Some(l) if previous_active.as_deref() != Some(l.as_str()) => l,
                             Some(l) => bail!(
@@ -534,7 +543,10 @@ async fn auth(command: AuthCommand) -> Result<()> {
                         .collect();
                     if !needed.is_empty() {
                         if interactive {
-                            println!("@{chosen}'s gh token lacks {}; asking gh to add them.", needed.join(", "));
+                            println!(
+                                "@{chosen}'s gh token lacks {}; asking gh to add them.",
+                                needed.join(", ")
+                            );
                             ghcli::switch_to(&host, &chosen)?;
                             let r = ghcli::refresh_scopes(&host, &needed);
                             restore(&host, &chosen);
@@ -550,11 +562,18 @@ async fn auth(command: AuthCommand) -> Result<()> {
                 restore(&host, &chosen);
                 let t = ghcli::token_for(&host, &chosen)?;
                 let gh = github::GitHub::new(&cfg.github.api_url, &t)?;
-                let me = gh.whoami().await.context("gh's token for the bot was rejected by GitHub")?;
+                let me = gh
+                    .whoami()
+                    .await
+                    .context("gh's token for the bot was rejected by GitHub")?;
                 if !me.login.eq_ignore_ascii_case(&chosen) {
                     bail!("gh's token for @{chosen} belongs to @{}", me.login);
                 }
-                if interactive && !yes && user.is_none() && !confirm(&format!("Use @{} as the bot account?", me.login))? {
+                if interactive
+                    && !yes
+                    && user.is_none()
+                    && !confirm(&format!("Use @{} as the bot account?", me.login))?
+                {
                     bail!("cancelled");
                 }
                 // A pasted token from an earlier sign-in would shadow gh's.
@@ -568,9 +587,16 @@ async fn auth(command: AuthCommand) -> Result<()> {
             st.bot_login = Some(login.clone());
             let _ = st.save();
             cfg.github.login = Some(login.clone());
-            cfg.github.email = Some(email.or_else(|| me.email.clone()).unwrap_or_else(|| me.noreply_email()));
+            cfg.github.email = Some(
+                email
+                    .or_else(|| me.email.clone())
+                    .unwrap_or_else(|| me.noreply_email()),
+            );
             println!("Bot account: @{login} ({source})");
-            println!("Commits will be authored as {login} <{}>", cfg.github.email.as_deref().unwrap_or(""));
+            println!(
+                "Commits will be authored as {login} <{}>",
+                cfg.github.email.as_deref().unwrap_or("")
+            );
             if !no_keys {
                 let host_name = hostname();
                 let key_path = cfg
@@ -588,7 +614,10 @@ async fn auth(command: AuthCommand) -> Result<()> {
                     }
                     Err(e) => eprintln!("warning: could not enroll the SSH key for pushes: {e:#}"),
                 }
-                match gh.add_key("ssh_signing_keys", &title, &pair.public_key).await {
+                match gh
+                    .add_key("ssh_signing_keys", &title, &pair.public_key)
+                    .await
+                {
                     Ok(id) => {
                         cfg.github.signing_key_id = Some(id);
                         println!("Enrolled the same key for commit signing");
@@ -600,7 +629,9 @@ async fn auth(command: AuthCommand) -> Result<()> {
             cfg.save()?;
             if let Some(prev) = previous_active.as_deref() {
                 if prev != login {
-                    println!("gh stays on @{prev}; ssf reads @{login}'s token from gh when it needs it.");
+                    println!(
+                        "gh stays on @{prev}; ssf reads @{login}'s token from gh when it needs it."
+                    );
                 }
             }
             if !cfg.repos.is_empty() {
@@ -725,7 +756,9 @@ fn read_stdin_token(interactive: bool) -> Result<String> {
         std::io::stderr().flush()?;
     }
     let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf).context("reading token from stdin")?;
+    std::io::stdin()
+        .read_to_string(&mut buf)
+        .context("reading token from stdin")?;
     Ok(buf.trim().to_string())
 }
 
@@ -746,7 +779,16 @@ fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>> {
     }
     println!("Which GitHub account is the bot?");
     for (i, a) in accounts.iter().enumerate() {
-        println!("  {}) @{}{}", i + 1, a.login, if a.active { "  (your active gh account)" } else { "" });
+        println!(
+            "  {}) @{}{}",
+            i + 1,
+            a.login,
+            if a.active {
+                "  (your active gh account)"
+            } else {
+                ""
+            }
+        );
     }
     println!("  w) sign in another account in the browser");
     loop {
@@ -763,7 +805,10 @@ fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>> {
                 return Ok(Some(accounts[n - 1].login.clone()));
             }
         }
-        if let Some(acc) = accounts.iter().find(|x| x.login.eq_ignore_ascii_case(a.trim_start_matches('@'))) {
+        if let Some(acc) = accounts
+            .iter()
+            .find(|x| x.login.eq_ignore_ascii_case(a.trim_start_matches('@')))
+        {
             return Ok(Some(acc.login.clone()));
         }
         println!("Enter a number, an account name, or w.");

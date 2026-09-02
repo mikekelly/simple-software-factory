@@ -339,8 +339,9 @@ impl Config {
             Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
         }
         if let Some(login) = &self.github.login {
-            return crate::ghcli::token_for(&self.github.git_host(), login)
-                .with_context(|| format!("bot @{login} is not signed in to gh any more; run `ssf auth login`"));
+            return crate::ghcli::token_for(&self.github.git_host(), login).with_context(|| {
+                format!("bot @{login} is not signed in to gh any more; run `ssf auth login`")
+            });
         }
         bail!("no bot account signed in; run `ssf auth login`")
     }
