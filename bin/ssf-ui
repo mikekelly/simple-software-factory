@@ -1,0 +1,228 @@
+#!/bin/bash
+# Human-facing flows for Simple Software Factory, built from Omarchy's menu
+# primitives (omarchy-menu-input / omarchy-menu-select / floating terminals)
+# so they look like the rest of the desktop. Agents should use `ssf` directly.
+
+set -euo pipefail
+
+usage() {
+  cat <<USAGE
+Usage: ssf-ui <command>
+
+  login                 Sign in the bot account (paste a GitHub token)
+  add-repo              Pick a repository and the agent that works it
+  edit-repo <owner/name> Change the agent for a repository, or stop watching it
+  manage-repos          Choose a watched repository to edit
+  service <enable|disable|toggle|restart|is-enabled>
+  logs                  Follow the service log in a terminal
+  status                Show status, then the doctor report
+  open-workspace <worktree-id> [issue-url]
+USAGE
+}
+
+notify() {
+  if command -v omarchy-notification-send >/dev/null 2>&1; then
+    omarchy-notification-send "$@" || true
+  elif command -v notify-send >/dev/null 2>&1; then
+    notify-send "Software Factory" "$*" || true
+  fi
+}
+
+have_menu() {
+  command -v omarchy-menu-select >/dev/null 2>&1 && command -v omarchy-menu-input >/dev/null 2>&1
+}
+
+# Options for omarchy-menu-select: "<glyph><TAB><label><TAB><subtext>". The menu
+# returns "<label><TAB><subtext>" when a subtext is present.
+agent_options() {
+  ssf agents --installed --json | jq -r '.[] | "\u{f0e7}\t\(.name)\t\(.id)\(if .default then " · omarchy default" else "" end)"'
+}
+
+pick_agent() {
+  local current="${1:-}"
+  local choice
+  if have_menu; then
+    local options
+    options=$(agent_options)
+    if [[ -z $options ]]; then
+      notify "No coding agents installed. Install one with Omarchy (Setup › Default agent) first."
+      return 1
+    fi
+    choice=$(printf '%s\n' "$options" | omarchy-menu-select "Which agent works this repository?") || return 1
+    # Take the id back out of the subtext ("claude · omarchy default" -> claude).
+    printf '%s\n' "$choice" | awk -F'\t' '{print $2}' | awk '{print $1}'
+  else
+    ssf agents --installed
+    read -rp "Agent id${current:+ [$current]}: " choice
+    printf '%s\n' "${choice:-$current}"
+  fi
+}
+
+pick_repo_name() {
+  local name
+  if have_menu; then
+    name=$(omarchy-menu-input "Repository to watch (owner/name)" --width 480) || return 1
+  else
+    read -rp "Repository (owner/name): " name
+  fi
+  name=${name#https://github.com/}
+  name=${name%.git}
+  name=${name%/}
+  printf '%s\n' "$name"
+}
+
+cmd_login() {
+  if command -v omarchy-show-logo >/dev/null 2>&1 && [[ -z ${SSF_UI_PRESENTED:-} && ! -t 0 ]]; then
+    SSF_UI_PRESENTED=1 exec omarchy-launch-floating-terminal-with-presentation ssf-ui login
+  fi
+  echo "Sign in the GitHub bot account that issues will be assigned to."
+  echo "The account comes from the GitHub CLI: pick one gh already knows, or"
+  echo "sign in another one in the browser (use a private window so GitHub"
+  echo "does not reuse your own session)."
+  echo
+  local -a accounts=()
+  mapfile -t accounts < <(gh auth status --hostname github.com --json hosts --jq '.hosts["github.com"][]? | "\(.login)\t\(if .active then " (your active gh account)" else "" end)"' 2>/dev/null || true)
+  local choice=""
+  if command -v gum >/dev/null 2>&1; then
+    local -a options=()
+    local line
+    for line in "${accounts[@]}"; do
+      [[ -n $line ]] && options+=("@${line%%$'\t'*}${line#*$'\t'}")
+    done
+    options+=("Sign in another account in the browser")
+    choice=$(gum choose --header "Which GitHub account is the bot?" "${options[@]}") || exit 130
+  fi
+  case "$choice" in
+    "Sign in another account in the browser")
+      ssf auth login --web --yes
+      ;;
+    @*)
+      choice=${choice#@}
+      ssf auth login --user "${choice%% *}" --yes
+      ;;
+    *)
+      ssf auth login
+      ;;
+  esac
+  ssf ui service enable >/dev/null 2>&1 || true
+  echo
+  echo "Next: watch a repository from the bar widget or with 'ssf-ui add-repo'."
+}
+
+cmd_add_repo() {
+  local name harness
+  name=$(pick_repo_name) || exit 0
+  [[ $name == */* ]] || { notify "Enter the repository as owner/name"; exit 1; }
+  harness=$(pick_agent) || exit 0
+  [[ -n $harness ]] || exit 0
+  if out=$(ssf repo add "$name" --harness "$harness" 2>&1); then
+    notify "Watching $name with $harness"
+  else
+    notify "Could not add $name: $out"
+    exit 1
+  fi
+  ssf ui service enable >/dev/null 2>&1 || true
+}
+
+cmd_edit_repo() {
+  local name="${1:-}"
+  [[ -n $name ]] || { usage; exit 1; }
+  local current
+  current=$(ssf repo list --json | jq -r --arg n "$name" '.[] | select(.name == $n) | .harness')
+  [[ -n $current ]] || { notify "$name is not watched"; exit 1; }
+  local choice
+  if have_menu; then
+    choice=$(omarchy-menu-select "$name (agent: $current)" \
+      $'\tChange agent' \
+      $'\tStop watching' \
+      $'\tOpen on GitHub') || exit 0
+  else
+    select choice in "Change agent" "Stop watching" "Open on GitHub"; do break; done
+  fi
+  case "$choice" in
+    "Change agent")
+      local harness
+      harness=$(pick_agent "$current") || exit 0
+      [[ -n $harness ]] || exit 0
+      ssf repo set "$name" --harness "$harness" && notify "$name now uses $harness"
+      ;;
+    "Stop watching")
+      ssf repo remove "$name" && notify "Stopped watching $name"
+      ;;
+    "Open on GitHub")
+      omarchy-launch-browser "https://github.com/$name" 2>/dev/null || xdg-open "https://github.com/$name"
+      ;;
+  esac
+}
+
+cmd_manage_repos() {
+  local rows
+  rows=$(ssf repo list --json | jq -r '.[] | "\u{f09b}\t\(.name)\t\(.harness)"')
+  if [[ -z $rows ]]; then
+    cmd_add_repo
+    return
+  fi
+  local choice
+  if have_menu; then
+    choice=$(printf '%s\n' "$rows" | omarchy-menu-select "Watched repositories") || exit 0
+    choice=$(printf '%s\n' "$choice" | awk -F'\t' '{print $1}')
+  else
+    ssf repo list
+    read -rp "Repository: " choice
+  fi
+  [[ -n $choice ]] && cmd_edit_repo "$choice"
+}
+
+cmd_service() {
+  case "${1:-}" in
+    enable|disable|toggle|is-enabled) ssf ui service "$1" ;;
+    restart)
+      systemctl --user restart ssf.service && notify "Software Factory restarted"
+      ;;
+    *) usage; exit 1 ;;
+  esac
+}
+
+cmd_logs() {
+  if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1 && [[ ! -t 1 ]]; then
+    exec omarchy-launch-terminal journalctl --user -fu ssf.service -n 200
+  fi
+  exec journalctl --user -fu ssf.service -n 200
+}
+
+cmd_status() {
+  ssf status || true
+  echo
+  ssf doctor || true
+  echo
+  if command -v gum >/dev/null 2>&1; then
+    gum confirm "Follow the log?" && journalctl --user -fu ssf.service -n 50
+  fi
+}
+
+cmd_open_workspace() {
+  local id="${1:-}" url="${2:-}"
+  local orca="${ORCA_CLI_COMMAND:-/usr/lib/orca-ide/bin/orca-ide}"
+  if [[ -n $id && -x $orca ]] && "$orca" worktree show --worktree "id:$id" --json >/dev/null 2>&1; then
+    "$orca" worktree set --worktree "id:$id" --json >/dev/null 2>&1 || true
+    "$orca" terminal switch --worktree "id:$id" --json >/dev/null 2>&1 || true
+    omarchy-launch-or-focus orca-ide 2>/dev/null || true
+    return
+  fi
+  if [[ -n $url ]]; then
+    omarchy-launch-browser "$url" 2>/dev/null || xdg-open "$url"
+  fi
+}
+
+case "${1:-}" in
+  login) shift; cmd_login "$@" ;;
+  add-repo) shift; cmd_add_repo "$@" ;;
+  edit-repo) shift; cmd_edit_repo "$@" ;;
+  manage-repos) shift; cmd_manage_repos "$@" ;;
+  service) shift; cmd_service "$@" ;;
+  logs) shift; cmd_logs "$@" ;;
+  status) shift; cmd_status "$@" ;;
+  open-workspace) shift; cmd_open_workspace "$@" ;;
+  -h|--help|help|"") usage ;;
+  *) echo "ssf-ui: unknown command $1" >&2; usage; exit 1 ;;
+esac

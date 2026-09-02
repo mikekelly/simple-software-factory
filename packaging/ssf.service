@@ -1,0 +1,22 @@
+[Unit]
+Description=Simple Software Factory: GitHub issues assigned to the bot become Orca agent workspaces
+Documentation=https://github.com/mikekelly/simple-software-factory
+# Orca (the desktop app) is what we drive, so wait for the graphical session.
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+# Written by `ssf ui service disable` so a stopped factory stays stopped
+# across logins without the unit having to be disabled.
+ConditionPathExists=!%h/.local/state/ssf/disabled
+
+[Service]
+Type=simple
+# Install the bar widget and menu entries on first start; harmless when done.
+ExecStartPre=-/usr/bin/ssf ui install --quiet
+ExecStart=/usr/bin/ssf run
+Restart=on-failure
+RestartSec=15
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=graphical-session.target

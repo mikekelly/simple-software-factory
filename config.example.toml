@@ -1,0 +1,40 @@
+# Simple Software Factory configuration (~/.config/ssf/config.toml).
+# Most of this is written for you by `ssf repo add`, the bar widget, or
+# `ssf config set`; the token lives in ~/.config/ssf/token (0600).
+
+[github]
+# api_url = "https://api.github.com"      # GitHub Enterprise: https://ghe.example.com/api/v3
+# Written by `ssf auth login --user <bot>`:
+# login = "acme-bot"
+# email = "12345+acme-bot@users.noreply.github.com"
+# ssh_key_path = "~/.config/ssf/keys/acme-bot_ed25519"   # enrolled for SSH pushes and commit signing
+# ssh_key_id = 0
+# signing_key_id = 0
+
+[orca]
+# command = "/usr/lib/orca-ide/bin/orca-ide"   # the Orca CLI (not /usr/bin/orca-ide, which launches the app)
+# host = "local"
+# projects_dir = "~/orca/projects"             # where repos are cloned when Orca has no project yet
+# setup_timeout_secs = 900
+# tui_idle_timeout_ms = 90000
+
+[daemon]
+# poll_interval_secs = 10
+# include_own_events = false                   # deliver the bot's own comments back to the agent
+# ignored_events = ["mentioned", "subscribed", "unsubscribed"]
+# max_body_chars = 8000
+# instructions = """
+# House rules appended to every initial prompt.
+# """
+# cleanup_on_close = true                      # remove the workspace once a closed issue's agent has wrapped up
+# cleanup_grace_secs = 900                     # ...or after this long, even if it is still busy
+
+# One [[repo]] per watched repository.
+[[repo]]
+name = "owner/name"
+harness = "claude"                             # agent id: see `ssf agents`
+# command = "claude --dangerously-skip-permissions"   # how the agent is started (default: the harness id); run via `ssf launch`
+# clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
+# path = "~/code/name"                         # register an existing checkout instead of cloning
+# base_branch = "origin/main"
+# instructions = "Run `make test` before opening a PR."

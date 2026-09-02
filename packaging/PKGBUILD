@@ -1,0 +1,78 @@
+# Maintainer: Mike Kelly <mikekelly321@gmail.com>
+#
+# Builds the working tree this file lives in (../). From the repository root:
+#     cd packaging && makepkg -si
+# For omarchy-pkgs, point `source` at a release tarball or git tag instead of
+# the local-copy prepare() below.
+
+pkgname=ssf
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become Orca agent workspaces"
+arch=('x86_64' 'aarch64')
+url="https://github.com/mikekelly/simple-software-factory"
+license=('MIT')
+depends=('gcc-libs' 'glibc' 'jq' 'systemd')
+makedepends=('cargo')
+optdepends=(
+  'orca-ide-bin: Orca desktop app and CLI, required at run time (not yet in the Omarchy repo; install manually)'
+  'omarchy: bar widget, menu entries and floating-terminal flows'
+  'gum: nicer prompts in ssf-ui'
+  'github-cli: lets agents comment on issues as the bot'
+)
+install=ssf.install
+options=('!lto')
+source=()
+sha256sums=()
+
+_repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+pkgver() {
+  local base
+  base=$(grep -m1 '^version' "$_repo/Cargo.toml" | sed 's/.*"\(.*\)"/\1/')
+  if git -C "$_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf '%s.r%s.g%s' "$base" "$(git -C "$_repo" rev-list --count HEAD)" "$(git -C "$_repo" rev-parse --short HEAD)"
+  else
+    printf '%s' "$base"
+  fi
+}
+
+prepare() {
+  # Copy the working tree (not just HEAD) so local changes are what gets built.
+  rm -rf "$srcdir/$pkgname"
+  mkdir -p "$srcdir/$pkgname"
+  tar -C "$_repo" --exclude=./target --exclude=./packaging/src --exclude=./packaging/pkg \
+      --exclude='./packaging/*.pkg.tar.*' --exclude=./.git -cf - . | tar -C "$srcdir/$pkgname" -xf -
+  cd "$srcdir/$pkgname"
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo build --frozen --release
+}
+
+check() {
+  cd "$srcdir/$pkgname"
+  export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+  export CARGO_TARGET_DIR="$srcdir/target"
+  cargo test --frozen --release
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  install -Dm755 "$srcdir/target/release/ssf" "$pkgdir/usr/bin/ssf"
+  install -Dm755 bin/ssf-ui "$pkgdir/usr/bin/ssf-ui"
+  install -Dm644 packaging/ssf.service "$pkgdir/usr/lib/systemd/user/ssf.service"
+  # Enabled for every user out of the box; `ssf ui service disable` turns it off.
+  install -d "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
+  ln -s ../ssf.service "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/ssf.service"
+  install -Dm644 omarchy-plugin/manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"
+  install -Dm644 omarchy-plugin/Panel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/Panel.qml"
+  install -Dm644 config.example.toml "$pkgdir/usr/share/ssf/config.example.toml"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/ssf/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/ssf/LICENSE"
+}

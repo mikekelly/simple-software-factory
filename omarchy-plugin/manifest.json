@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "ssf.factory",
+  "name": "Software Factory",
+  "version": "0.1.0",
+  "author": "Simple Software Factory",
+  "license": "MIT",
+  "description": "GitHub issues assigned to your bot account, and the agent workspaces working on them.",
+  "kinds": ["bar-widget"],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Software Factory",
+    "description": "Sign the bot in, pick which repositories to watch and which agent works each one, and see the issues in progress.",
+    "category": "AI",
+    "aliases": ["ssf", "factory"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 30
+    },
+    "schema": [
+      { "key": "refreshIntervalSec", "type": "integer", "label": "Refresh interval (seconds)", "min": 5, "max": 600, "step": 5, "defaultValue": 30 }
+    ]
+  }
+}
