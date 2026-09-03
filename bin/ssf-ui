@@ -16,6 +16,7 @@ Usage: ssf-ui <command>
   service <enable|disable|toggle|restart|is-enabled>
   logs                  Follow the service log in a terminal
   status                Show status, then the doctor report
+  peers                 Show the agent sessions and what each is doing
   open-workspace <worktree-id> [issue-url]
 USAGE
 }
@@ -200,6 +201,17 @@ cmd_status() {
   fi
 }
 
+cmd_peers() {
+  if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1 && [[ -z ${SSF_UI_PRESENTED:-} && ! -t 0 ]]; then
+    SSF_UI_PRESENTED=1 exec omarchy-launch-floating-terminal-with-presentation ssf-ui peers
+  fi
+  ssf peers --all || true
+  if [[ -t 0 ]]; then
+    echo
+    read -rsn1 -p "Press any key to close"
+  fi
+}
+
 cmd_open_workspace() {
   local id="${1:-}" url="${2:-}"
   local orca="${ORCA_CLI_COMMAND:-/usr/lib/orca-ide/bin/orca-ide}"
@@ -222,6 +234,7 @@ case "${1:-}" in
   service) shift; cmd_service "$@" ;;
   logs) shift; cmd_logs "$@" ;;
   status) shift; cmd_status "$@" ;;
+  peers) shift; cmd_peers "$@" ;;
   open-workspace) shift; cmd_open_workspace "$@" ;;
   -h|--help|help|"") usage ;;
   *) echo "ssf-ui: unknown command $1" >&2; usage; exit 1 ;;

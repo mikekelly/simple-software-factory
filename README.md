@@ -81,8 +81,12 @@ Click the factory icon in the bar, or open the Omarchy menu and pick
 
 Then assign an issue or PR to the bot on GitHub, @mention it, or request its
 review. Within a poll interval (10 s by
-default) a workspace shows up in Orca, and in the widget under "Issues in
-progress".
+default) a workspace shows up in Orca, and in the widget under "Sessions": one
+row per agent session with the issue or PR (click the title for GitHub), its
+GitHub state (open, closed, merged, draft), the agent's state (working, waiting,
+idle, done), what it last said or the tool it is running, the branch and when
+it was last active. Clicking a row opens the workspace in Orca. The bar icon
+turns urgent while an agent is waiting for input.
 
 The same can be done from a terminal:
 
@@ -97,6 +101,7 @@ ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
 ssf repo add acme/widgets --harness claude
 ssf status
+ssf peers                         # the agent sessions and what each is doing
 ssf doctor
 ```
 
@@ -114,12 +119,32 @@ ssf config get daemon.poll_interval_secs
 ssf config set daemon.poll_interval_secs 60
 ssf config set daemon.instructions "Always open PRs as drafts."
 ssf status --json
+ssf peers [--repo owner/name] [--all] [--json]
 ssf ui service disable|enable|toggle|status
 ```
 
 Config changes are picked up on the next poll; no restart needed. `ssf config
 set` refuses to touch `github.token`; use `ssf auth login` (interactive) for
 that.
+
+`ssf status --json` joins what ssf knows about every tracked item with what
+Orca reports about the workspace working on it (`orca worktree ps`), so
+nothing else has to talk to Orca. Its `sessions` array has one entry per item:
+
+| Field | From |
+|-------|------|
+| `id`, `repo`, `number`, `kind` (`issue`/`pull_request`), `title`, `url` | ssf; `id` is the session identity `owner/repo#N` |
+| `github_state` (`open`/`closed`/`merged`), `active`, `triggers`, `pr` | GitHub, as of the last poll |
+| `owner`, `subscribers`, `shares_workspace_of` | which session acts on the item (a PR that joined its issue's workspace is owned by that issue's session); `subscribers` is reserved for #3 |
+| `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
+| `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
+
+`repos[].issues[]` carries the same objects, and `orca.available` says
+whether Orca answered. `ssf peers` prints the same data as a terminal table:
+by default the active sessions on `$SSF_REPO` (so an agent sees who else is
+on its repository, and itself marked "(you)"), or on every watched repository
+outside a session; `--all` includes retired sessions. The initial prompt tells
+agents about it.
 
 ## How the agent gets the bot's identity
 
@@ -256,6 +281,9 @@ Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
   Claude Code and Codex; other harnesses are restarted with the full issue
   context instead.
 - One agent per issue; a second assignee is not coordinated with.
+- `ssf status` asks Orca for the workspace list on every call (a few hundred
+  milliseconds); when Orca is not running the ssf side is still reported and
+  agent states show as unknown.
 - The bar widget and menu entries are installed per user on first service
   start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
 - Logs: `journalctl --user -fu ssf.service`.
@@ -276,6 +304,7 @@ Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
 (reconciliation loop), `src/sessions.rs` (harness session capture and resume),
 `src/origin.rs` (origin tags), `src/shim.rs` (the `gh` shim),
-`src/ui.rs` (Omarchy integration),
+`src/status.rs` (the joined item/session view behind `status`, `peers` and the
+widget), `src/ui.rs` (Omarchy integration),
 `omarchy-plugin/` (Quickshell bar widget), `bin/ssf-ui` (menu flows),
 `packaging/` (PKGBUILD, systemd unit, pacman install script).

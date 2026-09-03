@@ -96,6 +96,9 @@ pub struct IssueState {
     /// `issue` or `pull_request`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// GitHub state as of the last poll: `open`, `closed` or `merged`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_state: Option<String>,
     /// Why the bot got involved: assigned, mentioned, review_requested.
     #[serde(default)]
     pub triggers: Vec<String>,

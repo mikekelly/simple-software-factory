@@ -503,6 +503,7 @@ impl Engine {
                 "issue".into()
             });
             e.triggers = triggers.clone();
+            e.github_state = Some(github_state(issue, pr.as_ref(), false));
             e.pr = pr.clone();
             e.shares_workspace_of = None;
         }
@@ -760,6 +761,7 @@ impl Engine {
             e.updated_at = Some(issue.updated_at.clone());
             e.seen = diff.seen;
             e.title = issue.title.clone();
+            e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
             return Ok(());
         }
         info!(
@@ -783,6 +785,7 @@ impl Engine {
         let e = self.entry(repo, issue.number);
         e.updated_at = Some(issue.updated_at.clone());
         e.title = issue.title.clone();
+        e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.seen = diff.seen;
         e.terminal_handle = Some(d.handle);
         e.last_prompt_at = Some(now_iso());
@@ -820,6 +823,7 @@ impl Engine {
         let e = self.entry(repo, issue.number);
         e.updated_at = Some(issue.updated_at.clone());
         e.title = issue.title.clone();
+        e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.seen = diff.seen;
         e.active = true;
         e.cleanup_pending = false;
@@ -847,19 +851,16 @@ impl Engine {
             .context("retiring unknown item")?;
         let issue = self.gh.issue(owner, name, number).await?;
         let closed = issue.state == "closed";
-        if !closed {
+        if !closed && issue.is_assigned_to(&self.login) {
             // Listing lag: still assigned, or still requested for review.
-            if issue.is_assigned_to(&self.login) {
-                return Ok(());
-            }
-            if issue.is_pull_request() {
-                if let Ok(info) = self.gh.pull(owner, name, number).await {
-                    if info.merged {
-                        // handled as closed below on the next pass
-                    }
-                }
-            }
+            return Ok(());
         }
+        let merged = closed
+            && issue.is_pull_request()
+            && match self.gh.pull(owner, name, number).await {
+                Ok(info) => info.merged,
+                Err(_) => st.pr.as_ref().is_some_and(|p| p.merged),
+            };
         info!(
             repo = repo.name,
             issue = number,
@@ -905,6 +906,8 @@ impl Engine {
         let cleanup = closed && workspace_alive && !shared && self.cfg.daemon.cleanup_on_close;
         let e = self.entry(repo, number);
         e.active = false;
+        e.title = issue.title.clone();
+        e.github_state = Some(github_state(&issue, st.pr.as_ref(), merged));
         e.updated_at = Some(issue.updated_at.clone());
         e.seen = diff.seen;
         e.retired_at = Some(now_iso());
@@ -1272,4 +1275,15 @@ async fn checkout_branch(path: &str, branch: &str) -> Result<()> {
         git(path, &["checkout", branch]).await?;
     }
     Ok(())
+}
+
+/// `open`, `closed` or `merged`, as `ssf status` reports it.
+fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
+    if merged || pr.is_some_and(|p| p.merged) {
+        "merged".into()
+    } else if issue.state == "closed" {
+        "closed".into()
+    } else {
+        "open".into()
+    }
 }
