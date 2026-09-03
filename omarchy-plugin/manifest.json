@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "Simple Software Factory",
   "license": "MIT",
-  "description": "GitHub issues assigned to your bot account, and the agent workspaces working on them.",
+  "description": "GitHub issues and pull requests involving your bot account, and the agent sessions working on them: what each agent is doing, what it last said, and where its workspace is.",
   "kinds": ["bar-widget"],
   "activation": "on-demand",
   "entryPoints": {
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Software Factory",
-    "description": "Sign the bot in, pick which repositories to watch and which agent works each one, and see the issues in progress.",
+    "description": "Sign the bot in, pick which repositories to watch and which agent works each one, and follow the agent sessions: state, last message, activity, with click-through to GitHub or the Orca workspace.",
     "category": "AI",
     "aliases": ["ssf", "factory"],
     "allowMultiple": false,

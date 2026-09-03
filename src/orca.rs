@@ -1,6 +1,7 @@
 //! Thin wrapper around the Orca CLI (`orca-ide ... --json`).
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -39,6 +40,170 @@ pub struct Delivery {
     pub handle: String,
     pub relaunched: bool,
     pub resumed: bool,
+}
+
+/// One row of `orca worktree ps`: a workspace and the agents running in it.
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct WorkspaceInfo {
+    pub worktree_id: String,
+    pub repo_id: String,
+    pub path: String,
+    pub display_name: String,
+    /// Branch name without the `refs/heads/` prefix.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// Board column (`in-progress`, `completed`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    /// Orca's own rollup (`working`, `active`, ...).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub is_archived: bool,
+    pub live_terminals: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_issue: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_pr: Option<u64>,
+    /// Most recent of the workspace's activity, output and agent timestamps (RFC 3339).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+    pub agents: Vec<AgentInfo>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct AgentInfo {
+    /// `working`, `done`, `open`, `waiting`, ... as Orca reports it.
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_assistant_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<String>,
+    pub interrupted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+impl WorkspaceInfo {
+    /// The agent whose state best describes the workspace: a working one
+    /// wins, otherwise the most recently updated.
+    pub fn primary_agent(&self) -> Option<&AgentInfo> {
+        self.agents
+            .iter()
+            .find(|a| a.state == "working")
+            .or_else(|| self.agents.iter().max_by_key(|a| a.updated_at.clone()))
+    }
+
+    pub fn is_working(&self) -> bool {
+        self.agents.iter().any(|a| a.state == "working")
+            || self.status.as_deref() == Some("working")
+    }
+}
+
+/// Milliseconds since the epoch (how Orca reports times) as RFC 3339.
+pub fn ms_to_iso(ms: i64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+}
+
+fn value_ms(v: &Value, key: &str) -> Option<i64> {
+    v.get(key).and_then(Value::as_i64)
+}
+
+fn value_string(v: &Value, key: &str) -> Option<String> {
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+fn linked_number(v: Option<&Value>) -> Option<u64> {
+    v.and_then(|l| {
+        l.as_u64()
+            .or_else(|| l.get("number").and_then(Value::as_u64))
+    })
+}
+
+/// Parse the `result` of `orca worktree ps --json`.
+pub fn parse_ps(v: &Value) -> Vec<WorkspaceInfo> {
+    let list = v.get("worktrees").and_then(Value::as_array);
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|w| {
+            let worktree_id = w
+                .get("worktreeId")
+                .or_else(|| w.get("id"))
+                .and_then(Value::as_str)?
+                .to_string();
+            let agents: Vec<AgentInfo> = w
+                .get("agents")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .map(|x| AgentInfo {
+                            state: value_string(x, "state").unwrap_or_else(|| "unknown".into()),
+                            agent_type: value_string(x, "agentType"),
+                            last_assistant_message: value_string(x, "lastAssistantMessage"),
+                            tool_name: value_string(x, "toolName"),
+                            tool_input: value_string(x, "toolInput"),
+                            interrupted: x
+                                .get("interrupted")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false),
+                            state_since: value_ms(x, "stateStartedAt").and_then(ms_to_iso),
+                            updated_at: value_ms(x, "updatedAt").and_then(ms_to_iso),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut latest = [value_ms(w, "lastActivityAt"), value_ms(w, "lastOutputAt")]
+                .into_iter()
+                .flatten()
+                .max();
+            for a in w
+                .get("agents")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(t) = value_ms(a, "updatedAt") {
+                    latest = Some(latest.map_or(t, |l| l.max(t)));
+                }
+            }
+            Some(WorkspaceInfo {
+                worktree_id,
+                repo_id: value_string(w, "repoId").unwrap_or_default(),
+                path: value_string(w, "path").unwrap_or_default(),
+                display_name: value_string(w, "displayName").unwrap_or_default(),
+                branch: value_string(w, "branch").map(|b| {
+                    b.strip_prefix("refs/heads/")
+                        .map(str::to_string)
+                        .unwrap_or(b)
+                }),
+                column: value_string(w, "workspaceStatus"),
+                status: value_string(w, "status"),
+                is_archived: w
+                    .get("isArchived")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                live_terminals: w
+                    .get("liveTerminalCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                linked_issue: linked_number(w.get("linkedIssue")),
+                linked_pr: linked_number(w.get("linkedPR")),
+                last_activity_at: latest.and_then(ms_to_iso),
+                agents,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -428,34 +593,19 @@ impl Orca {
         }
     }
 
+    /// Every workspace Orca knows about, with the agents running in it.
+    pub async fn ps(&self) -> Result<Vec<WorkspaceInfo>> {
+        let v = self.run(&["worktree", "ps", "--limit", "500"]).await?;
+        Ok(parse_ps(&v))
+    }
+
     /// Is the agent in this workspace still busy?
     pub async fn agent_busy(&self, worktree_id: &str) -> Result<bool> {
-        let v = self.run(&["worktree", "ps", "--limit", "500"]).await?;
-        let list = v
-            .get("worktrees")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        for w in list {
-            let id = w
-                .get("worktreeId")
-                .or_else(|| w.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            if id != worktree_id {
-                continue;
-            }
-            let working = w
-                .get("agents")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .any(|x| x.get("state").and_then(Value::as_str) == Some("working"))
-                })
-                .unwrap_or(false);
-            return Ok(working || w.get("status").and_then(Value::as_str) == Some("working"));
-        }
-        Ok(false)
+        Ok(self
+            .ps()
+            .await?
+            .iter()
+            .any(|w| w.worktree_id == worktree_id && w.is_working()))
     }
 
     /// Stop the workspace's terminals and remove it from Orca and git.
@@ -722,5 +872,95 @@ impl Orca {
             relaunched: true,
             resumed,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn parses_worktree_ps_rows() {
+        let v = json!({"worktrees": [{
+            "worktreeId": "repo::/w/issue-5",
+            "repoId": "repo",
+            "path": "/w/issue-5",
+            "branch": "refs/heads/bot/issue-5",
+            "displayName": "issue-5",
+            "workspaceStatus": "in-progress",
+            "status": "working",
+            "isArchived": false,
+            "liveTerminalCount": 1,
+            "linkedIssue": 5,
+            "linkedPR": null,
+            "lastActivityAt": 1788435090763i64,
+            "lastOutputAt": 1788435157645i64,
+            "agents": [{
+                "state": "working",
+                "agentType": "claude",
+                "lastAssistantMessage": null,
+                "toolName": "Bash",
+                "toolInput": "cargo test",
+                "interrupted": false,
+                "stateStartedAt": 1788435092830i64,
+                "updatedAt": 1788435160000i64
+            }]
+        }, {"id": "repo::/w/other", "branch": "main", "agents": []}]});
+        let rows = parse_ps(&v);
+        assert_eq!(rows.len(), 2);
+        let w = &rows[0];
+        assert_eq!(w.worktree_id, "repo::/w/issue-5");
+        assert_eq!(w.branch.as_deref(), Some("bot/issue-5"));
+        assert_eq!(w.column.as_deref(), Some("in-progress"));
+        assert_eq!(w.linked_issue, Some(5));
+        assert_eq!(w.linked_pr, None);
+        assert!(w.is_working());
+        // The newest of the workspace and agent timestamps wins.
+        assert_eq!(w.last_activity_at.as_deref(), Some("2026-09-03T11:32:40Z"));
+        let a = w.primary_agent().unwrap();
+        assert_eq!(a.state, "working");
+        assert_eq!(a.tool_name.as_deref(), Some("Bash"));
+        assert_eq!(a.last_assistant_message, None);
+        assert_eq!(a.state_since.as_deref(), Some("2026-09-03T11:31:32Z"));
+        let o = &rows[1];
+        assert_eq!(o.branch.as_deref(), Some("main"));
+        assert!(!o.is_working());
+        assert!(o.primary_agent().is_none());
+    }
+
+    #[test]
+    fn primary_agent_prefers_working_then_newest() {
+        let w = WorkspaceInfo {
+            agents: vec![
+                AgentInfo {
+                    state: "done".into(),
+                    updated_at: Some("2026-01-01T00:00:02Z".into()),
+                    ..Default::default()
+                },
+                AgentInfo {
+                    state: "open".into(),
+                    updated_at: Some("2026-01-01T00:00:01Z".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(w.primary_agent().unwrap().state, "done");
+        let w = WorkspaceInfo {
+            agents: vec![
+                AgentInfo {
+                    state: "done".into(),
+                    updated_at: Some("2026-01-01T00:00:02Z".into()),
+                    ..Default::default()
+                },
+                AgentInfo {
+                    state: "working".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(w.primary_agent().unwrap().state, "working");
     }
 }

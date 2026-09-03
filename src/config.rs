@@ -193,7 +193,7 @@ fn default_cleanup_grace() -> u64 {
     900
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RepoConfig {
     /// `owner/name` on GitHub.

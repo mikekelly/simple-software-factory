@@ -16,12 +16,12 @@ mod prompt;
 mod sessions;
 mod shim;
 mod state;
+mod status;
 mod ui;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -75,10 +75,24 @@ enum Command {
         #[arg(long)]
         once: bool,
     },
-    /// Show tracked issues and their workspaces.
+    /// Show tracked issues and their workspaces, joined with what Orca
+    /// reports about each agent session.
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// List the agent sessions on a repository: item, GitHub state, agent
+    /// state, branch, last message. Inside a session the repository comes
+    /// from SSF_REPO; otherwise every watched repository is listed.
+    Peers {
+        #[arg(long)]
+        json: bool,
+        /// Repository (owner/name) to list; defaults to $SSF_REPO, then all.
+        #[arg(long, env = "SSF_REPO")]
+        repo: Option<String>,
+        /// Include retired sessions (closed or unassigned items).
+        #[arg(long)]
+        all: bool,
     },
     /// Check that GitHub, Orca and the configured harnesses are usable.
     Doctor,
@@ -306,7 +320,8 @@ async fn main() -> Result<()> {
             config_cmd(command.unwrap_or(ConfigCommand::Show { json: false }))
         }
         Command::Run { once } => run(once).await,
-        Command::Status { json } => status(json),
+        Command::Status { json } => status(json).await,
+        Command::Peers { json, repo, all } => peers(json, repo, all).await,
         Command::Doctor => doctor().await,
         Command::Ui { command } => ui_cmd(command),
         Command::Launch {
@@ -1118,123 +1133,68 @@ async fn run(once: bool) -> Result<()> {
     engine.run_forever().await
 }
 
-fn status(json: bool) -> Result<()> {
-    let cfg = Config::load()?;
-    let st = state::State::load()?;
+async fn status(json: bool) -> Result<()> {
+    let snap = status::Snapshot::collect(Config::load()?).await?;
     if json {
-        let repos: Vec<serde_json::Value> = cfg
+        println!("{}", serde_json::to_string_pretty(&snap.to_json())?);
+    } else {
+        print!("{}", status::render_status(&snap));
+    }
+    Ok(())
+}
+
+async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
+    let snap = status::Snapshot::collect(Config::load()?).await?;
+    let repo = repo.filter(|r| !r.is_empty());
+    if let Some(r) = &repo {
+        if !snap
+            .cfg
             .repos
             .iter()
-            .map(|r| {
-                let issues: Vec<serde_json::Value> = st
-                    .repos
-                    .get(&r.name)
-                    .map(|rs| {
-                        rs.issues
-                            .values()
-                            .map(|i| {
-                                json!({
-                                    "number": i.number,
-                                    "title": i.title,
-                                    "url": i.html_url,
-                                    "active": i.active,
-                                    "worktree_path": i.worktree_path,
-                                    "worktree_id": i.worktree_id,
-                                    "prompts_sent": i.prompts_sent,
-                                    "last_prompt_at": i.last_prompt_at,
-                                    "bound_at": i.bound_at,
-                                    "origin": i.origin,
-                                    "origins": i.origins,
-                                    "untagged": i.untagged,
-                                })
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                json!({"name": r.name, "harness": r.harness, "path": r.path, "issues": issues})
-            })
-            .collect();
-        let out = json!({
-            "bot_login": st.bot_login,
-            "token_configured": cfg.github_token().is_ok(),
-            "service_enabled": ui::service_enabled(),
-            "service_active": ui::service_active(),
-            "last_poll_at": st.last_poll_at,
-            "last_error": st.last_error,
-            "poll_interval_secs": cfg.daemon.poll_interval_secs,
-            "config_path": config::config_path(),
-            "repos": repos,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+            .any(|c| c.name.eq_ignore_ascii_case(r))
+        {
+            bail!("{r} is not a watched repository (see `ssf repo list`)");
+        }
+    }
+    let me = match (
+        std::env::var("SSF_REPO").ok().filter(|r| !r.is_empty()),
+        std::env::var("SSF_ISSUE")
+            .ok()
+            .and_then(|n| n.parse::<u64>().ok()),
+    ) {
+        (Some(r), Some(n)) => Some(status::session_id(&r, n)),
+        _ => None,
+    };
+    let sessions: Vec<status::Session> = snap
+        .sessions()
+        .into_iter()
+        .filter(|s| repo.as_ref().is_none_or(|r| s.repo.eq_ignore_ascii_case(r)))
+        .filter(|s| all || s.active)
+        .collect();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "me": me,
+                "orca_available": snap.orca.is_ok(),
+                "orca_error": snap.orca.as_ref().err(),
+                "sessions": sessions,
+            }))?
+        );
         return Ok(());
     }
-    println!(
-        "bot:     {}",
-        st.bot_login.as_deref().unwrap_or("(not signed in)")
-    );
-    println!(
-        "service: {}{}",
-        if ui::service_active() {
-            "running"
-        } else {
-            "stopped"
-        },
-        if ui::service_enabled() {
-            ""
-        } else {
-            " (disabled)"
-        }
-    );
-    if let Some(t) = &st.last_poll_at {
-        println!("polled:  {t}");
+    if let Err(e) = &snap.orca {
+        eprintln!("orca unavailable, agent states unknown: {e}");
     }
-    if let Some(e) = &st.last_error {
-        println!("error:   {e}");
+    if sessions.is_empty() {
+        println!(
+            "no {}sessions{}",
+            if all { "" } else { "active " },
+            repo.map(|r| format!(" on {r}")).unwrap_or_default()
+        );
+        return Ok(());
     }
-    println!("config:  {}", config::config_path().display());
-    if cfg.repos.is_empty() {
-        println!("\nno repositories configured");
-    }
-    for r in &cfg.repos {
-        println!("\n{} (harness: {})", r.name, r.harness);
-        let Some(rs) = st.repos.get(&r.name) else {
-            println!("  (not polled yet)");
-            continue;
-        };
-        if rs.issues.is_empty() {
-            println!("  no issues tracked");
-        }
-        for is in rs.issues.values() {
-            println!(
-                "  #{:<6} {:<8} prompts={:<3} last={}  {}",
-                is.number,
-                if is.active { "active" } else { "retired" },
-                is.prompts_sent,
-                is.last_prompt_at.as_deref().unwrap_or("-"),
-                is.title
-            );
-            if let Some(p) = &is.worktree_path {
-                println!("          {}", p);
-            }
-            if let Some(o) = &is.origin {
-                println!("          opened by session {o}");
-            }
-            if !is.origins.is_empty() {
-                let mut by: BTreeMap<&str, usize> = BTreeMap::new();
-                for o in is.origins.values() {
-                    *by.entry(o.as_str()).or_default() += 1;
-                }
-                let parts: Vec<String> = by.iter().map(|(o, n)| format!("{o} ({n})")).collect();
-                println!("          posts from sessions: {}", parts.join(", "));
-            }
-            if !is.untagged.is_empty() {
-                println!(
-                    "          {} untagged post(s) by the bot (gh shim not in effect)",
-                    is.untagged.len()
-                );
-            }
-        }
-    }
+    print!("{}", status::render_peers(&sessions, me.as_deref()));
     Ok(())
 }
 

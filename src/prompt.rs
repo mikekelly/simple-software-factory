@@ -405,7 +405,10 @@ woken up when someone answers.\n\
 which session posted it (GitHub shows the same bot for every session). The `gh` on this PATH \
 adds it for you on `issue create|comment` and `pr create|comment|review` when you pass `--body` \
 or `--body-file`; add it yourself when you post any other way (`gh api`, `gh pr create --fill`, \
-`gh pr edit --body`, ...).\n"
+`gh pr edit --body`, ...).\n\
+- Other agent sessions may be working on this repository at the same time. `ssf peers` lists them \
+(item, GitHub state, agent state, branch, last message; `--json` for detail). Leave their branches \
+and workspaces alone.\n"
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -647,6 +650,7 @@ mod tests {
         assert!(p.contains("it was assigned to @bot"));
         assert!(p.contains("GH_TOKEN"));
         assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
+        assert!(p.contains("`ssf peers` lists them"));
         assert!(p.trim_end().ends_with("Run the tests."));
     }
 
