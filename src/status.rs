@@ -37,7 +37,8 @@ pub struct Session {
     pub github_state: String,
     /// Still assigned/mentioned/requested and open as of the last poll.
     pub active: bool,
-    /// Why the bot got involved: `assigned`, `mentioned`, `review_requested`.
+    /// Why the bot got involved: `assigned`, `mentioned`, `review_requested`,
+    /// `created` (the bot's own item).
     pub triggers: Vec<String>,
     pub harness: String,
     /// Session that acts on this item. Until subscriptions land this is the
@@ -47,6 +48,10 @@ pub struct Session {
     pub subscribers: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shares_workspace_of: Option<String>,
+    /// Session that handed this item off (`mode=delegate`); it hears about
+    /// the closure once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -249,6 +254,7 @@ fn join(
         owner: session_id(&repo.name, item.shares_workspace_of.unwrap_or(item.number)),
         subscribers: Vec::new(),
         shares_workspace_of: item.shares_workspace_of.map(|n| session_id(&repo.name, n)),
+        delegated_by: item.delegated_by.clone(),
         worktree_id: item.worktree_id.clone(),
         worktree_path: ws
             .map(|w| w.path.clone())
@@ -345,6 +351,9 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         }
         if s.owner != s.id {
             facts.push(format!("owned by {}", s.owner));
+        }
+        if let Some(p) = &s.delegated_by {
+            facts.push(format!("handed off by {p}"));
         }
         if !s.subscribers.is_empty() {
             facts.push(format!("subscribers {}", s.subscribers.join(", ")));

@@ -14,8 +14,9 @@ its review) it:
 2. creates an Orca workspace (git worktree) linked to the issue or PR and
    launches the agent you configured for that repository (Claude Code,
    Codex, ...). A pull request's workspace is checked out on the PR's branch,
-   so pushes update the PR; if the bot's own issue workspace already holds
-   that branch, the PR joins that agent instead,
+   so pushes update the PR. An item a session opened itself (or a PR on a
+   session's branch) gets no session of its own: it is routed to the agent
+   that opened it (see [Ownership](#ownership-one-session-per-item)),
 3. sends the agent the issue, its description and everything that has happened
    on it so far, plus instructions on how to report back,
 4. keeps polling the issue timeline and pastes new activity (comments, label
@@ -140,7 +141,7 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 |-------|------|
 | `id`, `repo`, `number`, `kind` (`issue`/`pull_request`), `title`, `url` | ssf; `id` is the session identity `owner/repo#N` |
 | `github_state` (`open`/`closed`/`merged`), `active`, `triggers`, `pr` | GitHub, as of the last poll |
-| `owner`, `subscribers`, `shares_workspace_of` | which session acts on the item (a PR that joined its issue's workspace is owned by that issue's session); `subscribers` is reserved for #3 |
+| `owner`, `subscribers`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `delegated_by` names the session that handed the item off (`mode=delegate`); `subscribers` is reserved for #3 |
 | `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
 
@@ -207,12 +208,64 @@ Untagged bot posts are also warned about in the logs and reported by
 that the shim links to the running ssf. When comments are shown to an
 agent, the tag is stripped and replaced by "(from session owner/repo#N)".
 
+The tag can carry more fields. The one defined so far is `mode=delegate`,
+which the shim adds when an `issue create` or `pr create` assigns the bot
+itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
+session's own (below).
+
+## Ownership: one session per item
+
+GitHub has one bot identity, so without help a human's @mention or review
+request on a pull request the bot opened would start a second agent next
+to the one that wrote it. ssf instead binds every item to at most one
+owning session, decided once when the item is first discovered (first
+binding wins):
+
+- **Opened by a session.** An issue or PR whose body carries a session's
+  origin tag belongs to that session. The bot's own open items are polled
+  (a fourth listing, `creator=<bot>`), so a session hears about the PR it
+  opened without anyone assigning or mentioning the bot: it gets one
+  message saying the item is now tracked for it, then every later comment,
+  review, review request, assignment and the closure, all into the same
+  agent, with `SSF_ISSUE` unchanged. The agent's own posts on it are
+  filtered out as usual.
+- **A PR on a session's branch.** A same-repo pull request whose head branch
+  is the branch of a tracked workspace belongs to that workspace's session,
+  tag or no tag (this is what a PR opened by hand from an agent's branch, or
+  with `gh pr create --fill`, falls back to).
+- **Triggers go to the owner.** Assigning, mentioning or requesting a review
+  from the bot on an owned item is delivered to the owner's agent as
+  activity, never to a new session. If the owner has been retired or its
+  workspace removed, it is brought back the way any lost session is
+  (workspace re-created from its branch, conversation resumed), rather than
+  replaced. A retired owner's workspace is not cleaned up while items bound
+  to it are still open.
+- **Hand-offs.** An item a session creates *and assigns the bot to* in the
+  same `gh ... create` command is a delegation: the tag carries
+  `mode=delegate`, the item gets a fresh session of its own, and the creating
+  session hears nothing more about it until it is closed or merged, when it
+  gets a single message with the outcome and the child's final comment (the
+  last comment the bot left on it). The child is told it was handed off and
+  to leave a clear final comment. The initial prompt explains this rule to
+  agents, so an agent that wants a separate worker uses `--assignee`, and
+  one that wants to keep an item simply opens it.
+- **Nothing to bind to.** A bot-opened item with no usable tag, no branch
+  match and no human trigger is left alone (logged once) rather than given
+  a session nobody asked for; assigning or mentioning the bot on it later
+  starts one as usual. Items opened from a session on a *different*
+  repository are not bound across repositories.
+
+`ssf status --json` shows the binding as `owner` / `shares_workspace_of`
+and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
+and "handed off by ...".
+
 ## How it works
 
-- **Polling, not webhooks.** Every `poll_interval_secs` ssf makes three
+- **Polling, not webhooks.** Every `poll_interval_secs` ssf makes four
   listings per repository (assigned to the bot, mentioning the bot, review
-  requested from the bot), using ETags so unchanged listings cost no rate
-  limit. Only items whose `updated_at` moved get their timeline re-fetched.
+  requested from the bot, opened by the bot), using ETags so unchanged
+  listings cost no rate limit. Only items whose `updated_at` moved get their
+  timeline re-fetched.
 - **Pull requests.** Review comments, reviews, force-pushes and merges are
   rendered like issue activity. A PR from a fork gets a workspace on the base
   branch and the agent is told it cannot push to the fork.
@@ -228,7 +281,8 @@ agent, the tag is stripped and replaced by "(from session owner/repo#N)".
   agent's terminal is gone, ssf starts it again with `--resume <id>` (Codex:
   `codex resume <id>`) and sends only the new events; if resuming fails or the
   harness has no resume support, it starts fresh and resends the whole issue
-  context. If the workspace itself is gone, ssf re-creates it from the old
+  context (the session's own item, even when what triggered the relaunch was
+  activity on an item it owns). If the workspace itself is gone, ssf re-creates it from the old
   branch (local or `origin/`) and does the same. Claude Code resumes a session
   from any directory, so this works even when the new worktree has a
   different path.
@@ -321,7 +375,8 @@ agent sees the flag twice.
 - Session resume (and therefore memory across relaunches) is implemented for
   Claude Code and Codex; other harnesses are restarted with the full issue
   context instead.
-- One agent per issue; a second assignee is not coordinated with.
+- One agent per issue; a second assignee is not coordinated with. A session
+  owns what it opens only within its own repository.
 - `ssf status` asks Orca for the workspace list on every call (a few hundred
   milliseconds); when Orca is not running the ssf side is still reported and
   agent states show as unknown.

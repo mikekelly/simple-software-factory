@@ -8,7 +8,9 @@
 //! body it reads.
 //!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
-//! add fields (`mode=delegate`, ...) without a new syntax.
+//! add fields without a new syntax. The one field defined so far is
+//! `mode=delegate`: the post opened an item that is handed off to a new
+//! session rather than kept by the one that opened it.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -60,13 +62,30 @@ impl Origin {
     pub fn tag(&self) -> String {
         format!("{OPEN} {MARK} origin={self} {CLOSE}")
     }
+
+    /// The marker for an item this session hands off to a new session.
+    pub fn delegate_tag(&self) -> String {
+        format!("{OPEN} {MARK} origin={self} {MODE}={DELEGATE} {CLOSE}")
+    }
 }
+
+/// Field naming how the origin session relates to the item it opened.
+pub const MODE: &str = "mode";
+/// `mode` value for a hand-off: the item gets its own session.
+pub const DELEGATE: &str = "delegate";
 
 /// A parsed tag: the origin plus any other fields it carried.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tag {
     pub origin: Origin,
     pub fields: BTreeMap<String, String>,
+}
+
+impl Tag {
+    /// Was the item handed off to a session of its own?
+    pub fn is_delegate(&self) -> bool {
+        self.fields.get(MODE).map(String::as_str) == Some(DELEGATE)
+    }
 }
 
 /// Every ssf tag in `body`, in order of appearance. Tags inside quoted
@@ -102,17 +121,28 @@ pub fn parse(body: &str) -> Option<Tag> {
     tags(body).pop()
 }
 
-/// `body` with the origin tag on its own final line. A body that already
-/// carries this exact origin is left alone (the agent added it by hand).
-pub fn stamp(body: &str, origin: &Origin) -> String {
-    if tags(body).iter().any(|t| &t.origin == origin) {
+/// `body` with the origin tag on its own final line, optionally marking the
+/// post as a hand-off. A body that already carries this origin is left alone
+/// (the agent added the tag by hand), except that a hand-written tag without
+/// `mode=delegate` is not enough for a hand-off: the delegate tag goes after
+/// it, and the last tag wins when read.
+pub fn stamp_with(body: &str, origin: &Origin, delegate: bool) -> String {
+    if tags(body)
+        .iter()
+        .any(|t| &t.origin == origin && (!delegate || t.is_delegate()))
+    {
         return body.to_string();
     }
+    let tag = if delegate {
+        origin.delegate_tag()
+    } else {
+        origin.tag()
+    };
     let trimmed = body.trim_end();
     if trimmed.is_empty() {
-        origin.tag()
+        tag
     } else {
-        format!("{trimmed}\n\n{}", origin.tag())
+        format!("{trimmed}\n\n{tag}")
     }
 }
 
@@ -164,6 +194,9 @@ fn spans(body: &str) -> Vec<(usize, usize)> {
 pub struct Scan {
     /// Tag carried by the item's own body (the session that opened it).
     pub origin: Option<String>,
+    /// The same tag with its fields (`mode=delegate` says the opening
+    /// session handed the item off rather than keeping it).
+    pub origin_tag: Option<Tag>,
     /// Timeline event key -> origin of the comment or review.
     pub origins: BTreeMap<String, String>,
     /// Posts by the bot that carry no tag (the shim was not in effect where
@@ -176,12 +209,16 @@ pub struct Scan {
 /// are read: a tag in a human's text is something they quoted or pasted.
 pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
     let mut s = Scan::default();
+    let mut body_tag = None;
     let mut note = |key: String, author: &str, body: Option<&str>, url: &str| {
         if !author.eq_ignore_ascii_case(bot) {
             return;
         }
         match parse(body.unwrap_or("")) {
             Some(t) => {
+                if key == "body" {
+                    body_tag = Some(t.clone());
+                }
                 s.origins.insert(key, t.origin.to_string());
             }
             None => {
@@ -232,6 +269,7 @@ pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
         }
     }
     s.origin = s.origins.remove("body");
+    s.origin_tag = body_tag;
     s
 }
 
@@ -242,6 +280,10 @@ mod tests {
 
     fn o() -> Origin {
         Origin::new("acme/widgets", 12).unwrap()
+    }
+
+    fn stamp(body: &str, origin: &Origin) -> String {
+        stamp_with(body, origin, false)
     }
 
     #[test]
@@ -278,6 +320,26 @@ mod tests {
         );
         assert!(parse("no tag here").is_none());
         assert!(parse("<!-- ssf: origin=a/b#1").is_none());
+    }
+
+    #[test]
+    fn delegate_tag_marks_a_hand_off() {
+        let t = o().delegate_tag();
+        assert_eq!(t, "<!-- ssf: origin=acme/widgets#12 mode=delegate -->");
+        let parsed = parse(&t).unwrap();
+        assert!(parsed.is_delegate());
+        assert!(!parse(&o().tag()).unwrap().is_delegate());
+        let s = stamp_with("hand this off", &o(), true);
+        assert!(s.ends_with(&t));
+        assert_eq!(stamp_with(&s, &o(), true), s, "not stamped twice");
+        assert_eq!(stamp_with(&s, &o(), false), s, "a delegate tag is a tag");
+        // A hand-written plain tag does not make a hand-off: the delegate tag
+        // goes after it and is the one that counts.
+        let plain = stamp("x", &o());
+        let both = stamp_with(&plain, &o(), true);
+        assert!(both.starts_with(&plain));
+        assert!(parse(&both).unwrap().is_delegate());
+        assert_eq!(strip(&both), "x");
     }
 
     #[test]
@@ -324,6 +386,7 @@ mod tests {
         ];
         let s = scan(&issue, &timeline, "Bot");
         assert_eq!(s.origin.as_deref(), Some("a/b#1"));
+        assert!(!s.origin_tag.as_ref().unwrap().is_delegate());
         assert_eq!(
             s.origins.get("commented:1").map(String::as_str),
             Some("a/b#1")
@@ -353,7 +416,12 @@ mod tests {
         }))
         .unwrap();
         let s = scan(&human, &[], "bot");
-        assert!(s.origin.is_none() && s.untagged.is_empty());
+        assert!(s.origin.is_none() && s.origin_tag.is_none() && s.untagged.is_empty());
+        let mut delegated = issue.clone();
+        delegated.body = Some("child\n\n<!-- ssf: origin=a/b#1 mode=delegate -->".into());
+        let s = scan(&delegated, &[], "bot");
+        assert_eq!(s.origin.as_deref(), Some("a/b#1"));
+        assert!(s.origin_tag.as_ref().unwrap().is_delegate());
         let mut by_bot = human.clone();
         by_bot.user = Some(crate::github::User {
             login: "bot".into(),

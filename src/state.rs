@@ -36,6 +36,11 @@ pub struct RepoState {
     pub pulls_etag: Option<String>,
     #[serde(default)]
     pub review_numbers: Vec<u64>,
+    /// Open items the bot account opened (a session's own issues and PRs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_etag: Option<String>,
+    #[serde(default)]
+    pub created_numbers: Vec<u64>,
     #[serde(default)]
     pub issues: BTreeMap<u64, IssueState>,
 }
@@ -99,16 +104,26 @@ pub struct IssueState {
     /// GitHub state as of the last poll: `open`, `closed` or `merged`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_state: Option<String>,
-    /// Why the bot got involved: assigned, mentioned, review_requested.
+    /// Why the bot got involved: assigned, mentioned, review_requested,
+    /// created (opened by the bot itself).
     #[serde(default)]
     pub triggers: Vec<String>,
     /// Pull request branch details.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<crate::github::PrInfo>,
-    /// This PR reuses the workspace of that issue (same branch); the
-    /// workspace lifecycle belongs to the issue.
+    /// This item is owned by that item's session (same repo): it was opened
+    /// from that session, or its PR branch is that session's branch. Every
+    /// prompt about this item goes to the owner's agent, and the workspace
+    /// lifecycle belongs to the owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shares_workspace_of: Option<u64>,
+    /// Session (`owner/repo#N`) that opened this item as a hand-off
+    /// (`mode=delegate`). It gets one message when this item closes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
+    /// The closing message has been sent to `delegated_by`.
+    #[serde(default)]
+    pub parent_notified: bool,
     /// Origin tag in the item's own body: the session that opened it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
