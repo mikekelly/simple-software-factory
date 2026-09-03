@@ -1,0 +1,325 @@
+//! The `gh` shim: a symlink named `gh` in an ssf-owned directory that `ssf
+//! launch` puts first on the agent's PATH. It points at the ssf binary, which
+//! notices it was invoked as `gh`, appends the session's origin tag to the
+//! body of anything that posts to GitHub, and execs the real gh.
+//!
+//! Only `issue create|comment` and `pr create|comment|review` are touched;
+//! every other invocation is passed on untouched. The shim reads nothing but
+//! its environment (and a `--body-file`), writes nothing, and keeps stdin and
+//! the terminal intact, so it works inside read-only sandboxes and leaves
+//! gh's interactive flows alone.
+
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+
+use crate::origin::{Origin, stamp};
+
+/// Bodies above this are passed through untouched rather than moved from a
+/// file onto the command line (GitHub rejects them anyway).
+const MAX_INLINE_BODY: usize = 100_000;
+
+/// Directory the shim lives in: `~/.config/ssf/bin`.
+pub fn dir() -> PathBuf {
+    crate::config::config_dir().join("bin")
+}
+
+pub fn path() -> PathBuf {
+    dir().join("gh")
+}
+
+/// Was this process started under the name `gh`?
+pub fn invoked_as_gh() -> bool {
+    std::env::args_os()
+        .next()
+        .map(PathBuf::from)
+        .and_then(|p| p.file_name().map(|f| f == "gh"))
+        .unwrap_or(false)
+}
+
+/// Make `<dir>/gh` a symlink to `exe`, replacing whatever is there.
+pub fn install(exe: &Path) -> Result<PathBuf> {
+    let dir = dir();
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let link = dir.join("gh");
+    if std::fs::read_link(&link).ok().as_deref() == Some(exe) {
+        return Ok(dir);
+    }
+    let tmp = dir.join(format!("gh.tmp.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    std::os::unix::fs::symlink(exe, &tmp)
+        .with_context(|| format!("linking {} -> {}", tmp.display(), exe.display()))?;
+    std::fs::rename(&tmp, &link).with_context(|| format!("installing {}", link.display()))?;
+    Ok(dir)
+}
+
+/// Where the shim currently points, if it is installed.
+pub fn target() -> Option<PathBuf> {
+    std::fs::read_link(path()).ok()
+}
+
+/// PATH with the shim directory first (and nowhere else).
+pub fn prepend_to_path(dir: &Path, path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+    let mut parts = vec![dir.to_path_buf()];
+    if let Some(p) = path {
+        parts.extend(std::env::split_paths(p).filter(|d| d != dir));
+    }
+    std::env::join_paths(parts).unwrap_or_else(|_| dir.as_os_str().to_os_string())
+}
+
+/// The real GitHub CLI: the first `gh` on PATH that is not this binary.
+pub fn real_gh() -> Option<PathBuf> {
+    let me = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("gh"))
+        .filter(|p| p.is_file())
+        .find(|p| std::fs::canonicalize(p).ok() != me)
+}
+
+/// Entry point when invoked as `gh`. Never returns.
+pub fn run() -> ! {
+    use std::os::unix::process::CommandExt;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(real) = real_gh() else {
+        eprintln!("gh: the GitHub CLI is not installed (ssf's gh shim found no other gh on PATH)");
+        std::process::exit(127);
+    };
+    let args = match Origin::from_env() {
+        Some(origin) => rewrite(args, &origin, &read_body_file),
+        None => args,
+    };
+    let err = std::process::Command::new(&real).args(&args).exec();
+    eprintln!("gh: could not run {}: {err}", real.display());
+    std::process::exit(126);
+}
+
+fn read_body_file(path: &str) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut s = String::new();
+    if path == "-" {
+        std::io::stdin().read_to_string(&mut s)?;
+    } else {
+        std::fs::File::open(path)?.read_to_string(&mut s)?;
+    }
+    Ok(s)
+}
+
+/// Position of the command and subcommand words in a gh command line.
+fn command_words(args: &[String]) -> Option<(usize, usize)> {
+    let mut words = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| !a.starts_with('-'))
+        .map(|(i, _)| i);
+    Some((words.next()?, words.next()?))
+}
+
+fn is_tagged(cmd: &str, sub: &str) -> bool {
+    matches!(
+        (cmd, sub),
+        ("issue", "create")
+            | ("issue", "comment")
+            | ("pr", "create")
+            | ("pr", "comment")
+            | ("pr", "review")
+    )
+}
+
+/// The gh arguments with the origin tag appended to the body, where there is
+/// one. `read` resolves `--body-file` (a path, or `-` for stdin).
+pub fn rewrite(
+    args: Vec<String>,
+    origin: &Origin,
+    read: &dyn Fn(&str) -> std::io::Result<String>,
+) -> Vec<String> {
+    let Some((c, s)) = command_words(&args) else {
+        return args;
+    };
+    if !is_tagged(&args[c], &args[s]) {
+        return args;
+    }
+    let mut out: Vec<String> = args[..=s].to_vec();
+    let mut stamped = false;
+    let mut i = s + 1;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            out.extend_from_slice(&args[i..]);
+            break;
+        }
+        let short = |flag: &str| a.strip_prefix(flag).filter(|_| !a.starts_with("--"));
+        // Inline body: --body X, -b X, --body=X, -bX.
+        if (a == "--body" || a == "-b") && i + 1 < args.len() {
+            out.push(a.to_string());
+            out.push(stamp(&args[i + 1], origin));
+            stamped = true;
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--body=") {
+            out.push(format!("--body={}", stamp(v, origin)));
+            stamped = true;
+            i += 1;
+            continue;
+        }
+        if let Some(v) = short("-b") {
+            out.push(format!("-b{}", stamp(v, origin)));
+            stamped = true;
+            i += 1;
+            continue;
+        }
+        // Body from a file (or stdin): moved onto the command line so no
+        // temporary file is needed.
+        let file = if (a == "--body-file" || a == "-F") && i + 1 < args.len() {
+            Some((args[i + 1].as_str(), 2))
+        } else if let Some(v) = a.strip_prefix("--body-file=") {
+            Some((v, 1))
+        } else {
+            short("-F").map(|v| (v, 1))
+        };
+        if let Some((path, used)) = file {
+            let Ok(text) = read(path) else {
+                return args; // let gh report the unreadable file
+            };
+            let body = stamp(&text, origin);
+            if body.len() > MAX_INLINE_BODY {
+                return args;
+            }
+            out.push("--body".to_string());
+            out.push(body);
+            stamped = true;
+            i += used;
+            continue;
+        }
+        out.push(a.to_string());
+        i += 1;
+    }
+    // A review needs no body, but should still say where it came from.
+    if !stamped && args[c] == "pr" && args[s] == "review" {
+        out.insert(s + 1, origin.tag());
+        out.insert(s + 1, "--body".to_string());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn o() -> Origin {
+        Origin::new("acme/widgets", 12).unwrap()
+    }
+
+    fn tag() -> String {
+        o().tag()
+    }
+
+    fn args(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| x.to_string()).collect()
+    }
+
+    fn no_files(_: &str) -> std::io::Result<String> {
+        Err(std::io::Error::other("no files in tests"))
+    }
+
+    #[test]
+    fn stamps_inline_bodies_in_every_spelling() {
+        let expect = format!("hello\n\n{}", tag());
+        for a in [
+            args(&["issue", "comment", "3", "--body", "hello"]),
+            args(&["issue", "comment", "3", "-b", "hello"]),
+            args(&["issue", "comment", "3", "--body=hello"]),
+            args(&["issue", "comment", "3", "-bhello"]),
+            args(&["pr", "create", "--title", "t", "--body", "hello", "--draft"]),
+            args(&["pr", "comment", "--body", "hello", "--repo", "a/b"]),
+            args(&["pr", "review", "--approve", "--body", "hello"]),
+            args(&["issue", "create", "-t", "t", "-b", "hello"]),
+        ] {
+            let out = rewrite(a.clone(), &o(), &no_files);
+            assert_eq!(out.len(), a.len(), "{a:?}");
+            let joined = out.join("\x00");
+            assert!(joined.contains(&expect), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn body_files_move_inline() {
+        let read = |p: &str| -> std::io::Result<String> {
+            assert!(p == "notes.md" || p == "-");
+            Ok("from file\n".into())
+        };
+        let expect = format!("from file\n\n{}", tag());
+        let out = rewrite(
+            args(&["pr", "create", "-t", "t", "--body-file", "notes.md"]),
+            &o(),
+            &read,
+        );
+        assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
+        let out = rewrite(args(&["pr", "create", "-t", "t", "-F", "-"]), &o(), &read);
+        assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
+        let out = rewrite(
+            args(&["issue", "comment", "1", "--body-file=notes.md"]),
+            &o(),
+            &read,
+        );
+        assert_eq!(out, args(&["issue", "comment", "1", "--body", &expect]));
+        let out = rewrite(
+            args(&["issue", "comment", "1", "-Fnotes.md", "-R", "a/b"]),
+            &o(),
+            &read,
+        );
+        assert_eq!(
+            out,
+            args(&["issue", "comment", "1", "--body", &expect, "-R", "a/b"])
+        );
+        // Unreadable file: untouched, gh reports it.
+        let a = args(&["issue", "comment", "1", "--body-file", "missing"]);
+        assert_eq!(rewrite(a.clone(), &o(), &no_files), a);
+    }
+
+    #[test]
+    fn reviews_without_a_body_get_one() {
+        let out = rewrite(args(&["pr", "review", "7", "--approve"]), &o(), &no_files);
+        assert_eq!(
+            out,
+            args(&["pr", "review", "--body", &tag(), "7", "--approve"])
+        );
+    }
+
+    #[test]
+    fn everything_else_passes_through() {
+        for a in [
+            args(&["pr", "list"]),
+            args(&["issue", "view", "3"]),
+            args(&["issue", "edit", "3", "--body", "x"]),
+            args(&["api", "repos/a/b/issues", "-f", "body=x"]),
+            args(&["pr", "create", "--fill"]),
+            args(&["issue", "comment", "3", "--editor"]),
+            args(&["issue", "comment", "3", "--", "--body", "x"]),
+            args(&["--version"]),
+            args(&[]),
+        ] {
+            assert_eq!(rewrite(a.clone(), &o(), &no_files), a, "{a:?}");
+        }
+    }
+
+    #[test]
+    fn already_tagged_bodies_are_left_alone() {
+        let body = format!("done\n\n{}", tag());
+        let a = args(&["issue", "comment", "3", "--body", &body]);
+        assert_eq!(rewrite(a.clone(), &o(), &no_files), a);
+    }
+
+    #[test]
+    fn path_gets_the_shim_first_once() {
+        let dir = Path::new("/home/x/.config/ssf/bin");
+        let p = prepend_to_path(
+            dir,
+            Some(std::ffi::OsStr::new(
+                "/usr/bin:/home/x/.config/ssf/bin:/bin",
+            )),
+        );
+        assert_eq!(p, "/home/x/.config/ssf/bin:/usr/bin:/bin");
+        assert_eq!(prepend_to_path(dir, None), "/home/x/.config/ssf/bin");
+    }
+}

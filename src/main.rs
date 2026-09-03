@@ -11,14 +11,17 @@ mod ghcli;
 mod github;
 mod keys;
 mod orca;
+mod origin;
 mod prompt;
 mod sessions;
+mod shim;
 mod state;
 mod ui;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
@@ -249,6 +252,11 @@ enum ServiceCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // `ssf launch` links `~/.config/ssf/bin/gh` to this binary; invoked under
+    // that name we are the gh shim, not the daemon.
+    if shim::invoked_as_gh() {
+        shim::run();
+    }
     let cli = Cli::parse();
     let filter = EnvFilter::try_from_env("RUST_LOG")
         .or_else(|_| EnvFilter::try_new(&cli.log))
@@ -412,6 +420,24 @@ fn launch(
     }
     if let Some(u) = issue_url {
         cmd.env("SSF_ISSUE_URL", u);
+    }
+    // A `gh` shim first on PATH stamps everything the agent posts with the
+    // origin tag for this issue (see src/shim.rs).
+    match std::env::current_exe().and_then(std::fs::canonicalize) {
+        Ok(me) => match shim::install(&me) {
+            Ok(dir) => {
+                cmd.env(
+                    "PATH",
+                    shim::prepend_to_path(&dir, std::env::var_os("PATH").as_deref()),
+                );
+            }
+            Err(e) => eprintln!(
+                "ssf launch: gh shim not installed, posts will not carry origin tags ({e:#})"
+            ),
+        },
+        Err(e) => {
+            eprintln!("ssf launch: gh shim not installed, posts will not carry origin tags ({e:#})")
+        }
     }
     let err = cmd.exec();
     Err(anyhow::Error::from(err).context("exec failed"))
@@ -1114,6 +1140,9 @@ fn status(json: bool) -> Result<()> {
                                     "prompts_sent": i.prompts_sent,
                                     "last_prompt_at": i.last_prompt_at,
                                     "bound_at": i.bound_at,
+                                    "origin": i.origin,
+                                    "origins": i.origins,
+                                    "untagged": i.untagged,
                                 })
                             })
                             .collect()
@@ -1183,6 +1212,23 @@ fn status(json: bool) -> Result<()> {
             );
             if let Some(p) = &is.worktree_path {
                 println!("          {}", p);
+            }
+            if let Some(o) = &is.origin {
+                println!("          opened by session {o}");
+            }
+            if !is.origins.is_empty() {
+                let mut by: BTreeMap<&str, usize> = BTreeMap::new();
+                for o in is.origins.values() {
+                    *by.entry(o.as_str()).or_default() += 1;
+                }
+                let parts: Vec<String> = by.iter().map(|(o, n)| format!("{o} ({n})")).collect();
+                println!("          posts from sessions: {}", parts.join(", "));
+            }
+            if !is.untagged.is_empty() {
+                println!(
+                    "          {} untagged post(s) by the bot (gh shim not in effect)",
+                    is.untagged.len()
+                );
             }
         }
     }
@@ -1321,6 +1367,56 @@ async fn doctor() -> Result<()> {
             );
         }
     }
+    match shim::real_gh() {
+        Some(gh) => check(true, format!("GitHub CLI at {}", gh.display())),
+        None => check(
+            false,
+            "GitHub CLI (gh) not installed; agents cannot post as the bot".into(),
+        ),
+    }
+    let shim_ok = shim::target()
+        .and_then(|t| std::fs::canonicalize(t).ok())
+        .is_some_and(|t| {
+            std::env::current_exe()
+                .and_then(std::fs::canonicalize)
+                .is_ok_and(|me| me == t)
+        });
+    check(
+        shim_ok,
+        format!(
+            "gh shim at {} {}",
+            shim::path().display(),
+            if shim_ok {
+                "links to this ssf"
+            } else {
+                "not installed yet (ssf launch creates it when an agent starts)"
+            }
+        ),
+    );
+    let st = state::State::load().unwrap_or_default();
+    let untagged: Vec<String> = st
+        .repos
+        .values()
+        .flat_map(|r| r.issues.values())
+        .flat_map(|i| i.untagged.values().cloned())
+        .collect();
+    check(
+        untagged.is_empty(),
+        if untagged.is_empty() {
+            "every post by the bot carried an origin tag".to_string()
+        } else {
+            format!(
+                "{} post(s) by the bot arrived without an origin tag (gh shim not in effect): {}",
+                untagged.len(),
+                untagged
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        },
+    );
     check(
         ui::service_active(),
         format!(
