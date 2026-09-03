@@ -370,6 +370,21 @@ impl Engine {
             triggers: &st.triggers,
             owner: st.shares_workspace_of,
             delegated_by: st.delegated_by.as_deref(),
+            projects: &st.projects,
+        }
+    }
+
+    /// Refresh which project boards the item is on. Best effort: a failed
+    /// lookup (no `project` scope, GraphQL hiccup) keeps whatever was known
+    /// and is logged, since the prompt is still useful without it.
+    async fn refresh_projects(&mut self, repo: &RepoConfig, owner: &str, name: &str, number: u64) {
+        match self.gh.project_items(owner, name, number).await {
+            Ok(projects) => self.entry(repo, number).projects = projects,
+            Err(e) => warn!(
+                repo = repo.name,
+                issue = number,
+                "could not look up project boards: {e:#}"
+            ),
         }
     }
 
@@ -680,6 +695,7 @@ impl Engine {
             );
             return Ok(());
         }
+        self.refresh_projects(repo, owner, name, issue.number).await;
         let snapshot = self.entry(repo, issue.number).clone();
         let ctx = self.ctx(repo, &snapshot);
         let text = prompt::initial_prompt(issue, &diff.rendered, &ctx);
@@ -1028,6 +1044,11 @@ impl Engine {
             events = diff.rendered.len(),
             "delivering new activity"
         );
+        self.refresh_projects(repo, owner, name, issue.number).await;
+        let st = IssueState {
+            projects: self.entry(repo, issue.number).projects.clone(),
+            ..st
+        };
         let ctx = self.ctx(repo, &st);
         let text = prompt::followup_prompt(issue, &diff.rendered, &ctx);
         // A harness started from scratch has lost its memory, so it gets the
@@ -1068,6 +1089,11 @@ impl Engine {
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
         self.record_origins(repo, issue, &timeline);
         let diff = self.diff(&st.seen, &timeline);
+        self.refresh_projects(repo, owner, name, issue.number).await;
+        let st = IssueState {
+            projects: self.entry(repo, issue.number).projects.clone(),
+            ..st
+        };
         let ctx = self.ctx(repo, &st);
         let text = prompt::reassigned_prompt(issue, &diff.rendered, &ctx);
         let all = self.diff(&BTreeMap::new(), &timeline).rendered;

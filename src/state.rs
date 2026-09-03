@@ -111,6 +111,9 @@ pub struct IssueState {
     /// Pull request branch details.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<crate::github::PrInfo>,
+    /// Open project boards the item is on, as of the last lookup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<crate::github::ProjectCard>,
     /// This item is owned by that item's session (same repo): it was opened
     /// from that session, or its PR branch is that session's branch. Every
     /// prompt about this item goes to the owner's agent, and the workspace
