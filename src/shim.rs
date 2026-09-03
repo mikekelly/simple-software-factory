@@ -338,6 +338,17 @@ mod tests {
     }
 
     #[test]
+    fn malformed_flags_pass_through() {
+        for a in [
+            args(&["issue", "comment", "3", "-b"]),
+            args(&["issue", "comment", "3", "--body"]),
+            args(&["issue", "comment", "3", "--body-file"]),
+        ] {
+            assert_eq!(rewrite(a.clone(), &o(), &no_files), a, "{a:?}");
+        }
+    }
+
+    #[test]
     fn already_tagged_bodies_are_left_alone() {
         let body = format!("done\n\n{}", tag());
         let a = args(&["issue", "comment", "3", "--body", &body]);
