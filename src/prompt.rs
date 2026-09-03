@@ -1,6 +1,8 @@
 //! Rendering GitHub issue timelines into prompts for the agent.
 
 use serde_json::Value;
+use std::path::Path;
+use tracing::warn;
 
 use crate::config::{DaemonConfig, RepoConfig};
 use crate::github::{Issue, PrInfo, ProjectCard, value_str, value_u64};
@@ -261,7 +263,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     Some(Rendered { key, text })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct PromptContext<'a> {
     pub repo: &'a RepoConfig,
     pub daemon: &'a DaemonConfig,
@@ -277,6 +279,45 @@ pub struct PromptContext<'a> {
     pub delegated_by: Option<&'a str>,
     /// Open project boards the item is on.
     pub projects: &'a [ProjectCard],
+    /// The repository's own prompt file, when the worktree has one.
+    pub project_prompt: Option<ProjectPrompt>,
+}
+
+/// Contents of the per-project prompt file (`SSF.md` by default): notes the
+/// humans on a repository keep for ssf agents, outside CLAUDE.md/AGENTS.md.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectPrompt {
+    /// The file as configured (`SSF.md`, `.ssf/prompt.md`, `~/notes/x.md`).
+    pub source: String,
+    pub text: String,
+}
+
+impl ProjectPrompt {
+    /// Read the repository's prompt file from the checkout at `worktree`.
+    /// A missing or empty file yields nothing; an unreadable one is logged.
+    pub fn load(repo: &RepoConfig, worktree: &Path) -> Option<Self> {
+        let path = repo.prompt_file_path(worktree);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                warn!(
+                    repo = repo.name,
+                    path = %path.display(),
+                    "cannot read the project prompt file: {e}"
+                );
+                return None;
+            }
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return None;
+        }
+        Some(Self {
+            source: repo.prompt_file().to_string(),
+            text: text.to_string(),
+        })
+    }
 }
 
 impl PromptContext<'_> {
@@ -318,7 +359,7 @@ impl PromptContext<'_> {
         let owned: Vec<String> = triggers.iter().map(|t| t.to_string()).collect();
         let ctx = PromptContext {
             triggers: &owned,
-            ..*self
+            ..self.clone()
         };
         ctx.because()
     }
@@ -552,6 +593,12 @@ when that changes (the command is under each board). ssf never moves cards itsel
         s.push('\n');
         s.push_str(extra.trim());
         s.push('\n');
+    }
+    if let Some(pp) = ctx.project_prompt.as_ref() {
+        s.push_str(&format!(
+            "\n## Project notes\n\nThe repository keeps notes for ssf agents in `{}`. They say:\n\n{}\n",
+            pp.source, pp.text
+        ));
     }
     s
 }
@@ -863,6 +910,7 @@ mod tests {
             path: None,
             base_branch: None,
             instructions: Some("Run the tests.".into()),
+            prompt_file: None,
         };
         let d = cfg();
         let ctx = PromptContext {
@@ -874,6 +922,7 @@ mod tests {
             owner: None,
             delegated_by: None,
             projects: &[],
+            project_prompt: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("o/r#3: Add thing"));
@@ -888,6 +937,16 @@ mod tests {
         assert!(!p.contains("handed off to you"));
         assert!(p.trim_end().ends_with("Run the tests."));
 
+        let ctx = PromptContext {
+            project_prompt: Some(ProjectPrompt {
+                source: "SSF.md".into(),
+                text: "Cards go to Review when a PR is open.".into(),
+            }),
+            ..ctx
+        };
+        let p = initial_prompt(&issue, &[], &ctx);
+        assert!(p.contains("Run the tests.\n\n## Project notes\n\n"));
+        assert!(p.contains("notes for ssf agents in `SSF.md`. They say:\n\nCards go to Review"));
         let triggers = vec!["assigned".to_string(), "created".to_string()];
         let child = PromptContext {
             triggers: &triggers,
@@ -930,6 +989,7 @@ mod tests {
             owner: Some(3),
             delegated_by: None,
             projects: &[],
+            project_prompt: None,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -1017,6 +1077,7 @@ mod tests {
             owner: None,
             delegated_by: None,
             projects: &boards,
+            project_prompt: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("## Project boards\n\n- Roadmap (https://gh/p/1): Status is \"Todo\". Options: \"Todo\", \"In Progress\".\n"));
@@ -1037,6 +1098,62 @@ mod tests {
         let p = initial_prompt(&issue, &[], &none);
         assert!(!p.contains("Project boards"));
         assert!(!p.contains("gh project item-edit"));
+    }
+
+    #[test]
+    fn project_prompt_is_read_from_the_worktree() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-prompt-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join(".ssf")).unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        assert_eq!(ProjectPrompt::load(&repo, &dir), None, "no file, no notes");
+        std::fs::write(dir.join("SSF.md"), "  \n").unwrap();
+        assert_eq!(
+            ProjectPrompt::load(&repo, &dir),
+            None,
+            "blank file, no notes"
+        );
+        std::fs::write(dir.join("SSF.md"), "\n# Notes\n\nBe brief.\n\n").unwrap();
+        assert_eq!(
+            ProjectPrompt::load(&repo, &dir),
+            Some(ProjectPrompt {
+                source: "SSF.md".into(),
+                text: "# Notes\n\nBe brief.".into()
+            })
+        );
+
+        std::fs::write(dir.join(".ssf/prompt.md"), "From the dotdir.").unwrap();
+        let repo = RepoConfig {
+            prompt_file: Some(".ssf/prompt.md".into()),
+            ..repo
+        };
+        let pp = ProjectPrompt::load(&repo, &dir).unwrap();
+        assert_eq!(pp.source, ".ssf/prompt.md");
+        assert_eq!(pp.text, "From the dotdir.");
+
+        let outside = dir.join("elsewhere.md");
+        std::fs::write(&outside, "Absolute.").unwrap();
+        let repo = RepoConfig {
+            prompt_file: Some(outside.to_string_lossy().to_string()),
+            ..repo
+        };
+        assert_eq!(
+            ProjectPrompt::load(&repo, Path::new("/nonexistent"))
+                .unwrap()
+                .text,
+            "Absolute."
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -1082,6 +1199,7 @@ mod tests {
             owner: None,
             delegated_by: None,
             projects: &[],
+            project_prompt: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("Opened by the agent session working on o/r#3."));

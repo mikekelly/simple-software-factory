@@ -19,7 +19,7 @@ its review) it:
    that opened it (see [Ownership](#ownership-one-session-per-item)),
 3. sends the agent the issue, its description, the project boards it is on
    and everything that has happened on it so far, plus instructions on how
-   to report back,
+   to report back and whatever the repository's own `SSF.md` says,
 4. keeps polling the issue timeline and pastes new activity (comments, label
    changes, renames, linked PRs, ...) into the same agent session, which
    steers it if it is busy and wakes it up if it is idle,
@@ -121,6 +121,7 @@ ssf repo set acme/widgets --model opus --effort high
 ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
 ssf models pi                     # ids the installed agent takes
 ssf repo set acme/widgets --clear model --clear effort
+ssf repo set acme/widgets --prompt-file .github/ssf.md   # instead of SSF.md
 ssf repo remove acme/widgets
 ssf config get daemon.poll_interval_secs
 ssf config set daemon.poll_interval_secs 60
@@ -342,10 +343,25 @@ instructions = "Run `make test` before opening a PR."
 | `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
 | `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.path` | | Register an existing checkout instead of cloning |
+| `repo.prompt_file` | `SSF.md` | The per-project prompt file (below), relative to the worktree unless absolute or `~/` |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories |
 
 Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
 `ORCA_CLI_COMMAND`, `RUST_LOG`.
+
+### The per-project prompt file
+
+Notes that only matter to ssf agents, and so do not belong in `CLAUDE.md` or
+`AGENTS.md` (which conventions the project boards use, who to ask about what,
+how the humans want PRs written up, ...), go in an `SSF.md` at the root of
+the repository. When an agent is started for an item, ssf reads the file from
+the item's own checkout (so a PR branch that changes it is seen with its own
+version) and appends it to the initial prompt under a "Project notes" heading,
+after `daemon.instructions` and `repo.instructions`. The same text is included
+when a harness is started again from scratch. No file, or an empty one, adds
+nothing. `repo.prompt_file` names another file: a path inside the worktree
+(`.github/ssf.md`), or an absolute or `~/` path for notes you would rather
+not commit.
 
 ### Models and effort levels
 

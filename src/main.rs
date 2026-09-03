@@ -199,6 +199,9 @@ enum RepoCommand {
         /// Extra instructions appended to the initial prompt for this repo.
         #[arg(long)]
         instructions: Option<String>,
+        /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<String>,
     },
     /// Change some settings of a watched repository, keeping the rest.
     Set {
@@ -221,7 +224,10 @@ enum RepoCommand {
         effort: Option<String>,
         #[arg(long)]
         instructions: Option<String>,
-        /// Clear an optional field: path, clone_url, base_branch, command, model, effort, instructions.
+        /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
+        #[arg(long, value_name = "PATH")]
+        prompt_file: Option<String>,
+        /// Clear an optional field: path, clone_url, base_branch, command, model, effort, instructions, prompt_file.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },
@@ -924,6 +930,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             model,
             effort,
             instructions,
+            prompt_file,
         } => {
             let (owner, r) = split_repo_name(&name)?;
             let name = format!("{owner}/{r}");
@@ -939,6 +946,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                 path,
                 base_branch,
                 instructions,
+                prompt_file,
             };
             entry.validate_launch_prefs()?;
             let action = if let Some(pos) = cfg
@@ -966,6 +974,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             model,
             effort,
             instructions,
+            prompt_file,
             clear,
         } => {
             let pos = cfg
@@ -1012,6 +1021,9 @@ fn repo(command: RepoCommand) -> Result<()> {
             if instructions.is_some() {
                 entry.instructions = instructions;
             }
+            if prompt_file.is_some() {
+                entry.prompt_file = prompt_file;
+            }
             for field in clear {
                 match field.as_str() {
                     "path" => entry.path = None,
@@ -1021,6 +1033,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                     "model" => entry.model = None,
                     "effort" => entry.effort = None,
                     "instructions" => entry.instructions = None,
+                    "prompt_file" => entry.prompt_file = None,
                     other => bail!("cannot clear unknown field {other}"),
                 }
             }

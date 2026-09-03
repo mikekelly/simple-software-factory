@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
@@ -10,7 +11,9 @@ use crate::config::{Config, RepoConfig};
 use crate::github::{Conditional, GitHub, Issue, PrInfo};
 use crate::orca::{Delivery, Orca, Worktree};
 use crate::origin::{self, Origin};
-use crate::prompt::{self, FinalComment, PromptContext, Rendered, actor_of, event_key, render_event};
+use crate::prompt::{
+    self, FinalComment, ProjectPrompt, PromptContext, Rendered, actor_of, event_key, render_event,
+};
 use crate::sessions;
 use crate::state::{IssueState, State, now_iso};
 
@@ -362,6 +365,12 @@ impl Engine {
     }
 
     fn ctx<'a>(&'a self, repo: &'a RepoConfig, st: &'a IssueState) -> PromptContext<'a> {
+        // The repository's prompt file is read from the item's own checkout,
+        // so a PR branch that changes it is seen as the branch has it.
+        let project_prompt = st
+            .worktree_path
+            .as_deref()
+            .and_then(|p| ProjectPrompt::load(repo, Path::new(p)));
         PromptContext {
             repo,
             daemon: &self.cfg.daemon,
@@ -371,7 +380,16 @@ impl Engine {
             owner: st.shares_workspace_of,
             delegated_by: st.delegated_by.as_deref(),
             projects: &st.projects,
+            project_prompt,
         }
+    }
+
+    /// The full first message for an item, built once its workspace is
+    /// known so the prompt file in that checkout can be included.
+    fn initial_text(&mut self, repo: &RepoConfig, issue: &Issue, rendered: &[Rendered]) -> String {
+        let snapshot = self.entry(repo, issue.number).clone();
+        let ctx = self.ctx(repo, &snapshot);
+        prompt::initial_prompt(issue, rendered, &ctx)
     }
 
     /// Refresh which project boards the item is on. Best effort: a failed
@@ -696,9 +714,6 @@ impl Engine {
             return Ok(());
         }
         self.refresh_projects(repo, owner, name, issue.number).await;
-        let snapshot = self.entry(repo, issue.number).clone();
-        let ctx = self.ctx(repo, &snapshot);
-        let text = prompt::initial_prompt(issue, &diff.rendered, &ctx);
 
         let mut existing: Option<Worktree> = None;
         if let Some(id) = prior.as_ref().and_then(|s| s.worktree_id.clone()) {
@@ -735,6 +750,7 @@ impl Engine {
                 );
                 self.remember_worktree(repo, issue.number, &wt);
                 let _ = self.orca.set_comment(&wt.id, &comment).await;
+                let text = self.initial_text(repo, issue, &diff.rendered);
                 let d = self.deliver_to(repo, issue.number, &text, None).await?;
                 d.handle
             }
@@ -772,6 +788,7 @@ impl Engine {
                     .orca
                     .launch_in_worktree(&created.id, &cmd, &title, &repo.harness)
                     .await?;
+                let text = self.initial_text(repo, issue, &diff.rendered);
                 self.orca.send_prompt(&handle, &text).await?;
                 info!(
                     repo = repo.name,

@@ -229,7 +229,15 @@ pub struct RepoConfig {
     /// Repo-specific instructions appended to the initial prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
+    /// File whose contents are appended to the initial prompt, relative to
+    /// the worktree unless absolute or `~/`-prefixed. Defaults to `SSF.md`
+    /// in the repository; a missing file is simply not mentioned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_file: Option<String>,
 }
+
+/// Name of the per-project prompt file when `repo.prompt_file` is not set.
+pub const DEFAULT_PROMPT_FILE: &str = "SSF.md";
 
 impl RepoConfig {
     pub fn split(&self) -> Result<(&str, &str)> {
@@ -240,6 +248,22 @@ impl RepoConfig {
         self.clone_url
             .clone()
             .unwrap_or_else(|| format!("https://github.com/{}.git", self.name))
+    }
+
+    /// The configured prompt file, as given (`SSF.md` by default).
+    pub fn prompt_file(&self) -> &str {
+        self.prompt_file
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .unwrap_or(DEFAULT_PROMPT_FILE)
+    }
+
+    /// Where the prompt file lives for a checkout at `worktree`: an absolute
+    /// or `~/` path stands on its own, anything else is inside the worktree.
+    pub fn prompt_file_path(&self, worktree: &Path) -> PathBuf {
+        let p = expand_tilde(self.prompt_file());
+        if p.is_absolute() { p } else { worktree.join(p) }
     }
 
     /// The command that starts the harness, with the configured model and
