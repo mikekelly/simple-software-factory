@@ -490,7 +490,7 @@ effort = "ultra"
                 r#"
 [[repo]]
 name = "acme/widgets"
-harness = "opencode"
+harness = "crush"
 model = "x"
 "#,
             )

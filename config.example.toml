@@ -34,8 +34,8 @@
 name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
 # command = "claude --dangerously-skip-permissions"   # how the agent is started (default: the harness id); run via `ssf launch`
-# model = "opus"                               # Orca model id, appended as the agent's model flag (see `ssf agents --json`)
-# effort = "high"                              # Orca effort level (claude: low|medium|high|xhigh|max; codex: minimal..ultra)
+# model = "opus"                               # Orca model id, or provider/model for pi/omp/opencode (see `ssf models <agent>`)
+# effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
 # path = "~/code/name"                         # register an existing checkout instead of cloning
 # base_branch = "origin/main"

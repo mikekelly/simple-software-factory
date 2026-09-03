@@ -65,17 +65,19 @@ agent_field() {
   ssf agents --json | jq -r --arg h "$harness" --arg f "$field" '.[] | select(.id == $h) | .[$f][]'
 }
 
-# Prints a model id, or an empty line for "use the agent's default".
+# Prints a model id, or an empty line for "use the agent's default". The
+# ids come from `ssf models`: Orca's ids for the agents Orca knows, otherwise
+# whatever the installed agent lists (pi and omp: provider/model).
 pick_model() {
   local harness="$1" current="${2:-}"
   local -a models=()
-  mapfile -t models < <(agent_field "$harness" models)
+  mapfile -t models < <(ssf models "$harness" 2>/dev/null)
   local choice
   if have_menu; then
     local options=$'\uf0e7\tDefault\tthe model '"$harness"$' starts with'
     local m
     for m in "${models[@]}"; do
-      options+=$'\n\uf0e7\t'"$m"$'\t'"$([[ $m == "$current" ]] && echo current || echo Orca id)"
+      options+=$'\n\uf0e7\t'"$m"$'\t'"$([[ $m == "$current" ]] && echo current || echo '')"
     done
     options+=$'\n\uf0e7\tOther\ttype a model id'
     choice=$(printf '%s\n' "$options" | omarchy-menu-select "Model for $harness${current:+ (now: $current)}") || return 1
@@ -86,7 +88,8 @@ pick_model() {
       *) printf '%s\n' "$choice" ;;
     esac
   else
-    echo "Models $harness is known to take: ${models[*]:-(none listed)}; other ids pass through."
+    echo "Models $harness takes (other ids pass through):"
+    printf '  %s\n' "${models[@]:-(none listed)}"
     read -rp "Model id${current:+ (now: $current)} (empty for the agent's default): " choice
     printf '%s\n' "$choice"
   fi
@@ -196,7 +199,7 @@ cmd_edit_repo() {
   # Rows for omarchy-menu-select ("<glyph><TAB><label>"); model and effort
   # only for agents that take them.
   local -a rows=($'\tChange agent')
-  [[ -n $(agent_field "$current" models) ]] && rows+=($'\tChange model')
+  [[ $(ssf agents --json | jq -r --arg h "$current" '.[] | select(.id == $h) | .takes_model') == true ]] && rows+=($'\tChange model')
   [[ -n $(agent_field "$current" effort_levels) ]] && rows+=($'\tChange effort')
   rows+=($'\tStop watching' $'\tOpen on GitHub')
   local choice

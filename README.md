@@ -116,6 +116,8 @@ ssf repo list --json
 ssf repo add acme/widgets --harness codex --instructions "Run make test before opening a PR."
 ssf repo set acme/widgets --harness claude --command "claude --dangerously-skip-permissions"
 ssf repo set acme/widgets --model opus --effort high
+ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
+ssf models pi                     # ids the installed agent takes
 ssf repo set acme/widgets --clear model --clear effort
 ssf repo remove acme/widgets
 ssf config get daemon.poll_interval_secs
@@ -267,8 +269,8 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_grace_secs` | `900` | How long to let the agent wrap up before removing the workspace anyway |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
 | `repo.command` | the harness id | Command that starts the agent, e.g. `claude --dangerously-skip-permissions` |
-| `repo.model` | the agent's default | Model, as an Orca model id (`ssf agents --json` lists the known ones; other ids pass through) |
-| `repo.effort` | the agent's default | Effort level, as an Orca effort level (`ssf agents --json` lists what each agent accepts) |
+| `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
+| `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.path` | | Register an existing checkout instead of cloning |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories |
 
@@ -277,10 +279,14 @@ Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
 
 ### Models and effort levels
 
-`repo.model` and `repo.effort` use the same identifiers as Orca's own
-`--model`/`--effort` options (`orca orchestration worker-start`), and ssf
-turns them into the agent's command-line flags when it starts the agent,
-including when it resumes a session:
+For the agents Orca has a model catalogue for, `repo.model` and `repo.effort`
+use the same identifiers as Orca's own `--model`/`--effort` options (`orca
+orchestration worker-start`). Pi, Oh My Pi, OpenCode and Copilot are not in
+Orca's catalogue; they take their own `provider/model` ids (Pi and Oh My Pi
+reach many providers, OpenRouter among them) and their own thinking or
+reasoning levels. Either way ssf turns the setting into the agent's
+command-line flags when it starts the agent, including when it resumes a
+session:
 
 | Agent | Model ids | Effort levels | What is appended to the command |
 |-------|-----------|---------------|---------------------------------|
@@ -288,13 +294,20 @@ including when it resumes a session:
 | `codex` | `gpt-5.5`, `gpt-5.2-codex`, ... | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | `-m <id> -c model_reasoning_effort=<level>` |
 | `gemini` | `gemini-3-pro-preview`, `gemini-2.5-pro`, ... | none | `-m <id>` |
 | `grok` | `grok-4.6`, `grok-4.5` | `low`, `medium`, `high`, `xhigh` | `-m <id> --reasoning-effort <level>` |
+| `pi` | `provider/model` as in `pi --list-models`, e.g. `openrouter/anthropic/claude-sonnet-4` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --thinking <level>` |
+| `omp` | `provider/model` as in `omp models`, e.g. `openai-codex/gpt-5.4` | as `pi`, plus `auto` | `--model <id> --thinking <level>` |
+| `opencode` | `provider/model` as in `opencode models` | none | `-m <id>` |
+| `copilot` | `auto` or a model name | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
 
-The other agents have no model or effort setting; ssf refuses to save one for
-them. Model ids are passed through as given, so a model the list does not
-mention works as long as the agent knows it; effort levels must be ones the
-agent accepts. Changing the agent of a repository resets both, since the ids
-belong to the agent. Keep `--model`/`--effort` out of `repo.command` when you
-set them here, or the agent sees the flag twice.
+`ssf models <agent>` prints the ids to choose from, asking the installed
+agent for its list where it has one (`pi`, `omp`, `opencode`); the menu's
+*Change model* picker uses the same list. Crush has no model flag for its
+TUI, so ssf refuses a model for it. Model ids are passed through as given, so
+a model the list does not mention works as long as the agent knows it;
+effort levels must be ones the agent accepts. Changing the agent of a
+repository resets both, since the ids belong to the agent. Keep
+`--model`/`--effort` out of `repo.command` when you set them here, or the
+agent sees the flag twice.
 
 ## Notes and limitations (v1)
 

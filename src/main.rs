@@ -57,6 +57,13 @@ enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
+    /// List the model ids an agent takes (asking the installed agent when it can tell).
+    Models {
+        /// Agent id (see `ssf agents`).
+        harness: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// List coding agents known to Omarchy and whether they are installed.
     Agents {
         #[arg(long)]
@@ -305,6 +312,17 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Repo { command } => repo(command),
+        Command::Models { harness, json } => {
+            let ids = models::available_models(&harness)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&ids)?);
+            } else {
+                for id in ids {
+                    println!("{id}");
+                }
+            }
+            Ok(())
+        }
         Command::Agents { json, installed } => {
             let mut list = agents::list();
             if installed {
