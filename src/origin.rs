@@ -69,10 +69,15 @@ pub struct Tag {
     pub fields: BTreeMap<String, String>,
 }
 
-/// Every ssf tag in `body`, in order of appearance.
+/// Every ssf tag in `body`, in order of appearance. Tags inside quoted
+/// lines (`> ...`, what GitHub's "quote reply" produces) belong to the post
+/// being quoted and are skipped.
 pub fn tags(body: &str) -> Vec<Tag> {
     let mut out = Vec::new();
     for (start, end) in spans(body) {
+        if is_quoted(body, start) {
+            continue;
+        }
         let inner = body[start + OPEN.len()..end].trim();
         let Some(rest) = inner.strip_prefix(MARK) else {
             continue;
@@ -117,7 +122,7 @@ pub fn strip(body: &str) -> String {
     let mut last = 0;
     for (start, end) in spans(body) {
         let inner = body[start + OPEN.len()..end].trim();
-        if !inner.starts_with(MARK) {
+        if !inner.starts_with(MARK) || is_quoted(body, start) {
             continue;
         }
         out.push_str(&body[last..start]);
@@ -130,6 +135,12 @@ pub fn strip(body: &str) -> String {
     }
     out.push_str(&body[last..]);
     out.trim_end().to_string()
+}
+
+/// Does the line containing byte offset `at` start with a markdown quote?
+fn is_quoted(body: &str, at: usize) -> bool {
+    let line_start = body[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    body[line_start..at].trim_start().starts_with('>')
 }
 
 /// Byte ranges `(start of "<!--", start of "-->")` of every HTML comment.
@@ -161,19 +172,21 @@ pub struct Scan {
 }
 
 /// Parse the tags out of the item body and every comment-like event on its
-/// timeline, noting the bot's posts that have none.
+/// timeline, noting the bot's posts that have none. Only the bot's own posts
+/// are read: a tag in a human's text is something they quoted or pasted.
 pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
     let mut s = Scan::default();
     let mut note = |key: String, author: &str, body: Option<&str>, url: &str| {
-        let body = body.unwrap_or("");
-        match parse(body) {
+        if !author.eq_ignore_ascii_case(bot) {
+            return;
+        }
+        match parse(body.unwrap_or("")) {
             Some(t) => {
                 s.origins.insert(key, t.origin.to_string());
             }
-            None if author.eq_ignore_ascii_case(bot) => {
+            None => {
                 s.untagged.insert(key, url.to_string());
             }
-            None => {}
         }
     };
     note(
@@ -251,8 +264,18 @@ mod tests {
     fn last_tag_wins_and_other_comments_are_ignored() {
         let body = "quoting:\n> <!-- ssf: origin=a/b#1 -->\n<!-- plain html comment -->\n\n<!-- ssf: origin=a/b#2 -->";
         assert_eq!(parse(body).unwrap().origin.to_string(), "a/b#2");
-        assert_eq!(tags(body).len(), 2);
+        assert_eq!(tags(body).len(), 1, "the quoted tag does not count");
         assert!(parse("<!-- ssf: origin=nonsense -->").is_none());
+        // A quote reply carries the quoted post's tag, not one of its own.
+        assert!(parse("> hi\n> <!-- ssf: origin=a/b#1 -->\n\nthanks").is_none());
+        assert!(parse("  > <!-- ssf: origin=a/b#1 -->").is_none());
+        assert_eq!(
+            parse("> <!-- ssf: origin=a/b#1 -->\n<!-- ssf: origin=a/b#2 -->")
+                .unwrap()
+                .origin
+                .number,
+            2
+        );
         assert!(parse("no tag here").is_none());
         assert!(parse("<!-- ssf: origin=a/b#1").is_none());
     }
@@ -274,6 +297,13 @@ mod tests {
         assert_eq!(strip(&s), "hello\n<!-- keep me -->");
         assert_eq!(strip("plain"), "plain");
         assert_eq!(strip(&o().tag()), "");
+        let quoted = "> <!-- ssf: origin=a/b#1 -->\nreply";
+        assert_eq!(strip(quoted), quoted);
+        assert_eq!(
+            strip("caf\u{e9} \u{1F600}\n\n<!-- ssf: origin=a/b#1 -->"),
+            "caf\u{e9} \u{1F600}"
+        );
+        assert_eq!(strip("<!-- never closed"), "<!-- never closed");
     }
 
     #[test]
@@ -288,6 +318,7 @@ mod tests {
             json!({"event":"commented","id":1,"user":{"login":"bot"},"body":"tagged <!-- ssf: origin=a/b#1 -->","html_url":"u1"}),
             json!({"event":"commented","id":2,"user":{"login":"bot"},"body":"untagged","html_url":"u2"}),
             json!({"event":"commented","id":3,"user":{"login":"alice"},"body":"human","html_url":"u3"}),
+            json!({"event":"commented","id":30,"user":{"login":"alice"},"body":"pasted <!-- ssf: origin=a/b#1 -->","html_url":"u30"}),
             json!({"event":"reviewed","id":4,"user":{"login":"bot"},"body":"<!-- ssf: origin=a/b#7 -->","html_url":"u4"}),
             json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"body":"inline","html_url":"u8"}]}),
         ];
@@ -310,6 +341,10 @@ mod tests {
             Some("u8")
         );
         assert!(!s.untagged.contains_key("commented:3"));
+        assert!(
+            !s.origins.contains_key("commented:30"),
+            "a human's tag is not an origin"
+        );
         assert!(!s.untagged.contains_key("body"));
 
         let human: Issue = serde_json::from_value(json!({

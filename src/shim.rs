@@ -57,38 +57,64 @@ pub fn target() -> Option<PathBuf> {
     std::fs::read_link(path()).ok()
 }
 
-/// PATH with the shim directory first (and nowhere else).
-pub fn prepend_to_path(dir: &Path, path: Option<&std::ffi::OsStr>) -> std::ffi::OsString {
+/// PATH with the shim directory first (and nowhere else). `None` when the
+/// directory cannot go on a PATH (it contains `:`).
+pub fn prepend_to_path(dir: &Path, path: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
     let mut parts = vec![dir.to_path_buf()];
     if let Some(p) = path {
         parts.extend(std::env::split_paths(p).filter(|d| d != dir));
     }
-    std::env::join_paths(parts).unwrap_or_else(|_| dir.as_os_str().to_os_string())
+    std::env::join_paths(parts).ok()
 }
 
-/// The real GitHub CLI: the first `gh` on PATH that is not this binary.
+/// The real GitHub CLI: the first `gh` on PATH that is neither this binary
+/// nor anything in the shim directory (so a missing /proc, which makes
+/// `current_exe` fail, cannot turn the shim into an exec loop).
 pub fn real_gh() -> Option<PathBuf> {
     let me = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    let shim_dir = dir();
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
+        .filter(|d| {
+            *d != shim_dir && std::fs::canonicalize(d).ok() != std::fs::canonicalize(&shim_dir).ok()
+        })
         .map(|d| d.join("gh"))
         .filter(|p| p.is_file())
-        .find(|p| std::fs::canonicalize(p).ok() != me)
+        .find(|p| {
+            let canonical = std::fs::canonicalize(p).ok();
+            let is_me = canonical.is_some() && canonical == me;
+            // Without /proc we cannot know our own path; treat any link to an
+            // `ssf` binary as another shim.
+            let looks_like_ssf = me.is_none()
+                && canonical
+                    .as_deref()
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| n == "ssf");
+            !is_me && !looks_like_ssf
+        })
 }
 
 /// Entry point when invoked as `gh`. Never returns.
 pub fn run() -> ! {
     use std::os::unix::process::CommandExt;
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let Some(real) = real_gh() else {
         eprintln!("gh: the GitHub CLI is not installed (ssf's gh shim found no other gh on PATH)");
         std::process::exit(127);
     };
-    let args = match Origin::from_env() {
-        Some(origin) => rewrite(args, &origin, &read_body_file),
-        None => args,
-    };
-    let err = std::process::Command::new(&real).args(&args).exec();
+    let mut cmd = std::process::Command::new(&real);
+    // Only well-formed UTF-8 argument lists are inspected; anything else is
+    // handed to gh exactly as received.
+    let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
+    match (utf8, Origin::from_env()) {
+        (Some(args), Some(origin)) => {
+            cmd.args(rewrite(args, &origin, &read_body_file));
+        }
+        _ => {
+            cmd.args(&raw);
+        }
+    }
+    let err = cmd.exec();
     eprintln!("gh: could not run {}: {err}", real.display());
     std::process::exit(126);
 }
@@ -162,7 +188,7 @@ pub fn rewrite(
             i += 1;
             continue;
         }
-        if let Some(v) = short("-b") {
+        if let Some(v) = short("-b").filter(|v| !v.is_empty()) {
             out.push(format!("-b{}", stamp(v, origin)));
             stamped = true;
             i += 1;
@@ -194,8 +220,16 @@ pub fn rewrite(
         out.push(a.to_string());
         i += 1;
     }
-    // A review needs no body, but should still say where it came from.
-    if !stamped && args[c] == "pr" && args[s] == "review" {
+    // An approval needs no body, but should still say where it came from.
+    // Without an action flag gh would prompt (or reject --body), so those
+    // are left alone.
+    let has_action = args[s + 1..].iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "--approve" | "-a" | "--request-changes" | "-r" | "--comment" | "-c"
+        )
+    });
+    if !stamped && args[c] == "pr" && args[s] == "review" && has_action {
         out.insert(s + 1, origin.tag());
         out.insert(s + 1, "--body".to_string());
     }
@@ -319,7 +353,11 @@ mod tests {
                 "/usr/bin:/home/x/.config/ssf/bin:/bin",
             )),
         );
-        assert_eq!(p, "/home/x/.config/ssf/bin:/usr/bin:/bin");
-        assert_eq!(prepend_to_path(dir, None), "/home/x/.config/ssf/bin");
+        assert_eq!(p.unwrap(), "/home/x/.config/ssf/bin:/usr/bin:/bin");
+        assert_eq!(
+            prepend_to_path(dir, None).unwrap(),
+            "/home/x/.config/ssf/bin"
+        );
+        assert!(prepend_to_path(Path::new("/odd:dir"), None).is_none());
     }
 }

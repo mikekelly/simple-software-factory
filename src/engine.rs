@@ -374,7 +374,7 @@ impl Engine {
                 debug!(key, "skipping bot's own event");
                 continue;
             }
-            if let Some(r) = render_event(ev, edited, &self.cfg.daemon) {
+            if let Some(r) = render_event(ev, edited, &self.cfg.daemon, &self.login) {
                 rendered.push(r);
             }
         }

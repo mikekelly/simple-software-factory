@@ -425,12 +425,15 @@ fn launch(
     // origin tag for this issue (see src/shim.rs).
     match std::env::current_exe().and_then(std::fs::canonicalize) {
         Ok(me) => match shim::install(&me) {
-            Ok(dir) => {
-                cmd.env(
-                    "PATH",
-                    shim::prepend_to_path(&dir, std::env::var_os("PATH").as_deref()),
-                );
-            }
+            Ok(dir) => match shim::prepend_to_path(&dir, std::env::var_os("PATH").as_deref()) {
+                Some(path) => {
+                    cmd.env("PATH", path);
+                }
+                None => eprintln!(
+                    "ssf launch: {} cannot go on PATH, posts will not carry origin tags",
+                    dir.display()
+                ),
+            },
             Err(e) => eprintln!(
                 "ssf launch: gh shim not installed, posts will not carry origin tags ({e:#})"
             ),
