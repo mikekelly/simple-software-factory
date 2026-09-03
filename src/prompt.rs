@@ -628,6 +628,8 @@ mod tests {
         let repo = RepoConfig {
             name: "o/r".into(),
             harness: "claude".into(),
+            model: None,
+            effort: None,
             command: None,
             clone_url: None,
             path: None,
@@ -685,11 +687,7 @@ mod tests {
         let repo = RepoConfig {
             name: "o/r".into(),
             harness: "claude".into(),
-            command: None,
-            clone_url: None,
-            path: None,
-            base_branch: None,
-            instructions: None,
+            ..Default::default()
         };
         let d = cfg();
         let ctx = PromptContext {

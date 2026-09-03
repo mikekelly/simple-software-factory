@@ -432,7 +432,7 @@ Panel {
             foreground: root.foreground
             fontFamily: root.fontFamily
             hasCursor: root.cursorActive && root.cursor === index
-            tooltipText: "Change agent or stop watching"
+            tooltipText: "Change agent, model or effort, or stop watching"
             onClicked: root.editRepo(String(modelData.name || ""))
             onHovered: function(h) { if (h) { root.cursorActive = true; root.cursor = index } }
 
@@ -440,7 +440,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.controlPaddingX
               anchors.verticalCenter: parent.verticalCenter
-              text: String(modelData.harness || "")
+              text: [modelData.harness, modelData.model, modelData.effort].filter(function(x) { return !!x }).join(" · ")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

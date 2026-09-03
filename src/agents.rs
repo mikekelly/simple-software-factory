@@ -14,6 +14,13 @@ pub struct Agent {
     pub installed: bool,
     /// Currently selected as the Omarchy default agent.
     pub default: bool,
+    /// Whether the agent takes a model setting (`ssf models <id>` lists ids).
+    pub takes_model: bool,
+    /// Model ids the agent is known to take without asking it (Orca
+    /// identifiers where Orca has them; more may work).
+    pub models: Vec<String>,
+    /// Effort levels the agent accepts, lowest first; empty when it has none.
+    pub effort_levels: Vec<String>,
 }
 
 const KNOWN: &[(&str, &str, &str, &str)] = &[
@@ -65,6 +72,15 @@ pub fn list() -> Vec<Agent> {
             command: cmd.to_string(),
             installed: on_path(cmd) || mise_has(pkg),
             default: default.as_deref() == Some(*id),
+            takes_model: crate::models::supports_model(id),
+            models: crate::models::known_models(id)
+                .iter()
+                .map(|m| m.to_string())
+                .collect(),
+            effort_levels: crate::models::effort_levels(id)
+                .iter()
+                .map(|e| e.to_string())
+                .collect(),
         })
         .collect()
 }

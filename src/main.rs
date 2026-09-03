@@ -10,6 +10,7 @@ mod engine;
 mod ghcli;
 mod github;
 mod keys;
+mod models;
 mod orca;
 mod origin;
 mod prompt;
@@ -55,6 +56,13 @@ enum Command {
     Repo {
         #[command(subcommand)]
         command: RepoCommand,
+    },
+    /// List the model ids an agent takes (asking the installed agent when it can tell).
+    Models {
+        /// Agent id (see `ssf agents`).
+        harness: String,
+        #[arg(long)]
+        json: bool,
     },
     /// List coding agents known to Omarchy and whether they are installed.
     Agents {
@@ -182,6 +190,12 @@ enum RepoCommand {
         /// Command that starts the harness (default: the harness id), e.g. "claude --dangerously-skip-permissions".
         #[arg(long)]
         command: Option<String>,
+        /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5); see `ssf agents --json`.
+        #[arg(long)]
+        model: Option<String>,
+        /// Effort level for the model, as an Orca effort level (e.g. low, medium, high, xhigh, max).
+        #[arg(long)]
+        effort: Option<String>,
         /// Extra instructions appended to the initial prompt for this repo.
         #[arg(long)]
         instructions: Option<String>,
@@ -199,9 +213,15 @@ enum RepoCommand {
         base_branch: Option<String>,
         #[arg(long)]
         command: Option<String>,
+        /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5).
+        #[arg(long)]
+        model: Option<String>,
+        /// Effort level for the model, as an Orca effort level (e.g. low, medium, high, xhigh, max).
+        #[arg(long)]
+        effort: Option<String>,
         #[arg(long)]
         instructions: Option<String>,
-        /// Clear an optional field: path, clone_url, base_branch, command, instructions.
+        /// Clear an optional field: path, clone_url, base_branch, command, model, effort, instructions.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },
@@ -292,6 +312,17 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Repo { command } => repo(command),
+        Command::Models { harness, json } => {
+            let ids = models::available_models(&harness)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&ids)?);
+            } else {
+                for id in ids {
+                    println!("{id}");
+                }
+            }
+            Ok(())
+        }
         Command::Agents { json, installed } => {
             let mut list = agents::list();
             if installed {
@@ -890,6 +921,8 @@ fn repo(command: RepoCommand) -> Result<()> {
             clone_url,
             base_branch,
             command,
+            model,
+            effort,
             instructions,
         } => {
             let (owner, r) = split_repo_name(&name)?;
@@ -900,11 +933,14 @@ fn repo(command: RepoCommand) -> Result<()> {
                 name: name.clone(),
                 harness,
                 command,
+                model: model.map(|m| m.trim().to_string()),
+                effort: effort.map(|e| e.trim().to_string()),
                 clone_url,
                 path,
                 base_branch,
                 instructions,
             };
+            entry.validate_launch_prefs()?;
             let action = if let Some(pos) = cfg
                 .repos
                 .iter()
@@ -927,6 +963,8 @@ fn repo(command: RepoCommand) -> Result<()> {
             clone_url,
             base_branch,
             command,
+            model,
+            effort,
             instructions,
             clear,
         } => {
@@ -938,6 +976,19 @@ fn repo(command: RepoCommand) -> Result<()> {
             let entry = &mut cfg.repos[pos];
             if let Some(h) = harness {
                 check_harness(&h);
+                if h != entry.harness {
+                    // Model ids and effort levels belong to a harness; a new
+                    // harness starts from its defaults unless told otherwise.
+                    if (entry.model.is_some() && model.is_none())
+                        || (entry.effort.is_some() && effort.is_none())
+                    {
+                        eprintln!(
+                            "note: model/effort reset to the defaults of {h}; set them again with --model/--effort"
+                        );
+                    }
+                    entry.model = None;
+                    entry.effort = None;
+                }
                 entry.harness = h;
             }
             if let Some(p) = expand_checkout(path)? {
@@ -952,6 +1003,12 @@ fn repo(command: RepoCommand) -> Result<()> {
             if command.is_some() {
                 entry.command = command;
             }
+            if let Some(m) = model {
+                entry.model = Some(m.trim().to_string());
+            }
+            if let Some(e) = effort {
+                entry.effort = Some(e.trim().to_string());
+            }
             if instructions.is_some() {
                 entry.instructions = instructions;
             }
@@ -961,10 +1018,13 @@ fn repo(command: RepoCommand) -> Result<()> {
                     "clone_url" => entry.clone_url = None,
                     "base_branch" => entry.base_branch = None,
                     "command" => entry.command = None,
+                    "model" => entry.model = None,
+                    "effort" => entry.effort = None,
                     "instructions" => entry.instructions = None,
                     other => bail!("cannot clear unknown field {other}"),
                 }
             }
+            entry.validate_launch_prefs()?;
             let updated = entry.name.clone();
             cfg.save()?;
             println!("Updated {updated}");
@@ -992,6 +1052,12 @@ fn repo(command: RepoCommand) -> Result<()> {
             }
             for r in &cfg.repos {
                 let mut extra = Vec::new();
+                if let Some(m) = &r.model {
+                    extra.push(format!("model={m}"));
+                }
+                if let Some(e) = &r.effort {
+                    extra.push(format!("effort={e}"));
+                }
                 if let Some(p) = &r.path {
                     extra.push(format!("path={p}"));
                 }
