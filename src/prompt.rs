@@ -628,6 +628,8 @@ mod tests {
         let repo = RepoConfig {
             name: "o/r".into(),
             harness: "claude".into(),
+            model: None,
+            effort: None,
             command: None,
             clone_url: None,
             path: None,

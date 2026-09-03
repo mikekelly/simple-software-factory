@@ -133,7 +133,14 @@ impl Snapshot {
             .iter()
             .map(|r| {
                 let issues: Vec<&Session> = sessions.iter().filter(|s| s.repo == r.name).collect();
-                json!({"name": r.name, "harness": r.harness, "path": r.path, "issues": issues})
+                json!({
+                    "name": r.name,
+                    "harness": r.harness,
+                    "model": r.model,
+                    "effort": r.effort,
+                    "path": r.path,
+                    "issues": issues,
+                })
             })
             .collect();
         json!({

@@ -208,6 +208,14 @@ pub struct RepoConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub command: Option<String>,
+    /// Model the harness runs with, as an Orca model id (`opus`, `gpt-5.5`,
+    /// ...); appended to the command as the harness's model flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Effort (reasoning) level for the model, as an Orca effort level
+    /// (`low`, `medium`, `high`, `xhigh`, ...); see `ssf agents --json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
     /// Clone URL used when Orca has no project for this repo yet.
     /// Defaults to `https://github.com/owner/name.git`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,8 +242,22 @@ impl RepoConfig {
             .unwrap_or_else(|| format!("https://github.com/{}.git", self.name))
     }
 
+    /// The command that starts the harness, with the configured model and
+    /// effort level applied.
     pub fn harness_command(&self) -> String {
-        self.command.clone().unwrap_or_else(|| self.harness.clone())
+        let base = self.command.clone().unwrap_or_else(|| self.harness.clone());
+        crate::models::apply_to_command(
+            &base,
+            &self.harness,
+            self.model.as_deref(),
+            self.effort.as_deref(),
+        )
+    }
+
+    /// Check that the model and effort settings fit the harness.
+    pub fn validate_launch_prefs(&self) -> Result<()> {
+        crate::models::validate(&self.harness, self.model.as_deref(), self.effort.as_deref())
+            .with_context(|| format!("repo {}", self.name))
     }
 }
 
@@ -304,6 +326,7 @@ impl Config {
             if r.harness.trim().is_empty() {
                 bail!("repo {}: harness must not be empty", r.name);
             }
+            r.validate_launch_prefs()?;
         }
         Ok(cfg)
     }
@@ -394,4 +417,101 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
     std::fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} to {}", tmp.display(), path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(toml_src: &str) -> Result<Config> {
+        let dir = std::env::temp_dir().join(format!("ssf-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!(
+            "{}.toml",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, toml_src).unwrap();
+        let r = Config::load_from(&path);
+        let _ = std::fs::remove_file(&path);
+        r
+    }
+
+    #[test]
+    fn model_and_effort_are_applied_to_the_command() {
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+command = "claude --dangerously-skip-permissions"
+model = "opus"
+effort = "high"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.repos[0].harness_command(),
+            "claude --dangerously-skip-permissions --model opus --effort high"
+        );
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "codex"
+model = "gpt-5.5"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.repos[0].harness_command(), "codex -m gpt-5.5");
+    }
+
+    #[test]
+    fn bad_effort_is_rejected_at_load() {
+        let err = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+effort = "ultra"
+"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("acme/widgets"), "{err:#}");
+        assert!(format!("{err:#}").contains("ultra"), "{err:#}");
+    }
+
+    #[test]
+    fn model_for_a_harness_without_model_support_is_rejected() {
+        assert!(
+            parse(
+                r#"
+[[repo]]
+name = "acme/widgets"
+harness = "opencode"
+model = "x"
+"#,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn settings_round_trip_through_toml() {
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+model = "sonnet"
+effort = "low"
+"#,
+        )
+        .unwrap();
+        let out = toml::to_string_pretty(&cfg).unwrap();
+        assert!(out.contains("model = \"sonnet\""), "{out}");
+        assert!(out.contains("effort = \"low\""), "{out}");
+    }
 }
