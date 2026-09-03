@@ -9,6 +9,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::{Config, RepoConfig};
 use crate::github::{Conditional, GitHub, Issue, PrInfo};
 use crate::orca::{Delivery, Orca, Worktree};
+use crate::origin;
 use crate::prompt::{self, PromptContext, Rendered, actor_of, event_key, render_event};
 use crate::sessions;
 use crate::state::{IssueState, State, now_iso};
@@ -322,6 +323,28 @@ impl Engine {
         }
     }
 
+    /// Parse origin tags out of the item body and its timeline, and flag posts
+    /// by the bot that carry none: the gh shim was not in effect in whichever
+    /// session made them, so nothing can tell which session that was.
+    fn record_origins(&mut self, repo: &RepoConfig, issue: &Issue, timeline: &[Value]) {
+        let scan = origin::scan(issue, timeline, &self.login);
+        let login = self.login.clone();
+        let e = self.entry(repo, issue.number);
+        for (key, url) in &scan.untagged {
+            if !e.untagged.contains_key(key) {
+                warn!(
+                    repo = repo.name,
+                    issue = issue.number,
+                    url,
+                    "post by @{login} without an origin tag (gh shim not in effect)"
+                );
+            }
+        }
+        e.origin = scan.origin;
+        e.origins = scan.origins;
+        e.untagged = scan.untagged;
+    }
+
     fn diff(&self, seen: &BTreeMap<String, String>, timeline: &[Value]) -> Diff {
         let mut rendered = Vec::new();
         let mut observed = BTreeMap::new();
@@ -351,7 +374,7 @@ impl Engine {
                 debug!(key, "skipping bot's own event");
                 continue;
             }
-            if let Some(r) = render_event(ev, edited, &self.cfg.daemon) {
+            if let Some(r) = render_event(ev, edited, &self.cfg.daemon, &self.login) {
                 rendered.push(r);
             }
         }
@@ -483,6 +506,7 @@ impl Engine {
             e.pr = pr.clone();
             e.shares_workspace_of = None;
         }
+        self.record_origins(repo, issue, &timeline);
         let snapshot = self.entry(repo, issue.number).clone();
         let ctx = self.ctx(repo, &snapshot);
         let text = prompt::initial_prompt(issue, &diff.rendered, &ctx);
@@ -724,6 +748,7 @@ impl Engine {
         st: IssueState,
     ) -> Result<()> {
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
+        self.record_origins(repo, issue, &timeline);
         let diff = self.diff(&st.seen, &timeline);
         if diff.rendered.is_empty() {
             debug!(
@@ -780,6 +805,7 @@ impl Engine {
             "issue assigned again; reactivating"
         );
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
+        self.record_origins(repo, issue, &timeline);
         let diff = self.diff(&st.seen, &timeline);
         let ctx = self.ctx(repo, &st);
         let text = prompt::reassigned_prompt(issue, &diff.rendered, &ctx);
@@ -841,6 +867,7 @@ impl Engine {
             "item no longer active for the bot"
         );
         let timeline = self.gh.timeline(owner, name, number).await?;
+        self.record_origins(repo, &issue, &timeline);
         let diff = self.diff(&st.seen, &timeline);
         let ctx = self.ctx(repo, &st);
         let text = if closed {

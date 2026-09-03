@@ -106,6 +106,16 @@ pub struct IssueState {
     /// workspace lifecycle belongs to the issue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shares_workspace_of: Option<u64>,
+    /// Origin tag in the item's own body: the session that opened it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Timeline event key -> origin of the comment or review that carried a tag.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub origins: BTreeMap<String, String>,
+    /// Posts by the bot without a tag (event key, or `body`, -> URL); the gh
+    /// shim was not in effect in whichever session made them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub untagged: BTreeMap<String, String>,
 }
 
 pub fn state_path() -> PathBuf {

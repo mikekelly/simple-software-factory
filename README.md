@@ -135,6 +135,7 @@ everything git and GitHub related is the bot, whatever the human's own
 | Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email` |
 | Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key) |
 | Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT` |
+| Which session posted what | a `gh` shim first on `PATH` that stamps posts with an origin tag (below) |
 
 Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
 outrank every config file, and only inside the agent's process tree. The
@@ -142,6 +143,39 @@ initial prompt tells the agent that plain `gh` and `git push` act as the bot.
 Because activity by the bot login is filtered out of follow-up messages, the
 agent's own comments are not echoed back to it (`daemon.include_own_events`
 turns that off). `ssf token` still prints the token for any other use.
+
+## Origin tags: which session posted what
+
+GitHub shows the same bot account for every session, so ssf encodes the
+session in the content. Everything an agent posts ends with an invisible
+marker naming the item its workspace belongs to:
+
+```
+<!-- ssf: origin=owner/repo#N -->
+```
+
+`ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
+directory first on the agent's `PATH`. Invoked as `gh`, ssf appends the tag
+to the body of `issue create`, `issue comment`, `pr create`, `pr comment`
+and `pr review` (whether given as `--body`, `--body=`, `-b`, `--body-file`
+or `-F -`; a review without a body gets one that is only the tag) and execs
+the real gh with everything else untouched. The shim reads only its
+environment, writes nothing and leaves stdin and the terminal alone, so it
+works inside read-only sandboxes and does not break gh's interactive flows.
+Outside a session (no `SSF_ISSUE`) it is a plain pass-through. Bodies that
+already carry the tag are not stamped twice, and the initial prompt asks the
+agent to add the tag itself whenever it posts some other way (`gh api`,
+`gh pr create --fill`, a harness that resets `PATH`).
+
+The daemon parses tags out of every item body and comment it reads. In
+`ssf status --json` each tracked item shows `origin` (the session that opened
+it, for PRs and issues an agent created), `origins` (timeline event key to
+session, for tagged comments and reviews) and `untagged` (posts by the bot
+that carry no tag, meaning the shim was not in effect where they were made).
+Untagged bot posts are also warned about in the logs and reported by
+`ssf doctor`, which additionally checks that the real gh is installed and
+that the shim links to the running ssf. When comments are shown to an
+agent, the tag is stripped and replaced by "(from session owner/repo#N)".
 
 ## How it works
 
@@ -241,6 +275,7 @@ omarchy plugin validate ./omarchy-plugin
 Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
 (reconciliation loop), `src/sessions.rs` (harness session capture and resume),
+`src/origin.rs` (origin tags), `src/shim.rs` (the `gh` shim),
 `src/ui.rs` (Omarchy integration),
 `omarchy-plugin/` (Quickshell bar widget), `bin/ssf-ui` (menu flows),
 `packaging/` (PKGBUILD, systemd unit, pacman install script).

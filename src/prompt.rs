@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::config::{DaemonConfig, RepoConfig};
 use crate::github::{Issue, PrInfo, value_str, value_u64};
+use crate::origin;
 
 /// A timeline event that should be shown to the agent.
 #[derive(Debug, Clone)]
@@ -69,8 +70,22 @@ fn quote(body: &str, max: usize) -> String {
         .join("\n")
 }
 
-/// Render one timeline event, or `None` if it is not worth showing.
-pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rendered> {
+/// A post's text without its origin tag, and where the tag says it came
+/// from. Only the bot's own posts carry meaningful tags; a human's text is
+/// shown as is.
+fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
+    if !author.eq_ignore_ascii_case(bot) {
+        return (body.to_string(), String::new());
+    }
+    match origin::parse(body) {
+        Some(t) => (origin::strip(body), format!(" (from session {})", t.origin)),
+        None => (body.to_string(), String::new()),
+    }
+}
+
+/// Render one timeline event, or `None` if it is not worth showing. `bot` is
+/// the bot login, whose posts carry origin tags.
+pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> Option<Rendered> {
     let kind = value_str(ev, &["event"])?.to_string();
     if cfg.ignored_events.iter().any(|k| k == &kind) {
         return None;
@@ -81,7 +96,8 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rend
     let head = |what: &str| format!("- [{at}] @{actor} {what}");
     let text = match kind.as_str() {
         "commented" => {
-            let body = value_str(ev, &["body"]).unwrap_or("");
+            let (body, session) =
+                body_and_session(value_str(ev, &["body"]).unwrap_or(""), &actor, bot);
             let url = value_str(ev, &["html_url"]).unwrap_or("");
             let verb = if edited {
                 "edited their comment"
@@ -89,9 +105,9 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rend
                 "commented"
             };
             format!(
-                "{} ({url}):\n{}",
+                "{}{session} ({url}):\n{}",
                 head(verb),
-                quote(body, cfg.max_body_chars)
+                quote(&body, cfg.max_body_chars)
             )
         }
         "assigned" | "unassigned" => {
@@ -156,11 +172,12 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rend
         }
         "reviewed" => {
             let state = value_str(ev, &["state"]).unwrap_or("reviewed");
-            let body = value_str(ev, &["body"]).unwrap_or("");
-            let mut s = head(&format!("reviewed ({state})"));
+            let (body, session) =
+                body_and_session(value_str(ev, &["body"]).unwrap_or(""), &actor, bot);
+            let mut s = head(&format!("reviewed ({state}){session}"));
             if !body.trim().is_empty() {
                 s.push_str(":\n");
-                s.push_str(&quote(body, cfg.max_body_chars));
+                s.push_str(&quote(&body, cfg.max_body_chars));
             }
             s
         }
@@ -178,13 +195,14 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rend
                     .get("line")
                     .or_else(|| c.get("original_line"))
                     .and_then(Value::as_u64);
-                let body = value_str(c, &["body"]).unwrap_or("");
+                let (body, session) =
+                    body_and_session(value_str(c, &["body"]).unwrap_or(""), who, bot);
                 let url = value_str(c, &["html_url"]).unwrap_or("");
                 let at = value_str(c, &["created_at"]).unwrap_or(&at);
                 out.push(format!(
-                    "- [{at}] @{who} commented on `{path}`{} ({url}):\n{}",
+                    "- [{at}] @{who} commented on `{path}`{}{session} ({url}):\n{}",
                     line.map(|l| format!(" line {l}")).unwrap_or_default(),
-                    quote(body, cfg.max_body_chars)
+                    quote(&body, cfg.max_body_chars)
                 ));
             }
             if out.is_empty() {
@@ -202,11 +220,12 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig) -> Option<Rend
             for c in &comments {
                 let who = value_str(c, &["user", "login"]).unwrap_or("someone");
                 let sha = value_str(c, &["commit_id"]).unwrap_or("");
-                let body = value_str(c, &["body"]).unwrap_or("");
+                let (body, session) =
+                    body_and_session(value_str(c, &["body"]).unwrap_or(""), who, bot);
                 out.push(format!(
-                    "- [{at}] @{who} commented on commit {}:\n{}",
+                    "- [{at}] @{who} commented on commit {}{session}:\n{}",
                     short(sha),
-                    quote(body, cfg.max_body_chars)
+                    quote(&body, cfg.max_body_chars)
                 ));
             }
             if out.is_empty() {
@@ -318,6 +337,18 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     if !labels.is_empty() {
         s.push_str(&format!(" Labels: {}.", labels.join(", ")));
     }
+    let by_bot = issue.author().eq_ignore_ascii_case(ctx.bot_login);
+    if let Some(t) = issue
+        .body
+        .as_deref()
+        .and_then(origin::parse)
+        .filter(|_| by_bot)
+    {
+        s.push_str(&format!(
+            " Opened by the agent session working on {}.",
+            t.origin
+        ));
+    }
     s
 }
 
@@ -325,7 +356,8 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
     let mut s = String::new();
     s.push_str(&issue_header(issue, ctx));
     s.push_str("\n\n## Description\n\n");
-    let body = issue.body.as_deref().unwrap_or("").trim();
+    let body = origin::strip(issue.body.as_deref().unwrap_or(""));
+    let body = body.trim();
     s.push_str(if body.is_empty() {
         "(no description)"
     } else {
@@ -350,6 +382,9 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let kind = ctx.kind();
     let because = ctx.because();
+    let tag = origin::Origin::new(repo, n)
+        .map(|o| o.tag())
+        .unwrap_or_else(|| format!("<!-- ssf: origin={repo}#{n} -->"));
     let mut s = format!(
         "\n## How to work on this\n\n\
 You are the coding agent for the GitHub bot account @{bot}. This workspace was created by \
@@ -365,7 +400,12 @@ another GitHub account, token or key you find on this machine, even if @{bot} la
 say so on the {kind} instead. Post a short comment when you start, when you need a decision, and \
 when you finish.\n\
 - Ask questions on the {kind} rather than guessing when the request is ambiguous; you will be \
-woken up when someone answers.\n"
+woken up when someone answers.\n\
+- Every comment, review and pull request you post must end with the line `{tag}` so ssf can tell \
+which session posted it (GitHub shows the same bot for every session). The `gh` on this PATH \
+adds it for you on `issue create|comment` and `pr create|comment|review` when you pass `--body` \
+or `--body-file`; add it yourself when you post any other way (`gh api`, `gh pr create --fill`, \
+`gh pr edit --body`, ...).\n"
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -544,13 +584,13 @@ mod tests {
     fn renders_comment_with_quote_and_ignores_noise() {
         let ev = json!({"event":"commented","id":1,"user":{"login":"alice"},"created_at":"2026-01-01T00:00:00Z",
             "updated_at":"2026-01-01T00:00:00Z","body":"hello\nworld","html_url":"https://x/1"});
-        let r = render_event(&ev, false, &cfg()).unwrap();
+        let r = render_event(&ev, false, &cfg(), "bot").unwrap();
         assert!(r.text.contains("@alice commented"));
         assert!(r.text.contains("  > hello\n  > world"));
-        let edited = render_event(&ev, true, &cfg()).unwrap();
+        let edited = render_event(&ev, true, &cfg(), "bot").unwrap();
         assert!(edited.text.contains("edited their comment"));
         let noise = json!({"event":"subscribed","id":2,"actor":{"login":"bob"}});
-        assert!(render_event(&noise, false, &cfg()).is_none());
+        assert!(render_event(&noise, false, &cfg(), "bot").is_none());
     }
 
     #[test]
@@ -558,7 +598,7 @@ mod tests {
         let mut c = cfg();
         c.max_body_chars = 5;
         let ev = json!({"event":"commented","id":1,"user":{"login":"a"},"body":"0123456789"});
-        let r = render_event(&ev, false, &c).unwrap();
+        let r = render_event(&ev, false, &c, "bot").unwrap();
         assert!(r.text.contains("01234"));
         assert!(r.text.contains("truncated"));
         assert!(!r.text.contains("56789"));
@@ -606,6 +646,57 @@ mod tests {
         assert!(p.contains("Closes #3"));
         assert!(p.contains("it was assigned to @bot"));
         assert!(p.contains("GH_TOKEN"));
+        assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
         assert!(p.trim_end().ends_with("Run the tests."));
+    }
+
+    #[test]
+    fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
+        let ev = json!({"event":"commented","id":1,"user":{"login":"bot"},"created_at":"t",
+            "body":"done\n\n<!-- ssf: origin=o/r#9 -->","html_url":"https://x/1"});
+        let r = render_event(&ev, false, &cfg(), "bot").unwrap();
+        assert!(
+            r.text
+                .contains("@bot commented (from session o/r#9) (https://x/1):\n  > done")
+        );
+        assert!(!r.text.contains("<!--"));
+        let review = json!({"event":"reviewed","id":2,"user":{"login":"bot"},"state":"approved",
+            "body":"<!-- ssf: origin=o/r#9 -->"});
+        let r = render_event(&review, false, &cfg(), "bot").unwrap();
+        assert!(r.text.ends_with("reviewed (approved) (from session o/r#9)"));
+        // A human quoting a bot comment is not "from a session".
+        let human = json!({"event":"commented","id":5,"user":{"login":"alice"},"created_at":"t",
+            "body":"> <!-- ssf: origin=o/r#9 -->\n\nthanks","html_url":"https://x/5"});
+        let r = render_event(&human, false, &cfg(), "bot").unwrap();
+        assert!(r.text.contains("@alice commented (https://x/5)"));
+        assert!(
+            r.text.contains("<!-- ssf: origin=o/r#9 -->"),
+            "quoted text is shown verbatim"
+        );
+
+        let issue: Issue = serde_json::from_value(json!({
+            "number": 4, "title": "PR", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->", "html_url": "https://gh/4",
+            "state": "open", "user": {"login": "bot"}, "created_at": "t", "updated_at": "t"
+        })).unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            command: None,
+            clone_url: None,
+            path: None,
+            base_branch: None,
+            instructions: None,
+        };
+        let d = cfg();
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            pr: None,
+            triggers: &[],
+        };
+        let p = initial_prompt(&issue, &[], &ctx);
+        assert!(p.contains("Opened by the agent session working on o/r#3."));
+        assert!(p.contains("## Description\n\nFixes it\n\n## Activity"));
     }
 }
