@@ -582,9 +582,13 @@ and workspaces alone. Their comments on your items arrive here like anyone else'
 \"from the agent on owner/repo#M\"; your own posts are never echoed back to you. To follow another \
 item without working on it, run `ssf sub <n>` (or `ssf sub owner/repo#n`): its activity then \
 arrives here as `[ssf] FYI` messages, which are for information only; `ssf unsub <n>` stops them \
-and `ssf subs` lists them. To speak to the agent on another item, comment on that item with `gh` \
-(it reaches that session, labelled as coming from you), or `ssf tell <n> \"message\"` to paste a \
-message straight into its terminal; messages sent to you that way arrive as `[ssf] Message from ...`.\n\
+and `ssf subs` lists them. To speak to the agent on another item, comment on that item with `gh`: it reaches that \
+session, labelled as coming from you, and stays on the item where anyone can find it later. \
+Decisions, questions that change scope, status and anything someone might need to look up go on \
+the item. `ssf tell <n> \"message\"` pastes a message straight into that session's terminal \
+instead; it is the exception, only for operational nudges that would be noise on the item \
+(\"master moved, rebase\", \"terminal is being replaced\") and for reaching a session whose item is \
+already closed. Messages sent to you that way arrive as `[ssf] Message from ...`.\n\
 - Issues and pull requests you open stay with you: ssf recognises the tag and delivers their \
 activity (comments, reviews, review requests, assignments, closure) here instead of starting \
 another session, and `SSF_ISSUE` stays {n}. To hand a piece of work to a separate agent instead, \
@@ -629,7 +633,7 @@ separate PR from this worktree against `{}`.\n\
 independently; that session follows it as a subscriber (it sees the activity but is told not to \
 act) and is told when it is closed, along with your final comment, so make that comment a clear \
 summary of the outcome (what was done, the PR link, anything left open). To ask it something, \
-comment on this {kind} or use `ssf tell`.\n"
+comment on this {kind}; `ssf tell` only for an operational nudge that would be noise here.\n"
         ));
     }
     if !ctx.projects.is_empty() {
@@ -909,7 +913,8 @@ because {}.",
     }
     s.push_str(&format!(
         "\nYou are subscribed to this {kind}; you are not working on it. Do not act on this unless \
-you are asked to. To reach the agent on it, comment on the {kind} with `gh` or run `ssf tell {} \"...\"`; \
+you are asked to. To reach the agent on it, comment on the {kind} with `gh`; `ssf tell {} \"...\"` \
+only for an operational nudge that would be noise on the {kind}, or once the {kind} is closed. \
 `ssf unsub {}` stops these messages.",
         issue.number, issue.number
     ));
@@ -940,9 +945,10 @@ pub fn tell_prompt(
         Some(f) => {
             let n = f.rsplit_once('#').map(|(_, n)| n).unwrap_or(f);
             s.push_str(&format!(
-                "\n\nIf it needs an answer, reply with `ssf tell {n} \"...\"` (or `ssf tell {f} \"...\"`), \
-or comment on {f}; that reaches its agent. Take it into account, but your own item and its \
-instructions still come first."
+                "\n\nIf it needs an answer, comment on {f}; that reaches its agent and keeps the exchange \
+on the item. Reply with `ssf tell {n} \"...\"` (or `ssf tell {f} \"...\"`) only when the answer is an \
+operational nudge that would be noise on the item, or when {f} is already closed. Take it into \
+account, but your own item and its instructions still come first."
             ));
         }
         None => {
@@ -1073,10 +1079,10 @@ the reviewer session and not from the author's (GitHub shows the same bot for bo
 on this PATH adds it for you on `pr review` and `pr comment` when you pass `--body` or \
 `--body-file`; add it yourself when you post any other way (`gh api`, ...).\n\
 - The author's session receives your review as activity and answers on the pull request; its \
-replies reach you here, marked \"from the agent on {author}\". To speak to it directly, comment \
-on the pull request with `gh` or run `ssf tell {n} \"...\"`. Other agent sessions may be working \
-on this repository at the same time (`ssf peers` lists them); leave their branches and \
-workspaces alone.\n"
+replies reach you here, marked \"from the agent on {author}\". To speak to it, comment on the \
+pull request with `gh`; `ssf tell {n} \"...\"` only for an operational nudge that would be noise \
+on the pull request. Other agent sessions may be working on this repository at the same time \
+(`ssf peers` lists them); leave their branches and workspaces alone.\n"
     );
     if let Some(extra) = ctx.daemon.instructions.as_deref() {
         s.push('\n');
@@ -1329,7 +1335,13 @@ mod tests {
         assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
         assert!(p.contains("`ssf peers` lists them"));
         assert!(p.contains("`ssf sub <n>`"));
+        assert!(
+            p.contains("To speak to the agent on another item, comment on that item with `gh`")
+        );
         assert!(p.contains("`ssf tell <n> \"message\"`"));
+        assert!(p.contains("it is the exception, only for operational nudges"));
+        assert!(p.contains("\"master moved, rebase\", \"terminal is being replaced\""));
+        assert!(p.contains("a session whose item is already closed"));
         assert!(p.contains("from the agent on owner/repo#M"));
         assert!(p.contains("create the issue (or PR) with `--assignee bot`"));
         assert!(p.contains("You are subscribed to it automatically"));
@@ -1358,6 +1370,9 @@ mod tests {
         ));
         assert!(p.contains("handed off to you by the agent session working on o/r#1"));
         assert!(p.contains("follows it as a subscriber"));
+        assert!(p.contains(
+            "comment on this issue; `ssf tell` only for an operational nudge that would be noise here"
+        ));
     }
 
     #[test]
@@ -1402,7 +1417,10 @@ mod tests {
             "[ssf] FYI on issue o/r#5 \"Thing\" (https://gh/5), owned by another session (o/r#5): new activity.\n\n- [t] @alice"
         ));
         assert!(p.contains("Do not act on this unless you are asked to."));
-        assert!(p.contains("`ssf tell 5 \"...\"`"));
+        assert!(p.contains(
+            "comment on the issue with `gh`; `ssf tell 5 \"...\"` only for an operational nudge"
+        ));
+        assert!(p.contains("or once the issue is closed"));
         assert!(p.contains("`ssf unsub 5`"));
         assert!(!p.contains("again unless"));
         let p = fyi_prompt(&issue, &[], &ctx, None, false, Fyi::Closed);
@@ -1421,7 +1439,11 @@ mod tests {
         assert!(t.starts_with(
             "[ssf] Message from the agent session on o/r#3 (\"Fix it\"), sent with `ssf tell`:\n\n  > are you done?"
         ));
-        assert!(t.contains("reply with `ssf tell 3 \"...\"`"));
+        assert!(t.contains("If it needs an answer, comment on o/r#3"));
+        assert!(
+            t.contains("Reply with `ssf tell 3 \"...\"` (or `ssf tell o/r#3 \"...\"`) only when")
+        );
+        assert!(t.contains("or when o/r#3 is already closed"));
         let t = tell_prompt(None, None, "hello", 100);
         assert!(t.starts_with("[ssf] Message from a human at the terminal, sent with `ssf tell`:"));
         assert!(t.contains("answer here"));
@@ -1575,6 +1597,9 @@ mod tests {
         assert!(p.contains("`<!-- ssf: origin=o/r#4 role=reviewer -->`"));
         assert!(p.contains("`SSF_ROLE` is `reviewer`"));
         assert!(p.contains("marked \"from the agent on o/r#3\""));
+        assert!(p.contains(
+            "To speak to it, comment on the pull request with `gh`; `ssf tell 4 \"...\"` only for an operational nudge"
+        ));
         assert!(p.contains("Run the tests."));
         assert!(p.contains("## Project notes"));
         assert!(p.contains("Keep cargo test green."));
