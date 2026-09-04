@@ -13,6 +13,9 @@ use crate::origin;
 pub struct Rendered {
     pub key: String,
     pub text: String,
+    /// For a post by the bot, the session (`owner/repo#N`) its origin tag
+    /// names; `None` when the post carries no tag.
+    pub origin: Option<String>,
 }
 
 /// Stable identity for a timeline event. Events without an id fall back to a
@@ -76,13 +79,18 @@ fn quote(body: &str, max: usize) -> String {
 /// from. Only the bot's own posts carry meaningful tags; a human's text is
 /// shown as is.
 fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
-    if !author.eq_ignore_ascii_case(bot) {
-        return (body.to_string(), String::new());
-    }
-    match origin::parse(body) {
-        Some(t) => (origin::strip(body), format!(" (from session {})", t.origin)),
+    match post_origin(body, author, bot) {
+        Some(o) => (origin::strip(body), format!(" (from the agent on {o})")),
         None => (body.to_string(), String::new()),
     }
+}
+
+/// The session a post by the bot came from, per its origin tag.
+fn post_origin(body: &str, author: &str, bot: &str) -> Option<String> {
+    if !author.eq_ignore_ascii_case(bot) {
+        return None;
+    }
+    origin::parse(body).map(|t| t.origin.to_string())
 }
 
 /// Render one timeline event, or `None` if it is not worth showing. `bot` is
@@ -96,10 +104,12 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     let actor = actor_of(ev);
     let at = when(ev);
     let head = |what: &str| format!("- [{at}] @{actor} {what}");
+    let mut origin: Option<String> = None;
     let text = match kind.as_str() {
         "commented" => {
-            let (body, session) =
-                body_and_session(value_str(ev, &["body"]).unwrap_or(""), &actor, bot);
+            let raw = value_str(ev, &["body"]).unwrap_or("");
+            origin = post_origin(raw, &actor, bot);
+            let (body, session) = body_and_session(raw, &actor, bot);
             let url = value_str(ev, &["html_url"]).unwrap_or("");
             let verb = if edited {
                 "edited their comment"
@@ -174,8 +184,9 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         }
         "reviewed" => {
             let state = value_str(ev, &["state"]).unwrap_or("reviewed");
-            let (body, session) =
-                body_and_session(value_str(ev, &["body"]).unwrap_or(""), &actor, bot);
+            let raw = value_str(ev, &["body"]).unwrap_or("");
+            origin = post_origin(raw, &actor, bot);
+            let (body, session) = body_and_session(raw, &actor, bot);
             let mut s = head(&format!("reviewed ({state}){session}"));
             if !body.trim().is_empty() {
                 s.push_str(":\n");
@@ -197,8 +208,11 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                     .get("line")
                     .or_else(|| c.get("original_line"))
                     .and_then(Value::as_u64);
-                let (body, session) =
-                    body_and_session(value_str(c, &["body"]).unwrap_or(""), who, bot);
+                let raw = value_str(c, &["body"]).unwrap_or("");
+                if origin.is_none() {
+                    origin = post_origin(raw, who, bot);
+                }
+                let (body, session) = body_and_session(raw, who, bot);
                 let url = value_str(c, &["html_url"]).unwrap_or("");
                 let at = value_str(c, &["created_at"]).unwrap_or(&at);
                 out.push(format!(
@@ -222,8 +236,11 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
             for c in &comments {
                 let who = value_str(c, &["user", "login"]).unwrap_or("someone");
                 let sha = value_str(c, &["commit_id"]).unwrap_or("");
-                let (body, session) =
-                    body_and_session(value_str(c, &["body"]).unwrap_or(""), who, bot);
+                let raw = value_str(c, &["body"]).unwrap_or("");
+                if origin.is_none() {
+                    origin = post_origin(raw, who, bot);
+                }
+                let (body, session) = body_and_session(raw, who, bot);
                 out.push(format!(
                     "- [{at}] @{who} commented on commit {}{session}:\n{}",
                     short(sha),
@@ -260,7 +277,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         }
         other => head(&format!("{}", other.replace('_', " "))),
     };
-    Some(Rendered { key, text })
+    Some(Rendered { key, text, origin })
 }
 
 #[derive(Clone)]
@@ -535,15 +552,22 @@ adds it for you on `issue create|comment` and `pr create|comment|review` when yo
 or `--body-file`; add it yourself when you post any other way (`gh api`, `gh pr create --fill`, \
 `gh pr edit --body`, ...).\n\
 - Other agent sessions may be working on this repository at the same time. `ssf peers` lists them \
-(item, GitHub state, agent state, branch, last message; `--json` for detail). Leave their branches \
-and workspaces alone.\n\
+(item, GitHub state, agent state, branch, last message; `--json` for detail); leave their branches \
+and workspaces alone. Their comments on your items arrive here like anyone else's, marked \
+\"from the agent on owner/repo#M\"; your own posts are never echoed back to you. To follow another \
+item without working on it, run `ssf sub <n>` (or `ssf sub owner/repo#n`): its activity then \
+arrives here as `[ssf] FYI` messages, which are for information only; `ssf unsub <n>` stops them \
+and `ssf subs` lists them. To speak to the agent on another item, comment on that item with `gh` \
+(it reaches that session, labelled as coming from you), or `ssf tell <n> \"message\"` to paste a \
+message straight into its terminal; messages sent to you that way arrive as `[ssf] Message from ...`.\n\
 - Issues and pull requests you open stay with you: ssf recognises the tag and delivers their \
 activity (comments, reviews, review requests, assignments, closure) here instead of starting \
 another session, and `SSF_ISSUE` stays {n}. To hand a piece of work to a separate agent instead, \
 create the issue (or PR) with `--assignee {bot}` in the same `gh ... create` command; the tag then \
-carries `mode=delegate`, the item gets a session of its own, and you hear nothing more about it \
-until it closes, when you get one message with its final comment. Assigning @{bot} to an existing \
-item you did not open gives it a fresh session too.\n"
+carries `mode=delegate` and the item gets a session of its own. You are subscribed to it \
+automatically, so you see its activity as FYI messages, and when it closes you get one message \
+with its final comment. Assigning @{bot} to an existing item you did not open gives it a fresh \
+session too.\n"
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -572,9 +596,10 @@ separate PR from this worktree against `{}`.\n\
     if let Some(parent) = ctx.delegated_by {
         s.push_str(&format!(
             "- This {kind} was handed off to you by the agent session working on {parent}. Work on it \
-independently; that session is not watching it and will only be told, once, when it is closed, \
-along with your final comment, so make that comment a clear summary of the outcome (what was \
-done, the PR link, anything left open).\n"
+independently; that session follows it as a subscriber (it sees the activity but is told not to \
+act) and is told when it is closed, along with your final comment, so make that comment a clear \
+summary of the outcome (what was done, the PR link, anything left open). To ask it something, \
+comment on this {kind} or use `ssf tell`.\n"
         ));
     }
     if !ctx.projects.is_empty() {
@@ -732,7 +757,7 @@ pub fn delegated_closed_prompt(
     match last {
         Some(c) => {
             let from = match &c.session {
-                Some(o) => format!("@{} (from session {o})", c.author),
+                Some(o) => format!("@{} (from the agent on {o})", c.author),
                 None => format!("@{}", c.author),
             };
             s.push_str(&format!(
@@ -747,6 +772,126 @@ pub fn delegated_closed_prompt(
         "\nThis is the only message you will get about it. Take the outcome into account for your \
 own work; nothing else is expected of you unless you disagree with it.",
     );
+    s
+}
+
+/// What an FYI to a subscriber is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fyi {
+    /// New events on the item.
+    Activity,
+    /// The item was closed (or merged).
+    Closed,
+    /// The bot is no longer involved with the item (its session retired).
+    Unassigned,
+    /// The item, until now only subscribed to, has been given a session.
+    Tracked,
+}
+
+/// A message to a session that subscribed to an item it does not act on.
+/// `owner` is the session acting on the item, if any; `merged` matters only
+/// for `Fyi::Closed`.
+pub fn fyi_prompt(
+    issue: &Issue,
+    events: &[Rendered],
+    ctx: &PromptContext,
+    owner: Option<&str>,
+    merged: bool,
+    what: Fyi,
+) -> String {
+    let kind = ctx.kind();
+    let owned = match owner {
+        Some(o) => format!("owned by another session ({o})"),
+        None => "not owned by any session".to_string(),
+    };
+    let head = match what {
+        Fyi::Activity => format!(
+            "[ssf] FYI on {kind} {}#{} \"{}\" ({}), {owned}: new activity.",
+            ctx.repo.name, issue.number, issue.title, issue.html_url
+        ),
+        Fyi::Closed => format!(
+            "[ssf] FYI on {kind} {}#{} \"{}\" ({}), {owned}: it has been {}.",
+            ctx.repo.name,
+            issue.number,
+            issue.title,
+            issue.html_url,
+            if merged {
+                "merged".to_string()
+            } else {
+                format!(
+                    "closed ({})",
+                    issue.state_reason.as_deref().unwrap_or("no reason given")
+                )
+            }
+        ),
+        Fyi::Unassigned => format!(
+            "[ssf] FYI on {kind} {}#{} \"{}\" ({}), {owned}: @{} is no longer involved with it, \
+so its session has retired.",
+            ctx.repo.name, issue.number, issue.title, issue.html_url, ctx.bot_login
+        ),
+        Fyi::Tracked => format!(
+            "[ssf] FYI on {kind} {}#{} \"{}\" ({}): it now has an agent session of its own ({}), \
+because {}.",
+            ctx.repo.name,
+            issue.number,
+            issue.title,
+            issue.html_url,
+            owner.unwrap_or("?"),
+            ctx.because()
+        ),
+    };
+    let mut s = head;
+    if !events.is_empty() {
+        s.push_str("\n\n");
+        for e in events {
+            s.push_str(&e.text);
+            s.push('\n');
+        }
+    } else {
+        s.push('\n');
+    }
+    s.push_str(&format!(
+        "\nYou are subscribed to this {kind}; you are not working on it. Do not act on this unless \
+you are asked to. To reach the agent on it, comment on the {kind} with `gh` or run `ssf tell {} \"...\"`; \
+`ssf unsub {}` stops these messages.",
+        issue.number, issue.number
+    ));
+    if matches!(what, Fyi::Closed | Fyi::Unassigned) {
+        s.push_str(&format!(
+            " You will not hear about {}#{} again unless it comes back.",
+            ctx.repo.name, issue.number
+        ));
+    }
+    s
+}
+
+/// A message another session (or a human shell) pasted in with `ssf tell`.
+pub fn tell_prompt(
+    from: Option<&str>,
+    from_title: Option<&str>,
+    text: &str,
+    max_body_chars: usize,
+) -> String {
+    let who = match (from, from_title) {
+        (Some(f), Some(t)) => format!("the agent session on {f} (\"{t}\")"),
+        (Some(f), None) => format!("the agent session on {f}"),
+        (None, _) => "a human at the terminal".to_string(),
+    };
+    let mut s = format!("[ssf] Message from {who}, sent with `ssf tell`:\n\n");
+    s.push_str(&quote(text, max_body_chars));
+    match from {
+        Some(f) => {
+            let n = f.rsplit_once('#').map(|(_, n)| n).unwrap_or(f);
+            s.push_str(&format!(
+                "\n\nIf it needs an answer, reply with `ssf tell {n} \"...\"` (or `ssf tell {f} \"...\"`), \
+or comment on {f}; that reaches its agent. Take it into account, but your own item and its \
+instructions still come first."
+            ));
+        }
+        None => {
+            s.push_str("\n\nTake it into account; it comes from outside GitHub, so answer here.")
+        }
+    }
     s
 }
 
@@ -933,7 +1078,11 @@ mod tests {
         assert!(p.contains("GH_TOKEN"));
         assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
         assert!(p.contains("`ssf peers` lists them"));
+        assert!(p.contains("`ssf sub <n>`"));
+        assert!(p.contains("`ssf tell <n> \"message\"`"));
+        assert!(p.contains("from the agent on owner/repo#M"));
         assert!(p.contains("create the issue (or PR) with `--assignee bot`"));
+        assert!(p.contains("You are subscribed to it automatically"));
         assert!(!p.contains("handed off to you"));
         assert!(p.trim_end().ends_with("Run the tests."));
 
@@ -958,6 +1107,74 @@ mod tests {
             "because it was assigned to @bot and the agent session working on o/r#1 opened it and handed it off"
         ));
         assert!(p.contains("handed off to you by the agent session working on o/r#1"));
+        assert!(p.contains("follows it as a subscriber"));
+    }
+
+    #[test]
+    fn fyi_and_tell_prompts() {
+        let issue: Issue = serde_json::from_value(json!({
+            "number": 5, "title": "Thing", "body": null, "html_url": "https://gh/5", "state": "closed",
+            "state_reason": "completed", "user": {"login": "carol"}, "created_at": "t", "updated_at": "t"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let d = cfg();
+        let triggers = vec!["assigned".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            pr: None,
+            triggers: &triggers,
+            owner: None,
+            delegated_by: None,
+            projects: &[],
+            project_prompt: None,
+        };
+        let ev = Rendered {
+            key: "k".into(),
+            text: "- [t] @alice commented (u):\n  > hi".into(),
+            origin: None,
+        };
+        let p = fyi_prompt(
+            &issue,
+            &[ev.clone()],
+            &ctx,
+            Some("o/r#5"),
+            false,
+            Fyi::Activity,
+        );
+        assert!(p.starts_with(
+            "[ssf] FYI on issue o/r#5 \"Thing\" (https://gh/5), owned by another session (o/r#5): new activity.\n\n- [t] @alice"
+        ));
+        assert!(p.contains("Do not act on this unless you are asked to."));
+        assert!(p.contains("`ssf tell 5 \"...\"`"));
+        assert!(p.contains("`ssf unsub 5`"));
+        assert!(!p.contains("again unless"));
+        let p = fyi_prompt(&issue, &[], &ctx, None, false, Fyi::Closed);
+        assert!(p.contains("not owned by any session: it has been closed (completed)."));
+        assert!(p.contains("You will not hear about o/r#5 again unless it comes back."));
+        let p = fyi_prompt(&issue, &[], &ctx, Some("o/r#5"), true, Fyi::Closed);
+        assert!(p.contains(": it has been merged."));
+        let p = fyi_prompt(&issue, &[ev], &ctx, Some("o/r#5"), false, Fyi::Tracked);
+        assert!(p.contains(
+            "it now has an agent session of its own (o/r#5), because it was assigned to @bot."
+        ));
+        let p = fyi_prompt(&issue, &[], &ctx, Some("o/r#5"), false, Fyi::Unassigned);
+        assert!(p.contains("@bot is no longer involved with it"));
+
+        let t = tell_prompt(Some("o/r#3"), Some("Fix it"), "are you done?", 100);
+        assert!(t.starts_with(
+            "[ssf] Message from the agent session on o/r#3 (\"Fix it\"), sent with `ssf tell`:\n\n  > are you done?"
+        ));
+        assert!(t.contains("reply with `ssf tell 3 \"...\"`"));
+        let t = tell_prompt(None, None, "hello", 100);
+        assert!(t.starts_with("[ssf] Message from a human at the terminal, sent with `ssf tell`:"));
+        assert!(t.contains("answer here"));
     }
 
     #[test]
@@ -994,6 +1211,7 @@ mod tests {
         let ev = Rendered {
             key: "k".into(),
             text: "- [t] @alice requested a review from @bot".into(),
+            origin: None,
         };
         let p = tracked_prompt(&pr_issue, &[ev], &ctx);
         assert!(p.starts_with(
@@ -1028,7 +1246,7 @@ mod tests {
         assert!(m.starts_with(
             "[ssf] pull request o/r#4 \"Fix it\" (https://gh/4), which this session handed off, has been merged."
         ));
-        assert!(m.contains("Final comment by @bot (from session o/r#4) (https://gh/4#c1):\n  > Done, see PR #5."));
+        assert!(m.contains("Final comment by @bot (from the agent on o/r#4) (https://gh/4#c1):\n  > Done, see PR #5."));
         let m = delegated_closed_prompt(&pr_issue, false, None, &ctx);
         assert!(m.contains("has been closed, completed."));
         assert!(m.contains("It has no comments."));
@@ -1056,8 +1274,14 @@ mod tests {
                 status: Some("Todo".into()),
                 status_field_id: Some("PVTSSF_1".into()),
                 status_options: vec![
-                    StatusOption { id: "a1".into(), name: "Todo".into() },
-                    StatusOption { id: "b2".into(), name: "In Progress".into() },
+                    StatusOption {
+                        id: "a1".into(),
+                        name: "Todo".into(),
+                    },
+                    StatusOption {
+                        id: "b2".into(),
+                        name: "In Progress".into(),
+                    },
                 ],
             },
             ProjectCard {
@@ -1094,7 +1318,10 @@ mod tests {
         assert!(how.contains("Keeping its card accurate"));
         assert!(!how.contains("Todo") && !how.contains("In Progress"));
 
-        let none = PromptContext { projects: &[], ..ctx };
+        let none = PromptContext {
+            projects: &[],
+            ..ctx
+        };
         let p = initial_prompt(&issue, &[], &none);
         assert!(!p.contains("Project boards"));
         assert!(!p.contains("gh project item-edit"));
@@ -1163,18 +1390,24 @@ mod tests {
         let r = render_event(&ev, false, &cfg(), "bot").unwrap();
         assert!(
             r.text
-                .contains("@bot commented (from session o/r#9) (https://x/1):\n  > done")
+                .contains("@bot commented (from the agent on o/r#9) (https://x/1):\n  > done")
         );
         assert!(!r.text.contains("<!--"));
+        assert_eq!(r.origin.as_deref(), Some("o/r#9"));
         let review = json!({"event":"reviewed","id":2,"user":{"login":"bot"},"state":"approved",
             "body":"<!-- ssf: origin=o/r#9 -->"});
         let r = render_event(&review, false, &cfg(), "bot").unwrap();
-        assert!(r.text.ends_with("reviewed (approved) (from session o/r#9)"));
+        assert!(
+            r.text
+                .ends_with("reviewed (approved) (from the agent on o/r#9)")
+        );
+        assert_eq!(r.origin.as_deref(), Some("o/r#9"));
         // A human quoting a bot comment is not "from a session".
         let human = json!({"event":"commented","id":5,"user":{"login":"alice"},"created_at":"t",
             "body":"> <!-- ssf: origin=o/r#9 -->\n\nthanks","html_url":"https://x/5"});
         let r = render_event(&human, false, &cfg(), "bot").unwrap();
         assert!(r.text.contains("@alice commented (https://x/5)"));
+        assert!(r.origin.is_none());
         assert!(
             r.text.contains("<!-- ssf: origin=o/r#9 -->"),
             "quoted text is shown verbatim"

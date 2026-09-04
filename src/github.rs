@@ -181,7 +181,11 @@ pub fn parse_project_items(data: &Value) -> Vec<ProjectCard> {
         .iter()
         .filter_map(|n| {
             let project = n.get("project")?;
-            if project.get("closed").and_then(Value::as_bool).unwrap_or(false) {
+            if project
+                .get("closed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 return None;
             }
             let field = project.get("field").filter(|f| !f.is_null());
@@ -201,11 +205,15 @@ pub fn parse_project_items(data: &Value) -> Vec<ProjectCard> {
                 .unwrap_or_default();
             Some(ProjectCard {
                 project_id: value_str(project, &["id"])?.to_string(),
-                title: value_str(project, &["title"]).unwrap_or("(untitled)").to_string(),
+                title: value_str(project, &["title"])
+                    .unwrap_or("(untitled)")
+                    .to_string(),
                 url: value_str(project, &["url"]).unwrap_or("").to_string(),
                 item_id: value_str(n, &["id"])?.to_string(),
                 status: value_str(n, &["fieldValueByName", "name"]).map(str::to_string),
-                status_field_id: field.and_then(|f| value_str(f, &["id"])).map(str::to_string),
+                status_field_id: field
+                    .and_then(|f| value_str(f, &["id"]))
+                    .map(str::to_string),
                 status_options,
             })
         })
@@ -494,10 +502,17 @@ impl GitHub {
             .send()
             .await
             .with_context(|| format!("POST {url}"))?;
-        let resp = Self::check(resp, &format!("looking up project boards of {owner}/{repo}#{number}"))
-            .await?;
+        let resp = Self::check(
+            resp,
+            &format!("looking up project boards of {owner}/{repo}#{number}"),
+        )
+        .await?;
         let v: Value = resp.json().await.context("decoding GraphQL response")?;
-        if let Some(errors) = v.get("errors").and_then(Value::as_array).filter(|e| !e.is_empty()) {
+        if let Some(errors) = v
+            .get("errors")
+            .and_then(Value::as_array)
+            .filter(|e| !e.is_empty())
+        {
             let msgs: Vec<&str> = errors
                 .iter()
                 .filter_map(|e| value_str(e, &["message"]))
