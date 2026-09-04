@@ -220,7 +220,13 @@ already carry the tag are not stamped twice, and the initial prompt asks the
 agent to add the tag itself whenever it posts some other way (`gh api`,
 `gh pr create --fill`, a harness that resets `PATH`).
 
-The daemon parses tags out of every item body and comment it reads. In
+The daemon parses tags out of every item body and comment it reads, and
+honours a tag only where the shim puts it: on the last non-blank line of the
+body (the last tag on that line, so a hand-written tag followed by the
+shim's is read as the shim's). A tag anywhere else, in a fenced or indented
+code block, a pasted transcript or a quote reply, is content: it neither
+attributes the post nor binds an item to the session it names, and a bot
+post whose only tag is quoted counts as untagged. In
 `ssf status --json` each tracked item shows `origin` (the session that opened
 it, for PRs and issues an agent created), `origins` (timeline event key to
 session, for tagged comments and reviews) and `untagged` (posts by the bot

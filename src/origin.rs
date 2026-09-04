@@ -4,8 +4,10 @@
 //! API says which agent session posted a comment or opened a pull request.
 //! The content carries it instead: an invisible HTML comment naming the item
 //! whose workspace the post came from. The `gh` shim (`crate::shim`) appends
-//! it to everything an agent posts; the daemon parses it back out of every
-//! body it reads.
+//! it to everything an agent posts, on a line of its own at the very end; the
+//! daemon parses it back out of every body it reads, and honours it only
+//! there: a tag anywhere else in a body (a fenced example, a pasted
+//! transcript, a quote reply) is content, not the post's own tag.
 //!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
 //! add fields without a new syntax. Two fields are defined: `mode=delegate`
@@ -164,20 +166,35 @@ pub fn tags(body: &str) -> Vec<Tag> {
     out
 }
 
-/// The tag that identifies the post: the last one, since the shim appends
-/// its own after anything the author quoted.
+/// The tag that identifies the post: the one on the body's last non-blank
+/// line, where the shim puts it (the last one on that line, since the shim
+/// appends its own after anything the author wrote by hand). A tag anywhere
+/// else, in a fenced or indented code block, a pasted transcript or a quote,
+/// is content and does not count; nor does a last line that is itself
+/// quoted or indented as code.
 pub fn parse(body: &str) -> Option<Tag> {
-    tags(body).pop()
+    let last = body.trim_end().lines().next_back()?;
+    if is_code(last) {
+        return None;
+    }
+    tags(last).pop()
+}
+
+/// Is `line` an indented code line (four spaces or a tab)?
+fn is_code(line: &str) -> bool {
+    line.starts_with("    ") || line.starts_with('\t')
 }
 
 /// `body` with the origin tag on its own final line, optionally marking the
 /// post as a hand-off, or as the reviewer session's. A body that already
-/// carries this origin is left alone (the agent added the tag by hand),
-/// except that a hand-written tag without `mode=delegate` is not enough for
-/// a hand-off, and one without `role=reviewer` is not enough for a reviewer:
-/// the right tag goes after it, and the last tag wins when read.
+/// ends with this origin's tag is left alone (the agent added the tag by
+/// hand), except that a hand-written tag without `mode=delegate` is not
+/// enough for a hand-off, and one without `role=reviewer` is not enough for
+/// a reviewer: the right tag goes after it, and the last tag wins when read.
+/// A tag of ours that is not on the last line does not count (`parse` would
+/// not see it either), so the body is stamped again at the end.
 pub fn stamp_with(body: &str, origin: &Origin, delegate: bool, reviewer: bool) -> String {
-    if tags(body).iter().any(|t| {
+    if parse(body).is_some_and(|t| {
         &t.origin == origin && (!delegate || t.is_delegate()) && (!reviewer || t.is_reviewer())
     }) {
         return body.to_string();
@@ -197,7 +214,11 @@ pub fn stamp_with(body: &str, origin: &Origin, delegate: bool, reviewer: bool) -
     }
 }
 
-/// `body` without its ssf tags (for showing the text to an agent).
+/// `body` without its ssf tags (for showing the text to an agent). Every
+/// unquoted tag goes, not only the trailing one `parse` honours, so that
+/// pasted examples and hand-written tags mid-body do not reach the agent as
+/// something to imitate; the tags in quoted lines stay, as `tags` treats
+/// them.
 pub fn strip(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut last = 0;
@@ -375,6 +396,55 @@ mod tests {
     }
 
     #[test]
+    fn only_the_trailing_line_is_the_posts_own_tag() {
+        // A tag quoted in a fenced block is content, not the post's tag.
+        let fenced = "the tag looks like:\n```text\n<!-- ssf: origin=a/b#1 -->\n```\n";
+        assert!(parse(fenced).is_none());
+        assert_eq!(tags(fenced).len(), 1, "tags() still lists it");
+        // ... until the shim appends the real one after it.
+        let stamped = stamp(fenced, &o());
+        assert_eq!(parse(&stamped).unwrap().origin, o());
+        assert_eq!(strip(&stamped), "the tag looks like:\n```text\n\n```");
+        // A tag followed by more text is not the trailing line.
+        assert!(parse("<!-- ssf: origin=a/b#1 -->\nmore").is_none());
+        assert!(parse("pasted <!-- ssf: origin=a/b#1 --> transcript\n\nsigned off").is_none());
+        // An indented code line at the end is code, not a tag.
+        assert!(parse("example:\n\n    <!-- ssf: origin=a/b#1 -->").is_none());
+        assert!(parse("example:\n\n\t<!-- ssf: origin=a/b#1 -->").is_none());
+        // A quoted last line is the quoted post's tag.
+        assert!(parse("thanks\n\n> <!-- ssf: origin=a/b#1 -->").is_none());
+        // A tag on the last line is honoured, trailing whitespace and all,
+        // with or without text before it on that line.
+        assert_eq!(
+            parse("hello\n\n<!-- ssf: origin=a/b#2 -->\n\n  \n")
+                .unwrap()
+                .origin
+                .number,
+            2
+        );
+        assert_eq!(
+            parse("tagged <!-- ssf: origin=a/b#3 -->")
+                .unwrap()
+                .origin
+                .number,
+            3
+        );
+        assert_eq!(
+            parse("  <!-- ssf: origin=a/b#4 -->").unwrap().origin.number,
+            4,
+            "one-space indentation is not code"
+        );
+        // A body that is only a tag still parses.
+        assert_eq!(parse(&o().tag()).unwrap().origin, o());
+        assert_eq!(parse(&format!("\n{}\n", o().tag())).unwrap().origin, o());
+        // Our own tag mid-body is not enough: it is stamped again at the end.
+        let mid = format!("{}\nmore", o().tag());
+        let s = stamp(&mid, &o());
+        assert!(s.ends_with(&format!("more\n\n{}", o().tag())));
+        assert_eq!(parse(&s).unwrap().origin, o());
+    }
+
+    #[test]
     fn delegate_tag_marks_a_hand_off() {
         let t = o().delegate_tag();
         assert_eq!(t, "<!-- ssf: origin=acme/widgets#12 mode=delegate -->");
@@ -468,6 +538,7 @@ mod tests {
             json!({"event":"commented","id":3,"user":{"login":"alice"},"body":"human","html_url":"u3"}),
             json!({"event":"commented","id":30,"user":{"login":"alice"},"body":"pasted <!-- ssf: origin=a/b#1 -->","html_url":"u30"}),
             json!({"event":"reviewed","id":4,"user":{"login":"bot"},"body":"<!-- ssf: origin=a/b#7 -->","html_url":"u4"}),
+            json!({"event":"commented","id":9,"user":{"login":"bot"},"body":"see\n```\n<!-- ssf: origin=a/b#7 role=reviewer -->\n```\n","html_url":"u9"}),
             json!({"event":"reviewed","id":5,"user":{"login":"bot"},"body":"lgtm\n\n<!-- ssf: origin=a/b#5 role=reviewer -->","html_url":"u5"}),
             json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"body":"inline","html_url":"u8"}]}),
         ];
@@ -497,6 +568,15 @@ mod tests {
         );
         assert!(!s.untagged.contains_key("commented:3"));
         assert!(
+            !s.origins.contains_key("commented:9"),
+            "a tag inside a code block is not the post's own"
+        );
+        assert_eq!(
+            s.untagged.get("commented:9").map(String::as_str),
+            Some("u9"),
+            "a post whose only tag is quoted counts as untagged"
+        );
+        assert!(
             !s.origins.contains_key("commented:30"),
             "a human's tag is not an origin"
         );
@@ -509,6 +589,12 @@ mod tests {
         .unwrap();
         let s = scan(&human, &[], "bot");
         assert!(s.origin.is_none() && s.origin_tag.is_none() && s.untagged.is_empty());
+        let mut quoting = issue.clone();
+        quoting.body =
+            Some("about tags:\n\n```\n<!-- ssf: origin=a/b#9 -->\n```\n\nposted by hand".into());
+        let s = scan(&quoting, &[], "bot");
+        assert!(s.origin.is_none(), "a quoted tag does not bind the item");
+        assert!(s.untagged.contains_key("body"));
         let mut delegated = issue.clone();
         delegated.body = Some("child\n\n<!-- ssf: origin=a/b#1 mode=delegate -->".into());
         let s = scan(&delegated, &[], "bot");
