@@ -165,6 +165,20 @@ pub struct DaemonConfig {
     /// review is posted. Empty disables the label trigger.
     #[serde(default = "default_review_label")]
     pub review_label: String,
+    /// Resume interrupted sessions when the daemon starts. After a machine
+    /// restart Orca's terminals are gone: every active session whose
+    /// workspace still exists but has no live agent is started again
+    /// (resuming its conversation when possible) with a note that it was
+    /// interrupted. Sessions that are still running are never touched, so a
+    /// plain daemon restart changes nothing.
+    #[serde(default = "default_true")]
+    pub resume_on_start: bool,
+    /// How long to wait for Orca at daemon start (checking every ten
+    /// seconds) before polling begins, since Orca may still be coming up in
+    /// the same login. If it is not ready by then, polling starts anyway and
+    /// the startup pass runs on the first poll that finds Orca ready.
+    #[serde(default = "default_startup_orca_wait")]
+    pub startup_orca_wait_secs: u64,
 }
 
 impl DaemonConfig {
@@ -186,6 +200,8 @@ impl Default for DaemonConfig {
             cleanup_on_close: true,
             cleanup_grace_secs: default_cleanup_grace(),
             review_label: default_review_label(),
+            resume_on_start: true,
+            startup_orca_wait_secs: default_startup_orca_wait(),
         }
     }
 }
@@ -211,6 +227,9 @@ fn default_review_label() -> String {
 
 fn default_cleanup_grace() -> u64 {
     900
+}
+fn default_startup_orca_wait() -> u64 {
+    120
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

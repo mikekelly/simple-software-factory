@@ -58,6 +58,12 @@ login starts it, or `systemctl --user start ssf.service` does.) On its first
 run it installs the **Software Factory** bar widget (next to Omarchy's Agents
 widget) and a **Factory** submenu in the Omarchy menu.
 
+The unit is the intended way to run the factory: it comes back with the next
+login after a reboot (unless it was switched off with the toggle), waits for
+Orca, and resumes the agent sessions the reboot cut off (see
+[Restarts](#how-it-works)). A dev build started by hand (`ssf run`) does the same
+on start, but nothing restarts it for you.
+
 ## Set up
 
 Click the factory icon in the bar, or open the Omarchy menu and pick
@@ -455,6 +461,23 @@ on the item and to use `ssf tell` only for the two cases above.
   different path.
 - **First-run dialogs.** Claude Code asks whether to trust a new folder; ssf
   answers it so unattended launches do not stall.
+- **Restarts.** A daemon restart is invisible to agents: the state is on
+  disk, Orca keeps the terminals, and delivery finds them again. A machine
+  restart takes the terminals with it, so the daemon runs a startup pass once
+  Orca first answers: every active session that owns its workspace and has
+  no live agent terminal is started again through the same path as any
+  relaunch (`--resume` when a session id was captured, fresh with the item's
+  story otherwise), with one message saying it was interrupted and telling
+  it to check `git status`/`git log` and carry on, or say on the item what
+  is left. Relaunches happen one at a time, each waiting for its harness to
+  settle. Sessions that are still running are not touched, workspaces that
+  are gone are left to rehydration on their next event, and sessions whose
+  workspace is waiting for cleanup are skipped. At start the daemon waits
+  for Orca (`daemon.startup_orca_wait_secs`, checking every ten seconds)
+  before its first poll; if Orca is still not up by then, polling starts
+  anyway and the pass runs on the first poll that finds it.
+  `daemon.resume_on_start = false` turns the pass off. `ssf run --once` runs
+  it too.
 - **Retirement and cleanup.** Closed or unassigned issues get one final
   message and are marked inactive. For closed issues, once the agent is idle
   (or after `daemon.cleanup_grace_secs`), the workspace is removed
@@ -489,6 +512,8 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_on_close` | `true` | Remove the workspace after the issue is closed and the agent has wrapped up |
 | `daemon.cleanup_grace_secs` | `900` | How long to let the agent wrap up before removing the workspace anyway |
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](#reviewer-sessions)); `""` turns the label trigger off |
+| `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#how-it-works)) |
+| `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
 | `repo.command` | the harness id | Command that starts the agent, e.g. `claude --dangerously-skip-permissions` |
 | `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |

@@ -45,6 +45,9 @@ pub struct Engine {
     /// no branch match, no human trigger), with what they were last looked
     /// at with, so they are not re-examined every pass.
     ignored: BTreeMap<(String, u64), Ignored>,
+    /// The startup pass (resume sessions whose terminals are gone) has not
+    /// run yet; it runs on the first pass that finds Orca ready.
+    startup_pass_pending: bool,
 }
 
 /// What an ignored item looked like when it was last examined: GitHub's
@@ -129,6 +132,7 @@ impl Engine {
         let mut state = State::load()?;
         state.bot_login = Some(me.login.clone());
         state.save()?;
+        let startup_pass_pending = cfg.daemon.resume_on_start;
         Ok(Self {
             cfg,
             gh,
@@ -137,6 +141,7 @@ impl Engine {
             state,
             failures: BTreeMap::new(),
             ignored: BTreeMap::new(),
+            startup_pass_pending,
         })
     }
 
@@ -150,26 +155,68 @@ impl Engine {
             socket = %crate::ipc::socket_path().display(),
             "ssf daemon started"
         );
-        'outer: loop {
+        // Orca may still be coming up in the same login (the unit starts with
+        // the graphical session), and the startup pass needs it: wait a
+        // bounded while before the first poll rather than skipping passes.
+        let mut stop = false;
+        if self.startup_pass_pending {
+            let wait = Duration::from_secs(self.cfg.daemon.startup_orca_wait_secs);
+            let started = tokio::time::Instant::now();
+            loop {
+                let err = match self.orca.status().await {
+                    Ok(_) => break,
+                    Err(e) => e,
+                };
+                let elapsed = started.elapsed();
+                if elapsed >= wait {
+                    if !wait.is_zero() {
+                        warn!(
+                            waited_secs = elapsed.as_secs(),
+                            "Orca is still not ready; polling starts now and interrupted sessions \
+are resumed on the first pass that finds it: {err:#}"
+                        );
+                    }
+                    break;
+                }
+                info!("waiting for Orca before the first pass: {err:#}");
+                let deadline =
+                    tokio::time::Instant::now() + Duration::from_secs(10).min(wait - elapsed);
+                if self.idle_until(deadline, &listener, &mut sigterm).await {
+                    stop = true;
+                    break;
+                }
+            }
+        }
+        while !stop {
             self.tick().await;
             let interval = Duration::from_secs(self.cfg.daemon.poll_interval_secs.max(5));
             let deadline = tokio::time::Instant::now() + interval;
-            // Between polls, answer the CLI (`ssf sub|unsub|tell`).
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep_until(deadline) => break,
-                    _ = tokio::signal::ctrl_c() => { info!("interrupted; exiting"); break 'outer; }
-                    _ = sigterm.recv() => { info!("SIGTERM; exiting"); break 'outer; }
-                    conn = listener.accept() => match conn {
-                        Ok((stream, _)) => self.serve(stream).await,
-                        Err(e) => warn!("accepting a CLI connection failed: {e}"),
-                    }
-                }
-            }
+            stop = self.idle_until(deadline, &listener, &mut sigterm).await;
         }
         self.state.save()?;
         let _ = std::fs::remove_file(crate::ipc::socket_path());
         Ok(())
+    }
+
+    /// Answer the CLI (`ssf sub|unsub|tell`) until `deadline`. True when a
+    /// signal asked the daemon to exit.
+    async fn idle_until(
+        &mut self,
+        deadline: tokio::time::Instant,
+        listener: &tokio::net::UnixListener,
+        sigterm: &mut tokio::signal::unix::Signal,
+    ) -> bool {
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => return false,
+                _ = tokio::signal::ctrl_c() => { info!("interrupted; exiting"); return true; }
+                _ = sigterm.recv() => { info!("SIGTERM; exiting"); return true; }
+                conn = listener.accept() => match conn {
+                    Ok((stream, _)) => self.serve(stream).await,
+                    Err(e) => warn!("accepting a CLI connection failed: {e}"),
+                }
+            }
+        }
     }
 
     /// Answer one CLI connection.
@@ -508,6 +555,10 @@ impl Engine {
             return;
         }
         self.state.last_error = None;
+        if self.startup_pass_pending {
+            self.startup_pass_pending = false;
+            self.resume_interrupted().await;
+        }
         for repo in self.cfg.repos.clone() {
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
@@ -519,6 +570,97 @@ impl Engine {
                 error!("saving state: {e:#}");
             }
         }
+    }
+
+    /// The startup pass. A daemon restart is invisible to agents (Orca keeps
+    /// their terminals), but after a machine restart every session's
+    /// terminal is gone, and nothing would bring one back until the next
+    /// GitHub event for its item. So, once, when Orca first answers: every
+    /// active session that owns its workspace is looked at, and one whose
+    /// workspace still exists but has no live agent is started again through
+    /// the normal delivery path (resuming its conversation when a session
+    /// id was captured, fresh with the item's story otherwise) with one
+    /// message saying it was interrupted. One at a time, each waiting for
+    /// its harness to settle. Live sessions are not touched, and a missing
+    /// workspace is left to rehydration on the next event rather than
+    /// re-created on boot.
+    async fn resume_interrupted(&mut self) {
+        for repo in self.cfg.repos.clone() {
+            let candidates = self.resume_candidates(&repo);
+            for slot in candidates {
+                let st = self.record(&repo, slot).clone();
+                let Some(worktree_id) = st.worktree_id.clone() else {
+                    continue;
+                };
+                let session = slot_id(&repo.name, slot);
+                match self.orca.worktree_exists(&worktree_id).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        debug!(session, "workspace is gone; left to rehydration");
+                        continue;
+                    }
+                    Err(e) => {
+                        warn!(session, "could not check the workspace: {e:#}");
+                        continue;
+                    }
+                }
+                match self.orca.has_live_agent(&worktree_id).await {
+                    Ok(true) => {
+                        debug!(session, "agent is live; nothing to do");
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        warn!(session, "could not list the workspace's terminals: {e:#}");
+                        continue;
+                    }
+                }
+                let text = prompt::interrupted_prompt(&prompt::Interrupted {
+                    repo: &repo.name,
+                    number: st.number,
+                    title: &st.title,
+                    url: &st.html_url,
+                    branch: st.branch.as_deref(),
+                    path: st.worktree_path.as_deref(),
+                    reviewer: slot.is_reviewer(),
+                });
+                info!(session, "session was interrupted; starting it again");
+                match self.deliver(&repo, slot, &text, None).await {
+                    Ok(d) => {
+                        let e = self.record(&repo, slot);
+                        e.terminal_handle = Some(d.handle);
+                        e.last_prompt_at = Some(now_iso());
+                        e.prompts_sent += 1;
+                    }
+                    Err(e) => warn!(session, "could not start the session again: {e:#}"),
+                }
+                if let Err(e) = self.state.save() {
+                    error!("saving state: {e:#}");
+                }
+            }
+        }
+    }
+
+    /// Sessions the startup pass looks at: active, seeded, owning their
+    /// workspace (items with no owner; reviewers always own theirs) and not
+    /// waiting for cleanup.
+    fn resume_candidates(&self, repo: &RepoConfig) -> Vec<Slot> {
+        let Some(rs) = self.state.repos.get(&repo.name) else {
+            return Vec::new();
+        };
+        let wanted =
+            |s: &IssueState| s.seeded && s.active && !s.cleanup_pending && s.worktree_id.is_some();
+        rs.issues
+            .values()
+            .filter(|s| wanted(s) && s.shares_workspace_of.is_none())
+            .map(|s| Slot::Item(s.number))
+            .chain(
+                rs.reviewers
+                    .values()
+                    .filter(|s| wanted(s))
+                    .map(|s| Slot::Reviewer(s.number)),
+            )
+            .collect()
     }
 
     async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
@@ -3206,6 +3348,7 @@ mod tests {
             state: State::default(),
             failures: BTreeMap::new(),
             ignored: BTreeMap::new(),
+            startup_pass_pending: false,
         }
     }
 
@@ -3736,6 +3879,55 @@ mod tests {
             "bot",
             "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"
         )]));
+    }
+
+    #[test]
+    fn startup_pass_looks_at_owning_active_sessions_only() {
+        let mut e = engine();
+        let r = repo();
+        let bind = |e: &mut Engine, n: u64| {
+            seeded(e, n, Some(&format!("b{n}")), true);
+            e.entry(&r, n).worktree_id = Some(format!("repo::/w/{n}"));
+        };
+        bind(&mut e, 1); // owns its workspace: resumed
+        bind(&mut e, 2); // owned by #1: its owner is the one to look at
+        e.entry(&r, 2).shares_workspace_of = Some(1);
+        bind(&mut e, 3); // closed, workspace about to go
+        e.entry(&r, 3).active = false;
+        e.entry(&r, 3).cleanup_pending = true;
+        bind(&mut e, 4); // retired but kept
+        e.entry(&r, 4).active = false;
+        seeded(&mut e, 5, None, true); // never got a workspace
+        bind(&mut e, 6); // active, cleanup pending after a reopen race
+        e.entry(&r, 6).cleanup_pending = true;
+        e.entry(&r, 7).active = true; // not seeded yet
+        e.entry(&r, 7).worktree_id = Some("repo::/w/7".into());
+        // Reviewers own their workspace even though the record names the
+        // PR's author.
+        {
+            let rv = e.record(&r, Slot::Reviewer(9));
+            rv.seeded = true;
+            rv.active = true;
+            rv.shares_workspace_of = Some(1);
+            rv.worktree_id = Some("repo::/w/9-review".into());
+        }
+        {
+            let rv = e.record(&r, Slot::Reviewer(10));
+            rv.seeded = true;
+            rv.active = false;
+            rv.worktree_id = Some("repo::/w/10-review".into());
+        }
+        assert_eq!(
+            e.resume_candidates(&r),
+            vec![Slot::Item(1), Slot::Reviewer(9)]
+        );
+        assert!(
+            e.resume_candidates(&RepoConfig {
+                name: "o/other".into(),
+                ..Default::default()
+            })
+            .is_empty()
+        );
     }
 
     #[test]
