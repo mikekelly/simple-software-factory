@@ -159,6 +159,10 @@ enum Command {
         issue: Option<u64>,
         #[arg(long)]
         issue_url: Option<String>,
+        /// `reviewer` for the reviewer session of a pull request: exported as
+        /// SSF_ROLE, and the gh shim tags posts with `role=reviewer`.
+        #[arg(long)]
+        role: Option<String>,
         /// Command line to run (through `sh -c`).
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -415,7 +419,8 @@ async fn main() -> Result<()> {
             issue,
             issue_url,
             command,
-        } => launch(repo, issue, issue_url, command),
+            role,
+        } => launch(repo, issue, issue_url, role, command),
         Command::GitCredential { op } => git_credential(&op),
     }
 }
@@ -424,6 +429,7 @@ fn launch(
     repo: Option<String>,
     issue: Option<u64>,
     issue_url: Option<String>,
+    role: Option<String>,
     command: Vec<String>,
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
@@ -521,6 +527,15 @@ fn launch(
     }
     if let Some(u) = issue_url {
         cmd.env("SSF_ISSUE_URL", u);
+    }
+    match role.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) if r == origin::REVIEWER => {
+            cmd.env("SSF_ROLE", r);
+        }
+        Some(r) => bail!("--role {r}: the only role is `{}`", origin::REVIEWER),
+        None => {
+            cmd.env_remove("SSF_ROLE");
+        }
     }
     // A `gh` shim first on PATH stamps everything the agent posts with the
     // origin tag for this issue (see src/shim.rs).
@@ -1284,15 +1299,7 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
             bail!("{r} is not a watched repository (see `ssf repo list`)");
         }
     }
-    let me = match (
-        std::env::var("SSF_REPO").ok().filter(|r| !r.is_empty()),
-        std::env::var("SSF_ISSUE")
-            .ok()
-            .and_then(|n| n.parse::<u64>().ok()),
-    ) {
-        (Some(r), Some(n)) => Some(status::session_id(&r, n)),
-        _ => None,
-    };
+    let me = identity(None)?.map(|(o, reviewer)| o.session(reviewer));
     let sessions: Vec<status::Session> = snap
         .sessions()
         .into_iter()
@@ -1326,47 +1333,54 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
     Ok(())
 }
 
-/// This session's identity: `--as owner/repo#N`, else the environment `ssf
-/// launch` set up.
-fn identity(as_: Option<&str>) -> Result<Option<origin::Origin>> {
+/// This session's identity: `--as owner/repo#N` (or `owner/repo#N:reviewer`),
+/// else the environment `ssf launch` set up (`SSF_ROLE=reviewer` makes it
+/// the reviewer session of the item).
+fn identity(as_: Option<&str>) -> Result<Option<(origin::Origin, bool)>> {
     match as_ {
-        Some(a) => origin::Origin::parse(a)
+        Some(a) => origin::parse_session(a)
             .map(Some)
             .with_context(|| format!("--as {a}: expected owner/repo#N")),
-        None => Ok(origin::Origin::from_env()),
+        None => Ok(origin::Origin::from_env().map(|o| (o, origin::Origin::reviewer_from_env()))),
     }
 }
 
-/// An item argument: `owner/repo#N`, or a bare number on `me`'s repository.
+/// An item or session argument: `owner/repo#N`, or a bare number on `me`'s
+/// repository; either with a `:reviewer` suffix for a reviewer session.
 fn item_ref(item: &str, me: Option<&origin::Origin>) -> Result<String> {
     let item = item.trim().trim_start_matches('#');
-    if let Ok(n) = item.parse::<u64>() {
+    let (bare, suffix) = match item.strip_suffix(&format!(":{}", origin::REVIEWER)) {
+        Some(b) => (b, format!(":{}", origin::REVIEWER)),
+        None => (item, String::new()),
+    };
+    if let Ok(n) = bare.parse::<u64>() {
         return match me {
-            Some(o) => Ok(format!("{}#{n}", o.repo)),
+            Some(o) => Ok(format!("{}#{n}{suffix}", o.repo)),
             None => {
                 bail!("{item}: pass owner/repo#{item}, or --as owner/repo#N to name the repository")
             }
         };
     }
-    match origin::Origin::parse(item) {
-        Some(o) => Ok(o.to_string()),
+    match origin::Origin::parse(bare) {
+        Some(o) => Ok(format!("{o}{suffix}")),
         None => bail!("{item}: expected an item number or owner/repo#N"),
     }
 }
 
 async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bool) -> Result<()> {
-    let me = identity(as_)?.context(
+    let (me, reviewer) = identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
     let target = item_ref(item, Some(&me))?;
+    let me = me.session(reviewer);
     let req = if subscribe {
         ipc::Request::Sub {
-            from: me.to_string(),
+            from: me.clone(),
             target: target.clone(),
         }
     } else {
         ipc::Request::Unsub {
-            from: me.to_string(),
+            from: me.clone(),
             target: target.clone(),
         }
     };
@@ -1416,26 +1430,29 @@ async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bool) -> Resu
 fn subs(as_: Option<&str>, json: bool) -> Result<()> {
     let cfg = Config::load()?;
     let st = state::State::load()?;
-    let me = identity(as_)?.context(
+    let (me, reviewer) = identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
-    // The subscriber is always the owning session.
-    let me_id = st
-        .repos
-        .get(&me.repo)
-        .map(|rs| {
-            let mut cur = me.number;
-            let mut hops = 0;
-            while let Some(next) = rs.issues.get(&cur).and_then(|s| s.shares_workspace_of) {
-                if next == cur || hops > 16 {
-                    break;
+    // The subscriber is always the owning session (a reviewer is its own).
+    let me_id = if reviewer {
+        me.session(true)
+    } else {
+        st.repos
+            .get(&me.repo)
+            .map(|rs| {
+                let mut cur = me.number;
+                let mut hops = 0;
+                while let Some(next) = rs.issues.get(&cur).and_then(|s| s.shares_workspace_of) {
+                    if next == cur || hops > 16 {
+                        break;
+                    }
+                    cur = next;
+                    hops += 1;
                 }
-                cur = next;
-                hops += 1;
-            }
-            status::session_id(&me.repo, cur)
-        })
-        .unwrap_or_else(|| me.to_string());
+                status::session_id(&me.repo, cur)
+            })
+            .unwrap_or_else(|| me.to_string())
+    };
     let mut following = Vec::new();
     let mut followers = Vec::new();
     for repo in &cfg.repos {
@@ -1526,7 +1543,7 @@ fn subs(as_: Option<&str>, json: bool) -> Result<()> {
 
 async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool) -> Result<()> {
     let me = identity(as_)?;
-    let target = item_ref(item, me.as_ref())?;
+    let target = item_ref(item, me.as_ref().map(|(o, _)| o))?;
     let text = match message {
         Some(m) => m,
         None => {
@@ -1539,7 +1556,7 @@ async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool
         bail!("nothing to say (pass the message, or pipe it in)");
     }
     let v = ipc::call(&ipc::Request::Tell {
-        from: me.map(|o| o.to_string()),
+        from: me.map(|(o, reviewer)| o.session(reviewer)),
         target: target.clone(),
         text,
     })
@@ -1794,4 +1811,22 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path)
         .map(|d| d.join(bin))
         .find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_refs_accept_numbers_sessions_and_reviewers() {
+        let me = origin::Origin::new("o/r", 3).unwrap();
+        assert_eq!(item_ref("7", Some(&me)).unwrap(), "o/r#7");
+        assert_eq!(item_ref("#7", Some(&me)).unwrap(), "o/r#7");
+        assert_eq!(item_ref("7:reviewer", Some(&me)).unwrap(), "o/r#7:reviewer");
+        assert_eq!(item_ref("x/y#7", None).unwrap(), "x/y#7");
+        assert_eq!(item_ref("x/y#7:reviewer", None).unwrap(), "x/y#7:reviewer");
+        assert!(item_ref("7", None).is_err());
+        assert!(item_ref("7:author", Some(&me)).is_err());
+        assert!(item_ref("nonsense", Some(&me)).is_err());
+    }
 }
