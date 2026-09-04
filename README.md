@@ -18,8 +18,9 @@ its review) it:
    session's branch) gets no session of its own: it is routed to the agent
    that opened it (see [Ownership](#ownership-one-session-per-item)),
 3. sends the agent the issue, its description, the project boards it is on
-   and everything that has happened on it so far, plus instructions on how
-   to report back and whatever the repository's own `SSF.md` says,
+   and everything that has happened on it so far, plus the few rules it
+   needs to act (`ssf guide` holds the rest) and whatever the repository's
+   own `SSF.md` says,
 4. keeps polling the issue timeline and pastes new activity (comments, label
    changes, renames, linked PRs, ...) into the same agent session, which
    steers it if it is busy and wakes it up if it is idle,
@@ -138,6 +139,7 @@ ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --
 ssf unsub 12
 ssf subs                          # what this session follows, who follows its items
 ssf tell 12 "stop, I'm changing the spec"   # steer that session from your shell: pastes into its terminal
+ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ```
 
@@ -162,7 +164,7 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 whether Orca answered. `ssf peers` prints the same data as a terminal table:
 by default the active sessions on `$SSF_REPO` (so an agent sees who else is
 on its repository, and itself marked "(you)"), or on every watched repository
-outside a session; `--all` includes retired sessions. The initial prompt tells
+outside a session; `--all` includes retired sessions. `ssf guide` tells
 agents about it.
 
 ## How the agent gets the bot's identity
@@ -187,6 +189,24 @@ initial prompt tells the agent that plain `gh` and `git push` act as the bot.
 Because activity by the bot login is filtered out of follow-up messages, the
 agent's own comments are not echoed back to it (`daemon.include_own_events`
 turns that off). `ssf token` still prints the token for any other use.
+
+## What the agent is told
+
+ssf's own prompting is the bare functional minimum. The initial prompt is
+the item (title, description, boards, everything that has happened on it)
+followed by the facts an agent needs in order to act at all: which bot it
+is and that its credentials are set, the origin tag rule, where new activity
+arrives, what to do when the work is done, and the hard rules only ssf knows
+(act only as the bot, do not close the issue, do not merge, keep the board
+card accurate). One line points at `ssf guide`, which prints the reference
+(other sessions, `ssf sub`/`ssf tell`, items a session opens and hand-offs,
+reviewer sessions, the origin tag) from the same binary, so it cannot drift
+from the daemon. Follow-up messages carry the activity and at most one line
+after it. Anything about *how* the agent should work (comment when it
+starts and finishes, ask rather than guess, commit as it goes, how to
+review) is the repository's to say, in its
+[prompt file](#the-per-project-prompt-file); ssf does not repeat it on
+every message.
 
 ## Project boards
 
@@ -286,9 +306,9 @@ binding wins):
   FYI messages, and when the child is closed or merged it gets a single
   message with the outcome and the child's final comment (the last comment
   the bot left on it). The child is told it was handed off and to leave a
-  clear final comment. The initial prompt explains this rule to agents, so
-  an agent that wants a separate worker uses `--assignee`, and one that
-  wants to keep an item simply opens it.
+  clear final comment. `ssf guide` explains this rule to agents, so an
+  agent that wants a separate worker uses `--assignee`, and one that wants
+  to keep an item simply opens it.
 - **Nothing to bind to.** A bot-opened item with no usable tag, no branch
   match and no human trigger is left alone (logged once) rather than given
   a session nobody asked for; assigning or mentioning the bot on it later
@@ -349,8 +369,8 @@ to it as activity with a note that a reviewer session has it, and the review
 itself arrives as activity marked "from the reviewer session on
 owner/repo#N". The author answers on the PR and pushes fixes as it would for
 a human reviewer; its replies reach the reviewer marked "from the agent on
-owner/repo#A". To get another look it adds the `review` label again (its
-initial prompt says so).
+owner/repo#A". To get another look it adds the `review` label again (`ssf guide`
+says so).
 
 The reviewer lives as long as the request: while the label is on the PR (or
 the bot is a requested reviewer), new activity on the PR (pushes, replies) is
@@ -405,9 +425,9 @@ session counts as that session):
   `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
   or "from a human at the terminal" without `--as`. For an operator it is the
   steering tool ("stop, I'm changing the spec"). Between agents it is the
-  exception: the default channel is a comment on the item (below), and the
-  prompt tells agents to keep `tell` for operational nudges that would be
-  noise on the item ("master moved, rebase", "terminal is being replaced")
+  exception: the default channel is a comment on the item (below), and
+  `ssf guide` tells agents to keep `tell` for operational nudges that would
+  be noise on the item ("master moved, rebase", "terminal is being replaced")
   and for reaching a session whose item is already closed. Tells are not
   mirrored to GitHub, so anything someone might need to find later
   (decisions, questions that change scope, status) goes on the item.
@@ -428,9 +448,9 @@ Untagged bot comments keep the old rule (never delivered, unless
 `daemon.include_own_events`). So session A talks to session B by
 commenting on B's issue with `gh`: B's agent receives it labelled as coming
 from A, and A does not receive its own comment back, even when A is
-subscribed to B's issue. This is the default channel between agents; the
-initial prompt, the FYI messages and the `tell` messages all say to comment
-on the item and to use `ssf tell` only for the two cases above.
+subscribed to B's issue. This is the default channel between agents:
+`ssf guide` says so, and a `tell` message repeats in one line that the
+answer goes on the item.
 
 ## How it works
 
@@ -534,10 +554,17 @@ the repository. When an agent is started for an item, ssf reads the file from
 the item's own checkout (so a PR branch that changes it is seen with its own
 version) and appends it to the initial prompt under a "Project notes" heading,
 after `daemon.instructions` and `repo.instructions`. The same text is included
-when a harness is started again from scratch. No file, or an empty one, adds
-nothing. `repo.prompt_file` names another file: a path inside the worktree
-(`.github/ssf.md`), or an absolute or `~/` path for notes you would rather
-not commit.
+when a harness is started again from scratch, and a reviewer session gets it
+too. No file, or an empty one, adds nothing. `repo.prompt_file` names another
+file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
+path for notes you would rather not commit.
+
+This is also where working style goes. ssf's prompts carry rules, not
+advice, so a repository that wants its agents told to comment when they
+start and finish, to ask rather than guess, to commit as they go, or how to
+review, says so here. `SSF.example.md` (installed as
+`/usr/share/ssf/SSF.example.md`) is a starting point with exactly those
+lines.
 
 ### Models and effort levels
 
