@@ -261,14 +261,20 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     Some(Rendered { key, text })
 }
 
+#[derive(Clone, Copy)]
 pub struct PromptContext<'a> {
     pub repo: &'a RepoConfig,
     pub daemon: &'a DaemonConfig,
     pub bot_login: &'a str,
     /// Set when the item is a pull request.
     pub pr: Option<&'a PrInfo>,
-    /// Why the bot is involved: assigned, mentioned, review_requested.
+    /// Why the bot is involved: assigned, mentioned, review_requested, created.
     pub triggers: &'a [String],
+    /// The item belongs to that item's session (same repo): prompts about it
+    /// go to that agent, whose own item this is not.
+    pub owner: Option<u64>,
+    /// Session (`owner/repo#N`) that opened the item as a hand-off.
+    pub delegated_by: Option<&'a str>,
 }
 
 impl PromptContext<'_> {
@@ -289,6 +295,12 @@ impl PromptContext<'_> {
                 "assigned" => format!("it was assigned to @{bot}"),
                 "mentioned" => format!("@{bot} was mentioned on it"),
                 "review_requested" => format!("a review was requested from @{bot}"),
+                "created" => match self.delegated_by {
+                    Some(parent) => {
+                        format!("the agent session working on {parent} opened it and handed it off")
+                    }
+                    None => format!("@{bot} opened it"),
+                },
                 other => other.to_string(),
             })
             .collect();
@@ -296,6 +308,34 @@ impl PromptContext<'_> {
             format!("it was assigned to @{bot}")
         } else {
             parts.join(" and ")
+        }
+    }
+
+    /// [`because`](Self::because) for an explicit list of triggers.
+    fn because_of(&self, triggers: &[&str]) -> String {
+        let owned: Vec<String> = triggers.iter().map(|t| t.to_string()).collect();
+        let ctx = PromptContext {
+            triggers: &owned,
+            ..*self
+        };
+        ctx.because()
+    }
+
+    /// How the item came to be routed to another session's agent.
+    fn owned_because(&self, issue: &Issue) -> String {
+        let by_bot = issue.author().eq_ignore_ascii_case(self.bot_login);
+        let tagged = issue
+            .body
+            .as_deref()
+            .and_then(origin::parse)
+            .filter(|_| by_bot)
+            .is_some_and(|t| Some(t.origin.number) == self.owner);
+        if tagged {
+            "this session opened it".to_string()
+        } else if let Some(pr) = self.pr {
+            format!("its branch `{}` is this workspace's branch", pr.head_ref)
+        } else {
+            "it belongs to this session".to_string()
         }
     }
 }
@@ -408,7 +448,14 @@ or `--body-file`; add it yourself when you post any other way (`gh api`, `gh pr 
 `gh pr edit --body`, ...).\n\
 - Other agent sessions may be working on this repository at the same time. `ssf peers` lists them \
 (item, GitHub state, agent state, branch, last message; `--json` for detail). Leave their branches \
-and workspaces alone.\n"
+and workspaces alone.\n\
+- Issues and pull requests you open stay with you: ssf recognises the tag and delivers their \
+activity (comments, reviews, review requests, assignments, closure) here instead of starting \
+another session, and `SSF_ISSUE` stays {n}. To hand a piece of work to a separate agent instead, \
+create the issue (or PR) with `--assignee {bot}` in the same `gh ... create` command; the tag then \
+carries `mode=delegate`, the item gets a session of its own, and you hear nothing more about it \
+until it closes, when you get one message with its final comment. Assigning @{bot} to an existing \
+item you did not open gives it a fresh session too.\n"
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -433,6 +480,14 @@ separate PR from this worktree against `{}`.\n\
 (`Closes #{n}`), then comment on the issue with the PR link.\n\
 - Do not close the issue yourself; a human reviews the PR.\n"
         )),
+    }
+    if let Some(parent) = ctx.delegated_by {
+        s.push_str(&format!(
+            "- This {kind} was handed off to you by the agent session working on {parent}. Work on it \
+independently; that session is not watching it and will only be told, once, when it is closed, \
+along with your final comment, so make that comment a clear summary of the outcome (what was \
+done, the PR link, anything left open).\n"
+        ));
     }
     if let Some(extra) = ctx.daemon.instructions.as_deref() {
         s.push('\n');
@@ -463,7 +518,59 @@ finished, address it and report back on the issue as before.",
     s
 }
 
+/// First message about an item that is routed to another session's agent
+/// (the item's owner): the session that opened it, or whose branch it is.
+pub fn tracked_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
+    let kind = ctx.kind();
+    let mut s = format!(
+        "[ssf] Now tracking {kind} {}#{} \"{}\" ({}) for this session, because {}. \
+Activity on it (comments, reviews, review requests, assignments, closure) will be delivered \
+here; `SSF_ISSUE` is unchanged.",
+        ctx.repo.name,
+        issue.number,
+        issue.title,
+        issue.html_url,
+        ctx.owned_because(issue)
+    );
+    let human: Vec<&str> = ctx
+        .triggers
+        .iter()
+        .filter(|t| t.as_str() != "created")
+        .map(String::as_str)
+        .collect();
+    if !human.is_empty() {
+        s.push_str(&format!(
+            " It reached ssf because {}; that is for you to act on.",
+            ctx.because_of(&human)
+        ));
+    }
+    s.push_str("\n\nActivity so far:\n\n");
+    if events.is_empty() {
+        s.push_str("(no activity yet)\n");
+    }
+    for e in events {
+        s.push_str(&e.text);
+        s.push('\n');
+    }
+    match ctx.pr {
+        Some(pr) if pr.same_repo(&ctx.repo.name) => s.push_str(&format!(
+            "\nReply to review comments and questions with `gh pr comment {} --repo {} --body \"...\"` \
+(or `gh api` for inline replies); pushes to `{}` update the PR. Do not merge it; a human does that.",
+            issue.number, ctx.repo.name, pr.head_ref
+        )),
+        Some(_) => s.push_str(
+            "\nThis pull request comes from a fork, so answer on it with `gh pr comment` and do not merge it.",
+        ),
+        None => s.push_str(&format!(
+            "\nAnswer on it with `gh issue comment {} --repo {} --body \"...\"`. Do not close it yourself.",
+            issue.number, ctx.repo.name
+        )),
+    }
+    s
+}
+
 pub fn closed_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
+    let kind = ctx.kind();
     let mut s = format!(
         "[ssf] {}#{} \"{}\" has been closed ({}).\n\n",
         ctx.repo.name,
@@ -475,9 +582,69 @@ pub fn closed_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) ->
         s.push_str(&e.text);
         s.push('\n');
     }
+    match ctx.owner {
+        Some(owner) => s.push_str(&format!(
+            "\nYou will not receive further updates for this {kind}. Your own item, {}#{owner}, is \
+unaffected; carry on with it.",
+            ctx.repo.name
+        )),
+        None => s.push_str(&format!(
+            "\nStop working on this {kind}. If you have uncommitted work worth keeping, commit it now \
+and leave a short final comment on the {kind}. You will not receive further updates for it."
+        )),
+    }
+    s
+}
+
+/// A comment on an item, as shown to the session that handed the item off.
+pub struct FinalComment {
+    pub author: String,
+    pub session: Option<String>,
+    pub url: String,
+    pub body: String,
+}
+
+/// The one message a delegating session gets: the item it handed off has
+/// closed, and this is the last word its agent left on it.
+pub fn delegated_closed_prompt(
+    issue: &Issue,
+    merged: bool,
+    last: Option<&FinalComment>,
+    ctx: &PromptContext,
+) -> String {
+    let outcome = if merged {
+        "merged".to_string()
+    } else {
+        format!(
+            "closed, {}",
+            issue.state_reason.as_deref().unwrap_or("no reason given")
+        )
+    };
+    let mut s = format!(
+        "[ssf] {} {}#{} \"{}\" ({}), which this session handed off, has been {outcome}.\n\n",
+        ctx.kind(),
+        ctx.repo.name,
+        issue.number,
+        issue.title,
+        issue.html_url
+    );
+    match last {
+        Some(c) => {
+            let from = match &c.session {
+                Some(o) => format!("@{} (from session {o})", c.author),
+                None => format!("@{}", c.author),
+            };
+            s.push_str(&format!(
+                "Final comment by {from} ({}):\n{}\n",
+                c.url,
+                quote(&c.body, ctx.daemon.max_body_chars)
+            ));
+        }
+        None => s.push_str("It has no comments.\n"),
+    }
     s.push_str(
-        "\nStop working on this issue. If you have uncommitted work worth keeping, commit it now \
-and leave a short final comment on the issue. You will not receive further updates for it.",
+        "\nThis is the only message you will get about it. Take the outcome into account for your \
+own work; nothing else is expected of you unless you disagree with it.",
     );
     s
 }
@@ -500,10 +667,17 @@ pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext
         s.push_str(&e.text);
         s.push('\n');
     }
-    s.push_str(
-        "\nStop working on this. Commit anything worth keeping and leave a short final comment \
+    match ctx.owner {
+        Some(owner) => s.push_str(&format!(
+            "\nYou will not receive further updates for it unless it is brought back in. Your own \
+item, {}#{owner}, is unaffected.",
+            ctx.repo.name
+        )),
+        None => s.push_str(
+            "\nStop working on this. Commit anything worth keeping and leave a short final comment \
 summarising where things stand. You will not receive further updates unless you are brought back in.",
-    );
+        ),
+    }
     s
 }
 
@@ -643,6 +817,8 @@ mod tests {
             bot_login: "bot",
             pr: None,
             triggers: &[],
+            owner: None,
+            delegated_by: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("o/r#3: Add thing"));
@@ -653,7 +829,93 @@ mod tests {
         assert!(p.contains("GH_TOKEN"));
         assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
         assert!(p.contains("`ssf peers` lists them"));
+        assert!(p.contains("create the issue (or PR) with `--assignee bot`"));
+        assert!(!p.contains("handed off to you"));
         assert!(p.trim_end().ends_with("Run the tests."));
+
+        let triggers = vec!["assigned".to_string(), "created".to_string()];
+        let child = PromptContext {
+            triggers: &triggers,
+            delegated_by: Some("o/r#1"),
+            ..ctx
+        };
+        let p = initial_prompt(&issue, &[], &child);
+        assert!(p.contains(
+            "because it was assigned to @bot and the agent session working on o/r#1 opened it and handed it off"
+        ));
+        assert!(p.contains("handed off to you by the agent session working on o/r#1"));
+    }
+
+    #[test]
+    fn owned_items_get_tracking_and_closing_notes() {
+        let pr_issue: Issue = serde_json::from_value(json!({
+            "number": 4, "title": "Fix it", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->", "html_url": "https://gh/4",
+            "state": "open", "state_reason": "completed", "user": {"login": "bot"}, "created_at": "t", "updated_at": "t",
+            "pull_request": {}
+        })).unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let d = cfg();
+        let pr = PrInfo {
+            head_ref: "bot/fix".into(),
+            head_repo: "o/r".into(),
+            base_ref: "main".into(),
+            ..Default::default()
+        };
+        let triggers = vec!["created".to_string(), "review_requested".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            pr: Some(&pr),
+            triggers: &triggers,
+            owner: Some(3),
+            delegated_by: None,
+        };
+        let ev = Rendered {
+            key: "k".into(),
+            text: "- [t] @alice requested a review from @bot".into(),
+        };
+        let p = tracked_prompt(&pr_issue, &[ev], &ctx);
+        assert!(p.starts_with(
+            "[ssf] Now tracking pull request o/r#4 \"Fix it\" (https://gh/4) for this session, because this session opened it."
+        ));
+        assert!(p.contains("because a review was requested from @bot; that is for you to act on"));
+        assert!(p.contains("@alice requested a review"));
+        assert!(p.contains("gh pr comment 4 --repo o/r"));
+        assert!(!p.contains("## How to work on this"));
+
+        // A branch match rather than a tag.
+        let mut untagged = pr_issue.clone();
+        untagged.body = None;
+        let p = tracked_prompt(&untagged, &[], &ctx);
+        assert!(p.contains("because its branch `bot/fix` is this workspace's branch"));
+        assert!(p.contains("(no activity yet)"));
+
+        let c = closed_prompt(&pr_issue, &[], &ctx);
+        assert!(c.contains("Your own item, o/r#3, is unaffected"));
+        assert!(!c.contains("Stop working"));
+        let u = unassigned_prompt(&pr_issue, &[], &ctx);
+        assert!(u.contains("Your own item, o/r#3, is unaffected"));
+
+        // The message a delegating parent gets.
+        let last = FinalComment {
+            author: "bot".into(),
+            session: Some("o/r#4".into()),
+            url: "https://gh/4#c1".into(),
+            body: "Done, see PR #5.".into(),
+        };
+        let m = delegated_closed_prompt(&pr_issue, true, Some(&last), &ctx);
+        assert!(m.starts_with(
+            "[ssf] pull request o/r#4 \"Fix it\" (https://gh/4), which this session handed off, has been merged."
+        ));
+        assert!(m.contains("Final comment by @bot (from session o/r#4) (https://gh/4#c1):\n  > Done, see PR #5."));
+        let m = delegated_closed_prompt(&pr_issue, false, None, &ctx);
+        assert!(m.contains("has been closed, completed."));
+        assert!(m.contains("It has no comments."));
     }
 
     #[test]
@@ -696,6 +958,8 @@ mod tests {
             bot_login: "bot",
             pr: None,
             triggers: &[],
+            owner: None,
+            delegated_by: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("Opened by the agent session working on o/r#3."));

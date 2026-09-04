@@ -4,7 +4,9 @@
 //! body of anything that posts to GitHub, and execs the real gh.
 //!
 //! Only `issue create|comment` and `pr create|comment|review` are touched;
-//! every other invocation is passed on untouched. The shim reads nothing but
+//! every other invocation is passed on untouched. An `issue create` or `pr
+//! create` that assigns the bot itself is a hand-off, and its tag says so
+//! (`mode=delegate`) so the daemon gives the new item a session of its own. The shim reads nothing but
 //! its environment (and a `--body-file`), writes nothing, and keeps stdin and
 //! the terminal intact, so it works inside read-only sandboxes and leaves
 //! gh's interactive flows alone.
@@ -12,7 +14,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::origin::{Origin, stamp};
+use crate::origin::{Origin, stamp_with};
 
 /// Bodies above this are passed through untouched rather than moved from a
 /// file onto the command line (GitHub rejects them anyway).
@@ -106,9 +108,10 @@ pub fn run() -> ! {
     // Only well-formed UTF-8 argument lists are inspected; anything else is
     // handed to gh exactly as received.
     let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
+    let bot = std::env::var("SSF_BOT").ok();
     match (utf8, Origin::from_env()) {
         (Some(args), Some(origin)) => {
-            cmd.args(rewrite(args, &origin, &read_body_file));
+            cmd.args(rewrite(args, &origin, bot.as_deref(), &read_body_file));
         }
         _ => {
             cmd.args(&raw);
@@ -151,11 +154,42 @@ fn is_tagged(cmd: &str, sub: &str) -> bool {
     )
 }
 
+/// Does an `issue create` / `pr create` command line assign the bot (`bot`)
+/// itself? `@me` is the bot too, since gh runs with its token.
+fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
+    let mut i = 0;
+    let mut names: Vec<&str> = Vec::new();
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            break;
+        }
+        if (a == "--assignee" || a == "-a") && i + 1 < args.len() {
+            names.push(args[i + 1].as_str());
+            i += 2;
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--assignee=") {
+            names.push(v);
+        } else if let Some(v) = a.strip_prefix("-a").filter(|v| !v.is_empty() && !a.starts_with("--")) {
+            names.push(v);
+        }
+        i += 1;
+    }
+    names
+        .iter()
+        .flat_map(|n| n.split(','))
+        .map(|n| n.trim().trim_start_matches('@'))
+        .any(|n| n.eq_ignore_ascii_case("me") || bot.is_some_and(|b| n.eq_ignore_ascii_case(b)))
+}
+
 /// The gh arguments with the origin tag appended to the body, where there is
-/// one. `read` resolves `--body-file` (a path, or `-` for stdin).
+/// one. `read` resolves `--body-file` (a path, or `-` for stdin). `bot` is
+/// the bot login, to notice a `create --assignee <bot>` hand-off.
 pub fn rewrite(
     args: Vec<String>,
     origin: &Origin,
+    bot: Option<&str>,
     read: &dyn Fn(&str) -> std::io::Result<String>,
 ) -> Vec<String> {
     let Some((c, s)) = command_words(&args) else {
@@ -164,6 +198,8 @@ pub fn rewrite(
     if !is_tagged(&args[c], &args[s]) {
         return args;
     }
+    let delegate = args[s] == "create" && assigns_bot(&args[s + 1..], bot);
+    let stamp = |body: &str| stamp_with(body, origin, delegate);
     let mut out: Vec<String> = args[..=s].to_vec();
     let mut stamped = false;
     let mut i = s + 1;
@@ -177,19 +213,19 @@ pub fn rewrite(
         // Inline body: --body X, -b X, --body=X, -bX.
         if (a == "--body" || a == "-b") && i + 1 < args.len() {
             out.push(a.to_string());
-            out.push(stamp(&args[i + 1], origin));
+            out.push(stamp(&args[i + 1]));
             stamped = true;
             i += 2;
             continue;
         }
         if let Some(v) = a.strip_prefix("--body=") {
-            out.push(format!("--body={}", stamp(v, origin)));
+            out.push(format!("--body={}", stamp(v)));
             stamped = true;
             i += 1;
             continue;
         }
         if let Some(v) = short("-b").filter(|v| !v.is_empty()) {
-            out.push(format!("-b{}", stamp(v, origin)));
+            out.push(format!("-b{}", stamp(v)));
             stamped = true;
             i += 1;
             continue;
@@ -207,7 +243,7 @@ pub fn rewrite(
             let Ok(text) = read(path) else {
                 return args; // let gh report the unreadable file
             };
-            let body = stamp(&text, origin);
+            let body = stamp(&text);
             if body.len() > MAX_INLINE_BODY {
                 return args;
             }
@@ -269,7 +305,7 @@ mod tests {
             args(&["pr", "review", "--approve", "--body", "hello"]),
             args(&["issue", "create", "-t", "t", "-b", "hello"]),
         ] {
-            let out = rewrite(a.clone(), &o(), &no_files);
+            let out = rewrite(a.clone(), &o(), None, &no_files);
             assert_eq!(out.len(), a.len(), "{a:?}");
             let joined = out.join("\x00");
             assert!(joined.contains(&expect), "{out:?}");
@@ -286,20 +322,23 @@ mod tests {
         let out = rewrite(
             args(&["pr", "create", "-t", "t", "--body-file", "notes.md"]),
             &o(),
+            None,
             &read,
         );
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
-        let out = rewrite(args(&["pr", "create", "-t", "t", "-F", "-"]), &o(), &read);
+        let out = rewrite(args(&["pr", "create", "-t", "t", "-F", "-"]), &o(), None, &read);
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
         let out = rewrite(
             args(&["issue", "comment", "1", "--body-file=notes.md"]),
             &o(),
+            None,
             &read,
         );
         assert_eq!(out, args(&["issue", "comment", "1", "--body", &expect]));
         let out = rewrite(
             args(&["issue", "comment", "1", "-Fnotes.md", "-R", "a/b"]),
             &o(),
+            None,
             &read,
         );
         assert_eq!(
@@ -308,12 +347,12 @@ mod tests {
         );
         // Unreadable file: untouched, gh reports it.
         let a = args(&["issue", "comment", "1", "--body-file", "missing"]);
-        assert_eq!(rewrite(a.clone(), &o(), &no_files), a);
+        assert_eq!(rewrite(a.clone(), &o(), None, &no_files), a);
     }
 
     #[test]
     fn reviews_without_a_body_get_one() {
-        let out = rewrite(args(&["pr", "review", "7", "--approve"]), &o(), &no_files);
+        let out = rewrite(args(&["pr", "review", "7", "--approve"]), &o(), None, &no_files);
         assert_eq!(
             out,
             args(&["pr", "review", "--body", &tag(), "7", "--approve"])
@@ -333,7 +372,7 @@ mod tests {
             args(&["--version"]),
             args(&[]),
         ] {
-            assert_eq!(rewrite(a.clone(), &o(), &no_files), a, "{a:?}");
+            assert_eq!(rewrite(a.clone(), &o(), None, &no_files), a, "{a:?}");
         }
     }
 
@@ -344,7 +383,7 @@ mod tests {
             args(&["issue", "comment", "3", "--body"]),
             args(&["issue", "comment", "3", "--body-file"]),
         ] {
-            assert_eq!(rewrite(a.clone(), &o(), &no_files), a, "{a:?}");
+            assert_eq!(rewrite(a.clone(), &o(), None, &no_files), a, "{a:?}");
         }
     }
 
@@ -352,7 +391,42 @@ mod tests {
     fn already_tagged_bodies_are_left_alone() {
         let body = format!("done\n\n{}", tag());
         let a = args(&["issue", "comment", "3", "--body", &body]);
-        assert_eq!(rewrite(a.clone(), &o(), &no_files), a);
+        assert_eq!(rewrite(a.clone(), &o(), None, &no_files), a);
+    }
+
+    #[test]
+    fn creating_and_assigning_the_bot_is_a_hand_off() {
+        let delegate = format!("child\n\n{}", o().delegate_tag());
+        let plain = format!("child\n\n{}", tag());
+        for a in [
+            args(&["issue", "create", "-t", "t", "-b", "child", "--assignee", "OverlayBot"]),
+            args(&["issue", "create", "-t", "t", "-b", "child", "-a", "overlaybot"]),
+            args(&["issue", "create", "-t", "t", "-b", "child", "--assignee=alice,OverlayBot"]),
+            args(&["issue", "create", "-t", "t", "-b", "child", "-a@me"]),
+            args(&["pr", "create", "-t", "t", "-b", "child", "--assignee", "@me"]),
+        ] {
+            let out = rewrite(a.clone(), &o(), Some("OverlayBot"), &no_files);
+            assert!(out.contains(&delegate), "{a:?} -> {out:?}");
+        }
+        // Assigning someone else, assigning on a comment, or not knowing the
+        // bot login: an ordinary tag.
+        for (a, bot) in [
+            (args(&["issue", "create", "-t", "t", "-b", "child", "--assignee", "alice"]), Some("OverlayBot")),
+            (args(&["issue", "create", "-t", "t", "-b", "child", "--assignee", "OverlayBot"]), None),
+            (args(&["issue", "create", "-t", "t", "-b", "child", "--", "--assignee", "OverlayBot"]), Some("OverlayBot")),
+            (args(&["issue", "comment", "3", "-b", "child", "--assignee", "OverlayBot"]), Some("OverlayBot")),
+        ] {
+            let out = rewrite(a.clone(), &o(), bot, &no_files);
+            assert!(out.contains(&plain), "{a:?} -> {out:?}");
+        }
+        // @me is the bot even without SSF_BOT: gh runs with the bot's token.
+        let out = rewrite(
+            args(&["issue", "create", "-t", "t", "-b", "child", "-a", "@me"]),
+            &o(),
+            None,
+            &no_files,
+        );
+        assert!(out.contains(&delegate));
     }
 
     #[test]

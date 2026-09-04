@@ -666,6 +666,17 @@ impl Orca {
             .collect())
     }
 
+    /// Is there a connected, writable terminal running an agent in the
+    /// workspace, i.e. would [`Orca::deliver`] paste into one rather than
+    /// relaunch the harness?
+    pub async fn has_live_agent(&self, worktree_id: &str) -> Result<bool> {
+        Ok(self
+            .list_terminals(worktree_id)
+            .await?
+            .iter()
+            .any(|t| t.agent_identity.is_some() && t.connected && t.writable))
+    }
+
     pub async fn create_terminal(
         &self,
         worktree_id: &str,
