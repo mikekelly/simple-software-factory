@@ -142,6 +142,10 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print the reference for agents: how sessions, other sessions,
+    /// following items, hand-offs and reviewer sessions work. The initial
+    /// prompt points here.
+    Guide,
     /// Check that GitHub, Orca and the configured harnesses are usable.
     Doctor,
     /// Omarchy desktop integration: bar widget, menu entries, background service.
@@ -412,6 +416,16 @@ async fn main() -> Result<()> {
             r#as,
             json,
         } => tell(&item, message, r#as.as_deref(), json).await,
+        Command::Guide => {
+            let bot = std::env::var("SSF_BOT")
+                .ok()
+                .filter(|b| !b.is_empty())
+                .or_else(|| state::State::load().ok().and_then(|s| s.bot_login))
+                .unwrap_or_else(|| "<bot>".into());
+            let daemon = Config::load().map(|c| c.daemon).unwrap_or_default();
+            print!("{}", prompt::guide(&bot, daemon.review_label()));
+            Ok(())
+        }
         Command::Doctor => doctor().await,
         Command::Ui { command } => ui_cmd(command),
         Command::Launch {

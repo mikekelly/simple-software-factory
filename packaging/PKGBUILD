@@ -6,7 +6,7 @@
 # the local-copy prepare() below.
 
 pkgname=ssf
-pkgver=0.1.0.r47.g777e390
+pkgver=0.1.0.r52.gecc98ba
 pkgrel=1
 pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become Orca agent workspaces"
 arch=('x86_64' 'aarch64')
@@ -73,6 +73,7 @@ package() {
   install -Dm644 omarchy-plugin/manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"
   install -Dm644 omarchy-plugin/Panel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/Panel.qml"
   install -Dm644 config.example.toml "$pkgdir/usr/share/ssf/config.example.toml"
+  install -Dm644 SSF.example.md "$pkgdir/usr/share/ssf/SSF.example.md"
   install -Dm644 README.md "$pkgdir/usr/share/doc/ssf/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/ssf/LICENSE"
 }
