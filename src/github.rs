@@ -1,5 +1,6 @@
-//! Minimal GitHub REST client for the bits ssf needs: identity, assigned
-//! issues (with ETag support), single issues, and issue timelines.
+//! Minimal GitHub client for the bits ssf needs: identity, assigned issues
+//! (with ETag support), single issues, issue timelines, and the project
+//! boards an item is on (the one GraphQL call).
 
 use anyhow::{Context, Result, bail};
 use reqwest::header::{ACCEPT, AUTHORIZATION, ETAG, IF_NONE_MATCH, LINK, USER_AGENT};
@@ -115,6 +116,100 @@ impl PrInfo {
     pub fn same_repo(&self, full_name: &str) -> bool {
         self.head_repo.eq_ignore_ascii_case(full_name)
     }
+}
+
+/// One project (v2) board an issue or pull request is on, with what the
+/// agent needs to read and change the card's Status.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, Deserialize)]
+pub struct ProjectCard {
+    /// Node id of the project (`PVT_...`).
+    pub project_id: String,
+    pub title: String,
+    pub url: String,
+    /// Node id of this item on the board (`PVTI_...`).
+    pub item_id: String,
+    /// Current value of the Status field, if the board has one and it is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// Node id of the Status field (`PVTSSF_...`), if the board has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_field_id: Option<String>,
+    /// The Status options the board offers, in board order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status_options: Vec<StatusOption>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, Deserialize)]
+pub struct StatusOption {
+    pub id: String,
+    pub name: String,
+}
+
+const PROJECT_ITEMS_QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issueOrPullRequest(number: $number) {
+      ... on Issue { projectItems(first: 20) { nodes { ...card } } }
+      ... on PullRequest { projectItems(first: 20) { nodes { ...card } } }
+    }
+  }
+}
+fragment card on ProjectV2Item {
+  id
+  project {
+    id
+    title
+    url
+    closed
+    field(name: "Status") {
+      ... on ProjectV2SingleSelectField { id options { id name } }
+    }
+  }
+  fieldValueByName(name: "Status") {
+    ... on ProjectV2ItemFieldSingleSelectValue { name }
+  }
+}"#;
+
+/// Cards out of a `projectItems` GraphQL response. Closed boards are left
+/// out: nothing is expected to be kept accurate on them.
+pub fn parse_project_items(data: &Value) -> Vec<ProjectCard> {
+    let nodes = data
+        .pointer("/repository/issueOrPullRequest/projectItems/nodes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    nodes
+        .iter()
+        .filter_map(|n| {
+            let project = n.get("project")?;
+            if project.get("closed").and_then(Value::as_bool).unwrap_or(false) {
+                return None;
+            }
+            let field = project.get("field").filter(|f| !f.is_null());
+            let status_options = field
+                .and_then(|f| f.get("options"))
+                .and_then(Value::as_array)
+                .map(|opts| {
+                    opts.iter()
+                        .filter_map(|o| {
+                            Some(StatusOption {
+                                id: value_str(o, &["id"])?.to_string(),
+                                name: value_str(o, &["name"])?.to_string(),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            Some(ProjectCard {
+                project_id: value_str(project, &["id"])?.to_string(),
+                title: value_str(project, &["title"]).unwrap_or("(untitled)").to_string(),
+                url: value_str(project, &["url"]).unwrap_or("").to_string(),
+                item_id: value_str(n, &["id"])?.to_string(),
+                status: value_str(n, &["fieldValueByName", "name"]).map(str::to_string),
+                status_field_id: field.and_then(|f| value_str(f, &["id"])).map(str::to_string),
+                status_options,
+            })
+        })
+        .collect()
 }
 
 /// Result of a conditional GET.
@@ -381,6 +476,40 @@ impl GitHub {
         Ok(PrInfo::from_value(&v))
     }
 
+    /// The open project boards an issue or pull request is on. Needs the
+    /// `project` scope; without it GitHub answers with a GraphQL error.
+    pub async fn project_items(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<Vec<ProjectCard>> {
+        let url = self.url("graphql");
+        let resp = self
+            .post(&url)
+            .json(&serde_json::json!({
+                "query": PROJECT_ITEMS_QUERY,
+                "variables": {"owner": owner, "name": repo, "number": number},
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let resp = Self::check(resp, &format!("looking up project boards of {owner}/{repo}#{number}"))
+            .await?;
+        let v: Value = resp.json().await.context("decoding GraphQL response")?;
+        if let Some(errors) = v.get("errors").and_then(Value::as_array).filter(|e| !e.is_empty()) {
+            let msgs: Vec<&str> = errors
+                .iter()
+                .filter_map(|e| value_str(e, &["message"]))
+                .collect();
+            bail!(
+                "GraphQL error looking up project boards of {owner}/{repo}#{number}: {}",
+                msgs.join("; ")
+            );
+        }
+        Ok(parse_project_items(v.get("data").unwrap_or(&Value::Null)))
+    }
+
     pub async fn issue(&self, owner: &str, repo: &str, number: u64) -> Result<Issue> {
         let url = self.url(&format!("repos/{owner}/{repo}/issues/{number}"));
         let resp = self
@@ -467,4 +596,36 @@ pub fn value_u64(v: &Value, path: &[&str]) -> Option<u64> {
         cur = cur.get(key)?;
     }
     cur.as_u64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn project_items_are_parsed_and_closed_boards_dropped() {
+        let data = json!({"repository": {"issueOrPullRequest": {"projectItems": {"nodes": [
+            {"id": "PVTI_1", "project": {"id": "PVT_1", "title": "Roadmap", "url": "https://gh/p/1", "closed": false,
+                "field": {"id": "PVTSSF_1", "options": [{"id": "a1", "name": "Todo"}, {"id": "b2", "name": "Done"}]}},
+             "fieldValueByName": {"name": "Todo"}},
+            {"id": "PVTI_2", "project": {"id": "PVT_2", "title": "Old", "url": "https://gh/p/2", "closed": true,
+                "field": null}, "fieldValueByName": null},
+            {"id": "PVTI_3", "project": {"id": "PVT_3", "title": "No status", "url": "https://gh/p/3", "closed": false,
+                "field": null}, "fieldValueByName": null}
+        ]}}}});
+        let cards = parse_project_items(&data);
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].title, "Roadmap");
+        assert_eq!(cards[0].item_id, "PVTI_1");
+        assert_eq!(cards[0].status.as_deref(), Some("Todo"));
+        assert_eq!(cards[0].status_field_id.as_deref(), Some("PVTSSF_1"));
+        assert_eq!(cards[0].status_options.len(), 2);
+        assert_eq!(cards[0].status_options[1].name, "Done");
+        assert_eq!(cards[1].title, "No status");
+        assert!(cards[1].status.is_none());
+        assert!(cards[1].status_field_id.is_none());
+        assert!(cards[1].status_options.is_empty());
+        assert!(parse_project_items(&Value::Null).is_empty());
+    }
 }

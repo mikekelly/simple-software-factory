@@ -17,8 +17,9 @@ its review) it:
    so pushes update the PR. An item a session opened itself (or a PR on a
    session's branch) gets no session of its own: it is routed to the agent
    that opened it (see [Ownership](#ownership-one-session-per-item)),
-3. sends the agent the issue, its description and everything that has happened
-   on it so far, plus instructions on how to report back,
+3. sends the agent the issue, its description, the project boards it is on
+   and everything that has happened on it so far, plus instructions on how
+   to report back,
 4. keeps polling the issue timeline and pastes new activity (comments, label
    changes, renames, linked PRs, ...) into the same agent session, which
    steers it if it is busy and wakes it up if it is idle,
@@ -174,6 +175,21 @@ initial prompt tells the agent that plain `gh` and `git push` act as the bot.
 Because activity by the bot login is filtered out of follow-up messages, the
 agent's own comments are not echoed back to it (`daemon.include_own_events`
 turns that off). `ssf token` still prints the token for any other use.
+
+## Project boards
+
+If the issue or pull request is on any GitHub project (v2) boards, the initial
+prompt lists them under a "Project boards" heading: each board's name and URL,
+the card's current Status, the Status options the board offers, and the
+`gh project item-edit` command (with the project, item, field and option ids
+filled in) that changes it. The agent is told that keeping its card accurate
+is part of the job and that which column fits is its own judgement from what
+is actually happening. ssf itself never moves cards and prescribes no mapping
+from events to columns; put any repository-specific conventions about columns
+in the per-repository instructions. The lookup is one GraphQL query per
+onboarding and delivery, using the bot token's `project` scope; if it fails
+the prompt simply carries no boards section and the daemon logs why. Closed
+boards are left out.
 
 ## Origin tags: which session posted what
 

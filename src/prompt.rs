@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use crate::config::{DaemonConfig, RepoConfig};
-use crate::github::{Issue, PrInfo, value_str, value_u64};
+use crate::github::{Issue, PrInfo, ProjectCard, value_str, value_u64};
 use crate::origin;
 
 /// A timeline event that should be shown to the agent.
@@ -275,6 +275,8 @@ pub struct PromptContext<'a> {
     pub owner: Option<u64>,
     /// Session (`owner/repo#N`) that opened the item as a hand-off.
     pub delegated_by: Option<&'a str>,
+    /// Open project boards the item is on.
+    pub projects: &'a [ProjectCard],
 }
 
 impl PromptContext<'_> {
@@ -392,9 +394,54 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     s
 }
 
+/// The boards the item is on: where the card is now and what it could be
+/// set to. Which column fits is the agent's call, so nothing here says.
+fn project_boards(ctx: &PromptContext) -> String {
+    if ctx.projects.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("\n\n## Project boards\n\n");
+    for card in ctx.projects {
+        s.push_str(&format!("- {} ({}): ", card.title, card.url));
+        match (&card.status, &card.status_field_id) {
+            (Some(status), _) => s.push_str(&format!("Status is \"{status}\".")),
+            (None, Some(_)) => s.push_str("Status is not set."),
+            (None, None) => s.push_str("this board has no Status field."),
+        }
+        if let Some(field) = &card.status_field_id {
+            if !card.status_options.is_empty() {
+                let names: Vec<String> = card
+                    .status_options
+                    .iter()
+                    .map(|o| format!("\"{}\"", o.name))
+                    .collect();
+                s.push_str(&format!(" Options: {}.", names.join(", ")));
+            }
+            s.push_str(&format!(
+                "\n  Change it with `gh project item-edit --project-id {} --id {} --field-id {} \
+--single-select-option-id <option id>`",
+                card.project_id, card.item_id, field
+            ));
+            if card.status_options.is_empty() {
+                s.push('.');
+            } else {
+                let ids: Vec<String> = card
+                    .status_options
+                    .iter()
+                    .map(|o| format!("\"{}\" = {}", o.name, o.id))
+                    .collect();
+                s.push_str(&format!(", where {}.", ids.join(", ")));
+            }
+        }
+        s.push('\n');
+    }
+    s.trim_end().to_string()
+}
+
 pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let mut s = String::new();
     s.push_str(&issue_header(issue, ctx));
+    s.push_str(&project_boards(ctx));
     s.push_str("\n\n## Description\n\n");
     let body = origin::strip(issue.body.as_deref().unwrap_or(""));
     let body = body.trim();
@@ -487,6 +534,13 @@ separate PR from this worktree against `{}`.\n\
 independently; that session is not watching it and will only be told, once, when it is closed, \
 along with your final comment, so make that comment a clear summary of the outcome (what was \
 done, the PR link, anything left open).\n"
+        ));
+    }
+    if !ctx.projects.is_empty() {
+        s.push_str(&format!(
+            "- This {kind} is on the project board(s) listed above. Keeping its card accurate is part \
+of the job: which Status fits is your judgement, from what is actually happening, so set it \
+when that changes (the command is under each board). ssf never moves cards itself.\n"
         ));
     }
     if let Some(extra) = ctx.daemon.instructions.as_deref() {
@@ -819,6 +873,7 @@ mod tests {
             triggers: &[],
             owner: None,
             delegated_by: None,
+            projects: &[],
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("o/r#3: Add thing"));
@@ -874,6 +929,7 @@ mod tests {
             triggers: &triggers,
             owner: Some(3),
             delegated_by: None,
+            projects: &[],
         };
         let ev = Rendered {
             key: "k".into(),
@@ -919,6 +975,71 @@ mod tests {
     }
 
     #[test]
+    fn initial_prompt_lists_project_boards_without_prescribing_columns() {
+        use crate::github::StatusOption;
+        let issue: Issue = serde_json::from_value(json!({
+            "number": 3, "title": "Add thing", "body": "Please add", "html_url": "https://gh/3", "state": "open",
+            "user": {"login": "carol"}, "created_at": "t", "updated_at": "t"
+        })).unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let d = cfg();
+        let boards = vec![
+            ProjectCard {
+                project_id: "PVT_1".into(),
+                title: "Roadmap".into(),
+                url: "https://gh/p/1".into(),
+                item_id: "PVTI_1".into(),
+                status: Some("Todo".into()),
+                status_field_id: Some("PVTSSF_1".into()),
+                status_options: vec![
+                    StatusOption { id: "a1".into(), name: "Todo".into() },
+                    StatusOption { id: "b2".into(), name: "In Progress".into() },
+                ],
+            },
+            ProjectCard {
+                project_id: "PVT_2".into(),
+                title: "Bare".into(),
+                url: "https://gh/p/2".into(),
+                item_id: "PVTI_2".into(),
+                ..Default::default()
+            },
+        ];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            pr: None,
+            triggers: &[],
+            owner: None,
+            delegated_by: None,
+            projects: &boards,
+        };
+        let p = initial_prompt(&issue, &[], &ctx);
+        assert!(p.contains("## Project boards\n\n- Roadmap (https://gh/p/1): Status is \"Todo\". Options: \"Todo\", \"In Progress\".\n"));
+        assert!(p.contains(
+            "`gh project item-edit --project-id PVT_1 --id PVTI_1 --field-id PVTSSF_1 --single-select-option-id <option id>`, where \"Todo\" = a1, \"In Progress\" = b2."
+        ));
+        assert!(p.contains("- Bare (https://gh/p/2): this board has no Status field.\n"));
+        assert!(p.contains("Keeping its card accurate is part of the job"));
+        assert!(p.contains("## Project boards"));
+        assert!(p.find("## Project boards").unwrap() < p.find("## Description").unwrap());
+        // No column is prescribed for any situation: the option names appear
+        // only in the board listing, never in the instructions.
+        let how = &p[p.find("## How to work on this").unwrap()..];
+        assert!(how.contains("Keeping its card accurate"));
+        assert!(!how.contains("Todo") && !how.contains("In Progress"));
+
+        let none = PromptContext { projects: &[], ..ctx };
+        let p = initial_prompt(&issue, &[], &none);
+        assert!(!p.contains("Project boards"));
+        assert!(!p.contains("gh project item-edit"));
+    }
+
+    #[test]
     fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
         let ev = json!({"event":"commented","id":1,"user":{"login":"bot"},"created_at":"t",
             "body":"done\n\n<!-- ssf: origin=o/r#9 -->","html_url":"https://x/1"});
@@ -960,6 +1081,7 @@ mod tests {
             triggers: &[],
             owner: None,
             delegated_by: None,
+            projects: &[],
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("Opened by the agent session working on o/r#3."));
