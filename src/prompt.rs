@@ -17,6 +17,22 @@ pub struct Rendered {
     /// (`owner/repo#N`, or `owner/repo#N:reviewer` for a reviewer session's
     /// post); `None` when the post carries no tag.
     pub origin: Option<String>,
+    /// For a `labeled`/`unlabeled` event, the label's name.
+    pub label: Option<String>,
+}
+
+impl Rendered {
+    /// Whether this event asks the bot for a review of the item: a review
+    /// request, or the review label being added.
+    pub fn asks_review(&self, review_label: Option<&str>) -> bool {
+        self.key.starts_with("review_requested:")
+            || (self.key.starts_with("labeled:")
+                && review_label.is_some_and(|l| {
+                    self.label
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(l))
+                }))
+    }
 }
 
 /// Stable identity for a timeline event. Events without an id fall back to a
@@ -288,7 +304,14 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         }
         other => head(&format!("{}", other.replace('_', " "))),
     };
-    Some(Rendered { key, text, origin })
+    let label = matches!(kind.as_str(), "labeled" | "unlabeled")
+        .then(|| value_str(ev, &["label", "name"]).unwrap_or("?").to_string());
+    Some(Rendered {
+        key,
+        text,
+        origin,
+        label,
+    })
 }
 
 #[derive(Clone)]
@@ -371,6 +394,43 @@ impl PromptContext<'_> {
         }
     }
 
+    /// How to ask the bot for a review of pull request `n` (again): the
+    /// review label if one is configured, since GitHub refuses a review
+    /// request from a pull request's author, else a review request.
+    pub fn ask_review(&self, n: &str) -> String {
+        match self.daemon.review_label() {
+            Some(l) => format!(
+                "add the `{l}` label (`gh pr edit {n} --add-label {l}`; GitHub refuses a review \
+request from a pull request's own author, and ssf clears the label once the review is posted)"
+            ),
+            None => format!(
+                "request the review again (`gh pr edit {n} --add-reviewer {}`)",
+                self.bot_login
+            ),
+        }
+    }
+
+    /// What asked the bot for this review, from a reviewer session's
+    /// triggers: "a review was requested from @bot", "the `review` label
+    /// was added", or both.
+    pub fn review_asked(&self) -> String {
+        let bot = self.bot_login;
+        let mut parts = Vec::new();
+        if self.triggers.iter().any(|t| t == "review_requested") {
+            parts.push(format!("a review was requested from @{bot}"));
+        }
+        if self.triggers.iter().any(|t| t == "review_label") {
+            parts.push(format!(
+                "the `{}` label was added",
+                self.daemon.review_label().unwrap_or("review")
+            ));
+        }
+        if parts.is_empty() {
+            parts.push(format!("a review was asked of @{bot}"));
+        }
+        parts.join(" and ")
+    }
+
     fn because(&self) -> String {
         let bot = self.bot_login;
         let parts: Vec<String> = self
@@ -380,6 +440,10 @@ impl PromptContext<'_> {
                 "assigned" => format!("it was assigned to @{bot}"),
                 "mentioned" => format!("@{bot} was mentioned on it"),
                 "review_requested" => format!("a review was requested from @{bot}"),
+                "review_label" => format!(
+                    "it was given the `{}` label, which asks @{bot} for a review",
+                    self.daemon.review_label().unwrap_or("review")
+                ),
                 "created" => match self.delegated_by {
                     Some(parent) => {
                         format!("the agent session working on {parent} opened it and handed it off")
@@ -597,11 +661,16 @@ carries `mode=delegate` and the item gets a session of its own. You are subscrib
 automatically, so you see its activity as FYI messages, and when it closes you get one message \
 with its final comment. Assigning @{bot} to an existing item you did not open gives it a fresh \
 session too.\n\
-- A review requested from @{bot} on a pull request you opened is not for you to do: ssf starts a \
-separate reviewer session for it (a read-only checkout of the PR with its own agent), and its \
-review arrives here as activity, marked \"from the reviewer session on owner/repo#P\". Answer it \
-and push fixes as you would for a human reviewer, then request the review again \
-(`gh pr edit P --add-reviewer {bot}`) when you want another look.\n"
+- A review asked of @{bot} on a pull request you opened{how_asked} is not for you to do: ssf \
+starts a separate reviewer session for it (a read-only checkout of the PR with its own agent), \
+and its review arrives here as activity, marked \"from the reviewer session on owner/repo#P\". \
+Answer it and push fixes as you would for a human reviewer, then {ask_again} when you want \
+another look.\n",
+        how_asked = match ctx.daemon.review_label() {
+            Some(l) => format!(" (the `{l}` label, or a review request)"),
+            None => String::new(),
+        },
+        ask_again = ctx.ask_review("P"),
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -678,10 +747,10 @@ finished, address it and report back on the issue as before.",
     if let Some(r) = ctx.reviewer_session(issue).filter(|_| {
         events
             .iter()
-            .any(|e| e.key.starts_with("review_requested:"))
+            .any(|e| e.asks_review(ctx.daemon.review_label()))
     }) {
         s.push_str(&format!(
-            " The review requested from @{} is not for you: since this session wrote the pull \
+            " The review asked of @{} is not for you: since this session wrote the pull \
 request, a separate reviewer session ({r}) reviews it. Do not review it yourself; its review \
 arrives here as activity.",
             ctx.bot_login
@@ -710,9 +779,13 @@ here; `SSF_ISSUE` is unchanged.",
         .filter(|t| t.as_str() != "created")
         .map(String::as_str)
         .collect();
+    let labelled = ctx
+        .daemon
+        .review_label()
+        .is_some_and(|l| issue.has_label(l));
     let reviewer = ctx
         .reviewer_session(issue)
-        .filter(|_| human.contains(&"review_requested"));
+        .filter(|_| human.contains(&"review_requested") || labelled);
     let human: Vec<&str> = human
         .into_iter()
         .filter(|t| reviewer.is_none() || *t != "review_requested")
@@ -725,10 +798,18 @@ here; `SSF_ISSUE` is unchanged.",
     }
     if let Some(r) = &reviewer {
         s.push_str(&format!(
-            " A review was requested from @{}; since this session wrote the pull request, a \
+            " A review was asked of @{}{}; since this session wrote the pull request, a \
 separate reviewer session ({r}) reviews it. Do not review it yourself: its review arrives here \
 as activity.",
-            ctx.bot_login
+            ctx.bot_login,
+            if labelled {
+                format!(
+                    " (the `{}` label)",
+                    ctx.daemon.review_label().unwrap_or_default()
+                )
+            } else {
+                String::new()
+            }
         ));
     }
     s.push_str("\n\nActivity so far:\n\n");
@@ -1050,10 +1131,18 @@ fn review_instructions(issue: &Issue, ctx: &PromptContext) -> String {
         Some(pr) => (pr.head_ref.clone(), pr.base_ref.clone()),
         None => ("the PR branch".to_string(), "the base branch".to_string()),
     };
+    let asked = ctx.review_asked();
+    let fulfilled = match ctx.daemon.review_label() {
+        Some(l) => format!(
+            "ssf removes the `{l}` label, or GitHub drops the review request; leave the label \
+alone yourself"
+        ),
+        None => "GitHub drops the review request".to_string(),
+    };
     let mut s = format!(
         "\n## How to review this\n\n\
 You are a reviewer for the GitHub bot account @{bot}. Simple Software Factory (ssf) started \
-this session because a review was requested from @{bot} on pull request {repo}#{n}, which \
+this session because {asked} on pull request {repo}#{n}, which \
 another agent session of the same bot ({author}) wrote; that session must not review its own \
 work, so you do. Your job is the review, nothing else: you never change the pull request.\n\n\
 - This worktree is a read-only checkout of the pull request's head (`origin/{head}`, against \
@@ -1067,8 +1156,8 @@ the issue asked, then tests, docs and the project's conventions. Be specific, po
 and lines, and say what would make it mergeable.\n\
 - Post the review with `gh pr review {n} --repo {repo} --approve|--request-changes|--comment \
 --body \"...\"` (inline comments through `gh api` if useful). One review per request: when it is \
-posted, GitHub drops the review request and this session pauses until the review is requested \
-again, when you get a message here with what happened since; then look at the changes again \
+posted the request is fulfilled ({fulfilled}) and this session pauses until a review is asked \
+for again, when you get a message here with what happened since; then look at the changes again \
 rather than starting over.\n\
 - The bot's GitHub credentials are already in your environment (`GH_TOKEN`, `GITHUB_TOKEN`), so \
 plain `gh` commands act as @{bot}. `SSF_REPO` and `SSF_ISSUE` name this pull request and \
@@ -1129,9 +1218,14 @@ pub fn review_again_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptConte
         .map(|p| p.head_ref.clone())
         .unwrap_or_else(|| "<branch>".into());
     let mut s = format!(
-        "[ssf] A review was requested from @{} again on pull request {}#{} \"{}\" ({}). \
+        "[ssf] Another review is asked of @{} on pull request {}#{} \"{}\" ({}): {}. \
 Activity since you last looked:\n\n",
-        ctx.bot_login, ctx.repo.name, issue.number, issue.title, issue.html_url
+        ctx.bot_login,
+        ctx.repo.name,
+        issue.number,
+        issue.title,
+        issue.html_url,
+        ctx.review_asked()
     );
     if events.is_empty() {
         s.push_str("(no new activity)\n");
@@ -1166,8 +1260,8 @@ pub fn review_done_prompt(
 ) -> String {
     let mut s = match why {
         ReviewEnd::Fulfilled => format!(
-            "[ssf] The review request for @{} on pull request {}#{} \"{}\" ({}) has been \
-fulfilled or withdrawn.\n\n",
+            "[ssf] The review asked of @{} on pull request {}#{} \"{}\" ({}) has been \
+posted, or the request withdrawn.\n\n",
             ctx.bot_login, ctx.repo.name, issue.number, issue.title, issue.html_url
         ),
         ReviewEnd::Closed { merged } => format!(
@@ -1185,7 +1279,7 @@ fulfilled or withdrawn.\n\n",
     }
     s.push_str(match why {
         ReviewEnd::Fulfilled => {
-            "\nStop here; do not post anything more. If a review is requested from the bot again \
+            "\nStop here; do not post anything more. If a review is asked of the bot again \
 you will be told here, with what happened in between."
         }
         ReviewEnd::Closed { .. } => {
@@ -1404,6 +1498,7 @@ mod tests {
             key: "k".into(),
             text: "- [t] @alice commented (u):\n  > hi".into(),
             origin: None,
+            label: None,
         };
         let p = fyi_prompt(
             &issue,
@@ -1484,6 +1579,7 @@ mod tests {
             key: "k".into(),
             text: "- [t] @alice requested a review from @bot".into(),
             origin: None,
+            label: None,
         };
         let p = tracked_prompt(&pr_issue, &[ev], &ctx);
         assert!(p.starts_with(
@@ -1581,6 +1677,7 @@ mod tests {
             key: "review_requested:1".into(),
             text: "- [t] @alice requested a review from @bot".into(),
             origin: None,
+            label: None,
         };
         let p = review_prompt(&pr_issue, &[ev.clone()], &ctx);
         assert!(p.contains(
@@ -1615,9 +1712,16 @@ mod tests {
         ));
         assert!(f.contains("if your review is still to be posted, post it"));
 
+        assert!(p.contains(
+            "this session because a review was requested from @bot on pull request o/r#4"
+        ));
+        assert!(p.contains(
+            "the request is fulfilled (ssf removes the `review` label, or GitHub drops the review request; leave the label alone yourself)"
+        ));
+
         let a = review_again_prompt(&pr_issue, &[], &ctx);
         assert!(a.starts_with(
-            "[ssf] A review was requested from @bot again on pull request o/r#4 \"Fix it\" (https://gh/4)."
+            "[ssf] Another review is asked of @bot on pull request o/r#4 \"Fix it\" (https://gh/4): a review was requested from @bot."
         ));
         assert!(a.contains("(no new activity)"));
         assert!(a.contains("git reset --hard origin/bot/fix"));
@@ -1625,10 +1729,10 @@ mod tests {
 
         let done = review_done_prompt(&pr_issue, &[ev.clone()], &ctx, ReviewEnd::Fulfilled);
         assert!(done.starts_with(
-            "[ssf] The review request for @bot on pull request o/r#4 \"Fix it\" (https://gh/4) has been fulfilled or withdrawn."
+            "[ssf] The review asked of @bot on pull request o/r#4 \"Fix it\" (https://gh/4) has been posted, or the request withdrawn."
         ));
         assert!(done.contains("@alice requested a review"));
-        assert!(done.contains("If a review is requested from the bot again you will be told here"));
+        assert!(done.contains("If a review is asked of the bot again you will be told here"));
         let merged = review_done_prompt(&pr_issue, &[], &ctx, ReviewEnd::Closed { merged: true });
         assert!(
             merged
@@ -1647,6 +1751,7 @@ mod tests {
             key: "commented:2".into(),
             text: "- [t] @alice commented".into(),
             origin: None,
+            label: None,
         };
         let fu = followup_prompt(&pr_issue, &[other], &ctx);
         assert!(!fu.contains("reviewer session"));
@@ -1659,12 +1764,136 @@ mod tests {
         let fu = followup_prompt(&pr_issue, &[ev], &unowned);
         assert!(!fu.contains("reviewer session"));
 
-        // The author's own instructions explain the rule.
+        // The author's own instructions explain the rule, and how to ask
+        // for a review of its own PR (a label, since GitHub refuses a
+        // review request from the author).
         let initial = initial_prompt(&pr_issue, &[], &unowned);
         assert!(initial.contains("ssf starts a separate reviewer session for it"));
-        assert!(initial.contains("gh pr edit P --add-reviewer bot"));
+        assert!(initial.contains("(the `review` label, or a review request)"));
+        assert!(
+            initial.contains("then add the `review` label (`gh pr edit P --add-label review`;")
+        );
+        assert!(!initial.contains("--add-reviewer"));
+        let mut no_label = d.clone();
+        no_label.review_label = String::new();
+        let plain = PromptContext {
+            daemon: &no_label,
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &plain);
+        assert!(
+            initial.contains("then request the review again (`gh pr edit P --add-reviewer bot`)")
+        );
+        assert!(!initial.contains("`review` label"));
 
         assert_eq!(review_worktree_name(4, "Fix it"), "review-4-fix-it");
+    }
+
+    #[test]
+    fn the_review_label_asks_for_a_review() {
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let d = cfg();
+        let pr = PrInfo {
+            head_ref: "bot/fix".into(),
+            head_repo: "o/r".into(),
+            base_ref: "main".into(),
+            ..Default::default()
+        };
+        let pr_issue: Issue = serde_json::from_value(json!({
+            "number": 4, "title": "Fix it", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->",
+            "html_url": "https://gh/4", "state": "open", "user": {"login": "bot"},
+            "labels": [{"name": "Review"}], "pull_request": {},
+            "created_at": "t", "updated_at": "t"
+        }))
+        .unwrap();
+        assert!(pr_issue.has_label("review"));
+        assert!(!pr_issue.has_label("bug"));
+        let created = vec!["created".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            pr: Some(&pr),
+            triggers: &created,
+            owner: Some(3),
+            delegated_by: None,
+            projects: &[],
+            project_prompt: None,
+        };
+        let labeled = json!({"event": "labeled", "id": 5, "actor": {"login": "alice"},
+            "label": {"name": "Review"}, "created_at": "t"});
+        let ev = render_event(&labeled, false, &d, "bot").unwrap();
+        assert_eq!(ev.label.as_deref(), Some("Review"));
+        assert!(ev.asks_review(Some("review")));
+        assert!(!ev.asks_review(Some("needs-review")));
+        assert!(!ev.asks_review(None));
+        let other = render_event(
+            &json!({"event": "labeled", "id": 6, "actor": {"login": "alice"},
+                "label": {"name": "bug"}, "created_at": "t"}),
+            false,
+            &d,
+            "bot",
+        )
+        .unwrap();
+        assert!(!other.asks_review(Some("review")));
+        let request = Rendered {
+            key: "review_requested:1".into(),
+            text: String::new(),
+            origin: None,
+            label: None,
+        };
+        assert!(request.asks_review(None));
+
+        // The author is told the label is not its to act on.
+        let fu = followup_prompt(&pr_issue, std::slice::from_ref(&ev), &ctx);
+        assert!(fu.contains(
+            "The review asked of @bot is not for you: since this session wrote the pull request, a separate reviewer session (o/r#4:reviewer) reviews it"
+        ));
+        let fu = followup_prompt(&pr_issue, std::slice::from_ref(&other), &ctx);
+        assert!(!fu.contains("reviewer session"));
+        // ...also when the PR is first bound with the label already on it.
+        let t = tracked_prompt(&pr_issue, std::slice::from_ref(&ev), &ctx);
+        assert!(t.contains(
+            "A review was asked of @bot (the `review` label); since this session wrote the pull request, a separate reviewer session (o/r#4:reviewer) reviews it"
+        ));
+        assert!(!t.contains("that is for you to act on"));
+        let mut plain = pr_issue.clone();
+        plain.labels.clear();
+        let t = tracked_prompt(&plain, &[], &ctx);
+        assert!(!t.contains("reviewer session"));
+
+        // The reviewer is told what asked for the review.
+        let asked = vec!["review_label".to_string()];
+        let rctx = PromptContext {
+            triggers: &asked,
+            ..ctx.clone()
+        };
+        let p = review_prompt(&pr_issue, std::slice::from_ref(&ev), &rctx);
+        assert!(p.contains(
+            "this session because the `review` label was added on pull request o/r#4, which another agent session of the same bot (o/r#3) wrote"
+        ));
+        let a = review_again_prompt(&pr_issue, &[], &rctx);
+        assert!(a.starts_with(
+            "[ssf] Another review is asked of @bot on pull request o/r#4 \"Fix it\" (https://gh/4): the `review` label was added."
+        ));
+        let both = vec!["review_requested".to_string(), "review_label".to_string()];
+        let bctx = PromptContext {
+            triggers: &both,
+            ..ctx.clone()
+        };
+        assert_eq!(
+            bctx.review_asked(),
+            "a review was requested from @bot and the `review` label was added"
+        );
+        assert_eq!(ctx.review_asked(), "a review was asked of @bot");
+        assert!(
+            bctx.because()
+                .contains("it was given the `review` label, which asks @bot for a review")
+        );
     }
 
     #[test]

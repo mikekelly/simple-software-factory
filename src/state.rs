@@ -112,7 +112,8 @@ pub struct IssueState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_state: Option<String>,
     /// Why the bot got involved: assigned, mentioned, review_requested,
-    /// created (opened by the bot itself).
+    /// created (opened by the bot itself); review_label on a reviewer
+    /// session started by the review label.
     #[serde(default)]
     pub triggers: Vec<String>,
     /// Pull request branch details.

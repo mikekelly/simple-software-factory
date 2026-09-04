@@ -1229,12 +1229,23 @@ impl Engine {
             .map_err(|e| e.context(ReviewerFailure))
     }
 
-    /// A review requested from the bot on a pull request one of its own
-    /// sessions wrote is not delivered to that session to act on: a reviewer
-    /// session (a second workspace on the PR, subscribed to it rather than
-    /// owning it) is started, followed up while the request stands, and
-    /// stood down when the request is gone (the review was posted, or it was
-    /// withdrawn). The author keeps the PR and sees the review as activity.
+    /// A review asked of the bot on a pull request one of its own sessions
+    /// wrote is not delivered to that session to act on: a reviewer session
+    /// (a second workspace on the PR, subscribed to it rather than owning
+    /// it) is started, followed up while the request stands, and stood down
+    /// when the request is gone. A review is asked for in one of two ways:
+    ///
+    /// - a review request from the bot, which GitHub only allows on a pull
+    ///   request the bot did not open; GitHub drops the request once the
+    ///   review is posted, or it is withdrawn;
+    /// - the review label (`daemon.review_label`, `review` by default) on
+    ///   the pull request, the way for a bot-authored PR, since GitHub
+    ///   refuses a review request from a PR's own author. The label is the
+    ///   request: once the reviewer has posted a review newer than the
+    ///   label, ssf removes the label and stands the reviewer down. Adding
+    ///   it again asks for another look.
+    ///
+    /// The author keeps the PR and sees the review as activity.
     async fn reconcile_reviewer(
         &mut self,
         repo: &RepoConfig,
@@ -1253,27 +1264,83 @@ impl Engine {
         if !issue.is_pull_request() {
             return Ok(());
         }
-        let wanted = triggers.iter().any(|t| t == "review_requested");
+        let requested = triggers.iter().any(|t| t == "review_requested");
+        let label = self
+            .cfg
+            .daemon
+            .review_label()
+            .filter(|l| issue.has_label(l))
+            .map(str::to_string);
+        let mut asked: Vec<String> = Vec::new();
+        if requested {
+            asked.push("review_requested".into());
+        }
+        if label.is_some() {
+            asked.push("review_label".into());
+        }
         let rv = self.peek(repo, Slot::Reviewer(issue.number)).cloned();
         let running = rv.as_ref().is_some_and(|r| r.seeded && r.active);
-        match (wanted, running) {
-            (true, false) => self.start_reviewer(repo, owner, name, issue, &st, rv).await,
-            (true, true) => {
-                self.review_follow_up(repo, owner, name, issue, rv.unwrap())
+        match (asked.is_empty(), running) {
+            (false, false) => {
+                self.start_reviewer(repo, owner, name, issue, &st, rv, asked)
                     .await
             }
             (false, true) => {
+                let rv = rv.unwrap();
+                if rv.triggers != asked {
+                    self.record(repo, Slot::Reviewer(issue.number)).triggers = asked.clone();
+                }
+                // The label has no GitHub-side "fulfilled" signal: look for
+                // the reviewer's review since the label was added, and clear
+                // the label ourselves when there is one. The label is removed
+                // before the record changes, so a failure here is retried on
+                // the next pass rather than leaving the label behind.
+                let mut timeline = None;
+                if let Some(label) = &label
+                    && rv.updated_at.as_deref() != Some(issue.updated_at.as_str())
+                {
+                    let me = reviewer_session_id(&repo.name, issue.number);
+                    let t = self.gh.timeline(owner, name, issue.number).await?;
+                    if review_posted_since_label(&t, label, &self.login, &me) {
+                        info!(
+                            repo = repo.name,
+                            issue = issue.number,
+                            label,
+                            "the reviewer has posted its review; removing the label"
+                        );
+                        self.gh
+                            .remove_label(owner, name, issue.number, label)
+                            .await?;
+                        return self
+                            .retire_reviewer(
+                                repo,
+                                owner,
+                                name,
+                                issue,
+                                ReviewEnd::Fulfilled,
+                                Some(&t),
+                            )
+                            .await;
+                    }
+                    timeline = Some(t);
+                }
+                self.review_follow_up(repo, owner, name, issue, rv, timeline)
+                    .await
+            }
+            (true, true) => {
                 self.retire_reviewer(repo, owner, name, issue, ReviewEnd::Fulfilled, None)
                     .await
             }
-            (false, false) => Ok(()),
+            (true, false) => Ok(()),
         }
     }
 
     /// Start (or bring back) the reviewer session for a pull request. A
     /// reviewer that was stood down keeps its record, workspace and
     /// conversation, so a repeated request resumes where it left off with
-    /// what happened in between.
+    /// what happened in between. `asked` is what wants the review
+    /// (`review_requested`, `review_label`, or both).
+    #[allow(clippy::too_many_arguments)]
     async fn start_reviewer(
         &mut self,
         repo: &RepoConfig,
@@ -1282,6 +1349,7 @@ impl Engine {
         issue: &Issue,
         st: &IssueState,
         prior: Option<IssueState>,
+        asked: Vec<String>,
     ) -> Result<()> {
         let number = issue.number;
         let slot = Slot::Reviewer(number);
@@ -1306,7 +1374,8 @@ impl Engine {
             issue = number,
             author,
             again,
-            "review requested on a session's own pull request; {} its reviewer session",
+            ?asked,
+            "review asked on a session's own pull request; {} its reviewer session",
             if again { "bringing back" } else { "starting" }
         );
         let setup = self
@@ -1331,7 +1400,7 @@ impl Engine {
             e.repo_id = Some(setup.repo_id.clone());
             e.worktree_name = Some(wt_name.clone());
             e.kind = Some("reviewer".into());
-            e.triggers = vec!["review_requested".into()];
+            e.triggers = asked;
             e.github_state = Some("open".into());
             e.pr = Some(pr.clone());
             e.projects = st.projects.clone();
@@ -1488,6 +1557,7 @@ impl Engine {
     }
 
     /// The pull request under review changed: tell the reviewer what is new.
+    /// `timeline` is the PR's timeline if the caller already fetched it.
     async fn review_follow_up(
         &mut self,
         repo: &RepoConfig,
@@ -1495,6 +1565,7 @@ impl Engine {
         name: &str,
         issue: &Issue,
         rv: IssueState,
+        timeline: Option<Vec<Value>>,
     ) -> Result<()> {
         if rv.updated_at.as_deref() == Some(issue.updated_at.as_str()) {
             return Ok(());
@@ -1502,7 +1573,10 @@ impl Engine {
         let number = issue.number;
         let slot = Slot::Reviewer(number);
         let me = reviewer_session_id(&repo.name, number);
-        let timeline = self.gh.timeline(owner, name, number).await?;
+        let timeline = match timeline {
+            Some(t) => t,
+            None => self.gh.timeline(owner, name, number).await?,
+        };
         let diff = self.diff(&rv.seen, &timeline);
         let mine = self.for_recipient(&diff.rendered, &me);
         if mine.is_empty() {
@@ -2940,6 +3014,38 @@ fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
 }
 
 /// The last comment the bot left on an item, as its session's final word.
+/// Whether the bot's reviewer session has posted a review on the pull
+/// request since the review label was last added (or at all, if the label
+/// came with the pull request). Only a review from the reviewer session
+/// counts: one tagged `role=reviewer` for this PR (`me`), or an untagged one
+/// (the shim not in effect); a review tagged with another session's origin
+/// is that session's doing, not the reviewer's.
+fn review_posted_since_label(timeline: &[Value], label: &str, bot: &str, me: &str) -> bool {
+    let mut posted = false;
+    for ev in timeline {
+        match crate::github::value_str(ev, &["event"]) {
+            Some("labeled")
+                if crate::github::value_str(ev, &["label", "name"])
+                    .is_some_and(|n| n.eq_ignore_ascii_case(label)) =>
+            {
+                posted = false;
+            }
+            Some("reviewed") if actor_of(ev).eq_ignore_ascii_case(bot) => {
+                let body = crate::github::value_str(ev, &["body"]).unwrap_or("");
+                let from_reviewer = match origin::parse(body) {
+                    Some(t) => t.session().eq_ignore_ascii_case(me),
+                    None => true,
+                };
+                if from_reviewer {
+                    posted = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    posted
+}
+
 fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
     timeline
         .iter()
@@ -3530,6 +3636,47 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn the_review_label_is_fulfilled_by_the_reviewers_review() {
+        let labeled = |id: u64, name: &str| json!({"event":"labeled","id":id,"actor":{"login":"alice"},"label":{"name":name}});
+        let review = |id: u64, who: &str, body: &str| json!({"event":"reviewed","id":id,"user":{"login":who},"state":"approved","body":body});
+        let me = "o/r#7:reviewer";
+        let posted = |t: &[Value]| review_posted_since_label(t, "review", "Bot", me);
+        // Nothing yet, or a review that predates the label.
+        assert!(!posted(&[]));
+        assert!(!posted(&[labeled(1, "Review")]));
+        assert!(!posted(&[
+            review(1, "bot", "old\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"),
+            labeled(2, "review"),
+        ]));
+        // The reviewer's review after the label fulfils it; a human's, or
+        // another label, does not.
+        assert!(posted(&[
+            labeled(1, "review"),
+            review(2, "bot", "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"),
+        ]));
+        assert!(!posted(&[labeled(1, "review"), review(2, "alice", "lgtm")]));
+        // A review with no tag (shim not in effect) still counts; one from
+        // another session does not.
+        assert!(posted(&[labeled(1, "review"), review(2, "bot", "lgtm")]));
+        assert!(!posted(&[
+            labeled(1, "review"),
+            review(2, "bot", "self-approved\n\n<!-- ssf: origin=o/r#1 -->"),
+        ]));
+        // A label added again after the review asks for another one.
+        assert!(!posted(&[
+            labeled(1, "review"),
+            review(2, "bot", "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"),
+            labeled(3, "review"),
+        ]));
+        // A label that came with the pull request has no event of its own.
+        assert!(posted(&[review(
+            1,
+            "bot",
+            "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"
+        )]));
     }
 
     #[test]

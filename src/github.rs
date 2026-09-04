@@ -79,6 +79,14 @@ impl Issue {
             .any(|a| a.login.eq_ignore_ascii_case(login))
     }
 
+    /// Whether the item carries a label of that name (GitHub label names are
+    /// case-insensitive).
+    pub fn has_label(&self, name: &str) -> bool {
+        self.labels
+            .iter()
+            .any(|l| l.name.eq_ignore_ascii_case(name))
+    }
+
     pub fn author(&self) -> &str {
         self.user
             .as_ref()
@@ -534,6 +542,37 @@ impl GitHub {
             .with_context(|| format!("GET {url}"))?;
         let resp = Self::check(resp, &format!("fetching {owner}/{repo}#{number}")).await?;
         resp.json().await.context("decoding issue")
+    }
+
+    /// Take a label off an issue or pull request. A label that is not on
+    /// the item (someone beat us to it) is not an error.
+    pub async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        label: &str,
+    ) -> Result<()> {
+        let mut url =
+            reqwest::Url::parse(&self.url(&format!("repos/{owner}/{repo}/issues/{number}/labels")))
+                .context("building the label URL")?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("cannot build the label URL"))?
+            .push(label);
+        let resp = self
+            .delete(url.as_str())
+            .send()
+            .await
+            .with_context(|| format!("DELETE {url}"))?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        Self::check(
+            resp,
+            &format!("removing the \"{label}\" label from {owner}/{repo}#{number}"),
+        )
+        .await?;
+        Ok(())
     }
 
     /// Full timeline for an issue, oldest first, all pages.

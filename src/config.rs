@@ -158,6 +158,21 @@ pub struct DaemonConfig {
     /// the workspace anyway.
     #[serde(default = "default_cleanup_grace")]
     pub cleanup_grace_secs: u64,
+    /// Label that asks for a review of a pull request one of the bot's own
+    /// sessions wrote: GitHub refuses a review request from a pull request's
+    /// author, so a human (or the author's agent) adds this label instead,
+    /// the reviewer session starts, and ssf removes the label once the
+    /// review is posted. Empty disables the label trigger.
+    #[serde(default = "default_review_label")]
+    pub review_label: String,
+}
+
+impl DaemonConfig {
+    /// The review label, unless the trigger is disabled.
+    pub fn review_label(&self) -> Option<&str> {
+        let l = self.review_label.trim();
+        (!l.is_empty()).then_some(l)
+    }
 }
 
 impl Default for DaemonConfig {
@@ -170,6 +185,7 @@ impl Default for DaemonConfig {
             instructions: None,
             cleanup_on_close: true,
             cleanup_grace_secs: default_cleanup_grace(),
+            review_label: default_review_label(),
         }
     }
 }
@@ -189,6 +205,10 @@ fn default_max_body_chars() -> usize {
 fn default_true() -> bool {
     true
 }
+fn default_review_label() -> String {
+    "review".into()
+}
+
 fn default_cleanup_grace() -> u64 {
     900
 }
@@ -461,6 +481,43 @@ mod tests {
         let r = Config::load_from(&path);
         let _ = std::fs::remove_file(&path);
         r
+    }
+
+    #[test]
+    fn the_review_label_defaults_to_review_and_can_be_disabled() {
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.daemon.review_label(), Some("review"));
+        let cfg = parse(
+            r#"
+[daemon]
+review_label = " needs-review "
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.daemon.review_label(), Some("needs-review"));
+        let cfg = parse(
+            r#"
+[daemon]
+review_label = ""
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.daemon.review_label(), None);
     }
 
     #[test]
