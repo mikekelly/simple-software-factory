@@ -40,3 +40,4 @@ harness = "claude"                             # agent id: see `ssf agents`
 # path = "~/code/name"                         # register an existing checkout instead of cloning
 # base_branch = "origin/main"
 # instructions = "Run `make test` before opening a PR."
+# prompt_file = "SSF.md"                       # file appended to the initial prompt; relative to the worktree unless absolute
