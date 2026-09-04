@@ -1039,6 +1039,57 @@ account, but your own item and its instructions still come first."
     s
 }
 
+/// A session the startup pass found interrupted: the item it works on and
+/// where its workspace is.
+pub struct Interrupted<'a> {
+    pub repo: &'a str,
+    pub number: u64,
+    pub title: &'a str,
+    pub url: &'a str,
+    /// `refs/heads/...` or short, as recorded; shown short.
+    pub branch: Option<&'a str>,
+    pub path: Option<&'a str>,
+    /// A reviewer session (a read-only checkout of a pull request).
+    pub reviewer: bool,
+}
+
+/// The one message a session gets when the factory finds it interrupted at
+/// startup: the machine (or Orca) restarted, its terminal is gone, and it
+/// has just been started again. A resumed harness has its memory; a fresh
+/// one gets the item's story ahead of this.
+pub fn interrupted_prompt(it: &Interrupted) -> String {
+    let item = format!("{}#{}", it.repo, it.number);
+    let mut s = String::from(
+        "[ssf] The factory restarted (the machine, Orca or ssf itself) and this session was \
+interrupted: its terminal was gone, so it has been started again.\n\n",
+    );
+    let branch = it
+        .branch
+        .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b))
+        .map(|b| format!(" on branch `{b}`"))
+        .unwrap_or_default();
+    let path = it.path.map(|p| format!(" in `{p}`")).unwrap_or_default();
+    if it.reviewer {
+        s.push_str(&format!(
+            "This is the reviewer session for pull request {item} \"{}\" ({}), a read-only \
+checkout of the pull request{path}.\n\nIf your review has not been posted yet, pick it up where \
+you left off (`git log` shows what you were reviewing) and post it. If it has, nothing is needed \
+until the next `[ssf]` message.",
+            it.title, it.url
+        ));
+        return s;
+    }
+    s.push_str(&format!(
+        "This is the session for {item} \"{}\" ({}){branch}{path}.\n\nWork out where you got to \
+(`git status`, `git log`, your last comments on the item) and carry on from there. Anything \
+that happened on the item while you were away arrives as further `[ssf]` messages. If you were \
+part-way through something and cannot tell what is left, say so on the item: that the session \
+was interrupted and what remains.",
+        it.title, it.url
+    ));
+    s
+}
+
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let what = if ctx.triggers.iter().any(|t| t == "review_requested")
         && !ctx.triggers.iter().any(|t| t == "assigned")
@@ -2097,5 +2148,36 @@ mod tests {
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("Opened by the agent session working on o/r#3."));
         assert!(p.contains("## Description\n\nFixes it\n\n## Activity"));
+    }
+
+    #[test]
+    fn interrupted_prompt_names_the_session_and_where_it_is() {
+        let p = interrupted_prompt(&Interrupted {
+            repo: "o/r",
+            number: 18,
+            title: "Resume sessions",
+            url: "https://gh/18",
+            branch: Some("refs/heads/bot/issue-18"),
+            path: Some("/w/issue-18"),
+            reviewer: false,
+        });
+        assert!(p.starts_with("[ssf] The factory restarted"));
+        assert!(p.contains("session for o/r#18 \"Resume sessions\" (https://gh/18)"));
+        assert!(p.contains("on branch `bot/issue-18` in `/w/issue-18`"));
+        assert!(p.contains("`git status`, `git log`"));
+        assert!(p.contains("say so on the item"));
+
+        let r = interrupted_prompt(&Interrupted {
+            repo: "o/r",
+            number: 25,
+            title: "Fix",
+            url: "https://gh/25",
+            branch: None,
+            path: None,
+            reviewer: true,
+        });
+        assert!(r.contains("reviewer session for pull request o/r#25 \"Fix\""));
+        assert!(!r.contains("on branch"));
+        assert!(r.contains("If your review has not been posted yet"));
     }
 }
