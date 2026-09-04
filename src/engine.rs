@@ -23,6 +23,17 @@ use crate::status::{reviewer_session_id, session_id};
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
 const MAX_DELIVERY_FAILURES: u32 = 5;
 
+/// Marks an error from the reviewer side of a pull request, so it is
+/// counted against the reviewer session rather than the PR's own record.
+#[derive(Debug)]
+struct ReviewerFailure;
+
+impl std::fmt::Display for ReviewerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("reviewer session")
+    }
+}
+
 pub struct Engine {
     cfg: Config,
     gh: GitHub,
@@ -638,14 +649,23 @@ impl Engine {
                     }
                 },
             };
-            if let Err(e) = self
+            match self
                 .reconcile_issue(repo, owner, name, &issue, pr, triggers)
                 .await
             {
-                all_ok = false;
-                self.note_failure(repo, issue.number, &e);
-            } else {
-                self.failures.remove(&(repo.name.clone(), issue.number));
+                Ok(()) => {
+                    self.failures.remove(&(repo.name.clone(), issue.number));
+                    self.failures
+                        .remove(&(reviewer_session_id(&repo.name, 0), issue.number));
+                }
+                Err(e) if e.downcast_ref::<ReviewerFailure>().is_some() => {
+                    all_ok = false;
+                    self.note_reviewer_failure(repo, issue.number, &e);
+                }
+                Err(e) => {
+                    all_ok = false;
+                    self.note_failure(repo, issue.number, &e);
+                }
             }
         }
 
@@ -935,6 +955,34 @@ impl Engine {
         }
     }
 
+    /// A failure on the reviewer side: counted apart from the PR's own
+    /// deliveries, and after enough of them the reviewer record is started
+    /// over rather than the PR re-onboarded onto its author.
+    fn note_reviewer_failure(&mut self, repo: &RepoConfig, number: u64, err: &anyhow::Error) {
+        let key = (reviewer_session_id(&repo.name, 0), number);
+        let count = self.failures.entry(key).or_insert(0);
+        *count += 1;
+        warn!(
+            repo = repo.name,
+            issue = number,
+            attempt = *count,
+            "reviewer session failed: {err:#}"
+        );
+        if *count >= MAX_DELIVERY_FAILURES {
+            error!(
+                repo = repo.name,
+                issue = number,
+                "giving up on the reviewer's workspace; it will be started over"
+            );
+            *count = 0;
+            if let Some(rv) = self.state.repo_mut(&repo.name).reviewers.get_mut(&number) {
+                rv.seeded = false;
+                rv.active = false;
+                rv.terminal_handle = None;
+            }
+        }
+    }
+
     fn ctx<'a>(&'a self, repo: &'a RepoConfig, st: &'a IssueState) -> PromptContext<'a> {
         // The repository's prompt file is read from the item's own checkout,
         // so a PR branch that changes it is seen as the branch has it.
@@ -1178,6 +1226,7 @@ impl Engine {
         }
         self.reconcile_reviewer(repo, owner, name, issue, &triggers)
             .await
+            .map_err(|e| e.context(ReviewerFailure))
     }
 
     /// A review requested from the bot on a pull request one of its own
