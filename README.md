@@ -128,6 +128,10 @@ ssf config set daemon.poll_interval_secs 60
 ssf config set daemon.instructions "Always open PRs as drafts."
 ssf status --json
 ssf peers [--repo owner/name] [--all] [--json]
+ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --as owner/repo#N)
+ssf unsub 12
+ssf subs                          # what this session follows, who follows its items
+ssf tell 12 "are you done with the schema?"   # paste a message into that session's terminal
 ssf ui service disable|enable|toggle|status
 ```
 
@@ -143,7 +147,7 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 |-------|------|
 | `id`, `repo`, `number`, `kind` (`issue`/`pull_request`), `title`, `url` | ssf; `id` is the session identity `owner/repo#N` |
 | `github_state` (`open`/`closed`/`merged`), `active`, `triggers`, `pr` | GitHub, as of the last poll |
-| `owner`, `subscribers`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `delegated_by` names the session that handed the item off (`mode=delegate`); `subscribers` is reserved for #3 |
+| `owner`, `subscribers`, `subscriber_only`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `subscribers` are the sessions that hear about it without acting on it; `subscriber_only` marks an item tracked only for them (no owner, no workspace); `delegated_by` names the session that handed the item off (`mode=delegate`) |
 | `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
 
@@ -260,12 +264,13 @@ binding wins):
 - **Hand-offs.** An item a session creates *and assigns the bot to* in the
   same `gh ... create` command is a delegation: the tag carries
   `mode=delegate`, the item gets a fresh session of its own, and the creating
-  session hears nothing more about it until it is closed or merged, when it
-  gets a single message with the outcome and the child's final comment (the
-  last comment the bot left on it). The child is told it was handed off and
-  to leave a clear final comment. The initial prompt explains this rule to
-  agents, so an agent that wants a separate worker uses `--assignee`, and
-  one that wants to keep an item simply opens it.
+  session is subscribed to it (see below): it sees the child's activity as
+  FYI messages, and when the child is closed or merged it gets a single
+  message with the outcome and the child's final comment (the last comment
+  the bot left on it). The child is told it was handed off and to leave a
+  clear final comment. The initial prompt explains this rule to agents, so
+  an agent that wants a separate worker uses `--assignee`, and one that
+  wants to keep an item simply opens it.
 - **Nothing to bind to.** A bot-opened item with no usable tag, no branch
   match and no human trigger is left alone (logged once) rather than given
   a session nobody asked for; assigning or mentioning the bot on it later
@@ -275,6 +280,54 @@ binding wins):
 `ssf status --json` shows the binding as `owner` / `shares_workspace_of`
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
 and "handed off by ...".
+
+## Subscriptions and cross-session comments
+
+Exactly one session acts on an item; any number can hear about it. Each
+item carries a list of subscriber sessions next to its owner, and every
+delivery about the item (new activity, closure, the bot being dropped from
+it, or the item getting a session of its own) is fanned out to them with
+FYI framing: `[ssf] FYI on issue owner/repo#N "title", owned by another
+session (owner/repo#N): ...`, ending with the instruction not to act unless
+asked and how to reach the agent on it. Subscriptions live in the state
+file, so they survive relaunches and rehydration; a session that retires
+(its item closed, or the bot dropped from it) is unsubscribed everywhere.
+
+The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a
+session, or `--as owner/repo#N` from a human shell (an item bound to another
+session counts as that session):
+
+- `ssf sub <n|owner/repo#n>` / `ssf unsub ...` follow or drop an item.
+  Subscribing to an item nothing tracks yet makes it tracked as
+  *subscriber-only*: polled every pass for activity, no workspace, no owner;
+  what happened before the subscription is not replayed. If the bot is later
+  assigned to it (or it is otherwise bound), it gets a session as usual and
+  the subscribers are told; when nobody follows it any more it is dropped.
+- `ssf subs` lists what this session follows and who follows its items
+  (`--json` for detail); `ssf peers` shows subscribers per session.
+- `ssf tell <n> "message"` pastes a message into the terminal of the session
+  acting on that item, through the daemon's own delivery path (so the agent
+  is relaunched or resumed first if its terminal is gone). It arrives as an
+  `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
+  or "from a human at the terminal" without `--as`.
+- Delegating parents are subscribed to their children automatically.
+
+`sub`, `unsub` and `tell` talk to the running daemon over a Unix socket in
+the state directory (`ssf.sock`), because the daemon owns the state and the
+delivery path; `ssf doctor` reports whether it answers. `subs` and `peers`
+read the state file and work without it.
+
+**Cross-session comments.** Comments the bot posts carry the origin tag of
+the session that made them (see above), and delivery is sorted out per
+recipient rather than by author: a bot comment whose tag names a different
+session is delivered like a human's, labelled "(from the agent on
+owner/repo#M)", while a comment tagged with the recipient's own session
+(or an item that session acts on) is the self-echo and stays filtered.
+Untagged bot comments keep the old rule (never delivered, unless
+`daemon.include_own_events`). So session A can talk to session B by
+commenting on B's issue with `gh`: B's agent receives it labelled as coming
+from A, and A does not receive its own comment back, even when A is
+subscribed to B's issue.
 
 ## How it works
 
@@ -431,7 +484,8 @@ omarchy plugin validate ./omarchy-plugin
 Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
 (reconciliation loop), `src/sessions.rs` (harness session capture and resume),
-`src/origin.rs` (origin tags), `src/shim.rs` (the `gh` shim),
+`src/origin.rs` (origin tags), `src/shim.rs` (the `gh` shim), `src/ipc.rs`
+(the CLI-to-daemon socket behind `sub`, `unsub` and `tell`),
 `src/status.rs` (the joined item/session view behind `status`, `peers` and the
 widget), `src/ui.rs` (Omarchy integration),
 `omarchy-plugin/` (Quickshell bar widget), `bin/ssf-ui` (menu flows),

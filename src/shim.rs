@@ -171,7 +171,10 @@ fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
         }
         if let Some(v) = a.strip_prefix("--assignee=") {
             names.push(v);
-        } else if let Some(v) = a.strip_prefix("-a").filter(|v| !v.is_empty() && !a.starts_with("--")) {
+        } else if let Some(v) = a
+            .strip_prefix("-a")
+            .filter(|v| !v.is_empty() && !a.starts_with("--"))
+        {
             names.push(v);
         }
         i += 1;
@@ -326,7 +329,12 @@ mod tests {
             &read,
         );
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
-        let out = rewrite(args(&["pr", "create", "-t", "t", "-F", "-"]), &o(), None, &read);
+        let out = rewrite(
+            args(&["pr", "create", "-t", "t", "-F", "-"]),
+            &o(),
+            None,
+            &read,
+        );
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
         let out = rewrite(
             args(&["issue", "comment", "1", "--body-file=notes.md"]),
@@ -352,7 +360,12 @@ mod tests {
 
     #[test]
     fn reviews_without_a_body_get_one() {
-        let out = rewrite(args(&["pr", "review", "7", "--approve"]), &o(), None, &no_files);
+        let out = rewrite(
+            args(&["pr", "review", "7", "--approve"]),
+            &o(),
+            None,
+            &no_files,
+        );
         assert_eq!(
             out,
             args(&["pr", "review", "--body", &tag(), "7", "--approve"])
@@ -399,11 +412,46 @@ mod tests {
         let delegate = format!("child\n\n{}", o().delegate_tag());
         let plain = format!("child\n\n{}", tag());
         for a in [
-            args(&["issue", "create", "-t", "t", "-b", "child", "--assignee", "OverlayBot"]),
-            args(&["issue", "create", "-t", "t", "-b", "child", "-a", "overlaybot"]),
-            args(&["issue", "create", "-t", "t", "-b", "child", "--assignee=alice,OverlayBot"]),
+            args(&[
+                "issue",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "child",
+                "--assignee",
+                "OverlayBot",
+            ]),
+            args(&[
+                "issue",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "child",
+                "-a",
+                "overlaybot",
+            ]),
+            args(&[
+                "issue",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "child",
+                "--assignee=alice,OverlayBot",
+            ]),
             args(&["issue", "create", "-t", "t", "-b", "child", "-a@me"]),
-            args(&["pr", "create", "-t", "t", "-b", "child", "--assignee", "@me"]),
+            args(&[
+                "pr",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "child",
+                "--assignee",
+                "@me",
+            ]),
         ] {
             let out = rewrite(a.clone(), &o(), Some("OverlayBot"), &no_files);
             assert!(out.contains(&delegate), "{a:?} -> {out:?}");
@@ -411,10 +459,58 @@ mod tests {
         // Assigning someone else, assigning on a comment, or not knowing the
         // bot login: an ordinary tag.
         for (a, bot) in [
-            (args(&["issue", "create", "-t", "t", "-b", "child", "--assignee", "alice"]), Some("OverlayBot")),
-            (args(&["issue", "create", "-t", "t", "-b", "child", "--assignee", "OverlayBot"]), None),
-            (args(&["issue", "create", "-t", "t", "-b", "child", "--", "--assignee", "OverlayBot"]), Some("OverlayBot")),
-            (args(&["issue", "comment", "3", "-b", "child", "--assignee", "OverlayBot"]), Some("OverlayBot")),
+            (
+                args(&[
+                    "issue",
+                    "create",
+                    "-t",
+                    "t",
+                    "-b",
+                    "child",
+                    "--assignee",
+                    "alice",
+                ]),
+                Some("OverlayBot"),
+            ),
+            (
+                args(&[
+                    "issue",
+                    "create",
+                    "-t",
+                    "t",
+                    "-b",
+                    "child",
+                    "--assignee",
+                    "OverlayBot",
+                ]),
+                None,
+            ),
+            (
+                args(&[
+                    "issue",
+                    "create",
+                    "-t",
+                    "t",
+                    "-b",
+                    "child",
+                    "--",
+                    "--assignee",
+                    "OverlayBot",
+                ]),
+                Some("OverlayBot"),
+            ),
+            (
+                args(&[
+                    "issue",
+                    "comment",
+                    "3",
+                    "-b",
+                    "child",
+                    "--assignee",
+                    "OverlayBot",
+                ]),
+                Some("OverlayBot"),
+            ),
         ] {
             let out = rewrite(a.clone(), &o(), bot, &no_files);
             assert!(out.contains(&plain), "{a:?} -> {out:?}");

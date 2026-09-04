@@ -9,6 +9,7 @@ mod config;
 mod engine;
 mod ghcli;
 mod github;
+mod ipc;
 mod keys;
 mod models;
 mod orca;
@@ -101,6 +102,45 @@ enum Command {
         /// Include retired sessions (closed or unassigned items).
         #[arg(long)]
         all: bool,
+    },
+    /// Follow an item without working on it: its activity arrives in this
+    /// session as `[ssf] FYI` messages. Needs the running daemon.
+    Sub {
+        /// Item number on this session's repository, or owner/repo#N.
+        item: String,
+        /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop following an item.
+    Unsub {
+        item: String,
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List what this session follows, and who follows its items.
+    Subs {
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Paste a message into the terminal of the agent session on an item,
+    /// through the daemon's delivery path (the session is brought back if
+    /// its terminal is gone).
+    Tell {
+        item: String,
+        /// The message (read from stdin when omitted).
+        message: Option<String>,
+        /// Send as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Check that GitHub, Orca and the configured harnesses are usable.
     Doctor,
@@ -359,6 +399,15 @@ async fn main() -> Result<()> {
         Command::Run { once } => run(once).await,
         Command::Status { json } => status(json).await,
         Command::Peers { json, repo, all } => peers(json, repo, all).await,
+        Command::Sub { item, r#as, json } => sub(&item, r#as.as_deref(), json, true).await,
+        Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false).await,
+        Command::Subs { r#as, json } => subs(r#as.as_deref(), json),
+        Command::Tell {
+            item,
+            message,
+            r#as,
+            json,
+        } => tell(&item, message, r#as.as_deref(), json).await,
         Command::Doctor => doctor().await,
         Command::Ui { command } => ui_cmd(command),
         Command::Launch {
@@ -1277,6 +1326,243 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
     Ok(())
 }
 
+/// This session's identity: `--as owner/repo#N`, else the environment `ssf
+/// launch` set up.
+fn identity(as_: Option<&str>) -> Result<Option<origin::Origin>> {
+    match as_ {
+        Some(a) => origin::Origin::parse(a)
+            .map(Some)
+            .with_context(|| format!("--as {a}: expected owner/repo#N")),
+        None => Ok(origin::Origin::from_env()),
+    }
+}
+
+/// An item argument: `owner/repo#N`, or a bare number on `me`'s repository.
+fn item_ref(item: &str, me: Option<&origin::Origin>) -> Result<String> {
+    let item = item.trim().trim_start_matches('#');
+    if let Ok(n) = item.parse::<u64>() {
+        return match me {
+            Some(o) => Ok(format!("{}#{n}", o.repo)),
+            None => {
+                bail!("{item}: pass owner/repo#{item}, or --as owner/repo#N to name the repository")
+            }
+        };
+    }
+    match origin::Origin::parse(item) {
+        Some(o) => Ok(o.to_string()),
+        None => bail!("{item}: expected an item number or owner/repo#N"),
+    }
+}
+
+async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bool) -> Result<()> {
+    let me = identity(as_)?.context(
+        "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
+    )?;
+    let target = item_ref(item, Some(&me))?;
+    let req = if subscribe {
+        ipc::Request::Sub {
+            from: me.to_string(),
+            target: target.clone(),
+        }
+    } else {
+        ipc::Request::Unsub {
+            from: me.to_string(),
+            target: target.clone(),
+        }
+    };
+    let v = ipc::call(&req).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("");
+    let who = v.get("subscriber").and_then(|t| t.as_str()).unwrap_or("");
+    if subscribe {
+        let owner = match v.get("owner").and_then(|o| o.as_str()) {
+            Some(o) => format!("owned by {o}"),
+            None => "no session of its own; polled for you".into(),
+        };
+        let added = v.get("added").and_then(|a| a.as_bool()).unwrap_or(true);
+        println!(
+            "{who} {} {target} \"{title}\" ({owner}); new activity on it will arrive as [ssf] FYI messages.",
+            if added {
+                "subscribed to"
+            } else {
+                "was already subscribed to"
+            }
+        );
+    } else {
+        let removed = v.get("removed").and_then(|a| a.as_bool()).unwrap_or(true);
+        println!(
+            "{who} {} {target} \"{title}\"{}",
+            if removed {
+                "unsubscribed from"
+            } else {
+                "was not subscribed to"
+            },
+            if v.get("untracked")
+                .and_then(|a| a.as_bool())
+                .unwrap_or(false)
+            {
+                "; nobody follows it now, so it is no longer polled"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
+}
+
+fn subs(as_: Option<&str>, json: bool) -> Result<()> {
+    let cfg = Config::load()?;
+    let st = state::State::load()?;
+    let me = identity(as_)?.context(
+        "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
+    )?;
+    // The subscriber is always the owning session.
+    let me_id = st
+        .repos
+        .get(&me.repo)
+        .map(|rs| {
+            let mut cur = me.number;
+            let mut hops = 0;
+            while let Some(next) = rs.issues.get(&cur).and_then(|s| s.shares_workspace_of) {
+                if next == cur || hops > 16 {
+                    break;
+                }
+                cur = next;
+                hops += 1;
+            }
+            status::session_id(&me.repo, cur)
+        })
+        .unwrap_or_else(|| me.to_string());
+    let mut following = Vec::new();
+    let mut followers = Vec::new();
+    for repo in &cfg.repos {
+        let Some(rs) = st.repos.get(&repo.name) else {
+            continue;
+        };
+        for item in rs.issues.values() {
+            let id = status::session_id(&repo.name, item.number);
+            let owner = if item.subscriber_only {
+                None
+            } else {
+                Some(status::session_id(
+                    &repo.name,
+                    item.shares_workspace_of.unwrap_or(item.number),
+                ))
+            };
+            if item
+                .subscribers
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&me_id))
+            {
+                following.push(json!({
+                    "item": id,
+                    "title": item.title,
+                    "kind": item.kind,
+                    "github_state": item.github_state,
+                    "owner": owner,
+                }));
+            }
+            if owner
+                .as_deref()
+                .is_some_and(|o| o.eq_ignore_ascii_case(&me_id))
+                && !item.subscribers.is_empty()
+            {
+                followers.push(json!({
+                    "item": id,
+                    "title": item.title,
+                    "subscribers": item.subscribers,
+                }));
+            }
+        }
+    }
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "me": me_id,
+                "subscribed_to": following,
+                "subscribers": followers,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("{me_id} follows:");
+    if following.is_empty() {
+        println!("  (nothing; `ssf sub <n>` to follow an item)");
+    }
+    for f in &following {
+        println!(
+            "  {:<24} {:<7} {}  ({})",
+            f["item"].as_str().unwrap_or(""),
+            f["github_state"].as_str().unwrap_or("?"),
+            f["title"].as_str().unwrap_or(""),
+            match f["owner"].as_str() {
+                Some(o) => format!("owned by {o}"),
+                None => "no session".into(),
+            }
+        );
+    }
+    println!("followed by other sessions:");
+    if followers.is_empty() {
+        println!("  (nobody)");
+    }
+    for f in &followers {
+        let subs: Vec<&str> = f["subscribers"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
+            .unwrap_or_default();
+        println!(
+            "  {:<24} {}  <- {}",
+            f["item"].as_str().unwrap_or(""),
+            f["title"].as_str().unwrap_or(""),
+            subs.join(", ")
+        );
+    }
+    Ok(())
+}
+
+async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool) -> Result<()> {
+    let me = identity(as_)?;
+    let target = item_ref(item, me.as_ref())?;
+    let text = match message {
+        Some(m) => m,
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+    };
+    if text.trim().is_empty() {
+        bail!("nothing to say (pass the message, or pipe it in)");
+    }
+    let v = ipc::call(&ipc::Request::Tell {
+        from: me.map(|o| o.to_string()),
+        target: target.clone(),
+        text,
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    println!(
+        "delivered to the session on {target} ({}){}",
+        v.get("session").and_then(|s| s.as_str()).unwrap_or("?"),
+        if v.get("relaunched")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+        {
+            ", whose agent had to be relaunched for it"
+        } else {
+            ""
+        }
+    );
+    Ok(())
+}
+
 fn ui_cmd(command: UiCommand) -> Result<()> {
     match command {
         UiCommand::Install { quiet } => ui::install_all(quiet),
@@ -1386,6 +1672,19 @@ async fn doctor() -> Result<()> {
         match orca.status().await {
             Ok(_) => check(true, "Orca runtime reachable and ready".into()),
             Err(e) => check(false, format!("Orca runtime: {e:#}")),
+        }
+    }
+    match ipc::call(&ipc::Request::Ping).await {
+        Ok(v) => check(
+            true,
+            format!(
+                "daemon answering on {} as @{}",
+                ipc::socket_path().display(),
+                v.get("login").and_then(|l| l.as_str()).unwrap_or("?")
+            ),
+        ),
+        Err(e) => {
+            println!("note the daemon is not answering (`ssf sub|unsub|tell` need it): {e:#}")
         }
     }
     check(

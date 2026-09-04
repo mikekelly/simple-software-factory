@@ -9,13 +9,16 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::{Config, RepoConfig};
 use crate::github::{Conditional, GitHub, Issue, PrInfo};
+use crate::ipc::{Request, Response};
 use crate::orca::{Delivery, Orca, Worktree};
 use crate::origin::{self, Origin};
 use crate::prompt::{
-    self, FinalComment, ProjectPrompt, PromptContext, Rendered, actor_of, event_key, render_event,
+    self, FinalComment, Fyi, ProjectPrompt, PromptContext, Rendered, actor_of, event_key,
+    render_event,
 };
 use crate::sessions;
 use crate::state::{IssueState, State, now_iso};
+use crate::status::session_id;
 
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
 const MAX_DELIVERY_FAILURES: u32 = 5;
@@ -64,22 +67,299 @@ impl Engine {
     pub async fn run_forever(mut self) -> Result<()> {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .context("installing SIGTERM handler")?;
+        let listener = bind_socket()?;
         info!(
             repos = self.cfg.repos.len(),
             poll_secs = self.cfg.daemon.poll_interval_secs,
+            socket = %crate::ipc::socket_path().display(),
             "ssf daemon started"
         );
-        loop {
+        'outer: loop {
             self.tick().await;
             let interval = Duration::from_secs(self.cfg.daemon.poll_interval_secs.max(5));
-            tokio::select! {
-                _ = tokio::time::sleep(interval) => {}
-                _ = tokio::signal::ctrl_c() => { info!("interrupted; exiting"); break; }
-                _ = sigterm.recv() => { info!("SIGTERM; exiting"); break; }
+            let deadline = tokio::time::Instant::now() + interval;
+            // Between polls, answer the CLI (`ssf sub|unsub|tell`).
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep_until(deadline) => break,
+                    _ = tokio::signal::ctrl_c() => { info!("interrupted; exiting"); break 'outer; }
+                    _ = sigterm.recv() => { info!("SIGTERM; exiting"); break 'outer; }
+                    conn = listener.accept() => match conn {
+                        Ok((stream, _)) => self.serve(stream).await,
+                        Err(e) => warn!("accepting a CLI connection failed: {e}"),
+                    }
+                }
             }
         }
         self.state.save()?;
+        let _ = std::fs::remove_file(crate::ipc::socket_path());
         Ok(())
+    }
+
+    /// Answer one CLI connection.
+    async fn serve(&mut self, mut stream: tokio::net::UnixStream) {
+        let resp = match crate::ipc::read_request(&mut stream).await {
+            Ok(req) => {
+                debug!(?req, "request from the CLI");
+                let resp = self.handle_request(req).await;
+                if let Err(e) = self.state.save() {
+                    error!("saving state: {e:#}");
+                }
+                resp
+            }
+            Err(e) => Response::err(format!("bad request: {e:#}")),
+        };
+        if let Err(e) = crate::ipc::write_response(&mut stream, &resp).await {
+            warn!("answering the CLI failed: {e:#}");
+        }
+    }
+
+    /// `ssf sub|unsub|tell`, run inside the daemon so the state and the
+    /// delivery path are the daemon's own.
+    pub async fn handle_request(&mut self, req: Request) -> Response {
+        match req {
+            Request::Ping => Response::ok(serde_json::json!({"login": self.login})),
+            Request::Sub { from, target } => match self.subscribe(&from, &target).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Request::Unsub { from, target } => match self.unsubscribe(&from, &target) {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Request::Tell { from, target, text } => {
+                match self.tell(from.as_deref(), &target, &text).await {
+                    Ok(v) => Response::ok(v),
+                    Err(e) => Response::err(format!("{e:#}")),
+                }
+            }
+        }
+    }
+
+    /// A watched repository and an item number out of `owner/repo#N`.
+    fn locate(&self, item: &str) -> Result<(RepoConfig, u64)> {
+        let o = Origin::parse(item).with_context(|| format!("{item}: expected owner/repo#N"))?;
+        let repo = self
+            .cfg
+            .repos
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&o.repo))
+            .cloned()
+            .with_context(|| format!("{} is not a watched repository", o.repo))?;
+        Ok((repo, o.number))
+    }
+
+    /// The session (`owner/repo#N`, normalised to the owning session) behind
+    /// a session id the CLI gave. It must be one ssf has a workspace for.
+    fn known_session(&self, id: &str) -> Result<(RepoConfig, u64, String)> {
+        let (repo, n) = self.locate(id)?;
+        let owner = self.owner_of(&repo, n);
+        let known = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.issues.get(&owner))
+            .is_some_and(|s| s.seeded);
+        if !known {
+            anyhow::bail!("{id} is not an agent session ssf knows (see `ssf peers --all`)");
+        }
+        let id = session_id(&repo.name, owner);
+        Ok((repo, owner, id))
+    }
+
+    async fn subscribe(&mut self, from: &str, target: &str) -> Result<Value> {
+        let (_, _, me) = self.known_session(from)?;
+        let (repo, number) = self.locate(target)?;
+        let (owner, name) = repo.split()?;
+        let existing = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.issues.get(&number))
+            .cloned();
+        let tracked = existing
+            .as_ref()
+            .is_some_and(|s| s.seeded || s.subscriber_only);
+        if tracked && !existing.as_ref().unwrap().subscriber_only {
+            let acting = session_id(&repo.name, self.owner_of(&repo, number));
+            if acting.eq_ignore_ascii_case(&me) {
+                anyhow::bail!("{target} is your own item (its session is {acting})");
+            }
+        }
+        let (title, owner_session, kind, state) = if tracked {
+            let st = existing.unwrap();
+            let owner_session = if st.subscriber_only {
+                None
+            } else {
+                Some(session_id(&repo.name, self.owner_of(&repo, number)))
+            };
+            (
+                st.title.clone(),
+                owner_session,
+                st.kind.clone().unwrap_or_else(|| "issue".into()),
+                st.github_state.clone().unwrap_or_else(|| "open".into()),
+            )
+        } else {
+            // Nothing tracks it yet: start polling it for the subscriber,
+            // from now on (what happened before is not new).
+            let issue = self
+                .gh
+                .issue(owner, name, number)
+                .await
+                .with_context(|| format!("fetching {target}"))?;
+            let timeline = self.gh.timeline(owner, name, number).await?;
+            let seen = self.diff(&BTreeMap::new(), &timeline).seen;
+            let is_pr = issue.is_pull_request();
+            let e = self.entry(&repo, number);
+            e.title = issue.title.clone();
+            e.html_url = issue.html_url.clone();
+            e.kind = Some(if is_pr {
+                "pull_request".into()
+            } else {
+                "issue".into()
+            });
+            e.github_state = Some(github_state(&issue, None, false));
+            e.updated_at = Some(issue.updated_at.clone());
+            e.seen = seen;
+            e.subscriber_only = true;
+            e.active = false;
+            info!(
+                repo = repo.name,
+                issue = number,
+                "tracking for subscribers only"
+            );
+            (
+                issue.title.clone(),
+                None,
+                e.kind.clone().unwrap(),
+                github_state(&issue, None, false),
+            )
+        };
+        let e = self.entry(&repo, number);
+        let added = if e.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me)) {
+            false
+        } else {
+            e.subscribers.push(me.clone());
+            true
+        };
+        info!(
+            repo = repo.name,
+            issue = number,
+            subscriber = me,
+            added,
+            "subscribed"
+        );
+        Ok(serde_json::json!({
+            "item": session_id(&repo.name, number),
+            "title": title,
+            "kind": kind,
+            "github_state": state,
+            "owner": owner_session,
+            "subscriber": me,
+            "added": added,
+        }))
+    }
+
+    fn unsubscribe(&mut self, from: &str, target: &str) -> Result<Value> {
+        let (_, _, me) = self.known_session(from)?;
+        let (repo, number) = self.locate(target)?;
+        let Some(st) = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.issues.get(&number))
+            .cloned()
+        else {
+            anyhow::bail!("{target} is not tracked");
+        };
+        let removed = st.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me));
+        let e = self.entry(&repo, number);
+        e.subscribers.retain(|s| !s.eq_ignore_ascii_case(&me));
+        let dropped = e.subscriber_only && e.subscribers.is_empty();
+        if dropped {
+            // Nobody listens any more and nothing else remembers it.
+            self.state.repo_mut(&repo.name).issues.remove(&number);
+            info!(
+                repo = repo.name,
+                issue = number,
+                "no subscribers left; no longer tracked"
+            );
+        }
+        info!(
+            repo = repo.name,
+            issue = number,
+            subscriber = me,
+            removed,
+            "unsubscribed"
+        );
+        Ok(serde_json::json!({
+            "item": session_id(&repo.name, number),
+            "title": st.title,
+            "subscriber": me,
+            "removed": removed,
+            "untracked": dropped,
+        }))
+    }
+
+    /// Paste a message into the terminal of the session acting on `target`.
+    async fn tell(&mut self, from: Option<&str>, target: &str, text: &str) -> Result<Value> {
+        if text.trim().is_empty() {
+            anyhow::bail!("nothing to say");
+        }
+        let (repo, number) = self.locate(target)?;
+        let st = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.issues.get(&number))
+            .cloned()
+            .filter(|s| s.seeded)
+            .with_context(|| format!("{target} has no agent session (see `ssf peers --all`)"))?;
+        let acting = self.owner_of(&repo, number);
+        let ost = self.entry(&repo, acting).clone();
+        let alive = match ost.worktree_id.as_deref() {
+            Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+            None => false,
+        };
+        if !ost.active && !alive {
+            anyhow::bail!(
+                "the session on {target} ({}) has retired and its workspace is gone",
+                session_id(&repo.name, acting)
+            );
+        }
+        let (sender, sender_title) = match from {
+            Some(f) => {
+                let (frepo, fnum, fid) = self.known_session(f)?;
+                let title = self.entry(&frepo, fnum).title.clone();
+                (Some(fid), Some(title).filter(|t| !t.is_empty()))
+            }
+            None => (None, None),
+        };
+        let prompt = prompt::tell_prompt(
+            sender.as_deref(),
+            sender_title.as_deref(),
+            text,
+            self.cfg.daemon.max_body_chars,
+        );
+        let d = self.deliver_to(&repo, number, &prompt, None).await?;
+        let e = self.entry(&repo, acting);
+        e.last_prompt_at = Some(now_iso());
+        e.prompts_sent += 1;
+        info!(
+            repo = repo.name,
+            issue = number,
+            session = acting,
+            from = sender.as_deref().unwrap_or("a human"),
+            "delivered a message"
+        );
+        Ok(serde_json::json!({
+            "item": session_id(&repo.name, number),
+            "title": st.title,
+            "session": session_id(&repo.name, acting),
+            "terminal": d.handle,
+            "relaunched": d.relaunched,
+            "from": sender,
+        }))
     }
 
     /// Pick up edits to the config file between passes (repos, harnesses,
@@ -168,7 +448,7 @@ impl Engine {
             && matches!(created, Conditional::NotModified)
         {
             debug!(repo = repo.name, "nothing changed");
-            return Ok(());
+            return self.watch_subscribed(repo, owner, name).await;
         }
 
         // number -> (fresh item if we have one, pr info, triggers)
@@ -267,9 +547,7 @@ impl Engine {
             // changes.
             let ignored = self.ignored.get(&(repo.name.clone(), number));
             if !tracked
-                && ignored.is_some_and(|at| {
-                    fresh.as_ref().is_none_or(|i| i.updated_at == *at)
-                })
+                && ignored.is_some_and(|at| fresh.as_ref().is_none_or(|i| i.updated_at == *at))
             {
                 continue;
             }
@@ -337,7 +615,223 @@ impl Engine {
             rs.pulls_etag = None;
             rs.created_etag = None;
         }
+        self.watch_subscribed(repo, owner, name).await
+    }
+
+    /// Poll the items that are tracked only because sessions subscribed to
+    /// them (they are on no listing), and fan their activity out.
+    async fn watch_subscribed(&mut self, repo: &RepoConfig, owner: &str, name: &str) -> Result<()> {
+        let watched: Vec<IssueState> = self
+            .state
+            .repo_mut(&repo.name)
+            .issues
+            .values()
+            .filter(|s| {
+                s.subscriber_only
+                    && !s.active
+                    && !s.subscribers.is_empty()
+                    && !matches!(s.github_state.as_deref(), Some("closed" | "merged"))
+            })
+            .cloned()
+            .collect();
+        let mut failed = false;
+        for st in watched {
+            let number = st.number;
+            let issue = match self.gh.issue(owner, name, number).await {
+                Ok(i) => i,
+                Err(e) => {
+                    failed = true;
+                    warn!(
+                        repo = repo.name,
+                        issue = number,
+                        "polling subscribed item failed: {e:#}"
+                    );
+                    continue;
+                }
+            };
+            if st.updated_at.as_deref() == Some(issue.updated_at.as_str()) {
+                continue;
+            }
+            let timeline = match self.gh.timeline(owner, name, number).await {
+                Ok(t) => t,
+                Err(e) => {
+                    failed = true;
+                    warn!(
+                        repo = repo.name,
+                        issue = number,
+                        "polling subscribed item failed: {e:#}"
+                    );
+                    continue;
+                }
+            };
+            self.record_origins(repo, &issue, &timeline);
+            let diff = self.diff(&st.seen, &timeline);
+            let closed = issue.state == "closed";
+            let merged = closed
+                && issue.is_pull_request()
+                && self
+                    .gh
+                    .pull(owner, name, number)
+                    .await
+                    .map(|p| p.merged)
+                    .unwrap_or(false);
+            info!(
+                repo = repo.name,
+                issue = number,
+                events = diff.rendered.len(),
+                closed,
+                "subscribed item changed"
+            );
+            let what = if closed { Fyi::Closed } else { Fyi::Activity };
+            self.fan_out(repo, &issue, &diff.rendered, what, merged, &[])
+                .await;
+            let e = self.entry(repo, number);
+            e.updated_at = Some(issue.updated_at.clone());
+            e.seen = diff.seen;
+            e.title = issue.title.clone();
+            e.github_state = Some(github_state(&issue, None, merged));
+            if closed {
+                // The subscribers have had the last word on it. An item that
+                // never had a session is forgotten; one that did keeps its
+                // workspace record for the cleanup.
+                if st.seeded {
+                    let e = self.entry(repo, number);
+                    e.subscriber_only = false;
+                    e.subscribers.clear();
+                } else {
+                    self.state.repo_mut(&repo.name).issues.remove(&number);
+                }
+            }
+        }
+        if failed {
+            anyhow::bail!("polling a subscribed item failed");
+        }
         Ok(())
+    }
+
+    /// The session (`owner/repo#N`) that acts on the item a post's origin
+    /// tag names: the item's owner, in a watched repository; the tag itself
+    /// anywhere else.
+    fn acting_session(&self, origin: &str) -> String {
+        let Some(o) = Origin::parse(origin) else {
+            return origin.to_string();
+        };
+        match self
+            .cfg
+            .repos
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&o.repo))
+        {
+            Some(r) => session_id(&r.name, self.owner_of(r, o.number)),
+            None => origin.to_string(),
+        }
+    }
+
+    /// `events` as `recipient` (a session id) should see them: without its
+    /// own posts, which would only echo its work back at it. Other sessions'
+    /// posts stay, labelled with where they came from by the renderer.
+    fn for_recipient(&self, events: &[Rendered], recipient: &str) -> Vec<Rendered> {
+        if self.cfg.daemon.include_own_events {
+            return events.to_vec();
+        }
+        events
+            .iter()
+            .filter(|e| {
+                e.origin
+                    .as_deref()
+                    .is_none_or(|o| !self.acting_session(o).eq_ignore_ascii_case(recipient))
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The session id of whoever acts on `number`.
+    fn acting_on(&self, repo: &RepoConfig, number: u64) -> String {
+        session_id(&repo.name, self.owner_of(repo, number))
+    }
+
+    /// Tell every subscriber of an item what happened on it, each without
+    /// its own posts. Best effort: a subscriber that cannot be reached is
+    /// logged and skipped, never retried, and a retired subscriber whose
+    /// workspace is gone is not rebuilt for an FYI. Sessions in `skip` are
+    /// left out (a delegating parent that gets a fuller message instead).
+    async fn fan_out(
+        &mut self,
+        repo: &RepoConfig,
+        issue: &Issue,
+        events: &[Rendered],
+        what: Fyi,
+        merged: bool,
+        skip: &[String],
+    ) {
+        let st = self.entry(repo, issue.number).clone();
+        if st.subscribers.is_empty() {
+            return;
+        }
+        let owner_session = if st.subscriber_only || !st.seeded {
+            None
+        } else {
+            Some(self.acting_on(repo, issue.number))
+        };
+        for sub in st.subscribers.clone() {
+            if owner_session
+                .as_deref()
+                .is_some_and(|o| o.eq_ignore_ascii_case(&sub))
+                || skip.iter().any(|s| s.eq_ignore_ascii_case(&sub))
+            {
+                continue;
+            }
+            let Ok((srepo, snum, sid)) = self.known_session(&sub) else {
+                warn!(
+                    repo = repo.name,
+                    issue = issue.number,
+                    subscriber = sub,
+                    "subscriber is not a session ssf knows; skipping"
+                );
+                continue;
+            };
+            let sst = self.entry(&srepo, snum).clone();
+            let alive = match sst.worktree_id.as_deref() {
+                Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+                None => false,
+            };
+            if !sst.active && !alive {
+                debug!(
+                    repo = repo.name,
+                    issue = issue.number,
+                    subscriber = sid,
+                    "subscriber has retired; not telling it"
+                );
+                continue;
+            }
+            let mine = self.for_recipient(events, &sid);
+            if mine.is_empty() && what == Fyi::Activity {
+                continue;
+            }
+            let ctx = self.ctx(repo, &st);
+            let text =
+                prompt::fyi_prompt(issue, &mine, &ctx, owner_session.as_deref(), merged, what);
+            match self.deliver_to(&srepo, snum, &text, None).await {
+                Ok(_) => {
+                    info!(
+                        repo = repo.name,
+                        issue = issue.number,
+                        subscriber = sid,
+                        events = mine.len(),
+                        "told a subscriber"
+                    );
+                    let e = self.entry(&srepo, snum);
+                    e.last_prompt_at = Some(now_iso());
+                    e.prompts_sent += 1;
+                }
+                Err(e) => warn!(
+                    repo = repo.name,
+                    issue = issue.number,
+                    subscriber = sid,
+                    "could not tell a subscriber: {e:#}"
+                ),
+            }
+        }
     }
 
     fn note_failure(&mut self, repo: &RepoConfig, number: u64, err: &anyhow::Error) {
@@ -498,7 +992,12 @@ impl Engine {
     /// Parse origin tags out of the item body and its timeline, and flag posts
     /// by the bot that carry none: the gh shim was not in effect in whichever
     /// session made them, so nothing can tell which session that was.
-    fn record_origins(&mut self, repo: &RepoConfig, issue: &Issue, timeline: &[Value]) -> origin::Scan {
+    fn record_origins(
+        &mut self,
+        repo: &RepoConfig,
+        issue: &Issue,
+        timeline: &[Value],
+    ) -> origin::Scan {
         let scan = origin::scan(issue, timeline, &self.login);
         let login = self.login.clone();
         let e = self.entry(repo, issue.number);
@@ -537,13 +1036,18 @@ impl Engine {
             }
             // The bot's own activity (its comments, commits, PRs) would only
             // echo the agent's work back at it. Things done *to* the bot,
-            // like being assigned, always count.
+            // like being assigned, always count. A comment that carries an
+            // origin tag is kept here: it came from one session and may be
+            // news to another, so it is sorted out per recipient
+            // (`for_recipient`) instead.
             let own = actor_of(ev).eq_ignore_ascii_case(&self.login);
             let echo = matches!(
                 kind,
                 "commented" | "cross-referenced" | "referenced" | "committed"
             );
-            if own && echo && !self.cfg.daemon.include_own_events {
+            let tagged = kind == "commented"
+                && origin::parse(crate::github::value_str(ev, &["body"]).unwrap_or("")).is_some();
+            if own && echo && !tagged && !self.cfg.daemon.include_own_events {
                 debug!(key, "skipping bot's own event");
                 continue;
             }
@@ -681,7 +1185,14 @@ impl Engine {
             e.shares_workspace_of = None;
             e.delegated_by = None;
             e.parent_notified = false;
+            e.subscriber_only = false;
         }
+        // Subscribers of an item that had no session until now hear that it
+        // got one, with whatever happened since they last heard.
+        let since_prior = prior
+            .as_ref()
+            .filter(|p| p.subscriber_only)
+            .map(|p| self.diff(&p.seen, &timeline).rendered);
         let scan = self.record_origins(repo, issue, &timeline);
         let by_bot = issue.author().eq_ignore_ascii_case(&self.login);
 
@@ -689,7 +1200,11 @@ impl Engine {
         // session (first binding wins: it never spawns a second one), unless
         // the session handed it off, in which case it gets its own session
         // and the parent hears about it once, when it closes.
-        if let Some(tag) = scan.origin_tag.as_ref().filter(|t| t.is_delegate() && by_bot) {
+        if let Some(tag) = scan
+            .origin_tag
+            .as_ref()
+            .filter(|t| t.is_delegate() && by_bot)
+        {
             info!(
                 repo = repo.name,
                 issue = issue.number,
@@ -697,8 +1212,20 @@ impl Engine {
                 "handed off by a session; starting its own"
             );
             self.entry(repo, issue.number).delegated_by = Some(tag.origin.to_string());
+            // The delegating parent follows its child.
+            let parent = self.acting_session(&tag.origin.to_string());
+            let e = self.entry(repo, issue.number);
+            if !e
+                .subscribers
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&parent))
+            {
+                e.subscribers.push(parent);
+            }
         } else if let Some(owner) = self.find_owner(repo, issue, pr.as_ref(), &scan) {
-            return self.bind_to(repo, issue, owner, diff, triggers).await;
+            return self
+                .bind_to(repo, issue, owner, diff, triggers, since_prior)
+                .await;
         } else if triggers.iter().all(|t| t == "created") {
             // Opened by the bot, but from nowhere ssf can name and with no
             // human asking for it: not worth a session.
@@ -707,13 +1234,16 @@ impl Engine {
                 issue = issue.number,
                 "opened by the bot without a usable origin tag; ignoring until it changes"
             );
-            self.ignored.insert(
-                (repo.name.clone(), issue.number),
-                issue.updated_at.clone(),
-            );
+            self.ignored
+                .insert((repo.name.clone(), issue.number), issue.updated_at.clone());
+            // Still polled for whoever subscribed to it.
+            if prior.as_ref().is_some_and(|p| p.subscriber_only) {
+                self.entry(repo, issue.number).subscriber_only = true;
+            }
             return Ok(());
         }
         self.refresh_projects(repo, owner, name, issue.number).await;
+        let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, issue.number));
 
         let mut existing: Option<Worktree> = None;
         if let Some(id) = prior.as_ref().and_then(|s| s.worktree_id.clone()) {
@@ -750,7 +1280,7 @@ impl Engine {
                 );
                 self.remember_worktree(repo, issue.number, &wt);
                 let _ = self.orca.set_comment(&wt.id, &comment).await;
-                let text = self.initial_text(repo, issue, &diff.rendered);
+                let text = self.initial_text(repo, issue, &mine);
                 let d = self.deliver_to(repo, issue.number, &text, None).await?;
                 d.handle
             }
@@ -788,7 +1318,7 @@ impl Engine {
                     .orca
                     .launch_in_worktree(&created.id, &cmd, &title, &repo.harness)
                     .await?;
-                let text = self.initial_text(repo, issue, &diff.rendered);
+                let text = self.initial_text(repo, issue, &mine);
                 self.orca.send_prompt(&handle, &text).await?;
                 info!(
                     repo = repo.name,
@@ -814,6 +1344,10 @@ impl Engine {
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
+        if let Some(since) = since_prior {
+            self.fan_out(repo, issue, &since, Fyi::Tracked, false, &[])
+                .await;
+        }
         // The session file appears once the first message is processed.
         tokio::time::sleep(Duration::from_secs(3)).await;
         self.capture_sessions(repo);
@@ -831,6 +1365,7 @@ impl Engine {
         owner: u64,
         diff: Diff,
         triggers: Vec<String>,
+        since_prior: Option<Vec<Rendered>>,
     ) -> Result<()> {
         info!(
             repo = repo.name,
@@ -847,8 +1382,9 @@ impl Engine {
         }
         self.mirror_owner(repo, issue.number, owner);
         let snapshot = self.entry(repo, issue.number).clone();
+        let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, owner));
         let ctx = self.ctx(repo, &snapshot);
-        let text = prompt::tracked_prompt(issue, &diff.rendered, &ctx);
+        let text = prompt::tracked_prompt(issue, &mine, &ctx);
         let d = self.deliver_to(repo, issue.number, &text, None).await?;
         let e = self.entry(repo, issue.number);
         e.terminal_handle = Some(d.handle);
@@ -859,6 +1395,10 @@ impl Engine {
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
+        if let Some(since) = since_prior {
+            self.fan_out(repo, issue, &since, Fyi::Tracked, false, &[])
+                .await;
+        }
         Ok(())
     }
 
@@ -870,6 +1410,7 @@ impl Engine {
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
         let all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        let all = self.for_recipient(&all, &self.acting_on(repo, number));
         let st = self.entry(repo, number).clone();
         let ctx = self.ctx(repo, &st);
         Ok(prompt::initial_prompt(&issue, &all, &ctx))
@@ -887,7 +1428,12 @@ impl Engine {
         parent: &str,
     ) {
         let Some(origin) = Origin::parse(parent) else {
-            warn!(repo = repo.name, issue = issue.number, parent, "unparseable parent session");
+            warn!(
+                repo = repo.name,
+                issue = issue.number,
+                parent,
+                "unparseable parent session"
+            );
             return;
         };
         let Some(prepo) = self
@@ -941,7 +1487,12 @@ impl Engine {
         let text = prompt::delegated_closed_prompt(issue, merged, last.as_ref(), &ctx);
         match self.deliver_to(&prepo, origin.number, &text, None).await {
             Ok(d) => {
-                info!(repo = repo.name, issue = issue.number, parent, "told the parent session");
+                info!(
+                    repo = repo.name,
+                    issue = issue.number,
+                    parent,
+                    "told the parent session"
+                );
                 let e = self.entry(&prepo, origin.number);
                 e.terminal_handle = Some(d.handle);
                 e.last_prompt_at = Some(now_iso());
@@ -1042,7 +1593,12 @@ impl Engine {
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
         self.record_origins(repo, issue, &timeline);
         let diff = self.diff(&st.seen, &timeline);
-        if diff.rendered.is_empty() {
+        // Subscribers hear first: the owner's own posts are news to them,
+        // and a failed delivery to the owner must not replay to them.
+        self.fan_out(repo, issue, &diff.rendered, Fyi::Activity, false, &[])
+            .await;
+        let mine = self.for_recipient(&diff.rendered, &self.acting_on(repo, issue.number));
+        if mine.is_empty() {
             debug!(
                 repo = repo.name,
                 issue = issue.number,
@@ -1058,7 +1614,7 @@ impl Engine {
         info!(
             repo = repo.name,
             issue = issue.number,
-            events = diff.rendered.len(),
+            events = mine.len(),
             "delivering new activity"
         );
         self.refresh_projects(repo, owner, name, issue.number).await;
@@ -1067,11 +1623,12 @@ impl Engine {
             ..st
         };
         let ctx = self.ctx(repo, &st);
-        let text = prompt::followup_prompt(issue, &diff.rendered, &ctx);
+        let text = prompt::followup_prompt(issue, &mine, &ctx);
         // A harness started from scratch has lost its memory, so it gets the
         // whole story rather than just the delta.
         let mut all = self.diff(&BTreeMap::new(), &timeline).rendered;
         all.retain(|r| !diff.rendered.iter().any(|n| n.key == r.key));
+        let all = self.for_recipient(&all, &self.acting_on(repo, issue.number));
         let mut relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
         relaunch_text.push_str("\n\n");
         relaunch_text.push_str(&text);
@@ -1111,9 +1668,13 @@ impl Engine {
             projects: self.entry(repo, issue.number).projects.clone(),
             ..st
         };
+        self.entry(repo, issue.number).subscriber_only = false;
+        let me = self.acting_on(repo, issue.number);
+        let mine = self.for_recipient(&diff.rendered, &me);
         let ctx = self.ctx(repo, &st);
-        let text = prompt::reassigned_prompt(issue, &diff.rendered, &ctx);
+        let text = prompt::reassigned_prompt(issue, &mine, &ctx);
         let all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        let all = self.for_recipient(&all, &me);
         let relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
         let d = self
             .deliver_to(repo, issue.number, &text, Some(&relaunch_text))
@@ -1132,6 +1693,8 @@ impl Engine {
         e.terminal_handle = Some(d.handle);
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
+        self.fan_out(repo, issue, &diff.rendered, Fyi::Tracked, false, &[])
+            .await;
         Ok(())
     }
 
@@ -1174,16 +1737,37 @@ impl Engine {
         let timeline = self.gh.timeline(owner, name, number).await?;
         self.record_origins(repo, &issue, &timeline);
         let diff = self.diff(&st.seen, &timeline);
+        let session = self.owner_of(repo, number);
+        let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, session));
         let ctx = self.ctx(repo, &st);
         let text = if closed {
-            prompt::closed_prompt(&issue, &diff.rendered, &ctx)
+            prompt::closed_prompt(&issue, &mine, &ctx)
         } else {
-            prompt::unassigned_prompt(&issue, &diff.rendered, &ctx)
+            prompt::unassigned_prompt(&issue, &mine, &ctx)
         };
+        // Subscribers hear about the end of it too; a delegating parent gets
+        // its own, fuller message below instead.
+        let parent_to_tell = if closed && !st.parent_notified {
+            st.delegated_by.clone()
+        } else {
+            None
+        };
+        let skip: Vec<String> = parent_to_tell
+            .iter()
+            .map(|p| self.acting_session(p))
+            .collect();
+        self.fan_out(
+            repo,
+            &issue,
+            &diff.rendered,
+            if closed { Fyi::Closed } else { Fyi::Unassigned },
+            merged,
+            &skip,
+        )
+        .await;
         // Retirement is best-effort: a deleted workspace must not keep us
         // retrying, and it is not worth rebuilding one just to say goodbye.
         // An owned item's workspace is its owner's.
-        let session = self.owner_of(repo, number);
         let workspace_alive = match self.entry(repo, session).worktree_id.clone() {
             Some(id) => self.orca.worktree_exists(&id).await.unwrap_or(false),
             None => false,
@@ -1240,12 +1824,29 @@ impl Engine {
         if shared && workspace_alive {
             self.release_owner(repo, session).await;
         }
-        if closed && !st.parent_notified {
-            if let Some(parent) = st.delegated_by.clone() {
-                self.notify_parent(repo, &issue, merged, &timeline, &parent)
-                    .await;
-                self.entry(repo, number).parent_notified = true;
+        if let Some(parent) = parent_to_tell {
+            self.notify_parent(repo, &issue, merged, &timeline, &parent)
+                .await;
+            self.entry(repo, number).parent_notified = true;
+        }
+        // A retired session hears nothing more: it is unsubscribed everywhere.
+        // Its own item keeps its subscribers, and stays polled for them while
+        // it is open.
+        if !shared {
+            let me = session_id(&repo.name, number);
+            let dropped = self.state.unsubscribe_everywhere(&me);
+            if !dropped.is_empty() {
+                info!(
+                    repo = repo.name,
+                    issue = number,
+                    ?dropped,
+                    "retired session unsubscribed"
+                );
             }
+        }
+        let e = self.entry(repo, number);
+        if !closed && !e.subscribers.is_empty() {
+            e.subscriber_only = true;
         }
         Ok(())
     }
@@ -1322,7 +1923,12 @@ impl Engine {
             .worktree_id
             .clone()
             .context("issue has no workspace bound")?;
-        let live = alive && self.orca.has_live_agent(&worktree_id).await.unwrap_or(false);
+        let live = alive
+            && self
+                .orca
+                .has_live_agent(&worktree_id)
+                .await
+                .unwrap_or(false);
         let mut story = None;
         if !live && (target != number || relaunch_text.is_none()) {
             match self.story(repo, target).await {
@@ -1522,7 +2128,11 @@ impl Engine {
             .filter_map(|s| s.shares_workspace_of.map(|o| (s.number, o)))
             .collect();
         for (number, owner) in owned {
-            if let Some(id) = rs.issues.get(&owner).and_then(|o| o.agent_session_id.clone()) {
+            if let Some(id) = rs
+                .issues
+                .get(&owner)
+                .and_then(|o| o.agent_session_id.clone())
+            {
                 if let Some(s) = rs.issues.get_mut(&number) {
                     s.agent_session_id = Some(id);
                 }
@@ -1613,6 +2223,29 @@ impl Engine {
             e.terminal_handle = None;
         }
     }
+}
+
+/// Listen for the CLI on the daemon's socket, replacing a stale one.
+fn bind_socket() -> Result<tokio::net::UnixListener> {
+    let path = crate::ipc::socket_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    if path.exists() {
+        // Another daemon, or a leftover from one that died?
+        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+            anyhow::bail!(
+                "another ssf daemon is listening on {}; stop it first",
+                path.display()
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    let listener = tokio::net::UnixListener::bind(&path)
+        .with_context(|| format!("listening on {}", path.display()))?;
+    let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    Ok(listener)
 }
 
 /// Follow `shares_workspace_of` to the session that acts on `number`.
@@ -1769,7 +2402,13 @@ mod tests {
     #[test]
     fn owner_follows_bindings_and_survives_cycles() {
         let mut issues: BTreeMap<u64, IssueState> = BTreeMap::new();
-        for (n, o) in [(1, None), (2, Some(1)), (3, Some(2)), (4, Some(5)), (5, Some(4))] {
+        for (n, o) in [
+            (1, None),
+            (2, Some(1)),
+            (3, Some(2)),
+            (4, Some(5)),
+            (5, Some(4)),
+        ] {
             issues.insert(
                 n,
                 IssueState {
@@ -1833,7 +2472,10 @@ mod tests {
             Some(2),
             "an active session beats a retired one"
         );
-        assert_eq!(e.find_owner(&r, &untagged, Some(&pr("nobody")), &scan), None);
+        assert_eq!(
+            e.find_owner(&r, &untagged, Some(&pr("nobody")), &scan),
+            None
+        );
         assert_eq!(e.find_owner(&r, &untagged, None, &scan), None);
         // A retired session on the branch is still the owner (it gets
         // rehydrated) rather than duplicated.
@@ -1850,7 +2492,10 @@ mod tests {
         // An unknown origin tag falls back to the branch.
         let tagged = issue(8, "bot", Some("<!-- ssf: origin=o/r#99 -->"));
         let scan = origin::scan(&tagged, &[], "bot");
-        assert_eq!(e.find_owner(&r, &tagged, Some(&pr("bot/fix")), &scan), Some(1));
+        assert_eq!(
+            e.find_owner(&r, &tagged, Some(&pr("bot/fix")), &scan),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1878,6 +2523,211 @@ mod tests {
         assert_eq!(c.branch.as_deref(), Some("refs/heads/bot/fix"));
         assert_eq!(c.agent_session_id.as_deref(), Some("sess"));
         assert_eq!(c.terminal_handle.as_deref(), Some("h1"));
+    }
+
+    fn comment(id: u64, who: &str, body: &str) -> Value {
+        json!({"event":"commented","id":id,"user":{"login":who},"body":body,
+            "html_url":format!("u{id}"),"created_at":"t","updated_at":"t"})
+    }
+
+    #[test]
+    fn tagged_bot_comments_are_kept_and_sorted_per_recipient() {
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        seeded(&mut e, 3, Some("bot/issue-3"), true);
+        // PR 7 is owned by session 1.
+        seeded(&mut e, 7, None, true);
+        e.entry(&r, 7).shares_workspace_of = Some(1);
+        let timeline = vec![
+            comment(1, "alice", "human"),
+            comment(2, "bot", "untagged bot comment"),
+            comment(3, "bot", "from one\n\n<!-- ssf: origin=o/r#1 -->"),
+            comment(4, "bot", "from three\n\n<!-- ssf: origin=o/r#3 -->"),
+            comment(
+                5,
+                "bot",
+                "from the PR's session\n\n<!-- ssf: origin=o/r#7 -->",
+            ),
+            comment(6, "bot", "from elsewhere\n\n<!-- ssf: origin=x/y#2 -->"),
+        ];
+        let d = e.diff(&BTreeMap::new(), &timeline);
+        let keys: Vec<&str> = d.rendered.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "commented:1",
+                "commented:3",
+                "commented:4",
+                "commented:5",
+                "commented:6"
+            ],
+            "the untagged bot comment keeps today's rule; tagged ones stay"
+        );
+        assert_eq!(d.seen.len(), 6, "everything is recorded as seen");
+        assert!(d.rendered[1].text.contains("(from the agent on o/r#1)"));
+
+        // Session 1 (which also acts on PR 7) does not get its own posts back.
+        let mine = e.for_recipient(&d.rendered, "o/r#1");
+        let keys: Vec<&str> = mine.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, vec!["commented:1", "commented:4", "commented:6"]);
+        // Session 3 sees session 1's (and the PR's) comments, not its own.
+        let theirs = e.for_recipient(&d.rendered, "o/r#3");
+        let keys: Vec<&str> = theirs.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec!["commented:1", "commented:3", "commented:5", "commented:6"]
+        );
+        // Case-insensitive on the repository, like everything else.
+        assert_eq!(e.for_recipient(&d.rendered, "O/R#3").len(), 4);
+        assert_eq!(e.acting_session("o/r#7"), "o/r#1");
+        assert_eq!(e.acting_session("x/y#2"), "x/y#2");
+        assert_eq!(e.acting_session("garbage"), "garbage");
+        e.cfg.daemon.include_own_events = true;
+        assert_eq!(e.for_recipient(&d.rendered, "o/r#1").len(), 5);
+    }
+
+    #[tokio::test]
+    async fn subscriptions_through_requests() {
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        seeded(&mut e, 3, Some("bot/issue-3"), true);
+        e.entry(&r, 3).title = "Three".into();
+        seeded(&mut e, 7, None, true);
+        e.entry(&r, 7).shares_workspace_of = Some(1);
+
+        // Session 1 follows item 3.
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#1".into(),
+                target: "o/r#3".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(resp.data["owner"], "o/r#3");
+        assert_eq!(resp.data["title"], "Three");
+        assert_eq!(resp.data["added"], true);
+        assert_eq!(e.entry(&r, 3).subscribers, vec!["o/r#1"]);
+        // Again: no duplicate.
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#1".into(),
+                target: "o/r#3".into(),
+            })
+            .await;
+        assert!(resp.ok);
+        assert_eq!(resp.data["added"], false);
+        assert_eq!(e.entry(&r, 3).subscribers.len(), 1);
+        // From the PR's identity it is still session 1, and its own items
+        // are refused.
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#7".into(),
+                target: "o/r#1".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("your own item"));
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#7".into(),
+                target: "o/r#7".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        // Unknown sessions and repositories are refused.
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#99".into(),
+                target: "o/r#3".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not an agent session"));
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#1".into(),
+                target: "x/y#3".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("not a watched repository"));
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#1".into(),
+                target: "nonsense".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+
+        // A subscriber-only item is dropped with its last subscriber.
+        {
+            let s = e.entry(&r, 20);
+            s.subscriber_only = true;
+            s.subscribers = vec!["o/r#1".into(), "o/r#3".into()];
+        }
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#7".into(),
+                target: "o/r#20".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(resp.data["removed"], true);
+        assert_eq!(resp.data["untracked"], false);
+        assert_eq!(e.entry(&r, 20).subscribers, vec!["o/r#3"]);
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#3".into(),
+                target: "o/r#20".into(),
+            })
+            .await;
+        assert!(resp.ok);
+        assert_eq!(resp.data["untracked"], true);
+        assert!(!e.state.repos["o/r"].issues.contains_key(&20));
+        // Unsubscribing from something never followed is fine.
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#3".into(),
+                target: "o/r#1".into(),
+            })
+            .await;
+        assert!(resp.ok);
+        assert_eq!(resp.data["removed"], false);
+
+        // Telling a retired session with no workspace is refused, and an
+        // empty message too.
+        let resp = e
+            .handle_request(Request::Tell {
+                from: None,
+                target: "o/r#3".into(),
+                text: "  ".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        e.entry(&r, 3).active = false;
+        let resp = e
+            .handle_request(Request::Tell {
+                from: Some("o/r#1".into()),
+                target: "o/r#3".into(),
+                text: "hello".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("retired"));
+        let resp = e
+            .handle_request(Request::Tell {
+                from: None,
+                target: "o/r#50".into(),
+                text: "hello".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("no agent session"));
+        assert!(e.handle_request(Request::Ping).await.ok);
     }
 
     #[test]

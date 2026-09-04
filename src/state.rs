@@ -137,6 +137,15 @@ pub struct IssueState {
     /// shim was not in effect in whichever session made them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub untagged: BTreeMap<String, String>,
+    /// Sessions (`owner/repo#N`, always an owning session) that hear about
+    /// this item without acting on it: every delivery is fanned out to them
+    /// with FYI framing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscribers: Vec<String>,
+    /// Tracked only because sessions subscribed to it: polled for activity,
+    /// but no workspace, no owner and no session of its own.
+    #[serde(default)]
+    pub subscriber_only: bool,
 }
 
 pub fn state_path() -> PathBuf {
@@ -173,8 +182,60 @@ impl State {
     pub fn repo_mut(&mut self, name: &str) -> &mut RepoState {
         self.repos.entry(name.to_string()).or_default()
     }
+
+    /// Drop `session` from every subscriber list, in every repository.
+    /// Returns the items (`owner/repo#N`) it was subscribed to.
+    pub fn unsubscribe_everywhere(&mut self, session: &str) -> Vec<String> {
+        let mut dropped = Vec::new();
+        for (repo, rs) in self.repos.iter_mut() {
+            for st in rs.issues.values_mut() {
+                let before = st.subscribers.len();
+                st.subscribers.retain(|s| !s.eq_ignore_ascii_case(session));
+                if st.subscribers.len() != before {
+                    dropped.push(format!("{repo}#{}", st.number));
+                }
+            }
+        }
+        dropped
+    }
 }
 
 pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsubscribe_everywhere_spans_repositories() {
+        let mut st = State::default();
+        for (repo, n, subs) in [
+            ("a/b", 1, vec!["a/b#9", "x/y#2"]),
+            ("a/b", 2, vec!["A/B#9"]),
+            ("x/y", 3, vec!["x/y#2"]),
+        ] {
+            let e = st.repo_mut(repo).issues.entry(n).or_default();
+            e.number = n;
+            e.subscribers = subs.into_iter().map(String::from).collect();
+        }
+        let dropped = st.unsubscribe_everywhere("a/b#9");
+        assert_eq!(dropped, vec!["a/b#1", "a/b#2"]);
+        assert_eq!(st.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+        assert!(st.repos["a/b"].issues[&2].subscribers.is_empty());
+        assert_eq!(st.repos["x/y"].issues[&3].subscribers, vec!["x/y#2"]);
+        assert!(st.unsubscribe_everywhere("nobody#1").is_empty());
+        // Round-trips through JSON with the new fields.
+        st.repos
+            .get_mut("a/b")
+            .unwrap()
+            .issues
+            .get_mut(&1)
+            .unwrap()
+            .subscriber_only = true;
+        let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
+        assert!(back.repos["a/b"].issues[&1].subscriber_only);
+        assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+    }
 }

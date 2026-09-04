@@ -41,11 +41,14 @@ pub struct Session {
     /// `created` (the bot's own item).
     pub triggers: Vec<String>,
     pub harness: String,
-    /// Session that acts on this item. Until subscriptions land this is the
-    /// item's own session, or the issue session a PR joined.
+    /// Session that acts on this item: its own, or the session it is bound
+    /// to. Empty for an item tracked only for its subscribers.
     pub owner: String,
-    /// Sessions that hear about this item without owning it (filled in by #3).
+    /// Sessions that hear about this item without acting on it.
     pub subscribers: Vec<String>,
+    /// Tracked only because sessions subscribed to it: no workspace, no
+    /// owner, no session of its own.
+    pub subscriber_only: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shares_workspace_of: Option<String>,
     /// Session that handed this item off (`mode=delegate`); it hears about
@@ -251,8 +254,13 @@ fn join(
         active: item.active,
         triggers: item.triggers.clone(),
         harness: repo.harness.clone(),
-        owner: session_id(&repo.name, item.shares_workspace_of.unwrap_or(item.number)),
-        subscribers: Vec::new(),
+        owner: if item.subscriber_only {
+            String::new()
+        } else {
+            session_id(&repo.name, item.shares_workspace_of.unwrap_or(item.number))
+        },
+        subscribers: item.subscribers.clone(),
+        subscriber_only: item.subscriber_only,
         shares_workspace_of: item.shares_workspace_of.map(|n| session_id(&repo.name, n)),
         delegated_by: item.delegated_by.clone(),
         worktree_id: item.worktree_id.clone(),
@@ -349,7 +357,9 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         if !s.triggers.is_empty() {
             facts.push(format!("via {}", s.triggers.join("+")));
         }
-        if s.owner != s.id {
+        if s.subscriber_only {
+            facts.push("subscribed only, no session".into());
+        } else if s.owner != s.id {
             facts.push(format!("owned by {}", s.owner));
         }
         if let Some(p) = &s.delegated_by {
@@ -362,7 +372,7 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             facts.push(format!("opened by {o}"));
         }
         facts.push(format!("prompts {}", s.prompts_sent));
-        if !s.active {
+        if !s.active && !s.subscriber_only {
             facts.push("retired".into());
         }
         out.push_str(&format!("         {}\n", facts.join("  ·  ")));
