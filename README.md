@@ -131,7 +131,7 @@ ssf peers [--repo owner/name] [--all] [--json]
 ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --as owner/repo#N)
 ssf unsub 12
 ssf subs                          # what this session follows, who follows its items
-ssf tell 12 "are you done with the schema?"   # paste a message into that session's terminal
+ssf tell 12 "stop, I'm changing the spec"   # steer that session from your shell: pastes into its terminal
 ssf ui service disable|enable|toggle|status
 ```
 
@@ -364,7 +364,14 @@ session counts as that session):
   the daemon's own delivery path (so the agent is relaunched or resumed first
   if its terminal is gone). It arrives as an
   `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
-  or "from a human at the terminal" without `--as`.
+  or "from a human at the terminal" without `--as`. For an operator it is the
+  steering tool ("stop, I'm changing the spec"). Between agents it is the
+  exception: the default channel is a comment on the item (below), and the
+  prompt tells agents to keep `tell` for operational nudges that would be
+  noise on the item ("master moved, rebase", "terminal is being replaced")
+  and for reaching a session whose item is already closed. Tells are not
+  mirrored to GitHub, so anything someone might need to find later
+  (decisions, questions that change scope, status) goes on the item.
 - Delegating parents are subscribed to their children automatically.
 
 `sub`, `unsub` and `tell` talk to the running daemon over a Unix socket in
@@ -379,10 +386,12 @@ session is delivered like a human's, labelled "(from the agent on
 owner/repo#M)", while a comment tagged with the recipient's own session
 (or an item that session acts on) is the self-echo and stays filtered.
 Untagged bot comments keep the old rule (never delivered, unless
-`daemon.include_own_events`). So session A can talk to session B by
+`daemon.include_own_events`). So session A talks to session B by
 commenting on B's issue with `gh`: B's agent receives it labelled as coming
 from A, and A does not receive its own comment back, even when A is
-subscribed to B's issue.
+subscribed to B's issue. This is the default channel between agents; the
+initial prompt, the FYI messages and the `tell` messages all say to comment
+on the item and to use `ssf tell` only for the two cases above.
 
 ## How it works
 
