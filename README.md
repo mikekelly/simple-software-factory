@@ -148,6 +148,7 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 | `id`, `repo`, `number`, `kind` (`issue`/`pull_request`), `title`, `url` | ssf; `id` is the session identity `owner/repo#N` |
 | `github_state` (`open`/`closed`/`merged`), `active`, `triggers`, `pr` | GitHub, as of the last poll |
 | `owner`, `subscribers`, `subscriber_only`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `subscribers` are the sessions that hear about it without acting on it; `subscriber_only` marks an item tracked only for them (no owner, no workspace); `delegated_by` names the session that handed the item off (`mode=delegate`) |
+| `reviewing` | on a session of kind `reviewer` (id `owner/repo#N:reviewer`): the pull request it reviews (see [Reviewer sessions](#reviewer-sessions)) |
 | `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
 
@@ -171,7 +172,7 @@ everything git and GitHub related is the bot, whatever the human's own
 | SSH pushes | `GIT_SSH_COMMAND` pinned to the enrolled bot key with `IdentitiesOnly=yes` |
 | Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email` |
 | Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key) |
-| Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT` |
+| Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT`, and `SSF_ROLE=reviewer` in a reviewer session (`ssf launch --role reviewer`) |
 | Which session posted what | a `gh` shim first on `PATH` that stamps posts with an origin tag (below) |
 
 Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
@@ -229,10 +230,13 @@ Untagged bot posts are also warned about in the logs and reported by
 that the shim links to the running ssf. When comments are shown to an
 agent, the tag is stripped and replaced by "(from session owner/repo#N)".
 
-The tag can carry more fields. The one defined so far is `mode=delegate`,
+The tag can carry more fields. Two are defined: `mode=delegate`,
 which the shim adds when an `issue create` or `pr create` assigns the bot
 itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
-session's own (below).
+session's own (below); and `role=reviewer`, which the shim adds to everything
+posted from a reviewer session (`SSF_ROLE=reviewer` in its environment), so
+a review by the bot on its own pull request is told apart from the author's
+posts and shown as "(from the reviewer session on owner/repo#N)".
 
 ## Ownership: one session per item
 
@@ -254,13 +258,15 @@ binding wins):
   is the branch of a tracked workspace belongs to that workspace's session,
   tag or no tag (this is what a PR opened by hand from an agent's branch, or
   with `gh pr create --fill`, falls back to).
-- **Triggers go to the owner.** Assigning, mentioning or requesting a review
-  from the bot on an owned item is delivered to the owner's agent as
-  activity, never to a new session. If the owner has been retired or its
-  workspace removed, it is brought back the way any lost session is
-  (workspace re-created from its branch, conversation resumed), rather than
-  replaced. A retired owner's workspace is not cleaned up while items bound
-  to it are still open.
+- **Triggers go to the owner.** Assigning or mentioning the bot on an owned
+  item is delivered to the owner's agent as activity, never to a new
+  session. If the owner has been retired or its workspace removed, it is
+  brought back the way any lost session is (workspace re-created from its
+  branch, conversation resumed), rather than replaced. A retired owner's
+  workspace is not cleaned up while items bound to it are still open. The
+  one exception is a review request on an owned pull request, which gets a
+  reviewer session (below): the author is told that, and not to review its
+  own work.
 - **Hand-offs.** An item a session creates *and assigns the bot to* in the
   same `gh ... create` command is a delegation: the tag carries
   `mode=delegate`, the item gets a fresh session of its own, and the creating
@@ -281,6 +287,53 @@ binding wins):
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
 and "handed off by ...".
 
+## Reviewer sessions
+
+A session must not review its own pull request, so a review requested from
+the bot on a PR that one of its sessions owns (opened from it, or on its
+branch) does not go to that session. ssf starts a **reviewer session**
+instead:
+
+- a second workspace, `review-<n>-<title>`, checked out at the PR's head
+  (`origin/<branch>`) on a local branch of its own, so nothing the reviewer
+  does can move the PR; the reviewer is told it is a read-only checkout and
+  how to refresh it after the author pushes;
+- its own agent, launched with `SSF_ROLE=reviewer` (so the gh shim tags its
+  posts `role=reviewer`), and a review-specific prompt: the PR, its
+  description and history, then how to review (`git diff base...head`,
+  `gh pr review <n> --approve|--request-changes|--comment`), never commit,
+  push, merge or touch the board, and that the author is another session of
+  the same bot;
+- the session id `owner/repo#N:reviewer`. It is listed by `ssf peers` as
+  kind `rev` ("reviewer session for owner/repo#N"), can be reached with
+  `ssf tell N:reviewer "..."` (or `owner/repo#N:reviewer`), and can `ssf sub`
+  other items as itself; it owns nothing and cannot be subscribed to (follow
+  the PR instead).
+
+The author session keeps the PR: the review request is delivered to it as
+activity with a note that a reviewer session has it, and the review itself
+arrives as activity marked "from the reviewer session on owner/repo#N". The
+author answers on the PR and pushes fixes as it would for a human reviewer;
+its replies reach the reviewer marked "from the agent on owner/repo#A". To
+get another look it re-requests the review (`gh pr edit N --add-reviewer
+<bot>`).
+
+The reviewer lives as long as the request: while the bot is a requested
+reviewer, new activity on the PR (pushes, replies) is delivered to it as
+`[ssf] New activity on pull request ... which you are reviewing`. Posting the
+review makes GitHub drop the request, and the reviewer is stood down (told
+to stop, its record kept). A repeated request brings the same session back,
+with what happened in between, resuming its conversation (and re-creating its
+workspace at the PR's current head if that was removed). When the PR is
+closed or merged the reviewer is told, its workspace is marked completed and
+cleaned up like any other. Reviewer state lives next to the items in
+`state.json` under `reviewers`, keyed by PR number.
+
+Only same-repository PRs owned by a session get a reviewer. A PR the bot did
+not write (a human's PR the bot is asked to review, or one assigned to it
+without a session of its own on the branch) is handled as before: a session
+of its own, on the PR's branch, which reviews when asked.
+
 ## Subscriptions and cross-session comments
 
 Exactly one session acts on an item; any number can hear about it. Each
@@ -293,8 +346,9 @@ asked and how to reach the agent on it. Subscriptions live in the state
 file, so they survive relaunches and rehydration; a session that retires
 (its item closed, or the bot dropped from it) is unsubscribed everywhere.
 
-The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a
-session, or `--as owner/repo#N` from a human shell (an item bound to another
+The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` (plus
+`SSF_ROLE` for a reviewer) inside a session, or `--as owner/repo#N` (or
+`owner/repo#N:reviewer`) from a human shell (an item bound to another
 session counts as that session):
 
 - `ssf sub <n|owner/repo#n>` / `ssf unsub ...` follow or drop an item.
@@ -306,8 +360,9 @@ session counts as that session):
 - `ssf subs` lists what this session follows and who follows its items
   (`--json` for detail); `ssf peers` shows subscribers per session.
 - `ssf tell <n> "message"` pastes a message into the terminal of the session
-  acting on that item, through the daemon's own delivery path (so the agent
-  is relaunched or resumed first if its terminal is gone). It arrives as an
+  acting on that item (`<n>:reviewer` for a PR's reviewer session), through
+  the daemon's own delivery path (so the agent is relaunched or resumed first
+  if its terminal is gone). It arrives as an
   `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
   or "from a human at the terminal" without `--as`.
 - Delegating parents are subscribed to their children automatically.

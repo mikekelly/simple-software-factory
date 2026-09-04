@@ -23,13 +23,19 @@ pub fn session_id(repo: &str, number: u64) -> String {
     format!("{repo}#{number}")
 }
 
+/// Identity of the reviewer session of pull request N: `owner/repo#N:reviewer`.
+pub fn reviewer_session_id(repo: &str, number: u64) -> String {
+    format!("{repo}#{number}:{}", crate::origin::REVIEWER)
+}
+
 /// One tracked item and the agent session working on it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: String,
     pub repo: String,
     pub number: u64,
-    /// `issue` or `pull_request`.
+    /// `issue`, `pull_request`, or `reviewer` for the reviewer session of a
+    /// pull request (`number` is the PR).
     pub kind: String,
     pub title: String,
     pub url: String,
@@ -55,6 +61,9 @@ pub struct Session {
     /// the closure once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub delegated_by: Option<String>,
+    /// For a reviewer session: the pull request it reviews (`owner/repo#N`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reviewing: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,6 +112,10 @@ pub struct Session {
 impl Session {
     pub fn is_pull_request(&self) -> bool {
         self.kind == "pull_request"
+    }
+
+    pub fn is_reviewer(&self) -> bool {
+        self.kind == "reviewer"
     }
 }
 
@@ -180,28 +193,61 @@ pub fn sessions(cfg: &Config, state: &State, workspaces: Option<&[WorkspaceInfo]
             continue;
         };
         for item in rs.issues.values() {
-            let ws = workspaces.and_then(|list| find_workspace(list, item));
+            let reviewer = rs.reviewers.get(&item.number).filter(|r| r.seeded);
+            let ws = workspaces.and_then(|list| {
+                find_workspace(list, item, reviewer.and_then(|r| r.worktree_id.as_deref()))
+            });
             out.push(join(repo, item, ws, workspaces.is_some()));
+            if let Some(rv) = reviewer {
+                let ws = workspaces.and_then(|list| find_workspace(list, rv, None));
+                let mut s = join(repo, rv, ws, workspaces.is_some());
+                s.id = reviewer_session_id(&repo.name, rv.number);
+                s.kind = "reviewer".into();
+                s.owner = s.id.clone();
+                s.shares_workspace_of = None;
+                s.reviewing = Some(session_id(&repo.name, rv.number));
+                if s.title.is_empty() {
+                    s.title = item.title.clone();
+                }
+                if s.url.is_empty() {
+                    s.url = item.html_url.clone();
+                }
+                out.push(s);
+            }
         }
     }
     out
 }
 
-fn find_workspace<'a>(list: &'a [WorkspaceInfo], item: &IssueState) -> Option<&'a WorkspaceInfo> {
+/// The Orca workspace of a record: by id, else by Orca's own link to the
+/// item number (the state file may be behind, or lost). `not` is a workspace
+/// that is known to be someone else's (a PR's reviewer's, which links to
+/// the same number); a reviewer's own is only ever found by id.
+fn find_workspace<'a>(
+    list: &'a [WorkspaceInfo],
+    item: &IssueState,
+    not: Option<&str>,
+) -> Option<&'a WorkspaceInfo> {
     if let Some(id) = &item.worktree_id {
         if let Some(w) = list.iter().find(|w| &w.worktree_id == id) {
             return Some(w);
         }
     }
-    // The state file may be behind (or lost): fall back to Orca's own link.
+    if item.kind.as_deref() == Some("reviewer") {
+        return None;
+    }
     let repo_id = item.repo_id.as_deref()?;
     let wanted = if item.kind.as_deref() == Some("pull_request") {
         |w: &WorkspaceInfo, n| w.linked_pr == Some(n) || w.linked_issue == Some(n)
     } else {
         |w: &WorkspaceInfo, n| w.linked_issue == Some(n)
     };
-    list.iter()
-        .find(|w| !w.is_archived && w.repo_id == repo_id && wanted(w, item.number))
+    list.iter().find(|w| {
+        !w.is_archived
+            && w.repo_id == repo_id
+            && not != Some(w.worktree_id.as_str())
+            && wanted(w, item.number)
+    })
 }
 
 fn strip_ref(branch: &str) -> String {
@@ -263,6 +309,7 @@ fn join(
         subscriber_only: item.subscriber_only,
         shares_workspace_of: item.shares_workspace_of.map(|n| session_id(&repo.name, n)),
         delegated_by: item.delegated_by.clone(),
+        reviewing: None,
         worktree_id: item.worktree_id.clone(),
         worktree_path: ws
             .map(|w| w.path.clone())
@@ -330,7 +377,13 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             out.push('\n');
             current_repo = &s.repo;
         }
-        let kind = if s.is_pull_request() { "PR" } else { "issue" };
+        let kind = if s.is_reviewer() {
+            "rev"
+        } else if s.is_pull_request() {
+            "PR"
+        } else {
+            "issue"
+        };
         let marker = if me == Some(s.id.as_str()) {
             " (you)"
         } else {
@@ -357,7 +410,9 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         if !s.triggers.is_empty() {
             facts.push(format!("via {}", s.triggers.join("+")));
         }
-        if s.subscriber_only {
+        if let Some(p) = &s.reviewing {
+            facts.push(format!("reviewer session for {p}"));
+        } else if s.subscriber_only {
             facts.push("subscribed only, no session".into());
         } else if s.owner != s.id {
             facts.push(format!("owned by {}", s.owner));
@@ -610,6 +665,49 @@ mod tests {
         assert_eq!(pr.owner, "acme/widgets#1");
         assert_eq!(pr.shares_workspace_of.as_deref(), Some("acme/widgets#1"));
         assert!(pr.is_pull_request());
+    }
+
+    #[test]
+    fn reviewer_sessions_are_listed_next_to_their_pull_request() {
+        let mut pr = item(9, None);
+        pr.kind = Some("pull_request".into());
+        pr.shares_workspace_of = Some(1);
+        pr.title = "Fix it".into();
+        let mut st = state_with(vec![item(1, Some("r1::/w/one")), pr]);
+        let mut rv = item(9, Some("r1::/w/review"));
+        rv.kind = Some("reviewer".into());
+        rv.title = String::new();
+        rv.seeded = true;
+        rv.triggers = vec!["review_requested".into()];
+        st.repo_mut("acme/widgets").reviewers.insert(9, rv);
+        // Not seeded yet: not a session.
+        let mut unseeded = item(1, None);
+        unseeded.seeded = false;
+        st.repo_mut("acme/widgets").reviewers.insert(1, unseeded);
+        let ws = vec![
+            workspace("r1::/w/one", Some(1), None),
+            workspace("r1::/w/review", Some(9), None),
+        ];
+        let s = sessions(&cfg(), &st, Some(&ws));
+        assert_eq!(s.len(), 3);
+        let r = s.iter().find(|s| s.is_reviewer()).unwrap();
+        assert_eq!(r.id, "acme/widgets#9:reviewer");
+        assert_eq!(r.owner, r.id);
+        assert_eq!(r.number, 9);
+        assert_eq!(r.title, "Fix it", "falls back to the PR's title");
+        assert_eq!(r.reviewing.as_deref(), Some("acme/widgets#9"));
+        assert!(r.shares_workspace_of.is_none());
+        assert_eq!(r.worktree_path.as_deref(), Some("/w/r1::/w/review"));
+        // The PR's own record does not pick up the reviewer's workspace by link.
+        let pr = s
+            .iter()
+            .find(|s| s.number == 9 && !s.is_reviewer())
+            .unwrap();
+        assert_eq!(pr.agent_state, "unbound");
+        let table = render_peers(&s, Some("acme/widgets#9:reviewer"));
+        assert!(table.contains("reviewer session for acme/widgets#9"));
+        assert!(table.contains("rev"));
+        assert!(table.contains("(you)"));
     }
 
     #[test]

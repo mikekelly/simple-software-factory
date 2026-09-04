@@ -43,6 +43,13 @@ pub struct RepoState {
     pub created_numbers: Vec<u64>,
     #[serde(default)]
     pub issues: BTreeMap<u64, IssueState>,
+    /// Reviewer sessions, keyed by the pull request they review: a second
+    /// workspace on the PR's branch with an agent that only reviews, started
+    /// when a review is requested from the bot on a PR one of its own
+    /// sessions wrote. Same record shape as an item, but the session id is
+    /// `owner/repo#N:reviewer` and it never owns anything.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub reviewers: BTreeMap<u64, IssueState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -198,6 +205,11 @@ impl State {
         }
         dropped
     }
+
+    /// The reviewer session record for pull request `number`, if any.
+    pub fn reviewer(&self, repo: &str, number: u64) -> Option<&IssueState> {
+        self.repos.get(repo)?.reviewers.get(&number)
+    }
 }
 
 pub fn now_iso() -> String {
@@ -234,8 +246,20 @@ mod tests {
             .get_mut(&1)
             .unwrap()
             .subscriber_only = true;
+        let rv = IssueState {
+            number: 1,
+            seeded: true,
+            ..Default::default()
+        };
+        st.repo_mut("a/b").reviewers.insert(1, rv);
         let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         assert!(back.repos["a/b"].issues[&1].subscriber_only);
         assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+        assert!(back.reviewer("a/b", 1).unwrap().seeded);
+        assert!(back.reviewer("a/b", 2).is_none());
+        assert!(back.reviewer("x/y", 1).is_none());
+        // An empty reviewer map is not written out.
+        let plain: State = serde_json::from_str(r#"{"repos":{"a/b":{}}}"#).unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("reviewers"));
     }
 }

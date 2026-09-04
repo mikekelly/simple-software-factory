@@ -13,15 +13,26 @@ use crate::ipc::{Request, Response};
 use crate::orca::{Delivery, Orca, Worktree};
 use crate::origin::{self, Origin};
 use crate::prompt::{
-    self, FinalComment, Fyi, ProjectPrompt, PromptContext, Rendered, actor_of, event_key,
-    render_event,
+    self, FinalComment, Fyi, ProjectPrompt, PromptContext, Rendered, ReviewEnd, actor_of,
+    event_key, render_event,
 };
 use crate::sessions;
 use crate::state::{IssueState, State, now_iso};
-use crate::status::session_id;
+use crate::status::{reviewer_session_id, session_id};
 
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
 const MAX_DELIVERY_FAILURES: u32 = 5;
+
+/// Marks an error from the reviewer side of a pull request, so it is
+/// counted against the reviewer session rather than the PR's own record.
+#[derive(Debug)]
+struct ReviewerFailure;
+
+impl std::fmt::Display for ReviewerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("reviewer session")
+    }
+}
 
 pub struct Engine {
     cfg: Config,
@@ -41,6 +52,35 @@ struct Diff {
     rendered: Vec<Rendered>,
     /// Every key/marker observed (including filtered ones), to be recorded as seen.
     seen: BTreeMap<String, String>,
+}
+
+/// Which session record of an item is meant: the item's own (the session
+/// that works on it, or is bound to its owner), or the reviewer session of
+/// a pull request, which has a workspace of its own next to the author's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slot {
+    Item(u64),
+    Reviewer(u64),
+}
+
+impl Slot {
+    fn number(self) -> u64 {
+        match self {
+            Slot::Item(n) | Slot::Reviewer(n) => n,
+        }
+    }
+
+    fn is_reviewer(self) -> bool {
+        matches!(self, Slot::Reviewer(_))
+    }
+}
+
+/// Session id of a record: `owner/repo#N`, or `owner/repo#N:reviewer`.
+fn slot_id(repo: &str, slot: Slot) -> String {
+    match slot {
+        Slot::Item(n) => session_id(repo, n),
+        Slot::Reviewer(n) => reviewer_session_id(repo, n),
+    }
 }
 
 impl Engine {
@@ -137,8 +177,11 @@ impl Engine {
     }
 
     /// A watched repository and an item number out of `owner/repo#N`.
-    fn locate(&self, item: &str) -> Result<(RepoConfig, u64)> {
-        let o = Origin::parse(item).with_context(|| format!("{item}: expected owner/repo#N"))?;
+    /// A session or item reference from the CLI: the repository, the number
+    /// and whether it names the reviewer session (`owner/repo#N:reviewer`).
+    fn locate(&self, item: &str) -> Result<(RepoConfig, u64, bool)> {
+        let (o, reviewer) = origin::parse_session(item)
+            .with_context(|| format!("{item}: expected owner/repo#N (or owner/repo#N:reviewer)"))?;
         let repo = self
             .cfg
             .repos
@@ -146,30 +189,61 @@ impl Engine {
             .find(|r| r.name.eq_ignore_ascii_case(&o.repo))
             .cloned()
             .with_context(|| format!("{} is not a watched repository", o.repo))?;
-        Ok((repo, o.number))
+        Ok((repo, o.number, reviewer))
     }
 
-    /// The session (`owner/repo#N`, normalised to the owning session) behind
-    /// a session id the CLI gave. It must be one ssf has a workspace for.
-    fn known_session(&self, id: &str) -> Result<(RepoConfig, u64, String)> {
-        let (repo, n) = self.locate(id)?;
-        let owner = self.owner_of(&repo, n);
-        let known = self
-            .state
-            .repos
-            .get(&repo.name)
-            .and_then(|rs| rs.issues.get(&owner))
-            .is_some_and(|s| s.seeded);
+    /// The session (`owner/repo#N`, normalised to the owning session, or
+    /// `owner/repo#N:reviewer`) behind a session id the CLI gave. It must be
+    /// one ssf has a workspace for.
+    fn known_session(&self, id: &str) -> Result<(RepoConfig, Slot, String)> {
+        let (repo, n, reviewer) = self.locate(id)?;
+        let slot = if reviewer {
+            Slot::Reviewer(n)
+        } else {
+            Slot::Item(self.owner_of(&repo, n))
+        };
+        let known = self.peek(&repo, slot).is_some_and(|s| s.seeded);
         if !known {
             anyhow::bail!("{id} is not an agent session ssf knows (see `ssf peers --all`)");
         }
-        let id = session_id(&repo.name, owner);
-        Ok((repo, owner, id))
+        let id = slot_id(&repo.name, slot);
+        Ok((repo, slot, id))
+    }
+
+    /// The record for a slot, if there is one.
+    fn peek(&self, repo: &RepoConfig, slot: Slot) -> Option<&IssueState> {
+        match slot {
+            Slot::Item(n) => self.state.repos.get(&repo.name)?.issues.get(&n),
+            Slot::Reviewer(n) => self.state.reviewer(&repo.name, n),
+        }
+    }
+
+    /// The record for a slot, created empty if missing.
+    fn record(&mut self, repo: &RepoConfig, slot: Slot) -> &mut IssueState {
+        match slot {
+            Slot::Item(n) => self.entry(repo, n),
+            Slot::Reviewer(n) => {
+                let e = self
+                    .state
+                    .repo_mut(&repo.name)
+                    .reviewers
+                    .entry(n)
+                    .or_default();
+                e.number = n;
+                e
+            }
+        }
     }
 
     async fn subscribe(&mut self, from: &str, target: &str) -> Result<Value> {
         let (_, _, me) = self.known_session(from)?;
-        let (repo, number) = self.locate(target)?;
+        let (repo, number, reviewer) = self.locate(target)?;
+        if reviewer {
+            anyhow::bail!(
+                "{target} is a reviewer session, not an item; subscribe to the pull request ({}#{number})",
+                repo.name
+            );
+        }
         let (owner, name) = repo.split()?;
         let existing = self
             .state
@@ -262,7 +336,13 @@ impl Engine {
 
     fn unsubscribe(&mut self, from: &str, target: &str) -> Result<Value> {
         let (_, _, me) = self.known_session(from)?;
-        let (repo, number) = self.locate(target)?;
+        let (repo, number, reviewer) = self.locate(target)?;
+        if reviewer {
+            anyhow::bail!(
+                "{target} is a reviewer session, not an item; unsubscribe from the pull request ({}#{number})",
+                repo.name
+            );
+        }
         let Some(st) = self
             .state
             .repos
@@ -306,17 +386,23 @@ impl Engine {
         if text.trim().is_empty() {
             anyhow::bail!("nothing to say");
         }
-        let (repo, number) = self.locate(target)?;
+        let (repo, number, reviewer) = self.locate(target)?;
+        let slot = if reviewer {
+            Slot::Reviewer(number)
+        } else {
+            Slot::Item(number)
+        };
         let st = self
-            .state
-            .repos
-            .get(&repo.name)
-            .and_then(|rs| rs.issues.get(&number))
+            .peek(&repo, slot)
             .cloned()
             .filter(|s| s.seeded)
             .with_context(|| format!("{target} has no agent session (see `ssf peers --all`)"))?;
-        let acting = self.owner_of(&repo, number);
-        let ost = self.entry(&repo, acting).clone();
+        let acting = if reviewer {
+            slot
+        } else {
+            Slot::Item(self.owner_of(&repo, number))
+        };
+        let ost = self.record(&repo, acting).clone();
         let alive = match ost.worktree_id.as_deref() {
             Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
             None => false,
@@ -324,13 +410,13 @@ impl Engine {
         if !ost.active && !alive {
             anyhow::bail!(
                 "the session on {target} ({}) has retired and its workspace is gone",
-                session_id(&repo.name, acting)
+                slot_id(&repo.name, acting)
             );
         }
         let (sender, sender_title) = match from {
             Some(f) => {
-                let (frepo, fnum, fid) = self.known_session(f)?;
-                let title = self.entry(&frepo, fnum).title.clone();
+                let (frepo, fslot, fid) = self.known_session(f)?;
+                let title = self.record(&frepo, fslot).title.clone();
                 (Some(fid), Some(title).filter(|t| !t.is_empty()))
             }
             None => (None, None),
@@ -341,21 +427,21 @@ impl Engine {
             text,
             self.cfg.daemon.max_body_chars,
         );
-        let d = self.deliver_to(&repo, number, &prompt, None).await?;
-        let e = self.entry(&repo, acting);
+        let d = self.deliver(&repo, slot, &prompt, None).await?;
+        let e = self.record(&repo, acting);
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
         info!(
             repo = repo.name,
             issue = number,
-            session = acting,
+            session = slot_id(&repo.name, acting),
             from = sender.as_deref().unwrap_or("a human"),
             "delivered a message"
         );
         Ok(serde_json::json!({
             "item": session_id(&repo.name, number),
             "title": st.title,
-            "session": session_id(&repo.name, acting),
+            "session": slot_id(&repo.name, acting),
             "terminal": d.handle,
             "relaunched": d.relaunched,
             "from": sender,
@@ -563,14 +649,23 @@ impl Engine {
                     }
                 },
             };
-            if let Err(e) = self
+            match self
                 .reconcile_issue(repo, owner, name, &issue, pr, triggers)
                 .await
             {
-                all_ok = false;
-                self.note_failure(repo, issue.number, &e);
-            } else {
-                self.failures.remove(&(repo.name.clone(), issue.number));
+                Ok(()) => {
+                    self.failures.remove(&(repo.name.clone(), issue.number));
+                    self.failures
+                        .remove(&(reviewer_session_id(&repo.name, 0), issue.number));
+                }
+                Err(e) if e.downcast_ref::<ReviewerFailure>().is_some() => {
+                    all_ok = false;
+                    self.note_reviewer_failure(repo, issue.number, &e);
+                }
+                Err(e) => {
+                    all_ok = false;
+                    self.note_failure(repo, issue.number, &e);
+                }
             }
         }
 
@@ -711,9 +806,10 @@ impl Engine {
 
     /// The session (`owner/repo#N`) that acts on the item a post's origin
     /// tag names: the item's owner, in a watched repository; the tag itself
-    /// anywhere else.
+    /// anywhere else. A reviewer session (`owner/repo#N:reviewer`) is its
+    /// own session, never the author's.
     fn acting_session(&self, origin: &str) -> String {
-        let Some(o) = Origin::parse(origin) else {
+        let Some((o, reviewer)) = origin::parse_session(origin) else {
             return origin.to_string();
         };
         match self
@@ -722,6 +818,7 @@ impl Engine {
             .iter()
             .find(|r| r.name.eq_ignore_ascii_case(&o.repo))
         {
+            Some(r) if reviewer => reviewer_session_id(&r.name, o.number),
             Some(r) => session_id(&r.name, self.owner_of(r, o.number)),
             None => origin.to_string(),
         }
@@ -781,7 +878,7 @@ impl Engine {
             {
                 continue;
             }
-            let Ok((srepo, snum, sid)) = self.known_session(&sub) else {
+            let Ok((srepo, sslot, sid)) = self.known_session(&sub) else {
                 warn!(
                     repo = repo.name,
                     issue = issue.number,
@@ -790,7 +887,7 @@ impl Engine {
                 );
                 continue;
             };
-            let sst = self.entry(&srepo, snum).clone();
+            let sst = self.record(&srepo, sslot).clone();
             let alive = match sst.worktree_id.as_deref() {
                 Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
                 None => false,
@@ -811,7 +908,7 @@ impl Engine {
             let ctx = self.ctx(repo, &st);
             let text =
                 prompt::fyi_prompt(issue, &mine, &ctx, owner_session.as_deref(), merged, what);
-            match self.deliver_to(&srepo, snum, &text, None).await {
+            match self.deliver(&srepo, sslot, &text, None).await {
                 Ok(_) => {
                     info!(
                         repo = repo.name,
@@ -820,7 +917,7 @@ impl Engine {
                         events = mine.len(),
                         "told a subscriber"
                     );
-                    let e = self.entry(&srepo, snum);
+                    let e = self.record(&srepo, sslot);
                     e.last_prompt_at = Some(now_iso());
                     e.prompts_sent += 1;
                 }
@@ -854,6 +951,34 @@ impl Engine {
             if let Some(st) = self.state.repo_mut(&repo.name).issues.get_mut(&number) {
                 st.seeded = false;
                 st.terminal_handle = None;
+            }
+        }
+    }
+
+    /// A failure on the reviewer side: counted apart from the PR's own
+    /// deliveries, and after enough of them the reviewer record is started
+    /// over rather than the PR re-onboarded onto its author.
+    fn note_reviewer_failure(&mut self, repo: &RepoConfig, number: u64, err: &anyhow::Error) {
+        let key = (reviewer_session_id(&repo.name, 0), number);
+        let count = self.failures.entry(key).or_insert(0);
+        *count += 1;
+        warn!(
+            repo = repo.name,
+            issue = number,
+            attempt = *count,
+            "reviewer session failed: {err:#}"
+        );
+        if *count >= MAX_DELIVERY_FAILURES {
+            error!(
+                repo = repo.name,
+                issue = number,
+                "giving up on the reviewer's workspace; it will be started over"
+            );
+            *count = 0;
+            if let Some(rv) = self.state.repo_mut(&repo.name).reviewers.get_mut(&number) {
+                rv.seeded = false;
+                rv.active = false;
+                rv.terminal_handle = None;
             }
         }
     }
@@ -1076,24 +1201,442 @@ impl Engine {
             .issues
             .get(&issue.number)
             .cloned();
-        if let Some(st) = &existing {
-            if st.seeded && st.triggers != triggers {
-                let e = self.entry(repo, issue.number);
-                e.triggers = triggers.clone();
-            }
+        let mut existing = existing;
+        if let Some(st) = existing
+            .as_mut()
+            .filter(|s| s.seeded && s.triggers != triggers)
+        {
+            let e = self.entry(repo, issue.number);
+            e.triggers = triggers.clone();
+            st.triggers = triggers.clone();
         }
         match existing {
             Some(st) if st.seeded && !st.active => {
-                self.reactivate(repo, owner, name, issue, st).await
+                self.reactivate(repo, owner, name, issue, st).await?
             }
             Some(st) if st.seeded => {
-                if st.updated_at.as_deref() == Some(issue.updated_at.as_str()) {
-                    return Ok(());
+                if st.updated_at.as_deref() != Some(issue.updated_at.as_str()) {
+                    self.follow_up(repo, owner, name, issue, st).await?
                 }
-                self.follow_up(repo, owner, name, issue, st).await
             }
-            _ => self.onboard(repo, owner, name, issue, pr, triggers).await,
+            _ => {
+                self.onboard(repo, owner, name, issue, pr, triggers.clone())
+                    .await?
+            }
         }
+        self.reconcile_reviewer(repo, owner, name, issue, &triggers)
+            .await
+            .map_err(|e| e.context(ReviewerFailure))
+    }
+
+    /// A review requested from the bot on a pull request one of its own
+    /// sessions wrote is not delivered to that session to act on: a reviewer
+    /// session (a second workspace on the PR, subscribed to it rather than
+    /// owning it) is started, followed up while the request stands, and
+    /// stood down when the request is gone (the review was posted, or it was
+    /// withdrawn). The author keeps the PR and sees the review as activity.
+    async fn reconcile_reviewer(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        issue: &Issue,
+        triggers: &[String],
+    ) -> Result<()> {
+        let Some(st) = self
+            .peek(repo, Slot::Item(issue.number))
+            .cloned()
+            .filter(|s| s.seeded && s.active && s.shares_workspace_of.is_some())
+        else {
+            return Ok(());
+        };
+        if !issue.is_pull_request() {
+            return Ok(());
+        }
+        let wanted = triggers.iter().any(|t| t == "review_requested");
+        let rv = self.peek(repo, Slot::Reviewer(issue.number)).cloned();
+        let running = rv.as_ref().is_some_and(|r| r.seeded && r.active);
+        match (wanted, running) {
+            (true, false) => self.start_reviewer(repo, owner, name, issue, &st, rv).await,
+            (true, true) => {
+                self.review_follow_up(repo, owner, name, issue, rv.unwrap())
+                    .await
+            }
+            (false, true) => {
+                self.retire_reviewer(repo, owner, name, issue, ReviewEnd::Fulfilled, None)
+                    .await
+            }
+            (false, false) => Ok(()),
+        }
+    }
+
+    /// Start (or bring back) the reviewer session for a pull request. A
+    /// reviewer that was stood down keeps its record, workspace and
+    /// conversation, so a repeated request resumes where it left off with
+    /// what happened in between.
+    async fn start_reviewer(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        issue: &Issue,
+        st: &IssueState,
+        prior: Option<IssueState>,
+    ) -> Result<()> {
+        let number = issue.number;
+        let slot = Slot::Reviewer(number);
+        let me = reviewer_session_id(&repo.name, number);
+        let author = self.owner_of(repo, number);
+        let pr = match st.pr.clone() {
+            Some(p) => p,
+            None => self.gh.pull(owner, name, number).await?,
+        };
+        if !pr.same_repo(&repo.name) || pr.head_ref.is_empty() {
+            warn!(
+                repo = repo.name,
+                issue = number,
+                "review requested on a pull request whose branch is not in this repository; \
+                 leaving it to the author's session"
+            );
+            return Ok(());
+        }
+        let again = prior.as_ref().is_some_and(|p| p.seeded);
+        info!(
+            repo = repo.name,
+            issue = number,
+            author,
+            again,
+            "review requested on a session's own pull request; {} its reviewer session",
+            if again { "bringing back" } else { "starting" }
+        );
+        let setup = self
+            .orca
+            .ensure_project(
+                owner,
+                name,
+                &repo.clone_url(),
+                repo.path.as_deref(),
+                &self.cfg.projects_dir(),
+            )
+            .await?;
+        let timeline = self.gh.timeline(owner, name, number).await?;
+        let wt_name = prior
+            .as_ref()
+            .and_then(|p| p.worktree_name.clone())
+            .unwrap_or_else(|| prompt::review_worktree_name(number, &issue.title));
+        {
+            let e = self.record(repo, slot);
+            e.title = issue.title.clone();
+            e.html_url = issue.html_url.clone();
+            e.repo_id = Some(setup.repo_id.clone());
+            e.worktree_name = Some(wt_name.clone());
+            e.kind = Some("reviewer".into());
+            e.triggers = vec!["review_requested".into()];
+            e.github_state = Some("open".into());
+            e.pr = Some(pr.clone());
+            e.projects = st.projects.clone();
+            // For a reviewer record: the session that wrote the PR.
+            e.shares_workspace_of = Some(author);
+            e.subscriber_only = false;
+            e.cleanup_pending = false;
+            e.retired_at = None;
+        }
+        if again {
+            let prior = prior.unwrap();
+            let diff = self.diff(&prior.seen, &timeline);
+            let mine = self.for_recipient(&diff.rendered, &me);
+            let rst = self.record(repo, slot).clone();
+            let ctx = self.ctx(repo, &rst);
+            let text = prompt::review_again_prompt(issue, &mine, &ctx);
+            let all = self.diff(&BTreeMap::new(), &timeline).rendered;
+            let all = self.for_recipient(&all, &me);
+            let mut relaunch = prompt::review_prompt(issue, &all, &ctx);
+            relaunch.push_str("\n\n");
+            relaunch.push_str(&text);
+            let d = self.deliver(repo, slot, &text, Some(&relaunch)).await?;
+            if let Some(id) = self.record(repo, slot).worktree_id.clone() {
+                let _ = self.orca.set_status(&id, "in-progress").await;
+            }
+            let e = self.record(repo, slot);
+            e.terminal_handle = Some(d.handle);
+            e.updated_at = Some(issue.updated_at.clone());
+            e.seen = diff.seen;
+            e.active = true;
+            e.last_prompt_at = Some(now_iso());
+            e.prompts_sent += 1;
+            return Ok(());
+        }
+        let diff = self.diff(&BTreeMap::new(), &timeline);
+        let mine = self.for_recipient(&diff.rendered, &me);
+        // A workspace left from an earlier, unfinished attempt is reused.
+        let mut existing: Option<Worktree> = None;
+        if let Some(id) = prior.as_ref().and_then(|p| p.worktree_id.clone())
+            && self.orca.worktree_exists(&id).await?
+        {
+            existing = Some(Worktree {
+                id,
+                path: prior
+                    .as_ref()
+                    .and_then(|p| p.worktree_path.clone())
+                    .unwrap_or_default(),
+                branch: prior.as_ref().and_then(|p| p.branch.clone()),
+            });
+        }
+        let handle = match existing {
+            Some(wt) => {
+                self.remember_worktree(repo, slot, &wt);
+                let rst = self.record(repo, slot).clone();
+                let ctx = self.ctx(repo, &rst);
+                let text = prompt::review_prompt(issue, &mine, &ctx);
+                let d = self.deliver(repo, slot, &text, Some(&text)).await?;
+                d.handle
+            }
+            None => {
+                let created = self
+                    .create_review_workspace(repo, &setup.repo_id, &wt_name, number, &pr)
+                    .await?;
+                info!(
+                    repo = repo.name,
+                    issue = number,
+                    worktree = created.id,
+                    "created the reviewer's workspace"
+                );
+                self.remember_worktree(repo, slot, &created);
+                {
+                    let e = self.record(repo, slot);
+                    e.launched_at = Some(now_iso());
+                    e.agent_session_id = None;
+                }
+                let title = format!("{} · #{} review", repo.harness, number);
+                let cmd = self.launch_command(
+                    repo,
+                    number,
+                    &issue.html_url,
+                    &repo.harness_command(),
+                    true,
+                );
+                let handle = self
+                    .orca
+                    .launch_in_worktree(&created.id, &cmd, &title, &repo.harness)
+                    .await?;
+                let rst = self.record(repo, slot).clone();
+                let ctx = self.ctx(repo, &rst);
+                let text = prompt::review_prompt(issue, &mine, &ctx);
+                self.orca.send_prompt(&handle, &text).await?;
+                info!(
+                    repo = repo.name,
+                    issue = number,
+                    handle,
+                    "launched {} as the reviewer and sent the pull request",
+                    repo.harness
+                );
+                handle
+            }
+        };
+        if let Some(id) = self.record(repo, slot).worktree_id.clone() {
+            let _ = self.orca.set_status(&id, "in-progress").await;
+        }
+        let e = self.record(repo, slot);
+        e.terminal_handle = Some(handle);
+        e.updated_at = Some(issue.updated_at.clone());
+        e.seen = diff.seen;
+        e.seeded = true;
+        e.active = true;
+        e.bound_at = Some(now_iso());
+        e.last_prompt_at = Some(now_iso());
+        e.prompts_sent += 1;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        self.capture_sessions(repo);
+        Ok(())
+    }
+
+    /// A worktree for reviewing a pull request: at the PR's head, on a local
+    /// branch of its own rather than the PR's, so nothing the reviewer does
+    /// can move the PR. The reviewer is told how to refresh it.
+    async fn create_review_workspace(
+        &mut self,
+        repo: &RepoConfig,
+        repo_id: &str,
+        wt_name: &str,
+        number: u64,
+        pr: &PrInfo,
+    ) -> Result<Worktree> {
+        let main = self.orca.repo_path(repo_id).await?;
+        if let Err(e) = git(&main, &["fetch", "origin", &pr.head_ref]).await {
+            warn!(
+                repo = repo.name,
+                issue = number,
+                "fetching PR branch failed: {e:#}"
+            );
+        }
+        if self
+            .orca
+            .existing_branch_ref(repo_id, &pr.head_ref)
+            .await?
+            .is_none()
+        {
+            anyhow::bail!(
+                "the pull request branch {} is not available in the repository checkout",
+                pr.head_ref
+            );
+        }
+        let base = format!("origin/{}", pr.head_ref);
+        let comment = format!("ssf: reviewing PR #{number}");
+        self.orca
+            .create_worktree(repo_id, wt_name, number, None, &comment, Some(&base))
+            .await
+    }
+
+    /// The pull request under review changed: tell the reviewer what is new.
+    async fn review_follow_up(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        issue: &Issue,
+        rv: IssueState,
+    ) -> Result<()> {
+        if rv.updated_at.as_deref() == Some(issue.updated_at.as_str()) {
+            return Ok(());
+        }
+        let number = issue.number;
+        let slot = Slot::Reviewer(number);
+        let me = reviewer_session_id(&repo.name, number);
+        let timeline = self.gh.timeline(owner, name, number).await?;
+        let diff = self.diff(&rv.seen, &timeline);
+        let mine = self.for_recipient(&diff.rendered, &me);
+        if mine.is_empty() {
+            let e = self.record(repo, slot);
+            e.updated_at = Some(issue.updated_at.clone());
+            e.seen = diff.seen;
+            e.title = issue.title.clone();
+            return Ok(());
+        }
+        info!(
+            repo = repo.name,
+            issue = number,
+            events = mine.len(),
+            "delivering new activity to the reviewer"
+        );
+        let rv = IssueState {
+            projects: self.entry(repo, number).projects.clone(),
+            ..rv
+        };
+        let ctx = self.ctx(repo, &rv);
+        let text = prompt::review_followup_prompt(issue, &mine, &ctx);
+        let mut all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        all.retain(|r| !diff.rendered.iter().any(|n| n.key == r.key));
+        let all = self.for_recipient(&all, &me);
+        let mut relaunch = prompt::review_prompt(issue, &all, &ctx);
+        relaunch.push_str("\n\n");
+        relaunch.push_str(&text);
+        let d = self.deliver(repo, slot, &text, Some(&relaunch)).await?;
+        let e = self.record(repo, slot);
+        e.updated_at = Some(issue.updated_at.clone());
+        e.title = issue.title.clone();
+        e.seen = diff.seen;
+        e.projects = rv.projects;
+        e.terminal_handle = Some(d.handle);
+        e.last_prompt_at = Some(now_iso());
+        e.prompts_sent += 1;
+        Ok(())
+    }
+
+    /// Stand a reviewer session down: the review request is gone, or the
+    /// pull request is closed. The record and workspace stay (a repeated
+    /// request resumes the same conversation) until the PR closes, when the
+    /// workspace is done with like any other.
+    async fn retire_reviewer(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        issue: &Issue,
+        why: ReviewEnd,
+        timeline: Option<&[Value]>,
+    ) -> Result<()> {
+        let number = issue.number;
+        let slot = Slot::Reviewer(number);
+        let Some(rv) = self.peek(repo, slot).cloned().filter(|r| r.seeded) else {
+            return Ok(());
+        };
+        let closed = matches!(why, ReviewEnd::Closed { .. });
+        if !rv.active && !closed {
+            return Ok(());
+        }
+        let me = reviewer_session_id(&repo.name, number);
+        info!(
+            repo = repo.name,
+            issue = number,
+            ?why,
+            "standing the reviewer session down"
+        );
+        let alive = match rv.worktree_id.as_deref() {
+            Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+            None => false,
+        };
+        let mut seen = None;
+        if rv.active {
+            let fetched;
+            let timeline = match timeline {
+                Some(t) => t,
+                None => {
+                    fetched = self.gh.timeline(owner, name, number).await?;
+                    &fetched
+                }
+            };
+            let diff = self.diff(&rv.seen, timeline);
+            let mine = self.for_recipient(&diff.rendered, &me);
+            seen = Some(diff.seen);
+            if alive {
+                let ctx = self.ctx(repo, &rv);
+                let text = prompt::review_done_prompt(issue, &mine, &ctx, why);
+                match self.deliver(repo, slot, &text, None).await {
+                    Ok(d) => {
+                        let e = self.record(repo, slot);
+                        e.terminal_handle = Some(d.handle);
+                        e.last_prompt_at = Some(now_iso());
+                        e.prompts_sent += 1;
+                    }
+                    Err(e) => warn!(
+                        repo = repo.name,
+                        issue = number,
+                        "could not notify the reviewer: {e:#}"
+                    ),
+                }
+            }
+        }
+        if closed
+            && alive
+            && let Some(id) = &rv.worktree_id
+        {
+            let _ = self.orca.set_status(id, "completed").await;
+        }
+        let cleanup = closed && alive && self.cfg.daemon.cleanup_on_close;
+        let e = self.record(repo, slot);
+        e.active = false;
+        e.title = issue.title.clone();
+        e.updated_at = Some(issue.updated_at.clone());
+        if let Some(seen) = seen {
+            e.seen = seen;
+        }
+        e.github_state = Some(match why {
+            ReviewEnd::Closed { merged: true } => "merged".into(),
+            ReviewEnd::Closed { merged: false } => "closed".into(),
+            ReviewEnd::Fulfilled => "open".into(),
+        });
+        e.retired_at = Some(now_iso());
+        e.cleanup_pending = cleanup;
+        let dropped = self.state.unsubscribe_everywhere(&me);
+        if !dropped.is_empty() {
+            info!(
+                repo = repo.name,
+                issue = number,
+                ?dropped,
+                "retired reviewer unsubscribed"
+            );
+        }
+        Ok(())
     }
 
     fn entry(&mut self, repo: &RepoConfig, number: u64) -> &mut IssueState {
@@ -1107,8 +1650,8 @@ impl Engine {
         e
     }
 
-    fn remember_worktree(&mut self, repo: &RepoConfig, number: u64, wt: &Worktree) {
-        let e = self.entry(repo, number);
+    fn remember_worktree(&mut self, repo: &RepoConfig, slot: Slot, wt: &Worktree) {
+        let e = self.record(repo, slot);
         e.worktree_id = Some(wt.id.clone());
         e.worktree_path = Some(wt.path.clone());
         e.repo_id = wt.id.split_once("::").map(|(r, _)| r.to_string());
@@ -1278,7 +1821,7 @@ impl Engine {
                     worktree = wt.id,
                     "reusing existing workspace"
                 );
-                self.remember_worktree(repo, issue.number, &wt);
+                self.remember_worktree(repo, Slot::Item(issue.number), &wt);
                 let _ = self.orca.set_comment(&wt.id, &comment).await;
                 let text = self.initial_text(repo, issue, &mine);
                 let d = self.deliver_to(repo, issue.number, &text, None).await?;
@@ -1301,7 +1844,7 @@ impl Engine {
                     worktree = created.id,
                     "created workspace"
                 );
-                self.remember_worktree(repo, issue.number, &created);
+                self.remember_worktree(repo, Slot::Item(issue.number), &created);
                 {
                     let e = self.entry(repo, issue.number);
                     e.launched_at = Some(now_iso());
@@ -1313,6 +1856,7 @@ impl Engine {
                     issue.number,
                     &issue.html_url,
                     &repo.harness_command(),
+                    false,
                 );
                 let handle = self
                     .orca
@@ -1405,15 +1949,23 @@ impl Engine {
     /// The whole story of an item as its initial prompt would tell it, for
     /// a harness that starts from scratch and needs context for whatever is
     /// about to be delivered.
-    async fn story(&mut self, repo: &RepoConfig, number: u64) -> Result<String> {
+    async fn story(&mut self, repo: &RepoConfig, slot: Slot) -> Result<String> {
         let (owner, name) = repo.split()?;
+        let number = slot.number();
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
         let all = self.diff(&BTreeMap::new(), &timeline).rendered;
-        let all = self.for_recipient(&all, &self.acting_on(repo, number));
-        let st = self.entry(repo, number).clone();
+        let me = match slot {
+            Slot::Item(n) => self.acting_on(repo, n),
+            Slot::Reviewer(n) => reviewer_session_id(&repo.name, n),
+        };
+        let all = self.for_recipient(&all, &me);
+        let st = self.record(repo, slot).clone();
         let ctx = self.ctx(repo, &st);
-        Ok(prompt::initial_prompt(&issue, &all, &ctx))
+        Ok(match slot {
+            Slot::Item(_) => prompt::initial_prompt(&issue, &all, &ctx),
+            Slot::Reviewer(_) => prompt::review_prompt(&issue, &all, &ctx),
+        })
     }
 
     /// Tell the session that handed an item off that it has closed, with the
@@ -1736,6 +2288,24 @@ impl Engine {
         );
         let timeline = self.gh.timeline(owner, name, number).await?;
         self.record_origins(repo, &issue, &timeline);
+        // Its reviewer, if it has one, is done too.
+        if issue.is_pull_request() {
+            let why = if closed {
+                ReviewEnd::Closed { merged }
+            } else {
+                ReviewEnd::Fulfilled
+            };
+            if let Err(e) = self
+                .retire_reviewer(repo, owner, name, &issue, why, Some(&timeline))
+                .await
+            {
+                warn!(
+                    repo = repo.name,
+                    issue = number,
+                    "standing the reviewer down failed: {e:#}"
+                );
+            }
+        }
         let diff = self.diff(&st.seen, &timeline);
         let session = self.owner_of(repo, number);
         let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, session));
@@ -1876,7 +2446,14 @@ impl Engine {
     /// `ssf launch ...` wrapper that puts the bot credentials and issue
     /// identity into the harness's environment. The daemon's own config and
     /// state locations are passed along so the wrapper reads the same files.
-    fn launch_command(&self, repo: &RepoConfig, number: u64, url: &str, inner: &str) -> String {
+    fn launch_command(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+        url: &str,
+        inner: &str,
+        reviewer: bool,
+    ) -> String {
         let me = std::env::current_exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "ssf".to_string());
@@ -1887,11 +2464,16 @@ impl Engine {
             }
         }
         format!(
-            "{prefix}{} launch --repo {} --issue {} --issue-url {} -- {}",
+            "{prefix}{} launch --repo {} --issue {} --issue-url {}{} -- {}",
             shell_quote(&me),
             shell_quote(&repo.name),
             number,
             shell_quote(url),
+            if reviewer {
+                format!(" --role {}", origin::REVIEWER)
+            } else {
+                String::new()
+            },
             shell_quote(inner)
         )
     }
@@ -1909,8 +2491,24 @@ impl Engine {
         text: &str,
         relaunch_text: Option<&str>,
     ) -> Result<Delivery> {
-        let target = self.owner_of(repo, number);
-        let st = self.entry(repo, target).clone();
+        self.deliver(repo, Slot::Item(number), text, relaunch_text)
+            .await
+    }
+
+    /// `deliver_to` for any session record: an item's (routed to its owner)
+    /// or a reviewer's (its own).
+    async fn deliver(
+        &mut self,
+        repo: &RepoConfig,
+        slot: Slot,
+        text: &str,
+        relaunch_text: Option<&str>,
+    ) -> Result<Delivery> {
+        let target = match slot {
+            Slot::Item(n) => Slot::Item(self.owner_of(repo, n)),
+            r => r,
+        };
+        let st = self.record(repo, target).clone();
         let alive = match st.worktree_id.as_deref() {
             Some(id) => self.orca.worktree_exists(id).await?,
             None => false,
@@ -1918,7 +2516,7 @@ impl Engine {
         if !alive {
             self.rehydrate(repo, target).await?;
         }
-        let st = self.entry(repo, target).clone();
+        let st = self.record(repo, target).clone();
         let worktree_id = st
             .worktree_id
             .clone()
@@ -1930,24 +2528,34 @@ impl Engine {
                 .await
                 .unwrap_or(false);
         let mut story = None;
-        if !live && (target != number || relaunch_text.is_none()) {
+        if !live && (target != slot || relaunch_text.is_none()) {
             match self.story(repo, target).await {
                 Ok(s) => story = Some(format!("{s}\n\n{text}")),
                 Err(e) => warn!(
                     repo = repo.name,
-                    issue = target,
+                    session = slot_id(&repo.name, target),
                     "could not assemble the session's story for a fresh harness: {e:#}"
                 ),
             }
         }
         let relaunch_text = story.as_deref().or(relaunch_text);
-        let title = format!("{} · #{}", repo.harness, target);
+        let title = match target {
+            Slot::Item(n) => format!("{} · #{n}", repo.harness),
+            Slot::Reviewer(n) => format!("{} · #{n} review", repo.harness),
+        };
+        let reviewer = target.is_reviewer();
         let resume = st
             .agent_session_id
             .as_deref()
             .and_then(|id| sessions::resume_command(&repo.harness, &repo.harness_command(), id))
-            .map(|c| self.launch_command(repo, st.number, &st.html_url, &c));
-        let relaunch = self.launch_command(repo, st.number, &st.html_url, &repo.harness_command());
+            .map(|c| self.launch_command(repo, st.number, &st.html_url, &c, reviewer));
+        let relaunch = self.launch_command(
+            repo,
+            st.number,
+            &st.html_url,
+            &repo.harness_command(),
+            reviewer,
+        );
         let d = self
             .orca
             .deliver(
@@ -1962,28 +2570,34 @@ impl Engine {
             )
             .await?;
         if d.relaunched {
-            let e = self.entry(repo, target);
+            let e = self.record(repo, target);
             e.launched_at = Some(now_iso());
             if !d.resumed {
                 e.agent_session_id = None;
             }
             info!(
                 repo = repo.name,
-                issue = target,
+                session = slot_id(&repo.name, target),
                 resumed = d.resumed,
                 "harness relaunched"
             );
         }
-        self.entry(repo, target).terminal_handle = Some(d.handle.clone());
-        if target != number {
-            self.mirror_owner(repo, number, target);
+        self.record(repo, target).terminal_handle = Some(d.handle.clone());
+        if let (Slot::Item(n), Slot::Item(t)) = (slot, target)
+            && t != n
+        {
+            self.mirror_owner(repo, n, t);
         }
         Ok(d)
     }
 
     /// Re-create the workspace for an issue whose Orca worktree is gone,
     /// starting from its old branch when that still exists.
-    async fn rehydrate(&mut self, repo: &RepoConfig, number: u64) -> Result<()> {
+    async fn rehydrate(&mut self, repo: &RepoConfig, slot: Slot) -> Result<()> {
+        let number = slot.number();
+        if slot.is_reviewer() {
+            return self.rehydrate_reviewer(repo, number).await;
+        }
         let st = self.entry(repo, number).clone();
         let repo_id = match st.repo_id.clone() {
             Some(r) => r,
@@ -2008,7 +2622,7 @@ impl Engine {
                 worktree = existing.id,
                 "found workspace linked to the issue"
             );
-            self.remember_worktree(repo, number, &existing);
+            self.remember_worktree(repo, Slot::Item(number), &existing);
             let e = self.entry(repo, number);
             e.terminal_handle = None;
             return Ok(());
@@ -2086,10 +2700,71 @@ impl Engine {
                 }
             }
         }
-        self.remember_worktree(repo, number, &created);
+        self.remember_worktree(repo, Slot::Item(number), &created);
         let e = self.entry(repo, number);
         e.terminal_handle = None;
         e.worktree_name = Some(name);
+        Ok(())
+    }
+
+    /// Re-create a reviewer's workspace: fresh at the pull request's current
+    /// head rather than from the reviewer's old local branch.
+    async fn rehydrate_reviewer(&mut self, repo: &RepoConfig, number: u64) -> Result<()> {
+        let slot = Slot::Reviewer(number);
+        let st = self.record(repo, slot).clone();
+        let (owner, name) = repo.split()?;
+        let repo_id = match st.repo_id.clone() {
+            Some(r) => r,
+            None => {
+                self.orca
+                    .ensure_project(
+                        owner,
+                        name,
+                        &repo.clone_url(),
+                        repo.path.as_deref(),
+                        &self.cfg.projects_dir(),
+                    )
+                    .await?
+                    .repo_id
+            }
+        };
+        // The PR's own record may have a workspace linked to the same number
+        // (a PR onboarded on its own); anything else linked to it is ours.
+        let own = self.entry(repo, number).worktree_id.clone();
+        if let Some(existing) = self.orca.find_worktree_for_issue(&repo_id, number).await?
+            && own.as_deref() != Some(existing.id.as_str())
+        {
+            info!(
+                repo = repo.name,
+                issue = number,
+                worktree = existing.id,
+                "found the reviewer's workspace linked to the pull request"
+            );
+            self.remember_worktree(repo, slot, &existing);
+            self.record(repo, slot).terminal_handle = None;
+            return Ok(());
+        }
+        let pr = match st.pr.clone() {
+            Some(p) => p,
+            None => self.gh.pull(owner, name, number).await?,
+        };
+        let wt_name = st
+            .worktree_name
+            .clone()
+            .unwrap_or_else(|| prompt::review_worktree_name(number, &st.title));
+        info!(
+            repo = repo.name,
+            issue = number,
+            name = wt_name,
+            "re-creating the reviewer's workspace"
+        );
+        let created = self
+            .create_review_workspace(repo, &repo_id, &wt_name, number, &pr)
+            .await?;
+        self.remember_worktree(repo, slot, &created);
+        let e = self.record(repo, slot);
+        e.terminal_handle = None;
+        e.worktree_name = Some(wt_name);
         Ok(())
     }
 
@@ -2099,7 +2774,7 @@ impl Engine {
             return;
         }
         let rs = self.state.repo_mut(&repo.name);
-        for st in rs.issues.values_mut() {
+        for st in rs.issues.values_mut().chain(rs.reviewers.values_mut()) {
             if st.agent_session_id.is_some() || st.worktree_id.is_none() {
                 continue;
             }
@@ -2142,30 +2817,33 @@ impl Engine {
 
     /// Remove workspaces of closed issues once their agent has wrapped up.
     async fn run_cleanups(&mut self, repo: &RepoConfig) {
-        let pending: Vec<IssueState> = self
-            .state
-            .repo_mut(&repo.name)
+        let rs = self.state.repo_mut(&repo.name);
+        let pending: Vec<(Slot, IssueState)> = rs
             .issues
             .values()
-            .filter(|s| s.cleanup_pending && !s.active)
-            .cloned()
+            .map(|s| (Slot::Item(s.number), s))
+            .chain(rs.reviewers.values().map(|s| (Slot::Reviewer(s.number), s)))
+            .filter(|(_, s)| s.cleanup_pending && !s.active)
+            .map(|(slot, s)| (slot, s.clone()))
             .collect();
-        for st in pending {
-            if st.shares_workspace_of.is_some() {
-                let e = self.entry(repo, st.number);
-                e.cleanup_pending = false;
-                continue;
-            }
-            if !self.active_dependents(repo, st.number).is_empty() {
-                debug!(
-                    repo = repo.name,
-                    issue = st.number,
-                    "cleanup waiting: session still owns open items"
-                );
-                continue;
+        for (slot, st) in pending {
+            if !slot.is_reviewer() {
+                if st.shares_workspace_of.is_some() {
+                    let e = self.entry(repo, st.number);
+                    e.cleanup_pending = false;
+                    continue;
+                }
+                if !self.active_dependents(repo, st.number).is_empty() {
+                    debug!(
+                        repo = repo.name,
+                        issue = st.number,
+                        "cleanup waiting: session still owns open items"
+                    );
+                    continue;
+                }
             }
             let Some(id) = st.worktree_id.clone() else {
-                self.entry(repo, st.number).cleanup_pending = false;
+                self.record(repo, slot).cleanup_pending = false;
                 continue;
             };
             let exists = self.orca.worktree_exists(&id).await.unwrap_or(true);
@@ -2200,7 +2878,7 @@ impl Engine {
                 match self.orca.remove_worktree(&id).await {
                     Ok(()) => info!(
                         repo = repo.name,
-                        issue = st.number,
+                        session = slot_id(&repo.name, slot),
                         worktree = id,
                         "removed workspace of closed issue"
                     ),
@@ -2216,7 +2894,7 @@ impl Engine {
                     }
                 }
             }
-            let e = self.entry(repo, st.number);
+            let e = self.record(repo, slot);
             e.cleanup_pending = false;
             e.worktree_id = None;
             e.worktree_path = None;
@@ -2728,6 +3406,130 @@ mod tests {
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("no agent session"));
         assert!(e.handle_request(Request::Ping).await.ok);
+    }
+
+    #[tokio::test]
+    async fn reviewer_sessions_have_their_own_identity() {
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        // PR 7 is owned by session 1 and has a reviewer session.
+        seeded(&mut e, 7, None, true);
+        e.entry(&r, 7).shares_workspace_of = Some(1);
+        e.entry(&r, 7).title = "Fix".into();
+        {
+            let rv = e.record(&r, Slot::Reviewer(7));
+            rv.seeded = true;
+            rv.active = true;
+            rv.title = "Fix".into();
+            rv.shares_workspace_of = Some(1);
+        }
+        assert_eq!(slot_id("o/r", Slot::Item(7)), "o/r#7");
+        assert_eq!(slot_id("o/r", Slot::Reviewer(7)), "o/r#7:reviewer");
+        assert_eq!(Slot::Reviewer(7).number(), 7);
+        // The reviewer is its own session; the PR's identity is the author's.
+        assert_eq!(e.acting_session("o/r#7:reviewer"), "o/r#7:reviewer");
+        assert_eq!(e.acting_session("O/R#7:reviewer"), "o/r#7:reviewer");
+        assert_eq!(e.acting_session("o/r#7"), "o/r#1");
+        assert_eq!(e.acting_session("x/y#7:reviewer"), "x/y#7:reviewer");
+        assert_eq!(
+            e.owner_of(&r, 7),
+            1,
+            "the reviewer record never owns the PR"
+        );
+
+        // A review by the reviewer reaches the author; the author's replies
+        // reach the reviewer; neither gets its own posts back.
+        let timeline = vec![
+            comment(1, "alice", "please review"),
+            comment(2, "bot", "on it\n\n<!-- ssf: origin=o/r#1 -->"),
+            json!({"event":"reviewed","id":3,"user":{"login":"bot"},"state":"changes_requested",
+                "body":"nits\n\n<!-- ssf: origin=o/r#7 role=reviewer -->","created_at":"t"}),
+            comment(4, "bot", "fixed\n\n<!-- ssf: origin=o/r#1 -->"),
+        ];
+        let d = e.diff(&BTreeMap::new(), &timeline);
+        assert_eq!(d.rendered.len(), 4);
+        let keys = |v: &[Rendered]| v.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+        assert_eq!(
+            keys(&e.for_recipient(&d.rendered, "o/r#1")),
+            vec!["commented:1", "reviewed:3"]
+        );
+        assert_eq!(
+            keys(&e.for_recipient(&d.rendered, "o/r#7:reviewer")),
+            vec!["commented:1", "commented:2", "commented:4"]
+        );
+
+        // The CLI can name the reviewer.
+        let (_, slot, id) = e.known_session("o/r#7:reviewer").unwrap();
+        assert_eq!(slot, Slot::Reviewer(7));
+        assert_eq!(id, "o/r#7:reviewer");
+        let (_, slot, id) = e.known_session("o/r#7").unwrap();
+        assert_eq!(slot, Slot::Item(1));
+        assert_eq!(id, "o/r#1");
+        assert!(
+            e.known_session("o/r#1:reviewer").is_err(),
+            "no reviewer on the issue"
+        );
+        assert!(e.peek(&r, Slot::Reviewer(1)).is_none());
+        assert!(e.peek(&r, Slot::Reviewer(7)).is_some_and(|s| s.seeded));
+        // Reviewer sessions are not items to subscribe to.
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#1".into(),
+                target: "o/r#7:reviewer".into(),
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(
+            resp.error
+                .unwrap()
+                .contains("subscribe to the pull request")
+        );
+        // But a reviewer can subscribe, as itself.
+        seeded(&mut e, 3, Some("bot/issue-3"), true);
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#7:reviewer".into(),
+                target: "o/r#3".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(e.entry(&r, 3).subscribers, vec!["o/r#7:reviewer"]);
+
+        // Launch commands carry the role.
+        let cmd = e.launch_command(&r, 7, "https://gh/7", "claude", true);
+        assert!(cmd.contains("--issue 7 --issue-url 'https://gh/7' --role reviewer -- 'claude'"));
+        let cmd = e.launch_command(&r, 7, "https://gh/7", "claude", false);
+        assert!(!cmd.contains("--role"));
+
+        // Standing a reviewer down when its PR closes: the record retires
+        // and it is unsubscribed everywhere; without a workspace there is
+        // nothing to clean up.
+        e.record(&r, Slot::Reviewer(7)).active = false;
+        let closed = issue(7, "bot", None);
+        e.retire_reviewer(
+            &r,
+            "o",
+            "r",
+            &closed,
+            ReviewEnd::Closed { merged: true },
+            None,
+        )
+        .await
+        .unwrap();
+        let rv = e.peek(&r, Slot::Reviewer(7)).unwrap().clone();
+        assert!(!rv.active);
+        assert!(rv.retired_at.is_some());
+        assert!(!rv.cleanup_pending);
+        assert_eq!(rv.github_state.as_deref(), Some("merged"));
+        assert!(e.entry(&r, 3).subscribers.is_empty());
+        // A reviewer that was already stood down is left alone on a repeat.
+        assert!(
+            e.retire_reviewer(&r, "o", "r", &closed, ReviewEnd::Fulfilled, None)
+                .await
+                .is_ok()
+        );
     }
 
     #[test]

@@ -13,8 +13,9 @@ use crate::origin;
 pub struct Rendered {
     pub key: String,
     pub text: String,
-    /// For a post by the bot, the session (`owner/repo#N`) its origin tag
-    /// names; `None` when the post carries no tag.
+    /// For a post by the bot, the session its origin tag names
+    /// (`owner/repo#N`, or `owner/repo#N:reviewer` for a reviewer session's
+    /// post); `None` when the post carries no tag.
     pub origin: Option<String>,
 }
 
@@ -79,8 +80,18 @@ fn quote(body: &str, max: usize) -> String {
 /// from. Only the bot's own posts carry meaningful tags; a human's text is
 /// shown as is.
 fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
-    match post_origin(body, author, bot) {
-        Some(o) => (origin::strip(body), format!(" (from the agent on {o})")),
+    if !author.eq_ignore_ascii_case(bot) {
+        return (body.to_string(), String::new());
+    }
+    match origin::parse(body) {
+        Some(t) if t.is_reviewer() => (
+            origin::strip(body),
+            format!(" (from the reviewer session on {})", t.origin),
+        ),
+        Some(t) => (
+            origin::strip(body),
+            format!(" (from the agent on {})", t.origin),
+        ),
         None => (body.to_string(), String::new()),
     }
 }
@@ -90,7 +101,7 @@ fn post_origin(body: &str, author: &str, bot: &str) -> Option<String> {
     if !author.eq_ignore_ascii_case(bot) {
         return None;
     }
-    origin::parse(body).map(|t| t.origin.to_string())
+    origin::parse(body).map(|t| t.session())
 }
 
 /// Render one timeline event, or `None` if it is not worth showing. `bot` is
@@ -346,6 +357,20 @@ impl PromptContext<'_> {
         }
     }
 
+    /// The reviewer session that handles review requests on this item: a
+    /// pull request another session wrote gets one, so the session that
+    /// wrote it never reviews its own work.
+    pub fn reviewer_session(&self, issue: &Issue) -> Option<String> {
+        if self.pr.is_some() && self.owner.is_some() {
+            Some(crate::status::reviewer_session_id(
+                &self.repo.name,
+                issue.number,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn because(&self) -> String {
         let bot = self.bot_login;
         let parts: Vec<String> = self
@@ -567,7 +592,12 @@ create the issue (or PR) with `--assignee {bot}` in the same `gh ... create` com
 carries `mode=delegate` and the item gets a session of its own. You are subscribed to it \
 automatically, so you see its activity as FYI messages, and when it closes you get one message \
 with its final comment. Assigning @{bot} to an existing item you did not open gives it a fresh \
-session too.\n"
+session too.\n\
+- A review requested from @{bot} on a pull request you opened is not for you to do: ssf starts a \
+separate reviewer session for it (a read-only checkout of the PR with its own agent), and its \
+review arrives here as activity, marked \"from the reviewer session on owner/repo#P\". Answer it \
+and push fixes as you would for a human reviewer, then request the review again \
+(`gh pr edit P --add-reviewer {bot}`) when you want another look.\n"
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -641,6 +671,18 @@ pub fn followup_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) 
         "\nTake this into account. If it changes what you should do, adjust now; if you had \
 finished, address it and report back on the issue as before.",
     );
+    if let Some(r) = ctx.reviewer_session(issue).filter(|_| {
+        events
+            .iter()
+            .any(|e| e.key.starts_with("review_requested:"))
+    }) {
+        s.push_str(&format!(
+            " The review requested from @{} is not for you: since this session wrote the pull \
+request, a separate reviewer session ({r}) reviews it. Do not review it yourself; its review \
+arrives here as activity.",
+            ctx.bot_login
+        ));
+    }
     s
 }
 
@@ -664,10 +706,25 @@ here; `SSF_ISSUE` is unchanged.",
         .filter(|t| t.as_str() != "created")
         .map(String::as_str)
         .collect();
+    let reviewer = ctx
+        .reviewer_session(issue)
+        .filter(|_| human.contains(&"review_requested"));
+    let human: Vec<&str> = human
+        .into_iter()
+        .filter(|t| reviewer.is_none() || *t != "review_requested")
+        .collect();
     if !human.is_empty() {
         s.push_str(&format!(
             " It reached ssf because {}; that is for you to act on.",
             ctx.because_of(&human)
+        ));
+    }
+    if let Some(r) = &reviewer {
+        s.push_str(&format!(
+            " A review was requested from @{}; since this session wrote the pull request, a \
+separate reviewer session ({r}) reviews it. Do not review it yourself: its review arrives here \
+as activity.",
+            ctx.bot_login
         ));
     }
     s.push_str("\n\nActivity so far:\n\n");
@@ -944,6 +1001,194 @@ about it:\n\n",
     s
 }
 
+/// The first message to a reviewer session: the pull request as its author
+/// session would have been told it, plus review instructions instead of
+/// working ones. `ctx.owner` is the session that wrote the PR.
+pub fn review_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
+    let mut s = String::new();
+    s.push_str(&issue_header(issue, ctx));
+    s.push_str(&project_boards(ctx));
+    s.push_str("\n\n## Description\n\n");
+    let body = origin::strip(issue.body.as_deref().unwrap_or(""));
+    let body = body.trim();
+    s.push_str(if body.is_empty() {
+        "(no description)"
+    } else {
+        body
+    });
+    s.push_str("\n\n## Activity so far\n\n");
+    if events.is_empty() {
+        s.push_str("(no activity yet)\n");
+    } else {
+        for e in events {
+            s.push_str(&e.text);
+            s.push('\n');
+        }
+    }
+    s.push_str(&review_instructions(issue, ctx));
+    s
+}
+
+fn review_instructions(issue: &Issue, ctx: &PromptContext) -> String {
+    let n = issue.number;
+    let repo = &ctx.repo.name;
+    let bot = ctx.bot_login;
+    let author = match ctx.owner {
+        Some(o) => crate::status::session_id(repo, o),
+        None => format!("{repo}#{n}"),
+    };
+    let tag = origin::Origin::new(repo, n)
+        .map(|o| o.reviewer_tag())
+        .unwrap_or_else(|| format!("<!-- ssf: origin={repo}#{n} role=reviewer -->"));
+    let (head, base) = match ctx.pr {
+        Some(pr) => (pr.head_ref.clone(), pr.base_ref.clone()),
+        None => ("the PR branch".to_string(), "the base branch".to_string()),
+    };
+    let mut s = format!(
+        "\n## How to review this\n\n\
+You are a reviewer for the GitHub bot account @{bot}. Simple Software Factory (ssf) started \
+this session because a review was requested from @{bot} on pull request {repo}#{n}, which \
+another agent session of the same bot ({author}) wrote; that session must not review its own \
+work, so you do. Your job is the review, nothing else: you never change the pull request.\n\n\
+- This worktree is a read-only checkout of the pull request's head (`origin/{head}`, against \
+`{base}`), on a local branch of its own. Do not commit, push, merge, or edit the PR; do not \
+change its board cards. To see the whole change run `git fetch origin && git diff \
+origin/{base}...origin/{head}` (or `gh pr diff {n} --repo {repo}`); to bring the checkout up to \
+date after the author pushes, run `git fetch origin && git reset --hard origin/{head}`. Building \
+and running tests here is fine.\n\
+- Review it the way a careful colleague would: correctness first, then whether it does what \
+the issue asked, then tests, docs and the project's conventions. Be specific, point at files \
+and lines, and say what would make it mergeable.\n\
+- Post the review with `gh pr review {n} --repo {repo} --approve|--request-changes|--comment \
+--body \"...\"` (inline comments through `gh api` if useful). One review per request: when it is \
+posted, GitHub drops the review request and this session pauses until the review is requested \
+again, when you get a message here with what happened since; then look at the changes again \
+rather than starting over.\n\
+- The bot's GitHub credentials are already in your environment (`GH_TOKEN`, `GITHUB_TOKEN`), so \
+plain `gh` commands act as @{bot}. `SSF_REPO` and `SSF_ISSUE` name this pull request and \
+`SSF_ROLE` is `reviewer`. Only ever act as @{bot}: never use another GitHub account, token or key \
+you find on this machine.\n\
+- Every review and comment you post must end with the line `{tag}` so ssf can tell it came from \
+the reviewer session and not from the author's (GitHub shows the same bot for both). The `gh` \
+on this PATH adds it for you on `pr review` and `pr comment` when you pass `--body` or \
+`--body-file`; add it yourself when you post any other way (`gh api`, ...).\n\
+- The author's session receives your review as activity and answers on the pull request; its \
+replies reach you here, marked \"from the agent on {author}\". To speak to it directly, comment \
+on the pull request with `gh` or run `ssf tell {n} \"...\"`. Other agent sessions may be working \
+on this repository at the same time (`ssf peers` lists them); leave their branches and \
+workspaces alone.\n"
+    );
+    if let Some(extra) = ctx.daemon.instructions.as_deref() {
+        s.push('\n');
+        s.push_str(extra.trim());
+        s.push('\n');
+    }
+    if let Some(extra) = ctx.repo.instructions.as_deref() {
+        s.push('\n');
+        s.push_str(extra.trim());
+        s.push('\n');
+    }
+    if let Some(pp) = ctx.project_prompt.as_ref() {
+        s.push_str(&format!(
+            "\n## Project notes\n\nThe repository keeps notes for ssf agents in `{}`. They say (the parts \
+about how to deliver changes are for the author; the conventions are what you review against):\n\n{}\n",
+            pp.source, pp.text
+        ));
+    }
+    s
+}
+
+/// New activity on a pull request under review, for its reviewer session.
+pub fn review_followup_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
+    let mut s = format!(
+        "[ssf] New activity on pull request {}#{} \"{}\" ({}), which you are reviewing:\n\n",
+        ctx.repo.name, issue.number, issue.title, issue.html_url
+    );
+    for e in events {
+        s.push_str(&e.text);
+        s.push('\n');
+    }
+    s.push_str(
+        "\nTake this into account. If the author pushed changes, fetch and look at them; if you \
+were asked something, answer on the pull request; if your review is still to be posted, post it.",
+    );
+    s
+}
+
+/// The review was requested again on a pull request this reviewer session
+/// already looked at.
+pub fn review_again_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
+    let head = ctx
+        .pr
+        .map(|p| p.head_ref.clone())
+        .unwrap_or_else(|| "<branch>".into());
+    let mut s = format!(
+        "[ssf] A review was requested from @{} again on pull request {}#{} \"{}\" ({}). \
+Activity since you last looked:\n\n",
+        ctx.bot_login, ctx.repo.name, issue.number, issue.title, issue.html_url
+    );
+    if events.is_empty() {
+        s.push_str("(no new activity)\n");
+    }
+    for e in events {
+        s.push_str(&e.text);
+        s.push('\n');
+    }
+    s.push_str(&format!(
+        "\nBring the checkout up to date (`git fetch origin && git reset --hard origin/{head}`), \
+look at what changed since your last review, and post a new review with `gh pr review {} --repo {}`.",
+        issue.number, ctx.repo.name
+    ));
+    s
+}
+
+/// Why a reviewer session is being stood down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewEnd {
+    /// The review request is gone: the review was posted, or it was withdrawn.
+    Fulfilled,
+    /// The pull request was closed or merged.
+    Closed { merged: bool },
+}
+
+/// Tell a reviewer session its review is no longer wanted for now.
+pub fn review_done_prompt(
+    issue: &Issue,
+    events: &[Rendered],
+    ctx: &PromptContext,
+    why: ReviewEnd,
+) -> String {
+    let mut s = match why {
+        ReviewEnd::Fulfilled => format!(
+            "[ssf] The review request for @{} on pull request {}#{} \"{}\" ({}) has been \
+fulfilled or withdrawn.\n\n",
+            ctx.bot_login, ctx.repo.name, issue.number, issue.title, issue.html_url
+        ),
+        ReviewEnd::Closed { merged } => format!(
+            "[ssf] Pull request {}#{} \"{}\" ({}) has been {}.\n\n",
+            ctx.repo.name,
+            issue.number,
+            issue.title,
+            issue.html_url,
+            if merged { "merged" } else { "closed" }
+        ),
+    };
+    for e in events {
+        s.push_str(&e.text);
+        s.push('\n');
+    }
+    s.push_str(match why {
+        ReviewEnd::Fulfilled => {
+            "\nStop here; do not post anything more. If a review is requested from the bot again \
+you will be told here, with what happened in between."
+        }
+        ReviewEnd::Closed { .. } => {
+            "\nThis review session is over: stop, and do not post anything more."
+        }
+    });
+    s
+}
+
 /// Short, filesystem-safe name for the worktree.
 pub fn worktree_name_for(number: u64, title: &str, is_pr: bool) -> String {
     let base = worktree_name(number, title);
@@ -952,6 +1197,11 @@ pub fn worktree_name_for(number: u64, title: &str, is_pr: bool) -> String {
     } else {
         base
     }
+}
+
+/// Name for the reviewer session's worktree on pull request `number`.
+pub fn review_worktree_name(number: u64, title: &str) -> String {
+    worktree_name(number, title).replacen("issue-", "review-", 1)
 }
 
 pub fn worktree_name(number: u64, title: &str) -> String {
@@ -1217,10 +1467,24 @@ mod tests {
         assert!(p.starts_with(
             "[ssf] Now tracking pull request o/r#4 \"Fix it\" (https://gh/4) for this session, because this session opened it."
         ));
-        assert!(p.contains("because a review was requested from @bot; that is for you to act on"));
+        // The review request is not the author's to act on: a reviewer
+        // session takes it.
+        assert!(!p.contains("that is for you to act on"));
+        assert!(p.contains(
+            "a separate reviewer session (o/r#4:reviewer) reviews it. Do not review it yourself"
+        ));
         assert!(p.contains("@alice requested a review"));
         assert!(p.contains("gh pr comment 4 --repo o/r"));
         assert!(!p.contains("## How to work on this"));
+        // Other human triggers on the owned PR still are.
+        let assigned = vec!["created".to_string(), "assigned".to_string()];
+        let actx = PromptContext {
+            triggers: &assigned,
+            ..ctx.clone()
+        };
+        let p = tracked_prompt(&pr_issue, &[], &actx);
+        assert!(p.contains("because it was assigned to @bot; that is for you to act on"));
+        assert!(!p.contains("reviewer session"));
 
         // A branch match rather than a tag.
         let mut untagged = pr_issue.clone();
@@ -1250,6 +1514,132 @@ mod tests {
         let m = delegated_closed_prompt(&pr_issue, false, None, &ctx);
         assert!(m.contains("has been closed, completed."));
         assert!(m.contains("It has no comments."));
+    }
+
+    #[test]
+    fn reviewer_sessions_get_review_prompts() {
+        let pr_issue: Issue = serde_json::from_value(json!({
+            "number": 4, "title": "Fix it", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->", "html_url": "https://gh/4",
+            "state": "open", "user": {"login": "bot"}, "created_at": "t", "updated_at": "t",
+            "pull_request": {}
+        })).unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            instructions: Some("Run the tests.".into()),
+            ..Default::default()
+        };
+        let d = cfg();
+        let pr = PrInfo {
+            head_ref: "bot/fix".into(),
+            head_repo: "o/r".into(),
+            base_ref: "main".into(),
+            ..Default::default()
+        };
+        let triggers = vec!["review_requested".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            pr: Some(&pr),
+            triggers: &triggers,
+            owner: Some(3),
+            delegated_by: None,
+            projects: &[],
+            project_prompt: Some(ProjectPrompt {
+                source: "SSF.md".into(),
+                text: "Keep cargo test green.".into(),
+            }),
+        };
+        assert_eq!(
+            ctx.reviewer_session(&pr_issue).as_deref(),
+            Some("o/r#4:reviewer")
+        );
+        let ev = Rendered {
+            key: "review_requested:1".into(),
+            text: "- [t] @alice requested a review from @bot".into(),
+            origin: None,
+        };
+        let p = review_prompt(&pr_issue, &[ev.clone()], &ctx);
+        assert!(p.contains(
+            "## Description\n\nFixes it\n\n## Activity so far\n\n- [t] @alice requested"
+        ));
+        assert!(p.contains("## How to review this"));
+        assert!(p.contains("another agent session of the same bot (o/r#3) wrote"));
+        assert!(p.contains(
+            "read-only checkout of the pull request's head (`origin/bot/fix`, against `main`)"
+        ));
+        assert!(p.contains("git diff origin/main...origin/bot/fix"));
+        assert!(p.contains("git reset --hard origin/bot/fix"));
+        assert!(p.contains("gh pr review 4 --repo o/r --approve|--request-changes|--comment"));
+        assert!(p.contains("`<!-- ssf: origin=o/r#4 role=reviewer -->`"));
+        assert!(p.contains("`SSF_ROLE` is `reviewer`"));
+        assert!(p.contains("marked \"from the agent on o/r#3\""));
+        assert!(p.contains("Run the tests."));
+        assert!(p.contains("## Project notes"));
+        assert!(p.contains("Keep cargo test green."));
+        assert!(!p.contains("## How to work on this"));
+        assert!(
+            !p.contains("<!-- ssf: origin=o/r#3 -->"),
+            "the body's tag is stripped"
+        );
+
+        let f = review_followup_prompt(&pr_issue, &[ev.clone()], &ctx);
+        assert!(f.starts_with(
+            "[ssf] New activity on pull request o/r#4 \"Fix it\" (https://gh/4), which you are reviewing:"
+        ));
+        assert!(f.contains("if your review is still to be posted, post it"));
+
+        let a = review_again_prompt(&pr_issue, &[], &ctx);
+        assert!(a.starts_with(
+            "[ssf] A review was requested from @bot again on pull request o/r#4 \"Fix it\" (https://gh/4)."
+        ));
+        assert!(a.contains("(no new activity)"));
+        assert!(a.contains("git reset --hard origin/bot/fix"));
+        assert!(a.contains("gh pr review 4 --repo o/r"));
+
+        let done = review_done_prompt(&pr_issue, &[ev.clone()], &ctx, ReviewEnd::Fulfilled);
+        assert!(done.starts_with(
+            "[ssf] The review request for @bot on pull request o/r#4 \"Fix it\" (https://gh/4) has been fulfilled or withdrawn."
+        ));
+        assert!(done.contains("@alice requested a review"));
+        assert!(done.contains("If a review is requested from the bot again you will be told here"));
+        let merged = review_done_prompt(&pr_issue, &[], &ctx, ReviewEnd::Closed { merged: true });
+        assert!(
+            merged
+                .starts_with("[ssf] Pull request o/r#4 \"Fix it\" (https://gh/4) has been merged.")
+        );
+        assert!(merged.contains("This review session is over"));
+        let closed = review_done_prompt(&pr_issue, &[], &ctx, ReviewEnd::Closed { merged: false });
+        assert!(closed.contains("has been closed."));
+
+        // The author's follow-up says who reviews, only when a request is among the events.
+        let fu = followup_prompt(&pr_issue, &[ev.clone()], &ctx);
+        assert!(fu.contains(
+            "a separate reviewer session (o/r#4:reviewer) reviews it. Do not review it yourself"
+        ));
+        let other = Rendered {
+            key: "commented:2".into(),
+            text: "- [t] @alice commented".into(),
+            origin: None,
+        };
+        let fu = followup_prompt(&pr_issue, &[other], &ctx);
+        assert!(!fu.contains("reviewer session"));
+        // An issue, or an unowned PR, has no reviewer session.
+        let unowned = PromptContext {
+            owner: None,
+            ..ctx.clone()
+        };
+        assert!(unowned.reviewer_session(&pr_issue).is_none());
+        let fu = followup_prompt(&pr_issue, &[ev], &unowned);
+        assert!(!fu.contains("reviewer session"));
+
+        // The author's own instructions explain the rule.
+        let initial = initial_prompt(&pr_issue, &[], &unowned);
+        assert!(initial.contains("ssf starts a separate reviewer session for it"));
+        assert!(initial.contains("gh pr edit P --add-reviewer bot"));
+
+        assert_eq!(review_worktree_name(4, "Fix it"), "review-4-fix-it");
     }
 
     #[test]
@@ -1402,6 +1792,22 @@ mod tests {
                 .ends_with("reviewed (approved) (from the agent on o/r#9)")
         );
         assert_eq!(r.origin.as_deref(), Some("o/r#9"));
+        // A reviewer session's posts are told apart from the author's.
+        let review = json!({"event":"reviewed","id":3,"user":{"login":"bot"},"state":"changes_requested",
+            "body":"nits\n\n<!-- ssf: origin=o/r#9 role=reviewer -->"});
+        let r = render_event(&review, false, &cfg(), "bot").unwrap();
+        assert!(r.text.contains(
+            "reviewed (changes_requested) (from the reviewer session on o/r#9):\n  > nits"
+        ));
+        assert_eq!(r.origin.as_deref(), Some("o/r#9:reviewer"));
+        let inline = json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"path":"a.rs",
+            "line":3,"body":"typo\n\n<!-- ssf: origin=o/r#9 role=reviewer -->","html_url":"u8"}]});
+        let r = render_event(&inline, false, &cfg(), "bot").unwrap();
+        assert!(
+            r.text
+                .contains("commented on `a.rs` line 3 (from the reviewer session on o/r#9)")
+        );
+        assert_eq!(r.origin.as_deref(), Some("o/r#9:reviewer"));
         // A human quoting a bot comment is not "from a session".
         let human = json!({"event":"commented","id":5,"user":{"login":"alice"},"created_at":"t",
             "body":"> <!-- ssf: origin=o/r#9 -->\n\nthanks","html_url":"https://x/5"});

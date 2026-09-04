@@ -8,9 +8,11 @@
 //! body it reads.
 //!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
-//! add fields without a new syntax. The one field defined so far is
-//! `mode=delegate`: the post opened an item that is handed off to a new
-//! session rather than kept by the one that opened it.
+//! add fields without a new syntax. Two fields are defined: `mode=delegate`
+//! (the post opened an item that is handed off to a new session rather than
+//! kept by the one that opened it) and `role=reviewer` (the post came from
+//! the reviewer session of the pull request the origin names, not from the
+//! session that wrote it).
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -43,6 +45,11 @@ impl Origin {
         Self::new(&repo, number)
     }
 
+    /// Is this the reviewer session of its item (`SSF_ROLE=reviewer`)?
+    pub fn reviewer_from_env() -> bool {
+        std::env::var("SSF_ROLE").is_ok_and(|r| r.trim() == REVIEWER)
+    }
+
     pub fn new(repo: &str, number: u64) -> Option<Self> {
         let repo = repo.trim();
         crate::config::split_repo_name(repo).ok()?;
@@ -67,12 +74,43 @@ impl Origin {
     pub fn delegate_tag(&self) -> String {
         format!("{OPEN} {MARK} origin={self} {MODE}={DELEGATE} {CLOSE}")
     }
+
+    /// The marker the reviewer session of this item appends to its posts.
+    pub fn reviewer_tag(&self) -> String {
+        format!("{OPEN} {MARK} origin={self} {ROLE}={REVIEWER} {CLOSE}")
+    }
+
+    /// Session id of this item's session (`owner/repo#N`), or of its
+    /// reviewer session (`owner/repo#N:reviewer`).
+    pub fn session(&self, reviewer: bool) -> String {
+        if reviewer {
+            format!("{self}:{REVIEWER}")
+        } else {
+            self.to_string()
+        }
+    }
 }
 
 /// Field naming how the origin session relates to the item it opened.
 pub const MODE: &str = "mode";
 /// `mode` value for a hand-off: the item gets its own session.
 pub const DELEGATE: &str = "delegate";
+/// Field naming which of an item's sessions posted: absent for the session
+/// that works on it, `reviewer` for the one reviewing it.
+pub const ROLE: &str = "role";
+/// `role` value for the reviewer session of a pull request.
+pub const REVIEWER: &str = "reviewer";
+
+/// A session id as the CLI, subscriber lists and origin tags name it:
+/// `owner/repo#N` for the session on an item, `owner/repo#N:reviewer` for
+/// the session reviewing pull request N.
+pub fn parse_session(s: &str) -> Option<(Origin, bool)> {
+    let s = s.trim();
+    match s.strip_suffix(&format!(":{REVIEWER}")) {
+        Some(item) => Origin::parse(item).map(|o| (o, true)),
+        None => Origin::parse(s).map(|o| (o, false)),
+    }
+}
 
 /// A parsed tag: the origin plus any other fields it carried.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +123,17 @@ impl Tag {
     /// Was the item handed off to a session of its own?
     pub fn is_delegate(&self) -> bool {
         self.fields.get(MODE).map(String::as_str) == Some(DELEGATE)
+    }
+
+    /// Did the post come from the reviewer session of the item?
+    pub fn is_reviewer(&self) -> bool {
+        self.fields.get(ROLE).map(String::as_str) == Some(REVIEWER)
+    }
+
+    /// The session that made the post: the origin item's own session, or
+    /// its reviewer.
+    pub fn session(&self) -> String {
+        self.origin.session(self.is_reviewer())
     }
 }
 
@@ -122,19 +171,21 @@ pub fn parse(body: &str) -> Option<Tag> {
 }
 
 /// `body` with the origin tag on its own final line, optionally marking the
-/// post as a hand-off. A body that already carries this origin is left alone
-/// (the agent added the tag by hand), except that a hand-written tag without
-/// `mode=delegate` is not enough for a hand-off: the delegate tag goes after
-/// it, and the last tag wins when read.
-pub fn stamp_with(body: &str, origin: &Origin, delegate: bool) -> String {
-    if tags(body)
-        .iter()
-        .any(|t| &t.origin == origin && (!delegate || t.is_delegate()))
-    {
+/// post as a hand-off, or as the reviewer session's. A body that already
+/// carries this origin is left alone (the agent added the tag by hand),
+/// except that a hand-written tag without `mode=delegate` is not enough for
+/// a hand-off, and one without `role=reviewer` is not enough for a reviewer:
+/// the right tag goes after it, and the last tag wins when read.
+pub fn stamp_with(body: &str, origin: &Origin, delegate: bool, reviewer: bool) -> String {
+    if tags(body).iter().any(|t| {
+        &t.origin == origin && (!delegate || t.is_delegate()) && (!reviewer || t.is_reviewer())
+    }) {
         return body.to_string();
     }
     let tag = if delegate {
         origin.delegate_tag()
+    } else if reviewer {
+        origin.reviewer_tag()
     } else {
         origin.tag()
     };
@@ -197,7 +248,8 @@ pub struct Scan {
     /// The same tag with its fields (`mode=delegate` says the opening
     /// session handed the item off rather than keeping it).
     pub origin_tag: Option<Tag>,
-    /// Timeline event key -> origin of the comment or review.
+    /// Timeline event key -> session (`owner/repo#N`, or
+    /// `owner/repo#N:reviewer`) that made the comment or review.
     pub origins: BTreeMap<String, String>,
     /// Posts by the bot that carry no tag (the shim was not in effect where
     /// they were made): event key -> URL. The item body is keyed `body`.
@@ -219,7 +271,7 @@ pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
                 if key == "body" {
                     body_tag = Some(t.clone());
                 }
-                s.origins.insert(key, t.origin.to_string());
+                s.origins.insert(key, t.session());
             }
             None => {
                 s.untagged.insert(key, url.to_string());
@@ -283,7 +335,7 @@ mod tests {
     }
 
     fn stamp(body: &str, origin: &Origin) -> String {
-        stamp_with(body, origin, false)
+        stamp_with(body, origin, false, false)
     }
 
     #[test]
@@ -329,17 +381,51 @@ mod tests {
         let parsed = parse(&t).unwrap();
         assert!(parsed.is_delegate());
         assert!(!parse(&o().tag()).unwrap().is_delegate());
-        let s = stamp_with("hand this off", &o(), true);
+        let s = stamp_with("hand this off", &o(), true, false);
         assert!(s.ends_with(&t));
-        assert_eq!(stamp_with(&s, &o(), true), s, "not stamped twice");
-        assert_eq!(stamp_with(&s, &o(), false), s, "a delegate tag is a tag");
+        assert_eq!(stamp_with(&s, &o(), true, false), s, "not stamped twice");
+        assert_eq!(
+            stamp_with(&s, &o(), false, false),
+            s,
+            "a delegate tag is a tag"
+        );
         // A hand-written plain tag does not make a hand-off: the delegate tag
         // goes after it and is the one that counts.
         let plain = stamp("x", &o());
-        let both = stamp_with(&plain, &o(), true);
+        let both = stamp_with(&plain, &o(), true, false);
         assert!(both.starts_with(&plain));
         assert!(parse(&both).unwrap().is_delegate());
         assert_eq!(strip(&both), "x");
+    }
+
+    #[test]
+    fn reviewer_tag_names_the_reviewer_session() {
+        let t = o().reviewer_tag();
+        assert_eq!(t, "<!-- ssf: origin=acme/widgets#12 role=reviewer -->");
+        let parsed = parse(&t).unwrap();
+        assert!(parsed.is_reviewer());
+        assert!(!parsed.is_delegate());
+        assert_eq!(parsed.session(), "acme/widgets#12:reviewer");
+        assert_eq!(parse(&o().tag()).unwrap().session(), "acme/widgets#12");
+        let s = stamp_with("looks good", &o(), false, true);
+        assert!(s.ends_with(&t));
+        assert_eq!(stamp_with(&s, &o(), false, true), s, "not stamped twice");
+        // A plain tag the reviewer wrote by hand is not enough: the reviewer
+        // tag goes after it and wins.
+        let both = stamp_with(&stamp("x", &o()), &o(), false, true);
+        assert!(parse(&both).unwrap().is_reviewer());
+        assert_eq!(strip(&both), "x");
+        // Session ids parse back, with or without the role.
+        let (org, rev) = parse_session("acme/widgets#12:reviewer").unwrap();
+        assert_eq!(org, o());
+        assert!(rev);
+        let (org, rev) = parse_session(" acme/widgets#12 ").unwrap();
+        assert_eq!(org, o());
+        assert!(!rev);
+        assert_eq!(o().session(true), "acme/widgets#12:reviewer");
+        assert_eq!(o().session(false), "acme/widgets#12");
+        assert!(parse_session("acme/widgets#12:author").is_none());
+        assert!(parse_session("nonsense").is_none());
     }
 
     #[test]
@@ -382,6 +468,7 @@ mod tests {
             json!({"event":"commented","id":3,"user":{"login":"alice"},"body":"human","html_url":"u3"}),
             json!({"event":"commented","id":30,"user":{"login":"alice"},"body":"pasted <!-- ssf: origin=a/b#1 -->","html_url":"u30"}),
             json!({"event":"reviewed","id":4,"user":{"login":"bot"},"body":"<!-- ssf: origin=a/b#7 -->","html_url":"u4"}),
+            json!({"event":"reviewed","id":5,"user":{"login":"bot"},"body":"lgtm\n\n<!-- ssf: origin=a/b#5 role=reviewer -->","html_url":"u5"}),
             json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"body":"inline","html_url":"u8"}]}),
         ];
         let s = scan(&issue, &timeline, "Bot");
@@ -394,6 +481,11 @@ mod tests {
         assert_eq!(
             s.origins.get("reviewed:4").map(String::as_str),
             Some("a/b#7")
+        );
+        assert_eq!(
+            s.origins.get("reviewed:5").map(String::as_str),
+            Some("a/b#5:reviewer"),
+            "the reviewer session is told apart from the item's own"
         );
         assert_eq!(
             s.untagged.get("commented:2").map(String::as_str),
