@@ -641,23 +641,30 @@ are resumed on the first pass that finds it: {err:#}"
         }
     }
 
-    /// Sessions the startup pass looks at: active, seeded, owning their
-    /// workspace (items with no owner; reviewers always own theirs) and not
-    /// waiting for cleanup.
+    /// Sessions the startup pass looks at: the session that acts on every
+    /// active, seeded item (the item's own, or its owner's, which may itself
+    /// be retired while it still owns open items and so keeps its
+    /// workspace), plus active reviewer sessions, which always own theirs.
+    /// A session whose workspace is gone or waiting for cleanup is skipped.
     fn resume_candidates(&self, repo: &RepoConfig) -> Vec<Slot> {
         let Some(rs) = self.state.repos.get(&repo.name) else {
             return Vec::new();
         };
-        let wanted =
-            |s: &IssueState| s.seeded && s.active && !s.cleanup_pending && s.worktree_id.is_some();
-        rs.issues
+        let has_workspace = |s: &IssueState| !s.cleanup_pending && s.worktree_id.is_some();
+        let owners: BTreeSet<u64> = rs
+            .issues
             .values()
-            .filter(|s| wanted(s) && s.shares_workspace_of.is_none())
-            .map(|s| Slot::Item(s.number))
+            .filter(|s| s.seeded && s.active)
+            .map(|s| owner_in(&rs.issues, s.number))
+            .collect();
+        owners
+            .into_iter()
+            .filter(|n| rs.issues.get(n).is_some_and(&has_workspace))
+            .map(Slot::Item)
             .chain(
                 rs.reviewers
                     .values()
-                    .filter(|s| wanted(s))
+                    .filter(|s| s.seeded && s.active && has_workspace(s))
                     .map(|s| Slot::Reviewer(s.number)),
             )
             .collect()
@@ -3902,6 +3909,19 @@ mod tests {
         e.entry(&r, 6).cleanup_pending = true;
         e.entry(&r, 7).active = true; // not seeded yet
         e.entry(&r, 7).worktree_id = Some("repo::/w/7".into());
+        // #11 closed while #12, bound to its workspace, is still open: the
+        // workspace was kept for #12, and its harness is the one to start.
+        bind(&mut e, 11);
+        e.entry(&r, 11).active = false;
+        bind(&mut e, 12);
+        e.entry(&r, 12).shares_workspace_of = Some(11);
+        // #13 closed with its workspace waiting for cleanup, even though #14
+        // still points at it: nothing to bring back.
+        bind(&mut e, 13);
+        e.entry(&r, 13).active = false;
+        e.entry(&r, 13).cleanup_pending = true;
+        bind(&mut e, 14);
+        e.entry(&r, 14).shares_workspace_of = Some(13);
         // Reviewers own their workspace even though the record names the
         // PR's author.
         {
@@ -3919,7 +3939,7 @@ mod tests {
         }
         assert_eq!(
             e.resume_candidates(&r),
-            vec![Slot::Item(1), Slot::Reviewer(9)]
+            vec![Slot::Item(1), Slot::Item(11), Slot::Reviewer(9)]
         );
         assert!(
             e.resume_candidates(&RepoConfig {
