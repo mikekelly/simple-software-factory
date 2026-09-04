@@ -633,8 +633,8 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let mut s = format!(
         "\n## How to work on this\n\n\
 You are the coding agent for the GitHub bot account @{bot}. Simple Software Factory (ssf) \
-created this workspace because {because}. Work on the {kind} in this worktree, on its branch. \
-New activity on the {kind} (comments, reviews, label changes, closure) arrives here as messages \
+created this workspace because {because}. Work on the {kind} in this worktree, on its branch; \
+other sessions' branches and workspaces are not yours to touch. New activity on the {kind} (comments, reviews, label changes, closure) arrives here as messages \
 prefixed `[ssf]`; act on them. `ssf guide` explains the rest: other sessions, following items, \
 items you open, hand-offs, reviews of your own pull requests.\n\n\
 - Talk to the humans through the {kind}, as the bot. `GH_TOKEN`, `GITHUB_TOKEN` and a git \
@@ -677,12 +677,13 @@ the {kind} closes, along with your final comment, so make that comment a clear s
 outcome. To ask it something, comment on this {kind}.\n"
         ));
     }
-    s.push_str(&extras(ctx));
+    s.push_str(&extras(ctx, false));
     s
 }
 
-/// The operator's and the repository's own instructions, after ssf's.
-fn extras(ctx: &PromptContext) -> String {
+/// The operator's and the repository's own instructions, after ssf's. A
+/// reviewer gets the same notes with one line saying what they are to it.
+fn extras(ctx: &PromptContext, reviewer: bool) -> String {
     let mut s = String::new();
     if let Some(extra) = ctx.daemon.instructions.as_deref() {
         s.push('\n');
@@ -695,10 +696,14 @@ fn extras(ctx: &PromptContext) -> String {
         s.push('\n');
     }
     if let Some(pp) = ctx.project_prompt.as_ref() {
-        s.push_str(&format!(
-            "\n## Project notes (`{}`)\n\n{}\n",
-            pp.source, pp.text
-        ));
+        s.push_str(&format!("\n## Project notes (`{}`)\n\n", pp.source));
+        if reviewer {
+            s.push_str(
+                "(What you review against; the steps about delivering changes are the author's.)\n\n",
+            );
+        }
+        s.push_str(&pp.text);
+        s.push('\n');
     }
     s
 }
@@ -1155,7 +1160,7 @@ other way (`gh api`, ...).\n\
 replies reach you here, marked \"from the agent on {author}\". To speak to it, comment on the \
 pull request. `ssf guide` explains the rest: other sessions, `ssf tell`, following items.\n"
     );
-    s.push_str(&extras(ctx));
+    s.push_str(&extras(ctx, true));
     s
 }
 
@@ -1464,6 +1469,7 @@ mod tests {
         assert!(p.contains("GH_TOKEN"));
         assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
         assert!(p.contains("Only ever act as @bot"));
+        assert!(p.contains("other sessions' branches and workspaces are not yours to touch"));
         assert!(p.contains("Do not close the issue yourself"));
         // The reference lives behind `ssf guide`; the prompt only points at it.
         assert!(p.contains("`ssf guide` explains the rest"));
@@ -1841,7 +1847,9 @@ mod tests {
         assert!(!p.contains("careful colleague"));
         assert!(!p.contains("ssf peers"));
         assert!(p.contains("`ssf guide` explains the rest"));
-        assert!(p.contains("## Project notes (`SSF.md`)\n\nKeep cargo test green."));
+        assert!(p.contains(
+            "## Project notes (`SSF.md`)\n\n(What you review against; the steps about delivering changes are the author's.)\n\nKeep cargo test green."
+        ));
         assert!(!p.contains("They say"));
 
         let f = review_followup_prompt(&pr_issue, &[ev.clone()], &ctx);
