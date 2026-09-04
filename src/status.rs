@@ -44,7 +44,8 @@ pub struct Session {
     /// Still assigned/mentioned/requested and open as of the last poll.
     pub active: bool,
     /// Why the bot got involved: `assigned`, `mentioned`, `review_requested`,
-    /// `created` (the bot's own item).
+    /// `created` (the bot's own item); `review_label` on a reviewer session
+    /// started by the review label.
     pub triggers: Vec<String>,
     pub harness: String,
     /// Session that acts on this item: its own, or the session it is bound

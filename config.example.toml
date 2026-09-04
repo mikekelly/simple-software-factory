@@ -28,6 +28,7 @@
 # """
 # cleanup_on_close = true                      # remove the workspace once a closed issue's agent has wrapped up
 # cleanup_grace_secs = 900                     # ...or after this long, even if it is still busy
+# review_label = "review"                      # label that asks for a review of a session's own PR (GitHub refuses review requests from the author); "" disables
 
 # One [[repo]] per watched repository.
 [[repo]]

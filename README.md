@@ -270,9 +270,9 @@ binding wins):
   brought back the way any lost session is (workspace re-created from its
   branch, conversation resumed), rather than replaced. A retired owner's
   workspace is not cleaned up while items bound to it are still open. The
-  one exception is a review request on an owned pull request, which gets a
-  reviewer session (below): the author is told that, and not to review its
-  own work.
+  one exception is a review asked on an owned pull request (a review
+  request, or the `review` label), which gets a reviewer session (below):
+  the author is told that, and not to review its own work.
 - **Hand-offs.** An item a session creates *and assigns the bot to* in the
   same `gh ... create` command is a delegation: the tag carries
   `mode=delegate`, the item gets a fresh session of its own, and the creating
@@ -295,10 +295,27 @@ and "handed off by ...".
 
 ## Reviewer sessions
 
-A session must not review its own pull request, so a review requested from
-the bot on a PR that one of its sessions owns (opened from it, or on its
-branch) does not go to that session. ssf starts a **reviewer session**
-instead:
+A session must not review its own pull request, so a review asked of the
+bot on a PR that one of its sessions owns (opened from it, or on its branch)
+does not go to that session. ssf starts a **reviewer session** instead. A
+review is asked for in one of two ways:
+
+- **The `review` label** (`daemon.review_label`; set it to `""` to turn the
+  trigger off). This is the way for a PR the bot opened: GitHub refuses a
+  review request from a pull request's own author (`gh pr edit --add-reviewer
+  <bot>` silently adds nothing on such a PR), so a human, or the author's
+  agent, adds the label instead (`gh pr edit N --add-label review`). The
+  label is the request: once the reviewer has posted a review newer than the
+  label, ssf removes the label and stands the reviewer down, and adding it
+  again asks for another look. The label must exist in the repository, and
+  the bot needs write (triage) access to take it off; if removing it fails,
+  the failure is logged against the reviewer session and retried on the
+  next poll.
+- **A review request** from the bot, on a PR the bot did not open but which a
+  session owns (a PR opened by hand from an agent's branch). GitHub drops the
+  request once the review is posted, or when it is withdrawn.
+
+The reviewer session is:
 
 - a second workspace, `review-<n>-<title>`, checked out at the PR's head
   (`origin/<branch>`) on a local branch of its own, so nothing the reviewer
@@ -316,24 +333,29 @@ instead:
   other items as itself; it owns nothing and cannot be subscribed to (follow
   the PR instead).
 
-The author session keeps the PR: the review request is delivered to it as
-activity with a note that a reviewer session has it, and the review itself
-arrives as activity marked "from the reviewer session on owner/repo#N". The
-author answers on the PR and pushes fixes as it would for a human reviewer;
-its replies reach the reviewer marked "from the agent on owner/repo#A". To
-get another look it re-requests the review (`gh pr edit N --add-reviewer
-<bot>`).
+The author session keeps the PR: the label (or review request) is delivered
+to it as activity with a note that a reviewer session has it, and the review
+itself arrives as activity marked "from the reviewer session on
+owner/repo#N". The author answers on the PR and pushes fixes as it would for
+a human reviewer; its replies reach the reviewer marked "from the agent on
+owner/repo#A". To get another look it adds the `review` label again (its
+initial prompt says so).
 
-The reviewer lives as long as the request: while the bot is a requested
-reviewer, new activity on the PR (pushes, replies) is delivered to it as
-`[ssf] New activity on pull request ... which you are reviewing`. Posting the
-review makes GitHub drop the request, and the reviewer is stood down (told
-to stop, its record kept). A repeated request brings the same session back,
-with what happened in between, resuming its conversation (and re-creating its
-workspace at the PR's current head if that was removed). When the PR is
-closed or merged the reviewer is told, its workspace is marked completed and
-cleaned up like any other. Reviewer state lives next to the items in
-`state.json` under `reviewers`, keyed by PR number.
+The reviewer lives as long as the request: while the label is on the PR (or
+the bot is a requested reviewer), new activity on the PR (pushes, replies) is
+delivered to it as `[ssf] New activity on pull request ... which you are
+reviewing`. Posting the review fulfils the request (ssf removes the label,
+or GitHub drops the review request), and the reviewer is stood down (told to
+stop, its record kept). Only a review counts, not a comment: a review by the
+bot with the reviewer's origin tag, or without any tag; one tagged with
+another session's origin is that session's doing. A repeated request brings
+the same session back, with what happened in between, resuming its
+conversation (and re-creating its workspace at the PR's current head if that
+was removed). When the PR is closed or merged the reviewer is told, its
+workspace is marked completed and cleaned up like any other. Reviewer state
+lives next to the items in `state.json` under `reviewers`, keyed by PR
+number; its `triggers` say what asked for the review (`review_label`,
+`review_requested`).
 
 Only same-repository PRs owned by a session get a reviewer. A PR the bot did
 not write (a human's PR the bot is asked to review, or one assigned to it
@@ -461,6 +483,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
 | `daemon.cleanup_on_close` | `true` | Remove the workspace after the issue is closed and the agent has wrapped up |
 | `daemon.cleanup_grace_secs` | `900` | How long to let the agent wrap up before removing the workspace anyway |
+| `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](#reviewer-sessions)); `""` turns the label trigger off |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
 | `repo.command` | the harness id | Command that starts the agent, e.g. `claude --dangerously-skip-permissions` |
 | `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
