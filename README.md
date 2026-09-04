@@ -286,8 +286,13 @@ binding wins):
 - **Nothing to bind to.** A bot-opened item with no usable tag, no branch
   match and no human trigger is left alone (logged once) rather than given
   a session nobody asked for; assigning or mentioning the bot on it later
-  starts one as usual. Items opened from a session on a *different*
-  repository are not bound across repositories.
+  starts one as usual. It is looked at again when it changes on GitHub *or*
+  when it shows up on another listing (assigned, mentioned, review
+  requested), whichever comes first: an assignment made just before the
+  first pass saw the item can be older than the `updated_at` it was ignored
+  with, so listing membership is part of what "unchanged" means. Items
+  opened from a session on a *different* repository are not bound across
+  repositories.
 
 `ssf status --json` shows the binding as `owner` / `shares_workspace_of`
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."

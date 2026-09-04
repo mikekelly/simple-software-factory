@@ -42,9 +42,45 @@ pub struct Engine {
     state: State,
     failures: BTreeMap<(String, u64), u32>,
     /// Items the bot opened that nothing binds to a session (no origin tag,
-    /// no branch match, no human trigger), keyed to the `updated_at` they
-    /// were last looked at with, so they are not re-examined every pass.
-    ignored: BTreeMap<(String, u64), String>,
+    /// no branch match, no human trigger), with what they were last looked
+    /// at with, so they are not re-examined every pass.
+    ignored: BTreeMap<(String, u64), Ignored>,
+}
+
+/// What an ignored item looked like when it was last examined: GitHub's
+/// `updated_at` and the listings it was on. Both are the key, because an
+/// assignment (or a mention, or a review request) can be older than the
+/// `updated_at` the item was first seen with: when the bot has just opened
+/// an item and is assigned to it in the same interval, the first pass may
+/// meet it through the creator listing alone (the assignee listing being a
+/// 304 against an ETag from before the assignment), ignore it as
+/// created-only, and then find nothing "changed" when the assignee listing
+/// does carry it. Showing up on another listing is a change for our
+/// purposes even when `updated_at` stands still.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ignored {
+    updated_at: String,
+    triggers: Vec<String>,
+}
+
+impl Ignored {
+    fn new(issue: &Issue, triggers: &[String]) -> Self {
+        let mut triggers = triggers.to_vec();
+        triggers.sort();
+        Self {
+            updated_at: issue.updated_at.clone(),
+            triggers,
+        }
+    }
+
+    /// Whether the item is still as it was: unchanged on GitHub (or on no
+    /// listing that changed, when `fresh` is `None`) and on the same
+    /// listings.
+    fn stands(&self, fresh: Option<&Issue>, triggers: &[String]) -> bool {
+        let mut triggers = triggers.to_vec();
+        triggers.sort();
+        fresh.is_none_or(|i| i.updated_at == self.updated_at) && triggers == self.triggers
+    }
 }
 
 /// New events for an issue relative to what has been delivered already.
@@ -621,25 +657,13 @@ impl Engine {
         let mut all_ok = true;
         let present: BTreeSet<u64> = items.keys().copied().collect();
         for (number, (fresh, pr, triggers)) in items {
-            let tracked = self
-                .state
-                .repo_mut(&repo.name)
-                .issues
-                .get(&number)
-                .map(|s| s.seeded && s.active)
-                .unwrap_or(false);
-            // An unchanged listing only matters for items we already handle,
-            // and an item nothing binds to a session stays ignored until it
-            // changes.
-            let ignored = self.ignored.get(&(repo.name.clone(), number));
-            if !tracked
-                && ignored.is_some_and(|at| fresh.as_ref().is_none_or(|i| i.updated_at == *at))
-            {
+            if !self.needs_look(repo, number, fresh.as_ref(), &triggers) {
                 continue;
             }
             let issue = match fresh {
                 Some(i) => i,
-                None if tracked => continue,
+                // Not on a listing that changed, and not handled by a
+                // session (`needs_look`): fetch it to see what it is now.
                 None => match self.gh.issue(owner, name, number).await {
                     Ok(i) => i,
                     Err(e) => {
@@ -711,6 +735,37 @@ impl Engine {
             rs.created_etag = None;
         }
         self.watch_subscribed(repo, owner, name).await
+    }
+
+    /// Whether a pass has to look at an item found on the listings: `fresh`
+    /// is the item as a changed listing reported it, `None` when every
+    /// listing carrying it was a 304, and `triggers` names the listings it
+    /// is on. An item a session handles is looked at when a listing
+    /// carrying it changed. One nothing handles is looked at unless it was
+    /// ignored and is still as it was then (see [`Ignored`]): the same
+    /// `updated_at` on the same listings. An item that was ignored as
+    /// created-only and now shows up as assigned (or mentioned, or with a
+    /// review requested) is looked at again, and onboarded as usual, even
+    /// though GitHub's `updated_at` has not moved.
+    fn needs_look(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+        fresh: Option<&Issue>,
+        triggers: &[String],
+    ) -> bool {
+        let tracked = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.issues.get(&number))
+            .is_some_and(|s| s.seeded && s.active);
+        if tracked {
+            return fresh.is_some();
+        }
+        self.ignored
+            .get(&(repo.name.clone(), number))
+            .is_none_or(|at| !at.stands(fresh, triggers))
     }
 
     /// Poll the items that are tracked only because sessions subscribed to
@@ -1812,6 +1867,8 @@ impl Engine {
             .map(|p| self.diff(&p.seen, &timeline).rendered);
         let scan = self.record_origins(repo, issue, &timeline);
         let by_bot = issue.author().eq_ignore_ascii_case(&self.login);
+        // Whatever it was ignored as before, it is being looked at afresh.
+        self.ignored.remove(&(repo.name.clone(), issue.number));
 
         // Who acts on this item. An item a session opened belongs to that
         // session (first binding wins: it never spawns a second one), unless
@@ -1851,8 +1908,10 @@ impl Engine {
                 issue = issue.number,
                 "opened by the bot without a usable origin tag; ignoring until it changes"
             );
-            self.ignored
-                .insert((repo.name.clone(), issue.number), issue.updated_at.clone());
+            self.ignored.insert(
+                (repo.name.clone(), issue.number),
+                Ignored::new(issue, &triggers),
+            );
             // Still polled for whoever subscribed to it.
             if prior.as_ref().is_some_and(|p| p.subscriber_only) {
                 self.entry(repo, issue.number).subscriber_only = true;
@@ -3693,5 +3752,70 @@ mod tests {
         assert_eq!(c.session.as_deref(), Some("o/r#5"));
         assert_eq!(c.author, "bot");
         assert!(last_bot_comment(&timeline[2..], "bot").is_none());
+    }
+
+    /// Replays issue #27: an item the bot opened was assigned to it just
+    /// before the first pass saw it, but that pass met it through the
+    /// creator listing alone (the assignee listing was a 304 against an
+    /// ETag from before the assignment), so it was ignored as created-only
+    /// with an `updated_at` that already reflected the assignment. When
+    /// the assignee listing carried it on a later pass, nothing had
+    /// "changed", and the assignment never produced a session.
+    #[test]
+    fn an_assignment_seen_after_a_created_only_pass_is_not_lost() {
+        let mut e = engine();
+        let r = repo();
+        let created = vec!["created".to_string()];
+        let both = vec!["assigned".to_string(), "created".to_string()];
+        let i18 = issue(18, "bot", None);
+
+        // Pass 1: first seen on the creator listing only; nothing binds it,
+        // so onboarding leaves it ignored at this updated_at and listing.
+        assert!(e.needs_look(&r, 18, Some(&i18), &created));
+        e.ignored
+            .insert((r.name.clone(), 18), Ignored::new(&i18, &created));
+
+        // Pass 2: the creator listing is a 304, or reports it unchanged.
+        assert!(!e.needs_look(&r, 18, None, &created));
+        assert!(!e.needs_look(&r, 18, Some(&i18), &created));
+        // Being subscribed to meanwhile (tracked for subscribers only, no
+        // session) changes nothing about that.
+        e.entry(&r, 18).subscriber_only = true;
+        assert!(!e.needs_look(&r, 18, Some(&i18), &created));
+
+        // Pass 3: the assignee listing now carries it, with the very same
+        // updated_at. That is a change for us: the item is looked at, and
+        // with no session it is onboarded (with `assigned` in its
+        // triggers, so it is not ignored again).
+        assert!(e.needs_look(&r, 18, Some(&i18), &both));
+        assert!(
+            e.needs_look(&r, 18, None, &both),
+            "a new listing membership counts even with every listing a 304"
+        );
+        assert!(!both.iter().all(|t| t == "created"));
+        // The same listings in another order are the same listings.
+        let reversed = vec!["created".to_string(), "assigned".to_string()];
+        assert!(Ignored::new(&i18, &both).stands(Some(&i18), &reversed));
+        // The other human triggers count the same way.
+        for t in ["mentioned", "review_requested"] {
+            assert!(e.needs_look(&r, 18, Some(&i18), &[t.into(), "created".into()]));
+        }
+
+        // A change on GitHub with the same listing re-evaluates as before.
+        let mut later = i18.clone();
+        later.updated_at = "y".into();
+        assert!(e.needs_look(&r, 18, Some(&later), &created));
+
+        // Once it has a session, only listings that changed matter, ignored
+        // or not.
+        seeded(&mut e, 18, None, true);
+        assert!(e.needs_look(&r, 18, Some(&i18), &created));
+        assert!(!e.needs_look(&r, 18, None, &both));
+        // A retired session's item falls back to the ignore record, which
+        // onboarding clears (`onboard` removes it before binding).
+        e.entry(&r, 18).active = false;
+        assert!(!e.needs_look(&r, 18, Some(&i18), &created));
+        e.ignored.remove(&(r.name.clone(), 18));
+        assert!(e.needs_look(&r, 18, Some(&i18), &created));
     }
 }
