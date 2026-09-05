@@ -98,7 +98,11 @@ impl Origin {
     }
 
     /// The line the shim prepends to a post made on `on_repo`: the byline,
-    /// then the tag (a hand-off's or the reviewer's when asked).
+    /// then the tag (a hand-off's or the reviewer's when asked). A hand-off
+    /// from a reviewer session keeps `(reviewer)` in the byline, which is
+    /// where the post came from, while the tag says `mode=delegate` rather
+    /// than `role=reviewer`: the mode outranks the role in the tag, and the
+    /// byline never encodes the mode.
     pub fn first_line(&self, on_repo: Option<&str>, delegate: bool, reviewer: bool) -> String {
         let tag = if delegate {
             self.delegate_tag()
