@@ -227,7 +227,7 @@ impl Orca {
     pub async fn run(&self, args: &[&str]) -> Result<Value> {
         let mut full: Vec<&str> = args.to_vec();
         full.push("--json");
-        debug!(cmd = %self.cfg.command, ?args, "orca");
+        debug!(cmd = %self.cfg.command, args = ?crate::driver::redacted_args(args), "orca");
         let out = Command::new(&self.cfg.command)
             .args(&full)
             .env_remove("ORCA_TERMINAL_ID")
@@ -242,7 +242,7 @@ impl Orca {
         let Some(v) = parsed else {
             bail!(
                 "orca {} produced no JSON (exit {:?}): {} {}",
-                args.join(" "),
+                crate::driver::redacted_args(args).join(" "),
                 out.status.code(),
                 stdout.trim().chars().take(400).collect::<String>(),
                 stderr.trim().chars().take(400).collect::<String>()
@@ -258,7 +258,10 @@ impl Orca {
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| err.to_string());
-        bail!("orca {} failed [{code}]: {msg}", args.join(" "))
+        bail!(
+            "orca {} failed [{code}]: {msg}",
+            crate::driver::redacted_args(args).join(" ")
+        )
     }
 
     pub async fn status(&self) -> Result<Value> {
@@ -808,7 +811,8 @@ impl Orca {
         if let Some(cmd) = resume_command {
             warn!(
                 worktree_id,
-                cmd, "no live agent terminal; resuming harness session"
+                cmd = crate::driver::redacted(cmd),
+                "no live agent terminal; resuming harness session"
             );
             let h = self.create_terminal(worktree_id, cmd, title).await?;
             match self.settle_harness(&h, harness).await {
@@ -844,7 +848,8 @@ impl Orca {
             None => {
                 warn!(
                     worktree_id,
-                    relaunch_command, "no live agent terminal; relaunching harness"
+                    relaunch_command = crate::driver::redacted(relaunch_command),
+                    "no live agent terminal; relaunching harness"
                 );
                 self.launch_in_worktree(worktree_id, relaunch_command, title, harness)
                     .await?
