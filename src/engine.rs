@@ -18,7 +18,7 @@ use crate::prompt::{
 };
 use crate::release::{self, git};
 use crate::sessions;
-use crate::state::{IssueState, State, now_iso};
+use crate::state::{Ignored, IssueState, State, now_iso};
 use crate::status::{reviewer_session_id, session_id};
 
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
@@ -48,31 +48,14 @@ pub struct Engine {
     login: String,
     state: State,
     failures: BTreeMap<(String, u64), u32>,
-    /// Items the bot opened that nothing binds to a session (no origin tag,
-    /// no branch match, no human trigger), with what they were last looked
-    /// at with, so they are not re-examined every pass.
-    ignored: BTreeMap<(String, u64), Ignored>,
     /// The startup pass (resume sessions whose terminals are gone) has not
     /// run yet; it runs on the first pass that finds Orca ready.
     startup_pass_pending: bool,
 }
 
-/// What an ignored item looked like when it was last examined: GitHub's
-/// `updated_at` and the listings it was on. Both are the key, because an
-/// assignment (or a mention, or a review request) can be older than the
-/// `updated_at` the item was first seen with: when the bot has just opened
-/// an item and is assigned to it in the same interval, the first pass may
-/// meet it through the creator listing alone (the assignee listing being a
-/// 304 against an ETag from before the assignment), ignore it as
-/// created-only, and then find nothing "changed" when the assignee listing
-/// does carry it. Showing up on another listing is a change for our
-/// purposes even when `updated_at` stands still.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Ignored {
-    updated_at: String,
-    triggers: Vec<String>,
-}
-
+/// The ignore record of a bot-opened item nothing binds to (see
+/// [`Ignored`] in `state`): what it was last looked at with, so it is not
+/// re-examined every pass, nor after every daemon restart.
 impl Ignored {
     fn new(issue: &Issue, triggers: &[String]) -> Self {
         let mut triggers = triggers.to_vec();
@@ -147,7 +130,6 @@ impl Engine {
             login: me.login,
             state,
             failures: BTreeMap::new(),
-            ignored: BTreeMap::new(),
             startup_pass_pending,
         })
     }
@@ -880,6 +862,10 @@ are resumed on the first pass that finds it: {err:#}"
         // Only trust the ETags when every item was handled; otherwise the next
         // pass must see the full listings again to retry.
         let rs = self.state.repo_mut(&repo.name);
+        // An ignored item that has left every listing (closed, or no longer
+        // the bot's) has nothing to be ignored as; if it comes back it is
+        // looked at afresh.
+        rs.ignored.retain(|n, _| present.contains(n));
         if all_ok {
             if let Some(t) = issues_etag {
                 rs.issues_etag = t;
@@ -932,8 +918,10 @@ are resumed on the first pass that finds it: {err:#}"
         if tracked {
             return fresh.is_some();
         }
-        self.ignored
-            .get(&(repo.name.clone(), number))
+        self.state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.ignored.get(&number))
             .is_none_or(|at| !at.stands(fresh, triggers))
     }
 
@@ -2045,7 +2033,10 @@ are resumed on the first pass that finds it: {err:#}"
         let scan = self.record_origins(repo, issue, &timeline);
         let by_bot = issue.author().eq_ignore_ascii_case(&self.login);
         // Whatever it was ignored as before, it is being looked at afresh.
-        self.ignored.remove(&(repo.name.clone(), issue.number));
+        self.state
+            .repo_mut(&repo.name)
+            .ignored
+            .remove(&issue.number);
 
         // Who acts on this item. An item a session opened belongs to that
         // session (first binding wins: it never spawns a second one), unless
@@ -2085,10 +2076,10 @@ are resumed on the first pass that finds it: {err:#}"
                 issue = issue.number,
                 "opened by the bot without a usable origin tag; ignoring until it changes"
             );
-            self.ignored.insert(
-                (repo.name.clone(), issue.number),
-                Ignored::new(issue, &triggers),
-            );
+            self.state
+                .repo_mut(&repo.name)
+                .ignored
+                .insert(issue.number, Ignored::new(issue, &triggers));
             // Still polled for whoever subscribed to it.
             if prior.as_ref().is_some_and(|p| p.subscriber_only) {
                 self.entry(repo, issue.number).subscriber_only = true;
@@ -3700,7 +3691,6 @@ mod tests {
             login: "bot".into(),
             state: State::default(),
             failures: BTreeMap::new(),
-            ignored: BTreeMap::new(),
             startup_pass_pending: false,
         }
     }
@@ -4363,8 +4353,10 @@ mod tests {
         // Pass 1: first seen on the creator listing only; nothing binds it,
         // so onboarding leaves it ignored at this updated_at and listing.
         assert!(e.needs_look(&r, 18, Some(&i18), &created));
-        e.ignored
-            .insert((r.name.clone(), 18), Ignored::new(&i18, &created));
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(18, Ignored::new(&i18, &created));
 
         // Pass 2: the creator listing is a 304, or reports it unchanged.
         assert!(!e.needs_look(&r, 18, None, &created));
@@ -4406,8 +4398,236 @@ mod tests {
         // onboarding clears (`onboard` removes it before binding).
         e.entry(&r, 18).active = false;
         assert!(!e.needs_look(&r, 18, Some(&i18), &created));
-        e.ignored.remove(&(r.name.clone(), 18));
+        e.state.repo_mut(&r.name).ignored.remove(&18);
         assert!(e.needs_look(&r, 18, Some(&i18), &created));
+    }
+
+    /// A stand-in for the GitHub API on a local port. It answers the four
+    /// listings, records the path of every request, and fails any other
+    /// request (an item or its timeline), so a test can say exactly what a
+    /// pass fetched. The creator listing honours `If-None-Match` against
+    /// an ETag the test can roll over (GitHub's do); the other three never
+    /// answer 304, so a pass never takes the "nothing changed" shortcut.
+    struct GitHubStub {
+        base: String,
+        hits: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// Open items the bot opened, as the creator listing reports them.
+        created: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        /// Bumped to give the creator listing a new ETag: the next request
+        /// gets a full listing, whatever it carries.
+        created_etag: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl GitHubStub {
+        async fn start() -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            use std::sync::{Arc, Mutex};
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let hits: Arc<Mutex<Vec<String>>> = Arc::default();
+            let created: Arc<Mutex<Vec<Value>>> = Arc::default();
+            let created_etag = Arc::new(AtomicU32::new(1));
+            let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
+            tokio::spawn(async move {
+                let other_etags = AtomicU32::new(1);
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else {
+                        return;
+                    };
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    loop {
+                        let n = sock.read(&mut chunk).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf).to_string();
+                    let mut lines = head.lines();
+                    let target = lines
+                        .next()
+                        .and_then(|l| l.split(' ').nth(1))
+                        .unwrap_or("")
+                        .to_string();
+                    let if_none_match = lines.find_map(|l| {
+                        let (k, val) = l.split_once(':')?;
+                        k.eq_ignore_ascii_case("if-none-match")
+                            .then(|| val.trim().to_string())
+                    });
+                    h.lock().unwrap().push(target.clone());
+                    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+                    let (status, etag, body) =
+                        if path == "/repos/o/r/issues" && query.starts_with("creator=") {
+                            let etag = format!("\"c{}\"", v.load(Ordering::SeqCst));
+                            if if_none_match.as_deref() == Some(etag.as_str()) {
+                                ("304 Not Modified", etag, String::new())
+                            } else {
+                                let items = Value::Array(c.lock().unwrap().clone());
+                                ("200 OK", etag, items.to_string())
+                            }
+                        } else if path == "/repos/o/r/issues" || path == "/repos/o/r/pulls" {
+                            let n = other_etags.fetch_add(1, Ordering::SeqCst);
+                            ("200 OK", format!("\"o{n}\""), "[]".to_string())
+                        } else {
+                            (
+                                "500 Internal Server Error",
+                                "\"none\"".to_string(),
+                                r#"{"message":"the test expected no fetch"}"#.to_string(),
+                            )
+                        };
+                    let resp = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nETag: {etag}\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                }
+            });
+            Self {
+                base,
+                hits,
+                created,
+                created_etag,
+            }
+        }
+
+        /// The request paths since the last call.
+        fn hits(&self) -> Vec<String> {
+            std::mem::take(&mut *self.hits.lock().unwrap())
+        }
+
+        fn bump_created_etag(&self) {
+            self.created_etag
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn engine_at(api_url: &str) -> Engine {
+        let mut e = engine();
+        e.gh = GitHub::new(api_url, "t").unwrap();
+        e
+    }
+
+    /// Every hit is one of the four listings: nothing was fetched by number.
+    fn assert_listings_only(hits: &[String]) {
+        let fetched: Vec<&String> = hits
+            .iter()
+            .filter(|h| {
+                let path = h.split('?').next().unwrap_or("");
+                path != "/repos/o/r/issues" && path != "/repos/o/r/pulls"
+            })
+            .collect();
+        assert!(fetched.is_empty(), "fetched by number: {fetched:?}");
+        assert_eq!(hits.len(), 4, "four listings expected: {hits:?}");
+    }
+
+    /// Replays issue #34: the ignore records used to live only in memory
+    /// while the listing ETags are persisted, so after a daemon restart
+    /// every listing answered 304 until something changed, and the first
+    /// pass that saw a change fetched every ignored item (issue and
+    /// timeline) again to find nothing new. An ignored item is fetched
+    /// again only when its `updated_at` moves or it appears on a listing
+    /// it was not on before: not for a full listing with unchanged content
+    /// (GitHub rolled its ETag over), not for a 304 with another listing
+    /// changed, and not after a restart.
+    #[tokio::test]
+    async fn ignored_items_are_not_fetched_on_a_full_listing_or_after_a_restart() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let created = vec!["created".to_string()];
+        let listed = |n: u64| {
+            json!({
+                "number": n, "title": "t", "body": null, "html_url": format!("https://gh/{n}"),
+                "state": "open", "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+            })
+        };
+        *stub.created.lock().unwrap() = vec![listed(18), listed(19)];
+
+        // Both were looked at on an earlier pass and ignored as created-only.
+        let mut e = engine_at(&stub.base);
+        for n in [18, 19] {
+            e.state
+                .repo_mut(&r.name)
+                .ignored
+                .insert(n, Ignored::new(&issue(n, "bot", None), &created));
+        }
+
+        // Pass 1: no ETags yet, so a full creator listing carrying both,
+        // unchanged. Nothing is fetched, and nothing is onboarded (which
+        // would fail at Orca here and be counted as a failure).
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert_eq!(e.state.repos[&r.name].created_numbers, vec![18, 19]);
+
+        // A daemon restart: the state file survives, memory does not.
+        let dir = std::env::temp_dir().join(format!("ssf-engine-ignored-{}", std::process::id()));
+        let path = dir.join("state.json");
+        e.state.save_to(&path).unwrap();
+        let mut e = engine_at(&stub.base);
+        e.state = State::load_from(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            e.state.repos[&r.name]
+                .ignored
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![18, 19],
+            "the ignore records are persisted"
+        );
+
+        // Pass 2: GitHub's ETag rolled over, so a full listing again, with
+        // the same content. Nothing is fetched.
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        let hits = stub.hits();
+        assert!(hits.iter().any(|h| h.contains("creator=")), "{hits:?}");
+        assert_listings_only(&hits);
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+
+        // Pass 3: the creator listing is a 304 while another listing
+        // changed, so the items come from the cached numbers with no
+        // fresh copy. Still nothing is fetched.
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+
+        // Control: an item nothing remembers is fetched by number on such a
+        // pass (the stub fails the fetch, which the pass survives), and its
+        // neighbour is not.
+        e.state.repo_mut(&r.name).ignored.remove(&19);
+        e.tick_repo(&r).await.unwrap();
+        let hits = stub.hits();
+        assert!(
+            hits.contains(&"/repos/o/r/issues/19".to_string()),
+            "{hits:?}"
+        );
+        assert!(
+            !hits.iter().any(|h| h.starts_with("/repos/o/r/issues/18")),
+            "{hits:?}"
+        );
+
+        // An item that left every listing (closed, say) loses its record;
+        // one still listed keeps it.
+        *stub.created.lock().unwrap() = vec![listed(18)];
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(
+            e.state.repos[&r.name]
+                .ignored
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![18]
+        );
     }
 
     #[test]

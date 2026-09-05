@@ -43,6 +43,15 @@ pub struct RepoState {
     pub created_numbers: Vec<u64>,
     #[serde(default)]
     pub issues: BTreeMap<u64, IssueState>,
+    /// Items the bot opened that nothing binds to a session (no origin
+    /// tag, no branch match, no human trigger), keyed by number, with what
+    /// they were last looked at with (see [`Ignored`]). Kept here rather
+    /// than in memory so a daemon restart does not queue a walk of every
+    /// such item: the listing ETags survive a restart, so the first pass
+    /// after one on which any listing has changed would otherwise fetch
+    /// each of them (issue and timeline) again to find nothing new.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ignored: BTreeMap<u64, Ignored>,
     /// Reviewer sessions, keyed by the pull request they review: a second
     /// workspace on the PR's branch with an agent that only reviews, started
     /// when a review is requested from the bot on a PR one of its own
@@ -50,6 +59,24 @@ pub struct RepoState {
     /// `owner/repo#N:reviewer` and it never owns anything.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub reviewers: BTreeMap<u64, IssueState>,
+}
+
+/// What an ignored item looked like when it was last examined: GitHub's
+/// `updated_at` and the listings it was on. Both are the key, because an
+/// assignment (or a mention, or a review request) can be older than the
+/// `updated_at` the item was first seen with: when the bot has just opened
+/// an item and is assigned to it in the same interval, the first pass may
+/// meet it through the creator listing alone (the assignee listing being a
+/// 304 against an ETag from before the assignment), ignore it as
+/// created-only, and then find nothing "changed" when the assignee listing
+/// does carry it. Showing up on another listing is a change for our
+/// purposes even when `updated_at` stands still.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Ignored {
+    pub updated_at: String,
+    /// Sorted, so two listings in any order compare equal.
+    #[serde(default)]
+    pub triggers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
