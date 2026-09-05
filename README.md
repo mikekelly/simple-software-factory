@@ -634,9 +634,12 @@ binding wins):
   when it shows up on another listing (assigned, mentioned, review
   requested), whichever comes first: an assignment made just before the
   first pass saw the item can be older than the `updated_at` it was ignored
-  with, so listing membership is part of what "unchanged" means. Items
-  opened from a session on a *different* repository are not bound across
-  repositories.
+  with, so listing membership is part of what "unchanged" means. What it
+  was ignored with is kept in `state.json` (under `ignored`, per
+  repository), so a daemon restart does not fetch every such item again the
+  next time a listing changes; the record goes when the item leaves every
+  listing. Items opened from a session on a *different* repository are not
+  bound across repositories.
 
 `ssf status --json` shows the binding as `owner` / `shares_workspace_of`
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
