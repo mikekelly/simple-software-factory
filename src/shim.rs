@@ -31,10 +31,6 @@ pub fn dir() -> PathBuf {
     crate::config::config_dir().join("bin")
 }
 
-pub fn path() -> PathBuf {
-    dir().join("gh")
-}
-
 /// Was this process started under the name `gh`?
 pub fn invoked_as_gh() -> bool {
     std::env::args_os()
@@ -85,11 +81,6 @@ pub fn ssf_on_path() -> Option<PathBuf> {
         })
         .map(|d| d.join("ssf"))
         .find(|p| p.is_file())
-}
-
-/// Where the shim currently points, if it is installed.
-pub fn target() -> Option<PathBuf> {
-    std::fs::read_link(path()).ok()
 }
 
 /// PATH with the shim directory first (and nowhere else). `None` when the
