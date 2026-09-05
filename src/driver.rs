@@ -42,6 +42,37 @@ pub struct Relaunch<'a> {
     pub text: Option<&'a str>,
 }
 
+/// A launch command fit for a log line: the bot token that
+/// `Engine::launch_command` puts in front of the wrapper (as
+/// `SSF_GITHUB_TOKEN='...'`) is replaced by `<redacted>`. Everything else
+/// is left as it is.
+pub fn redacted(command: &str) -> String {
+    const KEY: &str = "SSF_GITHUB_TOKEN=";
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(at) = rest.find(KEY) {
+        let start = at + KEY.len();
+        out.push_str(&rest[..start]);
+        let value = &rest[start..];
+        let len = if let Some(inner) = value.strip_prefix('\'') {
+            // A quoted value ends at its closing quote (shell_quote writes
+            // an embedded quote as '\'', which also ends here).
+            inner.find('\'').map(|i| i + 2).unwrap_or(value.len())
+        } else {
+            value.find(char::is_whitespace).unwrap_or(value.len())
+        };
+        out.push_str("<redacted>");
+        rest = &value[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `redacted` over a CLI argument list.
+pub fn redacted_args(args: &[&str]) -> Vec<String> {
+    args.iter().map(|a| redacted(a)).collect()
+}
+
 impl Driver {
     pub fn new(kind: DriverKind, cfg: &Config) -> Self {
         match kind {
@@ -559,6 +590,31 @@ pub fn err_no_field(what: &str, v: &serde_json::Value) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn log_lines_never_carry_the_token() {
+        use super::redacted;
+        let wrapper = "SSF_CONFIG_DIR='/c' SSF_STATE_DIR='/s' SSF_GITHUB_TOKEN='gho_abc123' '/bin/ssf' launch --repo 'o/r' -- 'claude'";
+        assert_eq!(
+            redacted(wrapper),
+            "SSF_CONFIG_DIR='/c' SSF_STATE_DIR='/s' SSF_GITHUB_TOKEN=<redacted> '/bin/ssf' launch --repo 'o/r' -- 'claude'"
+        );
+        // Unquoted, at the end, twice, and absent.
+        assert_eq!(
+            redacted("SSF_GITHUB_TOKEN=gho_x ssf"),
+            "SSF_GITHUB_TOKEN=<redacted> ssf"
+        );
+        assert_eq!(
+            redacted("A=1 SSF_GITHUB_TOKEN='gho_x'"),
+            "A=1 SSF_GITHUB_TOKEN=<redacted>"
+        );
+        assert_eq!(
+            redacted("SSF_GITHUB_TOKEN='a' SSF_GITHUB_TOKEN=b"),
+            "SSF_GITHUB_TOKEN=<redacted> SSF_GITHUB_TOKEN=<redacted>"
+        );
+        assert_eq!(redacted("claude --model haiku"), "claude --model haiku");
+        assert!(!redacted(wrapper).contains("gho_"));
+    }
+
     use super::*;
 
     #[test]

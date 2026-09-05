@@ -234,7 +234,7 @@ impl Herdr {
     /// Run a herdr command and return its stdout (`read --format text`
     /// prints the screen as it is).
     pub async fn run_raw(&self, args: &[&str]) -> Result<String> {
-        debug!(cmd = %self.cfg.command, ?args, "herdr");
+        debug!(cmd = %self.cfg.command, args = ?driver::redacted_args(args), "herdr");
         let out = Command::new(&self.cfg.command)
             .args(args)
             // The daemon may itself run inside a herdr pane; commands must
@@ -648,7 +648,11 @@ impl Herdr {
         let mut resumed = false;
         let mut handle = None;
         if let Some(cmd) = relaunch.resume_command {
-            warn!(workspace_id, cmd, "no live agent; resuming harness session");
+            warn!(
+                workspace_id,
+                cmd = driver::redacted(cmd),
+                "no live agent; resuming harness session"
+            );
             match self
                 .launch(workspace_id, cmd, relaunch.title, relaunch.harness)
                 .await
@@ -679,7 +683,7 @@ impl Herdr {
             None => {
                 warn!(
                     workspace_id,
-                    command = relaunch.command,
+                    command = driver::redacted(relaunch.command),
                     "no live agent; relaunching harness"
                 );
                 self.launch(
