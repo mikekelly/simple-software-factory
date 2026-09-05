@@ -534,29 +534,6 @@ impl Orca {
             .ok_or_else(|| anyhow!("repo show returned no path: {v}"))
     }
 
-    /// A ref to base a re-created workspace on: the local branch if it still
-    /// exists, else its remote-tracking copy (pushed work survives `worktree rm`).
-    pub async fn existing_branch_ref(&self, repo_id: &str, branch: &str) -> Result<Option<String>> {
-        let path = self.repo_path(repo_id).await?;
-        for (full, short) in [
-            (format!("refs/heads/{branch}"), branch.to_string()),
-            (
-                format!("refs/remotes/origin/{branch}"),
-                format!("origin/{branch}"),
-            ),
-        ] {
-            let out = Command::new("git")
-                .args(["-C", &path, "rev-parse", "--verify", "--quiet", &full])
-                .output()
-                .await
-                .context("running git")?;
-            if out.status.success() {
-                return Ok(Some(short));
-            }
-        }
-        Ok(None)
-    }
-
     /// Start the harness in a workspace that has no agent yet: create its
     /// terminal, wait for the TUI, answer first-run dialogs, and close the
     /// placeholder shell Orca opened with the checkout.

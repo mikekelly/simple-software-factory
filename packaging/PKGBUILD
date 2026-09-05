@@ -6,16 +6,17 @@
 # the local-copy prepare() below.
 
 pkgname=ssf
-pkgver=0.1.0.r88.g9ec68a5
+pkgver=0.1.0.r95.gc3e60e5
 pkgrel=1
-pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become Orca agent workspaces"
+pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in Orca or herdr"
 arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'jq' 'systemd')
 makedepends=('cargo')
 optdepends=(
-  'orca-ide-bin: Orca desktop app and CLI, required at run time (not yet in the Omarchy repo; install manually)'
+  'orca-ide-bin: Orca desktop app and CLI, the default driver (not yet in the Omarchy repo; install manually)'
+  'herdr: terminal workspace manager, an alternative driver (driver = "herdr")'
   'omarchy: bar widget, menu entries and floating-terminal flows'
   'gum: nicer prompts in ssf-ui'
   'github-cli: lets agents comment on issues as the bot'

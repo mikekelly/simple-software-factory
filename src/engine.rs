@@ -7,10 +7,12 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
+use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
+use crate::driver::{Driver, Drivers, Relaunch};
 use crate::github::{Conditional, GitHub, Issue, PrInfo};
 use crate::ipc::{Request, Response};
-use crate::orca::{Delivery, Orca, Worktree};
+use crate::orca::{Delivery, Worktree};
 use crate::origin::{self, Origin};
 use crate::prompt::{
     self, FinalComment, Fyi, ProjectPrompt, PromptContext, Rendered, ReviewEnd, actor_of,
@@ -44,13 +46,17 @@ impl std::fmt::Display for ReviewerFailure {
 pub struct Engine {
     cfg: Config,
     gh: GitHub,
-    orca: Orca,
+    drivers: Drivers,
+    /// Drivers that did not answer at the start of this pass; their
+    /// repositories are skipped until they do.
+    down: Vec<DriverKind>,
     login: String,
     state: State,
     failures: BTreeMap<(String, u64), u32>,
-    /// The startup pass (resume sessions whose terminals are gone) has not
-    /// run yet; it runs on the first pass that finds Orca ready.
-    startup_pass_pending: bool,
+    /// Drivers whose startup pass (resume sessions whose terminals are
+    /// gone) has not run yet; each runs on the first pass that finds that
+    /// driver ready.
+    startup_pending: Vec<DriverKind>,
 }
 
 /// The ignore record of a bot-opened item nothing binds to (see
@@ -113,24 +119,78 @@ fn slot_id(repo: &str, slot: Slot) -> String {
 }
 
 impl Engine {
+    /// The driver a repository's sessions run under.
+    fn driver(&self, repo: &RepoConfig) -> &Driver {
+        let kind = self.cfg.driver_for(repo);
+        self.drivers
+            .get(kind)
+            .expect("sync_drivers keeps a driver for every kind the config uses")
+    }
+
+    /// Rebuild the driver set when the config's choice of drivers changed
+    /// (a repo added with `--driver`, or the default switched).
+    fn sync_drivers(&mut self) {
+        if self.drivers.kinds() != self.cfg.drivers_in_use() {
+            self.drivers = Drivers::from_config(&self.cfg);
+        }
+    }
+
+    fn driver_down(&self, repo: &RepoConfig) -> bool {
+        self.down.contains(&self.cfg.driver_for(repo))
+    }
+
+    /// Ask every driver in use whether it is ready, remembering the ones
+    /// that are not. Returns what is wrong with the ones that are not; fails
+    /// only when none is.
+    async fn check_drivers(&mut self) -> Result<Vec<String>> {
+        let mut down = Vec::new();
+        let mut errors = Vec::new();
+        let mut any_up = false;
+        for d in self.drivers.iter() {
+            match d.status().await {
+                Ok(()) => any_up = true,
+                Err(e) => {
+                    down.push(d.kind());
+                    errors.push(format!("{} unavailable: {e:#}", d.label()));
+                }
+            }
+        }
+        for e in &errors {
+            if any_up {
+                warn!("{e}; its repositories are skipped this pass");
+            }
+        }
+        self.down = down;
+        if any_up {
+            Ok(errors)
+        } else {
+            anyhow::bail!("{}", errors.join("; "))
+        }
+    }
+
     pub async fn new(cfg: Config) -> Result<Self> {
         let token = cfg.github_token()?;
         let gh = GitHub::new(&cfg.github.api_url, &token)?;
         let me = gh.whoami().await.context("verifying GitHub token")?;
         info!(login = me.login, kind = me.kind, "authenticated to GitHub");
-        let orca = Orca::new(cfg.orca.clone());
+        let drivers = Drivers::from_config(&cfg);
         let mut state = State::load()?;
         state.bot_login = Some(me.login.clone());
         state.save()?;
-        let startup_pass_pending = cfg.daemon.resume_on_start;
+        let startup_pending = if cfg.daemon.resume_on_start {
+            cfg.drivers_in_use()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             cfg,
             gh,
-            orca,
+            drivers,
+            down: Vec::new(),
             login: me.login,
             state,
             failures: BTreeMap::new(),
-            startup_pass_pending,
+            startup_pending,
         })
     }
 
@@ -148,11 +208,11 @@ impl Engine {
         // the graphical session), and the startup pass needs it: wait a
         // bounded while before the first poll rather than skipping passes.
         let mut stop = false;
-        if self.startup_pass_pending {
+        if !self.startup_pending.is_empty() {
             let wait = Duration::from_secs(self.cfg.daemon.startup_orca_wait_secs);
             let started = tokio::time::Instant::now();
             loop {
-                let err = match self.orca.status().await {
+                let err = match self.check_drivers().await {
                     Ok(_) => break,
                     Err(e) => e,
                 };
@@ -161,13 +221,13 @@ impl Engine {
                     if !wait.is_zero() {
                         warn!(
                             waited_secs = elapsed.as_secs(),
-                            "Orca is still not ready; polling starts now and interrupted sessions \
+                            "the driver is still not ready; polling starts now and interrupted sessions \
 are resumed on the first pass that finds it: {err:#}"
                         );
                     }
                     break;
                 }
-                info!("waiting for Orca before the first pass: {err:#}");
+                info!("waiting for the driver before the first pass: {err:#}");
                 let deadline =
                     tokio::time::Instant::now() + Duration::from_secs(10).min(wait - elapsed);
                 if self.idle_until(deadline, &listener, &mut sigterm).await {
@@ -488,7 +548,11 @@ are resumed on the first pass that finds it: {err:#}"
         };
         let ost = self.record(&repo, acting).clone();
         let alive = match ost.worktree_id.as_deref() {
-            Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+            Some(id) => self
+                .driver(&repo)
+                .worktree_exists(id)
+                .await
+                .unwrap_or(false),
             None => false,
         };
         if !ost.active && !alive {
@@ -536,7 +600,10 @@ are resumed on the first pass that finds it: {err:#}"
     /// intervals) without a restart. The token is fixed for the process.
     fn reload_config(&mut self) {
         match Config::load() {
-            Ok(cfg) => self.cfg = cfg,
+            Ok(cfg) => {
+                self.cfg = cfg;
+                self.sync_drivers();
+            }
             Err(e) => warn!("config reload failed, keeping previous: {e:#}"),
         }
     }
@@ -549,18 +616,36 @@ are resumed on the first pass that finds it: {err:#}"
             warn!("no repos configured; nothing to do (see `ssf repo add`)");
             return;
         }
-        if let Err(e) = self.orca.status().await {
-            warn!("Orca unavailable, skipping this pass: {e:#}");
-            self.state.last_error = Some(format!("Orca unavailable: {e:#}"));
-            let _ = self.state.save();
-            return;
-        }
-        self.state.last_error = None;
-        if self.startup_pass_pending {
-            self.startup_pass_pending = false;
-            self.resume_interrupted().await;
+        let down = match self.check_drivers().await {
+            Ok(down) => down,
+            Err(e) => {
+                warn!("skipping this pass: {e:#}");
+                self.state.last_error = Some(format!("{e:#}"));
+                let _ = self.state.save();
+                return;
+            }
+        };
+        // A driver that is down is a visible error even while the others
+        // carry on; its repositories are skipped below.
+        self.state.last_error = if down.is_empty() {
+            None
+        } else {
+            Some(down.join("; "))
+        };
+        let ready: Vec<DriverKind> = self
+            .startup_pending
+            .iter()
+            .copied()
+            .filter(|k| !self.down.contains(k))
+            .collect();
+        if !ready.is_empty() {
+            self.startup_pending.retain(|k| !ready.contains(k));
+            self.resume_interrupted(&ready).await;
         }
         for repo in self.cfg.repos.clone() {
+            if self.driver_down(&repo) {
+                continue;
+            }
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
@@ -585,8 +670,11 @@ are resumed on the first pass that finds it: {err:#}"
     /// its harness to settle. Live sessions are not touched, and a missing
     /// workspace is left to rehydration on the next event rather than
     /// re-created on boot.
-    async fn resume_interrupted(&mut self) {
+    async fn resume_interrupted(&mut self, kinds: &[DriverKind]) {
         for repo in self.cfg.repos.clone() {
+            if self.driver_down(&repo) || !kinds.contains(&self.cfg.driver_for(&repo)) {
+                continue;
+            }
             let candidates = self.resume_candidates(&repo);
             for slot in candidates {
                 let st = self.record(&repo, slot).clone();
@@ -594,7 +682,7 @@ are resumed on the first pass that finds it: {err:#}"
                     continue;
                 };
                 let session = slot_id(&repo.name, slot);
-                match self.orca.worktree_exists(&worktree_id).await {
+                match self.driver(&repo).worktree_exists(&worktree_id).await {
                     Ok(true) => {}
                     Ok(false) => {
                         debug!(session, "workspace is gone; left to rehydration");
@@ -605,7 +693,7 @@ are resumed on the first pass that finds it: {err:#}"
                         continue;
                     }
                 }
-                match self.orca.has_live_agent(&worktree_id).await {
+                match self.driver(&repo).has_live_agent(&worktree_id).await {
                     Ok(true) => {
                         debug!(session, "agent is live; nothing to do");
                         continue;
@@ -1101,7 +1189,11 @@ are resumed on the first pass that finds it: {err:#}"
             };
             let sst = self.record(&srepo, sslot).clone();
             let alive = match sst.worktree_id.as_deref() {
-                Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+                Some(id) => self
+                    .driver(&srepo)
+                    .worktree_exists(id)
+                    .await
+                    .unwrap_or(false),
                 None => false,
             };
             if !sst.active && !alive {
@@ -1206,6 +1298,7 @@ are resumed on the first pass that finds it: {err:#}"
             repo,
             daemon: &self.cfg.daemon,
             bot_login: &self.login,
+            driver: self.cfg.driver_for(repo),
             pr: st.pr.as_ref(),
             triggers: &st.triggers,
             owner: st.shares_workspace_of,
@@ -1592,13 +1685,13 @@ are resumed on the first pass that finds it: {err:#}"
             if again { "bringing back" } else { "starting" }
         );
         let setup = self
-            .orca
+            .driver(repo)
             .ensure_project(
                 owner,
                 name,
                 &repo.clone_url(),
                 repo.path.as_deref(),
-                &self.cfg.projects_dir(),
+                &self.cfg.projects_dir(self.cfg.driver_for(repo)),
             )
             .await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
@@ -1637,7 +1730,7 @@ are resumed on the first pass that finds it: {err:#}"
             relaunch.push_str(&text);
             let d = self.deliver(repo, slot, &text, Some(&relaunch)).await?;
             if let Some(id) = self.record(repo, slot).worktree_id.clone() {
-                let _ = self.orca.set_status(&id, "in-progress").await;
+                let _ = self.driver(repo).set_status(&id, "in-progress").await;
             }
             let e = self.record(repo, slot);
             e.terminal_handle = Some(d.handle);
@@ -1653,7 +1746,7 @@ are resumed on the first pass that finds it: {err:#}"
         // A workspace left from an earlier, unfinished attempt is reused.
         let mut existing: Option<Worktree> = None;
         if let Some(id) = prior.as_ref().and_then(|p| p.worktree_id.clone())
-            && self.orca.worktree_exists(&id).await?
+            && self.driver(repo).worktree_exists(&id).await?
         {
             existing = Some(Worktree {
                 id,
@@ -1697,14 +1790,13 @@ are resumed on the first pass that finds it: {err:#}"
                     &repo.harness_command(),
                     true,
                 );
-                let handle = self
-                    .orca
-                    .launch_in_worktree(&created.id, &cmd, &title, &repo.harness)
-                    .await?;
                 let rst = self.record(repo, slot).clone();
                 let ctx = self.ctx(repo, &rst);
                 let text = prompt::review_prompt(issue, &mine, &ctx);
-                self.orca.send_prompt(&handle, &text).await?;
+                let handle = self
+                    .driver(repo)
+                    .start(&created.id, &cmd, &title, &repo.harness, &text)
+                    .await?;
                 info!(
                     repo = repo.name,
                     issue = number,
@@ -1716,7 +1808,7 @@ are resumed on the first pass that finds it: {err:#}"
             }
         };
         if let Some(id) = self.record(repo, slot).worktree_id.clone() {
-            let _ = self.orca.set_status(&id, "in-progress").await;
+            let _ = self.driver(repo).set_status(&id, "in-progress").await;
         }
         let e = self.record(repo, slot);
         e.terminal_handle = Some(handle);
@@ -1743,7 +1835,7 @@ are resumed on the first pass that finds it: {err:#}"
         number: u64,
         pr: &PrInfo,
     ) -> Result<Worktree> {
-        let main = self.orca.repo_path(repo_id).await?;
+        let main = self.driver(repo).repo_path(repo_id).await?;
         if let Err(e) = git(&main, &["fetch", "origin", &pr.head_ref]).await {
             warn!(
                 repo = repo.name,
@@ -1752,7 +1844,7 @@ are resumed on the first pass that finds it: {err:#}"
             );
         }
         if self
-            .orca
+            .driver(repo)
             .existing_branch_ref(repo_id, &pr.head_ref)
             .await?
             .is_none()
@@ -1764,8 +1856,8 @@ are resumed on the first pass that finds it: {err:#}"
         }
         let base = format!("origin/{}", pr.head_ref);
         let comment = format!("ssf: reviewing PR #{number}");
-        self.orca
-            .create_worktree(repo_id, wt_name, number, None, &comment, Some(&base))
+        self.driver(repo)
+            .create_worktree(repo_id, wt_name, number, &comment, Some(&base))
             .await
     }
 
@@ -1859,7 +1951,7 @@ are resumed on the first pass that finds it: {err:#}"
             "standing the reviewer session down"
         );
         let alive = match rv.worktree_id.as_deref() {
-            Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+            Some(id) => self.driver(repo).worktree_exists(id).await.unwrap_or(false),
             None => false,
         };
         let mut seen = None;
@@ -1897,7 +1989,7 @@ are resumed on the first pass that finds it: {err:#}"
             && alive
             && let Some(id) = &rv.worktree_id
         {
-            let _ = self.orca.set_status(id, "completed").await;
+            let _ = self.driver(repo).set_status(id, "completed").await;
         }
         // A reviewer's workspace is a read-only checkout that never holds
         // work of its own, so it still goes on its own once the agent is
@@ -1944,7 +2036,9 @@ are resumed on the first pass that finds it: {err:#}"
         let e = self.record(repo, slot);
         e.worktree_id = Some(wt.id.clone());
         e.worktree_path = Some(wt.path.clone());
-        e.repo_id = wt.id.split_once("::").map(|(r, _)| r.to_string());
+        if let Some((r, _)) = wt.id.split_once("::") {
+            e.repo_id = Some(r.to_string());
+        }
         if wt.branch.is_some() {
             e.branch = wt.branch.clone();
         }
@@ -1978,13 +2072,13 @@ are resumed on the first pass that finds it: {err:#}"
             "onboarding"
         );
         let setup = self
-            .orca
+            .driver(repo)
             .ensure_project(
                 owner,
                 name,
                 &repo.clone_url(),
                 repo.path.as_deref(),
-                &self.cfg.projects_dir(),
+                &self.cfg.projects_dir(self.cfg.driver_for(repo)),
             )
             .await?;
         let pr = match (is_pr, pr) {
@@ -2091,7 +2185,7 @@ are resumed on the first pass that finds it: {err:#}"
 
         let mut existing: Option<Worktree> = None;
         if let Some(id) = prior.as_ref().and_then(|s| s.worktree_id.clone()) {
-            if self.orca.worktree_exists(&id).await? {
+            if self.driver(repo).worktree_exists(&id).await? {
                 existing = Some(Worktree {
                     id,
                     path: prior
@@ -2104,7 +2198,7 @@ are resumed on the first pass that finds it: {err:#}"
         }
         if existing.is_none() {
             existing = self
-                .orca
+                .driver(repo)
                 .find_worktree_for_issue(&setup.repo_id, issue.number)
                 .await?;
         }
@@ -2123,7 +2217,7 @@ are resumed on the first pass that finds it: {err:#}"
                     "reusing existing workspace"
                 );
                 self.remember_worktree(repo, Slot::Item(issue.number), &wt);
-                let _ = self.orca.set_comment(&wt.id, &comment).await;
+                let _ = self.driver(repo).set_comment(&wt.id, &comment).await;
                 let text = self.initial_text(repo, issue, &mine);
                 let d = self.deliver_to(repo, issue.number, &text, None).await?;
                 d.handle
@@ -2159,12 +2253,11 @@ are resumed on the first pass that finds it: {err:#}"
                     &repo.harness_command(),
                     false,
                 );
-                let handle = self
-                    .orca
-                    .launch_in_worktree(&created.id, &cmd, &title, &repo.harness)
-                    .await?;
                 let text = self.initial_text(repo, issue, &mine);
-                self.orca.send_prompt(&handle, &text).await?;
+                let handle = self
+                    .driver(repo)
+                    .start(&created.id, &cmd, &title, &repo.harness, &text)
+                    .await?;
                 info!(
                     repo = repo.name,
                     issue = issue.number,
@@ -2177,7 +2270,7 @@ are resumed on the first pass that finds it: {err:#}"
             }
         };
         if let Some(id) = self.entry(repo, issue.number).worktree_id.clone() {
-            let _ = self.orca.set_status(&id, "in-progress").await;
+            let _ = self.driver(repo).set_status(&id, "in-progress").await;
         }
 
         let e = self.entry(repo, issue.number);
@@ -2322,7 +2415,7 @@ are resumed on the first pass that finds it: {err:#}"
         let owner = self.owner_of(&prepo, origin.number);
         let ost = self.entry(&prepo, owner).clone();
         let alive = match ost.worktree_id.as_deref() {
-            Some(id) => self.orca.worktree_exists(id).await.unwrap_or(false),
+            Some(id) => self.driver(repo).worktree_exists(id).await.unwrap_or(false),
             None => false,
         };
         if !ost.active && !alive {
@@ -2375,7 +2468,7 @@ are resumed on the first pass that finds it: {err:#}"
         let mut base = repo.base_branch.clone();
         let mut checkout: Option<String> = None;
         if let Some(p) = pr.filter(|p| p.same_repo(&repo.name) && !p.head_ref.is_empty()) {
-            let main = self.orca.repo_path(repo_id).await?;
+            let main = self.driver(repo).repo_path(repo_id).await?;
             if let Err(e) = git(&main, &["fetch", "origin", &p.head_ref]).await {
                 warn!(
                     repo = repo.name,
@@ -2384,7 +2477,7 @@ are resumed on the first pass that finds it: {err:#}"
                 );
             }
             if self
-                .orca
+                .driver(repo)
                 .existing_branch_ref(repo_id, &p.head_ref)
                 .await?
                 .is_some()
@@ -2394,8 +2487,8 @@ are resumed on the first pass that finds it: {err:#}"
             }
         }
         let created = match self
-            .orca
-            .create_worktree(repo_id, wt_name, number, None, comment, base.as_deref())
+            .driver(repo)
+            .create_worktree(repo_id, wt_name, number, comment, base.as_deref())
             .await
         {
             Ok(w) => w,
@@ -2406,12 +2499,11 @@ are resumed on the first pass that finds it: {err:#}"
                     "creating from the PR branch failed ({e:#}); using the default base"
                 );
                 checkout = None;
-                self.orca
+                self.driver(repo)
                     .create_worktree(
                         repo_id,
                         wt_name,
                         number,
-                        None,
                         comment,
                         repo.base_branch.as_deref(),
                     )
@@ -2533,7 +2625,7 @@ are resumed on the first pass that finds it: {err:#}"
             .deliver_to(repo, issue.number, &text, Some(&relaunch_text))
             .await?;
         if let Some(id) = self.entry(repo, issue.number).worktree_id.clone() {
-            let _ = self.orca.set_status(&id, "in-progress").await;
+            let _ = self.driver(repo).set_status(&id, "in-progress").await;
         }
         let e = self.entry(repo, issue.number);
         e.updated_at = Some(issue.updated_at.clone());
@@ -2644,7 +2736,11 @@ are resumed on the first pass that finds it: {err:#}"
         // retrying, and it is not worth rebuilding one just to say goodbye.
         // An owned item's workspace is its owner's.
         let workspace_alive = match self.entry(repo, session).worktree_id.clone() {
-            Some(id) => self.orca.worktree_exists(&id).await.unwrap_or(false),
+            Some(id) => self
+                .driver(repo)
+                .worktree_exists(&id)
+                .await
+                .unwrap_or(false),
             None => false,
         };
         let handle = if workspace_alive {
@@ -2669,7 +2765,7 @@ are resumed on the first pass that finds it: {err:#}"
         let done = closed && workspace_alive && !shared && dependents.is_empty();
         if done {
             if let Some(id) = &st.worktree_id {
-                let _ = self.orca.set_status(id, "completed").await;
+                let _ = self.driver(repo).set_status(id, "completed").await;
             }
         }
         // The workspace stays, whatever state it is in: the agent releases
@@ -2743,7 +2839,7 @@ are resumed on the first pass that finds it: {err:#}"
             "retired session has no open items left; its workspace can be released"
         );
         if let Some(id) = &o.worktree_id {
-            let _ = self.orca.set_status(id, "completed").await;
+            let _ = self.driver(repo).set_status(id, "completed").await;
         }
         let e = self.entry(repo, owner);
         e.retired_at = Some(now_iso());
@@ -2817,7 +2913,7 @@ are resumed on the first pass that finds it: {err:#}"
         };
         let st = self.record(repo, target).clone();
         let alive = match st.worktree_id.as_deref() {
-            Some(id) => self.orca.worktree_exists(id).await?,
+            Some(id) => self.driver(repo).worktree_exists(id).await?,
             None => false,
         };
         if !alive {
@@ -2830,7 +2926,7 @@ are resumed on the first pass that finds it: {err:#}"
             .context("issue has no workspace bound")?;
         let live = alive
             && self
-                .orca
+                .driver(repo)
                 .has_live_agent(&worktree_id)
                 .await
                 .unwrap_or(false);
@@ -2864,16 +2960,18 @@ are resumed on the first pass that finds it: {err:#}"
             reviewer,
         );
         let d = self
-            .orca
+            .driver(repo)
             .deliver(
                 &worktree_id,
                 st.terminal_handle.as_deref(),
-                &relaunch,
-                resume.as_deref(),
-                &repo.harness,
-                &title,
+                Relaunch {
+                    command: &relaunch,
+                    resume_command: resume.as_deref(),
+                    harness: &repo.harness,
+                    title: &title,
+                    text: relaunch_text,
+                },
                 text,
-                relaunch_text,
             )
             .await?;
         if d.relaunched {
@@ -2910,19 +3008,23 @@ are resumed on the first pass that finds it: {err:#}"
             Some(r) => r,
             None => {
                 let (owner, name) = repo.split()?;
-                self.orca
+                self.driver(repo)
                     .ensure_project(
                         owner,
                         name,
                         &repo.clone_url(),
                         repo.path.as_deref(),
-                        &self.cfg.projects_dir(),
+                        &self.cfg.projects_dir(self.cfg.driver_for(repo)),
                     )
                     .await?
                     .repo_id
             }
         };
-        if let Some(existing) = self.orca.find_worktree_for_issue(&repo_id, number).await? {
+        if let Some(existing) = self
+            .driver(repo)
+            .find_worktree_for_issue(&repo_id, number)
+            .await?
+        {
             info!(
                 repo = repo.name,
                 issue = number,
@@ -2942,7 +3044,7 @@ are resumed on the first pass that finds it: {err:#}"
         let mut base = repo.base_branch.clone();
         if let Some(branch) = st.branch.as_deref() {
             let short = branch.strip_prefix("refs/heads/").unwrap_or(branch);
-            match self.orca.existing_branch_ref(&repo_id, short).await {
+            match self.driver(repo).existing_branch_ref(&repo_id, short).await {
                 Ok(Some(r)) => base = Some(r),
                 Ok(None) => debug!(
                     repo = repo.name,
@@ -2965,8 +3067,8 @@ are resumed on the first pass that finds it: {err:#}"
             "re-creating workspace"
         );
         let created = match self
-            .orca
-            .create_worktree(&repo_id, &name, number, None, &comment, base.as_deref())
+            .driver(repo)
+            .create_worktree(&repo_id, &name, number, &comment, base.as_deref())
             .await
         {
             Ok(w) => w,
@@ -2976,12 +3078,11 @@ are resumed on the first pass that finds it: {err:#}"
                     issue = number,
                     "re-create from old branch failed ({e:#}); using default base"
                 );
-                self.orca
+                self.driver(repo)
                     .create_worktree(
                         &repo_id,
                         &name,
                         number,
-                        None,
                         &comment,
                         repo.base_branch.as_deref(),
                     )
@@ -3023,13 +3124,13 @@ are resumed on the first pass that finds it: {err:#}"
         let repo_id = match st.repo_id.clone() {
             Some(r) => r,
             None => {
-                self.orca
+                self.driver(repo)
                     .ensure_project(
                         owner,
                         name,
                         &repo.clone_url(),
                         repo.path.as_deref(),
-                        &self.cfg.projects_dir(),
+                        &self.cfg.projects_dir(self.cfg.driver_for(repo)),
                     )
                     .await?
                     .repo_id
@@ -3038,7 +3139,10 @@ are resumed on the first pass that finds it: {err:#}"
         // The PR's own record may have a workspace linked to the same number
         // (a PR onboarded on its own); anything else linked to it is ours.
         let own = self.entry(repo, number).worktree_id.clone();
-        if let Some(existing) = self.orca.find_worktree_for_issue(&repo_id, number).await?
+        if let Some(existing) = self
+            .driver(repo)
+            .find_worktree_for_issue(&repo_id, number)
+            .await?
             && own.as_deref() != Some(existing.id.as_str())
         {
             info!(
@@ -3156,7 +3260,7 @@ are resumed on the first pass that finds it: {err:#}"
                 self.record(repo, slot).cleanup_pending = false;
                 continue;
             };
-            let exists = self.orca.worktree_exists(&id).await.unwrap_or(true);
+            let exists = self.driver(repo).worktree_exists(&id).await.unwrap_or(true);
             let grace = Duration::from_secs(self.cfg.daemon.cleanup_grace_secs);
             let retired = st
                 .retired_at
@@ -3172,7 +3276,7 @@ are resumed on the first pass that finds it: {err:#}"
                 // Give the reviewer its wrap-up time; a session id must be
                 // known so the conversation can be resumed later, unless
                 // we've waited long enough anyway.
-                let busy = self.orca.agent_busy(&id).await.unwrap_or(false);
+                let busy = self.driver(repo).agent_busy(&id).await.unwrap_or(false);
                 let resumable =
                     st.agent_session_id.is_some() || !sessions::supports_resume(&repo.harness);
                 if (busy || !resumable) && !overdue {
@@ -3185,7 +3289,7 @@ are resumed on the first pass that finds it: {err:#}"
                     );
                     continue;
                 }
-                match self.orca.remove_worktree(&id).await {
+                match self.driver(repo).remove_worktree(&id).await {
                     Ok(()) => info!(
                         repo = repo.name,
                         session = slot_id(&repo.name, slot),
@@ -3219,7 +3323,7 @@ are resumed on the first pass that finds it: {err:#}"
             self.mark_released(repo, st.number);
             return;
         };
-        if !self.orca.worktree_exists(&id).await.unwrap_or(true) {
+        if !self.driver(repo).worktree_exists(&id).await.unwrap_or(true) {
             info!(session, "workspace is already gone");
             self.mark_released(repo, st.number);
             return;
@@ -3251,7 +3355,7 @@ are resumed on the first pass that finds it: {err:#}"
                 return;
             }
         }
-        match self.orca.remove_worktree(&id).await {
+        match self.driver(repo).remove_worktree(&id).await {
             Ok(()) => {
                 info!(session, worktree = id, "released the workspace");
                 self.mark_released(repo, st.number);
@@ -3294,7 +3398,7 @@ are resumed on the first pass that finds it: {err:#}"
         // Only an agent that is there hears about it; a refusal is not
         // worth starting a harness for.
         let live = match st.worktree_id.as_deref() {
-            Some(id) => self.orca.has_live_agent(id).await.unwrap_or(false),
+            Some(id) => self.driver(repo).has_live_agent(id).await.unwrap_or(false),
             None => false,
         };
         if !live {
@@ -3396,7 +3500,12 @@ are resumed on the first pass that finds it: {err:#}"
         };
         // Orca not answering is not a reason to refuse: the pass checks
         // again before removing anything.
-        if !self.orca.worktree_exists(&wid).await.unwrap_or(true) {
+        if !self
+            .driver(&repo)
+            .worktree_exists(&wid)
+            .await
+            .unwrap_or(true)
+        {
             self.mark_released(&repo, number);
             return Ok(serde_json::json!({
                 "session": id, "title": st.title, "released": true, "already_gone": true,
@@ -3485,7 +3594,7 @@ are resumed on the first pass that finds it: {err:#}"
                     "removed": false,
                     "release_given_up": st.release_refusals >= MAX_RELEASE_REFUSALS,
                 });
-                if !self.orca.worktree_exists(&id).await? {
+                if !self.driver(&repo).worktree_exists(&id).await? {
                     row["state"] = "already gone".into();
                     if !dry_run {
                         self.mark_released(&repo, st.number);
@@ -3494,7 +3603,7 @@ are resumed on the first pass that finds it: {err:#}"
                     rows.push(row);
                     continue;
                 }
-                if self.orca.has_live_agent(&id).await.unwrap_or(true) {
+                if self.driver(&repo).has_live_agent(&id).await.unwrap_or(true) {
                     row["state"] = "agent running".into();
                     rows.push(row);
                     continue;
@@ -3513,7 +3622,7 @@ are resumed on the first pass that finds it: {err:#}"
                 row["state"] = state.into();
                 row["problems"] = problems.into();
                 if !dry_run && (safe || force) {
-                    match self.orca.remove_worktree(&id).await {
+                    match self.driver(&repo).remove_worktree(&id).await {
                         Ok(()) => {
                             info!(
                                 session,
@@ -3684,15 +3793,37 @@ mod tests {
         Engine {
             cfg: Config::default(),
             gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
-            orca: Orca::new(crate::config::OrcaConfig {
-                command: "/nonexistent/orca-for-ssf-tests".into(),
-                ..Default::default()
-            }),
+            drivers: Drivers::from_list(vec![Driver::Orca(crate::orca::Orca::new(
+                crate::config::OrcaConfig {
+                    command: "/nonexistent/orca-for-ssf-tests".into(),
+                    ..Default::default()
+                },
+            ))]),
+            down: Vec::new(),
             login: "bot".into(),
             state: State::default(),
             failures: BTreeMap::new(),
-            startup_pass_pending: false,
+            startup_pending: Vec::new(),
         }
+    }
+
+    #[test]
+    fn drivers_follow_the_config() {
+        let mut e = engine();
+        let orca = repo();
+        let mut herdr = repo();
+        herdr.name = "o/h".into();
+        herdr.driver = Some(DriverKind::Herdr);
+        e.cfg.repos = vec![orca.clone(), herdr.clone()];
+        // What a reloaded config that added a herdr repo does.
+        e.sync_drivers();
+        assert_eq!(e.driver(&orca).kind(), DriverKind::Orca);
+        assert_eq!(e.driver(&herdr).kind(), DriverKind::Herdr);
+        // And the other way: the default switched, Orca no longer used.
+        e.cfg.driver = DriverKind::Herdr;
+        e.cfg.repos = vec![herdr.clone()];
+        e.sync_drivers();
+        assert_eq!(e.drivers.kinds(), vec![DriverKind::Herdr]);
     }
 
     fn repo() -> RepoConfig {

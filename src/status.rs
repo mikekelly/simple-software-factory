@@ -9,15 +9,16 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::config::{Config, RepoConfig};
+use crate::config::{Config, DriverKind, RepoConfig};
+use crate::driver::Drivers;
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
-use crate::orca::{Orca, WorkspaceInfo};
+use crate::orca::WorkspaceInfo;
 use crate::state::{IssueState, State};
 
-/// How long `ssf status` waits for Orca before reporting it unavailable; the
-/// bar widget polls this, so it must never hang.
-const ORCA_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long `ssf status` waits for a driver before reporting it unavailable;
+/// the bar widget polls this, so it must never hang.
+const DRIVER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Session identity: `owner/repo#N`, the same form `--as` takes.
 pub fn session_id(repo: &str, number: u64) -> String {
@@ -135,27 +136,62 @@ impl Session {
 pub struct Snapshot {
     pub cfg: Config,
     pub state: State,
-    /// Orca's workspaces, or why they could not be listed.
-    pub orca: Result<Vec<WorkspaceInfo>, String>,
+    /// The workspaces of every driver that answered.
+    pub workspaces: Vec<WorkspaceInfo>,
+    /// Drivers that did not answer; their sessions' agent states are
+    /// unknown, the others' are not affected.
+    pub down: Vec<DriverKind>,
+    pub errors: Vec<String>,
 }
 
 impl Snapshot {
     pub async fn collect(cfg: Config) -> anyhow::Result<Self> {
         let state = State::load()?;
-        let orca = Orca::new(cfg.orca.clone());
-        let orca = match tokio::time::timeout(ORCA_TIMEOUT, orca.ps()).await {
-            Ok(Ok(list)) => Ok(list),
-            Ok(Err(e)) => Err(format!("{e:#}")),
-            Err(_) => Err(format!(
-                "orca worktree ps did not answer within {}s",
-                ORCA_TIMEOUT.as_secs()
-            )),
-        };
-        Ok(Self { cfg, state, orca })
+        let mut workspaces = Vec::new();
+        let mut errors = Vec::new();
+        let mut down = Vec::new();
+        for d in Drivers::from_config(&cfg).iter() {
+            match tokio::time::timeout(DRIVER_TIMEOUT, d.ps()).await {
+                Ok(Ok(list)) => workspaces.extend(list),
+                Ok(Err(e)) => {
+                    down.push(d.kind());
+                    errors.push(format!("{}: {e:#}", d.label()));
+                }
+                Err(_) => {
+                    down.push(d.kind());
+                    errors.push(format!(
+                        "{} did not answer within {}s",
+                        d.label(),
+                        DRIVER_TIMEOUT.as_secs()
+                    ));
+                }
+            }
+        }
+        Ok(Self {
+            cfg,
+            state,
+            workspaces,
+            down,
+            errors,
+        })
+    }
+
+    /// Every driver in use answered.
+    pub fn available(&self) -> bool {
+        self.down.is_empty()
+    }
+
+    /// Why some driver did not answer, if one did not.
+    pub fn error(&self) -> Option<String> {
+        if self.errors.is_empty() {
+            None
+        } else {
+            Some(self.errors.join("; "))
+        }
     }
 
     pub fn sessions(&self) -> Vec<Session> {
-        sessions(&self.cfg, &self.state, self.orca.as_deref().ok())
+        sessions_with(&self.cfg, &self.state, &self.workspaces, &self.down)
     }
 
     pub fn to_json(&self) -> Value {
@@ -185,10 +221,12 @@ impl Snapshot {
             "last_error": self.state.last_error,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
             "config_path": crate::config::config_path(),
+            // Keyed `orca` from when it was the only driver; the widget reads it.
             "orca": {
-                "available": self.orca.is_ok(),
-                "error": self.orca.as_ref().err(),
-                "workspaces": self.orca.as_ref().map(Vec::len).unwrap_or(0),
+                "available": self.available(),
+                "error": self.error(),
+                "workspaces": self.workspaces.len(),
+                "down": self.down.iter().map(|k| k.id()).collect::<Vec<_>>(),
             },
             "sessions": sessions,
             "repos": repos,
@@ -196,11 +234,31 @@ impl Snapshot {
     }
 }
 
-/// Join every tracked item with its Orca workspace. `workspaces` is `None`
-/// when Orca could not be asked.
+/// Join every tracked item with its workspace. `workspaces` is `None`
+/// when no driver could be asked.
+#[cfg(test)]
 pub fn sessions(cfg: &Config, state: &State, workspaces: Option<&[WorkspaceInfo]>) -> Vec<Session> {
+    match workspaces {
+        Some(list) => sessions_with(cfg, state, list, &[]),
+        None => sessions_with(cfg, state, &[], &DriverKind::ALL),
+    }
+}
+
+/// [`sessions`] for a mixed set of drivers: the repositories of a driver in
+/// `down` get no workspace data (agent state unknown), the others do.
+pub fn sessions_with(
+    cfg: &Config,
+    state: &State,
+    list: &[WorkspaceInfo],
+    down: &[DriverKind],
+) -> Vec<Session> {
     let mut out = Vec::new();
     for repo in &cfg.repos {
+        let workspaces = if down.contains(&cfg.driver_for(repo)) {
+            None
+        } else {
+            Some(list)
+        };
         let Some(rs) = state.repos.get(&repo.name) else {
             continue;
         };
@@ -520,9 +578,12 @@ pub fn render_status(snap: &Snapshot) -> String {
     if let Some(e) = &st.last_error {
         out.push_str(&format!("error:   {e}\n"));
     }
-    match &snap.orca {
-        Ok(list) => out.push_str(&format!("orca:    {} workspaces\n", list.len())),
-        Err(e) => out.push_str(&format!("orca:    unavailable ({e})\n")),
+    match snap.error() {
+        None => out.push_str(&format!("driver:  {} workspaces\n", snap.workspaces.len())),
+        Some(e) => out.push_str(&format!(
+            "driver:  {} workspaces; unavailable: {e}\n",
+            snap.workspaces.len()
+        )),
     }
     out.push_str(&format!(
         "config:  {}\n",
@@ -781,7 +842,9 @@ mod tests {
         let snap = Snapshot {
             cfg: cfg(),
             state: state_with(vec![item(1, Some("r1::/w/one"))]),
-            orca: Err("not running".into()),
+            workspaces: Vec::new(),
+            down: vec![DriverKind::Orca],
+            errors: vec!["not running".into()],
         };
         let v = snap.to_json();
         assert_eq!(v["orca"]["available"], false);

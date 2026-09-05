@@ -7,10 +7,12 @@ its own agent. The agents know about each other, about the project board, and
 about the notes your repository keeps for them.
 
 ssf is a small daemon for [Omarchy](https://omarchy.org/). It runs the
-agents in [Orca](https://onorca.dev/), so you can watch them work, take
-over, or nudge them at any time. Nothing runs in the cloud: the daemon
-polls GitHub and drives Orca, and the agents are the ones you already have
-installed (Claude Code, Codex, ...).
+agents in [Orca](https://onorca.dev/) by default, or in
+[herdr](https://herdr.dev/), so you can watch them work, take over, or
+nudge them at any time (see [Drivers](#drivers-orca-and-herdr)). Nothing
+runs in the cloud: the daemon polls GitHub and drives the multiplexer, and
+the agents are the ones you already have installed (Claude Code, Codex,
+...).
 
 ## One issue, start to finish
 
@@ -162,7 +164,7 @@ by a person.
   typed straight into an agent's terminal, kept for nudges that would be
   noise on the item.
 - **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
-  in Orca, and starts the agents you have installed, with the bot's
+  in Orca (or herdr), and starts the agents you have installed, with the bot's
   credentials, so what the agents do on GitHub is done as the bot (see
   [Notes and limitations](#notes-and-limitations-v1) for what that does
   and does not isolate).
@@ -170,8 +172,9 @@ by a person.
 ## How it works
 
 Every few seconds ssf asks GitHub for the open issues and pull requests that
-involve the bot. For a new one it creates a workspace in Orca, checked out on
-a branch for the issue (or on the pull request's branch, so pushes update
+involve the bot. For a new one it creates a workspace (in Orca or in herdr,
+depending on the [driver](#drivers-orca-and-herdr)), checked out on a
+branch for the issue (or on the pull request's branch, so pushes update
 the pull request), and starts the agent there with the whole story so far.
 From then on every new comment, review, label or push on the item is pasted
 into that agent's terminal as a message: it steers the agent if it is busy
@@ -187,8 +190,10 @@ configuration, and how the pieces above are put together.
 ## Install
 
 ssf runs on [Omarchy](https://omarchy.org/). Install
-[Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in. Then build and
-install ssf from this checkout:
+[Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in, or install
+[herdr](https://herdr.dev/) and set `driver = "herdr"` (see
+[Drivers](#drivers-orca-and-herdr)). Then build and install ssf from this
+checkout:
 
 ```sh
 cd packaging && makepkg -si
@@ -348,8 +353,11 @@ instructions = "Run `make test` before opening a PR."
 |-----|---------|---------|
 | `github.api_url` | `https://api.github.com` | GitHub Enterprise: `https://ghe.example.com/api/v3` |
 | `github.login`, `github.email`, `github.ssh_key_path` | set by `ssf auth login` | The bot's identity and key; edit `email` if the bot has a public address |
+| `driver` | `orca` | What runs the agents: `orca` or `herdr` (see [Drivers](#drivers-orca-and-herdr)) |
 | `orca.command` | `/usr/lib/orca-ide/bin/orca-ide` | Orca CLI binary (`/usr/bin/orca-ide` launches the app, not the CLI) |
 | `orca.projects_dir` | `~/orca/projects` | Where repositories are cloned when Orca has no project for them |
+| `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
+| `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
 | `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](#workspaces-after-close-release-and-purge)); still accepted so old files load |
@@ -358,6 +366,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#under-the-hood)) |
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
+| `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
 | `repo.command` | the agent id | Command that starts the agent, e.g. `claude --dangerously-skip-permissions` |
 | `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
 | `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
@@ -366,7 +375,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories |
 
 Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
-`ORCA_CLI_COMMAND`, `RUST_LOG`.
+`ORCA_CLI_COMMAND`, `HERDR_COMMAND`, `RUST_LOG`.
 
 ### The per-project prompt file
 
@@ -421,6 +430,51 @@ effort levels must be ones the agent accepts. Changing the agent of a
 repository resets both, since the ids belong to the agent. Keep
 `--model`/`--effort` out of `repo.command` when you set them here, or the
 agent sees the flag twice.
+
+## Drivers: Orca and herdr
+
+The daemon does not care what holds the agents' terminals. Everything it
+asks for (a checkout of the repository, a workspace per item on the item's
+branch, starting the agent there, pasting a message in, whether the agent
+is still there or busy, removing the workspace) goes through a *driver*,
+and there are two. The `driver` key picks the default for the whole
+instance; a `[[repo]]` can set its own, so one daemon can run some
+repositories in Orca and others in herdr. `ssf doctor` checks every driver
+in use. A pass skips the repositories of a driver that is not answering
+while the others carry on; the outage shows as the error in `ssf status`,
+and that driver's sessions show an unknown agent state until it answers
+(the other driver's are reported as usual). The startup pass runs per
+driver, on the first pass that finds that driver ready. Cloud-hosted agent
+sessions are not a driver yet; they need a different shape (no local
+terminal, no local `ssf`) and are tracked in
+[#49](https://github.com/mikekelly/simple-software-factory/issues/49).
+
+**`orca`** (the default) is the Orca desktop app and its CLI, as described
+throughout this file: Orca keeps the projects, worktrees are linked to the
+issue number, terminals belong to the workspace, and the bar widget's
+"open workspace" goes there.
+
+**`herdr`** is the [herdr](https://herdr.dev/) terminal workspace manager
+(a herdr session has to be running). ssf clones the repository itself under
+`herdr.projects_dir` (or uses `repo.path`), makes a git worktree per item
+in `<name>.worktrees/` next to the clone, opens it as a herdr workspace
+and runs the agent in the workspace's root pane through the same
+`ssf launch` wrapper as with Orca, so the bot identity, the `gh` shim and
+the `ssf` commands all work. herdr recognises the agent in the pane and
+reports its state (`idle`, `working`, `blocked`, `done`); messages go in
+with `herdr agent prompt`, which pastes and submits them. Claude Code's
+folder-trust question is answered on start. herdr keeps no link between a
+workspace and an issue, so ssf finds a workspace it lost track of by the
+worktree's name (`issue-N-...`), and remembers a workspace as herdr's id
+plus the checkout it was opened on (`w7@/path`), so a workspace id that
+herdr has since given to something else is treated as gone rather than
+prompted or removed. herdr also opens one workspace for the clone itself
+the first time it opens a worktree of it; that one is left alone. Clicking
+a session in the bar widget focuses its herdr workspace. herdr can only run
+the agents it recognises in a pane (`herdr agent start --help` lists them;
+`crush` from `ssf agents` is not among them in herdr 0.8.2); `ssf repo add
+--driver herdr` warns when the harness is not on that list, and a start
+with one that is not gives up after `herdr.tui_idle_timeout_ms`.
 
 ## What the agent is told
 
@@ -842,9 +896,10 @@ The details behind [How it works](#how-it-works).
   rendered like issue activity. A PR from a fork gets a workspace on the base
   branch and the agent is told it cannot push to the fork.
 - **One workspace per issue.** The binding lives in
-  `~/.local/state/ssf/state.json` and is also recoverable from Orca (the
-  worktree is linked to the issue number), so a lost state file re-attaches
-  instead of creating a second workspace.
+  `~/.local/state/ssf/state.json` and is also recoverable from the driver
+  (Orca links the worktree to the issue number; the others name it after
+  it), so a lost state file re-attaches instead of creating a second
+  workspace.
 - **Delivery into the agent's terminal.** Messages are pasted with bracketed
   paste so multi-line text arrives as one message, then Enter. Claude Code
   queues it as a steering message while busy, or runs it when idle.
@@ -900,9 +955,11 @@ The details behind [How it works](#how-it-works).
   context instead.
 - One agent per issue; a second assignee is not coordinated with. A session
   owns what it opens only within its own repository.
-- `ssf status` asks Orca for the workspace list on every call (a few hundred
-  milliseconds); when Orca is not running the ssf side is still reported and
-  agent states show as unknown.
+- `ssf status` asks every driver in use for its workspace list on every call
+  (a few hundred milliseconds); when a driver is not running the ssf side is
+  still reported and its sessions' agent states show as unknown. The JSON
+  keeps the `orca` key (`available`, `error`, `workspaces`, now with `down`)
+  for the bar widget, whichever drivers are in use.
 - The bar widget and menu entries are installed per user on first service
   start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
 - Logs: `journalctl --user -fu ssf.service`.

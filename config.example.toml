@@ -11,12 +11,22 @@
 # ssh_key_id = 0
 # signing_key_id = 0
 
+# What runs the agents: "orca" (default) or "herdr". A [[repo]] can pick
+# its own with `driver = "..."`.
+# driver = "orca"
+
 [orca]
 # command = "/usr/lib/orca-ide/bin/orca-ide"   # the Orca CLI (not /usr/bin/orca-ide, which launches the app)
 # host = "local"
 # projects_dir = "~/orca/projects"             # where repos are cloned when Orca has no project yet
 # setup_timeout_secs = 900
 # tui_idle_timeout_ms = 90000
+
+[herdr]
+# command = "herdr"                            # the herdr CLI; a herdr session must be running
+# projects_dir = "~/ssf/projects"              # ssf clones repos here; worktrees go in <name>.worktrees/ next to the clone
+# tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
+
 
 [daemon]
 # poll_interval_secs = 10
@@ -36,11 +46,12 @@
 [[repo]]
 name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
+# driver = "herdr"                             # orca | herdr (default: the top-level `driver`)
 # command = "claude --dangerously-skip-permissions"   # how the agent is started (default: the harness id); run via `ssf launch`
 # model = "opus"                               # Orca model id, or provider/model for pi/omp/opencode (see `ssf models <agent>`)
 # effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
-# path = "~/code/name"                         # register an existing checkout instead of cloning
+# path = "~/code/name"                         # use an existing checkout instead of cloning
 # base_branch = "origin/main"
 # instructions = "Run `make test` before opening a PR."
 # prompt_file = "SSF.md"                       # file appended to the initial prompt (see SSF.example.md); relative to the worktree unless absolute
