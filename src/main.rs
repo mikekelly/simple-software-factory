@@ -1778,7 +1778,7 @@ async fn doctor() -> Result<()> {
             "every post by the bot carried an origin tag".to_string()
         } else {
             format!(
-                "{} post(s) by the bot arrived without an origin tag (gh shim not in effect): {}",
+                "{} post(s) by the bot arrived without an origin tag (a person posting as the bot, or the gh shim not in effect): {}",
                 untagged.len(),
                 untagged
                     .iter()

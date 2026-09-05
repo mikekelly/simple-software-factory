@@ -1319,8 +1319,9 @@ are resumed on the first pass that finds it: {err:#}"
     }
 
     /// Parse origin tags out of the item body and its timeline, and flag posts
-    /// by the bot that carry none: the gh shim was not in effect in whichever
-    /// session made them, so nothing can tell which session that was.
+    /// by the bot that carry none: a person typed them as the bot, or the gh
+    /// shim was not in effect in whichever session made them, and nothing
+    /// can tell which.
     fn record_origins(
         &mut self,
         repo: &RepoConfig,
@@ -1336,7 +1337,7 @@ are resumed on the first pass that finds it: {err:#}"
                     repo = repo.name,
                     issue = issue.number,
                     url,
-                    "post by @{login} without an origin tag (gh shim not in effect)"
+                    "post by @{login} without an origin tag (a person, or the gh shim not in effect)"
                 );
             }
         }

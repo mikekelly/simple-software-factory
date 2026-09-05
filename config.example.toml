@@ -20,7 +20,7 @@
 
 [daemon]
 # poll_interval_secs = 10
-# include_own_events = false                   # deliver the bot's own comments back to the agent
+# include_own_events = false                   # deliver the bot's own commits/cross-references and each session's posts back to it
 # ignored_events = ["mentioned", "subscribed", "unsubscribed"]
 # max_body_chars = 8000
 # instructions = """

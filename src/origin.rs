@@ -276,7 +276,7 @@ pub fn strip(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut last = 0;
     let mut line_cut = false;
-    let mut push = |out: &mut String, chunk: &str, line_cut: bool| {
+    let push = |out: &mut String, chunk: &str, line_cut: bool| {
         // Text that followed a tag at the start of its line loses the
         // space that separated them.
         out.push_str(if line_cut {

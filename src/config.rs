@@ -135,8 +135,10 @@ fn default_tui_timeout() -> u64 {
 pub struct DaemonConfig {
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
-    /// Deliver events performed by the bot account itself (normally noise:
-    /// the agent's own comments would be echoed back to it).
+    /// Deliver the bot account's own commits and cross-references too
+    /// (normally noise), and every session's posts back to it. The bot's
+    /// comments are otherwise sorted per session by their origin tag, and
+    /// untagged ones (a person typing as the bot) are always delivered.
     #[serde(default)]
     pub include_own_events: bool,
     /// Timeline event types that are never delivered.

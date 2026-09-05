@@ -629,9 +629,16 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let kind = ctx.kind();
     let because = ctx.because();
-    let tag = origin::Origin::new(repo, n)
-        .map(|o| o.tag())
-        .unwrap_or_else(|| format!("<!-- ssf: origin={repo}#{n} -->"));
+    let (line, elsewhere) = match origin::Origin::new(repo, n) {
+        Some(o) => (
+            o.first_line(Some(repo), false, false),
+            o.byline(None, false),
+        ),
+        None => (
+            format!("{}#{n} <!-- ssf: origin={repo}#{n} -->", origin::ROBOT),
+            format!("{}{repo}#{n}", origin::ROBOT),
+        ),
+    };
     let mut s = format!(
         "\n## How to work on this\n\n\
 You are the coding agent for the GitHub bot account @{bot}. Simple Software Factory (ssf) \
@@ -644,10 +651,12 @@ credential helper are set, so plain `gh` and `git push` act as @{bot}, and commi
 and signed as @{bot}. `SSF_REPO` and `SSF_ISSUE` name this {kind}. Only ever act as @{bot}: \
 never use another GitHub account, token or key you find on this machine, even if @{bot} lacks a \
 permission; say so on the {kind} instead.\n\
-- Every comment, review and pull request you post must end with the line `{tag}`; it tells ssf \
-which session posted it. The `gh` on this PATH adds it when you pass `--body` or `--body-file` \
-to `issue create|comment` or `pr create|comment|review`; add it yourself when you post any other \
-way (`gh api`, `gh pr create --fill`, `gh pr edit --body`, ...).\n"
+- Every comment, review and pull request you post must start with the line `{line}` (`{elsewhere}` \
+for `{}` on another repository) and a blank line; it tells readers and ssf which session posted \
+it. The `gh` on this PATH adds it when you pass `--body` or `--body-file` to \
+`issue create|comment` or `pr create|comment|review`; add it yourself when you post any other way \
+(`gh api`, `gh pr create --fill`, `gh pr edit --body`, ...).\n",
+        format!("{}#{n}", origin::ROBOT)
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -1120,9 +1129,14 @@ fn review_instructions(issue: &Issue, ctx: &PromptContext) -> String {
         Some(o) => crate::status::session_id(repo, o),
         None => format!("{repo}#{n}"),
     };
-    let tag = origin::Origin::new(repo, n)
-        .map(|o| o.reviewer_tag())
-        .unwrap_or_else(|| format!("<!-- ssf: origin={repo}#{n} role=reviewer -->"));
+    let line = origin::Origin::new(repo, n)
+        .map(|o| o.first_line(Some(repo), false, true))
+        .unwrap_or_else(|| {
+            format!(
+                "{}#{n} (reviewer) <!-- ssf: origin={repo}#{n} role=reviewer -->",
+                origin::ROBOT
+            )
+        });
     let (head, base) = match ctx.pr {
         Some(pr) => (pr.head_ref.clone(), pr.base_ref.clone()),
         None => ("the PR branch".to_string(), "the base branch".to_string()),
@@ -1154,10 +1168,10 @@ for again, when you get a message here with what happened since.\n\
 - `GH_TOKEN` and `GITHUB_TOKEN` are set, so plain `gh` commands act as @{bot}. `SSF_REPO` and \
 `SSF_ISSUE` name this pull request and `SSF_ROLE` is `reviewer`. Only ever act as @{bot}: never \
 use another GitHub account, token or key you find on this machine.\n\
-- Every review and comment you post must end with the line `{tag}`; it tells ssf it came from \
-the reviewer session and not from the author's. The `gh` on this PATH adds it when you pass \
-`--body` or `--body-file` to `pr review` or `pr comment`; add it yourself when you post any \
-other way (`gh api`, ...).\n\
+- Every review and comment you post must start with the line `{line}`, then a blank line: it \
+shows readers, and tells ssf, that it came from the reviewer session and not from the author's. \
+The `gh` on this PATH adds it when you pass `--body` or `--body-file` to `pr review` or \
+`pr comment`; add it yourself when you post any other way (`gh api`, ...).\n\
 - The author's session receives your review as activity and answers on the pull request; its \
 replies reach you here, marked \"from the agent on {author}\". To speak to it, comment on the \
 pull request. `ssf guide` explains the rest: other sessions, `ssf tell`, following items.\n"
@@ -1321,14 +1335,18 @@ starts a separate reviewer session for it (a read-only checkout of the pull requ
 own agent, `owner/repo#P:reviewer` in `ssf peers`), and its review arrives here as activity, \
 marked \"from the reviewer session on owner/repo#P\". Answer it and push fixes as you would \
 for a human reviewer; when you want another look, {ask_again}.\n\n\
-## The origin tag\n\n\
+## The byline and origin tag\n\n\
 GitHub shows the same bot for every session, so every comment, review and pull request a \
-session posts ends with `<!-- ssf: origin=owner/repo#N -->` (`role=reviewer` added in a \
-reviewer session, `mode=delegate` on a hand-off). The `gh` on the session's PATH adds it when \
-`--body` or `--body-file` is passed to `issue create|comment` or `pr create|comment|review`; \
-any other way of posting (`gh api`, `gh pr create --fill`, `gh pr edit --body`, ...) needs the \
-tag added by hand, on the last line of the body. A tag inside a code block or a quote is \
-content and is ignored.\n"
+session posts starts with one line that is both a byline for people and a tag for ssf: \
+`🤖#N <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N` when the post is on another \
+repository; `🤖#N (reviewer)` and `role=reviewer` from a reviewer session; `mode=delegate` on \
+a hand-off), then a blank line. GitHub links the byline to the session's item. The `gh` on the \
+session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
+or `pr create|comment|review`; any other way of posting (`gh api`, `gh pr create --fill`, \
+`gh pr edit --body`, ...) needs it added by hand, as the first line of the body. A tag \
+anywhere else, in a code block, a quote or at the end, is content and is ignored. A post by \
+@{bot} without the line was typed by a person using the bot account; it reaches you marked \
+\"(not from a session)\" and is a human's.\n"
     )
 }
 
@@ -1469,7 +1487,7 @@ mod tests {
         assert!(p.contains("Closes #3"));
         assert!(p.contains("it was assigned to @bot"));
         assert!(p.contains("GH_TOKEN"));
-        assert!(p.contains("`<!-- ssf: origin=o/r#3 -->`"));
+        assert!(p.contains("must start with the line `🤖#3 <!-- ssf: origin=o/r#3 -->` (`🤖o/r#3` for `🤖#3` on another repository) and a blank line"), "{p}");
         assert!(p.contains("Only ever act as @bot"));
         assert!(p.contains("other sessions' branches and workspaces are not yours to touch"));
         assert!(p.contains("Do not close the issue yourself"));
@@ -1834,7 +1852,7 @@ mod tests {
         assert!(p.contains("git diff origin/main...origin/bot/fix"));
         assert!(p.contains("git reset --hard origin/bot/fix"));
         assert!(p.contains("gh pr review 4 --repo o/r --approve|--request-changes|--comment"));
-        assert!(p.contains("`<!-- ssf: origin=o/r#4 role=reviewer -->`"));
+        assert!(p.contains("must start with the line `🤖#4 (reviewer) <!-- ssf: origin=o/r#4 role=reviewer -->`"), "{p}");
         assert!(p.contains("`SSF_ROLE` is `reviewer`"));
         assert!(p.contains("marked \"from the agent on o/r#3\""));
         assert!(p.contains("To speak to it, comment on the pull request."));
