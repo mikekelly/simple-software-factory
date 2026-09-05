@@ -469,9 +469,10 @@ prompt lists them under a "Project boards" heading: each board's name and URL,
 the card's current Status, the Status options the board offers, and the
 `gh project item-edit` command (with the project, item, field and option ids
 filled in) that changes it. The agent is told to keep the card's Status
-accurate and that which column fits is its call. ssf itself never moves cards and prescribes no mapping
-from events to columns; put any repository-specific conventions about columns
-in the per-repository instructions. The lookup is one GraphQL query per
+accurate and that which column fits is its call. ssf itself never moves
+cards and prescribes no mapping from events to columns; put any
+repository-specific conventions about columns in the per-repository
+instructions. The lookup is one GraphQL query per
 onboarding and delivery, using the bot token's `project` scope; if it fails
 the prompt simply carries no boards section and the daemon logs why. Closed
 boards are left out.
@@ -682,9 +683,8 @@ says so).
 The reviewer lives as long as the request: while the label is on the PR (or
 the bot is a requested reviewer), new activity on the PR (pushes, replies) is
 delivered to it as `[ssf] New activity on #N`. Posting the review fulfils
-the request (ssf removes the label,
-or GitHub drops the review request), and the reviewer is stood down (told to
-stop, its record kept). Only a review counts, not a comment: a review by the
+the request (ssf removes the label, or GitHub drops the review request), and
+the reviewer is stood down (told to stop, its record kept). Only a review counts, not a comment: a review by the
 bot with the reviewer's origin tag, or without any tag; one tagged with
 another session's origin is that session's doing. A repeated request brings
 the same session back, with what happened in between, resuming its

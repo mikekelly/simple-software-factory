@@ -79,8 +79,9 @@ fn when(ev: &Value) -> String {
 }
 
 /// A GitHub timestamp as the agent sees it: `2026-09-04 17:40Z`, or just
-/// `17:40Z` when the date is `today` (`YYYY-MM-DD`); order within a message
-/// stays clear either way. Anything not in GitHub's ISO form is shown as is.
+/// `17:40Z` when the date is `today` (`YYYY-MM-DD`; pass `""` to keep the
+/// date always); order within a message stays clear either way. Anything
+/// not in GitHub's ISO form is shown as is.
 fn fmt_when(raw: &str, today: &str) -> String {
     let iso = raw
         .split_once('T')
@@ -536,10 +537,20 @@ fn short_ref(issue: &Issue, ctx: &PromptContext) -> String {
 /// the facts about it that the rest of the message does not repeat.
 fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
-    let opened = fmt_when(&issue.created_at, &today_utc());
+    // The header keeps the full date: it is the anchor for the day-less
+    // activity lines under it.
+    let opened = fmt_when(&issue.created_at, "");
+    let by_bot = issue.author().eq_ignore_ascii_case(ctx.bot_login);
+    let session = issue
+        .body
+        .as_deref()
+        .and_then(origin::parse)
+        .filter(|_| by_bot)
+        .map(|t| format!(" (from the agent on {})", t.origin))
+        .unwrap_or_default();
     let mut s = match ctx.pr {
         Some(pr) => format!(
-            "# GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{} on {opened}.",
+            "# GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
@@ -554,7 +565,7 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
             issue.author(),
         ),
         None => format!(
-            "# GitHub issue #{}: {}\n{}\n\nOpened by @{} on {opened}.",
+            "# GitHub issue #{}: {}\n{}\n\nOpened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
@@ -563,18 +574,6 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     };
     if !labels.is_empty() {
         s.push_str(&format!(" Labels: {}.", labels.join(", ")));
-    }
-    let by_bot = issue.author().eq_ignore_ascii_case(ctx.bot_login);
-    if let Some(t) = issue
-        .body
-        .as_deref()
-        .and_then(origin::parse)
-        .filter(|_| by_bot)
-    {
-        s.push_str(&format!(
-            " Opened by the agent session working on {}.",
-            t.origin
-        ));
     }
     s
 }
@@ -1140,9 +1139,10 @@ session because {asked} on #{n}, which another session of the same bot ({author}
 must not review. Your job is the review, nothing else: you never change the pull request.\n\n\
 - This worktree is a read-only checkout of the pull request's head (`origin/{head}`, against \
 `{base}`), on a local branch of its own. Do not commit, push, merge or edit the PR, and do not \
-change its board cards. `git fetch origin && git diff origin/{base}...origin/{head}` shows the \
-whole change; `git fetch origin && git reset --hard origin/{head}` brings the checkout up to \
-date after the author pushes. Building and running tests here is fine.\n\
+change its board cards. `git fetch origin && git diff origin/{base}...origin/{head}` (or \
+`gh pr diff {n} --repo {repo}`) shows the whole change; `git fetch origin && git reset --hard \
+origin/{head}` brings the checkout up to date after the author pushes. Building and running \
+tests here is fine.\n\
 - Post the review with `gh pr review {n} --repo {repo} --approve|--request-changes|--comment \
 --body \"...\"` (inline comments through `gh api` if useful). One review per request: once it \
 is posted the request is fulfilled ({fulfilled}) and this session pauses until a review is \
@@ -1953,7 +1953,7 @@ For information only; you will not hear about it again unless it comes back."
 
         assert!(p.contains("this session because a review was requested from @bot on #4"));
         assert!(!p.contains("GH_TOKEN"));
-        assert!(!p.contains("gh pr diff"));
+        assert!(p.contains("(or `gh pr diff 4 --repo o/r`)"));
         assert!(p.contains(
             "the request is fulfilled (ssf removes the `review` label, or GitHub drops the review request; leave the label alone yourself)"
         ));
@@ -2416,7 +2416,10 @@ accurate; which column fits is your call.\n\n## Description"
             project_prompt: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
-        assert!(p.contains("Opened by the agent session working on o/r#3."));
+        assert!(
+            p.contains("\n\nOpened by @bot (from the agent on o/r#3) on t.\n"),
+            "{p}"
+        );
         assert!(p.contains("## Description\n\nFixes it\n\n## Activity"));
     }
 
@@ -2469,7 +2472,7 @@ accurate; which column fits is your call.\n\n## Description"
             "number": 18,
             "title": "Resume sessions after a machine restart: startup reconciliation pass",
             "body": "After a reboot Orca's terminals are gone and ssf only notices when the next GitHub event arrives.\n\nProposal: a startup reconciliation pass that resumes every active session whose worktree exists but has no live agent terminal.",
-            "html_url": format!("{base}/issues/18"), "state": "open",
+            "html_url": format!("{base}/issues/18"), "state": "open", "state_reason": "completed",
             "user": {"login": bot}, "labels": [{"name": "daemon"}],
             "created_at": "2026-09-04T13:56:29Z", "updated_at": "2026-09-04T17:29:10Z"
         })).unwrap();
