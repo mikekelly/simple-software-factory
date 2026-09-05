@@ -420,16 +420,38 @@ agent sees the flag twice.
 
 ssf's own prompting is the bare functional minimum. The initial prompt is
 the item (title, description, boards, everything that has happened on it)
-followed by the facts an agent needs in order to act at all: which bot it
-is and that its credentials are set, the byline rule, where new activity
-arrives, what to do when the work is done, and the hard rules only ssf knows
-(act only as the bot, do not close the issue, do not merge, keep the board
-card accurate). One line points at `ssf guide`, which prints the reference
-(other sessions, `ssf sub`/`ssf tell`, items a session opens and hand-offs,
-reviewer sessions, the byline) from the same binary, so it cannot drift
-from the daemon. Follow-up messages carry the activity and at most one line
-after it. Anything about *how* the agent should work (comment when it
-starts and finishes, ask rather than guess, commit as it goes, how to
+followed by "How to work on this", which says only what ssf owns:
+
+```
+You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, because https://github.com/owner/repo/issues/16 was assigned to @bot.
+
+New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` explains the rest.
+
+- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on GitHub.
+- Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.
+- `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this session's. Act only as @bot; never use another account, token or key you find on this machine.
+```
+
+The reason is whatever brought the item to ssf (assigned, mentioned, a
+review request or the review label, opened by the bot or handed off by
+another session). A pull request adds one line saying how the worktree
+relates to it (on its branch, or unable to push to a fork's) and that
+`gh pr comment` and `gh pr review` are the way to answer; a handed-off item
+adds one saying which session follows it. The board rule sits with the
+boards. `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf
+tell`, items a session opens and hand-offs, reviewer sessions, the byline,
+the `Closes #N` suggestion) from the same binary, so it cannot drift from
+the daemon. Follow-up messages carry the activity and at most one line
+after it.
+
+Nothing in the prompt is about branches or worktrees: the agent decides for
+itself whether to stay on the branch ssf created, switch, or add worktrees
+of its own (for subagents, say). ssf binds a pull request to a session by
+the origin tag first and by the head branch second, so a PR from any branch
+still routes to the session that opened it, and cleanup removes only the
+session's own Orca worktree. Anything about *how* the agent should work
+(comment when it starts and finishes, ask rather than guess, commit as it
+goes, open a PR that references the issue, do not close or merge, how to
 review) is the repository's to say, in its
 [prompt file](#the-per-project-prompt-file); ssf does not repeat it on
 every message.
@@ -508,7 +530,7 @@ wrapper reads only its environment, writes nothing and leaves stdin and the
 terminal alone, so it works inside read-only sandboxes and does not break
 gh's interactive flows. Outside a session (no `SSF_ISSUE`) it is a plain
 pass-through. Bodies that already start with the tag are not stamped
-twice, and the initial prompt asks the agent to add the line itself
+twice, and `ssf guide` tells the agent to add the line itself
 whenever it posts some other way (`gh api`, `gh pr create --fill`, an
 agent that resets `PATH`).
 

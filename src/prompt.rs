@@ -417,32 +417,46 @@ impl PromptContext<'_> {
         parts.join(" and ")
     }
 
+    /// Why the item reached ssf, as "it was assigned to @bot and mentioned
+    /// @bot" (the tracked messages' subject is "it").
     fn because(&self) -> String {
+        self.because_for("it")
+    }
+
+    /// Why the session was spawned, with the item's URL as the subject:
+    /// "https://... was assigned to @bot and mentioned @bot".
+    fn spawned_because(&self, url: &str) -> String {
+        self.because_for(url)
+    }
+
+    /// One trigger table for both phrasings: `subject` followed by what
+    /// happened to it, the parts joined with "and".
+    fn because_for(&self, subject: &str) -> String {
         let bot = self.bot_login;
         let parts: Vec<String> = self
             .triggers
             .iter()
             .map(|t| match t.as_str() {
-                "assigned" => format!("it was assigned to @{bot}"),
-                "mentioned" => format!("@{bot} was mentioned on it"),
-                "review_requested" => format!("a review was requested from @{bot}"),
+                "assigned" => format!("was assigned to @{bot}"),
+                "mentioned" => format!("mentioned @{bot}"),
+                "review_requested" => format!("requested a review from @{bot}"),
                 "review_label" => format!(
-                    "it was given the `{}` label, which asks @{bot} for a review",
+                    "was given the `{}` label, which asks @{bot} for a review",
                     self.daemon.review_label().unwrap_or("review")
                 ),
                 "created" => match self.delegated_by {
-                    Some(parent) => {
-                        format!("the agent session working on {parent} opened it and handed it off")
-                    }
-                    None => format!("@{bot} opened it"),
+                    Some(parent) => format!(
+                        "was opened by the agent session working on {parent} and handed off to you"
+                    ),
+                    None => format!("was opened by @{bot}"),
                 },
                 other => other.to_string(),
             })
             .collect();
         if parts.is_empty() {
-            format!("it was assigned to @{bot}")
+            format!("{subject} was assigned to @{bot}")
         } else {
-            parts.join(" and ")
+            format!("{subject} {}", parts.join(" and "))
         }
     }
 
@@ -628,57 +642,39 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let repo = &ctx.repo.name;
     let bot = ctx.bot_login;
     let kind = ctx.kind();
-    let because = ctx.because();
-    let (line, elsewhere) = match origin::Origin::new(repo, n) {
-        Some(o) => (
-            o.first_line(Some(repo), false, false),
-            o.byline(None, false),
-        ),
-        None => (
-            format!("{}#{n} <!-- ssf: origin={repo}#{n} -->", origin::ROBOT),
-            format!("{}{repo}#{n}", origin::ROBOT),
-        ),
-    };
     let mut s = format!(
         "\n## How to work on this\n\n\
-You are the coding agent for the GitHub bot account @{bot}. Simple Software Factory (ssf) \
-created this workspace because {because}. Work on the {kind} in this worktree, on its branch; \
-other sessions' branches and workspaces are not yours to touch. New activity on the {kind} (comments, reviews, label changes, closure) arrives here as messages \
-prefixed `[ssf]`; act on them. `ssf guide` explains the rest: other sessions, following items, \
-items you open, hand-offs, reviews of your own pull requests.\n\n\
-- Talk to the humans through the {kind}, as the bot. `GH_TOKEN`, `GITHUB_TOKEN` and a git \
-credential helper are set, so plain `gh` and `git push` act as @{bot}, and commits are authored \
-and signed as @{bot}. `SSF_REPO` and `SSF_ISSUE` name this {kind}. Only ever act as @{bot}: \
-never use another GitHub account, token or key you find on this machine, even if @{bot} lacks a \
-permission; say so on the {kind} instead.\n\
-- Every comment, review and pull request you post must start with the line `{line}` (`{elsewhere}` \
-for `{}` on another repository) and a blank line; it tells readers and ssf which session posted \
-it. The `gh` on this PATH adds it when you pass `--body` or `--body-file` to \
-`issue create|comment` or `pr create|comment|review`; add it yourself when you post any other way \
-(`gh api`, `gh pr create --fill`, `gh pr edit --body`, ...).\n",
-        format!("{}#{n}", origin::ROBOT)
+You are an automatically spawned coding agent for the GitHub account @{bot}. Simple Software \
+Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, \
+because {}.\n\n\
+New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
+explains the rest.\n\n\
+- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
+GitHub.\n\
+- Collaborate with humans and other ssf-managed agents through GitHub comments on the {kind}.\n\
+- `gh` and `git push` already act as @{bot}, and the `gh` on your PATH marks your posts as this \
+session's. Act only as @{bot}; never use another account, token or key you find on this \
+machine.\n",
+        ctx.spawned_because(&issue.html_url)
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
-            "- This worktree is on the pull request's branch `{}`: commit here and `git push` to \
-change the PR. Answer on it with `gh pr comment {n} --repo {repo} --body \"...\"` (or `gh api` \
-for inline replies); if you were asked to review rather than to change anything, review with \
-`gh pr review {n} --repo {repo}` (--comment, --approve or --request-changes). Do not merge the \
-pull request; a human does that.\n",
+            "- This worktree is on the pull request's branch `{}`; pushes to it change the PR. \
+Answer on it with `gh pr comment {n} --repo {repo}`, or `gh pr review {n} --repo {repo}` when a \
+review was asked.\n",
             pr.head_ref
         )),
         Some(pr) => s.push_str(&format!(
-            "- This pull request comes from a fork ({}), so you cannot push to its branch. Answer \
-on it with `gh pr comment {n} --repo {repo} --body \"...\"`; describe changes it needs in a review \
-(`gh pr review {n} --repo {repo} --request-changes --body \"...\"`) or open a separate PR from \
-this worktree against `{}`. Do not merge the pull request; a human does that.\n",
-            pr.head_repo, pr.base_ref
+            "- The pull request comes from a fork ({}), so this worktree cannot push to its \
+branch; it is on a branch of its own{}. Answer on it with `gh pr comment {n} --repo {repo}`, \
+or `gh pr review {n} --repo {repo}` when a review was asked.\n",
+            pr.head_repo,
+            match ctx.repo.base_branch.as_deref() {
+                Some(base) => format!(" off `{base}`"),
+                None => String::new(),
+            }
         )),
-        None => s.push_str(&format!(
-            "- When the work is done, push the branch and open a pull request that references the \
-issue (`Closes #{n}`), then comment on the issue with the PR link. Do not close the issue \
-yourself; a human reviews the PR.\n"
-        )),
+        None => {}
     }
     if let Some(parent) = ctx.delegated_by {
         s.push_str(&format!(
@@ -804,14 +800,14 @@ as activity.",
     match ctx.pr {
         Some(pr) if pr.same_repo(&ctx.repo.name) => s.push_str(&format!(
             "\nReply to review comments and questions with `gh pr comment {} --repo {} --body \"...\"` \
-(or `gh api` for inline replies); pushes to `{}` update the PR. Do not merge it; a human does that.",
+(or `gh api` for inline replies); pushes to `{}` update the PR.",
             issue.number, ctx.repo.name, pr.head_ref
         )),
         Some(_) => s.push_str(
-            "\nThis pull request comes from a fork, so answer on it with `gh pr comment` and do not merge it.",
+            "\nThis pull request comes from a fork, so answer on it with `gh pr comment`.",
         ),
         None => s.push_str(&format!(
-            "\nAnswer on it with `gh issue comment {} --repo {} --body \"...\"`. Do not close it yourself.",
+            "\nAnswer on it with `gh issue comment {} --repo {} --body \"...\"`.",
             issue.number, ctx.repo.name
         )),
     }
@@ -1283,8 +1279,8 @@ request from a pull request's own author, and ssf clears the label once the revi
     format!(
         "# ssf guide\n\n\
 Simple Software Factory (ssf) runs one agent session per GitHub issue or pull request that \
-involves the bot account @{bot}. Each session has a workspace (a git worktree on the item's \
-branch) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
+involves the bot account @{bot}. Each session has a workspace (a git worktree of the \
+repository) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login; `SSF_ROLE` \
 is `reviewer` in a reviewer session. This guide is the reference behind the initial prompt.\n\n\
 ## Messages you receive\n\n\
@@ -1300,8 +1296,7 @@ lifecycle; each says what to do.\n\
 started again.\n\n\
 ## Other sessions\n\n\
 `ssf peers` lists the agent sessions on this repository: item, GitHub state, agent state, \
-branch, last message (`--json` for detail, `--all` to include retired ones). Leave their \
-branches and workspaces alone.\n\n\
+branch, last message (`--json` for detail, `--all` to include retired ones).\n\n\
 To speak to the agent on another item, comment on that item with `gh`: it reaches that session \
 labelled as coming from you (\"from the agent on owner/repo#M\"), and stays on the item where \
 anyone can find it later. Comments from other sessions on your items arrive the same way. \
@@ -1320,7 +1315,9 @@ this session follows and who follows its items.\n\n\
 Issues and pull requests you open stay with you: ssf recognises the origin tag on them and \
 delivers their activity (comments, reviews, review requests, assignments, closure) here \
 instead of starting another session; `SSF_ISSUE` does not change. A pull request opened on \
-this workspace's branch is yours too, tag or no tag.\n\n\
+this workspace's branch is yours too, tag or no tag. Referencing the item in a pull request's \
+body (`Closes #N`) links the two on GitHub, which then closes the issue when the pull request \
+is merged; the repository's own notes say how it wants pull requests.\n\n\
 To hand a piece of work to a separate agent instead, create the issue (or pull request) with \
 `--assignee {bot}` in the same `gh ... create` command: the tag then carries `mode=delegate` \
 and the item gets a session of its own. You are subscribed to it automatically, so its \
@@ -1484,13 +1481,42 @@ mod tests {
         assert!(p.contains("o/r#3: Add thing"));
         assert!(p.contains("Labels: feature"));
         assert!(p.contains("(no activity yet)"));
-        assert!(p.contains("Closes #3"));
-        assert!(p.contains("it was assigned to @bot"));
-        assert!(p.contains("GH_TOKEN"));
-        assert!(p.contains("must start with the line `🤖#3 <!-- ssf: origin=o/r#3 -->` (`🤖o/r#3` for `🤖#3` on another repository) and a blank line"), "{p}");
-        assert!(p.contains("Only ever act as @bot"));
-        assert!(p.contains("other sessions' branches and workspaces are not yours to touch"));
-        assert!(p.contains("Do not close the issue yourself"));
+        assert!(
+            p.contains(
+                "## How to work on this\n\nYou are an automatically spawned coding agent for the \
+GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, \
+in a worktree of this repository, because https://gh/3 was assigned to @bot.\n\n\
+New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
+explains the rest.\n\n\
+- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
+GitHub.\n\
+- Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.\n\
+- `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this \
+session's. Act only as @bot; never use another account, token or key you find on this \
+machine.\n"
+            ),
+            "{p}"
+        );
+        // Branches and worktrees are the agent's own business, the byline's
+        // mechanics are the guide's, and the PR conventions (reference the
+        // issue, do not close it, do not merge) are the repository's.
+        for dropped in [
+            "Closes #3",
+            "on its branch",
+            "not yours to touch",
+            "must start with the line",
+            "<!-- ssf: origin=",
+            "Do not close",
+            "Do not merge",
+            "open a pull request",
+            "GH_TOKEN",
+            "SSF_ISSUE",
+        ] {
+            assert!(
+                !p.contains(dropped),
+                "{dropped} is no longer the prompt's to say:\n{p}"
+            );
+        }
         // The reference lives behind `ssf guide`; the prompt only points at it.
         assert!(p.contains("`ssf guide` explains the rest"));
         for moved in [
@@ -1536,7 +1562,7 @@ mod tests {
         };
         let p = initial_prompt(&issue, &[], &child);
         assert!(p.contains(
-            "because it was assigned to @bot and the agent session working on o/r#1 opened it and handed it off"
+            "because https://gh/3 was assigned to @bot and was opened by the agent session working on o/r#1 and handed off to you."
         ));
         assert!(p.contains("handed off to you by the agent session working on o/r#1"));
         assert!(p.contains("follows this issue as a subscriber"));
@@ -1609,6 +1635,9 @@ mod tests {
         let g = guide("bot", Some("review"));
         assert!(g.starts_with("# ssf guide\n\n"));
         assert!(g.contains("`ssf peers` lists the agent sessions"));
+        assert!(!g.contains("Leave their branches and workspaces alone"));
+        assert!(g.contains("Referencing the item in a pull request's body (`Closes #N`)"));
+        assert!(g.contains("needs it added by hand, as the first line of the body"));
         assert!(
             g.contains("To speak to the agent on another item, comment on that item with `gh`")
         );
@@ -1935,8 +1964,75 @@ mod tests {
         let initial = initial_prompt(&pr_issue, &[], &unowned);
         assert!(!initial.contains("reviewer session"));
         assert!(initial.contains("`ssf guide` explains the rest"));
-        assert!(initial.contains("This worktree is on the pull request's branch `bot/fix`"));
-        assert!(initial.contains("Do not merge the pull request; a human does that."));
+        assert!(
+            initial.contains("because https://gh/4 requested a review from @bot."),
+            "{initial}"
+        );
+        assert!(initial.contains(
+            "- This worktree is on the pull request's branch `bot/fix`; pushes to it change the PR. \
+Answer on it with `gh pr comment 4 --repo o/r`, or `gh pr review 4 --repo o/r` when a review was asked.\n"
+        ), "{initial}");
+        assert!(initial.contains("GitHub comments on the pull request."));
+        assert!(!initial.contains("Do not merge"));
+        let fork = PrInfo {
+            head_repo: "someone/r".into(),
+            ..pr.clone()
+        };
+        let forked = PromptContext {
+            pr: Some(&fork),
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &forked);
+        // The worktree's base is the repository's configured base branch (or
+        // Orca's default when none is set), never the PR's base ref.
+        assert!(initial.contains(
+            "- The pull request comes from a fork (someone/r), so this worktree cannot push to its \
+branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo o/r`, or \
+`gh pr review 4 --repo o/r` when a review was asked.\n"
+        ), "{initial}");
+        let based = RepoConfig {
+            base_branch: Some("develop".into()),
+            ..repo.clone()
+        };
+        let initial = initial_prompt(
+            &pr_issue,
+            &[],
+            &PromptContext {
+                repo: &based,
+                ..forked.clone()
+            },
+        );
+        assert!(
+            initial.contains("it is on a branch of its own off `develop`. Answer"),
+            "{initial}"
+        );
+        assert!(!initial.contains("off `main`"));
+        let mentioned = vec!["assigned".to_string(), "mentioned".to_string()];
+        let both = PromptContext {
+            triggers: &mentioned,
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &both);
+        assert!(initial.contains("because https://gh/4 was assigned to @bot and mentioned @bot."));
+        let created = vec!["created".to_string()];
+        let opened = PromptContext {
+            triggers: &created,
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &opened);
+        assert!(
+            initial.contains("because https://gh/4 was opened by @bot."),
+            "{initial}"
+        );
+        let none = PromptContext {
+            triggers: &[],
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &none);
+        assert!(
+            initial.contains("because https://gh/4 was assigned to @bot."),
+            "{initial}"
+        );
 
         assert_eq!(review_worktree_name(4, "Fix it"), "review-4-fix-it");
     }
@@ -2042,9 +2138,9 @@ mod tests {
             "a review was requested from @bot and the `review` label was added"
         );
         assert_eq!(ctx.review_asked(), "a review was asked of @bot");
-        assert!(
-            bctx.because()
-                .contains("it was given the `review` label, which asks @bot for a review")
+        assert_eq!(
+            bctx.because(),
+            "it requested a review from @bot and was given the `review` label, which asks @bot for a review"
         );
     }
 
