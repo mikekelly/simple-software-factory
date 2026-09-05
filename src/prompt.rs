@@ -417,38 +417,21 @@ impl PromptContext<'_> {
         parts.join(" and ")
     }
 
+    /// Why the item reached ssf, as "it was assigned to @bot and mentioned
+    /// @bot" (the tracked messages' subject is "it").
     fn because(&self) -> String {
-        let bot = self.bot_login;
-        let parts: Vec<String> = self
-            .triggers
-            .iter()
-            .map(|t| match t.as_str() {
-                "assigned" => format!("it was assigned to @{bot}"),
-                "mentioned" => format!("@{bot} was mentioned on it"),
-                "review_requested" => format!("a review was requested from @{bot}"),
-                "review_label" => format!(
-                    "it was given the `{}` label, which asks @{bot} for a review",
-                    self.daemon.review_label().unwrap_or("review")
-                ),
-                "created" => match self.delegated_by {
-                    Some(parent) => {
-                        format!("the agent session working on {parent} opened it and handed it off")
-                    }
-                    None => format!("@{bot} opened it"),
-                },
-                other => other.to_string(),
-            })
-            .collect();
-        if parts.is_empty() {
-            format!("it was assigned to @{bot}")
-        } else {
-            parts.join(" and ")
-        }
+        self.because_for("it")
     }
 
     /// Why the session was spawned, with the item's URL as the subject:
     /// "https://... was assigned to @bot and mentioned @bot".
     fn spawned_because(&self, url: &str) -> String {
+        self.because_for(url)
+    }
+
+    /// One trigger table for both phrasings: `subject` followed by what
+    /// happened to it, the parts joined with "and".
+    fn because_for(&self, subject: &str) -> String {
         let bot = self.bot_login;
         let parts: Vec<String> = self
             .triggers
@@ -471,9 +454,9 @@ impl PromptContext<'_> {
             })
             .collect();
         if parts.is_empty() {
-            format!("{url} was assigned to @{bot}")
+            format!("{subject} was assigned to @{bot}")
         } else {
-            format!("{url} {}", parts.join(" and "))
+            format!("{subject} {}", parts.join(" and "))
         }
     }
 
@@ -683,9 +666,13 @@ review was asked.\n",
         )),
         Some(pr) => s.push_str(&format!(
             "- The pull request comes from a fork ({}), so this worktree cannot push to its \
-branch; it is on its own branch off `{}`. Answer on it with `gh pr comment {n} --repo {repo}`, \
+branch; it is on a branch of its own{}. Answer on it with `gh pr comment {n} --repo {repo}`, \
 or `gh pr review {n} --repo {repo}` when a review was asked.\n",
-            pr.head_repo, pr.base_ref
+            pr.head_repo,
+            match ctx.repo.base_branch.as_deref() {
+                Some(base) => format!(" off `{base}`"),
+                None => String::new(),
+            }
         )),
         None => {}
     }
@@ -1996,11 +1983,30 @@ Answer on it with `gh pr comment 4 --repo o/r`, or `gh pr review 4 --repo o/r` w
             ..unowned.clone()
         };
         let initial = initial_prompt(&pr_issue, &[], &forked);
+        // The worktree's base is the repository's configured base branch (or
+        // Orca's default when none is set), never the PR's base ref.
         assert!(initial.contains(
             "- The pull request comes from a fork (someone/r), so this worktree cannot push to its \
-branch; it is on its own branch off `main`. Answer on it with `gh pr comment 4 --repo o/r`, or \
+branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo o/r`, or \
 `gh pr review 4 --repo o/r` when a review was asked.\n"
         ), "{initial}");
+        let based = RepoConfig {
+            base_branch: Some("develop".into()),
+            ..repo.clone()
+        };
+        let initial = initial_prompt(
+            &pr_issue,
+            &[],
+            &PromptContext {
+                repo: &based,
+                ..forked.clone()
+            },
+        );
+        assert!(
+            initial.contains("it is on a branch of its own off `develop`. Answer"),
+            "{initial}"
+        );
+        assert!(!initial.contains("off `main`"));
         let mentioned = vec!["assigned".to_string(), "mentioned".to_string()];
         let both = PromptContext {
             triggers: &mentioned,
@@ -2008,6 +2014,25 @@ branch; it is on its own branch off `main`. Answer on it with `gh pr comment 4 -
         };
         let initial = initial_prompt(&pr_issue, &[], &both);
         assert!(initial.contains("because https://gh/4 was assigned to @bot and mentioned @bot."));
+        let created = vec!["created".to_string()];
+        let opened = PromptContext {
+            triggers: &created,
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &opened);
+        assert!(
+            initial.contains("because https://gh/4 was opened by @bot."),
+            "{initial}"
+        );
+        let none = PromptContext {
+            triggers: &[],
+            ..unowned.clone()
+        };
+        let initial = initial_prompt(&pr_issue, &[], &none);
+        assert!(
+            initial.contains("because https://gh/4 was assigned to @bot."),
+            "{initial}"
+        );
 
         assert_eq!(review_worktree_name(4, "Fix it"), "review-4-fix-it");
     }
@@ -2113,9 +2138,9 @@ branch; it is on its own branch off `main`. Answer on it with `gh pr comment 4 -
             "a review was requested from @bot and the `review` label was added"
         );
         assert_eq!(ctx.review_asked(), "a review was asked of @bot");
-        assert!(
-            bctx.because()
-                .contains("it was given the `review` label, which asks @bot for a review")
+        assert_eq!(
+            bctx.because(),
+            "it requested a review from @bot and was given the `review` label, which asks @bot for a review"
         );
     }
 
