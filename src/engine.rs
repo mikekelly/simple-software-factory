@@ -616,7 +616,6 @@ are resumed on the first pass that finds it: {err:#}"
                     }
                 }
                 let text = prompt::interrupted_prompt(&prompt::Interrupted {
-                    repo: &repo.name,
                     number: st.number,
                     title: &st.title,
                     url: &st.html_url,
