@@ -5,10 +5,13 @@
 //! into that agent.
 
 mod agents;
+mod cloud;
 mod config;
+mod driver;
 mod engine;
 mod ghcli;
 mod github;
+mod herdr;
 mod ipc;
 mod keys;
 mod models;
@@ -261,7 +264,10 @@ enum RepoCommand {
         /// Agent id to run in each issue workspace (see `ssf agents`).
         #[arg(long)]
         harness: String,
-        /// Existing local checkout to register in Orca instead of cloning.
+        /// Where this repository's sessions run: orca, herdr or cloud (default: the top-level `driver`).
+        #[arg(long)]
+        driver: Option<String>,
+        /// Existing local checkout to use instead of cloning.
         #[arg(long)]
         path: Option<String>,
         /// Clone URL (default https://github.com/owner/name.git).
@@ -291,6 +297,9 @@ enum RepoCommand {
         name: String,
         #[arg(long)]
         harness: Option<String>,
+        /// orca, herdr or cloud.
+        #[arg(long)]
+        driver: Option<String>,
         #[arg(long)]
         path: Option<String>,
         #[arg(long)]
@@ -310,7 +319,7 @@ enum RepoCommand {
         /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
         #[arg(long, value_name = "PATH")]
         prompt_file: Option<String>,
-        /// Clear an optional field: path, clone_url, base_branch, command, model, effort, instructions, prompt_file.
+        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },
@@ -1032,7 +1041,7 @@ fn hostname() -> String {
 fn check_harness(harness: &str) {
     if !agents::is_known(harness) {
         eprintln!(
-            "note: `{harness}` is not one of the agents Omarchy knows about (see `ssf agents`); Orca must know how to launch it"
+            "note: `{harness}` is not one of the agents Omarchy knows about (see `ssf agents`); the driver must know how to launch it"
         );
     } else if !agents::list()
         .iter()
@@ -1048,6 +1057,7 @@ fn repo(command: RepoCommand) -> Result<()> {
         RepoCommand::Add {
             name,
             harness,
+            driver,
             path,
             clone_url,
             base_branch,
@@ -1061,9 +1071,11 @@ fn repo(command: RepoCommand) -> Result<()> {
             let name = format!("{owner}/{r}");
             let path = expand_checkout(path)?;
             check_harness(&harness);
+            let driver = driver.map(|d| d.parse()).transpose()?;
             let entry = RepoConfig {
                 name: name.clone(),
                 harness,
+                driver,
                 command,
                 model: model.map(|m| m.trim().to_string()),
                 effort: effort.map(|e| e.trim().to_string()),
@@ -1092,6 +1104,7 @@ fn repo(command: RepoCommand) -> Result<()> {
         RepoCommand::Set {
             name,
             harness,
+            driver,
             path,
             clone_url,
             base_branch,
@@ -1125,6 +1138,9 @@ fn repo(command: RepoCommand) -> Result<()> {
                 }
                 entry.harness = h;
             }
+            if let Some(d) = driver {
+                entry.driver = Some(d.parse()?);
+            }
             if let Some(p) = expand_checkout(path)? {
                 entry.path = Some(p);
             }
@@ -1151,6 +1167,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             }
             for field in clear {
                 match field.as_str() {
+                    "driver" => entry.driver = None,
                     "path" => entry.path = None,
                     "clone_url" => entry.clone_url = None,
                     "base_branch" => entry.base_branch = None,
@@ -1380,7 +1397,7 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
         return Ok(());
     }
     if let Err(e) = &snap.orca {
-        eprintln!("orca unavailable, agent states unknown: {e}");
+        eprintln!("driver unavailable, agent states unknown: {e}");
     }
     if sessions.is_empty() {
         println!(
@@ -1896,14 +1913,27 @@ async fn doctor() -> Result<()> {
         },
         Err(e) => check(false, format!("{e:#}")),
     }
-    let orca = orca::Orca::new(cfg.orca.clone());
-    let cli_present =
-        std::path::Path::new(orca.command()).exists() || which(orca.command()).is_some();
-    check(cli_present, format!("Orca CLI at {}", orca.command()));
-    if cli_present {
-        match orca.status().await {
-            Ok(_) => check(true, "Orca runtime reachable and ready".into()),
-            Err(e) => check(false, format!("Orca runtime: {e:#}")),
+    for d in driver::Drivers::from_config(&cfg).iter() {
+        let cli_present =
+            std::path::Path::new(d.command()).exists() || which(d.command()).is_some();
+        check(
+            cli_present,
+            format!("{} driver: CLI at {}", d.label(), d.command()),
+        );
+        if cli_present {
+            match d.status().await {
+                Ok(()) => check(true, format!("{} reachable and ready", d.label())),
+                Err(e) => check(false, format!("{}: {e:#}", d.label())),
+            }
+        }
+        if d.kind() == config::DriverKind::Cloud
+            && cfg.cloud.environment.is_none()
+            && which("script").is_none()
+        {
+            check(
+                false,
+                "cloud driver: `script` (util-linux) is needed to create sessions".into(),
+            );
         }
     }
     match ipc::call(&ipc::Request::Ping).await {
@@ -2008,7 +2038,10 @@ async fn doctor() -> Result<()> {
     );
     check(
         true,
-        format!("new clones go under {}", cfg.projects_dir().display()),
+        format!(
+            "new clones go under {}",
+            cfg.projects_dir(cfg.driver).display()
+        ),
     );
     if problems > 0 {
         bail!("{problems} problem(s) found");

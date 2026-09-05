@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::path::Path;
 use tracing::warn;
 
-use crate::config::{DaemonConfig, RepoConfig};
+use crate::config::{DaemonConfig, DriverKind, RepoConfig};
 use crate::github::{Issue, PrInfo, ProjectCard, value_str, value_u64};
 use crate::origin;
 
@@ -345,6 +345,8 @@ pub struct PromptContext<'a> {
     pub repo: &'a RepoConfig,
     pub daemon: &'a DaemonConfig,
     pub bot_login: &'a str,
+    /// What runs the session (named in the first prompt).
+    pub driver: DriverKind,
     /// Set when the item is a pull request.
     pub pr: Option<&'a PrInfo>,
     /// Why the bot is involved: assigned, mentioned, review_requested, created.
@@ -676,10 +678,15 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let repo = &ctx.repo.name;
     let bot = ctx.bot_login;
     let kind = ctx.kind();
+    let multiplexer = match ctx.driver {
+        DriverKind::Orca => "the Orca multiplexer",
+        DriverKind::Herdr => "the herdr multiplexer",
+        DriverKind::Cloud => "a Claude Code cloud session",
+    };
     let mut s = format!(
         "\n## How to work on this\n\n\
 You are an automatically spawned coding agent for the GitHub account @{bot}. Simple Software \
-Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, \
+Factory (ssf) spawned you, through {multiplexer}, in a worktree of this repository, \
 because {}.\n\n\
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
 explains the rest.\n\n\
@@ -1043,7 +1050,7 @@ pub struct Interrupted<'a> {
 pub fn interrupted_prompt(it: &Interrupted) -> String {
     let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
     let mut s = String::from(
-        "[ssf] The factory restarted (the machine, Orca or ssf itself) and this session was \
+        "[ssf] The factory restarted (the machine, the multiplexer or ssf itself) and this session was \
 interrupted: its terminal was gone, so it has been started again.\n\n",
     );
     let branch = it
@@ -1299,7 +1306,7 @@ to this session; its activity comes here from now on.\n\
 - `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
 - `[ssf] ... has been closed`, `... no longer assigned`, `... assigned ... again`: your item's \
 lifecycle; each says what to do.\n\
-- `[ssf] The factory restarted ...`: the machine, Orca or ssf restarted and this session was \
+- `[ssf] The factory restarted ...`: the machine, the multiplexer or ssf restarted and this session was \
 started again.\n\n\
 ## Other sessions\n\n\
 `ssf peers` lists the agent sessions on this repository: item, GitHub state, agent state, \
@@ -1406,6 +1413,40 @@ pub fn worktree_name(number: u64, title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_prompt_names_the_driver() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({
+            "number": 3, "title": "T", "html_url": "https://x/3", "body": "", "state": "open",
+            "user": {"login": "h"}, "labels": [], "assignees": [],
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let d = DaemonConfig::default();
+        let triggers = vec!["assigned".to_string()];
+        let mut ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            driver: DriverKind::Herdr,
+            pr: None,
+            triggers: &triggers,
+            owner: None,
+            delegated_by: None,
+            projects: &[],
+            project_prompt: None,
+        };
+        assert!(instructions(&issue, &ctx).contains("through the herdr multiplexer"));
+        ctx.driver = DriverKind::Cloud;
+        assert!(instructions(&issue, &ctx).contains("through a Claude Code cloud session"));
+        ctx.driver = DriverKind::Orca;
+        assert!(instructions(&issue, &ctx).contains("through the Orca multiplexer"));
+    }
     use serde_json::json;
 
     fn cfg() -> DaemonConfig {
@@ -1500,6 +1541,7 @@ mod tests {
         let repo = RepoConfig {
             name: "o/r".into(),
             harness: "claude".into(),
+            driver: None,
             model: None,
             effort: None,
             command: None,
@@ -1514,6 +1556,7 @@ mod tests {
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: None,
             triggers: &[],
             owner: None,
@@ -1657,6 +1700,7 @@ machine.\n"
             repo: &repo,
             daemon: &d,
             bot_login: "OverlayBot",
+            driver: DriverKind::Orca,
             pr: None,
             triggers: &triggers,
             owner: None,
@@ -1733,6 +1777,7 @@ machine.\n"
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: None,
             triggers: &triggers,
             owner: None,
@@ -1815,6 +1860,7 @@ For information only; you will not hear about it again unless it comes back."
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: Some(&pr),
             triggers: &triggers,
             owner: Some(3),
@@ -1938,6 +1984,7 @@ For information only; you will not hear about it again unless it comes back."
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: Some(&pr),
             triggers: &triggers,
             owner: Some(3),
@@ -2158,6 +2205,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: Some(&pr),
             triggers: &created,
             owner: Some(3),
@@ -2281,6 +2329,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: None,
             triggers: &[],
             owner: None,
@@ -2457,6 +2506,7 @@ accurate; which column fits is your call.\n\n## Description"
             repo: &repo,
             daemon: &d,
             bot_login: "bot",
+            driver: DriverKind::Orca,
             pr: None,
             triggers: &[],
             owner: None,
@@ -2658,6 +2708,7 @@ accurate; which column fits is your call.\n\n## Description"
             repo: &repo,
             daemon: &d,
             bot_login: bot,
+            driver: DriverKind::Orca,
             pr: None,
             triggers: &assigned_t,
             owner: None,

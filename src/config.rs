@@ -6,13 +6,80 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_ORCA_COMMAND: &str = "/usr/lib/orca-ide/bin/orca-ide";
 
+/// What runs the agents: the multiplexer (or service) that holds the
+/// workspaces and terminals ssf creates and delivers prompts into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DriverKind {
+    /// The Orca desktop app and CLI (`orca-ide`).
+    #[default]
+    Orca,
+    /// The herdr terminal workspace manager (`herdr`).
+    Herdr,
+    /// Claude Code cloud sessions (`claude --cloud`): nothing runs locally
+    /// but a checkout the sessions are started from.
+    Cloud,
+}
+
+impl DriverKind {
+    /// The config value (`orca`, `herdr`, `cloud`).
+    pub fn id(self) -> &'static str {
+        match self {
+            DriverKind::Orca => "orca",
+            DriverKind::Herdr => "herdr",
+            DriverKind::Cloud => "cloud",
+        }
+    }
+
+    /// How the driver is called in messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            DriverKind::Orca => "Orca",
+            DriverKind::Herdr => "herdr",
+            DriverKind::Cloud => "Claude Code cloud",
+        }
+    }
+
+    /// Whether agents run on this machine, where `ssf launch` gives them the
+    /// bot's identity and the `ssf` CLI (cloud sessions have neither).
+    pub fn is_local(self) -> bool {
+        !matches!(self, DriverKind::Cloud)
+    }
+}
+
+impl std::str::FromStr for DriverKind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "orca" => Ok(DriverKind::Orca),
+            "herdr" => Ok(DriverKind::Herdr),
+            "cloud" | "claude-cloud" => Ok(DriverKind::Cloud),
+            other => bail!("unknown driver {other:?}; use orca, herdr or cloud"),
+        }
+    }
+}
+
+impl std::fmt::Display for DriverKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Driver that repositories use unless they set their own.
+    #[serde(default)]
+    pub driver: DriverKind,
     #[serde(default)]
     pub github: GithubConfig,
     #[serde(default)]
     pub orca: OrcaConfig,
+    #[serde(default)]
+    pub herdr: HerdrConfig,
+    #[serde(default)]
+    pub cloud: CloudConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
     #[serde(default, rename = "repo")]
@@ -126,6 +193,91 @@ fn default_projects_dir() -> String {
 fn default_setup_timeout() -> u64 {
     900
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HerdrConfig {
+    /// The herdr CLI; it talks to the running herdr server over its socket.
+    #[serde(default = "default_herdr_command")]
+    pub command: String,
+    /// Parent directory that ssf clones repositories into (herdr has no
+    /// project registry; ssf keeps the checkouts itself). Worktrees go next
+    /// to the clone, in `<name>.worktrees/`.
+    #[serde(default = "default_ssf_projects_dir")]
+    pub projects_dir: String,
+    /// How long to wait for a freshly launched agent to be detected in its
+    /// pane and become ready for input.
+    #[serde(default = "default_tui_timeout")]
+    pub tui_idle_timeout_ms: u64,
+}
+
+impl Default for HerdrConfig {
+    fn default() -> Self {
+        Self {
+            command: default_herdr_command(),
+            projects_dir: default_ssf_projects_dir(),
+            tui_idle_timeout_ms: default_tui_timeout(),
+        }
+    }
+}
+
+fn default_herdr_command() -> String {
+    std::env::var("HERDR_COMMAND").unwrap_or_else(|_| "herdr".to_string())
+}
+fn default_ssf_projects_dir() -> String {
+    "~/ssf/projects".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloudConfig {
+    /// The Claude Code CLI, signed in (`claude auth login`) to the claude.ai
+    /// account whose cloud sessions these are.
+    #[serde(default = "default_cloud_command")]
+    pub command: String,
+    /// Parent directory that ssf clones repositories into; every cloud
+    /// session is started from a worktree of the clone on the item's branch,
+    /// which is what the cloud VM checks out.
+    #[serde(default = "default_ssf_projects_dir")]
+    pub projects_dir: String,
+    /// A self-hosted cloud environment (`ccpool_...`) to run sessions on.
+    /// With it, sessions are created without a terminal
+    /// (`claude -p ... --environment`); without it, `claude --cloud` is run
+    /// in a pseudo-terminal until it has created the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<String>,
+    /// How long a session creation may take (cloning the repository in the
+    /// cloud included).
+    #[serde(default = "default_cloud_create_timeout")]
+    pub create_timeout_secs: u64,
+    /// After `claude --cloud` has reported the new session's id, how long it
+    /// is left attached so the task description is delivered before ssf
+    /// closes its terminal.
+    #[serde(default = "default_cloud_attach_grace")]
+    pub attach_grace_secs: u64,
+}
+
+impl Default for CloudConfig {
+    fn default() -> Self {
+        Self {
+            command: default_cloud_command(),
+            projects_dir: default_ssf_projects_dir(),
+            environment: None,
+            create_timeout_secs: default_cloud_create_timeout(),
+            attach_grace_secs: default_cloud_attach_grace(),
+        }
+    }
+}
+
+fn default_cloud_command() -> String {
+    std::env::var("SSF_CLAUDE_COMMAND").unwrap_or_else(|_| "claude".to_string())
+}
+fn default_cloud_create_timeout() -> u64 {
+    600
+}
+fn default_cloud_attach_grace() -> u64 {
+    20
+}
+
 fn default_tui_timeout() -> u64 {
     90_000
 }
@@ -240,8 +392,12 @@ fn default_startup_orca_wait() -> u64 {
 pub struct RepoConfig {
     /// `owner/name` on GitHub.
     pub name: String,
-    /// Orca agent id launched in each issue workspace (`claude`, `codex`, ...).
+    /// Agent id launched in each issue workspace (`claude`, `codex`, ...).
     pub harness: String,
+    /// Driver for this repository's sessions; the top-level `driver` when
+    /// not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<DriverKind>,
     /// Shell command that starts the harness (run through `ssf launch`, which
     /// exports the bot credentials). Defaults to the harness id.
     #[serde(
@@ -450,8 +606,30 @@ impl Config {
         }
     }
 
-    pub fn projects_dir(&self) -> PathBuf {
-        expand_tilde(&self.orca.projects_dir)
+    /// Where a driver clones repositories that have no checkout yet.
+    pub fn projects_dir(&self, driver: DriverKind) -> PathBuf {
+        expand_tilde(match driver {
+            DriverKind::Orca => &self.orca.projects_dir,
+            DriverKind::Herdr => &self.herdr.projects_dir,
+            DriverKind::Cloud => &self.cloud.projects_dir,
+        })
+    }
+
+    /// The driver a repository's sessions run under.
+    pub fn driver_for(&self, repo: &RepoConfig) -> DriverKind {
+        repo.driver.unwrap_or(self.driver)
+    }
+
+    /// Every driver some repository uses (the default one when there are
+    /// no repositories, so `ssf doctor` has something to check).
+    pub fn drivers_in_use(&self) -> Vec<DriverKind> {
+        let mut out: Vec<DriverKind> = self.repos.iter().map(|r| self.driver_for(r)).collect();
+        if out.is_empty() {
+            out.push(self.driver);
+        }
+        out.sort();
+        out.dedup();
+        out
     }
 }
 
@@ -488,6 +666,50 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drivers_come_from_the_top_level_and_per_repo() {
+        let cfg: Config = toml::from_str(
+            r#"
+driver = "herdr"
+[herdr]
+projects_dir = "~/work"
+[[repo]]
+name = "a/b"
+harness = "claude"
+[[repo]]
+name = "c/d"
+harness = "claude"
+driver = "cloud"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.driver, DriverKind::Herdr);
+        assert_eq!(cfg.driver_for(&cfg.repos[0]), DriverKind::Herdr);
+        assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Cloud);
+        assert_eq!(
+            cfg.drivers_in_use(),
+            vec![DriverKind::Herdr, DriverKind::Cloud]
+        );
+        assert!(cfg.projects_dir(DriverKind::Herdr).ends_with("work"));
+        assert!(
+            cfg.projects_dir(DriverKind::Cloud)
+                .ends_with("ssf/projects")
+        );
+        assert!(!DriverKind::Cloud.is_local());
+        assert!(DriverKind::Herdr.is_local());
+        let empty = Config::default();
+        assert_eq!(empty.driver, DriverKind::Orca);
+        assert_eq!(empty.drivers_in_use(), vec![DriverKind::Orca]);
+        assert_eq!("Herdr".parse::<DriverKind>().unwrap(), DriverKind::Herdr);
+        assert!("tmux".parse::<DriverKind>().is_err());
+        // The per-repo choice round-trips through the file.
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("driver = \"cloud\""));
+        let again: Config = toml::from_str(&text).unwrap();
+        assert_eq!(again.repos[1].driver, Some(DriverKind::Cloud));
+        assert_eq!(again.repos[0].driver, None);
+    }
 
     fn parse(toml_src: &str) -> Result<Config> {
         let dir = std::env::temp_dir().join(format!("ssf-config-test-{}", std::process::id()));

@@ -7,10 +7,12 @@ its own agent. The agents know about each other, about the project board, and
 about the notes your repository keeps for them.
 
 ssf is a small daemon for [Omarchy](https://omarchy.org/). It runs the
-agents in [Orca](https://onorca.dev/), so you can watch them work, take
-over, or nudge them at any time. Nothing runs in the cloud: the daemon
-polls GitHub and drives Orca, and the agents are the ones you already have
-installed (Claude Code, Codex, ...).
+agents in [Orca](https://onorca.dev/) by default, or in
+[herdr](https://herdr.dev/), so you can watch them work, take over, or
+nudge them at any time; the agents are the ones you already have installed
+(Claude Code, Codex, ...). With the `cloud` driver it runs them as Claude
+Code cloud sessions instead, and nothing but the daemon runs on your
+machine (see [Drivers](#drivers-orca-herdr-cloud)).
 
 ## One issue, start to finish
 
@@ -170,9 +172,11 @@ by a person.
 ## How it works
 
 Every few seconds ssf asks GitHub for the open issues and pull requests that
-involve the bot. For a new one it creates a workspace in Orca, checked out on
-a branch for the issue (or on the pull request's branch, so pushes update
-the pull request), and starts the agent there with the whole story so far.
+involve the bot. For a new one it creates a workspace (in Orca, in herdr, or
+as a cloud session, depending on the [driver](#drivers-orca-herdr-cloud)),
+checked out on a branch for the issue (or on the pull request's branch, so
+pushes update the pull request), and starts the agent there with the whole
+story so far.
 From then on every new comment, review, label or push on the item is pasted
 into that agent's terminal as a message: it steers the agent if it is busy
 and wakes it if it is idle. If a terminal is gone, or the whole workspace,
@@ -187,8 +191,11 @@ configuration, and how the pieces above are put together.
 ## Install
 
 ssf runs on [Omarchy](https://omarchy.org/). Install
-[Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in. Then build and
-install ssf from this checkout:
+[Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in, or install
+[herdr](https://herdr.dev/) and set `driver = "herdr"`, or sign Claude Code
+in to claude.ai and set `driver = "cloud"` (see
+[Drivers](#drivers-orca-herdr-cloud)). Then build and install ssf from this
+checkout:
 
 ```sh
 cd packaging && makepkg -si
@@ -348,8 +355,15 @@ instructions = "Run `make test` before opening a PR."
 |-----|---------|---------|
 | `github.api_url` | `https://api.github.com` | GitHub Enterprise: `https://ghe.example.com/api/v3` |
 | `github.login`, `github.email`, `github.ssh_key_path` | set by `ssf auth login` | The bot's identity and key; edit `email` if the bot has a public address |
+| `driver` | `orca` | What runs the agents: `orca`, `herdr` or `cloud` (see [Drivers](#drivers-orca-herdr-cloud)) |
 | `orca.command` | `/usr/lib/orca-ide/bin/orca-ide` | Orca CLI binary (`/usr/bin/orca-ide` launches the app, not the CLI) |
 | `orca.projects_dir` | `~/orca/projects` | Where repositories are cloned when Orca has no project for them |
+| `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
+| `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
+| `cloud.command` | `claude` | Claude Code, signed in to claude.ai |
+| `cloud.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the cloud driver; each session starts from a worktree there |
+| `cloud.environment` | | A self-hosted cloud environment id (`ccpool_...`); with it sessions are created without a terminal |
+| `cloud.create_timeout_secs`, `cloud.attach_grace_secs` | `600`, `20` | How long creating a session may take, and how long `claude --cloud` stays attached after reporting the session id |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
 | `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](#workspaces-after-close-release-and-purge)); still accepted so old files load |
@@ -358,6 +372,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#under-the-hood)) |
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
+| `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories locally and others in the cloud |
 | `repo.command` | the agent id | Command that starts the agent, e.g. `claude --dangerously-skip-permissions` |
 | `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
 | `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
@@ -366,7 +381,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories |
 
 Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
-`ORCA_CLI_COMMAND`, `RUST_LOG`.
+`ORCA_CLI_COMMAND`, `HERDR_COMMAND`, `SSF_CLAUDE_COMMAND`, `RUST_LOG`.
 
 ### The per-project prompt file
 
@@ -421,6 +436,63 @@ effort levels must be ones the agent accepts. Changing the agent of a
 repository resets both, since the ids belong to the agent. Keep
 `--model`/`--effort` out of `repo.command` when you set them here, or the
 agent sees the flag twice.
+
+## Drivers: Orca, herdr, cloud
+
+The daemon does not care what holds the agents' terminals. Everything it
+asks for (a checkout of the repository, a workspace per item on the item's
+branch, starting the agent there, pasting a message in, whether the agent
+is still there or busy, removing the workspace) goes through a *driver*,
+and there are three. The `driver` key picks the default; a `[[repo]]` can
+set its own, so one daemon can run some repositories in Orca and others
+in the cloud. `ssf doctor` checks every driver in use, and a pass skips
+the repositories of a driver that is not answering (the others carry on).
+
+**`orca`** (the default) is the Orca desktop app and its CLI, as described
+throughout this file: Orca keeps the projects, worktrees are linked to the
+issue number, terminals belong to the workspace, and the bar widget's
+"open workspace" goes there.
+
+**`herdr`** is the [herdr](https://herdr.dev/) terminal workspace manager
+(a herdr session has to be running). ssf clones the repository itself under
+`herdr.projects_dir` (or uses `repo.path`), makes a git worktree per item
+in `<name>.worktrees/` next to the clone, opens it as a herdr workspace
+and runs the agent in the workspace's root pane through the same
+`ssf launch` wrapper as with Orca, so the bot identity, the `gh` shim and
+the `ssf` commands all work. herdr recognises the agent in the pane and
+reports its state (`idle`, `working`, `blocked`, `done`); messages go in
+with `herdr agent prompt`, which pastes and submits them. Claude Code's
+folder-trust question is answered on start. herdr keeps no link between a
+workspace and an issue, so ssf finds a workspace it lost track of by the
+worktree's name (`issue-N-...`). herdr also opens one workspace for the
+clone itself the first time it opens a worktree of it; that one is left
+alone. Clicking a session in the bar widget focuses its herdr workspace.
+
+**`cloud`** runs each item as a
+[Claude Code cloud session](https://code.claude.com/docs/en/claude-code-on-the-web)
+on Anthropic's infrastructure, from the `claude` CLI signed in to
+claude.ai (`claude auth login`; a Pro, Max or Team account). ssf still
+clones the repository under `cloud.projects_dir` and makes a worktree per
+item, because a cloud session is started *from* a checkout: the cloud VM
+clones the repository's GitHub remote at the checkout's branch, so ssf
+pushes the item's branch first (as the bot) and then creates the session
+with the first prompt as its task. Later messages are queued into the
+session with `claude -p ... --cloud <session id>`, which needs no terminal;
+a session that was archived gets a new one with the whole story. Creating
+a session, however, is interactive in the CLI unless the session runs on a
+self-hosted environment (`cloud.environment`), so without one ssf runs
+`claude --cloud` in a pseudo-terminal (`script`) until the session id
+shows up, keeps it attached for `cloud.attach_grace_secs` so the task goes
+out, and closes it. The session id is kept in the worktree's git directory
+and `ssf status` shows it as the session's link. What this driver cannot do:
+tell whether a session is busy (there is no CLI for that; releases and
+purges treat cloud sessions as idle), resume a session by id (there is
+nothing to resume: the session lives on in the cloud), or give the session
+the bot's identity. A cloud session pushes and comments as the GitHub
+account connected to the claude.ai account, has no `ssf` CLI (no `ssf
+tell`, `sub`, `release` or `guide`) and no `gh` shim, so its posts carry no
+origin tag; the byline the prompt asks for (`🤖#N says:`) is what
+attributes them.
 
 ## What the agent is told
 
@@ -842,9 +914,10 @@ The details behind [How it works](#how-it-works).
   rendered like issue activity. A PR from a fork gets a workspace on the base
   branch and the agent is told it cannot push to the fork.
 - **One workspace per issue.** The binding lives in
-  `~/.local/state/ssf/state.json` and is also recoverable from Orca (the
-  worktree is linked to the issue number), so a lost state file re-attaches
-  instead of creating a second workspace.
+  `~/.local/state/ssf/state.json` and is also recoverable from the driver
+  (Orca links the worktree to the issue number; the others name it after
+  it), so a lost state file re-attaches instead of creating a second
+  workspace.
 - **Delivery into the agent's terminal.** Messages are pasted with bracketed
   paste so multi-line text arrives as one message, then Enter. Claude Code
   queues it as a steering message while busy, or runs it when idle.
@@ -900,9 +973,13 @@ The details behind [How it works](#how-it-works).
   context instead.
 - One agent per issue; a second assignee is not coordinated with. A session
   owns what it opens only within its own repository.
-- `ssf status` asks Orca for the workspace list on every call (a few hundred
-  milliseconds); when Orca is not running the ssf side is still reported and
-  agent states show as unknown.
+- `ssf status` asks every driver in use for its workspace list on every call
+  (a few hundred milliseconds); when a driver is not running the ssf side is
+  still reported and agent states show as unknown.
+- Cloud sessions (`driver = "cloud"`) act as the claude.ai account's GitHub
+  identity, not the bot's, and cannot be asked whether they are busy; see
+  [Drivers](#drivers-orca-herdr-cloud). Creating one without a self-hosted
+  environment drives the interactive `claude --cloud` in a pseudo-terminal.
 - The bar widget and menu entries are installed per user on first service
   start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
 - Logs: `journalctl --user -fu ssf.service`.

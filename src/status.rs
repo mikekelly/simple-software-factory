@@ -10,14 +10,15 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::config::{Config, RepoConfig};
+use crate::driver::Drivers;
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
-use crate::orca::{Orca, WorkspaceInfo};
+use crate::orca::WorkspaceInfo;
 use crate::state::{IssueState, State};
 
-/// How long `ssf status` waits for Orca before reporting it unavailable; the
-/// bar widget polls this, so it must never hang.
-const ORCA_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long `ssf status` waits for a driver before reporting it unavailable;
+/// the bar widget polls this, so it must never hang.
+const DRIVER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Session identity: `owner/repo#N`, the same form `--as` takes.
 pub fn session_id(repo: &str, number: u64) -> String {
@@ -135,21 +136,31 @@ impl Session {
 pub struct Snapshot {
     pub cfg: Config,
     pub state: State,
-    /// Orca's workspaces, or why they could not be listed.
+    /// The drivers' workspaces, or why they could not be listed. (The field
+    /// keeps its name from when Orca was the only driver; the JSON key too.)
     pub orca: Result<Vec<WorkspaceInfo>, String>,
 }
 
 impl Snapshot {
     pub async fn collect(cfg: Config) -> anyhow::Result<Self> {
         let state = State::load()?;
-        let orca = Orca::new(cfg.orca.clone());
-        let orca = match tokio::time::timeout(ORCA_TIMEOUT, orca.ps()).await {
-            Ok(Ok(list)) => Ok(list),
-            Ok(Err(e)) => Err(format!("{e:#}")),
-            Err(_) => Err(format!(
-                "orca worktree ps did not answer within {}s",
-                ORCA_TIMEOUT.as_secs()
-            )),
+        let mut all = Vec::new();
+        let mut errors = Vec::new();
+        for d in Drivers::from_config(&cfg).iter() {
+            match tokio::time::timeout(DRIVER_TIMEOUT, d.ps()).await {
+                Ok(Ok(list)) => all.extend(list),
+                Ok(Err(e)) => errors.push(format!("{}: {e:#}", d.label())),
+                Err(_) => errors.push(format!(
+                    "{} did not answer within {}s",
+                    d.label(),
+                    DRIVER_TIMEOUT.as_secs()
+                )),
+            }
+        }
+        let orca = if errors.is_empty() {
+            Ok(all)
+        } else {
+            Err(errors.join("; "))
         };
         Ok(Self { cfg, state, orca })
     }
@@ -521,8 +532,8 @@ pub fn render_status(snap: &Snapshot) -> String {
         out.push_str(&format!("error:   {e}\n"));
     }
     match &snap.orca {
-        Ok(list) => out.push_str(&format!("orca:    {} workspaces\n", list.len())),
-        Err(e) => out.push_str(&format!("orca:    unavailable ({e})\n")),
+        Ok(list) => out.push_str(&format!("driver:  {} workspaces\n", list.len())),
+        Err(e) => out.push_str(&format!("driver:  unavailable ({e})\n")),
     }
     out.push_str(&format!(
         "config:  {}\n",

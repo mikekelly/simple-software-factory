@@ -308,11 +308,18 @@ cmd_peers() {
 cmd_open_workspace() {
   local id="${1:-}" url="${2:-}"
   local orca="${ORCA_CLI_COMMAND:-/usr/lib/orca-ide/bin/orca-ide}"
-  if [[ -n $id && -x $orca ]] && "$orca" worktree show --worktree "id:$id" --json >/dev/null 2>&1; then
+  # Workspace ids tell the driver apart: Orca's carry `::`, herdr's are
+  # `w<N>`, the cloud driver's are local paths (nothing to focus).
+  if [[ -n $id && $id == *::* && -x $orca ]] && "$orca" worktree show --worktree "id:$id" --json >/dev/null 2>&1; then
     "$orca" worktree set --worktree "id:$id" --json >/dev/null 2>&1 || true
     "$orca" terminal switch --worktree "id:$id" --json >/dev/null 2>&1 || true
     omarchy-launch-or-focus orca-ide 2>/dev/null || true
     return
+  fi
+  if [[ -n $id && $id == w* && $id != */* ]] && command -v "${HERDR_COMMAND:-herdr}" >/dev/null 2>&1; then
+    if "${HERDR_COMMAND:-herdr}" workspace focus "$id" >/dev/null 2>&1; then
+      return
+    fi
   fi
   if [[ -n $url ]]; then
     omarchy-launch-browser "$url" 2>/dev/null || xdg-open "$url"
