@@ -150,14 +150,15 @@ pub struct DaemonConfig {
     /// Extra instructions appended to every initial prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-    /// Remove the Orca workspace after an issue is closed (once the agent has
-    /// finished wrapping up). The agent's conversation is kept on disk and the
-    /// workspace is re-created, resuming that conversation, if the issue comes
-    /// back to life.
+    /// No longer used: an item's workspace is never removed on close. The
+    /// agent releases it with `ssf release` once everything is on origin,
+    /// and `ssf purge` handles what is left. Accepted so old config files
+    /// still load.
     #[serde(default = "default_true")]
     pub cleanup_on_close: bool,
-    /// How long to wait for the agent to finish after a close before removing
-    /// the workspace anyway.
+    /// How long a reviewer session gets to finish after its review is done
+    /// or its pull request closes before its workspace (a read-only
+    /// checkout) is removed anyway. Item workspaces are not affected.
     #[serde(default = "default_cleanup_grace")]
     pub cleanup_grace_secs: u64,
     /// Label that asks for a review of a pull request one of the bot's own

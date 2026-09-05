@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::config::{Config, RepoConfig};
+use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
 use crate::orca::{Orca, WorkspaceInfo};
 use crate::state::{IssueState, State};
@@ -81,6 +82,16 @@ pub struct Session {
     pub bound_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<String>,
+    /// When `ssf release` or `ssf purge` removed the workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
+    /// For a retired item: `kept` (the workspace is still there), `released`
+    /// (removed by `ssf release`/`ssf purge`), `gone` (removed some other
+    /// way), `pending` (release approved, removal on the next pass), or
+    /// `given-up` (kept after the daemon refused the agent's release
+    /// three times; a person's to deal with).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr: Option<PrInfo>,
     /// Session that opened the item, from the origin tag in its body.
@@ -258,6 +269,38 @@ fn strip_ref(branch: &str) -> String {
         .to_string()
 }
 
+/// What became of a retired session's workspace; `None` for active items
+/// and for items tracked only for subscribers.
+fn workspace_state(
+    item: &IssueState,
+    ws: Option<&WorkspaceInfo>,
+    orca_available: bool,
+) -> Option<String> {
+    if item.active || item.subscriber_only {
+        return None;
+    }
+    // Retired before it was ever bound (unassigned during onboarding).
+    if item.worktree_id.is_none() && item.repo_id.is_none() && item.worktree_name.is_none() {
+        return None;
+    }
+    Some(
+        if item.release_pending {
+            "pending"
+        } else if item.worktree_id.is_some() && item.release_refusals >= MAX_RELEASE_REFUSALS {
+            "given-up"
+        } else if item.worktree_id.is_none() && item.released_at.is_some() {
+            "released"
+        } else if item.worktree_id.is_none() {
+            "gone"
+        } else if ws.is_some() || !orca_available {
+            "kept"
+        } else {
+            "gone"
+        }
+        .into(),
+    )
+}
+
 fn join(
     repo: &RepoConfig,
     item: &IssueState,
@@ -323,6 +366,8 @@ fn join(
         last_prompt_at: item.last_prompt_at.clone(),
         bound_at: item.bound_at.clone(),
         retired_at: item.retired_at.clone(),
+        released_at: item.released_at.clone(),
+        workspace_state: workspace_state(item, ws, orca_available),
         pr: item.pr.clone(),
         origin: item.origin.clone(),
         posts_by_session: item.origins.values().fold(BTreeMap::new(), |mut by, o| {
@@ -355,7 +400,7 @@ pub fn ago(iso: Option<&str>) -> String {
     }
 }
 
-fn one_line(text: &str, max: usize) -> String {
+pub fn one_line(text: &str, max: usize) -> String {
     let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= max {
         flat
@@ -429,7 +474,13 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         }
         facts.push(format!("prompts {}", s.prompts_sent));
         if !s.active && !s.subscriber_only {
-            facts.push("retired".into());
+            facts.push(match s.workspace_state.as_deref() {
+                Some("kept") => "retired, workspace kept".into(),
+                Some("released") => "retired, workspace released".into(),
+                Some("pending") => "retired, workspace being released".into(),
+                Some("given-up") => "retired, release given up, workspace kept".into(),
+                _ => "retired".into(),
+            });
         }
         out.push_str(&format!("         {}\n", facts.join("  ·  ")));
         if let Some(t) = &s.tool {
@@ -503,7 +554,21 @@ pub fn render_status(snap: &Snapshot) -> String {
                 s.title
             ));
             if let Some(p) = &s.worktree_path {
-                out.push_str(&format!("          {p}\n"));
+                out.push_str(&format!(
+                    "          {p}{}\n",
+                    match s.workspace_state.as_deref() {
+                        Some("kept") => "  (workspace kept)",
+                        Some("pending") => "  (being released)",
+                        Some("given-up") => "  (release given up, workspace kept)",
+                        Some("gone") => "  (workspace gone)",
+                        _ => "",
+                    }
+                ));
+            } else if s.workspace_state.as_deref() == Some("released") {
+                out.push_str(&format!(
+                    "          workspace released {}\n",
+                    ago(s.released_at.as_deref())
+                ));
             }
             if let Some(m) = &s.last_assistant_message {
                 out.push_str(&format!("          said: {}\n", one_line(m, 100)));

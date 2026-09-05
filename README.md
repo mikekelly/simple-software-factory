@@ -117,8 +117,9 @@ a last comment on the issue:
 > Done. After the next package install, the daemon will resume interrupted
 > sessions on start.
 
-Once the agent is done, ssf removes its workspace. The branch stays on
-GitHub. Twenty minutes passed between the assignment and the merge. The
+Once the agent is done and everything is on GitHub, it gives its workspace
+back with `ssf release`; ssf never removes one on its own. The branch stays
+on GitHub. Twenty minutes passed between the assignment and the merge. The
 human's part was the assignment, the label and the merge; on this
 repository even those were done by a project-management agent on the
 maintainer's instructions.
@@ -146,7 +147,8 @@ by a person.
   (a git worktree on its own branch) and its own agent session, from the
   moment the bot is assigned, @mentioned, or asked to review until the item
   is closed. Comment on the issue and the agent hears it. Close the issue
-  and the agent wraps up.
+  and the agent wraps up; its workspace stays until the agent, or a
+  person, says it can go.
 - **Agents know the project.** An agent is told the issue, everything that
   has happened on it, the project boards it is on and their columns, and
   the notes your repository keeps in `SSF.md` (how you want work done,
@@ -175,8 +177,9 @@ From then on every new comment, review, label or push on the item is pasted
 into that agent's terminal as a message: it steers the agent if it is busy
 and wakes it if it is idle. If a terminal is gone, or the whole workspace,
 ssf brings it back and resumes the same conversation, including after a
-reboot. When the item is closed the agent is told, and the workspace is
-removed once it has finished.
+reboot. When the item is closed the agent is told to push what is worth keeping
+and, only then, to release its workspace; ssf never deletes one that might
+hold work (see [Workspaces after close](#workspaces-after-close-release-and-purge)).
 
 The rest of this file is reference: install and set up, the command line,
 configuration, and how the pieces above are put together.
@@ -294,6 +297,8 @@ ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --
 ssf unsub 12
 ssf subs                          # what this session follows, who follows its items
 ssf tell 12 "stop, I'm changing the spec"   # steer that session from your shell: pastes into its terminal
+ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspace once its work is on origin
+ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ```
@@ -313,6 +318,7 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 | `owner`, `subscribers`, `subscriber_only`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `subscribers` are the sessions that hear about it without acting on it; `subscriber_only` marks an item tracked only for them (no owner, no workspace); `delegated_by` names the session that handed the item off (`mode=delegate`) |
 | `reviewing` | on a session of kind `reviewer` (id `owner/repo#N:reviewer`): the pull request it reviews (see [Reviewer sessions](#reviewer-sessions)) |
 | `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
+| `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
 
 `repos[].issues[]` carries the same objects, and `orca.available` says
@@ -346,8 +352,8 @@ instructions = "Run `make test` before opening a PR."
 | `orca.projects_dir` | `~/orca/projects` | Where repositories are cloned when Orca has no project for them |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
-| `daemon.cleanup_on_close` | `true` | Remove the workspace after the issue is closed and the agent has wrapped up |
-| `daemon.cleanup_grace_secs` | `900` | How long to let the agent wrap up before removing the workspace anyway |
+| `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](#workspaces-after-close-release-and-purge)); still accepted so old files load |
+| `daemon.cleanup_grace_secs` | `900` | How long a reviewer session gets to finish before its read-only workspace is removed anyway; item workspaces are not affected |
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](#reviewer-sessions)); `""` turns the label trigger off |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#under-the-hood)) |
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
@@ -454,8 +460,8 @@ Nothing in the prompt is about branches or worktrees: the agent decides for
 itself whether to stay on the branch ssf created, switch, or add worktrees
 of its own (for subagents, say). ssf binds a pull request to a session by
 the origin tag first and by the head branch second, so a PR from any branch
-still routes to the session that opened it, and cleanup removes only the
-session's own Orca worktree. Anything about *how* the agent should work
+still routes to the session that opened it, and `ssf release`/`ssf purge`
+only ever remove the session's own Orca worktree. Anything about *how* the agent should work
 (comment when it starts and finishes, ask rather than guess, commit as it
 goes, open a PR that references the issue, do not close or merge, how to
 review) is the repository's to say, in its
@@ -603,7 +609,8 @@ binding wins):
   session. If the owner has been retired or its workspace removed, it is
   brought back the way any lost session is (workspace re-created from its
   branch, conversation resumed), rather than replaced. A retired owner's
-  workspace is not cleaned up while items bound to it are still open. The
+  workspace cannot be released or purged while items bound to it are still
+  open. The
   one exception is a review asked on an owned pull request (a review
   request, or the `review` label), which gets a reviewer session (below):
   the author is told that, and not to review its own work.
@@ -690,7 +697,9 @@ another session's origin is that session's doing. A repeated request brings
 the same session back, with what happened in between, resuming its
 conversation (and re-creating its workspace at the PR's current head if that
 was removed). When the PR is closed or merged the reviewer is told, its
-workspace is marked completed and cleaned up like any other. Reviewer state
+workspace is marked completed and, being a read-only checkout that never
+holds work of its own, removed on its own once the agent is idle (or after
+`daemon.cleanup_grace_secs`). Reviewer state
 lives next to the items in `state.json` under `reviewers`, keyed by PR
 number; its `triggers` say what asked for the review (`review_label`,
 `review_requested`).
@@ -760,6 +769,59 @@ subscribed to B's issue. This is the default channel between agents:
 `ssf guide` says so, and a `tell` message repeats in one line that the
 answer goes on the item.
 
+## Workspaces after close: release and purge
+
+ssf never deletes a workspace that might hold unpushed work. Closing an
+issue is a signal anyone can send, an agent included, and the moment the
+agent looks idle is not the moment its last commit is safe. So when an item
+closes (or the bot is unassigned) the agent gets one message and the
+worktree is left exactly as it is, whatever state it is in. The message
+tells the agent to commit what is worth keeping, push, leave a final
+comment, and then, only if everything is on origin, run `ssf release`.
+
+- **`ssf release`** (inside the session, or `ssf release 12` /
+  `--as owner/repo#12` from a shell) asks the daemon to remove the
+  session's workspace after checking, in the worktree, that the tree is
+  clean (no modified or untracked files; ignored build artefacts do not
+  count), that the checked-out branch is on origin with no unpushed
+  commits, and that no stash entry was made on that branch. If any check
+  fails it prints what would be lost and refuses; nothing is removed.
+  A person who has looked can pass `--force` (from a shell, not inside the
+  session). The daemon removes the workspace, and its terminal, on its next
+  pass, running the checks once more first. If that re-check finds work
+  (the tree changed after the agent asked, or a push did not land) the
+  release is dropped and the agent gets one `[ssf] Release ... refused`
+  message naming what would be lost, so it can fix that and ask again.
+  After three such refusals on the same item the daemon stops telling the
+  agent, refuses further `ssf release` from it, and marks the item
+  "release given up, workspace kept" (in `ssf status`, `ssf peers --all`
+  and `ssf purge --dry-run`) for a person to deal with; only the daemon's
+  own refusals count, not the ones `ssf release` prints straight away.
+  A release is also refused while the item is still open and assigned, or
+  while the session still owns open items (a pull request bound to it,
+  say), and one already accepted is dropped if the item comes back to life
+  before the pass. Reviewer sessions look after themselves and are not
+  released by hand.
+- **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
+  for what agents left behind: every workspace whose item is closed and
+  whose session has no running agent, listed with its state (`clean and
+  pushed`, `dirty`, `unpushed commits`, `unknown` for a detached head or an
+  unreachable origin, `agent running`). The clean and pushed ones are
+  removed; the rest are reported and kept unless `--force`. Workspaces of
+  open items, of sessions that still own open items, and with a running
+  agent are never touched. `--older-than` limits it to items retired more
+  than that many days ago; `--json` gives the same rows as data.
+- **What the record says.** A released or purged item is marked
+  `released` (with `released_at`), and `ssf status`/`ssf peers --all` show
+  "retired, workspace kept", "retired, workspace released" or "retired,
+  release given up, workspace kept" for closed items, so a person can see
+  what is lying around. The old `daemon.cleanup_on_close` key is accepted
+  but does nothing.
+- **Coming back is unchanged.** A released or purged workspace is re-created
+  from its branch on origin on the item's next event (reopening,
+  re-assignment, a comment on a bound pull request), and the conversation
+  resumes.
+
 ## Under the hood
 
 The details behind [How it works](#how-it-works).
@@ -802,18 +864,21 @@ The details behind [How it works](#how-it-works).
   or say on the item what is left. Relaunches happen one at a time, each
   waiting for its agent to settle. Sessions that are still running are not
   touched, workspaces that are gone are brought back on their next event,
-  and sessions whose workspace is waiting for cleanup are skipped. At start
+  and sessions whose workspace was released or is about to be are skipped.
+  At start
   the daemon waits for Orca (`daemon.startup_orca_wait_secs`, checking every
   ten seconds) before its first poll; if Orca is still not up by then,
   polling starts anyway and the pass runs on the first poll that finds it.
   `daemon.resume_on_start = false` turns the pass off. `ssf run --once` runs
   it too.
-- **Retirement and cleanup.** Closed or unassigned issues get one final
-  message and are marked inactive. For closed issues, once the agent is idle
-  (or after `daemon.cleanup_grace_secs`), the workspace is removed
-  (`daemon.cleanup_on_close`, default on). Work that was pushed survives on
-  the remote branch; re-assigning or reopening the issue re-creates the
-  workspace and resumes the conversation.
+- **Retirement.** Closed or unassigned issues get one final message (push,
+  final comment, then `ssf release` if everything is on origin) and are
+  marked inactive; the workspace is marked completed in Orca and left in
+  place. Removal is the agent's (`ssf release`) or a person's (`ssf purge`)
+  to ask for, and is refused whenever the worktree holds anything that is
+  not on origin (see [Workspaces after close](#workspaces-after-close-release-and-purge)).
+  Re-assigning or reopening the issue re-creates a released workspace and
+  resumes the conversation.
 
 ## Notes and limitations (v1)
 

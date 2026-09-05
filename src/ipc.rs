@@ -1,5 +1,5 @@
-//! Requests from the CLI to the running daemon (`ssf sub|unsub|tell`), over a
-//! Unix socket in the state directory.
+//! Requests from the CLI to the running daemon (`ssf sub|unsub|tell`,
+//! `ssf release|purge`), over a Unix socket in the state directory.
 //!
 //! The daemon keeps the state in memory and writes it out wholesale, so
 //! anything that changes it (a subscription) or needs its delivery path (a
@@ -63,6 +63,20 @@ pub enum Request {
         from: Option<String>,
         target: String,
         text: String,
+    },
+    /// Remove the workspace of `session` (`owner/repo#N`) once the checks
+    /// in `crate::release` pass; `force` skips them.
+    Release {
+        session: String,
+        force: bool,
+    },
+    /// List, and unless `dry_run` remove, the workspaces of closed items
+    /// whose agent is gone: the clean-and-pushed ones, or all of them with
+    /// `force`. `older_than_days` keeps recently retired ones out of it.
+    Purge {
+        dry_run: bool,
+        older_than_days: Option<u64>,
+        force: bool,
     },
     Ping,
 }
@@ -177,6 +191,14 @@ mod tests {
         let j = serde_json::to_string(&r).unwrap();
         assert!(j.contains("\"op\":\"tell\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), r);
+        let p = Request::Purge {
+            dry_run: true,
+            older_than_days: Some(7),
+            force: false,
+        };
+        let j = serde_json::to_string(&p).unwrap();
+        assert!(j.contains("\"op\":\"purge\""));
+        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), p);
         let e = serde_json::to_string(&Response::err("nope")).unwrap();
         let back: Response = serde_json::from_str(&e).unwrap();
         assert!(!back.ok);
