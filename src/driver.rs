@@ -590,9 +590,10 @@ pub fn err_no_field(what: &str, v: &serde_json::Value) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn log_lines_never_carry_the_token() {
-        use super::redacted;
         let wrapper = "SSF_CONFIG_DIR='/c' SSF_STATE_DIR='/s' SSF_GITHUB_TOKEN='gho_abc123' '/bin/ssf' launch --repo 'o/r' -- 'claude'";
         assert_eq!(
             redacted(wrapper),
@@ -614,8 +615,6 @@ mod tests {
         assert_eq!(redacted("claude --model haiku"), "claude --model haiku");
         assert!(!redacted(wrapper).contains("gho_"));
     }
-
-    use super::*;
 
     #[test]
     fn repo_root_tolerates_orca_ids() {

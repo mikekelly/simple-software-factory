@@ -242,7 +242,7 @@ impl Orca {
         let Some(v) = parsed else {
             bail!(
                 "orca {} produced no JSON (exit {:?}): {} {}",
-                args.join(" "),
+                crate::driver::redacted_args(args).join(" "),
                 out.status.code(),
                 stdout.trim().chars().take(400).collect::<String>(),
                 stderr.trim().chars().take(400).collect::<String>()
@@ -258,7 +258,10 @@ impl Orca {
             .and_then(Value::as_str)
             .map(str::to_string)
             .unwrap_or_else(|| err.to_string());
-        bail!("orca {} failed [{code}]: {msg}", args.join(" "))
+        bail!(
+            "orca {} failed [{code}]: {msg}",
+            crate::driver::redacted_args(args).join(" ")
+        )
     }
 
     pub async fn status(&self) -> Result<Value> {

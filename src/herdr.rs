@@ -224,7 +224,7 @@ impl Herdr {
         let Some(v) = parsed else {
             bail!(
                 "herdr {} produced no JSON: {}",
-                args.join(" "),
+                crate::driver::redacted_args(args).join(" "),
                 stdout.trim().chars().take(400).collect::<String>()
             );
         };
@@ -269,7 +269,10 @@ impl Herdr {
                         stderr.trim().chars().take(400).collect::<String>()
                     )
                 });
-            bail!("herdr {} failed: {msg}", args.join(" "));
+            bail!(
+                "herdr {} failed: {msg}",
+                crate::driver::redacted_args(args).join(" ")
+            );
         }
         Ok(stdout.to_string())
     }
