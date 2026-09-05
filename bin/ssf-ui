@@ -308,8 +308,7 @@ cmd_peers() {
 cmd_open_workspace() {
   local id="${1:-}" url="${2:-}"
   local orca="${ORCA_CLI_COMMAND:-/usr/lib/orca-ide/bin/orca-ide}"
-  # Workspace ids tell the driver apart: Orca's carry `::`, herdr's are
-  # `w<N>`, the cloud driver's are local paths (nothing to focus).
+  # Workspace ids tell the driver apart: Orca's carry `::`, herdr's are `w<N>`.
   if [[ -n $id && $id == *::* && -x $orca ]] && "$orca" worktree show --worktree "id:$id" --json >/dev/null 2>&1; then
     "$orca" worktree set --worktree "id:$id" --json >/dev/null 2>&1 || true
     "$orca" terminal switch --worktree "id:$id" --json >/dev/null 2>&1 || true

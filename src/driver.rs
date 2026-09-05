@@ -1,6 +1,6 @@
 //! The driver boundary: everything the engine asks of whatever runs the
-//! agents. Orca was the only such thing; now it is one of three, chosen per
-//! repository (`driver = "orca" | "herdr" | "cloud"`).
+//! agents. Orca was the only such thing; now it is one of two, chosen per
+//! repository (`driver = "orca" | "herdr"`).
 //!
 //! A driver owns three things. A *project*: a checkout of the repository on
 //! this machine (Orca keeps its own registry of those; the others clone
@@ -16,7 +16,6 @@ use anyhow::{Context, Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
-use crate::cloud::Cloud;
 use crate::config::{Config, DriverKind};
 use crate::herdr::Herdr;
 use crate::orca::{Delivery, Orca, ProjectSetup, WorkspaceInfo, Worktree};
@@ -27,7 +26,6 @@ use crate::release::git;
 pub enum Driver {
     Orca(Orca),
     Herdr(Herdr),
-    Cloud(Cloud),
 }
 
 /// How a prompt is delivered when the agent has to be started again: the
@@ -49,19 +47,6 @@ impl Driver {
         match kind {
             DriverKind::Orca => Driver::Orca(Orca::new(cfg.orca.clone())),
             DriverKind::Herdr => Driver::Herdr(Herdr::new(cfg.herdr.clone())),
-            DriverKind::Cloud => {
-                let projects = cfg.projects_dir(DriverKind::Cloud);
-                let roots = cfg
-                    .repos
-                    .iter()
-                    .filter(|r| cfg.driver_for(r) == DriverKind::Cloud)
-                    .map(|r| match r.path.as_deref() {
-                        Some(p) => crate::config::expand_tilde(p).to_string_lossy().to_string(),
-                        None => projects.join(&r.name).to_string_lossy().to_string(),
-                    })
-                    .collect();
-                Driver::Cloud(Cloud::new(cfg.cloud.clone()).with_roots(roots))
-            }
         }
     }
 
@@ -69,7 +54,6 @@ impl Driver {
         match self {
             Driver::Orca(_) => DriverKind::Orca,
             Driver::Herdr(_) => DriverKind::Herdr,
-            Driver::Cloud(_) => DriverKind::Cloud,
         }
     }
 
@@ -82,7 +66,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.command(),
             Driver::Herdr(d) => d.command(),
-            Driver::Cloud(d) => d.command(),
         }
     }
 
@@ -91,7 +74,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.status().await.map(|_| ()),
             Driver::Herdr(d) => d.status().await,
-            Driver::Cloud(d) => d.status().await,
         }
     }
 
@@ -110,7 +92,7 @@ impl Driver {
                 d.ensure_project(owner, repo, clone_url, existing_path, projects_dir)
                     .await
             }
-            Driver::Herdr(_) | Driver::Cloud(_) => {
+            Driver::Herdr(_) => {
                 ensure_local_checkout(repo, clone_url, existing_path, projects_dir).await
             }
         }
@@ -125,7 +107,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.find_worktree_for_issue(repo_id, number).await,
             Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, number).await,
-            Driver::Cloud(d) => d.find_worktree_for_issue(repo_id, number).await,
         }
     }
 
@@ -145,7 +126,6 @@ impl Driver {
                     .await
             }
             Driver::Herdr(d) => d.create_worktree(repo_id, name, comment, base_branch).await,
-            Driver::Cloud(d) => d.create_worktree(repo_id, name, base_branch).await,
         }
     }
 
@@ -153,7 +133,7 @@ impl Driver {
     pub async fn repo_path(&self, repo_id: &str) -> Result<String> {
         match self {
             Driver::Orca(d) => d.repo_path(repo_id).await,
-            Driver::Herdr(_) | Driver::Cloud(_) => Ok(repo_root(repo_id).to_string()),
+            Driver::Herdr(_) => Ok(repo_root(repo_id).to_string()),
         }
     }
 
@@ -187,7 +167,6 @@ impl Driver {
                 d.send_prompt(&handle, text).await?;
                 Ok(handle)
             }
-            Driver::Cloud(d) => d.start(worktree_id, command, text).await,
         }
     }
 
@@ -196,7 +175,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.worktree_exists(worktree_id).await,
             Driver::Herdr(d) => d.worktree_exists(worktree_id).await,
-            Driver::Cloud(d) => d.worktree_exists(worktree_id).await,
         }
     }
 
@@ -205,7 +183,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.ps().await,
             Driver::Herdr(d) => d.ps().await,
-            Driver::Cloud(d) => d.ps().await,
         }
     }
 
@@ -214,7 +191,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.agent_busy(worktree_id).await,
             Driver::Herdr(d) => d.agent_busy(worktree_id).await,
-            Driver::Cloud(d) => d.agent_busy(worktree_id).await,
         }
     }
 
@@ -223,7 +199,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.remove_worktree(worktree_id).await,
             Driver::Herdr(d) => d.remove_worktree(worktree_id).await,
-            Driver::Cloud(d) => d.remove_worktree(worktree_id).await,
         }
     }
 
@@ -232,7 +207,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.set_comment(worktree_id, comment).await,
             Driver::Herdr(d) => d.set_comment(worktree_id, comment).await,
-            Driver::Cloud(_) => Ok(()),
         }
     }
 
@@ -241,7 +215,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.set_status(worktree_id, status).await,
             Driver::Herdr(d) => d.set_status(worktree_id, status).await,
-            Driver::Cloud(_) => Ok(()),
         }
     }
 
@@ -251,7 +224,6 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.has_live_agent(worktree_id).await,
             Driver::Herdr(d) => d.has_live_agent(worktree_id).await,
-            Driver::Cloud(d) => d.has_live_agent(worktree_id).await,
         }
     }
 
@@ -279,10 +251,6 @@ impl Driver {
                 .await
             }
             Driver::Herdr(d) => {
-                d.deliver(worktree_id, preferred_handle, &relaunch, text)
-                    .await
-            }
-            Driver::Cloud(d) => {
                 d.deliver(worktree_id, preferred_handle, &relaunch, text)
                     .await
             }

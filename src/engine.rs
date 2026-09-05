@@ -2826,11 +2826,6 @@ are resumed on the first pass that finds it: {err:#}"
         inner: &str,
         reviewer: bool,
     ) -> String {
-        if !self.cfg.driver_for(repo).is_local() {
-            // Nothing of ssf's runs where the agent does; the driver starts
-            // the harness itself.
-            return inner.to_string();
-        }
         let me = std::env::current_exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "ssf".to_string());
@@ -3779,22 +3774,6 @@ mod tests {
             failures: BTreeMap::new(),
             startup_pass_pending: false,
         }
-    }
-
-    #[test]
-    fn cloud_sessions_get_the_bare_harness_command() {
-        let mut e = engine();
-        let mut r = repo();
-        let local = e.launch_command(&r, 7, "https://x/7", "claude --model opus", false);
-        assert!(local.contains(" launch --repo "));
-        assert!(local.contains(" --issue 7 "));
-        assert!(local.ends_with("-- 'claude --model opus'"));
-        r.driver = Some(DriverKind::Cloud);
-        e.cfg.repos = vec![r.clone()];
-        assert_eq!(
-            e.launch_command(&r, 7, "https://x/7", "claude --model opus", false),
-            "claude --model opus"
-        );
     }
 
     fn repo() -> RepoConfig {

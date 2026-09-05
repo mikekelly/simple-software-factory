@@ -5,7 +5,6 @@
 //! into that agent.
 
 mod agents;
-mod cloud;
 mod config;
 mod driver;
 mod engine;
@@ -264,7 +263,7 @@ enum RepoCommand {
         /// Agent id to run in each issue workspace (see `ssf agents`).
         #[arg(long)]
         harness: String,
-        /// Where this repository's sessions run: orca, herdr or cloud (default: the top-level `driver`).
+        /// Where this repository's sessions run: orca or herdr (default: the top-level `driver`).
         #[arg(long)]
         driver: Option<String>,
         /// Existing local checkout to use instead of cloning.
@@ -297,7 +296,7 @@ enum RepoCommand {
         name: String,
         #[arg(long)]
         harness: Option<String>,
-        /// orca, herdr or cloud.
+        /// orca or herdr.
         #[arg(long)]
         driver: Option<String>,
         #[arg(long)]
@@ -1925,15 +1924,6 @@ async fn doctor() -> Result<()> {
                 Ok(()) => check(true, format!("{} reachable and ready", d.label())),
                 Err(e) => check(false, format!("{}: {e:#}", d.label())),
             }
-        }
-        if d.kind() == config::DriverKind::Cloud
-            && cfg.cloud.environment.is_none()
-            && which("script").is_none()
-        {
-            check(
-                false,
-                "cloud driver: `script` (util-linux) is needed to create sessions".into(),
-            );
         }
     }
     match ipc::call(&ipc::Request::Ping).await {

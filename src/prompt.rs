@@ -681,7 +681,6 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let multiplexer = match ctx.driver {
         DriverKind::Orca => "the Orca multiplexer",
         DriverKind::Herdr => "the herdr multiplexer",
-        DriverKind::Cloud => "a Claude Code cloud session",
     };
     let mut s = format!(
         "\n## How to work on this\n\n\
@@ -1442,8 +1441,6 @@ mod tests {
             project_prompt: None,
         };
         assert!(instructions(&issue, &ctx).contains("through the herdr multiplexer"));
-        ctx.driver = DriverKind::Cloud;
-        assert!(instructions(&issue, &ctx).contains("through a Claude Code cloud session"));
         ctx.driver = DriverKind::Orca;
         assert!(instructions(&issue, &ctx).contains("through the Orca multiplexer"));
     }

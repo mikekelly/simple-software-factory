@@ -11,8 +11,8 @@
 # ssh_key_id = 0
 # signing_key_id = 0
 
-# What runs the agents: "orca" (default), "herdr", or "cloud" (Claude Code
-# cloud sessions). A [[repo]] can pick its own with `driver = "..."`.
+# What runs the agents: "orca" (default) or "herdr". A [[repo]] can pick
+# its own with `driver = "..."`.
 # driver = "orca"
 
 [orca]
@@ -27,12 +27,6 @@
 # projects_dir = "~/ssf/projects"              # ssf clones repos here; worktrees go in <name>.worktrees/ next to the clone
 # tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
 
-[cloud]
-# command = "claude"                           # Claude Code, signed in to claude.ai (`claude auth login`)
-# projects_dir = "~/ssf/projects"              # local clone each session is started from (its branch is pushed first)
-# environment = "ccpool_..."                   # a self-hosted cloud environment: sessions are created without a terminal
-# create_timeout_secs = 600                    # how long creating a session may take
-# attach_grace_secs = 20                       # how long `claude --cloud` stays attached after reporting the session id
 
 [daemon]
 # poll_interval_secs = 10
@@ -52,7 +46,7 @@
 [[repo]]
 name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
-# driver = "herdr"                             # orca | herdr | cloud (default: the top-level `driver`)
+# driver = "herdr"                             # orca | herdr (default: the top-level `driver`)
 # command = "claude --dangerously-skip-permissions"   # how the agent is started (default: the harness id); run via `ssf launch`
 # model = "opus"                               # Orca model id, or provider/model for pi/omp/opencode (see `ssf models <agent>`)
 # effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)

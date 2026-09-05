@@ -8,7 +8,7 @@
 pkgname=ssf
 pkgver=0.1.0.r91.g846c7a6
 pkgrel=1
-pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in Orca, herdr or the cloud"
+pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in Orca or herdr"
 arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
@@ -17,7 +17,6 @@ makedepends=('cargo')
 optdepends=(
   'orca-ide-bin: Orca desktop app and CLI, the default driver (not yet in the Omarchy repo; install manually)'
   'herdr: terminal workspace manager, an alternative driver (driver = "herdr")'
-  'util-linux: script(1), used by the cloud driver to create Claude Code cloud sessions'
   'omarchy: bar widget, menu entries and floating-terminal flows'
   'gum: nicer prompts in ssf-ui'
   'github-cli: lets agents comment on issues as the bot'

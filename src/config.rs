@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 pub const DEFAULT_ORCA_COMMAND: &str = "/usr/lib/orca-ide/bin/orca-ide";
 
-/// What runs the agents: the multiplexer (or service) that holds the
-/// workspaces and terminals ssf creates and delivers prompts into.
+/// What runs the agents: the multiplexer that holds the workspaces and
+/// terminals ssf creates and delivers prompts into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DriverKind {
@@ -16,18 +16,14 @@ pub enum DriverKind {
     Orca,
     /// The herdr terminal workspace manager (`herdr`).
     Herdr,
-    /// Claude Code cloud sessions (`claude --cloud`): nothing runs locally
-    /// but a checkout the sessions are started from.
-    Cloud,
 }
 
 impl DriverKind {
-    /// The config value (`orca`, `herdr`, `cloud`).
+    /// The config value (`orca`, `herdr`).
     pub fn id(self) -> &'static str {
         match self {
             DriverKind::Orca => "orca",
             DriverKind::Herdr => "herdr",
-            DriverKind::Cloud => "cloud",
         }
     }
 
@@ -36,14 +32,7 @@ impl DriverKind {
         match self {
             DriverKind::Orca => "Orca",
             DriverKind::Herdr => "herdr",
-            DriverKind::Cloud => "Claude Code cloud",
         }
-    }
-
-    /// Whether agents run on this machine, where `ssf launch` gives them the
-    /// bot's identity and the `ssf` CLI (cloud sessions have neither).
-    pub fn is_local(self) -> bool {
-        !matches!(self, DriverKind::Cloud)
     }
 }
 
@@ -54,8 +43,7 @@ impl std::str::FromStr for DriverKind {
         match s.trim().to_ascii_lowercase().as_str() {
             "orca" => Ok(DriverKind::Orca),
             "herdr" => Ok(DriverKind::Herdr),
-            "cloud" | "claude-cloud" => Ok(DriverKind::Cloud),
-            other => bail!("unknown driver {other:?}; use orca, herdr or cloud"),
+            other => bail!("unknown driver {other:?}; use orca or herdr"),
         }
     }
 }
@@ -78,8 +66,6 @@ pub struct Config {
     pub orca: OrcaConfig,
     #[serde(default)]
     pub herdr: HerdrConfig,
-    #[serde(default)]
-    pub cloud: CloudConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
     #[serde(default, rename = "repo")]
@@ -225,57 +211,6 @@ fn default_herdr_command() -> String {
 }
 fn default_ssf_projects_dir() -> String {
     "~/ssf/projects".to_string()
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CloudConfig {
-    /// The Claude Code CLI, signed in (`claude auth login`) to the claude.ai
-    /// account whose cloud sessions these are.
-    #[serde(default = "default_cloud_command")]
-    pub command: String,
-    /// Parent directory that ssf clones repositories into; every cloud
-    /// session is started from a worktree of the clone on the item's branch,
-    /// which is what the cloud VM checks out.
-    #[serde(default = "default_ssf_projects_dir")]
-    pub projects_dir: String,
-    /// A self-hosted cloud environment (`ccpool_...`) to run sessions on.
-    /// With it, sessions are created without a terminal
-    /// (`claude -p ... --environment`); without it, `claude --cloud` is run
-    /// in a pseudo-terminal until it has created the session.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<String>,
-    /// How long a session creation may take (cloning the repository in the
-    /// cloud included).
-    #[serde(default = "default_cloud_create_timeout")]
-    pub create_timeout_secs: u64,
-    /// After `claude --cloud` has reported the new session's id, how long it
-    /// is left attached so the task description is delivered before ssf
-    /// closes its terminal.
-    #[serde(default = "default_cloud_attach_grace")]
-    pub attach_grace_secs: u64,
-}
-
-impl Default for CloudConfig {
-    fn default() -> Self {
-        Self {
-            command: default_cloud_command(),
-            projects_dir: default_ssf_projects_dir(),
-            environment: None,
-            create_timeout_secs: default_cloud_create_timeout(),
-            attach_grace_secs: default_cloud_attach_grace(),
-        }
-    }
-}
-
-fn default_cloud_command() -> String {
-    std::env::var("SSF_CLAUDE_COMMAND").unwrap_or_else(|_| "claude".to_string())
-}
-fn default_cloud_create_timeout() -> u64 {
-    600
-}
-fn default_cloud_attach_grace() -> u64 {
-    20
 }
 
 fn default_tui_timeout() -> u64 {
@@ -611,7 +546,6 @@ impl Config {
         expand_tilde(match driver {
             DriverKind::Orca => &self.orca.projects_dir,
             DriverKind::Herdr => &self.herdr.projects_dir,
-            DriverKind::Cloud => &self.cloud.projects_dir,
         })
     }
 
@@ -680,24 +614,22 @@ harness = "claude"
 [[repo]]
 name = "c/d"
 harness = "claude"
-driver = "cloud"
+driver = "orca"
 "#,
         )
         .unwrap();
         assert_eq!(cfg.driver, DriverKind::Herdr);
         assert_eq!(cfg.driver_for(&cfg.repos[0]), DriverKind::Herdr);
-        assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Cloud);
+        assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Orca);
         assert_eq!(
             cfg.drivers_in_use(),
-            vec![DriverKind::Herdr, DriverKind::Cloud]
+            vec![DriverKind::Orca, DriverKind::Herdr]
         );
         assert!(cfg.projects_dir(DriverKind::Herdr).ends_with("work"));
         assert!(
-            cfg.projects_dir(DriverKind::Cloud)
-                .ends_with("ssf/projects")
+            cfg.projects_dir(DriverKind::Orca)
+                .ends_with("orca/projects")
         );
-        assert!(!DriverKind::Cloud.is_local());
-        assert!(DriverKind::Herdr.is_local());
         let empty = Config::default();
         assert_eq!(empty.driver, DriverKind::Orca);
         assert_eq!(empty.drivers_in_use(), vec![DriverKind::Orca]);
@@ -705,9 +637,9 @@ driver = "cloud"
         assert!("tmux".parse::<DriverKind>().is_err());
         // The per-repo choice round-trips through the file.
         let text = toml::to_string(&cfg).unwrap();
-        assert!(text.contains("driver = \"cloud\""));
+        assert!(text.contains("driver = \"orca\""));
         let again: Config = toml::from_str(&text).unwrap();
-        assert_eq!(again.repos[1].driver, Some(DriverKind::Cloud));
+        assert_eq!(again.repos[1].driver, Some(DriverKind::Orca));
         assert_eq!(again.repos[0].driver, None);
     }
 

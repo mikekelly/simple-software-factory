@@ -22,7 +22,7 @@ post_install() {
 ==> Simple Software Factory (ssf) is installed.
     It runs as a per-user service (ssf.service) and starts with the graphical session.
     Orca must be installed separately (orca-ide-bin) until it is packaged for Omarchy;
-    herdr (driver = "herdr") or Claude Code cloud sessions (driver = "cloud") work instead.
+    herdr works instead (driver = "herdr").
 MSG
   if ! _start_for_logged_in_users start; then
     echo "    No running user session found; it starts at next login, or now with:"
