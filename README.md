@@ -638,8 +638,9 @@ binding wins):
   was ignored with is kept in `state.json` (under `ignored`, per
   repository), so a daemon restart does not fetch every such item again the
   next time a listing changes; the record goes when the item leaves every
-  listing. Items opened from a session on a *different* repository are not
-  bound across repositories.
+  listing. (A state file from before this record existed still costs one
+  walk on the first pass that sees a change.) Items opened from a session
+  on a *different* repository are not bound across repositories.
 
 `ssf status --json` shows the binding as `owner` / `shares_workspace_of`
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
