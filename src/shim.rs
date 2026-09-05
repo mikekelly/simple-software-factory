@@ -2,6 +2,8 @@
 //! launch` puts first on the agent's PATH. It points at the ssf binary, which
 //! notices it was invoked as `gh`, prepends the session's byline and origin
 //! tag to the body of anything that posts to GitHub, and execs the real gh.
+//! The same directory carries an `ssf` link to the same binary, so the `ssf`
+//! commands the prompts name run the daemon's build.
 //!
 //! Only `issue create|comment` and `pr create|comment|review` are touched;
 //! every other invocation is passed on untouched. An `issue create` or `pr
@@ -42,20 +44,47 @@ pub fn invoked_as_gh() -> bool {
         .unwrap_or(false)
 }
 
-/// Make `<dir>/gh` a symlink to `exe`, replacing whatever is there.
+/// Names linked to the ssf binary in the shim directory: `gh` (the shim)
+/// and `ssf` itself, so `ssf release`, `ssf sub`, `ssf tell` and the rest
+/// run the daemon's own build rather than whatever `ssf` the agent's shell
+/// happens to have (an older package, or nothing).
+pub const LINKS: [&str; 2] = ["gh", "ssf"];
+
+/// Make `<dir>/gh` and `<dir>/ssf` symlinks to `exe`, replacing whatever
+/// is there.
 pub fn install(exe: &Path) -> Result<PathBuf> {
     let dir = dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let link = dir.join("gh");
-    if std::fs::read_link(&link).ok().as_deref() == Some(exe) {
-        return Ok(dir);
-    }
-    let tmp = dir.join(format!("gh.tmp.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    std::os::unix::fs::symlink(exe, &tmp)
-        .with_context(|| format!("linking {} -> {}", tmp.display(), exe.display()))?;
-    std::fs::rename(&tmp, &link).with_context(|| format!("installing {}", link.display()))?;
+    install_in(&dir, exe)?;
     Ok(dir)
+}
+
+fn install_in(dir: &Path, exe: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    for name in LINKS {
+        let link = dir.join(name);
+        if std::fs::read_link(&link).ok().as_deref() == Some(exe) {
+            continue;
+        }
+        let tmp = dir.join(format!("{name}.tmp.{}", std::process::id()));
+        let _ = std::fs::remove_file(&tmp);
+        std::os::unix::fs::symlink(exe, &tmp)
+            .with_context(|| format!("linking {} -> {}", tmp.display(), exe.display()))?;
+        std::fs::rename(&tmp, &link).with_context(|| format!("installing {}", link.display()))?;
+    }
+    Ok(())
+}
+
+/// The first `ssf` on PATH outside the shim directory, if any: what an
+/// agent's shell would run without the shim directory in front.
+pub fn ssf_on_path() -> Option<PathBuf> {
+    let shim_dir = dir();
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .filter(|d| {
+            *d != shim_dir && std::fs::canonicalize(d).ok() != std::fs::canonicalize(&shim_dir).ok()
+        })
+        .map(|d| d.join("ssf"))
+        .find(|p| p.is_file())
 }
 
 /// Where the shim currently points, if it is installed.
@@ -929,6 +958,25 @@ mod tests {
             )),
             "{out:?}"
         );
+    }
+
+    #[test]
+    fn install_links_gh_and_ssf_to_the_binary() {
+        let dir = std::env::temp_dir().join(format!("ssf-shim-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let exe = Path::new("/opt/ssf/bin/ssf");
+        install_in(&dir, exe).unwrap();
+        for name in LINKS {
+            assert_eq!(std::fs::read_link(dir.join(name)).unwrap(), exe, "{name}");
+        }
+        // A second install with another target replaces both links.
+        let other = Path::new("/opt/ssf/bin/ssf-2");
+        install_in(&dir, other).unwrap();
+        for name in LINKS {
+            assert_eq!(std::fs::read_link(dir.join(name)).unwrap(), other, "{name}");
+        }
+        assert!(!dir.join(format!("gh.tmp.{}", std::process::id())).exists());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

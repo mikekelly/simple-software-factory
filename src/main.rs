@@ -383,8 +383,8 @@ enum ServiceCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // `ssf launch` links `~/.config/ssf/bin/gh` to this binary; invoked under
-    // that name we are the gh shim, not the daemon.
+    // `ssf launch` links `~/.config/ssf/bin/gh` (and `ssf`) to this binary;
+    // invoked under the gh name we are the gh shim, not the daemon.
     if shim::invoked_as_gh() {
         shim::run();
     }
@@ -2013,6 +2013,28 @@ async fn doctor() -> Result<()> {
             }
         ),
     );
+    let me = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    match shim::ssf_on_path() {
+        Some(p) if me.is_some() && std::fs::canonicalize(&p).ok() != me => check(
+            false,
+            format!(
+                "ssf on PATH at {} is not this binary; agents get this one through {} once ssf launch has run",
+                p.display(),
+                shim::dir().display()
+            ),
+        ),
+        Some(p) => check(
+            true,
+            format!("ssf on PATH at {} is this binary", p.display()),
+        ),
+        None => check(
+            true,
+            format!(
+                "no ssf on PATH; agents get this one through {} once ssf launch has run",
+                shim::dir().display()
+            ),
+        ),
+    }
     let st = state::State::load().unwrap_or_default();
     let untagged: Vec<String> = st
         .repos
