@@ -7,7 +7,10 @@
 //! Workspace ids are herdr's id and the checkout it was opened on, as
 //! `w7@/path/to/worktree`: herdr's ids alone are opaque, and the path is
 //! what says a workspace with that id is still ours before anything is
-//! sent to it or removed. Prompt handles are pane ids (`w7:p1`).
+//! sent to it or removed. That check asks herdr which worktree the
+//! workspace is bound to (`worktree list --workspace`), never a pane's
+//! cwd, which follows whatever a shell in it does. Prompt handles are
+//! pane ids (`w7:p1`).
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
@@ -59,6 +62,11 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
     }
 }
 
+fn is_not_found(e: &anyhow::Error) -> bool {
+    let msg = e.to_string().to_lowercase();
+    msg.contains("not_found") || msg.contains("not found")
+}
+
 pub fn make_id(workspace_id: &str, path: &str) -> String {
     format!("{workspace_id}@{path}")
 }
@@ -102,6 +110,27 @@ pub fn parse_panes(v: &Value) -> Vec<Pane> {
             })
         })
         .collect()
+}
+
+/// The checkout herdr has a workspace bound to, from `herdr worktree list`.
+pub fn bound_worktree(v: &Value, workspace_id: &str) -> Option<String> {
+    worktree_rows(v)
+        .find(|w| s(w, "open_workspace_id").as_deref() == Some(workspace_id))
+        .and_then(|w| s(w, "path"))
+}
+
+/// The workspace herdr has open on a checkout, from `herdr worktree list`.
+pub fn workspace_on(v: &Value, path: &str) -> Option<String> {
+    worktree_rows(v)
+        .find(|w| s(w, "path").as_deref() == Some(path))
+        .and_then(|w| s(w, "open_workspace_id"))
+}
+
+fn worktree_rows(v: &Value) -> impl Iterator<Item = &Value> {
+    v.get("worktrees")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
 }
 
 /// A workspace's checkout root and item number, from the cwd of its panes:
@@ -265,63 +294,54 @@ impl Herdr {
         ))
     }
 
-    /// The checkout a workspace is open on, from `workspace get` (or the
-    /// cwd of its first pane); `None` when herdr has no such workspace.
-    async fn workspace_path(&self, workspace_id: &str) -> Result<Option<String>> {
-        let v = match self.run(&["workspace", "get", workspace_id]).await {
-            Ok(v) => v,
-            Err(e) => {
-                let msg = e.to_string().to_lowercase();
-                if msg.contains("not_found") || msg.contains("not found") {
-                    return Ok(None);
-                }
-                return Err(e);
-            }
-        };
-        let path = v
-            .pointer("/workspace/worktree/checkout_path")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        match path {
-            Some(p) => Ok(Some(p)),
-            None => Ok(Some(
-                self.panes(workspace_id)
-                    .await?
-                    .iter()
-                    .find_map(|p| p.cwd.clone())
-                    .unwrap_or_default(),
-            )),
+    /// Does herdr have a workspace with this id?
+    async fn workspace_exists(&self, workspace_id: &str) -> Result<bool> {
+        match self.run(&["workspace", "get", workspace_id]).await {
+            Ok(_) => Ok(true),
+            Err(e) if is_not_found(&e) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The checkout herdr has a workspace bound to, from its own worktree
+    /// list keyed by the workspace; `None` when herdr has no such workspace
+    /// or it is not open on a worktree. Panes are not consulted: their cwd
+    /// follows whatever a shell in them does.
+    async fn bound_path(&self, workspace_id: &str) -> Result<Option<String>> {
+        match self
+            .run(&["worktree", "list", "--workspace", workspace_id])
+            .await
+        {
+            Ok(v) => Ok(bound_worktree(&v, workspace_id)),
+            Err(e) if is_not_found(&e) || e.to_string().contains("not_git_worktree") => Ok(None),
+            Err(e) => Err(e),
         }
     }
 
     /// The herdr workspace id behind one of our ids, provided the workspace
-    /// is still open on the checkout the id names.
+    /// is still bound to the checkout the id names.
     async fn ours(&self, id: &str) -> Result<Option<String>> {
         let (ws, path) = split_id(id);
-        let Some(open_on) = self.workspace_path(ws).await? else {
-            return Ok(None);
+        let Some(path) = path else {
+            return Ok(self.workspace_exists(ws).await?.then(|| ws.to_string()));
         };
-        if let Some(p) = path
-            && open_on != p
-        {
-            warn!(
-                id,
-                open_on, "herdr workspace is not ours any more; treating it as gone"
-            );
-            return Ok(None);
+        match self.bound_path(ws).await? {
+            Some(open_on) if open_on == path => Ok(Some(ws.to_string())),
+            Some(open_on) => {
+                warn!(
+                    id,
+                    open_on, "herdr workspace is open on another checkout; treating it as gone"
+                );
+                Ok(None)
+            }
+            None => Ok(None),
         }
-        Ok(Some(ws.to_string()))
     }
 
     /// The herdr workspace open on `path`, if any.
     async fn workspace_for_path(&self, repo_root: &str, path: &str) -> Result<Option<String>> {
         let v = self.run(&["worktree", "list", "--cwd", repo_root]).await?;
-        Ok(v.get("worktrees")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|w| s(w, "path").as_deref() == Some(path))
-            .and_then(|w| s(w, "open_workspace_id")))
+        Ok(workspace_on(&v, path))
     }
 
     /// Open (or find open) a herdr workspace on a local worktree.
@@ -418,14 +438,14 @@ impl Herdr {
     }
 
     /// Close the workspace and remove its checkout. Only a workspace that is
-    /// still open on our checkout is touched.
+    /// still bound to our checkout is touched.
     pub async fn remove_worktree(&self, id: &str) -> Result<()> {
         let Some(workspace_id) = self.ours(id).await? else {
             return Ok(());
         };
         let workspace_id = workspace_id.as_str();
+        let (_, path) = split_id(id);
         let panes = self.panes(workspace_id).await.unwrap_or_default();
-        let cwd = panes.iter().find_map(|p| p.cwd.clone());
         for p in &panes {
             if p.agent.is_some() {
                 let _ = self.run(&["pane", "send-keys", &p.pane_id, "ctrl+c"]).await;
@@ -445,10 +465,10 @@ impl Herdr {
             }
         }
         // Whatever herdr did with the checkout, git must agree.
-        if let Some(cwd) = cwd {
-            let (root, _) = root_and_item(&cwd);
+        if let Some(path) = path {
+            let (root, _) = root_and_item(path);
             if let Some(root) = root {
-                let _ = remove_local_worktree(&root, &cwd).await;
+                let _ = remove_local_worktree(&root, path).await;
             }
         }
         Ok(())
@@ -733,6 +753,18 @@ mod tests {
         assert!(!h.has_live_agent(&wt.id).await.unwrap());
         let found = h.find_worktree_for_issue(&root, 3).await.unwrap().unwrap();
         assert_eq!(found.id, wt.id);
+        // A shell that leaves the checkout does not move the workspace (#50):
+        // herdr's own binding, not a pane's cwd, says it is still ours.
+        let (ws, _) = split_id(&wt.id);
+        let root_pane = h.panes(ws).await.unwrap()[0].pane_id.clone();
+        h.run(&["pane", "run", &root_pane, "cd /"]).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let cwd = h.panes(ws).await.unwrap()[0].cwd.clone();
+        assert_eq!(cwd.as_deref(), Some("/"), "herdr did not see the cd");
+        assert!(h.worktree_exists(&wt.id).await.unwrap());
+        let back = format!("cd '{}'", wt.path);
+        h.run(&["pane", "run", &root_pane, &back]).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
         let handle = h
             .launch(&wt.id, "claude --model haiku", "claude · #3", "claude")
             .await
@@ -765,9 +797,40 @@ mod tests {
         assert!(!h.worktree_exists(&foreign).await.unwrap());
         h.remove_worktree(&foreign).await.unwrap();
         assert!(h.worktree_exists(&wt.id).await.unwrap());
+        // Removal while the root pane's shell is elsewhere (#50): the agent
+        // is quit (two ctrl+c), the shell sent away, and the workspace and
+        // checkout must still go.
+        for _ in 0..2 {
+            h.run(&["pane", "send-keys", &handle, "ctrl+c"])
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        for _ in 0..20 {
+            if !h.has_live_agent(&wt.id).await.unwrap() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(
+            !h.has_live_agent(&wt.id).await.unwrap(),
+            "claude did not quit"
+        );
+        h.run(&["pane", "run", &handle, "cd /"]).await.unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(h.worktree_exists(&wt.id).await.unwrap());
         h.remove_worktree(&wt.id).await.unwrap();
         assert!(!h.worktree_exists(&wt.id).await.unwrap());
         assert!(!std::path::Path::new(&wt.path).exists());
+        // The clone's own workspace, which herdr opened alongside ours, is
+        // left alone in use; here the clone goes too.
+        if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
+            && let Some(src) = v
+                .pointer("/source/source_workspace_id")
+                .and_then(Value::as_str)
+        {
+            let _ = h.run(&["workspace", "close", src]).await;
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -789,6 +852,33 @@ mod tests {
         assert_eq!(panes[1].agent, None);
         assert_eq!(panes[0].agent.as_deref(), Some("claude"));
         assert_eq!(panes[0].workspace_id, "w2");
+    }
+
+    #[test]
+    fn worktree_list_binds_workspaces_to_checkouts() {
+        // `herdr worktree list` on 0.8.2, trimmed.
+        let v = json!({"source": {"repo_root": "/p/widgets", "source_workspace_id": "wW"},
+            "type": "worktree_list", "worktrees": [
+            {"branch": "master", "is_linked_worktree": false, "is_prunable": false,
+             "open_workspace_id": "wW", "path": "/p/widgets"},
+            {"branch": "bot/issue-3-x", "is_linked_worktree": true, "is_prunable": true,
+             "open_workspace_id": "wX", "path": "/p/widgets.worktrees/issue-3-x"},
+            {"branch": "bot/issue-4-y", "is_linked_worktree": true, "is_prunable": false,
+             "path": "/p/widgets.worktrees/issue-4-y"}
+        ]});
+        assert_eq!(
+            bound_worktree(&v, "wX").as_deref(),
+            Some("/p/widgets.worktrees/issue-3-x")
+        );
+        assert_eq!(bound_worktree(&v, "wW").as_deref(), Some("/p/widgets"));
+        assert_eq!(bound_worktree(&v, "wZ"), None);
+        assert_eq!(
+            workspace_on(&v, "/p/widgets.worktrees/issue-3-x").as_deref(),
+            Some("wX")
+        );
+        assert_eq!(workspace_on(&v, "/p/widgets.worktrees/issue-4-y"), None);
+        assert_eq!(workspace_on(&v, "/elsewhere"), None);
+        assert_eq!(bound_worktree(&json!({"worktrees": []}), "wX"), None);
     }
 
     #[test]

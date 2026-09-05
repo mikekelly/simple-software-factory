@@ -466,9 +466,11 @@ with `herdr agent prompt`, which pastes and submits them. Claude Code's
 folder-trust question is answered on start. herdr keeps no link between a
 workspace and an issue, so ssf finds a workspace it lost track of by the
 worktree's name (`issue-N-...`), and remembers a workspace as herdr's id
-plus the checkout it was opened on (`w7@/path`), so a workspace id that
-herdr has since given to something else is treated as gone rather than
-prompted or removed. herdr also opens one workspace for the clone itself
+plus the checkout it was opened on (`w7@/path`). Before prompting or
+removing, ssf asks herdr which worktree that workspace is bound to; a
+workspace id herdr has since given to something else is treated as gone
+rather than touched, and a shell in the workspace that has `cd`'d
+elsewhere changes nothing. herdr also opens one workspace for the clone itself
 the first time it opens a worktree of it; that one is left alone. Clicking
 a session in the bar widget focuses its herdr workspace. herdr can only run
 the agents it recognises in a pane (`herdr agent start --help` lists them;
