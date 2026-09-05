@@ -3682,28 +3682,32 @@ fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
     cur
 }
 
-/// The last comment the bot left on an item, as its session's final word.
-/// Whether the bot's reviewer session has posted a review on the pull
+/// Whether the bot's reviewer session has posted its review on the pull
 /// request since the review label was last added (or at all, if the label
-/// came with the pull request). Only a review from the reviewer session
-/// counts: one tagged `role=reviewer` for this PR (`me`), or an untagged one
-/// (the shim not in effect); a review tagged with another session's origin
-/// is that session's doing, not the reviewer's.
+/// came with the pull request). A review from the reviewer session counts:
+/// one tagged `role=reviewer` for this PR (`me`), or an untagged one (the
+/// shim not in effect); a review tagged with another session's origin is
+/// that session's doing, not the reviewer's. So does a plain comment
+/// carrying the reviewer's tag: GitHub refuses approve/request-changes
+/// reviews from the account that opened the PR, and a reviewer that fell
+/// back to `gh pr comment` has still delivered its review. An untagged
+/// comment does not count, since a person posting as the bot looks the same.
 fn review_posted_since_label(timeline: &[Value], label: &str, bot: &str, me: &str) -> bool {
     let mut posted = false;
     for ev in timeline {
-        match crate::github::value_str(ev, &["event"]) {
+        let event = crate::github::value_str(ev, &["event"]);
+        match event {
             Some("labeled")
                 if crate::github::value_str(ev, &["label", "name"])
                     .is_some_and(|n| n.eq_ignore_ascii_case(label)) =>
             {
                 posted = false;
             }
-            Some("reviewed") if actor_of(ev).eq_ignore_ascii_case(bot) => {
+            Some("reviewed" | "commented") if actor_of(ev).eq_ignore_ascii_case(bot) => {
                 let body = crate::github::value_str(ev, &["body"]).unwrap_or("");
                 let from_reviewer = match origin::parse(body) {
                     Some(t) => t.session().eq_ignore_ascii_case(me),
-                    None => true,
+                    None => event == Some("reviewed"),
                 };
                 if from_reviewer {
                     posted = true;
@@ -3715,6 +3719,7 @@ fn review_posted_since_label(timeline: &[Value], label: &str, bot: &str, me: &st
     posted
 }
 
+/// The last comment the bot left on an item, as its session's final word.
 fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
     timeline
         .iter()
@@ -4385,6 +4390,34 @@ mod tests {
             "bot",
             "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nlgtm"
         )]));
+        // A comment tagged as the reviewer's counts too (the fallback when
+        // GitHub refuses approve/request-changes from the PR's author); an
+        // untagged comment, a human's, or the author session's does not.
+        let comment = |id: u64, who: &str, body: &str| json!({"event":"commented","id":id,"actor":{"login":who},"body":body});
+        assert!(posted(&[
+            labeled(1, "review"),
+            comment(
+                2,
+                "bot",
+                "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nlooks good"
+            ),
+        ]));
+        assert!(!posted(&[
+            labeled(1, "review"),
+            comment(2, "bot", "looks good")
+        ]));
+        assert!(!posted(&[
+            labeled(1, "review"),
+            comment(2, "alice", "looks good")
+        ]));
+        assert!(!posted(&[
+            labeled(1, "review"),
+            comment(2, "bot", "<!-- ssf: origin=o/r#3 -->\n\nthanks"),
+        ]));
+        assert!(!posted(&[
+            comment(1, "bot", "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nold"),
+            labeled(2, "review"),
+        ]));
     }
 
     #[test]
