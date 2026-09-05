@@ -9,9 +9,10 @@
 //! naming the item whose workspace the post came from. The `gh` shim
 //! (`crate::shim`) prepends that line to everything an agent posts; the
 //! daemon parses the tag back out of every body it reads, and honours it
-//! only there: a tag anywhere else in a body (a fenced example, a pasted
-//! transcript, a quote reply) is content, not the post's own tag. The
-//! byline is for people: someone who enrols their own account as the bot
+//! only there, or on the last non-blank line, where posts made before the
+//! byline carried it (the first line wins): a tag anywhere else in a body
+//! (a fenced example, a pasted transcript, a quote reply) is content, not
+//! the post's own tag. The byline is for people: someone who enrols their own account as the bot
 //! can tell a session's posts from their own at a glance, and their own
 //! untagged posts reach the agents as a person's.
 //!
@@ -205,17 +206,34 @@ pub fn tags(body: &str) -> Vec<Tag> {
 
 /// The tag that identifies the post: the one on the body's first non-blank
 /// line, where the shim puts it (the first one on that line: the shim's
-/// line goes before anything the author wrote by hand). A tag anywhere
-/// else, in a fenced or indented code block, a pasted transcript, a quote,
-/// or at the end of the body where older posts carried it, is content and
-/// does not count; nor does a first line that is itself quoted or indented
-/// as code.
+/// line goes before anything the author wrote by hand), or failing that
+/// the one on the last non-blank line, where posts made before the byline
+/// carried it (the last one on that line, since the old shim appended its
+/// own after anything hand-written). The first line wins when both carry
+/// one. A tag anywhere else, in a fenced or indented code block, a pasted
+/// transcript or a quote, is content and does not count; nor does a first
+/// or last line that is itself quoted or indented as code.
 pub fn parse(body: &str) -> Option<Tag> {
+    parse_first(body).or_else(|| parse_last(body))
+}
+
+/// The tag on the body's first non-blank line, if any: what the shim puts
+/// there, and the only place `stamp_with` looks.
+fn parse_first(body: &str) -> Option<Tag> {
     let first = body.lines().find(|l| !l.trim().is_empty())?;
     if is_code(first) {
         return None;
     }
     tags(first).into_iter().next()
+}
+
+/// The tag on the body's last non-blank line, if any (the old form).
+fn parse_last(body: &str) -> Option<Tag> {
+    let last = body.trim_end().lines().next_back()?;
+    if is_code(last) {
+        return None;
+    }
+    tags(last).pop()
 }
 
 /// Is `line` an indented code line (four spaces or a tab)?
@@ -231,8 +249,8 @@ fn is_code(line: &str) -> bool {
 /// without `mode=delegate` is not enough for a hand-off, and one without
 /// `role=reviewer` is not enough for a reviewer: the right line goes before
 /// it, and the first tag wins when read. A tag of ours that is not on the
-/// first line does not count (`parse` would not see it either), so the
-/// body is stamped at the top anyway.
+/// first line does not count, even at the end where `parse` still accepts
+/// the old form, so the body gets the byline at the top anyway.
 pub fn stamp_with(
     body: &str,
     origin: &Origin,
@@ -240,7 +258,7 @@ pub fn stamp_with(
     delegate: bool,
     reviewer: bool,
 ) -> String {
-    if parse(body).is_some_and(|t| {
+    if parse_first(body).is_some_and(|t| {
         &t.origin == origin && (!delegate || t.is_delegate()) && (!reviewer || t.is_reviewer())
     }) {
         return body.to_string();
@@ -543,10 +561,34 @@ mod tests {
         assert!(stamped.starts_with(&format!("{}\n\nthe tag", line())));
         assert_eq!(parse(&stamped).unwrap().origin, o());
         assert_eq!(strip(&stamped), "the tag looks like:\n```text\n\n```");
-        // A tag at the end of the body, where posts used to carry it, is
-        // content now.
-        assert!(parse("more\n\n<!-- ssf: origin=a/b#1 -->").is_none());
-        assert!(parse("signed off\n\npasted <!-- ssf: origin=a/b#1 --> transcript").is_none());
+        // A tag on the last line, where posts used to carry it, still
+        // counts (the last one on that line); the first line wins.
+        assert_eq!(
+            parse("more\n\n<!-- ssf: origin=a/b#1 -->")
+                .unwrap()
+                .origin
+                .number,
+            1
+        );
+        assert_eq!(
+            parse("signed off\n\npasted <!-- ssf: origin=a/b#1 --> <!-- ssf: origin=a/b#2 -->")
+                .unwrap()
+                .origin
+                .number,
+            2
+        );
+        assert_eq!(
+            parse("<!-- ssf: origin=a/b#3 -->\n\ntext\n\n<!-- ssf: origin=a/b#1 -->")
+                .unwrap()
+                .origin
+                .number,
+            3,
+            "first line wins"
+        );
+        assert!(parse("thanks\n\n> <!-- ssf: origin=a/b#1 -->").is_none());
+        assert!(parse("example:\n\n    <!-- ssf: origin=a/b#1 -->").is_none());
+        // A tag in the middle is content (the #23 rule).
+        assert!(parse("a\n<!-- ssf: origin=a/b#1 -->\nb").is_none());
         // An indented code line at the start is code, not a tag.
         assert!(parse("    <!-- ssf: origin=a/b#1 -->\nexample").is_none());
         assert!(parse("\t<!-- ssf: origin=a/b#1 -->\nexample").is_none());
@@ -576,12 +618,16 @@ mod tests {
         // A body that is only a tag still parses.
         assert_eq!(parse(&o().tag()).unwrap().origin, o());
         assert_eq!(parse(&format!("\n{}\n", o().tag())).unwrap().origin, o());
-        // Our own tag at the end is not enough: the body is stamped at the top.
+        // Our own tag at the end still attributes (old form) but is not
+        // enough for the shim: the byline goes on top, and wins.
         let end = format!("more\n\n{}", o().tag());
+        assert_eq!(parse(&end).unwrap().origin, o());
         let s = stamp(&end, &o());
         assert_eq!(s, format!("{}\n\n{end}", line()));
         assert_eq!(parse(&s).unwrap().origin, o());
         assert_eq!(strip(&s), "more");
+        let old_delegate = format!("child\n\n{}", o().delegate_tag());
+        assert!(parse(&old_delegate).unwrap().is_delegate());
     }
 
     #[test]
@@ -777,10 +823,11 @@ mod tests {
             "a post whose only tag is quoted counts as untagged"
         );
         assert_eq!(
-            s.untagged.get("commented:10").map(String::as_str),
-            Some("u10"),
-            "a tag at the end of the body is content now"
+            s.origins.get("commented:10").map(String::as_str),
+            Some("a/b#1"),
+            "an old-form comment, tag on the last line, still attributes"
         );
+        assert!(!s.untagged.contains_key("commented:10"));
         assert!(
             !s.origins.contains_key("commented:30"),
             "a human's tag is not an origin"

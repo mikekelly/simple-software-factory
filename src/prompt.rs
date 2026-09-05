@@ -1344,7 +1344,7 @@ a hand-off), then a blank line. GitHub links the byline to the session's item. T
 session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
 or `pr create|comment|review`; any other way of posting (`gh api`, `gh pr create --fill`, \
 `gh pr edit --body`, ...) needs it added by hand, as the first line of the body. A tag \
-anywhere else, in a code block, a quote or at the end, is content and is ignored. A post by \
+anywhere else, in a code block or a quote, is content and is ignored. A post by \
 @{bot} without the line was typed by a person using the bot account; it reaches you marked \
 \"(not from a session)\" and is a human's.\n"
     )
@@ -2206,13 +2206,18 @@ mod tests {
             r.text
         );
         assert!(r.origin.is_none());
-        // A tag at the end of the body (older posts) is content, so the
-        // post reads as a person's; strip still keeps the text clean.
+        // A tag at the end of the body (posts made before the byline) still
+        // attributes the post to its session.
         let ev = json!({"event":"commented","id":12,"user":{"login":"bot"},"created_at":"t",
             "body":"old style\n\n<!-- ssf: origin=o/r#9 -->","html_url":"https://x/12"});
         let r = render_event(&ev, false, &cfg(), "bot").unwrap();
-        assert!(r.text.contains("(not from a session)"));
-        assert!(r.origin.is_none());
+        assert!(
+            r.text
+                .contains("(from the agent on o/r#9) (https://x/12):\n  > old style"),
+            "{}",
+            r.text
+        );
+        assert_eq!(r.origin.as_deref(), Some("o/r#9"));
         let review = json!({"event":"reviewed","id":2,"user":{"login":"bot"},"state":"approved",
             "body":"<!-- ssf: origin=o/r#9 -->"});
         let r = render_event(&review, false, &cfg(), "bot").unwrap();

@@ -266,11 +266,14 @@ harness that resets `PATH`).
 The daemon parses tags out of every item body and comment it reads, and
 honours a tag only where the shim puts it: on the first non-blank line of
 the body (the first tag on that line, so the shim's line, which goes before
-anything the agent wrote by hand, is the one read). A tag anywhere else, in
-a fenced or indented code block, a pasted transcript, a quote reply, or at
-the end of the body (where posts made before this rule carried it), is
-content: it neither attributes the post nor binds an item to the session it
-names, and a bot post whose only tag is quoted counts as untagged. In
+anything the agent wrote by hand, is the one read). Failing that, a tag on
+the last non-blank line still counts (the last one on that line): posts
+made before the byline carried it there, and the daemon re-reads timelines
+on relaunch and for delegation report-backs, so they stay attributed. The
+first line wins when both carry one. A tag anywhere else, in a fenced or
+indented code block, a pasted transcript or a quote reply, is content: it
+neither attributes the post nor binds an item to the session it names, and
+a bot post whose only tag is quoted counts as untagged. In
 `ssf status --json` each tracked item shows `origin` (the session that opened
 it, for PRs and issues an agent created), `origins` (timeline event key to
 session, for tagged comments and reviews) and `untagged` (posts by the bot
