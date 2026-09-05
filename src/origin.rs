@@ -1,20 +1,26 @@
-//! Origin tags: `<!-- ssf: origin=owner/repo#N -->`.
+//! Origin tags: `🤖#N <!-- ssf: origin=owner/repo#N -->`.
 //!
 //! GitHub has one bot identity and no notion of sessions, so nothing in the
 //! API says which agent session posted a comment or opened a pull request.
-//! The content carries it instead: an invisible HTML comment naming the item
-//! whose workspace the post came from. The `gh` shim (`crate::shim`) appends
-//! it to everything an agent posts, on a line of its own at the very end; the
-//! daemon parses it back out of every body it reads, and honours it only
-//! there: a tag anywhere else in a body (a fenced example, a pasted
-//! transcript, a quote reply) is content, not the post's own tag.
+//! The content carries it instead, on the first line of every post: a
+//! visible byline (`🤖#N`, which GitHub renders and links to the session's
+//! item; `🤖owner/repo#N` on another repository; `🤖#N (reviewer)` from a
+//! reviewer session) and, on the same line, an invisible HTML comment
+//! naming the item whose workspace the post came from. The `gh` shim
+//! (`crate::shim`) prepends that line to everything an agent posts; the
+//! daemon parses the tag back out of every body it reads, and honours it
+//! only there: a tag anywhere else in a body (a fenced example, a pasted
+//! transcript, a quote reply) is content, not the post's own tag. The
+//! byline is for people: someone who enrols their own account as the bot
+//! can tell a session's posts from their own at a glance, and their own
+//! untagged posts reach the agents as a person's.
 //!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
 //! add fields without a new syntax. Two fields are defined: `mode=delegate`
 //! (the post opened an item that is handed off to a new session rather than
 //! kept by the one that opened it) and `role=reviewer` (the post came from
 //! the reviewer session of the pull request the origin names, not from the
-//! session that wrote it).
+//! session that wrote it). The byline does not encode the mode.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -25,6 +31,8 @@ use crate::github::{Issue, value_str, value_u64};
 const OPEN: &str = "<!--";
 const CLOSE: &str = "-->";
 const MARK: &str = "ssf:";
+/// What every byline starts with.
+pub const ROBOT: &str = "\u{1F916}";
 
 /// The item (issue or pull request) a session works on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,9 +75,38 @@ impl Origin {
         Self::new(repo, n.parse().ok()?)
     }
 
-    /// The marker the shim appends.
+    /// The machine-readable marker.
     pub fn tag(&self) -> String {
         format!("{OPEN} {MARK} origin={self} {CLOSE}")
+    }
+
+    /// The visible byline: `🤖#N` on the origin's own repository, `🤖owner/repo#N`
+    /// on another (or when `on_repo`, the repository posted to, is not
+    /// known), with ` (reviewer)` after it for the reviewer session. GitHub
+    /// renders either form as a link to the origin item.
+    pub fn byline(&self, on_repo: Option<&str>, reviewer: bool) -> String {
+        let item = match on_repo {
+            Some(r) if r.trim().eq_ignore_ascii_case(&self.repo) => format!("#{}", self.number),
+            _ => self.to_string(),
+        };
+        if reviewer {
+            format!("{ROBOT}{item} ({REVIEWER})")
+        } else {
+            format!("{ROBOT}{item}")
+        }
+    }
+
+    /// The line the shim prepends to a post made on `on_repo`: the byline,
+    /// then the tag (a hand-off's or the reviewer's when asked).
+    pub fn first_line(&self, on_repo: Option<&str>, delegate: bool, reviewer: bool) -> String {
+        let tag = if delegate {
+            self.delegate_tag()
+        } else if reviewer {
+            self.reviewer_tag()
+        } else {
+            self.tag()
+        };
+        format!("{} {tag}", self.byline(on_repo, reviewer))
     }
 
     /// The marker for an item this session hands off to a new session.
@@ -166,18 +203,19 @@ pub fn tags(body: &str) -> Vec<Tag> {
     out
 }
 
-/// The tag that identifies the post: the one on the body's last non-blank
-/// line, where the shim puts it (the last one on that line, since the shim
-/// appends its own after anything the author wrote by hand). A tag anywhere
-/// else, in a fenced or indented code block, a pasted transcript or a quote,
-/// is content and does not count; nor does a last line that is itself
-/// quoted or indented as code.
+/// The tag that identifies the post: the one on the body's first non-blank
+/// line, where the shim puts it (the first one on that line: the shim's
+/// line goes before anything the author wrote by hand). A tag anywhere
+/// else, in a fenced or indented code block, a pasted transcript, a quote,
+/// or at the end of the body where older posts carried it, is content and
+/// does not count; nor does a first line that is itself quoted or indented
+/// as code.
 pub fn parse(body: &str) -> Option<Tag> {
-    let last = body.trim_end().lines().next_back()?;
-    if is_code(last) {
+    let first = body.lines().find(|l| !l.trim().is_empty())?;
+    if is_code(first) {
         return None;
     }
-    tags(last).pop()
+    tags(first).into_iter().next()
 }
 
 /// Is `line` an indented code line (four spaces or a tab)?
@@ -185,58 +223,105 @@ fn is_code(line: &str) -> bool {
     line.starts_with("    ") || line.starts_with('\t')
 }
 
-/// `body` with the origin tag on its own final line, optionally marking the
-/// post as a hand-off, or as the reviewer session's. A body that already
-/// ends with this origin's tag is left alone (the agent added the tag by
-/// hand), except that a hand-written tag without `mode=delegate` is not
-/// enough for a hand-off, and one without `role=reviewer` is not enough for
-/// a reviewer: the right tag goes after it, and the last tag wins when read.
-/// A tag of ours that is not on the last line does not count (`parse` would
-/// not see it either), so the body is stamped again at the end.
-pub fn stamp_with(body: &str, origin: &Origin, delegate: bool, reviewer: bool) -> String {
+/// `body` with the byline and origin tag on a first line of its own,
+/// optionally marking the post as a hand-off, or as the reviewer session's.
+/// `on_repo` is the repository the post goes to, which decides the byline's
+/// form. A body that already starts with this origin's tag is left alone
+/// (the agent added the line by hand), except that a hand-written tag
+/// without `mode=delegate` is not enough for a hand-off, and one without
+/// `role=reviewer` is not enough for a reviewer: the right line goes before
+/// it, and the first tag wins when read. A tag of ours that is not on the
+/// first line does not count (`parse` would not see it either), so the
+/// body is stamped at the top anyway.
+pub fn stamp_with(
+    body: &str,
+    origin: &Origin,
+    on_repo: Option<&str>,
+    delegate: bool,
+    reviewer: bool,
+) -> String {
     if parse(body).is_some_and(|t| {
         &t.origin == origin && (!delegate || t.is_delegate()) && (!reviewer || t.is_reviewer())
     }) {
         return body.to_string();
     }
-    let tag = if delegate {
-        origin.delegate_tag()
-    } else if reviewer {
-        origin.reviewer_tag()
+    let line = origin.first_line(on_repo, delegate, reviewer);
+    let text = without_leading_blank_lines(body).trim_end();
+    if text.is_empty() {
+        line
     } else {
-        origin.tag()
-    };
-    let trimmed = body.trim_end();
-    if trimmed.is_empty() {
-        tag
-    } else {
-        format!("{trimmed}\n\n{tag}")
+        format!("{line}\n\n{text}")
     }
 }
 
-/// `body` without its ssf tags (for showing the text to an agent). Every
-/// unquoted tag goes, not only the trailing one `parse` honours, so that
-/// pasted examples and hand-written tags mid-body do not reach the agent as
-/// something to imitate; the tags in quoted lines stay, as `tags` treats
-/// them.
+/// `s` from its first non-blank line on.
+fn without_leading_blank_lines(s: &str) -> &str {
+    let mut rest = s;
+    while let Some((line, tail)) = rest.split_once('\n') {
+        if !line.trim().is_empty() {
+            break;
+        }
+        rest = tail;
+    }
+    if rest.trim().is_empty() { "" } else { rest }
+}
+
+/// `body` without its byline and ssf tags (for showing the text to an
+/// agent). Every unquoted tag goes, not only the first-line one `parse`
+/// honours, so that pasted examples and hand-written tags mid-body do not
+/// reach the agent as something to imitate; the tags in quoted lines stay,
+/// as `tags` treats them. A byline in front of a tag on its line goes with
+/// it, and a line left blank that way goes entirely.
 pub fn strip(body: &str) -> String {
     let mut out = String::with_capacity(body.len());
     let mut last = 0;
+    let mut line_cut = false;
+    let mut push = |out: &mut String, chunk: &str, line_cut: bool| {
+        // Text that followed a tag at the start of its line loses the
+        // space that separated them.
+        out.push_str(if line_cut {
+            chunk.trim_start_matches([' ', '\t'])
+        } else {
+            chunk
+        });
+    };
     for (start, end) in spans(body) {
         let inner = body[start + OPEN.len()..end].trim();
         if !inner.starts_with(MARK) || is_quoted(body, start) {
             continue;
         }
-        out.push_str(&body[last..start]);
+        let line_start = body[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let cut = if is_byline(&body[line_start..start]) {
+            line_start
+        } else {
+            start
+        };
+        push(&mut out, &body[last..cut.max(last)], line_cut);
+        line_cut = cut == line_start;
         last = end + CLOSE.len();
-        // Swallow the blank line the shim put before the tag.
+        // Swallow the blank line before a tag that ends a body.
         if let Some(stripped) = out.strip_suffix("\n\n") {
             out.truncate(stripped.len());
             out.push('\n');
         }
     }
-    out.push_str(&body[last..]);
-    out.trim_end().to_string()
+    push(&mut out, &body[last..], line_cut);
+    without_leading_blank_lines(&out).trim_end().to_string()
+}
+
+/// Is `s` (the text before a tag on its line) a byline and nothing else:
+/// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)`?
+fn is_byline(s: &str) -> bool {
+    let Some(after) = s.trim_start().strip_prefix(ROBOT) else {
+        return false;
+    };
+    let item_len = after.find(char::is_whitespace).unwrap_or(after.len());
+    if item_len == 0 {
+        return false;
+    }
+    let rest = after[item_len..].trim_start();
+    let rest = rest.strip_prefix(&format!("({REVIEWER})")).unwrap_or(rest);
+    rest.trim().is_empty()
 }
 
 /// Does the line containing byte offset `at` start with a markdown quote?
@@ -355,8 +440,13 @@ mod tests {
         Origin::new("acme/widgets", 12).unwrap()
     }
 
+    /// Stamp for a post on the origin's own repository.
     fn stamp(body: &str, origin: &Origin) -> String {
-        stamp_with(body, origin, false, false)
+        stamp_with(body, origin, Some("acme/widgets"), false, false)
+    }
+
+    fn line() -> String {
+        o().first_line(Some("acme/widgets"), false, false)
     }
 
     #[test]
@@ -369,23 +459,68 @@ mod tests {
     }
 
     #[test]
+    fn byline_names_the_item_the_way_github_links_it() {
+        assert_eq!(o().byline(Some("acme/widgets"), false), "🤖#12");
+        assert_eq!(o().byline(Some("ACME/Widgets"), false), "🤖#12");
+        assert_eq!(o().byline(Some("acme/other"), false), "🤖acme/widgets#12");
+        assert_eq!(o().byline(None, false), "🤖acme/widgets#12");
+        assert_eq!(o().byline(Some("acme/widgets"), true), "🤖#12 (reviewer)");
+        assert_eq!(
+            o().byline(Some("acme/other"), true),
+            "🤖acme/widgets#12 (reviewer)"
+        );
+        assert_eq!(
+            line(),
+            "🤖#12 <!-- ssf: origin=acme/widgets#12 -->",
+            "byline, then the tag, on one line"
+        );
+        assert_eq!(
+            o().first_line(None, true, false),
+            "🤖acme/widgets#12 <!-- ssf: origin=acme/widgets#12 mode=delegate -->",
+            "the byline does not encode the mode"
+        );
+        assert_eq!(
+            o().first_line(Some("acme/widgets"), false, true),
+            "🤖#12 (reviewer) <!-- ssf: origin=acme/widgets#12 role=reviewer -->"
+        );
+        // The whole line parses back to the tag.
+        assert_eq!(parse(&line()).unwrap().origin, o());
+        assert!(
+            parse(&o().first_line(None, false, true))
+                .unwrap()
+                .is_reviewer()
+        );
+    }
+
+    #[test]
     fn parses_extra_fields_and_loose_spacing() {
-        let t = parse("hi\n<!--ssf: origin=a/b#3 mode=delegate-->").unwrap();
+        let t = parse("<!--ssf: origin=a/b#3 mode=delegate-->\nhi").unwrap();
         assert_eq!(t.origin.to_string(), "a/b#3");
         assert_eq!(t.fields.get("mode").map(String::as_str), Some("delegate"));
     }
 
     #[test]
-    fn last_tag_wins_and_other_comments_are_ignored() {
-        let body = "quoting:\n> <!-- ssf: origin=a/b#1 -->\n<!-- plain html comment -->\n\n<!-- ssf: origin=a/b#2 -->";
-        assert_eq!(parse(body).unwrap().origin.to_string(), "a/b#2");
+    fn first_tag_wins_and_other_comments_are_ignored() {
+        let body = "<!-- plain html comment -->\n<!-- ssf: origin=a/b#2 -->\n\nquoting:\n> <!-- ssf: origin=a/b#1 -->";
+        assert!(
+            parse(body).is_none(),
+            "the first line is a plain comment, not a tag"
+        );
         assert_eq!(tags(body).len(), 1, "the quoted tag does not count");
+        assert_eq!(
+            parse("<!-- ssf: origin=a/b#2 --> <!-- ssf: origin=a/b#3 -->")
+                .unwrap()
+                .origin
+                .number,
+            2,
+            "the first tag on the line is the post's"
+        );
         assert!(parse("<!-- ssf: origin=nonsense -->").is_none());
         // A quote reply carries the quoted post's tag, not one of its own.
         assert!(parse("> hi\n> <!-- ssf: origin=a/b#1 -->\n\nthanks").is_none());
         assert!(parse("  > <!-- ssf: origin=a/b#1 -->").is_none());
         assert_eq!(
-            parse("> <!-- ssf: origin=a/b#1 -->\n<!-- ssf: origin=a/b#2 -->")
+            parse("<!-- ssf: origin=a/b#2 -->\n> <!-- ssf: origin=a/b#1 -->")
                 .unwrap()
                 .origin
                 .number,
@@ -393,37 +528,41 @@ mod tests {
         );
         assert!(parse("no tag here").is_none());
         assert!(parse("<!-- ssf: origin=a/b#1").is_none());
+        assert!(parse("").is_none());
+        assert!(parse("\n\n  \n").is_none());
     }
 
     #[test]
-    fn only_the_trailing_line_is_the_posts_own_tag() {
+    fn only_the_first_line_is_the_posts_own_tag() {
         // A tag quoted in a fenced block is content, not the post's tag.
         let fenced = "the tag looks like:\n```text\n<!-- ssf: origin=a/b#1 -->\n```\n";
         assert!(parse(fenced).is_none());
         assert_eq!(tags(fenced).len(), 1, "tags() still lists it");
-        // ... until the shim appends the real one after it.
+        // ... until the shim prepends the real one.
         let stamped = stamp(fenced, &o());
+        assert!(stamped.starts_with(&format!("{}\n\nthe tag", line())));
         assert_eq!(parse(&stamped).unwrap().origin, o());
         assert_eq!(strip(&stamped), "the tag looks like:\n```text\n\n```");
-        // A tag followed by more text is not the trailing line.
-        assert!(parse("<!-- ssf: origin=a/b#1 -->\nmore").is_none());
-        assert!(parse("pasted <!-- ssf: origin=a/b#1 --> transcript\n\nsigned off").is_none());
-        // An indented code line at the end is code, not a tag.
-        assert!(parse("example:\n\n    <!-- ssf: origin=a/b#1 -->").is_none());
-        assert!(parse("example:\n\n\t<!-- ssf: origin=a/b#1 -->").is_none());
-        // A quoted last line is the quoted post's tag.
-        assert!(parse("thanks\n\n> <!-- ssf: origin=a/b#1 -->").is_none());
-        // A tag on the last line is honoured, trailing whitespace and all,
-        // with or without text before it on that line.
+        // A tag at the end of the body, where posts used to carry it, is
+        // content now.
+        assert!(parse("more\n\n<!-- ssf: origin=a/b#1 -->").is_none());
+        assert!(parse("signed off\n\npasted <!-- ssf: origin=a/b#1 --> transcript").is_none());
+        // An indented code line at the start is code, not a tag.
+        assert!(parse("    <!-- ssf: origin=a/b#1 -->\nexample").is_none());
+        assert!(parse("\t<!-- ssf: origin=a/b#1 -->\nexample").is_none());
+        // A quoted first line is the quoted post's tag.
+        assert!(parse("> <!-- ssf: origin=a/b#1 -->\n\nthanks").is_none());
+        // A tag on the first non-blank line is honoured, leading blank lines
+        // and all, with or without text after it on that line.
         assert_eq!(
-            parse("hello\n\n<!-- ssf: origin=a/b#2 -->\n\n  \n")
+            parse("\n  \n<!-- ssf: origin=a/b#2 -->\n\nhello")
                 .unwrap()
                 .origin
                 .number,
             2
         );
         assert_eq!(
-            parse("tagged <!-- ssf: origin=a/b#3 -->")
+            parse("<!-- ssf: origin=a/b#3 --> tagged\nmore")
                 .unwrap()
                 .origin
                 .number,
@@ -437,11 +576,12 @@ mod tests {
         // A body that is only a tag still parses.
         assert_eq!(parse(&o().tag()).unwrap().origin, o());
         assert_eq!(parse(&format!("\n{}\n", o().tag())).unwrap().origin, o());
-        // Our own tag mid-body is not enough: it is stamped again at the end.
-        let mid = format!("{}\nmore", o().tag());
-        let s = stamp(&mid, &o());
-        assert!(s.ends_with(&format!("more\n\n{}", o().tag())));
+        // Our own tag at the end is not enough: the body is stamped at the top.
+        let end = format!("more\n\n{}", o().tag());
+        let s = stamp(&end, &o());
+        assert_eq!(s, format!("{}\n\n{end}", line()));
         assert_eq!(parse(&s).unwrap().origin, o());
+        assert_eq!(strip(&s), "more");
     }
 
     #[test]
@@ -451,19 +591,23 @@ mod tests {
         let parsed = parse(&t).unwrap();
         assert!(parsed.is_delegate());
         assert!(!parse(&o().tag()).unwrap().is_delegate());
-        let s = stamp_with("hand this off", &o(), true, false);
-        assert!(s.ends_with(&t));
-        assert_eq!(stamp_with(&s, &o(), true, false), s, "not stamped twice");
+        let s = stamp_with("hand this off", &o(), Some("acme/widgets"), true, false);
+        assert_eq!(s, format!("🤖#12 {t}\n\nhand this off"));
         assert_eq!(
-            stamp_with(&s, &o(), false, false),
+            stamp_with(&s, &o(), Some("acme/widgets"), true, false),
+            s,
+            "not stamped twice"
+        );
+        assert_eq!(
+            stamp_with(&s, &o(), Some("acme/widgets"), false, false),
             s,
             "a delegate tag is a tag"
         );
-        // A hand-written plain tag does not make a hand-off: the delegate tag
-        // goes after it and is the one that counts.
+        // A hand-written plain tag does not make a hand-off: the delegate
+        // line goes before it and is the one that counts.
         let plain = stamp("x", &o());
-        let both = stamp_with(&plain, &o(), true, false);
-        assert!(both.starts_with(&plain));
+        let both = stamp_with(&plain, &o(), Some("acme/widgets"), true, false);
+        assert!(both.ends_with(&plain));
         assert!(parse(&both).unwrap().is_delegate());
         assert_eq!(strip(&both), "x");
     }
@@ -477,12 +621,17 @@ mod tests {
         assert!(!parsed.is_delegate());
         assert_eq!(parsed.session(), "acme/widgets#12:reviewer");
         assert_eq!(parse(&o().tag()).unwrap().session(), "acme/widgets#12");
-        let s = stamp_with("looks good", &o(), false, true);
-        assert!(s.ends_with(&t));
-        assert_eq!(stamp_with(&s, &o(), false, true), s, "not stamped twice");
+        let s = stamp_with("looks good", &o(), Some("acme/widgets"), false, true);
+        assert_eq!(s, format!("🤖#12 (reviewer) {t}\n\nlooks good"));
+        assert_eq!(
+            stamp_with(&s, &o(), Some("acme/widgets"), false, true),
+            s,
+            "not stamped twice"
+        );
+        assert_eq!(strip(&s), "looks good");
         // A plain tag the reviewer wrote by hand is not enough: the reviewer
-        // tag goes after it and wins.
-        let both = stamp_with(&stamp("x", &o()), &o(), false, true);
+        // line goes before it and wins.
+        let both = stamp_with(&stamp("x", &o()), &o(), Some("acme/widgets"), false, true);
         assert!(parse(&both).unwrap().is_reviewer());
         assert_eq!(strip(&both), "x");
         // Session ids parse back, with or without the role.
@@ -499,47 +648,98 @@ mod tests {
     }
 
     #[test]
-    fn stamp_appends_once() {
+    fn stamp_prepends_once() {
         let s = stamp("hello  \n", &o());
-        assert_eq!(s, "hello\n\n<!-- ssf: origin=acme/widgets#12 -->");
+        assert_eq!(s, "🤖#12 <!-- ssf: origin=acme/widgets#12 -->\n\nhello");
         assert_eq!(stamp(&s, &o()), s);
-        assert_eq!(stamp("", &o()), o().tag());
+        assert_eq!(stamp("", &o()), line());
+        assert_eq!(stamp("\n \n", &o()), line());
+        assert_eq!(
+            stamp("\n\nhello", &o()),
+            s,
+            "leading blank lines go, the byline is the first line"
+        );
+        assert_eq!(
+            stamp("    code first", &o()),
+            format!("{}\n\n    code first", line()),
+            "indentation of the first line is kept"
+        );
         // A different origin quoted in the body does not count as ours.
         let quoted = "see <!-- ssf: origin=acme/widgets#99 -->";
-        assert!(stamp(quoted, &o()).ends_with(&o().tag()));
+        assert!(stamp(quoted, &o()).starts_with(&line()));
+        // On another repository the byline spells the repository out.
+        assert_eq!(
+            stamp_with("hi", &o(), Some("acme/other"), false, false),
+            "🤖acme/widgets#12 <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
+        );
+        assert_eq!(
+            stamp_with("hi", &o(), None, false, false),
+            "🤖acme/widgets#12 <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
+        );
+        // A hand-written first line with the right tag is left alone, byline
+        // or not.
+        let by_hand = format!("{}\n\nhello", o().tag());
+        assert_eq!(stamp(&by_hand, &o()), by_hand);
+        let cross = format!("🤖acme/widgets#12 {}\n\nhello", o().tag());
+        assert_eq!(stamp(&cross, &o()), cross);
     }
 
     #[test]
-    fn strip_removes_tags_only() {
+    fn strip_removes_bylines_and_tags_only() {
         let s = stamp("hello\n<!-- keep me -->", &o());
         assert_eq!(strip(&s), "hello\n<!-- keep me -->");
         assert_eq!(strip("plain"), "plain");
         assert_eq!(strip(&o().tag()), "");
+        assert_eq!(strip(&line()), "");
+        assert_eq!(strip(&o().first_line(None, false, true)), "");
         let quoted = "> <!-- ssf: origin=a/b#1 -->\nreply";
         assert_eq!(strip(quoted), quoted);
         assert_eq!(
-            strip("caf\u{e9} \u{1F600}\n\n<!-- ssf: origin=a/b#1 -->"),
+            strip("<!-- ssf: origin=a/b#1 -->\n\ncaf\u{e9} \u{1F600}"),
             "caf\u{e9} \u{1F600}"
         );
+        assert_eq!(
+            strip("caf\u{e9} \u{1F600}\n\n<!-- ssf: origin=a/b#1 -->"),
+            "caf\u{e9} \u{1F600}",
+            "a trailing tag (older posts) still goes"
+        );
         assert_eq!(strip("<!-- never closed"), "<!-- never closed");
+        // Text on the first line after the tag stays; only byline and tag go.
+        assert_eq!(
+            strip("🤖#12 <!-- ssf: origin=a/b#12 --> hello\nmore"),
+            "hello\nmore"
+        );
+        assert_eq!(
+            strip("🤖#12 (reviewer) <!-- ssf: origin=a/b#12 role=reviewer --> hello"),
+            "hello"
+        );
+        assert_eq!(strip("<!-- ssf: origin=a/b#12 --> hello"), "hello");
+        // A robot that is not the byline (no tag on its line) is content.
+        assert_eq!(strip("🤖 beep\n\nhi"), "🤖 beep\n\nhi");
+        assert_eq!(
+            strip("<!-- ssf: origin=a/b#1 -->\n\n🤖#1 said so"),
+            "🤖#1 said so",
+            "the byline is only looked for on the tag's line"
+        );
     }
 
     #[test]
     fn scan_collects_origins_and_untagged_bot_posts() {
         let issue: Issue = serde_json::from_value(json!({
-            "number": 5, "title": "t", "body": "opened by a session\n\n<!-- ssf: origin=a/b#1 -->",
+            "number": 5, "title": "t", "body": "🤖a/b#1 <!-- ssf: origin=a/b#1 -->\n\nopened by a session",
             "html_url": "https://gh/5", "state": "open", "user": {"login": "bot"},
             "created_at": "x", "updated_at": "x"
         }))
         .unwrap();
         let timeline = vec![
-            json!({"event":"commented","id":1,"user":{"login":"bot"},"body":"tagged <!-- ssf: origin=a/b#1 -->","html_url":"u1"}),
+            json!({"event":"commented","id":1,"user":{"login":"bot"},"body":"🤖#1 <!-- ssf: origin=a/b#1 -->\n\ntagged","html_url":"u1"}),
             json!({"event":"commented","id":2,"user":{"login":"bot"},"body":"untagged","html_url":"u2"}),
             json!({"event":"commented","id":3,"user":{"login":"alice"},"body":"human","html_url":"u3"}),
-            json!({"event":"commented","id":30,"user":{"login":"alice"},"body":"pasted <!-- ssf: origin=a/b#1 -->","html_url":"u30"}),
+            json!({"event":"commented","id":30,"user":{"login":"alice"},"body":"<!-- ssf: origin=a/b#1 --> pasted","html_url":"u30"}),
             json!({"event":"reviewed","id":4,"user":{"login":"bot"},"body":"<!-- ssf: origin=a/b#7 -->","html_url":"u4"}),
             json!({"event":"commented","id":9,"user":{"login":"bot"},"body":"see\n```\n<!-- ssf: origin=a/b#7 role=reviewer -->\n```\n","html_url":"u9"}),
-            json!({"event":"reviewed","id":5,"user":{"login":"bot"},"body":"lgtm\n\n<!-- ssf: origin=a/b#5 role=reviewer -->","html_url":"u5"}),
+            json!({"event":"reviewed","id":5,"user":{"login":"bot"},"body":"🤖#5 (reviewer) <!-- ssf: origin=a/b#5 role=reviewer -->\n\nlgtm","html_url":"u5"}),
+            json!({"event":"commented","id":10,"user":{"login":"bot"},"body":"old style\n\n<!-- ssf: origin=a/b#1 -->","html_url":"u10"}),
             json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"body":"inline","html_url":"u8"}]}),
         ];
         let s = scan(&issue, &timeline, "Bot");
@@ -576,6 +776,11 @@ mod tests {
             Some("u9"),
             "a post whose only tag is quoted counts as untagged"
         );
+        assert_eq!(
+            s.untagged.get("commented:10").map(String::as_str),
+            Some("u10"),
+            "a tag at the end of the body is content now"
+        );
         assert!(
             !s.origins.contains_key("commented:30"),
             "a human's tag is not an origin"
@@ -596,7 +801,7 @@ mod tests {
         assert!(s.origin.is_none(), "a quoted tag does not bind the item");
         assert!(s.untagged.contains_key("body"));
         let mut delegated = issue.clone();
-        delegated.body = Some("child\n\n<!-- ssf: origin=a/b#1 mode=delegate -->".into());
+        delegated.body = Some("🤖#1 <!-- ssf: origin=a/b#1 mode=delegate -->\n\nchild".into());
         let s = scan(&delegated, &[], "bot");
         assert_eq!(s.origin.as_deref(), Some("a/b#1"));
         assert!(s.origin_tag.as_ref().unwrap().is_delegate());

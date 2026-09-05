@@ -92,9 +92,11 @@ fn quote(body: &str, max: usize) -> String {
         .join("\n")
 }
 
-/// A post's text without its origin tag, and where the tag says it came
-/// from. Only the bot's own posts carry meaningful tags; a human's text is
-/// shown as is.
+/// A post's text without its byline and origin tag, and where the tag
+/// says it came from. Only the bot's own posts carry meaningful tags; a
+/// human's text is shown as is. A post by the bot login without a tag was
+/// typed by a person using the bot account (sessions always stamp), and is
+/// marked so that the agent knows it is a human's.
 fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
     if !author.eq_ignore_ascii_case(bot) {
         return (body.to_string(), String::new());
@@ -108,7 +110,7 @@ fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
             origin::strip(body),
             format!(" (from the agent on {})", t.origin),
         ),
-        None => (body.to_string(), String::new()),
+        None => (body.to_string(), " (not from a session)".to_string()),
     }
 }
 
@@ -1688,7 +1690,7 @@ mod tests {
     #[test]
     fn owned_items_get_tracking_and_closing_notes() {
         let pr_issue: Issue = serde_json::from_value(json!({
-            "number": 4, "title": "Fix it", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->", "html_url": "https://gh/4",
+            "number": 4, "title": "Fix it", "body": "<!-- ssf: origin=o/r#3 -->\n\nFixes it", "html_url": "https://gh/4",
             "state": "open", "state_reason": "completed", "user": {"login": "bot"}, "created_at": "t", "updated_at": "t",
             "pull_request": {}
         })).unwrap();
@@ -1778,7 +1780,7 @@ mod tests {
     #[test]
     fn reviewer_sessions_get_review_prompts() {
         let pr_issue: Issue = serde_json::from_value(json!({
-            "number": 4, "title": "Fix it", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->", "html_url": "https://gh/4",
+            "number": 4, "title": "Fix it", "body": "<!-- ssf: origin=o/r#3 -->\n\nFixes it", "html_url": "https://gh/4",
             "state": "open", "user": {"login": "bot"}, "created_at": "t", "updated_at": "t",
             "pull_request": {}
         })).unwrap();
@@ -1936,7 +1938,7 @@ mod tests {
             ..Default::default()
         };
         let pr_issue: Issue = serde_json::from_value(json!({
-            "number": 4, "title": "Fix it", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->",
+            "number": 4, "title": "Fix it", "body": "<!-- ssf: origin=o/r#3 -->\n\nFixes it",
             "html_url": "https://gh/4", "state": "open", "user": {"login": "bot"},
             "labels": [{"name": "Review"}], "pull_request": {},
             "created_at": "t", "updated_at": "t"
@@ -2163,14 +2165,36 @@ mod tests {
     #[test]
     fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
         let ev = json!({"event":"commented","id":1,"user":{"login":"bot"},"created_at":"t",
-            "body":"done\n\n<!-- ssf: origin=o/r#9 -->","html_url":"https://x/1"});
+            "body":"🤖#9 <!-- ssf: origin=o/r#9 -->\n\ndone","html_url":"https://x/1"});
         let r = render_event(&ev, false, &cfg(), "bot").unwrap();
         assert!(
             r.text
-                .contains("@bot commented (from the agent on o/r#9) (https://x/1):\n  > done")
+                .contains("@bot commented (from the agent on o/r#9) (https://x/1):\n  > done"),
+            "{}",
+            r.text
         );
         assert!(!r.text.contains("<!--"));
+        assert!(!r.text.contains("🤖"), "the byline goes with the tag");
         assert_eq!(r.origin.as_deref(), Some("o/r#9"));
+        // A comment by the bot login with no tag was typed by a person.
+        let ev = json!({"event":"commented","id":11,"user":{"login":"bot"},"created_at":"t",
+            "body":"typed as the bot","html_url":"https://x/11"});
+        let r = render_event(&ev, false, &cfg(), "bot").unwrap();
+        assert!(
+            r.text.contains(
+                "@bot commented (not from a session) (https://x/11):\n  > typed as the bot"
+            ),
+            "{}",
+            r.text
+        );
+        assert!(r.origin.is_none());
+        // A tag at the end of the body (older posts) is content, so the
+        // post reads as a person's; strip still keeps the text clean.
+        let ev = json!({"event":"commented","id":12,"user":{"login":"bot"},"created_at":"t",
+            "body":"old style\n\n<!-- ssf: origin=o/r#9 -->","html_url":"https://x/12"});
+        let r = render_event(&ev, false, &cfg(), "bot").unwrap();
+        assert!(r.text.contains("(not from a session)"));
+        assert!(r.origin.is_none());
         let review = json!({"event":"reviewed","id":2,"user":{"login":"bot"},"state":"approved",
             "body":"<!-- ssf: origin=o/r#9 -->"});
         let r = render_event(&review, false, &cfg(), "bot").unwrap();
@@ -2181,14 +2205,14 @@ mod tests {
         assert_eq!(r.origin.as_deref(), Some("o/r#9"));
         // A reviewer session's posts are told apart from the author's.
         let review = json!({"event":"reviewed","id":3,"user":{"login":"bot"},"state":"changes_requested",
-            "body":"nits\n\n<!-- ssf: origin=o/r#9 role=reviewer -->"});
+            "body":"<!-- ssf: origin=o/r#9 role=reviewer -->\n\nnits"});
         let r = render_event(&review, false, &cfg(), "bot").unwrap();
         assert!(r.text.contains(
             "reviewed (changes_requested) (from the reviewer session on o/r#9):\n  > nits"
         ));
         assert_eq!(r.origin.as_deref(), Some("o/r#9:reviewer"));
         let inline = json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"path":"a.rs",
-            "line":3,"body":"typo\n\n<!-- ssf: origin=o/r#9 role=reviewer -->","html_url":"u8"}]});
+            "line":3,"body":"<!-- ssf: origin=o/r#9 role=reviewer -->\n\ntypo","html_url":"u8"}]});
         let r = render_event(&inline, false, &cfg(), "bot").unwrap();
         assert!(
             r.text
@@ -2207,7 +2231,7 @@ mod tests {
         );
 
         let issue: Issue = serde_json::from_value(json!({
-            "number": 4, "title": "PR", "body": "Fixes it\n\n<!-- ssf: origin=o/r#3 -->", "html_url": "https://gh/4",
+            "number": 4, "title": "PR", "body": "<!-- ssf: origin=o/r#3 -->\n\nFixes it", "html_url": "https://gh/4",
             "state": "open", "user": {"login": "bot"}, "created_at": "t", "updated_at": "t"
         })).unwrap();
         let repo = RepoConfig {
