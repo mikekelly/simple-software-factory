@@ -201,6 +201,49 @@ pub fn effort_levels(harness: &str) -> &'static [&'static str] {
     catalogue(harness).map(|c| c.effort_levels).unwrap_or(&[])
 }
 
+/// Flags that make a harness run without stopping for approval: every tool
+/// call is allowed and the first-run trust question, where a flag can answer
+/// it, is answered. ssf's terminals are unmanned, so nothing could answer a
+/// prompt; Claude Code's `AskUserQuestion` tool is dropped for the same
+/// reason. Login and first-run onboarding survive all of these and are
+/// machine setup.
+const UNATTENDED_FLAGS: &[(&str, &str)] = &[
+    (
+        "claude",
+        "--dangerously-skip-permissions --disallowedTools AskUserQuestion",
+    ),
+    (
+        "codex",
+        "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust",
+    ),
+    ("gemini", "--yolo --skip-trust"),
+    ("grok", "--always-approve"),
+    // Pi has no tool approvals; `--approve` trusts the project's `.pi/` files.
+    ("pi", "--approve"),
+    ("omp", "--auto-approve"),
+    ("opencode", "--auto"),
+    ("copilot", "--allow-all"),
+    ("crush", "--yolo"),
+];
+
+/// The flags that let `harness` run unattended, if ssf knows them.
+pub fn unattended_flags(harness: &str) -> Option<&'static str> {
+    UNATTENDED_FLAGS
+        .iter()
+        .find(|(h, _)| *h == harness)
+        .map(|(_, f)| *f)
+}
+
+/// The command that starts `harness` when `repo.command` is not set: the
+/// harness id plus its unattended flags, or the bare id for a harness ssf
+/// does not know.
+pub fn default_command(harness: &str) -> String {
+    match unattended_flags(harness) {
+        Some(flags) => format!("{harness} {flags}"),
+        None => harness.to_string(),
+    }
+}
+
 /// Model ids to offer for `harness`: the installed agent's own list when it
 /// can produce one, else the seeded ids.
 pub fn available_models(harness: &str) -> Result<Vec<String>> {
@@ -425,6 +468,36 @@ mod tests {
         assert!(validate("gemini", None, Some("high")).is_err());
         assert!(validate("crush", Some("x"), None).is_err());
         assert!(validate("crush", None, None).is_ok());
+    }
+
+    #[test]
+    fn default_commands_are_permission_free() {
+        assert_eq!(
+            default_command("claude"),
+            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+        );
+        assert_eq!(
+            default_command("codex"),
+            "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust"
+        );
+        assert_eq!(default_command("gemini"), "gemini --yolo --skip-trust");
+        assert_eq!(default_command("grok"), "grok --always-approve");
+        assert_eq!(default_command("pi"), "pi --approve");
+        assert_eq!(default_command("omp"), "omp --auto-approve");
+        assert_eq!(default_command("opencode"), "opencode --auto");
+        assert_eq!(default_command("copilot"), "copilot --allow-all");
+        assert_eq!(default_command("crush"), "crush --yolo");
+        // Every agent ssf knows has unattended flags.
+        for a in crate::agents::list() {
+            assert!(unattended_flags(&a.id).is_some(), "{}", a.id);
+        }
+        // An unknown harness is started as given.
+        assert_eq!(default_command("aider"), "aider");
+        // Model and effort go after the flags.
+        assert_eq!(
+            apply_to_command(&default_command("codex"), "codex", Some("gpt-5.5"), None),
+            "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
+        );
     }
 
     #[test]

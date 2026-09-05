@@ -286,7 +286,7 @@ can reconfigure the factory:
 ```sh
 ssf repo list --json
 ssf repo add acme/widgets --harness codex --instructions "Run make test before opening a PR."
-ssf repo set acme/widgets --harness claude --command "claude --dangerously-skip-permissions"
+ssf repo set acme/widgets --harness claude --command "claude --dangerously-skip-permissions --disallowedTools 'Bash(git push:*)'"
 ssf repo set acme/widgets --model opus --effort high
 ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
 ssf models pi                     # ids the installed agent takes
@@ -367,7 +367,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
-| `repo.command` | the agent id | Command that starts the agent, e.g. `claude --dangerously-skip-permissions` |
+| `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
 | `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
 | `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.path` | | Register an existing checkout instead of cloning |
@@ -431,6 +431,38 @@ repository resets both, since the ids belong to the agent. Keep
 `--model`/`--effort` out of `repo.command` when you set them here, or the
 agent sees the flag twice.
 
+### Permissions
+
+Nobody sits at an ssf terminal, so an agent that stops to ask whether it may
+run a command waits forever. Unless `repo.command` says otherwise, ssf
+therefore starts every agent with the flags that let it run unattended:
+
+| Agent | Default command | What still shows up at start |
+|-------|-----------------|------------------------------|
+| `claude` | `claude --dangerously-skip-permissions --disallowedTools AskUserQuestion` | the folder-trust question (ssf answers it) |
+| `codex` | `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust` | the directory-trust question (ssf answers it) |
+| `gemini` | `gemini --yolo --skip-trust` | nothing |
+| `grok` | `grok --always-approve` | nothing |
+| `pi` | `pi --approve` (Pi has no tool approvals; the flag trusts the repository's `.pi/` files) | nothing |
+| `omp` | `omp --auto-approve` | nothing |
+| `opencode` | `opencode --auto` | nothing |
+| `copilot` | `copilot --allow-all` | nothing (the flag trusts the folder too) |
+| `crush` | `crush --yolo` | an offer to create `AGENTS.md`, which the first prompt dismisses |
+
+`ssf agents --json` shows the default as `launch_command`. Claude Code's
+`AskUserQuestion` tool is switched off because it, too, waits for a person
+at the terminal; the agent is told to ask on the issue instead. Login and
+first-run onboarding are not covered: sign each agent in once, by hand, on
+the machine that runs the daemon.
+
+Set `repo.command` to run an agent differently, for instance with a
+permission mode of your own or a tool deny list in the agent's own syntax
+(`--disallowedTools` for Claude Code, `--deny` for Grok, `--deny-tool` for
+Copilot, `--exclude-tools` for Pi). Behavioural limits (do not merge, do not
+close issues) belong in the [per-project prompt
+file](#the-per-project-prompt-file), not in the command. ssf has no
+allow/deny list of its own.
+
 ## Drivers: Orca and herdr
 
 The daemon does not care what holds the agents' terminals. Everything it
@@ -462,8 +494,8 @@ and runs the agent in the workspace's root pane through the same
 `ssf launch` wrapper as with Orca, so the bot identity, the `gh` shim and
 the `ssf` commands all work. herdr recognises the agent in the pane and
 reports its state (`idle`, `working`, `blocked`, `done`); messages go in
-with `herdr agent prompt`, which pastes and submits them. Claude Code's
-folder-trust question is answered on start. herdr keeps no link between a
+with `herdr agent prompt`, which pastes and submits them. Claude Code's and
+Codex's folder-trust questions are answered on start. herdr keeps no link between a
 workspace and an issue, so ssf finds a workspace it lost track of by the
 worktree's name (`issue-N-...`), and remembers a workspace as herdr's id
 plus the checkout it was opened on (`w7@/path`). Before prompting or
@@ -915,8 +947,9 @@ The details behind [How it works](#how-it-works).
   gone, ssf re-creates it from the old branch (local or `origin/`) and does
   the same. Claude Code resumes a session from any directory, so this works
   even when the new worktree has a different path.
-- **First-run dialogs.** Claude Code asks whether to trust a new folder; ssf
-  answers it so unattended launches do not stall.
+- **First-run dialogs.** Claude Code and Codex ask whether to trust a new
+  folder; ssf answers it so unattended launches do not stall. Approval
+  prompts never appear because of the [default commands](#permissions).
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, Orca keeps the terminals, and delivery finds
   them again. A machine restart takes the terminals with it, so the daemon

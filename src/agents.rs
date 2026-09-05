@@ -11,6 +11,9 @@ pub struct Agent {
     pub name: String,
     /// Executable expected on PATH.
     pub command: String,
+    /// How ssf starts the agent unless `repo.command` says otherwise: the
+    /// executable plus the flags that let it run unattended.
+    pub launch_command: String,
     pub installed: bool,
     /// Currently selected as the Omarchy default agent.
     pub default: bool,
@@ -70,6 +73,7 @@ pub fn list() -> Vec<Agent> {
             id: id.to_string(),
             name: name.to_string(),
             command: cmd.to_string(),
+            launch_command: crate::models::default_command(id),
             installed: on_path(cmd) || mise_has(pkg),
             default: default.as_deref() == Some(*id),
             takes_model: crate::models::supports_model(id),

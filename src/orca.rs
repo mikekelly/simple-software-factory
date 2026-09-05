@@ -715,9 +715,9 @@ impl Orca {
     }
 
     /// Wait for a freshly launched harness to become idle and click through
-    /// first-run dialogs that would otherwise swallow the prompt. Claude Code
-    /// asks whether to trust a folder the first time it runs in a new
-    /// worktree; the answer is the second option.
+    /// first-run dialogs that would otherwise swallow the prompt: Claude Code
+    /// and Codex ask whether to trust a folder the first time they run in a
+    /// new worktree (see `driver::trust_dialog` for who preselects what).
     pub async fn settle_harness(&self, handle: &str, harness: &str) -> Result<()> {
         let idle = self
             .wait_tui_idle(handle, self.cfg.tui_idle_timeout_ms)
@@ -727,12 +727,13 @@ impl Orca {
         }
         for _ in 0..3 {
             let screen = self.screen(handle).await?;
-            let text = screen.join("\n").to_lowercase();
-            if text.contains("trust this folder") || text.contains("i trust this folder") {
+            if let Some(answer) = crate::driver::trust_dialog(&screen.join("\n")) {
                 info!(handle, "accepting the folder trust dialog");
-                self.run(&["terminal", "send", "--terminal", handle, "--text", "\x1b[B"])
-                    .await?;
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                if answer == crate::driver::TrustAnswer::DownEnter {
+                    self.run(&["terminal", "send", "--terminal", handle, "--text", "\x1b[B"])
+                        .await?;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
                 self.run(&[
                     "terminal",
                     "send",

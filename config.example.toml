@@ -47,7 +47,7 @@
 name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
 # driver = "herdr"                             # orca | herdr (default: the top-level `driver`)
-# command = "claude --dangerously-skip-permissions"   # how the agent is started (default: the harness id); run via `ssf launch`
+# command = "claude --permission-mode acceptEdits"    # how the agent is started; default: its permission-free command (`ssf agents --json`), run via `ssf launch`
 # model = "opus"                               # Orca model id, or provider/model for pi/omp/opencode (see `ssf models <agent>`)
 # effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
