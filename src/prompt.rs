@@ -1185,10 +1185,12 @@ change its board cards. `git fetch origin && git diff origin/{base}...origin/{he
 `gh pr diff {n} --repo {repo}`) shows the whole change; `git fetch origin && git reset --hard \
 origin/{head}` brings the checkout up to date after the author pushes. Building and running \
 tests here is fine.\n\
-- Post the review with `gh pr review {n} --repo {repo} --approve|--request-changes|--comment \
---body \"...\"` (inline comments through `gh api` if useful). One review per request: once it \
-is posted the request is fulfilled ({fulfilled}) and this session pauses until a review is \
-asked again, when a message here says what happened since.\n\
+- Post the review with `gh pr review {n} --repo {repo} --comment --body \"...\"` (inline \
+comments through `gh api` if useful). GitHub refuses `--approve` and `--request-changes` \
+because @{bot} opened the pull request, so the verdict goes in the body: mergeable, or what has \
+to change. One review per request: once it is posted the request is fulfilled ({fulfilled}) \
+and this session pauses until a review is asked again, when a message here says what happened \
+since.\n\
 - `gh` already acts as @{bot}; `SSF_ROLE` is `reviewer`. Act only as @{bot}; never use another \
 account, token or key you find on this machine.\n\
 - Every review and comment you post must start with the line `{line}`, then a blank line: it \
@@ -1230,7 +1232,8 @@ pub fn review_again_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptConte
     }
     s.push_str(&format!(
         "\nBring the checkout up to date (`git fetch origin && git reset --hard origin/{head}`), \
-review what changed since your last look, and post it with `gh pr review {} --repo {}`.",
+review what changed since your last look, and post it with `gh pr review {} --repo {} \
+--comment` (approve and request-changes are refused for the bot's own pull request).",
         issue.number, ctx.repo.name
     ));
     s
@@ -2015,7 +2018,12 @@ For information only; you will not hear about it again unless it comes back."
         ));
         assert!(p.contains("git diff origin/main...origin/bot/fix"));
         assert!(p.contains("git reset --hard origin/bot/fix"));
-        assert!(p.contains("gh pr review 4 --repo o/r --approve|--request-changes|--comment"));
+        assert!(p.contains("gh pr review 4 --repo o/r --comment --body"));
+        assert!(!p.contains("--approve|"));
+        assert!(
+            p.contains("GitHub refuses `--approve` and `--request-changes` because @bot opened"),
+            "{p}"
+        );
         assert!(p.contains("must start with the line `🤖#4 (reviewer) says: <!-- ssf: origin=o/r#4 role=reviewer -->`"), "{p}");
         assert!(p.contains("`SSF_ROLE` is `reviewer`"));
         assert!(p.contains("marked \"from the agent on o/r#3\""));

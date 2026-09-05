@@ -736,7 +736,9 @@ The reviewer session is:
 - its own agent, launched with `SSF_ROLE=reviewer` (so the gh wrapper tags its
   posts `role=reviewer`), and a review-specific prompt: the PR, its
   description and history, then how to review (`git diff base...head`,
-  `gh pr review <n> --approve|--request-changes|--comment`), never commit,
+  `gh pr review <n> --comment`, since GitHub refuses approve and
+  request-changes from the account that opened the PR, so the verdict goes
+  in the body), never commit,
   push, merge or touch the board, and that the author is another session of
   the same bot;
 - the session id `owner/repo#N:reviewer`. It is listed by `ssf peers` as
