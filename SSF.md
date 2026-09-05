@@ -3,7 +3,7 @@
 - Post a short comment on the issue when you start, when you need a decision, and when you finish.
 - Ask on the issue rather than guessing when the request is ambiguous; you are woken up when someone answers.
 - Commit as you go.
-- Work on the issue's branch and open a PR that references the issue.
+- Work on the issue's branch and open a PR that references the issue (`Closes #N`), then comment on the issue with the link. Do not close the issue or merge the PR yourself; a human reviews and merges.
 - Keep `cargo test` green and run `cargo fmt` and `cargo clippy` before pushing.
 - Update `README.md` and `config.example.toml` for any user-visible behaviour.
 - Rebuild the package with `cd packaging && makepkg -fd` before calling something done; commit the `pkgver` bump makepkg makes to `packaging/PKGBUILD`.
