@@ -1037,6 +1037,27 @@ fn hostname() -> String {
         .unwrap_or_else(|| "omarchy".to_string())
 }
 
+/// herdr starts and reads only the agents it can recognise in a pane.
+fn check_herdr_harness(harness: &str) {
+    let known = std::process::Command::new(
+        std::env::var("HERDR_COMMAND").unwrap_or_else(|_| "herdr".into()),
+    )
+    .args(["agent", "start", "--help"])
+    .output()
+    .ok()
+    .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
+    if let Some(text) = known
+        && text.contains("possible values")
+        && !text
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|w| w == harness)
+    {
+        eprintln!(
+            "warning: herdr does not list `{harness}` among the agents it detects (see `herdr agent start --help`); sessions would wait for it and give up"
+        );
+    }
+}
+
 fn check_harness(harness: &str) {
     if !agents::is_known(harness) {
         eprintln!(
@@ -1071,6 +1092,9 @@ fn repo(command: RepoCommand) -> Result<()> {
             let path = expand_checkout(path)?;
             check_harness(&harness);
             let driver = driver.map(|d| d.parse()).transpose()?;
+            if driver == Some(config::DriverKind::Herdr) {
+                check_herdr_harness(&harness);
+            }
             let entry = RepoConfig {
                 name: name.clone(),
                 harness,
@@ -1139,6 +1163,9 @@ fn repo(command: RepoCommand) -> Result<()> {
             }
             if let Some(d) = driver {
                 entry.driver = Some(d.parse()?);
+            }
+            if entry.driver == Some(config::DriverKind::Herdr) {
+                check_herdr_harness(&entry.harness);
             }
             if let Some(p) = expand_checkout(path)? {
                 entry.path = Some(p);
@@ -1388,15 +1415,15 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&json!({
                 "me": me,
-                "orca_available": snap.orca.is_ok(),
-                "orca_error": snap.orca.as_ref().err(),
+                "orca_available": snap.available(),
+                "orca_error": snap.error(),
                 "sessions": sessions,
             }))?
         );
         return Ok(());
     }
-    if let Err(e) = &snap.orca {
-        eprintln!("driver unavailable, agent states unknown: {e}");
+    if let Some(e) = snap.error() {
+        eprintln!("driver unavailable, its agent states unknown: {e}");
     }
     if sessions.is_empty() {
         println!(

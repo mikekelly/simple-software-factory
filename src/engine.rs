@@ -53,9 +53,10 @@ pub struct Engine {
     login: String,
     state: State,
     failures: BTreeMap<(String, u64), u32>,
-    /// The startup pass (resume sessions whose terminals are gone) has not
-    /// run yet; it runs on the first pass that finds Orca ready.
-    startup_pass_pending: bool,
+    /// Drivers whose startup pass (resume sessions whose terminals are
+    /// gone) has not run yet; each runs on the first pass that finds that
+    /// driver ready.
+    startup_pending: Vec<DriverKind>,
 }
 
 /// The ignore record of a bot-opened item nothing binds to (see
@@ -123,8 +124,15 @@ impl Engine {
         let kind = self.cfg.driver_for(repo);
         self.drivers
             .get(kind)
-            .or_else(|| self.drivers.iter().next())
-            .unwrap_or_else(|| panic!("no driver configured for {kind}"))
+            .expect("sync_drivers keeps a driver for every kind the config uses")
+    }
+
+    /// Rebuild the driver set when the config's choice of drivers changed
+    /// (a repo added with `--driver`, or the default switched).
+    fn sync_drivers(&mut self) {
+        if self.drivers.kinds() != self.cfg.drivers_in_use() {
+            self.drivers = Drivers::from_config(&self.cfg);
+        }
     }
 
     fn driver_down(&self, repo: &RepoConfig) -> bool {
@@ -132,8 +140,9 @@ impl Engine {
     }
 
     /// Ask every driver in use whether it is ready, remembering the ones
-    /// that are not. Fails only when none is.
-    async fn check_drivers(&mut self) -> Result<()> {
+    /// that are not. Returns what is wrong with the ones that are not; fails
+    /// only when none is.
+    async fn check_drivers(&mut self) -> Result<Vec<String>> {
         let mut down = Vec::new();
         let mut errors = Vec::new();
         let mut any_up = false;
@@ -153,7 +162,7 @@ impl Engine {
         }
         self.down = down;
         if any_up {
-            Ok(())
+            Ok(errors)
         } else {
             anyhow::bail!("{}", errors.join("; "))
         }
@@ -168,7 +177,11 @@ impl Engine {
         let mut state = State::load()?;
         state.bot_login = Some(me.login.clone());
         state.save()?;
-        let startup_pass_pending = cfg.daemon.resume_on_start;
+        let startup_pending = if cfg.daemon.resume_on_start {
+            cfg.drivers_in_use()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             cfg,
             gh,
@@ -177,7 +190,7 @@ impl Engine {
             login: me.login,
             state,
             failures: BTreeMap::new(),
-            startup_pass_pending,
+            startup_pending,
         })
     }
 
@@ -195,12 +208,12 @@ impl Engine {
         // the graphical session), and the startup pass needs it: wait a
         // bounded while before the first poll rather than skipping passes.
         let mut stop = false;
-        if self.startup_pass_pending {
+        if !self.startup_pending.is_empty() {
             let wait = Duration::from_secs(self.cfg.daemon.startup_orca_wait_secs);
             let started = tokio::time::Instant::now();
             loop {
                 let err = match self.check_drivers().await {
-                    Ok(()) => break,
+                    Ok(_) => break,
                     Err(e) => e,
                 };
                 let elapsed = started.elapsed();
@@ -587,7 +600,10 @@ are resumed on the first pass that finds it: {err:#}"
     /// intervals) without a restart. The token is fixed for the process.
     fn reload_config(&mut self) {
         match Config::load() {
-            Ok(cfg) => self.cfg = cfg,
+            Ok(cfg) => {
+                self.cfg = cfg;
+                self.sync_drivers();
+            }
             Err(e) => warn!("config reload failed, keeping previous: {e:#}"),
         }
     }
@@ -600,16 +616,31 @@ are resumed on the first pass that finds it: {err:#}"
             warn!("no repos configured; nothing to do (see `ssf repo add`)");
             return;
         }
-        if let Err(e) = self.check_drivers().await {
-            warn!("skipping this pass: {e:#}");
-            self.state.last_error = Some(format!("{e:#}"));
-            let _ = self.state.save();
-            return;
-        }
-        self.state.last_error = None;
-        if self.startup_pass_pending {
-            self.startup_pass_pending = false;
-            self.resume_interrupted().await;
+        let down = match self.check_drivers().await {
+            Ok(down) => down,
+            Err(e) => {
+                warn!("skipping this pass: {e:#}");
+                self.state.last_error = Some(format!("{e:#}"));
+                let _ = self.state.save();
+                return;
+            }
+        };
+        // A driver that is down is a visible error even while the others
+        // carry on; its repositories are skipped below.
+        self.state.last_error = if down.is_empty() {
+            None
+        } else {
+            Some(down.join("; "))
+        };
+        let ready: Vec<DriverKind> = self
+            .startup_pending
+            .iter()
+            .copied()
+            .filter(|k| !self.down.contains(k))
+            .collect();
+        if !ready.is_empty() {
+            self.startup_pending.retain(|k| !ready.contains(k));
+            self.resume_interrupted(&ready).await;
         }
         for repo in self.cfg.repos.clone() {
             if self.driver_down(&repo) {
@@ -639,9 +670,9 @@ are resumed on the first pass that finds it: {err:#}"
     /// its harness to settle. Live sessions are not touched, and a missing
     /// workspace is left to rehydration on the next event rather than
     /// re-created on boot.
-    async fn resume_interrupted(&mut self) {
+    async fn resume_interrupted(&mut self, kinds: &[DriverKind]) {
         for repo in self.cfg.repos.clone() {
-            if self.driver_down(&repo) {
+            if self.driver_down(&repo) || !kinds.contains(&self.cfg.driver_for(&repo)) {
                 continue;
             }
             let candidates = self.resume_candidates(&repo);
@@ -3772,8 +3803,27 @@ mod tests {
             login: "bot".into(),
             state: State::default(),
             failures: BTreeMap::new(),
-            startup_pass_pending: false,
+            startup_pending: Vec::new(),
         }
+    }
+
+    #[test]
+    fn drivers_follow_the_config() {
+        let mut e = engine();
+        let orca = repo();
+        let mut herdr = repo();
+        herdr.name = "o/h".into();
+        herdr.driver = Some(DriverKind::Herdr);
+        e.cfg.repos = vec![orca.clone(), herdr.clone()];
+        // What a reloaded config that added a herdr repo does.
+        e.sync_drivers();
+        assert_eq!(e.driver(&orca).kind(), DriverKind::Orca);
+        assert_eq!(e.driver(&herdr).kind(), DriverKind::Herdr);
+        // And the other way: the default switched, Orca no longer used.
+        e.cfg.driver = DriverKind::Herdr;
+        e.cfg.repos = vec![herdr.clone()];
+        e.sync_drivers();
+        assert_eq!(e.drivers.kinds(), vec![DriverKind::Herdr]);
     }
 
     fn repo() -> RepoConfig {

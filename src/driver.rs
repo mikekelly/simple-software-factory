@@ -280,6 +280,14 @@ impl Drivers {
         Self { list }
     }
 
+    /// The kinds in the set, in `DriverKind` order.
+    pub fn kinds(&self) -> Vec<DriverKind> {
+        let mut out: Vec<DriverKind> = self.list.iter().map(Driver::kind).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn get(&self, kind: DriverKind) -> Option<&Driver> {
         self.list.iter().find(|d| d.kind() == kind)
     }

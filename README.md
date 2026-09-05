@@ -440,10 +440,14 @@ is still there or busy, removing the workspace) goes through a *driver*,
 and there are two. The `driver` key picks the default for the whole
 instance; a `[[repo]]` can set its own, so one daemon can run some
 repositories in Orca and others in herdr. `ssf doctor` checks every driver
-in use, and a pass skips the repositories of a driver that is not answering
-(the others carry on). Cloud-hosted agent sessions are not a driver yet;
-they need a different shape (no local terminal, no local `ssf`) and are
-left for later.
+in use. A pass skips the repositories of a driver that is not answering
+while the others carry on; the outage shows as the error in `ssf status`,
+and that driver's sessions show an unknown agent state until it answers
+(the other driver's are reported as usual). The startup pass runs per
+driver, on the first pass that finds that driver ready. Cloud-hosted agent
+sessions are not a driver yet; they need a different shape (no local
+terminal, no local `ssf`) and are tracked in
+[#49](https://github.com/mikekelly/simple-software-factory/issues/49).
 
 **`orca`** (the default) is the Orca desktop app and its CLI, as described
 throughout this file: Orca keeps the projects, worktrees are linked to the
@@ -461,9 +465,16 @@ reports its state (`idle`, `working`, `blocked`, `done`); messages go in
 with `herdr agent prompt`, which pastes and submits them. Claude Code's
 folder-trust question is answered on start. herdr keeps no link between a
 workspace and an issue, so ssf finds a workspace it lost track of by the
-worktree's name (`issue-N-...`). herdr also opens one workspace for the
-clone itself the first time it opens a worktree of it; that one is left
-alone. Clicking a session in the bar widget focuses its herdr workspace.
+worktree's name (`issue-N-...`), and remembers a workspace as herdr's id
+plus the checkout it was opened on (`w7@/path`), so a workspace id that
+herdr has since given to something else is treated as gone rather than
+prompted or removed. herdr also opens one workspace for the clone itself
+the first time it opens a worktree of it; that one is left alone. Clicking
+a session in the bar widget focuses its herdr workspace. herdr can only run
+the agents it recognises in a pane (`herdr agent start --help` lists them;
+`crush` from `ssf agents` is not among them in herdr 0.8.2); `ssf repo add
+--driver herdr` warns when the harness is not on that list, and a start
+with one that is not gives up after `herdr.tui_idle_timeout_ms`.
 
 ## What the agent is told
 
@@ -946,7 +957,9 @@ The details behind [How it works](#how-it-works).
   owns what it opens only within its own repository.
 - `ssf status` asks every driver in use for its workspace list on every call
   (a few hundred milliseconds); when a driver is not running the ssf side is
-  still reported and agent states show as unknown.
+  still reported and its sessions' agent states show as unknown. The JSON
+  keeps the `orca` key (`available`, `error`, `workspaces`, now with `down`)
+  for the bar widget, whichever drivers are in use.
 - The bar widget and menu entries are installed per user on first service
   start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
 - Logs: `journalctl --user -fu ssf.service`.

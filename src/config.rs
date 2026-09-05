@@ -19,6 +19,9 @@ pub enum DriverKind {
 }
 
 impl DriverKind {
+    #[cfg(test)]
+    pub const ALL: [DriverKind; 2] = [DriverKind::Orca, DriverKind::Herdr];
+
     /// The config value (`orca`, `herdr`).
     pub fn id(self) -> &'static str {
         match self {
