@@ -318,7 +318,7 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 | `owner`, `subscribers`, `subscriber_only`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `subscribers` are the sessions that hear about it without acting on it; `subscriber_only` marks an item tracked only for them (no owner, no workspace); `delegated_by` names the session that handed the item off (`mode=delegate`) |
 | `reviewing` | on a session of kind `reviewer` (id `owner/repo#N:reviewer`): the pull request it reviews (see [Reviewer sessions](#reviewer-sessions)) |
 | `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
-| `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass) or `gone` (removed some other way) |
+| `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
 
 `repos[].issues[]` carries the same objects, and `orca.available` says
@@ -788,9 +788,20 @@ comment, and then, only if everything is on origin, run `ssf release`.
   fails it prints what would be lost and refuses; nothing is removed.
   A person who has looked can pass `--force` (from a shell, not inside the
   session). The daemon removes the workspace, and its terminal, on its next
-  pass, running the checks once more first. It is refused while the session
-  still owns open items (a pull request bound to it, say). Reviewer
-  sessions look after themselves and are not released by hand.
+  pass, running the checks once more first. If that re-check finds work
+  (the tree changed after the agent asked, or a push did not land) the
+  release is dropped and the agent gets one `[ssf] Release ... refused`
+  message naming what would be lost, so it can fix that and ask again.
+  After three such refusals on the same item the daemon stops telling the
+  agent, refuses further `ssf release` from it, and marks the item
+  "release given up, workspace kept" (in `ssf status`, `ssf peers --all`
+  and `ssf purge --dry-run`) for a person to deal with; only the daemon's
+  own refusals count, not the ones `ssf release` prints straight away.
+  A release is also refused while the item is still open and assigned, or
+  while the session still owns open items (a pull request bound to it,
+  say), and one already accepted is dropped if the item comes back to life
+  before the pass. Reviewer sessions look after themselves and are not
+  released by hand.
 - **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
   for what agents left behind: every workspace whose item is closed and
   whose session has no running agent, listed with its state (`clean and
@@ -802,9 +813,10 @@ comment, and then, only if everything is on origin, run `ssf release`.
   than that many days ago; `--json` gives the same rows as data.
 - **What the record says.** A released or purged item is marked
   `released` (with `released_at`), and `ssf status`/`ssf peers --all` show
-  "retired, workspace kept" or "retired, workspace released" for closed
-  items, so a person can see what is lying around. The old
-  `daemon.cleanup_on_close` key is accepted but does nothing.
+  "retired, workspace kept", "retired, workspace released" or "retired,
+  release given up, workspace kept" for closed items, so a person can see
+  what is lying around. The old `daemon.cleanup_on_close` key is accepted
+  but does nothing.
 - **Coming back is unchanged.** A released or purged workspace is re-created
   from its branch on origin on the item's next event (reopening,
   re-assignment, a comment on a bound pull request), and the conversation

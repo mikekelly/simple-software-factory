@@ -91,10 +91,19 @@ pub struct IssueState {
     /// daemon's next pass, after the checks are run once more.
     #[serde(default)]
     pub release_pending: bool,
+    /// The pending release was forced by a person: the pass removes the
+    /// workspace without running the checks again.
+    #[serde(default)]
+    pub release_forced: bool,
     /// When the workspace was removed by `ssf release` or `ssf purge`.
     /// Cleared when the next event re-creates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
+    /// Releases the daemon's own re-check refused (the tree changed after
+    /// `ssf release` passed its checks). Each is reported to the agent up
+    /// to a cap, after which the workspace is left for a person.
+    #[serde(default)]
+    pub release_refusals: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<String>,
     /// `updated_at` of the issue when the timeline was last reconciled.

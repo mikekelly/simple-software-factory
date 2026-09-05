@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::config::{Config, RepoConfig};
+use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
 use crate::orca::{Orca, WorkspaceInfo};
 use crate::state::{IssueState, State};
@@ -86,7 +87,9 @@ pub struct Session {
     pub released_at: Option<String>,
     /// For a retired item: `kept` (the workspace is still there), `released`
     /// (removed by `ssf release`/`ssf purge`), `gone` (removed some other
-    /// way), or `pending` (release approved, removal on the next pass).
+    /// way), `pending` (release approved, removal on the next pass), or
+    /// `given-up` (kept after the daemon refused the agent's release
+    /// three times; a person's to deal with).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_state: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -276,9 +279,15 @@ fn workspace_state(
     if item.active || item.subscriber_only {
         return None;
     }
+    // Retired before it was ever bound (unassigned during onboarding).
+    if item.worktree_id.is_none() && item.repo_id.is_none() && item.worktree_name.is_none() {
+        return None;
+    }
     Some(
         if item.release_pending {
             "pending"
+        } else if item.worktree_id.is_some() && item.release_refusals >= MAX_RELEASE_REFUSALS {
+            "given-up"
         } else if item.worktree_id.is_none() && item.released_at.is_some() {
             "released"
         } else if item.worktree_id.is_none() {
@@ -469,6 +478,7 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
                 Some("kept") => "retired, workspace kept".into(),
                 Some("released") => "retired, workspace released".into(),
                 Some("pending") => "retired, workspace being released".into(),
+                Some("given-up") => "retired, release given up, workspace kept".into(),
                 _ => "retired".into(),
             });
         }
@@ -549,6 +559,7 @@ pub fn render_status(snap: &Snapshot) -> String {
                     match s.workspace_state.as_deref() {
                         Some("kept") => "  (workspace kept)",
                         Some("pending") => "  (being released)",
+                        Some("given-up") => "  (release given up, workspace kept)",
                         Some("gone") => "  (workspace gone)",
                         _ => "",
                     }

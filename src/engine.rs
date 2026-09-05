@@ -24,6 +24,12 @@ use crate::status::{reviewer_session_id, session_id};
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
 const MAX_DELIVERY_FAILURES: u32 = 5;
 
+/// Daemon-side release refusals (the re-check on the pass after `ssf
+/// release` found work) before ssf stops telling the agent and leaves the
+/// workspace for a person. The synchronous refusal `ssf release` prints is
+/// not counted: only the daemon's own refusals can loop.
+pub const MAX_RELEASE_REFUSALS: u32 = 3;
+
 /// Marks an error from the reviewer side of a pull request, so it is
 /// counted against the reviewer session rather than the PR's own record.
 #[derive(Debug)]
@@ -1281,6 +1287,7 @@ are resumed on the first pass that finds it: {err:#}"
         e.launched_at = o.launched_at;
         e.cleanup_pending = false;
         e.release_pending = false;
+        e.release_forced = false;
         e.released_at = o.released_at;
     }
 
@@ -1955,7 +1962,9 @@ are resumed on the first pass that finds it: {err:#}"
         }
         e.cleanup_pending = false;
         e.release_pending = false;
+        e.release_forced = false;
         e.released_at = None;
+        e.release_refusals = 0;
     }
 
     /// First contact: make sure the project and a workspace exist, then send
@@ -2542,6 +2551,10 @@ are resumed on the first pass that finds it: {err:#}"
         e.seen = diff.seen;
         e.active = true;
         e.cleanup_pending = false;
+        // A release the agent asked for before the item came back is off:
+        // the session is live again in this workspace.
+        e.release_pending = false;
+        e.release_forced = false;
         e.retired_at = None;
         e.terminal_handle = Some(d.handle);
         e.last_prompt_at = Some(now_iso());
@@ -3220,16 +3233,20 @@ are resumed on the first pass that finds it: {err:#}"
             self.mark_released(repo, st.number);
             return;
         }
+        if st.active {
+            warn!(session, "release dropped: the item is active again");
+            self.drop_release(repo, st.number);
+            return;
+        }
         if !self.active_dependents(repo, st.number).is_empty() {
             warn!(
                 session,
                 "release dropped: the session owns open items again"
             );
-            self.entry(repo, st.number).release_pending = false;
+            self.drop_release(repo, st.number);
             return;
         }
-        let forced = st.released_at.is_some();
-        if !forced {
+        if !st.release_forced {
             let verdict = match st.worktree_path.as_deref() {
                 Some(path) => release::inspect(path).await.map(|c| c.problems()),
                 None => Err(anyhow::anyhow!("no workspace path recorded")),
@@ -3239,12 +3256,7 @@ are resumed on the first pass that finds it: {err:#}"
                 Err(e) => vec![format!("{e:#}")],
             };
             if !problems.is_empty() {
-                warn!(
-                    session,
-                    ?problems,
-                    "release dropped: the workspace changed since the checks passed"
-                );
-                self.entry(repo, st.number).release_pending = false;
+                self.refuse_release(repo, &st, problems).await;
                 return;
             }
         }
@@ -3255,8 +3267,67 @@ are resumed on the first pass that finds it: {err:#}"
             }
             Err(e) => {
                 warn!(session, "removing the workspace failed: {e:#}");
-                self.entry(repo, st.number).release_pending = false;
+                self.drop_release(repo, st.number);
             }
+        }
+    }
+
+    /// A pending release is off; a later `ssf release` starts from scratch.
+    fn drop_release(&mut self, repo: &RepoConfig, number: u64) {
+        let e = self.entry(repo, number);
+        e.release_pending = false;
+        e.release_forced = false;
+    }
+
+    /// The pass's own re-check found work in a workspace `ssf release` had
+    /// approved: drop the release, count it, and tell the agent what would
+    /// be lost so it can fix that and ask again. After
+    /// `MAX_RELEASE_REFUSALS` the agent hears no more and the workspace is
+    /// kept for a person (`release given up` in status, peers and purge).
+    async fn refuse_release(&mut self, repo: &RepoConfig, st: &IssueState, problems: Vec<String>) {
+        let session = session_id(&repo.name, st.number);
+        let e = self.entry(repo, st.number);
+        e.release_pending = false;
+        e.release_forced = false;
+        e.release_refusals = e.release_refusals.saturating_add(1);
+        let n = e.release_refusals;
+        warn!(
+            session,
+            ?problems,
+            refusals = n,
+            "release refused: the workspace changed since the checks passed"
+        );
+        if n > MAX_RELEASE_REFUSALS {
+            return;
+        }
+        // Only an agent that is there hears about it; a refusal is not
+        // worth starting a harness for.
+        let live = match st.worktree_id.as_deref() {
+            Some(id) => self.orca.has_live_agent(id).await.unwrap_or(false),
+            None => false,
+        };
+        if !live {
+            debug!(session, "no live agent to tell about the refused release");
+            return;
+        }
+        let text = prompt::release_refused_prompt(
+            &repo.name,
+            st.number,
+            &problems,
+            n,
+            MAX_RELEASE_REFUSALS,
+        );
+        match self.deliver(repo, Slot::Item(st.number), &text, None).await {
+            Ok(d) => {
+                let e = self.entry(repo, st.number);
+                e.terminal_handle = Some(d.handle);
+                e.last_prompt_at = Some(now_iso());
+                e.prompts_sent += 1;
+            }
+            Err(e) => warn!(
+                session,
+                "could not tell the agent about the refused release: {e:#}"
+            ),
         }
     }
 
@@ -3266,7 +3337,9 @@ are resumed on the first pass that finds it: {err:#}"
         let now = now_iso();
         let e = self.entry(repo, number);
         e.release_pending = false;
+        e.release_forced = false;
         e.cleanup_pending = false;
+        e.release_refusals = 0;
         e.worktree_id = None;
         e.worktree_path = None;
         e.terminal_handle = None;
@@ -3301,12 +3374,23 @@ are resumed on the first pass that finds it: {err:#}"
         }
         let number = slot.number();
         let st = self.entry(&repo, number).clone();
+        if st.active {
+            anyhow::bail!(
+                "{id} is still open and assigned; its workspace is in use. Close or unassign the item first"
+            );
+        }
         let deps = self.active_dependents(&repo, number);
         if !deps.is_empty() {
             let deps: Vec<String> = deps.iter().map(|n| format!("#{n}")).collect();
             anyhow::bail!(
                 "{id} still owns open items ({}); the workspace stays until they close",
                 deps.join(", ")
+            );
+        }
+        if st.release_refusals >= MAX_RELEASE_REFUSALS && !force {
+            anyhow::bail!(
+                "{id}: release given up after {} refusals by the daemon's own re-check; the workspace is kept for a person (`ssf release --as {id} --force` from a shell, or `ssf purge`)",
+                st.release_refusals
             );
         }
         let Some(wid) = st.worktree_id.clone() else {
@@ -3319,7 +3403,9 @@ are resumed on the first pass that finds it: {err:#}"
                 }
             );
         };
-        if !self.orca.worktree_exists(&wid).await? {
+        // Orca not answering is not a reason to refuse: the pass checks
+        // again before removing anything.
+        if !self.orca.worktree_exists(&wid).await.unwrap_or(true) {
             self.mark_released(&repo, number);
             return Ok(serde_json::json!({
                 "session": id, "title": st.title, "released": true, "already_gone": true,
@@ -3344,9 +3430,11 @@ are resumed on the first pass that finds it: {err:#}"
         }
         let e = self.entry(&repo, number);
         e.release_pending = true;
-        if !safe {
-            // Forced: `finish_release` must not run the checks again.
-            e.released_at = Some(now_iso());
+        // Forced: `finish_release` must not run the checks again, and a
+        // person has taken over from the agent's refused attempts.
+        e.release_forced = force;
+        if force {
+            e.release_refusals = 0;
         }
         info!(session = id, forced = !safe, "release accepted");
         Ok(serde_json::json!({
@@ -3404,6 +3492,7 @@ are resumed on the first pass that finds it: {err:#}"
                     "path": st.worktree_path,
                     "retired_at": st.retired_at,
                     "removed": false,
+                    "release_given_up": st.release_refusals >= MAX_RELEASE_REFUSALS,
                 });
                 if !self.orca.worktree_exists(&id).await? {
                     row["state"] = "already gone".into();
@@ -3604,7 +3693,10 @@ mod tests {
         Engine {
             cfg: Config::default(),
             gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
-            orca: Orca::new(Default::default()),
+            orca: Orca::new(crate::config::OrcaConfig {
+                command: "/nonexistent/orca-for-ssf-tests".into(),
+                ..Default::default()
+            }),
             login: "bot".into(),
             state: State::default(),
             failures: BTreeMap::new(),
@@ -4450,5 +4542,139 @@ mod tests {
         };
         e.remember_worktree(&r, Slot::Item(1), &wt);
         assert!(e.entry(&r, 1).released_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn daemon_side_refusals_are_capped_and_give_the_workspace_up() {
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("b1"), false);
+        {
+            let st = e.entry(&r, 1);
+            st.worktree_id = Some("repo::/w/1".into());
+            // No such directory: the re-check cannot pass.
+            st.worktree_path = Some("/nonexistent/ssf-w1".into());
+            st.github_state = Some("closed".into());
+        }
+        // The fake Orca cannot be asked, so the workspace counts as still
+        // there and no agent is live to tell; the refusal is counted all
+        // the same.
+        for n in 1..=MAX_RELEASE_REFUSALS {
+            e.entry(&r, 1).release_pending = true;
+            let st = e.entry(&r, 1).clone();
+            e.finish_release(&r, st).await;
+            let st = e.entry(&r, 1).clone();
+            assert!(!st.release_pending, "attempt {n}");
+            assert_eq!(st.release_refusals, n);
+            assert!(st.worktree_id.is_some(), "the workspace is kept");
+            assert!(st.released_at.is_none());
+        }
+        // Given up: the agent's next request is refused outright...
+        let resp = e
+            .handle_request(Request::Release {
+                session: "o/r#1".into(),
+                force: false,
+            })
+            .await;
+        assert!(!resp.ok);
+        let err = resp.error.unwrap();
+        assert!(err.contains("given up after 3 refusals"), "{err}");
+        assert!(!e.entry(&r, 1).release_pending);
+        // ...and it shows as such.
+        let sessions = crate::status::sessions(&e.cfg, &e.state, None);
+        assert_eq!(sessions[0].workspace_state.as_deref(), Some("given-up"));
+        assert!(crate::status::render_peers(&sessions, None).contains("release given up"));
+        // A person's forced release goes ahead and resets the count.
+        let resp = e
+            .handle_request(Request::Release {
+                session: "o/r#1".into(),
+                force: true,
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        let st = e.entry(&r, 1).clone();
+        assert!(st.release_pending);
+        assert!(st.release_forced, "forced: no re-check on the pass");
+        assert!(st.released_at.is_none());
+        assert_eq!(st.release_refusals, 0);
+        // Re-creating the workspace also starts afresh.
+        e.entry(&r, 1).release_refusals = MAX_RELEASE_REFUSALS;
+        let wt = Worktree {
+            id: "repo::/w/1b".into(),
+            path: "/w/1b".into(),
+            branch: None,
+        };
+        e.remember_worktree(&r, Slot::Item(1), &wt);
+        assert_eq!(e.entry(&r, 1).release_refusals, 0);
+    }
+
+    #[test]
+    fn release_refused_prompt_names_the_work_and_the_last_warning() {
+        let problems = vec!["1 uncommitted change".to_string()];
+        let p = prompt::release_refused_prompt("o/r", 1, &problems, 1, 3);
+        assert!(p.starts_with("[ssf] Release of this workspace refused (1 of 3)"));
+        assert!(p.contains("- 1 uncommitted change"));
+        assert!(p.contains("run `ssf release` again"));
+        let last = prompt::release_refused_prompt("o/r", 1, &problems, 3, 3);
+        assert!(last.contains("will not ask again"));
+        assert!(!last.contains("run `ssf release` again"));
+    }
+
+    #[tokio::test]
+    async fn a_release_is_off_once_the_item_is_live_again() {
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        // Open and assigned: nothing to release, not even by force.
+        seeded(&mut e, 1, Some("b1"), true);
+        e.entry(&r, 1).worktree_id = Some("repo::/w/1".into());
+        e.entry(&r, 1).worktree_path = Some("/w/1".into());
+        let resp = e
+            .handle_request(Request::Release {
+                session: "o/r#1".into(),
+                force: true,
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("still open and assigned"));
+        assert!(!e.entry(&r, 1).release_pending);
+        // The reopen race: release approved, then the item came back before
+        // the pass. The pass drops the release and leaves the workspace.
+        {
+            let st = e.entry(&r, 1);
+            st.release_pending = true;
+            st.release_forced = true;
+            st.terminal_handle = Some("h".into());
+        }
+        e.run_cleanups(&r).await;
+        let st = e.entry(&r, 1).clone();
+        assert!(!st.release_pending);
+        assert!(!st.release_forced);
+        assert_eq!(st.worktree_id.as_deref(), Some("repo::/w/1"));
+        assert_eq!(st.worktree_path.as_deref(), Some("/w/1"));
+        assert_eq!(st.terminal_handle.as_deref(), Some("h"));
+        assert!(st.released_at.is_none());
+        // A dropped forced release does not make the next plain one forced.
+        seeded(&mut e, 2, Some("b2"), false);
+        {
+            let st = e.entry(&r, 2);
+            st.worktree_id = Some("repo::/w/2".into());
+            st.worktree_path = Some("/nonexistent/ssf-w2".into());
+            st.release_pending = true;
+            st.release_forced = true;
+        }
+        seeded(&mut e, 3, Some("b2"), true);
+        e.entry(&r, 3).shares_workspace_of = Some(2);
+        e.run_cleanups(&r).await; // dependents came back: dropped
+        assert!(!e.entry(&r, 2).release_pending);
+        assert!(!e.entry(&r, 2).release_forced);
+        e.entry(&r, 3).active = false;
+        e.entry(&r, 2).release_pending = true;
+        e.run_cleanups(&r).await; // plain: re-checked, and the path is gone
+        let st = e.entry(&r, 2).clone();
+        assert!(!st.release_pending);
+        assert_eq!(st.release_refusals, 1);
+        assert!(st.worktree_id.is_some());
     }
 }

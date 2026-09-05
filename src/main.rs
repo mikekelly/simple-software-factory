@@ -153,7 +153,8 @@ enum Command {
         /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
         #[arg(long = "as", value_name = "SESSION")]
         r#as: Option<String>,
-        /// Remove it even if the checks fail (from a shell only; work in it is lost).
+        /// Remove it even if the checks fail; work in it is lost. Refused
+        /// inside a session unless --as names the session.
         #[arg(long)]
         force: bool,
         #[arg(long)]
@@ -1732,35 +1733,42 @@ async fn purge(dry_run: bool, older_than: Option<u64>, force: bool, json: bool) 
     }
     let mut removed = 0;
     let mut kept = 0;
+    let mut forceable = 0;
     for r in &rows {
         let s = |k: &str| r.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
         let did = r.get("removed").and_then(|b| b.as_bool()).unwrap_or(false);
+        let state = s("state");
+        let gone = state == "already gone";
         let verb = if did {
             removed += 1;
-            "removed"
+            if gone { "forgot" } else { "removed" }
         } else if dry_run {
-            "would keep"
-        } else {
-            kept += 1;
-            "kept"
-        };
-        let verb = if dry_run && !did {
-            let state = s("state");
-            if state == "clean and pushed" || (force && state != "agent running") {
+            if gone {
+                "would forget"
+            } else if state == "clean and pushed" || (force && state != "agent running") {
                 "would remove"
             } else {
-                verb
+                "would keep"
             }
         } else {
-            verb
+            kept += 1;
+            if state != "agent running" {
+                forceable += 1;
+            }
+            "kept"
         };
         let title = s("title");
+        let given_up = r
+            .get("release_given_up")
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
         println!(
-            "{:<13} {} \"{}\"  [{}]  {}",
+            "{:<13} {} \"{}\"  [{}]{}  {}",
             verb,
             s("session"),
             status::one_line(&title, 50),
             s("state"),
+            if given_up { " (release given up)" } else { "" },
             s("path")
         );
         if let Some(problems) = r.get("problems").and_then(|p| p.as_array()) {
@@ -1777,7 +1785,7 @@ async fn purge(dry_run: bool, older_than: Option<u64>, force: bool, json: bool) 
     } else {
         println!(
             "{removed} removed, {kept} kept{}.",
-            if kept > 0 && !force {
+            if forceable > 0 && !force {
                 "; `ssf purge --force` removes the kept ones too, losing what is in them"
             } else {
                 ""
