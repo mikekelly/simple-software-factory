@@ -298,6 +298,33 @@ impl Herdr {
     /// is still open on the checkout the id names.
     async fn ours(&self, id: &str) -> Result<Option<String>> {
         let (ws, path) = split_id(id);
+        // herdr's own binding of checkouts to workspaces is the authority;
+        // the workspace's reported checkout (or a pane's cwd, which follows
+        // `cd`) only when the id's path does not say which clone to ask.
+        if let Some(p) = path
+            && let (Some(root), _) = root_and_item(p)
+        {
+            return Ok(match self.workspace_for_path(&root, p).await? {
+                Some(open) if open == ws => Some(ws.to_string()),
+                Some(open) => {
+                    warn!(
+                        id,
+                        open,
+                        "our checkout is open in another herdr workspace; treating the recorded one as gone"
+                    );
+                    None
+                }
+                None => {
+                    if self.workspace_path(ws).await?.is_some() {
+                        warn!(
+                            id,
+                            "herdr workspace is not ours any more; treating it as gone"
+                        );
+                    }
+                    None
+                }
+            });
+        }
         let Some(open_on) = self.workspace_path(ws).await? else {
             return Ok(None);
         };
