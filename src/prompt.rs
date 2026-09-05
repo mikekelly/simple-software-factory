@@ -1872,7 +1872,7 @@ For information only; you will not hear about it again unless it comes back."
         let c = closed_prompt(&pr_issue, &[], &own);
         assert_eq!(
             c,
-            "[ssf] #4 has been closed (completed).\n\nStop working on it: commit anything worth keeping and leave a short final comment on it. No further updates for it."
+            "[ssf] #4 has been closed (completed).\n\nStop working on it: commit anything worth keeping, push, and leave a short final comment on it; then, only if everything is on origin, `ssf release` gives this workspace back (it refuses if anything would be lost; a kept workspace is fine). No further updates for it."
         );
         let u = unassigned_prompt(&pr_issue, &[], &own);
         assert!(u.starts_with("[ssf] The review request for @bot on #4 has been fulfilled or withdrawn.\n\nStop working on it:"));
