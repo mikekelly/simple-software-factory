@@ -423,7 +423,7 @@ the item (title, description, boards, everything that has happened on it)
 followed by "How to work on this", which says only what ssf owns:
 
 ```
-You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, because https://github.com/owner/repo/issues/16 was assigned to @bot.
+You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, because #16 was assigned to @bot.
 
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` explains the rest.
 
@@ -444,6 +444,12 @@ the `Closes #N` suggestion) from the same binary, so it cannot drift from
 the daemon. Follow-up messages carry the activity and at most one line
 after it.
 
+Every message names its item once: `#N "title"` with the URL on first
+mention (the header of a first message, or of an FYI), `#N` alone in later
+messages about the session's own item. Cross-repository references are
+`owner/repo#N`, which GitHub links. Timestamps on activity lines are
+`2026-09-04 17:40Z`, or just `17:40Z` when the date is today's.
+
 Nothing in the prompt is about branches or worktrees: the agent decides for
 itself whether to stay on the branch ssf created, switch, or add worktrees
 of its own (for subagents, say). ssf binds a pull request to a session by
@@ -462,11 +468,11 @@ If the issue or pull request is on any GitHub project (v2) boards, the initial
 prompt lists them under a "Project boards" heading: each board's name and URL,
 the card's current Status, the Status options the board offers, and the
 `gh project item-edit` command (with the project, item, field and option ids
-filled in) that changes it. The agent is told that keeping its card accurate
-is part of the job and that which column fits is its own judgement from what
-is actually happening. ssf itself never moves cards and prescribes no mapping
-from events to columns; put any repository-specific conventions about columns
-in the per-repository instructions. The lookup is one GraphQL query per
+filled in) that changes it. The agent is told to keep the card's Status
+accurate and that which column fits is its call. ssf itself never moves
+cards and prescribes no mapping from events to columns; put any
+repository-specific conventions about columns in the per-repository
+instructions. The lookup is one GraphQL query per
 onboarding and delivery, using the bot token's `project` scope; if it fails
 the prompt simply carries no boards section and the daemon logs why. Closed
 boards are left out.
@@ -676,10 +682,9 @@ says so).
 
 The reviewer lives as long as the request: while the label is on the PR (or
 the bot is a requested reviewer), new activity on the PR (pushes, replies) is
-delivered to it as `[ssf] New activity on pull request ... which you are
-reviewing`. Posting the review fulfils the request (ssf removes the label,
-or GitHub drops the review request), and the reviewer is stood down (told to
-stop, its record kept). Only a review counts, not a comment: a review by the
+delivered to it as `[ssf] New activity on #N`. Posting the review fulfils
+the request (ssf removes the label, or GitHub drops the review request), and
+the reviewer is stood down (told to stop, its record kept). Only a review counts, not a comment: a review by the
 bot with the reviewer's origin tag, or without any tag; one tagged with
 another session's origin is that session's doing. A repeated request brings
 the same session back, with what happened in between, resuming its
@@ -701,9 +706,9 @@ Exactly one session acts on an item; any number can hear about it. Each
 item carries a list of subscriber sessions next to its owner, and every
 delivery about the item (new activity, closure, the bot being dropped from
 it, or the item getting a session of its own) is fanned out to them with
-FYI framing: `[ssf] FYI on issue owner/repo#N "title", owned by another
-session (owner/repo#N): ...`, ending with the instruction not to act unless
-asked and how to reach the agent on it. Subscriptions live in the state
+FYI framing: `[ssf] FYI: new activity on issue #N "title" (url):`, `[ssf]
+FYI: issue #N ... has been closed`, and so on, ending with one line saying
+it is for information only and how to stop them. Subscriptions live in the state
 file, so they survive relaunches and a session being brought back; a session
 that retires (its item closed, or the bot dropped from it) is unsubscribed
 everywhere.

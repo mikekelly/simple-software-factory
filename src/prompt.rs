@@ -78,6 +78,27 @@ fn when(ev: &Value) -> String {
         .to_string()
 }
 
+/// A GitHub timestamp as the agent sees it: `2026-09-04 17:40Z`, or just
+/// `17:40Z` when the date is `today` (`YYYY-MM-DD`; pass `""` to keep the
+/// date always); order within a message stays clear either way. Anything
+/// not in GitHub's ISO form is shown as is.
+fn fmt_when(raw: &str, today: &str) -> String {
+    let iso = raw
+        .split_once('T')
+        .filter(|(d, t)| d.len() == 10 && t.ends_with('Z'))
+        .and_then(|(d, t)| t.get(..5).map(|hm| (d, hm)));
+    match iso {
+        Some((d, hm)) if d == today => format!("{hm}Z"),
+        Some((d, hm)) => format!("{d} {hm}Z"),
+        None => raw.to_string(),
+    }
+}
+
+/// Today's date in UTC, spelled as GitHub timestamps spell it.
+pub fn today_utc() -> String {
+    chrono::Utc::now().format("%Y-%m-%d").to_string()
+}
+
 fn quote(body: &str, max: usize) -> String {
     let mut b: String = body.trim().to_string();
     if b.is_empty() {
@@ -131,8 +152,9 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     }
     let key = event_key(ev)?;
     let actor = actor_of(ev);
-    let at = when(ev);
-    let head = |what: &str| format!("- [{at}] @{actor} {what}");
+    let today = today_utc();
+    let at = fmt_when(&when(ev), &today);
+    let head = |what: &str| format!("- {at} @{actor} {what}");
     let mut origin: Option<String> = None;
     let text = match kind.as_str() {
         "commented" => {
@@ -205,7 +227,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                 .lines()
                 .next()
                 .unwrap_or("");
-            format!("- [{at}] commit {} by {actor}: {msg}", short(sha))
+            format!("- {at} commit {} by {actor}: {msg}", short(sha))
         }
         "review_requested" => {
             let who = value_str(ev, &["requested_reviewer", "login"]).unwrap_or("someone");
@@ -243,9 +265,11 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                 }
                 let (body, session) = body_and_session(raw, who, bot);
                 let url = value_str(c, &["html_url"]).unwrap_or("");
-                let at = value_str(c, &["created_at"]).unwrap_or(&at);
+                let at = value_str(c, &["created_at"])
+                    .map(|c| fmt_when(c, &today))
+                    .unwrap_or_else(|| at.clone());
                 out.push(format!(
-                    "- [{at}] @{who} commented on `{path}`{}{session} ({url}):\n{}",
+                    "- {at} @{who} commented on `{path}`{}{session} ({url}):\n{}",
                     line.map(|l| format!(" line {l}")).unwrap_or_default(),
                     quote(&body, cfg.max_body_chars)
                 ));
@@ -271,7 +295,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
                 }
                 let (body, session) = body_and_session(raw, who, bot);
                 out.push(format!(
-                    "- [{at}] @{who} commented on commit {}{session}:\n{}",
+                    "- {at} @{who} commented on commit {}{session}:\n{}",
                     short(sha),
                     quote(&body, cfg.max_body_chars)
                 ));
@@ -423,10 +447,11 @@ impl PromptContext<'_> {
         self.because_for("it")
     }
 
-    /// Why the session was spawned, with the item's URL as the subject:
-    /// "https://... was assigned to @bot and mentioned @bot".
-    fn spawned_because(&self, url: &str) -> String {
-        self.because_for(url)
+    /// Why the session was spawned, with the item as the subject: "#18 was
+    /// assigned to @bot and mentioned @bot" (the header above it has the
+    /// title and URL).
+    fn spawned_because(&self, number: u64) -> String {
+        self.because_for(&format!("#{number}"))
     }
 
     /// One trigger table for both phrasings: `subject` followed by what
@@ -493,12 +518,39 @@ fn short(sha: &str) -> String {
     sha.chars().take(7).collect()
 }
 
+/// The item as a message names it once, in full: `#N "title" (url)`.
+fn full_ref(issue: &Issue) -> String {
+    format!("#{} \"{}\" ({})", issue.number, issue.title, issue.html_url)
+}
+
+/// The item as a later message names it: `#N` for the session's own item,
+/// which it knows; `#N "title"` for an item bound to the session (a pull
+/// request it opened), of which it may have several.
+fn short_ref(issue: &Issue, ctx: &PromptContext) -> String {
+    match ctx.owner {
+        Some(_) => format!("#{} \"{}\"", issue.number, issue.title),
+        None => format!("#{}", issue.number),
+    }
+}
+
+/// The header of a first message: the item, named once with its URL, and
+/// the facts about it that the rest of the message does not repeat.
 fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
+    // The header keeps the full date: it is the anchor for the day-less
+    // activity lines under it.
+    let opened = fmt_when(&issue.created_at, "");
+    let by_bot = issue.author().eq_ignore_ascii_case(ctx.bot_login);
+    let session = issue
+        .body
+        .as_deref()
+        .and_then(origin::parse)
+        .filter(|_| by_bot)
+        .map(|t| format!(" (from the agent on {})", t.origin))
+        .unwrap_or_default();
     let mut s = match ctx.pr {
         Some(pr) => format!(
-            "# GitHub pull request {}#{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{} on {}.",
-            ctx.repo.name,
+            "# GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
@@ -511,32 +563,17 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
             },
             if pr.draft { ", draft" } else { "" },
             issue.author(),
-            issue.created_at
         ),
         None => format!(
-            "# GitHub issue {}#{}: {}\n{}\n\nOpened by @{} on {}.",
-            ctx.repo.name,
+            "# GitHub issue #{}: {}\n{}\n\nOpened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
             issue.author(),
-            issue.created_at
         ),
     };
     if !labels.is_empty() {
         s.push_str(&format!(" Labels: {}.", labels.join(", ")));
-    }
-    let by_bot = issue.author().eq_ignore_ascii_case(ctx.bot_login);
-    if let Some(t) = issue
-        .body
-        .as_deref()
-        .and_then(origin::parse)
-        .filter(|_| by_bot)
-    {
-        s.push_str(&format!(
-            " Opened by the agent session working on {}.",
-            t.origin
-        ));
     }
     s
 }
@@ -585,10 +622,7 @@ fn project_boards(ctx: &PromptContext, keep: bool) -> String {
         s.push('\n');
     }
     if keep {
-        s.push_str(
-            "\nKeeping the card's Status accurate is part of the job: which column fits is your \
-judgement, from what is actually happening. ssf never moves cards itself.\n",
-        );
+        s.push_str("\nKeep the card's Status accurate; which column fits is your call.\n");
     }
     s.trim_end().to_string()
 }
@@ -655,7 +689,7 @@ GitHub.\n\
 - `gh` and `git push` already act as @{bot}, and the `gh` on your PATH marks your posts as this \
 session's. Act only as @{bot}; never use another account, token or key you find on this \
 machine.\n",
-        ctx.spawned_because(&issue.html_url)
+        ctx.spawned_because(n)
     );
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
@@ -678,10 +712,9 @@ or `gh pr review {n} --repo {repo}` when a review was asked.\n",
     }
     if let Some(parent) = ctx.delegated_by {
         s.push_str(&format!(
-            "- This {kind} was handed off to you by the agent session working on {parent}. It \
-follows this {kind} as a subscriber (it sees the activity but does not act) and is told when \
-the {kind} closes, along with your final comment, so make that comment a clear summary of the \
-outcome. To ask it something, comment on this {kind}.\n"
+            "- The session on {parent}, which handed this off, follows the {kind} as a subscriber \
+(it sees the activity but does not act) and gets your final comment when the {kind} closes, so \
+make that comment a clear summary of the outcome. To ask it something, comment on this {kind}.\n"
         ));
     }
     s.push_str(&extras(ctx, false));
@@ -716,19 +749,15 @@ fn extras(ctx: &PromptContext, reviewer: bool) -> String {
 }
 
 pub fn followup_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let head = format!(
-        "[ssf] New activity on {}#{} \"{}\" ({}):",
-        ctx.repo.name, issue.number, issue.title, issue.html_url
-    );
+    let head = format!("[ssf] New activity on {}:", short_ref(issue, ctx));
     let tail = match ctx.reviewer_session(issue).filter(|_| {
         events
             .iter()
             .any(|e| e.asks_review(ctx.daemon.review_label()))
     }) {
         Some(r) => format!(
-            "The review asked of @{} is not for you: since this session wrote the pull request, \
-a separate reviewer session ({r}) reviews it. Do not review it yourself; its review arrives \
-here as activity.",
+            "The review asked of @{} is not yours to do: a separate reviewer session ({r}) \
+reviews what this session wrote, and its review arrives here as activity.",
             ctx.bot_login
         ),
         None => String::new(),
@@ -741,13 +770,8 @@ here as activity.",
 pub fn tracked_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let kind = ctx.kind();
     let mut s = format!(
-        "[ssf] Now tracking {kind} {}#{} \"{}\" ({}) for this session, because {}. \
-Activity on it (comments, reviews, review requests, assignments, closure) will be delivered \
-here; `SSF_ISSUE` is unchanged.",
-        ctx.repo.name,
-        issue.number,
-        issue.title,
-        issue.html_url,
+        "[ssf] Now tracking {kind} {} for this session, because {}.",
+        full_ref(issue),
         ctx.owned_because(issue)
     );
     let human: Vec<&str> = ctx
@@ -775,9 +799,8 @@ here; `SSF_ISSUE` is unchanged.",
     }
     if let Some(r) = &reviewer {
         s.push_str(&format!(
-            " A review was asked of @{}{}; since this session wrote the pull request, a \
-separate reviewer session ({r}) reviews it. Do not review it yourself: its review arrives here \
-as activity.",
+            " A review was asked of @{}{}: not yours to do; a separate reviewer session ({r}) \
+reviews it, and its review arrives here as activity.",
             ctx.bot_login,
             if labelled {
                 format!(
@@ -799,15 +822,15 @@ as activity.",
     }
     match ctx.pr {
         Some(pr) if pr.same_repo(&ctx.repo.name) => s.push_str(&format!(
-            "\nReply to review comments and questions with `gh pr comment {} --repo {} --body \"...\"` \
-(or `gh api` for inline replies); pushes to `{}` update the PR.",
+            "\nAnswer on it with `gh pr comment {} --repo {}`; pushes to `{}` update it.",
             issue.number, ctx.repo.name, pr.head_ref
         )),
-        Some(_) => s.push_str(
-            "\nThis pull request comes from a fork, so answer on it with `gh pr comment`.",
-        ),
+        Some(_) => s.push_str(&format!(
+            "\nIt comes from a fork; answer on it with `gh pr comment {} --repo {}`.",
+            issue.number, ctx.repo.name
+        )),
         None => s.push_str(&format!(
-            "\nAnswer on it with `gh issue comment {} --repo {} --body \"...\"`.",
+            "\nAnswer on it with `gh issue comment {} --repo {}`.",
             issue.number, ctx.repo.name
         )),
     }
@@ -815,24 +838,18 @@ as activity.",
 }
 
 pub fn closed_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let kind = ctx.kind();
     let head = format!(
-        "[ssf] {}#{} \"{}\" has been closed ({}).",
-        ctx.repo.name,
-        issue.number,
-        issue.title,
+        "[ssf] {} has been closed ({}).",
+        short_ref(issue, ctx),
         issue.state_reason.as_deref().unwrap_or("no reason given")
     );
     let tail = match ctx.owner {
-        Some(owner) => format!(
-            "You will not receive further updates for this {kind}. Your own item, {}#{owner}, is \
-unaffected; carry on with it.",
-            ctx.repo.name
-        ),
-        None => format!(
-            "Stop working on this {kind}. If you have uncommitted work worth keeping, commit it \
-now and leave a short final comment on the {kind}. You will not receive further updates for it."
-        ),
+        Some(owner) => {
+            format!("No further updates for it; your own item, #{owner}, is unaffected.")
+        }
+        None => "Stop working on it: commit anything worth keeping and leave a short final \
+comment on it. No further updates for it."
+            .to_string(),
     };
     assemble(&head, events, &tail)
 }
@@ -857,17 +874,14 @@ pub fn delegated_closed_prompt(
         "merged".to_string()
     } else {
         format!(
-            "closed, {}",
+            "closed ({})",
             issue.state_reason.as_deref().unwrap_or("no reason given")
         )
     };
     let mut s = format!(
-        "[ssf] {} {}#{} \"{}\" ({}), which this session handed off, has been {outcome}.\n\n",
+        "[ssf] {}, the {} this session handed off, has been {outcome}.\n\n",
+        full_ref(issue),
         ctx.kind(),
-        ctx.repo.name,
-        issue.number,
-        issue.title,
-        issue.html_url
     );
     match last {
         Some(c) => {
@@ -901,8 +915,8 @@ pub enum Fyi {
 }
 
 /// A message to a session that subscribed to an item it does not act on.
-/// `owner` is the session acting on the item, if any; `merged` matters only
-/// for `Fyi::Closed`.
+/// `owner` is the session acting on the item, named only when that is the
+/// news (`Fyi::Tracked`); `merged` matters only for `Fyi::Closed`.
 pub fn fyi_prompt(
     issue: &Issue,
     events: &[Rendered],
@@ -911,22 +925,11 @@ pub fn fyi_prompt(
     merged: bool,
     what: Fyi,
 ) -> String {
-    let kind = ctx.kind();
-    let owned = match owner {
-        Some(o) => format!("owned by another session ({o})"),
-        None => "not owned by any session".to_string(),
-    };
+    let item = format!("{} {}", ctx.kind(), full_ref(issue));
     let head = match what {
-        Fyi::Activity => format!(
-            "[ssf] FYI on {kind} {}#{} \"{}\" ({}), {owned}: new activity.",
-            ctx.repo.name, issue.number, issue.title, issue.html_url
-        ),
+        Fyi::Activity => format!("[ssf] FYI: new activity on {item}:"),
         Fyi::Closed => format!(
-            "[ssf] FYI on {kind} {}#{} \"{}\" ({}), {owned}: it has been {}.",
-            ctx.repo.name,
-            issue.number,
-            issue.title,
-            issue.html_url,
+            "[ssf] FYI: {item} has been {}.",
             if merged {
                 "merged".to_string()
             } else {
@@ -937,30 +940,23 @@ pub fn fyi_prompt(
             }
         ),
         Fyi::Unassigned => format!(
-            "[ssf] FYI on {kind} {}#{} \"{}\" ({}), {owned}: @{} is no longer involved with it, \
-so its session has retired.",
-            ctx.repo.name, issue.number, issue.title, issue.html_url, ctx.bot_login
+            "[ssf] FYI: @{} is no longer involved with {item}, so its session has retired.",
+            ctx.bot_login
         ),
         Fyi::Tracked => format!(
-            "[ssf] FYI on {kind} {}#{} \"{}\" ({}): it now has an agent session of its own ({}), \
-because {}.",
-            ctx.repo.name,
-            issue.number,
-            issue.title,
-            issue.html_url,
+            "[ssf] FYI: {item} now has an agent session of its own ({}), because {}.",
             owner.unwrap_or("?"),
             ctx.because()
         ),
     };
     let tail = match what {
-        Fyi::Closed | Fyi::Unassigned => format!(
-            "For information only; you will not hear about #{} again unless it comes back.",
-            issue.number
-        ),
+        Fyi::Closed | Fyi::Unassigned => {
+            "For information only; you will not hear about it again unless it comes back."
+                .to_string()
+        }
         Fyi::Activity | Fyi::Tracked => format!(
-            "For information only: you are subscribed to #{}, not working on it. `ssf unsub {}` \
-stops these messages.",
-            issue.number, issue.number
+            "For information only; `ssf unsub {}` stops these messages.",
+            issue.number
         ),
     };
     assemble(&head, events, &tail)
@@ -996,7 +992,6 @@ operational nudge."
 /// A session the startup pass found interrupted: the item it works on and
 /// where its workspace is.
 pub struct Interrupted<'a> {
-    pub repo: &'a str,
     pub number: u64,
     pub title: &'a str,
     pub url: &'a str,
@@ -1012,7 +1007,7 @@ pub struct Interrupted<'a> {
 /// has just been started again. A resumed harness has its memory; a fresh
 /// one gets the item's story ahead of this.
 pub fn interrupted_prompt(it: &Interrupted) -> String {
-    let item = format!("{}#{}", it.repo, it.number);
+    let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
     let mut s = String::from(
         "[ssf] The factory restarted (the machine, Orca or ssf itself) and this session was \
 interrupted: its terminal was gone, so it has been started again.\n\n",
@@ -1025,48 +1020,40 @@ interrupted: its terminal was gone, so it has been started again.\n\n",
     let path = it.path.map(|p| format!(" in `{p}`")).unwrap_or_default();
     if it.reviewer {
         s.push_str(&format!(
-            "This is the reviewer session for pull request {item} \"{}\" ({}), a read-only \
-checkout of the pull request{path}.\n\nIf your review has not been posted yet, pick it up where \
-you left off (`git log` shows what you were reviewing) and post it. If it has, nothing is needed \
-until the next `[ssf]` message.",
-            it.title, it.url
+            "This is the reviewer session for pull request {item}, a read-only checkout of \
+it{path}.\n\nIf your review has not been posted yet, pick it up where you left off (`git log` \
+shows what you were reviewing) and post it. If it has, nothing is needed until the next `[ssf]` \
+message."
         ));
         return s;
     }
     s.push_str(&format!(
-        "This is the session for {item} \"{}\" ({}){branch}{path}.\n\nWork out where you got to \
-(`git status`, `git log`, your last comments on the item) and carry on from there. Anything \
-that happened on the item while you were away arrives as further `[ssf]` messages. If you were \
+        "This is the session for {item}{branch}{path}.\n\nWork out where you got to (`git \
+status`, `git log`, your last comments on the item) and carry on from there. Anything that \
+happened on the item while you were away arrives as further `[ssf]` messages. If you were \
 part-way through something and cannot tell what is left, say so on the item: that the session \
-was interrupted and what remains.",
-        it.title, it.url
+was interrupted and what remains."
     ));
     s
 }
 
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let what = if ctx.triggers.iter().any(|t| t == "review_requested")
+    let bot = ctx.bot_login;
+    let item = short_ref(issue, ctx);
+    let head = if ctx.triggers.iter().any(|t| t == "review_requested")
         && !ctx.triggers.iter().any(|t| t == "assigned")
     {
-        "the review request for @{bot} on {repo}#{n} \"{title}\" has been fulfilled or withdrawn"
+        format!("[ssf] The review request for @{bot} on {item} has been fulfilled or withdrawn.")
     } else {
-        "@{bot} is no longer assigned to or requested on {repo}#{n} \"{title}\""
+        format!("[ssf] @{bot} is no longer assigned to or requested on {item}.")
     };
-    let what = what
-        .replace("{bot}", ctx.bot_login)
-        .replace("{repo}", &ctx.repo.name)
-        .replace("{n}", &issue.number.to_string())
-        .replace("{title}", &issue.title);
-    let head = format!("[ssf] {what}.");
     let tail = match ctx.owner {
         Some(owner) => format!(
-            "You will not receive further updates for it unless it is brought back in. Your own \
-item, {}#{owner}, is unaffected.",
-            ctx.repo.name
+            "No further updates for it unless it is brought back in; your own item, #{owner}, is \
+unaffected."
         ),
-        None => "Stop working on this. Commit anything worth keeping and leave a short final \
-comment summarising where things stand. You will not receive further updates unless you are \
-brought back in."
+        None => "Stop working on it: commit anything worth keeping and leave a short final \
+comment saying where things stand. No further updates unless you are brought back in."
             .to_string(),
     };
     assemble(&head, events, &tail)
@@ -1074,9 +1061,9 @@ brought back in."
 
 pub fn reassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let mut s = format!(
-        "[ssf] {}#{} \"{}\" has been assigned to @{} again. Activity since you last heard \
-about it:\n\n",
-        ctx.repo.name, issue.number, issue.title, ctx.bot_login
+        "[ssf] {} has been assigned to @{} again. Activity since then:\n\n",
+        short_ref(issue, ctx),
+        ctx.bot_login
     );
     if events.is_empty() {
         s.push_str("(no new activity)\n");
@@ -1085,7 +1072,7 @@ about it:\n\n",
         s.push_str(&e.text);
         s.push('\n');
     }
-    s.push_str("\nResume work on the issue with the original instructions.");
+    s.push_str("\nResume work on it.");
     s
 }
 
@@ -1147,41 +1134,36 @@ alone yourself"
     };
     let mut s = format!(
         "\n## How to review this\n\n\
-You are a reviewer for the GitHub bot account @{bot}. Simple Software Factory (ssf) started \
-this session because {asked} on pull request {repo}#{n}, which another agent session of the \
-same bot ({author}) wrote; that session must not review its own work, so you do. Your job is \
-the review, nothing else: you never change the pull request.\n\n\
+You are a reviewer for the GitHub account @{bot}. Simple Software Factory (ssf) started this \
+session because {asked} on #{n}, which another session of the same bot ({author}) wrote and so \
+must not review. Your job is the review, nothing else: you never change the pull request.\n\n\
 - This worktree is a read-only checkout of the pull request's head (`origin/{head}`, against \
-`{base}`), on a local branch of its own. Do not commit, push, merge, or edit the PR; do not \
+`{base}`), on a local branch of its own. Do not commit, push, merge or edit the PR, and do not \
 change its board cards. `git fetch origin && git diff origin/{base}...origin/{head}` (or \
 `gh pr diff {n} --repo {repo}`) shows the whole change; `git fetch origin && git reset --hard \
 origin/{head}` brings the checkout up to date after the author pushes. Building and running \
 tests here is fine.\n\
 - Post the review with `gh pr review {n} --repo {repo} --approve|--request-changes|--comment \
---body \"...\"` (inline comments through `gh api` if useful). One review per request: when it is \
-posted the request is fulfilled ({fulfilled}) and this session pauses until a review is asked \
-for again, when you get a message here with what happened since.\n\
-- `GH_TOKEN` and `GITHUB_TOKEN` are set, so plain `gh` commands act as @{bot}. `SSF_REPO` and \
-`SSF_ISSUE` name this pull request and `SSF_ROLE` is `reviewer`. Only ever act as @{bot}: never \
-use another GitHub account, token or key you find on this machine.\n\
+--body \"...\"` (inline comments through `gh api` if useful). One review per request: once it \
+is posted the request is fulfilled ({fulfilled}) and this session pauses until a review is \
+asked again, when a message here says what happened since.\n\
+- `gh` already acts as @{bot}; `SSF_ROLE` is `reviewer`. Act only as @{bot}; never use another \
+account, token or key you find on this machine.\n\
 - Every review and comment you post must start with the line `{line}`, then a blank line: it \
-shows readers, and tells ssf, that it came from the reviewer session and not from the author's. \
-The `gh` on this PATH adds it when you pass `--body` or `--body-file` to `pr review` or \
-`pr comment`; add it yourself when you post any other way (`gh api`, ...).\n\
-- The author's session receives your review as activity and answers on the pull request; its \
+tells readers and ssf that it came from the reviewer session, not the author's. The `gh` on \
+your PATH adds it when you pass `--body` or `--body-file` to `pr review` or `pr comment`; add \
+it yourself when you post any other way (`gh api`, ...).\n\
+- The author's session gets your review as activity and answers on the pull request; its \
 replies reach you here, marked \"from the agent on {author}\". To speak to it, comment on the \
-pull request. `ssf guide` explains the rest: other sessions, `ssf tell`, following items.\n"
+pull request. `ssf guide` explains the rest.\n"
     );
     s.push_str(&extras(ctx, true));
     s
 }
 
 /// New activity on a pull request under review, for its reviewer session.
-pub fn review_followup_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let head = format!(
-        "[ssf] New activity on pull request {}#{} \"{}\" ({}), which you are reviewing:",
-        ctx.repo.name, issue.number, issue.title, issue.html_url
-    );
+pub fn review_followup_prompt(issue: &Issue, events: &[Rendered], _ctx: &PromptContext) -> String {
+    let head = format!("[ssf] New activity on #{}:", issue.number);
     assemble(&head, events, "")
 }
 
@@ -1193,13 +1175,8 @@ pub fn review_again_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptConte
         .map(|p| p.head_ref.clone())
         .unwrap_or_else(|| "<branch>".into());
     let mut s = format!(
-        "[ssf] Another review is asked of @{} on pull request {}#{} \"{}\" ({}): {}. \
-Activity since you last looked:\n\n",
-        ctx.bot_login,
-        ctx.repo.name,
+        "[ssf] Another review of #{} is asked: {}. Activity since your last look:\n\n",
         issue.number,
-        issue.title,
-        issue.html_url,
         ctx.review_asked()
     );
     if events.is_empty() {
@@ -1211,7 +1188,7 @@ Activity since you last looked:\n\n",
     }
     s.push_str(&format!(
         "\nBring the checkout up to date (`git fetch origin && git reset --hard origin/{head}`), \
-look at what changed since your last review, and post a new review with `gh pr review {} --repo {}`.",
+review what changed since your last look, and post it with `gh pr review {} --repo {}`.",
         issue.number, ctx.repo.name
     ));
     s
@@ -1235,27 +1212,21 @@ pub fn review_done_prompt(
 ) -> String {
     let head = match why {
         ReviewEnd::Fulfilled => format!(
-            "[ssf] The review asked of @{} on pull request {}#{} \"{}\" ({}) has been \
-posted, or the request withdrawn.",
-            ctx.bot_login, ctx.repo.name, issue.number, issue.title, issue.html_url
+            "[ssf] The review asked of @{} on #{} has been posted, or the request withdrawn.",
+            ctx.bot_login, issue.number
         ),
         ReviewEnd::Closed { merged } => format!(
-            "[ssf] Pull request {}#{} \"{}\" ({}) has been {}.",
-            ctx.repo.name,
+            "[ssf] #{} has been {}.",
             issue.number,
-            issue.title,
-            issue.html_url,
             if merged { "merged" } else { "closed" }
         ),
     };
     let tail = match why {
         ReviewEnd::Fulfilled => {
-            "Stop here; do not post anything more. If a review is asked of the bot again you \
-will be told here, with what happened in between."
+            "Stop here; post nothing more. If a review is asked again you will be told here, \
+with what happened in between."
         }
-        ReviewEnd::Closed { .. } => {
-            "This review session is over: stop, and do not post anything more."
-        }
+        ReviewEnd::Closed { .. } => "This review session is over: stop, and post nothing more.",
     };
     assemble(&head, events, tail)
 }
@@ -1288,7 +1259,7 @@ is `reviewer` in a reviewer session. This guide is the reference behind the init
 like on your item. Your own posts are never echoed back.\n\
 - `[ssf] Now tracking ...`: an item you opened, or a pull request on your branch, has been bound \
 to this session; its activity comes here from now on.\n\
-- `[ssf] FYI on ...`: activity on an item you follow but do not work on. For information only.\n\
+- `[ssf] FYI: ...`: activity on an item you follow but do not work on. For information only.\n\
 - `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
 - `[ssf] ... has been closed`, `... no longer assigned`, `... assigned ... again`: your item's \
 lifecycle; each says what to do.\n\
@@ -1425,6 +1396,32 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_are_short_and_drop_todays_date() {
+        assert_eq!(
+            fmt_when("2026-09-04T17:40:02Z", "2026-09-05"),
+            "2026-09-04 17:40Z"
+        );
+        assert_eq!(fmt_when("2026-09-05T09:03:59Z", "2026-09-05"), "09:03Z");
+        assert_eq!(fmt_when("t", "2026-09-05"), "t");
+        assert_eq!(fmt_when("", "2026-09-05"), "");
+        assert_eq!(fmt_when("2026-09-05T09", "2026-09-05"), "2026-09-05T09");
+        assert_eq!(today_utc().len(), 10);
+        let ev = json!({"event":"assigned","id":7,"actor":{"login":"carol"},"assignee":{"login":"bot"},
+            "created_at":"2026-01-02T03:04:05Z"});
+        let r = render_event(&ev, false, &cfg(), "bot").unwrap();
+        assert_eq!(r.text, "- 2026-01-02 03:04Z @carol assigned @bot");
+        let inline = json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"alice"},"path":"a.rs",
+            "line":3,"body":"typo","html_url":"u8","created_at":"2026-01-02T03:04:05Z"}]});
+        let r = render_event(&inline, false, &cfg(), "bot").unwrap();
+        assert!(
+            r.text
+                .starts_with("- 2026-01-02 03:04Z @alice commented on `a.rs` line 3 (u8):"),
+            "{}",
+            r.text
+        );
+    }
+
+    #[test]
     fn truncates_long_bodies() {
         let mut c = cfg();
         c.max_body_chars = 5;
@@ -1478,14 +1475,18 @@ mod tests {
             project_prompt: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
-        assert!(p.contains("o/r#3: Add thing"));
-        assert!(p.contains("Labels: feature"));
+        assert!(p.starts_with(
+            "# GitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
+        ), "{p}");
+        // The item is named once: the header has the URL, the reason has `#3`.
+        assert_eq!(p.matches("https://gh/3").count(), 1);
+        assert!(!p.contains("o/r#3"));
         assert!(p.contains("(no activity yet)"));
         assert!(
             p.contains(
                 "## How to work on this\n\nYou are an automatically spawned coding agent for the \
 GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, \
-in a worktree of this repository, because https://gh/3 was assigned to @bot.\n\n\
+in a worktree of this repository, because #3 was assigned to @bot.\n\n\
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
 explains the rest.\n\n\
 - This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
@@ -1562,10 +1563,13 @@ machine.\n"
         };
         let p = initial_prompt(&issue, &[], &child);
         assert!(p.contains(
-            "because https://gh/3 was assigned to @bot and was opened by the agent session working on o/r#1 and handed off to you."
+            "because #3 was assigned to @bot and was opened by the agent session working on o/r#1 and handed off to you."
         ));
-        assert!(p.contains("handed off to you by the agent session working on o/r#1"));
-        assert!(p.contains("follows this issue as a subscriber"));
+        // The bullet does not say "handed off" again; the reason did.
+        assert!(p.contains(
+            "- The session on o/r#1, which handed this off, follows the issue as a subscriber"
+        ));
+        assert_eq!(p.matches("handed").count(), 2, "{p}");
         assert!(p.contains("To ask it something, comment on this issue."));
     }
 
@@ -1625,7 +1629,9 @@ machine.\n"
         );
         // The board rule sits with the boards, not among the instructions.
         let boards = &p[p.find("## Project boards").unwrap()..p.find("## Description").unwrap()];
-        assert!(boards.contains("Keeping the card's Status accurate is part of the job"));
+        assert!(
+            boards.contains("Keep the card's Status accurate; which column fits is your call.")
+        );
         let how = &p[p.find("## How to work on this").unwrap()..];
         assert!(!how.contains("card"));
     }
@@ -1699,28 +1705,30 @@ machine.\n"
             false,
             Fyi::Activity,
         );
+        // The item is named once, in the header; the owner is not.
         assert!(p.starts_with(
-            "[ssf] FYI on issue o/r#5 \"Thing\" (https://gh/5), owned by another session (o/r#5): new activity.\n\n- [t] @alice"
+            "[ssf] FYI: new activity on issue #5 \"Thing\" (https://gh/5):\n\n- [t] @alice"
         ));
+        assert!(!p.contains("owned by"));
         // One line of boilerplate after the activity, no more.
-        assert!(p.ends_with(
-            "  > hi\n\nFor information only: you are subscribed to #5, not working on it. `ssf unsub 5` stops these messages."
-        ));
+        assert!(p.ends_with("  > hi\n\nFor information only; `ssf unsub 5` stops these messages."));
         assert!(!p.contains("again unless"));
         let p = fyi_prompt(&issue, &[], &ctx, None, false, Fyi::Closed);
-        assert!(p.contains("not owned by any session: it has been closed (completed)."));
-        assert!(p.ends_with(
-            "(completed).\n\nFor information only; you will not hear about #5 again unless it comes back."
-        ));
-        assert!(!p.contains("unsub"));
+        assert_eq!(
+            p,
+            "[ssf] FYI: issue #5 \"Thing\" (https://gh/5) has been closed (completed).\n\n\
+For information only; you will not hear about it again unless it comes back."
+        );
         let p = fyi_prompt(&issue, &[], &ctx, Some("o/r#5"), true, Fyi::Closed);
-        assert!(p.contains(": it has been merged."));
+        assert!(p.contains("(https://gh/5) has been merged."));
         let p = fyi_prompt(&issue, &[ev], &ctx, Some("o/r#5"), false, Fyi::Tracked);
         assert!(p.contains(
-            "it now has an agent session of its own (o/r#5), because it was assigned to @bot."
+            "[ssf] FYI: issue #5 \"Thing\" (https://gh/5) now has an agent session of its own (o/r#5), because it was assigned to @bot."
         ));
         let p = fyi_prompt(&issue, &[], &ctx, Some("o/r#5"), false, Fyi::Unassigned);
-        assert!(p.contains("@bot is no longer involved with it"));
+        assert!(p.starts_with(
+            "[ssf] FYI: @bot is no longer involved with issue #5 \"Thing\" (https://gh/5), so its session has retired."
+        ));
 
         let t = tell_prompt(Some("o/r#3"), Some("Fix it"), "are you done?", 100);
         assert!(t.starts_with(
@@ -1773,16 +1781,15 @@ machine.\n"
         };
         let p = tracked_prompt(&pr_issue, &[ev], &ctx);
         assert!(p.starts_with(
-            "[ssf] Now tracking pull request o/r#4 \"Fix it\" (https://gh/4) for this session, because this session opened it."
-        ));
+            "[ssf] Now tracking pull request #4 \"Fix it\" (https://gh/4) for this session, because this session opened it. A review was asked of @bot: not yours to do; a separate reviewer session (o/r#4:reviewer) reviews it, and its review arrives here as activity.\n\nActivity so far:\n\n- [t] @alice requested a review from @bot\n"
+        ), "{p}");
         // The review request is not the author's to act on: a reviewer
         // session takes it.
         assert!(!p.contains("that is for you to act on"));
-        assert!(p.contains(
-            "a separate reviewer session (o/r#4:reviewer) reviews it. Do not review it yourself"
+        assert!(!p.contains("SSF_ISSUE"));
+        assert!(p.ends_with(
+            "\nAnswer on it with `gh pr comment 4 --repo o/r`; pushes to `bot/fix` update it."
         ));
-        assert!(p.contains("@alice requested a review"));
-        assert!(p.contains("gh pr comment 4 --repo o/r"));
         assert!(!p.contains("## How to work on this"));
         // Other human triggers on the owned PR still are.
         let assigned = vec!["created".to_string(), "assigned".to_string()];
@@ -1801,11 +1808,44 @@ machine.\n"
         assert!(p.contains("because its branch `bot/fix` is this workspace's branch"));
         assert!(p.contains("(no activity yet)"));
 
+        // A bound item is named with its title (the session may have
+        // several); the session's own item, by number only.
         let c = closed_prompt(&pr_issue, &[], &ctx);
-        assert!(c.contains("Your own item, o/r#3, is unaffected"));
-        assert!(!c.contains("Stop working"));
+        assert_eq!(
+            c,
+            "[ssf] #4 \"Fix it\" has been closed (completed).\n\nNo further updates for it; your own item, #3, is unaffected."
+        );
         let u = unassigned_prompt(&pr_issue, &[], &ctx);
-        assert!(u.contains("Your own item, o/r#3, is unaffected"));
+        assert_eq!(
+            u,
+            "[ssf] The review request for @bot on #4 \"Fix it\" has been fulfilled or withdrawn.\n\nNo further updates for it unless it is brought back in; your own item, #3, is unaffected."
+        );
+        let own = PromptContext {
+            owner: None,
+            ..ctx.clone()
+        };
+        let c = closed_prompt(&pr_issue, &[], &own);
+        assert_eq!(
+            c,
+            "[ssf] #4 has been closed (completed).\n\nStop working on it: commit anything worth keeping and leave a short final comment on it. No further updates for it."
+        );
+        let u = unassigned_prompt(&pr_issue, &[], &own);
+        assert!(u.starts_with("[ssf] The review request for @bot on #4 has been fulfilled or withdrawn.\n\nStop working on it:"));
+        let assigned_ctx = PromptContext {
+            triggers: &assigned,
+            ..own.clone()
+        };
+        let u = unassigned_prompt(&pr_issue, &[], &assigned_ctx);
+        assert!(u.starts_with("[ssf] @bot is no longer assigned to or requested on #4.\n\n"));
+        let r = reassigned_prompt(&pr_issue, &[], &assigned_ctx);
+        assert_eq!(
+            r,
+            "[ssf] #4 has been assigned to @bot again. Activity since then:\n\n(no new activity)\n\nResume work on it."
+        );
+        let f = followup_prompt(&pr_issue, &[], &own);
+        assert!(f.starts_with("[ssf] New activity on #4:"), "{f}");
+        let f = followup_prompt(&pr_issue, &[], &ctx);
+        assert!(f.starts_with("[ssf] New activity on #4 \"Fix it\":"), "{f}");
 
         // The message a delegating parent gets.
         let last = FinalComment {
@@ -1816,11 +1856,11 @@ machine.\n"
         };
         let m = delegated_closed_prompt(&pr_issue, true, Some(&last), &ctx);
         assert!(m.starts_with(
-            "[ssf] pull request o/r#4 \"Fix it\" (https://gh/4), which this session handed off, has been merged."
+            "[ssf] #4 \"Fix it\" (https://gh/4), the pull request this session handed off, has been merged."
         ));
         assert!(m.contains("Final comment by @bot (from the agent on o/r#4) (https://gh/4#c1):\n  > Done, see PR #5."));
         let m = delegated_closed_prompt(&pr_issue, false, None, &ctx);
-        assert!(m.contains("has been closed, completed."));
+        assert!(m.contains("has been closed (completed)."));
         assert!(m.contains("It has no comments."));
     }
 
@@ -1874,7 +1914,9 @@ machine.\n"
             "## Description\n\nFixes it\n\n## Activity so far\n\n- [t] @alice requested"
         ));
         assert!(p.contains("## How to review this"));
-        assert!(p.contains("another agent session of the same bot (o/r#3) wrote"));
+        assert!(p.contains(
+            "on #4, which another session of the same bot (o/r#3) wrote and so must not review."
+        ));
         assert!(p.contains(
             "read-only checkout of the pull request's head (`origin/bot/fix`, against `main`)"
         ));
@@ -1902,22 +1944,23 @@ machine.\n"
         assert!(!p.contains("They say"));
 
         let f = review_followup_prompt(&pr_issue, &[ev.clone()], &ctx);
-        assert!(f.starts_with(
-            "[ssf] New activity on pull request o/r#4 \"Fix it\" (https://gh/4), which you are reviewing:"
-        ));
-        // The header says what the message is; nothing follows the activity.
-        assert!(f.ends_with("- [t] @alice requested a review from @bot\n"));
+        // The reviewer's own item needs no title or URL; nothing follows
+        // the activity.
+        assert_eq!(
+            f,
+            "[ssf] New activity on #4:\n\n- [t] @alice requested a review from @bot\n"
+        );
 
-        assert!(p.contains(
-            "this session because a review was requested from @bot on pull request o/r#4"
-        ));
+        assert!(p.contains("this session because a review was requested from @bot on #4"));
+        assert!(!p.contains("GH_TOKEN"));
+        assert!(p.contains("(or `gh pr diff 4 --repo o/r`)"));
         assert!(p.contains(
             "the request is fulfilled (ssf removes the `review` label, or GitHub drops the review request; leave the label alone yourself)"
         ));
 
         let a = review_again_prompt(&pr_issue, &[], &ctx);
         assert!(a.starts_with(
-            "[ssf] Another review is asked of @bot on pull request o/r#4 \"Fix it\" (https://gh/4): a review was requested from @bot."
+            "[ssf] Another review of #4 is asked: a review was requested from @bot. Activity since your last look:"
         ));
         assert!(a.contains("(no new activity)"));
         assert!(a.contains("git reset --hard origin/bot/fix"));
@@ -1925,23 +1968,24 @@ machine.\n"
 
         let done = review_done_prompt(&pr_issue, &[ev.clone()], &ctx, ReviewEnd::Fulfilled);
         assert!(done.starts_with(
-            "[ssf] The review asked of @bot on pull request o/r#4 \"Fix it\" (https://gh/4) has been posted, or the request withdrawn."
+            "[ssf] The review asked of @bot on #4 has been posted, or the request withdrawn.\n\n- [t] @alice requested a review"
         ));
-        assert!(done.contains("@alice requested a review"));
-        assert!(done.contains("If a review is asked of the bot again you will be told here"));
+        assert!(done.ends_with(
+            "Stop here; post nothing more. If a review is asked again you will be told here, with what happened in between."
+        ));
         let merged = review_done_prompt(&pr_issue, &[], &ctx, ReviewEnd::Closed { merged: true });
         assert_eq!(
             merged,
-            "[ssf] Pull request o/r#4 \"Fix it\" (https://gh/4) has been merged.\n\nThis review session is over: stop, and do not post anything more."
+            "[ssf] #4 has been merged.\n\nThis review session is over: stop, and post nothing more."
         );
         let closed = review_done_prompt(&pr_issue, &[], &ctx, ReviewEnd::Closed { merged: false });
         assert!(closed.contains("has been closed."));
 
         // The author's follow-up says who reviews, only when a request is among the events.
         let fu = followup_prompt(&pr_issue, &[ev.clone()], &ctx);
-        assert!(fu.contains(
-            "a separate reviewer session (o/r#4:reviewer) reviews it. Do not review it yourself"
-        ));
+        assert!(fu.ends_with(
+            "\nThe review asked of @bot is not yours to do: a separate reviewer session (o/r#4:reviewer) reviews what this session wrote, and its review arrives here as activity."
+        ), "{fu}");
         let other = Rendered {
             key: "commented:2".into(),
             text: "- [t] @alice commented".into(),
@@ -1965,7 +2009,7 @@ machine.\n"
         assert!(!initial.contains("reviewer session"));
         assert!(initial.contains("`ssf guide` explains the rest"));
         assert!(
-            initial.contains("because https://gh/4 requested a review from @bot."),
+            initial.contains("because #4 requested a review from @bot."),
             "{initial}"
         );
         assert!(initial.contains(
@@ -2013,7 +2057,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             ..unowned.clone()
         };
         let initial = initial_prompt(&pr_issue, &[], &both);
-        assert!(initial.contains("because https://gh/4 was assigned to @bot and mentioned @bot."));
+        assert!(initial.contains("because #4 was assigned to @bot and mentioned @bot."));
         let created = vec!["created".to_string()];
         let opened = PromptContext {
             triggers: &created,
@@ -2021,7 +2065,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
         };
         let initial = initial_prompt(&pr_issue, &[], &opened);
         assert!(
-            initial.contains("because https://gh/4 was opened by @bot."),
+            initial.contains("because #4 was opened by @bot."),
             "{initial}"
         );
         let none = PromptContext {
@@ -2030,7 +2074,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
         };
         let initial = initial_prompt(&pr_issue, &[], &none);
         assert!(
-            initial.contains("because https://gh/4 was assigned to @bot."),
+            initial.contains("because #4 was assigned to @bot."),
             "{initial}"
         );
 
@@ -2099,14 +2143,14 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
         // The author is told the label is not its to act on.
         let fu = followup_prompt(&pr_issue, std::slice::from_ref(&ev), &ctx);
         assert!(fu.contains(
-            "The review asked of @bot is not for you: since this session wrote the pull request, a separate reviewer session (o/r#4:reviewer) reviews it"
+            "The review asked of @bot is not yours to do: a separate reviewer session (o/r#4:reviewer) reviews what this session wrote"
         ));
         let fu = followup_prompt(&pr_issue, std::slice::from_ref(&other), &ctx);
         assert!(!fu.contains("reviewer session"));
         // ...also when the PR is first bound with the label already on it.
         let t = tracked_prompt(&pr_issue, std::slice::from_ref(&ev), &ctx);
         assert!(t.contains(
-            "A review was asked of @bot (the `review` label); since this session wrote the pull request, a separate reviewer session (o/r#4:reviewer) reviews it"
+            "A review was asked of @bot (the `review` label): not yours to do; a separate reviewer session (o/r#4:reviewer) reviews it"
         ));
         assert!(!t.contains("that is for you to act on"));
         let mut plain = pr_issue.clone();
@@ -2122,12 +2166,12 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
         };
         let p = review_prompt(&pr_issue, std::slice::from_ref(&ev), &rctx);
         assert!(p.contains(
-            "this session because the `review` label was added on pull request o/r#4, which another agent session of the same bot (o/r#3) wrote"
+            "this session because the `review` label was added on #4, which another session of the same bot (o/r#3) wrote"
         ));
         let a = review_again_prompt(&pr_issue, &[], &rctx);
-        assert!(a.starts_with(
-            "[ssf] Another review is asked of @bot on pull request o/r#4 \"Fix it\" (https://gh/4): the `review` label was added."
-        ));
+        assert!(
+            a.starts_with("[ssf] Another review of #4 is asked: the `review` label was added.")
+        );
         let both = vec!["review_requested".to_string(), "review_label".to_string()];
         let bctx = PromptContext {
             triggers: &both,
@@ -2201,9 +2245,10 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             "`gh project item-edit --project-id PVT_1 --id PVTI_1 --field-id PVTSSF_1 --single-select-option-id <option id>`, where \"Todo\" = a1, \"In Progress\" = b2."
         ));
         assert!(p.contains(
-            "- Bare (https://gh/p/2): this board has no Status field.\n\nKeeping the card's Status accurate is part of the job"
+            "- Bare (https://gh/p/2): this board has no Status field.\n\nKeep the card's Status \
+accurate; which column fits is your call.\n\n## Description"
         ));
-        assert!(p.contains("ssf never moves cards itself.\n\n## Description"));
+        assert!(!p.contains("never moves cards"));
         assert!(p.find("## Project boards").unwrap() < p.find("## Description").unwrap());
         // No column is prescribed for any situation: the option names appear
         // only in the board listing, never in the instructions.
@@ -2371,14 +2416,16 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             project_prompt: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
-        assert!(p.contains("Opened by the agent session working on o/r#3."));
+        assert!(
+            p.contains("\n\nOpened by @bot (from the agent on o/r#3) on t.\n"),
+            "{p}"
+        );
         assert!(p.contains("## Description\n\nFixes it\n\n## Activity"));
     }
 
     #[test]
     fn interrupted_prompt_names_the_session_and_where_it_is() {
         let p = interrupted_prompt(&Interrupted {
-            repo: "o/r",
             number: 18,
             title: "Resume sessions",
             url: "https://gh/18",
@@ -2387,13 +2434,12 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             reviewer: false,
         });
         assert!(p.starts_with("[ssf] The factory restarted"));
-        assert!(p.contains("session for o/r#18 \"Resume sessions\" (https://gh/18)"));
+        assert!(p.contains("session for #18 \"Resume sessions\" (https://gh/18)"));
         assert!(p.contains("on branch `bot/issue-18` in `/w/issue-18`"));
         assert!(p.contains("`git status`, `git log`"));
         assert!(p.contains("say so on the item"));
 
         let r = interrupted_prompt(&Interrupted {
-            repo: "o/r",
             number: 25,
             title: "Fix",
             url: "https://gh/25",
@@ -2401,8 +2447,312 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             path: None,
             reviewer: true,
         });
-        assert!(r.contains("reviewer session for pull request o/r#25 \"Fix\""));
+        assert!(r.contains("reviewer session for pull request #25 \"Fix\" (https://gh/25), a read-only checkout of it."));
         assert!(!r.contains("on branch"));
         assert!(r.contains("If your review has not been posted yet"));
+    }
+
+    /// Every message kind, rendered with the fixtures the catalogue on #16
+    /// used (issue #18, PR #22, issue #21, the board, `SSF.md`), with sizes.
+    /// Run with `cargo test prompt_catalogue -- --ignored --nocapture` to
+    /// measure a wording change; nothing is asserted.
+    #[test]
+    #[ignore = "prints the prompt catalogue with sizes"]
+    fn prompt_catalogue() {
+        use crate::github::StatusOption;
+        let d = cfg();
+        let bot = "OverlayBot";
+        let repo = RepoConfig {
+            name: "mikekelly/simple-software-factory".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let base = "https://github.com/mikekelly/simple-software-factory";
+        let issue18: Issue = serde_json::from_value(json!({
+            "number": 18,
+            "title": "Resume sessions after a machine restart: startup reconciliation pass",
+            "body": "After a reboot Orca's terminals are gone and ssf only notices when the next GitHub event arrives.\n\nProposal: a startup reconciliation pass that resumes every active session whose worktree exists but has no live agent terminal.",
+            "html_url": format!("{base}/issues/18"), "state": "open", "state_reason": "completed",
+            "user": {"login": bot}, "labels": [{"name": "daemon"}],
+            "created_at": "2026-09-04T13:56:29Z", "updated_at": "2026-09-04T17:29:10Z"
+        })).unwrap();
+        let pr22_title = "Comment by default, tell as the exception: prompt and README wording";
+        let pr22: Issue = serde_json::from_value(json!({
+            "number": 22, "title": pr22_title,
+            "body": "<!-- ssf: origin=mikekelly/simple-software-factory#21 -->\n\nCloses #21\n\nReworded the peers/sub/tell paragraph.",
+            "html_url": format!("{base}/pull/22"), "state": "open", "pull_request": {},
+            "user": {"login": bot},
+            "created_at": "2026-09-04T17:17:00Z", "updated_at": "2026-09-04T17:17:00Z"
+        })).unwrap();
+        let pr = PrInfo {
+            head_ref: "mikekelly/issue-21-comment-by-default-tell-as-the-exception".into(),
+            head_repo: "mikekelly/simple-software-factory".into(),
+            base_ref: "master".into(),
+            ..Default::default()
+        };
+        let issue21: Issue = serde_json::from_value(json!({
+            "number": 21, "title": pr22_title, "body": "",
+            "html_url": format!("{base}/issues/21"), "state": "closed", "state_reason": "completed",
+            "user": {"login": bot},
+            "created_at": "2026-09-04T17:10:00Z", "updated_at": "2026-09-04T18:10:00Z"
+        }))
+        .unwrap();
+        let boards = vec![ProjectCard {
+            project_id: "PVT_kwHN2ebOAYlXgQ".into(),
+            title: "Simple Software Factory".into(),
+            url: "https://github.com/users/mikekelly/projects/5".into(),
+            item_id: "PVTI_lAHN2ebOAYlXgc4OXRyA".into(),
+            status: Some("Todo".into()),
+            status_field_id: Some("PVTSSF_lAHN2ebOAYlXgc4YTeZE".into()),
+            status_options: [
+                ("Longrunners", "6ea12c8d"),
+                ("Todo", "f75ad846"),
+                ("In Progress", "47fc9ee4"),
+                ("Done", "98236657"),
+            ]
+            .iter()
+            .map(|(n, i)| StatusOption {
+                id: i.to_string(),
+                name: n.to_string(),
+            })
+            .collect(),
+        }];
+        let notes = ProjectPrompt {
+            source: "SSF.md".into(),
+            text: "# Notes for ssf agents\n\n\
+- Work on the issue's branch and open a PR that references the issue.\n\
+- Keep `cargo test` green and run `cargo fmt` and `cargo clippy` before pushing.\n\
+- Update `README.md` and `config.example.toml` for any user-visible behaviour.\n\
+- Rebuild the package with `cd packaging && makepkg -fd` before calling something done; commit the `pkgver` bump makepkg makes to `packaging/PKGBUILD`.\n\
+- The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live."
+                .into(),
+        };
+        let render = |v: Value| render_event(&v, false, &d, bot).unwrap();
+        let ev = |kind: &str, actor: &str, at: &str, extra: Value| {
+            let mut v =
+                json!({"event": kind, "id": 1, "actor": {"login": actor}, "created_at": at});
+            if let (Some(m), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+                for (k, val) in e {
+                    m.insert(k.clone(), val.clone());
+                }
+            }
+            render(v)
+        };
+        let added = ev(
+            "added_to_project_v2",
+            bot,
+            "2026-09-04T13:56:29Z",
+            json!({}),
+        );
+        let assigned = ev(
+            "assigned",
+            "mikekelly",
+            "2026-09-04T17:29:10Z",
+            json!({"assignee": {"login": bot}}),
+        );
+        let comment = ev(
+            "commented",
+            "mikekelly",
+            "2026-09-04T17:40:02Z",
+            json!({"html_url": format!("{base}/issues/18#issuecomment-1"),
+                "body": "Please stagger the relaunches by at least ten seconds; nine Claude sessions starting at once will thrash the machine."}),
+        );
+        let requested = ev(
+            "review_requested",
+            "mikekelly",
+            "2026-09-04T17:45:00Z",
+            json!({"requested_reviewer": {"login": bot}}),
+        );
+        let closed = ev(
+            "closed",
+            "mikekelly",
+            "2026-09-04T18:00:00Z",
+            json!({"state_reason": "completed"}),
+        );
+        let unassigned = ev(
+            "unassigned",
+            "mikekelly",
+            "2026-09-04T18:00:00Z",
+            json!({"assignee": {"login": bot}}),
+        );
+        let reassigned = ev(
+            "assigned",
+            "mikekelly",
+            "2026-09-04T18:05:00Z",
+            json!({"assignee": {"login": bot}}),
+        );
+        let bot_closed = ev(
+            "closed",
+            bot,
+            "2026-09-04T18:10:00Z",
+            json!({"state_reason": "completed"}),
+        );
+        let reply = ev(
+            "commented",
+            bot,
+            "2026-09-04T17:50:00Z",
+            json!({"html_url": format!("{base}/pull/22#issuecomment-2"),
+                "body": "🤖#21 <!-- ssf: origin=mikekelly/simple-software-factory#21 -->\n\nAddressed both points in 3f2a1c0."}),
+        );
+        let again = ev(
+            "review_requested",
+            "mikekelly",
+            "2026-09-04T18:20:00Z",
+            json!({"requested_reviewer": {"login": bot}}),
+        );
+
+        let assigned_t = vec!["assigned".to_string()];
+        let created_t = vec!["created".to_string()];
+        let delegated_t = vec!["assigned".to_string(), "created".to_string()];
+        let requested_t = vec!["review_requested".to_string()];
+        let own = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: bot,
+            pr: None,
+            triggers: &assigned_t,
+            owner: None,
+            delegated_by: None,
+            projects: &boards,
+            project_prompt: Some(notes.clone()),
+        };
+        let owned_pr = PromptContext {
+            pr: Some(&pr),
+            triggers: &created_t,
+            owner: Some(21),
+            projects: &[],
+            project_prompt: None,
+            ..own.clone()
+        };
+        let child = PromptContext {
+            triggers: &delegated_t,
+            delegated_by: Some("mikekelly/simple-software-factory#16"),
+            ..own.clone()
+        };
+        let sub = PromptContext {
+            projects: &[],
+            project_prompt: None,
+            ..own.clone()
+        };
+        let reviewer = PromptContext {
+            triggers: &requested_t,
+            project_prompt: Some(notes.clone()),
+            ..owned_pr.clone()
+        };
+        let final_comment = FinalComment {
+            author: bot.into(),
+            session: Some("mikekelly/simple-software-factory#21".into()),
+            url: format!("{base}/issues/21#issuecomment-5544055473"),
+            body: "Done: PR #22. Prompt reworded, README updated, pkgver bumped.".into(),
+        };
+        let owner21 = Some("mikekelly/simple-software-factory#21");
+        let catalogue: Vec<(&str, String)> = vec![
+            (
+                "initial_prompt (issue, assigned, on a board, repo has SSF.md)",
+                initial_prompt(&issue18, &[added.clone(), assigned.clone()], &own),
+            ),
+            (
+                "tracked_prompt (session's own PR picked up, no human trigger)",
+                tracked_prompt(&pr22, &[], &owned_pr),
+            ),
+            (
+                "followup_prompt (new activity on the session's item)",
+                followup_prompt(&issue18, std::slice::from_ref(&comment), &own),
+            ),
+            (
+                "followup_prompt on an owned PR (review requested from the bot)",
+                followup_prompt(&pr22, std::slice::from_ref(&requested), &owned_pr),
+            ),
+            (
+                "initial_prompt for a delegated (handed-off) issue",
+                initial_prompt(&issue18, &[], &child),
+            ),
+            (
+                "closed_prompt (the session's issue was closed)",
+                closed_prompt(&issue18, std::slice::from_ref(&closed), &own),
+            ),
+            (
+                "unassigned_prompt",
+                unassigned_prompt(&issue18, std::slice::from_ref(&unassigned), &own),
+            ),
+            (
+                "reassigned_prompt",
+                reassigned_prompt(&issue18, std::slice::from_ref(&reassigned), &own),
+            ),
+            (
+                "delegated_closed_prompt (parent hears its hand-off finished)",
+                delegated_closed_prompt(&issue21, false, Some(&final_comment), &sub),
+            ),
+            (
+                "fyi_prompt (subscriber sees activity on someone else's item)",
+                fyi_prompt(
+                    &issue21,
+                    std::slice::from_ref(&comment),
+                    &sub,
+                    owner21,
+                    false,
+                    Fyi::Activity,
+                ),
+            ),
+            (
+                "fyi_prompt (subscribed item closed)",
+                fyi_prompt(
+                    &issue21,
+                    std::slice::from_ref(&bot_closed),
+                    &sub,
+                    owner21,
+                    false,
+                    Fyi::Closed,
+                ),
+            ),
+            (
+                "tell_prompt (message from another session)",
+                tell_prompt(
+                    Some("mikekelly/simple-software-factory#16"),
+                    Some("Project management"),
+                    "master moved after you branched (#14 and #13 merged); please rebase onto origin/master before pushing again.",
+                    d.max_body_chars,
+                ),
+            ),
+            (
+                "tell_prompt (from a human shell, no session)",
+                tell_prompt(None, None, "stop, I'm changing the spec", d.max_body_chars),
+            ),
+            (
+                "review_prompt (reviewer session's first message)",
+                review_prompt(&pr22, &[added.clone(), assigned.clone()], &reviewer),
+            ),
+            (
+                "review_followup_prompt",
+                review_followup_prompt(&pr22, std::slice::from_ref(&reply), &reviewer),
+            ),
+            (
+                "review_again_prompt (repeated request)",
+                review_again_prompt(&pr22, std::slice::from_ref(&again), &reviewer),
+            ),
+            (
+                "review_done_prompt (request fulfilled)",
+                review_done_prompt(&pr22, &[], &reviewer, ReviewEnd::Fulfilled),
+            ),
+            (
+                "review_done_prompt (PR merged)",
+                review_done_prompt(&pr22, &[], &reviewer, ReviewEnd::Closed { merged: true }),
+            ),
+        ];
+        println!("\n| # | prompt | chars | ~tokens |\n|---|---|---|---|");
+        let mut total = 0;
+        for (i, (name, text)) in catalogue.iter().enumerate() {
+            let n = text.chars().count();
+            total += n;
+            println!("| {} | {name} | {n} | ~{} |", i + 1, n / 4);
+        }
+        println!("| | total | {total} | ~{} |", total / 4);
+        for (i, (name, text)) in catalogue.iter().enumerate() {
+            println!(
+                "\n<details>\n<summary><b>{}. {name}</b> ({} chars)</summary>\n\n```text\n{text}\n```\n\n</details>",
+                i + 1,
+                text.chars().count()
+            );
+        }
     }
 }
