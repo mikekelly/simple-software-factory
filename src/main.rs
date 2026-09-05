@@ -15,6 +15,7 @@ mod models;
 mod orca;
 mod origin;
 mod prompt;
+mod release;
 mod sessions;
 mod shim;
 mod state;
@@ -139,6 +140,39 @@ enum Command {
         /// Send as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
         #[arg(long = "as", value_name = "SESSION")]
         r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Give a session's workspace back once everything is on origin: the
+    /// daemon checks the tree is clean, the branch is on origin with nothing
+    /// unpushed and no stash was made on it, and refuses otherwise. Inside a
+    /// session it is this session's workspace; from a shell name the item.
+    Release {
+        /// Item number on this session's repository, or owner/repo#N.
+        item: Option<String>,
+        /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        /// Remove it even if the checks fail (from a shell only; work in it is lost).
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the workspaces of closed items whose agent is gone: each is
+    /// listed with its state, the clean-and-pushed ones are removed, the
+    /// rest are left in place. Workspaces of open items, of sessions that
+    /// still own open items, and with a running agent are never touched.
+    Purge {
+        /// Only list; remove nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Only workspaces whose item retired more than this many days ago.
+        #[arg(long, value_name = "DAYS")]
+        older_than: Option<u64>,
+        /// Remove the dirty and unpushed ones too (their work is lost).
+        #[arg(long)]
+        force: bool,
         #[arg(long)]
         json: bool,
     },
@@ -416,6 +450,18 @@ async fn main() -> Result<()> {
             r#as,
             json,
         } => tell(&item, message, r#as.as_deref(), json).await,
+        Command::Release {
+            item,
+            r#as,
+            force,
+            json,
+        } => release(item.as_deref(), r#as.as_deref(), force, json).await,
+        Command::Purge {
+            dry_run,
+            older_than,
+            force,
+            json,
+        } => purge(dry_run, older_than, force, json).await,
         Command::Guide => {
             let bot = std::env::var("SSF_BOT")
                 .ok()
@@ -1591,6 +1637,153 @@ async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool
             ""
         }
     );
+    Ok(())
+}
+
+async fn release(item: Option<&str>, as_: Option<&str>, force: bool, json: bool) -> Result<()> {
+    let me = identity(as_)?;
+    let session = match item {
+        Some(i) => item_ref(i, me.as_ref().map(|(o, _)| o))?,
+        None => me
+            .as_ref()
+            .map(|(o, reviewer)| o.session(*reviewer))
+            .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
+    };
+    // Inside a session `--force` is not the agent's to use: the checks are
+    // the whole point. A person passes --as, or runs it from a plain shell.
+    if force && as_.is_none() && origin::Origin::from_env().is_some() {
+        bail!(
+            "--force is for a person who has looked at the workspace: run `ssf release --as {session} --force` from a shell"
+        );
+    }
+    let v = ipc::call(&ipc::Request::Release { session, force }).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        if v.get("released").and_then(|b| b.as_bool()) != Some(true) {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let session = v.get("session").and_then(|s| s.as_str()).unwrap_or("?");
+    let path = v.get("path").and_then(|s| s.as_str()).unwrap_or("");
+    let problems: Vec<&str> = v
+        .pointer("/check/problems")
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    if v.get("released").and_then(|b| b.as_bool()) != Some(true) {
+        let mut msg = format!(
+            "not released: the workspace of {session} ({path}) holds work that is not on origin:\n"
+        );
+        for p in &problems {
+            msg.push_str(&format!("  - {p}\n"));
+        }
+        msg.push_str(
+            "nothing was removed. Commit, push and try again; a kept workspace costs nothing.",
+        );
+        bail!("{msg}");
+    }
+    if v.get("already_gone").and_then(|b| b.as_bool()) == Some(true) {
+        println!("{session}: the workspace was already gone; recorded as released.");
+        return Ok(());
+    }
+    let secs = v
+        .get("poll_interval_secs")
+        .and_then(|n| n.as_u64())
+        .unwrap_or(10);
+    if v.get("forced").and_then(|b| b.as_bool()) == Some(true) {
+        println!("{session}: release forced despite:");
+        for p in &problems {
+            println!("  - {p}");
+        }
+    } else {
+        println!("{session}: clean and on origin.");
+    }
+    println!(
+        "The workspace ({path}) is removed on the daemon's next pass (within {secs}s), with its terminal. Stop here."
+    );
+    Ok(())
+}
+
+async fn purge(dry_run: bool, older_than: Option<u64>, force: bool, json: bool) -> Result<()> {
+    let v = ipc::call(&ipc::Request::Purge {
+        dry_run,
+        older_than_days: older_than,
+        force,
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let rows = v
+        .get("workspaces")
+        .and_then(|w| w.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if rows.is_empty() {
+        println!(
+            "no workspaces to purge: none belongs to a closed item{}",
+            older_than
+                .map(|d| format!(" retired more than {d} days ago"))
+                .unwrap_or_default()
+        );
+        return Ok(());
+    }
+    let mut removed = 0;
+    let mut kept = 0;
+    for r in &rows {
+        let s = |k: &str| r.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let did = r.get("removed").and_then(|b| b.as_bool()).unwrap_or(false);
+        let verb = if did {
+            removed += 1;
+            "removed"
+        } else if dry_run {
+            "would keep"
+        } else {
+            kept += 1;
+            "kept"
+        };
+        let verb = if dry_run && !did {
+            let state = s("state");
+            if state == "clean and pushed" || (force && state != "agent running") {
+                "would remove"
+            } else {
+                verb
+            }
+        } else {
+            verb
+        };
+        let title = s("title");
+        println!(
+            "{:<13} {} \"{}\"  [{}]  {}",
+            verb,
+            s("session"),
+            status::one_line(&title, 50),
+            s("state"),
+            s("path")
+        );
+        if let Some(problems) = r.get("problems").and_then(|p| p.as_array()) {
+            for p in problems.iter().filter_map(|p| p.as_str()) {
+                println!("              - {p}");
+            }
+        }
+        if let Some(e) = r.get("error").and_then(|e| e.as_str()) {
+            println!("              error: {e}");
+        }
+    }
+    if dry_run {
+        println!("dry run: nothing was removed.");
+    } else {
+        println!(
+            "{removed} removed, {kept} kept{}.",
+            if kept > 0 && !force {
+                "; `ssf purge --force` removes the kept ones too, losing what is in them"
+            } else {
+                ""
+            }
+        );
+    }
     Ok(())
 }
 

@@ -82,9 +82,19 @@ pub struct IssueState {
     /// When the harness was last launched, to find its session file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_at: Option<String>,
-    /// Workspace should be removed once the agent has wrapped up.
+    /// Reviewer workspace to be removed once its agent has wrapped up.
+    /// Item workspaces are never removed on this flag any more (see
+    /// `release_pending`); a stale `true` on one is cleared.
     #[serde(default)]
     pub cleanup_pending: bool,
+    /// `ssf release` passed its checks: the workspace is removed on the
+    /// daemon's next pass, after the checks are run once more.
+    #[serde(default)]
+    pub release_pending: bool,
+    /// When the workspace was removed by `ssf release` or `ssf purge`.
+    /// Cleared when the next event re-creates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<String>,
     /// `updated_at` of the issue when the timeline was last reconciled.

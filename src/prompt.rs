@@ -847,8 +847,9 @@ pub fn closed_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) ->
         Some(owner) => {
             format!("No further updates for it; your own item, #{owner}, is unaffected.")
         }
-        None => "Stop working on it: commit anything worth keeping and leave a short final \
-comment on it. No further updates for it."
+        None => "Stop working on it: commit anything worth keeping, push, and leave a short final \
+comment on it; then, only if everything is on origin, `ssf release` gives this workspace back \
+(it refuses if anything would be lost; a kept workspace is fine). No further updates for it."
             .to_string(),
     };
     assemble(&head, events, &tail)
@@ -1052,8 +1053,10 @@ pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext
             "No further updates for it unless it is brought back in; your own item, #{owner}, is \
 unaffected."
         ),
-        None => "Stop working on it: commit anything worth keeping and leave a short final \
-comment saying where things stand. No further updates unless you are brought back in."
+        None => "Stop working on it: commit anything worth keeping, push, and leave a short final \
+comment saying where things stand; then, only if everything is on origin, `ssf release` gives \
+this workspace back (it refuses if anything would be lost). No further updates unless you are \
+brought back in."
             .to_string(),
     };
     assemble(&head, events, &tail)
@@ -1303,6 +1306,15 @@ starts a separate reviewer session for it (a read-only checkout of the pull requ
 own agent, `owner/repo#P:reviewer` in `ssf peers`), and its review arrives here as activity, \
 marked \"from the reviewer session on owner/repo#P\". Answer it and push fixes as you would \
 for a human reviewer; when you want another look, {ask_again}.\n\n\
+## Wrapping up\n\n\
+When your item closes, or you are no longer assigned, ssf says so and leaves the workspace \
+exactly as it is: nothing on disk is ever removed on that signal. Commit what is worth \
+keeping, push, leave a final comment, and then, only if everything is on origin, run \
+`ssf release`: the daemon checks that the tree is clean, the branch is on origin with no \
+unpushed commits and no stash was made on it, and removes the workspace (with this terminal) \
+on its next pass. If anything would be lost it says what and refuses; leave the workspace \
+then, a kept workspace costs nothing, and a person cleans up with `ssf purge`. A released \
+workspace is re-created from its branch if the item comes back to life.\n\n\
 ## The byline and origin tag\n\n\
 GitHub shows the same bot for every session, so every comment, review and pull request a \
 session posts starts with one line that is both a byline for people and a tag for ssf: \
