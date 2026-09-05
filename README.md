@@ -20,7 +20,8 @@ on 2026-09-04, from assignment to merge, as it appears on GitHub. The bot
 account is @OverlayBot; every comment below is from that account, and the
 timestamps are UTC.
 
-**20:24 — the issue is assigned to the bot.** Within a minute a workspace
+**20:24 — the issue is assigned to the bot** (for the second time; the
+first assignment at 20:21 was undone and redone). Within a minute a workspace
 named after the issue appears in Orca and an agent starts in it. Two
 minutes after the assignment it posts:
 
@@ -133,10 +134,10 @@ linked to it. A post from the agent on issue #31 looks like this on GitHub:
 > Merged in #32 (c73d0fd). Final note: two commits landed on the branch
 > after the merge (...)
 
-A reviewer's byline reads `🤖#29 (reviewer)`. The posts quoted above from
-#18 predate the byline (it arrived with #32 on 2026-09-05) and carried the
-same mark out of sight at the end of the body; every post since carries it
-on the first line. A post by the bot account *without* a byline was typed
+A reviewer's byline reads `🤖#29 (reviewer)`. The posts quoted above
+from #18 predate the byline (it arrived with #32 on 2026-09-05) and
+carried the same mark out of sight at the end of the body; every post
+since carries it on the first line. A post by the bot account *without* a byline was typed
 by a person.
 
 ## The key ideas
@@ -160,7 +161,9 @@ by a person.
   noise on the item.
 - **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
   in Orca, and starts the agents you have installed, with the bot's
-  credentials. Your own accounts and keys are not used.
+  credentials, so what the agents do on GitHub is done as the bot (see
+  [Notes and limitations](#notes-and-limitations-v1) for what that does
+  and does not isolate).
 
 ## How it works
 
