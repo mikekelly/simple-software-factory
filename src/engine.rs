@@ -3224,6 +3224,11 @@ are resumed on the first pass that finds it: {err:#}"
     /// Second half of `ssf release`: the checks again, then the removal.
     async fn finish_release(&mut self, repo: &RepoConfig, st: IssueState) {
         let session = session_id(&repo.name, st.number);
+        if st.active {
+            warn!(session, "release dropped: the item is active again");
+            self.drop_release(repo, st.number);
+            return;
+        }
         let Some(id) = st.worktree_id.clone() else {
             self.mark_released(repo, st.number);
             return;
@@ -3231,11 +3236,6 @@ are resumed on the first pass that finds it: {err:#}"
         if !self.orca.worktree_exists(&id).await.unwrap_or(true) {
             info!(session, "workspace is already gone");
             self.mark_released(repo, st.number);
-            return;
-        }
-        if st.active {
-            warn!(session, "release dropped: the item is active again");
-            self.drop_release(repo, st.number);
             return;
         }
         if !self.active_dependents(repo, st.number).is_empty() {
