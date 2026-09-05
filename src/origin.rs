@@ -1,11 +1,11 @@
-//! Origin tags: `🤖#N <!-- ssf: origin=owner/repo#N -->`.
+//! Origin tags: `🤖#N says: <!-- ssf: origin=owner/repo#N -->`.
 //!
 //! GitHub has one bot identity and no notion of sessions, so nothing in the
 //! API says which agent session posted a comment or opened a pull request.
 //! The content carries it instead, on the first line of every post: a
-//! visible byline (`🤖#N`, which GitHub renders and links to the session's
-//! item; `🤖owner/repo#N` on another repository; `🤖#N (reviewer)` from a
-//! reviewer session) and, on the same line, an invisible HTML comment
+//! visible byline (`🤖#N says:`, which GitHub renders with a link to the
+//! session's item; `🤖owner/repo#N says:` on another repository;
+//! `🤖#N (reviewer) says:` from a reviewer session) and, on the same line, an invisible HTML comment
 //! naming the item whose workspace the post came from. The `gh` shim
 //! (`crate::shim`) prepends that line to everything an agent posts; the
 //! daemon parses the tag back out of every body it reads, and honours it
@@ -34,6 +34,8 @@ const CLOSE: &str = "-->";
 const MARK: &str = "ssf:";
 /// What every byline starts with.
 pub const ROBOT: &str = "\u{1F916}";
+/// What every byline ends with.
+pub const SAYS: &str = "says:";
 
 /// The item (issue or pull request) a session works on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,19 +83,20 @@ impl Origin {
         format!("{OPEN} {MARK} origin={self} {CLOSE}")
     }
 
-    /// The visible byline: `🤖#N` on the origin's own repository, `🤖owner/repo#N`
-    /// on another (or when `on_repo`, the repository posted to, is not
-    /// known), with ` (reviewer)` after it for the reviewer session. GitHub
-    /// renders either form as a link to the origin item.
+    /// The visible byline: `🤖#N says:` on the origin's own repository,
+    /// `🤖owner/repo#N says:` on another (or when `on_repo`, the repository
+    /// posted to, is not known), with ` (reviewer)` before `says:` for the
+    /// reviewer session. GitHub renders the item in either form as a link
+    /// to it.
     pub fn byline(&self, on_repo: Option<&str>, reviewer: bool) -> String {
         let item = match on_repo {
             Some(r) if r.trim().eq_ignore_ascii_case(&self.repo) => format!("#{}", self.number),
             _ => self.to_string(),
         };
         if reviewer {
-            format!("{ROBOT}{item} ({REVIEWER})")
+            format!("{ROBOT}{item} ({REVIEWER}) {SAYS}")
         } else {
-            format!("{ROBOT}{item}")
+            format!("{ROBOT}{item} {SAYS}")
         }
     }
 
@@ -328,7 +331,8 @@ pub fn strip(body: &str) -> String {
 }
 
 /// Is `s` (the text before a tag on its line) a byline and nothing else:
-/// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)`?
+/// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)`, either with ` says:`
+/// (posts made before #42 have no `says:`)?
 fn is_byline(s: &str) -> bool {
     let Some(after) = s.trim_start().strip_prefix(ROBOT) else {
         return false;
@@ -339,6 +343,7 @@ fn is_byline(s: &str) -> bool {
     }
     let rest = after[item_len..].trim_start();
     let rest = rest.strip_prefix(&format!("({REVIEWER})")).unwrap_or(rest);
+    let rest = rest.trim_start().strip_prefix(SAYS).unwrap_or(rest);
     rest.trim().is_empty()
 }
 
@@ -478,28 +483,34 @@ mod tests {
 
     #[test]
     fn byline_names_the_item_the_way_github_links_it() {
-        assert_eq!(o().byline(Some("acme/widgets"), false), "🤖#12");
-        assert_eq!(o().byline(Some("ACME/Widgets"), false), "🤖#12");
-        assert_eq!(o().byline(Some("acme/other"), false), "🤖acme/widgets#12");
-        assert_eq!(o().byline(None, false), "🤖acme/widgets#12");
-        assert_eq!(o().byline(Some("acme/widgets"), true), "🤖#12 (reviewer)");
+        assert_eq!(o().byline(Some("acme/widgets"), false), "🤖#12 says:");
+        assert_eq!(o().byline(Some("ACME/Widgets"), false), "🤖#12 says:");
+        assert_eq!(
+            o().byline(Some("acme/other"), false),
+            "🤖acme/widgets#12 says:"
+        );
+        assert_eq!(o().byline(None, false), "🤖acme/widgets#12 says:");
+        assert_eq!(
+            o().byline(Some("acme/widgets"), true),
+            "🤖#12 (reviewer) says:"
+        );
         assert_eq!(
             o().byline(Some("acme/other"), true),
-            "🤖acme/widgets#12 (reviewer)"
+            "🤖acme/widgets#12 (reviewer) says:"
         );
         assert_eq!(
             line(),
-            "🤖#12 <!-- ssf: origin=acme/widgets#12 -->",
+            "🤖#12 says: <!-- ssf: origin=acme/widgets#12 -->",
             "byline, then the tag, on one line"
         );
         assert_eq!(
             o().first_line(None, true, false),
-            "🤖acme/widgets#12 <!-- ssf: origin=acme/widgets#12 mode=delegate -->",
+            "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 mode=delegate -->",
             "the byline does not encode the mode"
         );
         assert_eq!(
             o().first_line(Some("acme/widgets"), false, true),
-            "🤖#12 (reviewer) <!-- ssf: origin=acme/widgets#12 role=reviewer -->"
+            "🤖#12 (reviewer) says: <!-- ssf: origin=acme/widgets#12 role=reviewer -->"
         );
         // The whole line parses back to the tag.
         assert_eq!(parse(&line()).unwrap().origin, o());
@@ -638,7 +649,7 @@ mod tests {
         assert!(parsed.is_delegate());
         assert!(!parse(&o().tag()).unwrap().is_delegate());
         let s = stamp_with("hand this off", &o(), Some("acme/widgets"), true, false);
-        assert_eq!(s, format!("🤖#12 {t}\n\nhand this off"));
+        assert_eq!(s, format!("🤖#12 says: {t}\n\nhand this off"));
         assert_eq!(
             stamp_with(&s, &o(), Some("acme/widgets"), true, false),
             s,
@@ -668,7 +679,7 @@ mod tests {
         assert_eq!(parsed.session(), "acme/widgets#12:reviewer");
         assert_eq!(parse(&o().tag()).unwrap().session(), "acme/widgets#12");
         let s = stamp_with("looks good", &o(), Some("acme/widgets"), false, true);
-        assert_eq!(s, format!("🤖#12 (reviewer) {t}\n\nlooks good"));
+        assert_eq!(s, format!("🤖#12 (reviewer) says: {t}\n\nlooks good"));
         assert_eq!(
             stamp_with(&s, &o(), Some("acme/widgets"), false, true),
             s,
@@ -696,7 +707,10 @@ mod tests {
     #[test]
     fn stamp_prepends_once() {
         let s = stamp("hello  \n", &o());
-        assert_eq!(s, "🤖#12 <!-- ssf: origin=acme/widgets#12 -->\n\nhello");
+        assert_eq!(
+            s,
+            "🤖#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhello"
+        );
         assert_eq!(stamp(&s, &o()), s);
         assert_eq!(stamp("", &o()), line());
         assert_eq!(stamp("\n \n", &o()), line());
@@ -716,18 +730,21 @@ mod tests {
         // On another repository the byline spells the repository out.
         assert_eq!(
             stamp_with("hi", &o(), Some("acme/other"), false, false),
-            "🤖acme/widgets#12 <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
+            "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
         );
         assert_eq!(
             stamp_with("hi", &o(), None, false, false),
-            "🤖acme/widgets#12 <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
+            "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
         );
         // A hand-written first line with the right tag is left alone, byline
         // or not.
         let by_hand = format!("{}\n\nhello", o().tag());
         assert_eq!(stamp(&by_hand, &o()), by_hand);
-        let cross = format!("🤖acme/widgets#12 {}\n\nhello", o().tag());
+        let cross = format!("🤖acme/widgets#12 says: {}\n\nhello", o().tag());
         assert_eq!(stamp(&cross, &o()), cross);
+        // So is the byline from before #42, without `says:`.
+        let old = format!("🤖#12 {}\n\nhello", o().tag());
+        assert_eq!(stamp(&old, &o()), old);
     }
 
     #[test]
@@ -752,12 +769,26 @@ mod tests {
         assert_eq!(strip("<!-- never closed"), "<!-- never closed");
         // Text on the first line after the tag stays; only byline and tag go.
         assert_eq!(
+            strip("🤖#12 says: <!-- ssf: origin=a/b#12 --> hello\nmore"),
+            "hello\nmore"
+        );
+        assert_eq!(
+            strip("🤖#12 (reviewer) says: <!-- ssf: origin=a/b#12 role=reviewer --> hello"),
+            "hello"
+        );
+        // Bylines from before #42 have no `says:`; they go too.
+        assert_eq!(
             strip("🤖#12 <!-- ssf: origin=a/b#12 --> hello\nmore"),
             "hello\nmore"
         );
         assert_eq!(
-            strip("🤖#12 (reviewer) <!-- ssf: origin=a/b#12 role=reviewer --> hello"),
-            "hello"
+            strip("🤖acme/widgets#12 (reviewer) <!-- ssf: origin=a/b#12 role=reviewer -->\n\nhi"),
+            "hi"
+        );
+        // Other words before the tag are content, not a byline.
+        assert_eq!(
+            strip("🤖#12 said <!-- ssf: origin=a/b#12 -->\n\nhi"),
+            "🤖#12 said \n\nhi"
         );
         assert_eq!(strip("<!-- ssf: origin=a/b#12 --> hello"), "hello");
         // A robot that is not the byline (no tag on its line) is content.

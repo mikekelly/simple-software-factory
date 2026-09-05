@@ -130,15 +130,15 @@ linked to it. A post from the agent on issue #31 looks like this on GitHub:
 
 > **OverlayBot** commented
 >
-> 🤖#31
+> 🤖#31 says:
 >
 > Merged in #32 (c73d0fd). Final note: two commits landed on the branch
 > after the merge (...)
 
-A reviewer's byline reads `🤖#29 (reviewer)`. The posts quoted above
-from #18 predate the byline (it arrived with #32 on 2026-09-05) and
-carried the same mark out of sight at the end of the body; every post
-since carries it on the first line. A post by the bot account *without* a byline was typed
+A reviewer's byline reads `🤖#29 (reviewer) says:`. The posts quoted above
+from #18 predate the byline (it arrived with #32 on 2026-09-05, and the
+`says:` with #42) and carried the same mark out of sight at the end of the
+body; every post since carries it on the first line. A post by the bot account *without* a byline was typed
 by a person.
 
 ## The key ideas
@@ -514,14 +514,16 @@ session in the content. Everything an agent posts starts with one line that
 is both a byline for people and a tag for the daemon, then a blank line:
 
 ```
-🤖#16 <!-- ssf: origin=owner/repo#16 -->
+🤖#16 says: <!-- ssf: origin=owner/repo#16 -->
 ```
 
-The byline is `🤖#N` when the post is on the same repository as the
-session's item and `🤖owner/repo#N` on another; GitHub renders either as a
-link to the item, so a reader can tell a session's posts from a person's
-at a glance and see which session wrote them, even when the "bot" is
-someone's own account. A reviewer session's byline is `🤖#N (reviewer)`.
+The byline is `🤖#N says:` when the post is on the same repository as the
+session's item and `🤖owner/repo#N says:` on another; GitHub renders the
+item in either as a link to it, so a reader can tell a session's posts from
+a person's at a glance and see which session wrote them, even when the
+"bot" is someone's own account. A reviewer session's byline is
+`🤖#N (reviewer) says:`. Posts from before #42 have the byline without
+`says:`; the daemon reads those the same way.
 The HTML comment after it (the *origin tag*) is invisible in the rendered
 post and is what the daemon reads. (Because the byline links to the origin
 item, GitHub adds a "referenced in ..." event on that item for every post:

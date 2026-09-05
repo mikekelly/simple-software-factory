@@ -449,8 +449,8 @@ mod tests {
 
     #[test]
     fn byline_follows_the_repository_posted_to() {
-        let short = format!("🤖#12 {}\n\nhi", o().tag());
-        let long = format!("🤖acme/widgets#12 {}\n\nhi", o().tag());
+        let short = format!("🤖#12 says: {}\n\nhi", o().tag());
+        let long = format!("🤖acme/widgets#12 says: {}\n\nhi", o().tag());
         // --repo in every spelling, compared case-insensitively.
         for a in [
             args(&[
@@ -555,7 +555,7 @@ mod tests {
             "--body",
             "https://github.com/acme/other/pull/1",
         ]));
-        assert!(out[4].starts_with("🤖#12 "), "{out:?}");
+        assert!(out[4].starts_with("🤖#12 says: "), "{out:?}");
         let out = rewrite(args(&[
             "pr",
             "create",
@@ -719,7 +719,10 @@ mod tests {
     #[test]
     fn reviewer_sessions_stamp_their_role() {
         let rline = o().first_line(Some("acme/widgets"), false, true);
-        assert_eq!(rline, format!("🤖#12 (reviewer) {}", o().reviewer_tag()));
+        assert_eq!(
+            rline,
+            format!("🤖#12 (reviewer) says: {}", o().reviewer_tag())
+        );
         let o = o();
         let mut s = shim(&o);
         s.reviewer = true;
@@ -790,7 +793,7 @@ mod tests {
 
     #[test]
     fn creating_and_assigning_the_bot_is_a_hand_off() {
-        let delegate = format!("🤖#12 {}\n\nchild", o().delegate_tag());
+        let delegate = format!("🤖#12 says: {}\n\nchild", o().delegate_tag());
         let plain = format!("{}\n\nchild", line());
         let o = o();
         let mut s = shim(&o);
@@ -920,7 +923,10 @@ mod tests {
             "OverlayBot",
         ]));
         assert!(
-            out.contains(&format!("🤖acme/widgets#12 {}\n\nchild", o.delegate_tag())),
+            out.contains(&format!(
+                "🤖acme/widgets#12 says: {}\n\nchild",
+                o.delegate_tag()
+            )),
             "{out:?}"
         );
     }

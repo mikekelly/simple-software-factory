@@ -1351,8 +1351,8 @@ released workspace is re-created from its branch if the item comes back to life.
 ## The byline and origin tag\n\n\
 GitHub shows the same bot for every session, so every comment, review and pull request a \
 session posts starts with one line that is both a byline for people and a tag for ssf: \
-`🤖#N <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N` when the post is on another \
-repository; `🤖#N (reviewer)` and `role=reviewer` from a reviewer session; `mode=delegate` on \
+`🤖#N says: <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N says:` when the post is on another \
+repository; `🤖#N (reviewer) says:` and `role=reviewer` from a reviewer session; `mode=delegate` on \
 a hand-off), then a blank line. GitHub links the byline to the session's item. The `gh` on the \
 session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
 or `pr create|comment|review`; any other way of posting (`gh api`, `gh pr create --fill`, \
@@ -1968,7 +1968,7 @@ For information only; you will not hear about it again unless it comes back."
         assert!(p.contains("git diff origin/main...origin/bot/fix"));
         assert!(p.contains("git reset --hard origin/bot/fix"));
         assert!(p.contains("gh pr review 4 --repo o/r --approve|--request-changes|--comment"));
-        assert!(p.contains("must start with the line `🤖#4 (reviewer) <!-- ssf: origin=o/r#4 role=reviewer -->`"), "{p}");
+        assert!(p.contains("must start with the line `🤖#4 (reviewer) says: <!-- ssf: origin=o/r#4 role=reviewer -->`"), "{p}");
         assert!(p.contains("`SSF_ROLE` is `reviewer`"));
         assert!(p.contains("marked \"from the agent on o/r#3\""));
         assert!(p.contains("To speak to it, comment on the pull request."));
