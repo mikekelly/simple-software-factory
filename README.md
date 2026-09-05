@@ -588,7 +588,10 @@ the daemon skips the bot's own cross-references, and for people the trail
 on the item shows where its session has posted.)
 
 `ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
-directory first on the agent's `PATH`. Invoked as `gh`, ssf prepends the
+directory first on the agent's `PATH` (next to it, `ssf` links to the same
+binary, so the `ssf` commands the prompts name run the daemon's own build
+rather than an older package on the shell's `PATH`; `ssf doctor` says
+when the two differ). Invoked as `gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
 `pr comment` and `pr review` (whether given as `--body`, `--body=`, `-b`,
 `--body-file` or `-F -`; a review without a body gets one that is only the
