@@ -524,7 +524,7 @@ pub fn render_status(snap: &Snapshot) -> String {
             }
             if s.untagged_posts > 0 {
                 out.push_str(&format!(
-                    "          {} untagged post(s) by the bot (gh shim not in effect)\n",
+                    "          {} untagged post(s) by the bot (a person, or the gh shim not in effect)\n",
                     s.untagged_posts
                 ));
             }

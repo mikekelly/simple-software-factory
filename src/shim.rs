@@ -1,15 +1,19 @@
 //! The `gh` shim: a symlink named `gh` in an ssf-owned directory that `ssf
 //! launch` puts first on the agent's PATH. It points at the ssf binary, which
-//! notices it was invoked as `gh`, appends the session's origin tag to the
-//! body of anything that posts to GitHub, and execs the real gh.
+//! notices it was invoked as `gh`, prepends the session's byline and origin
+//! tag to the body of anything that posts to GitHub, and execs the real gh.
 //!
 //! Only `issue create|comment` and `pr create|comment|review` are touched;
 //! every other invocation is passed on untouched. An `issue create` or `pr
 //! create` that assigns the bot itself is a hand-off, and its tag says so
-//! (`mode=delegate`) so the daemon gives the new item a session of its own. The shim reads nothing but
-//! its environment (and a `--body-file`), writes nothing, and keeps stdin and
-//! the terminal intact, so it works inside read-only sandboxes and leaves
-//! gh's interactive flows alone.
+//! (`mode=delegate`) so the daemon gives the new item a session of its own.
+//! The byline links to the session's item, as `#N` on the item's own
+//! repository and `owner/repo#N` elsewhere, so the shim works out which
+//! repository the post goes to the way gh does: `--repo`, an item given as
+//! a URL, `GH_REPO`, else the checkout's `origin` remote. The shim reads
+//! nothing but its environment (a `--body-file`, and `git config` for that
+//! remote), writes nothing, and keeps stdin and the terminal intact, so it
+//! works inside read-only sandboxes and leaves gh's interactive flows alone.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -109,16 +113,18 @@ pub fn run() -> ! {
     // handed to gh exactly as received.
     let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let bot = std::env::var("SSF_BOT").ok();
-    let reviewer = Origin::reviewer_from_env();
+    let gh_repo = std::env::var("GH_REPO").ok();
     match (utf8, Origin::from_env()) {
         (Some(args), Some(origin)) => {
-            cmd.args(rewrite(
-                args,
-                &origin,
-                bot.as_deref(),
-                reviewer,
-                &read_body_file,
-            ));
+            let shim = Shim {
+                origin: &origin,
+                bot: bot.as_deref(),
+                reviewer: Origin::reviewer_from_env(),
+                gh_repo: gh_repo.as_deref(),
+                read: &read_body_file,
+                checkout: &checkout_repo,
+            };
+            cmd.args(shim.rewrite(args));
         }
         _ => {
             cmd.args(&raw);
@@ -138,6 +144,95 @@ fn read_body_file(path: &str) -> std::io::Result<String> {
         std::fs::File::open(path)?.read_to_string(&mut s)?;
     }
     Ok(s)
+}
+
+/// The repository the current directory's checkout pushes to (`origin`).
+fn checkout_repo() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    repo_of(String::from_utf8(out.stdout).ok()?.trim())
+}
+
+/// `owner/repo` out of any way of naming a GitHub repository: `OWNER/REPO`,
+/// `HOST/OWNER/REPO`, an `https://` URL of the repository or of an item in
+/// it, or a remote URL (`https://host/o/r.git`, `git@host:o/r.git`,
+/// `ssh://git@host/o/r`).
+pub fn repo_of(s: &str) -> Option<String> {
+    let s = s.trim().trim_end_matches('/');
+    let path = if let Some((_, rest)) = s.split_once("://") {
+        // host/owner/repo[/...]
+        rest.split_once('/').map(|(_, p)| p)?
+    } else if let Some((_, rest)) = s.split_once(':').filter(|(host, _)| !host.contains('/')) {
+        // scp-like: [user@]host:owner/repo
+        rest
+    } else if s.matches('/').count() >= 2 {
+        // HOST/OWNER/REPO
+        s.split_once('/').map(|(_, p)| p)?
+    } else {
+        s
+    };
+    let mut segs = path.split('/').filter(|p| !p.is_empty());
+    let owner = segs.next()?;
+    let repo = segs.next()?;
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let name = format!("{owner}/{repo}");
+    crate::config::split_repo_name(&name).ok()?;
+    Some(name)
+}
+
+/// The repository a gh command posts to, as far as its arguments say:
+/// `--repo`/`-R` (in any spelling), else an item named by its URL. Values
+/// of the body and title flags are not looked at.
+fn repo_in_args(args: &[String]) -> Option<String> {
+    let mut i = 0;
+    let mut url = None;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if a == "--" {
+            break;
+        }
+        if (a == "--repo" || a == "-R") && i + 1 < args.len() {
+            return repo_of(&args[i + 1]);
+        }
+        if let Some(v) = a.strip_prefix("--repo=") {
+            return repo_of(v);
+        }
+        if let Some(v) = a.strip_prefix("-R").filter(|v| !v.is_empty()) {
+            return repo_of(v);
+        }
+        if matches!(a, "--body" | "-b" | "--body-file" | "-F" | "--title" | "-t") {
+            i += 2;
+            continue;
+        }
+        if url.is_none()
+            && !a.starts_with('-')
+            && (a.starts_with("https://") || a.starts_with("http://"))
+        {
+            url = repo_of(a);
+        }
+        i += 1;
+    }
+    url
+}
+
+/// What the shim knows about the session it runs in, and how it reads the
+/// world: `read` resolves `--body-file` (a path, or `-` for stdin),
+/// `checkout` names the current checkout's repository. `bot` is the bot
+/// login, to notice a `create --assignee <bot>` hand-off; `reviewer` says
+/// the posts come from the item's reviewer session; `gh_repo` is the
+/// `GH_REPO` gh honours over the checkout.
+pub struct Shim<'a> {
+    pub origin: &'a Origin,
+    pub bot: Option<&'a str>,
+    pub reviewer: bool,
+    pub gh_repo: Option<&'a str>,
+    pub read: &'a dyn Fn(&str) -> std::io::Result<String>,
+    pub checkout: &'a dyn Fn() -> Option<String>,
 }
 
 /// Position of the command and subcommand words in a gh command line.
@@ -193,102 +288,93 @@ fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
         .any(|n| n.eq_ignore_ascii_case("me") || bot.is_some_and(|b| n.eq_ignore_ascii_case(b)))
 }
 
-/// The gh arguments with the origin tag appended to the body, where there is
-/// one. `read` resolves `--body-file` (a path, or `-` for stdin). `bot` is
-/// the bot login, to notice a `create --assignee <bot>` hand-off. With
-/// `reviewer` the tag says the post comes from the item's reviewer session.
-pub fn rewrite(
-    args: Vec<String>,
-    origin: &Origin,
-    bot: Option<&str>,
-    reviewer: bool,
-    read: &dyn Fn(&str) -> std::io::Result<String>,
-) -> Vec<String> {
-    let Some((c, s)) = command_words(&args) else {
-        return args;
-    };
-    if !is_tagged(&args[c], &args[s]) {
-        return args;
-    }
-    let delegate = args[s] == "create" && assigns_bot(&args[s + 1..], bot);
-    let stamp = |body: &str| stamp_with(body, origin, delegate, reviewer);
-    let own_tag = || {
-        if reviewer {
-            origin.reviewer_tag()
-        } else {
-            origin.tag()
-        }
-    };
-    let mut out: Vec<String> = args[..=s].to_vec();
-    let mut stamped = false;
-    let mut i = s + 1;
-    while i < args.len() {
-        let a = args[i].as_str();
-        if a == "--" {
-            out.extend_from_slice(&args[i..]);
-            break;
-        }
-        let short = |flag: &str| a.strip_prefix(flag).filter(|_| !a.starts_with("--"));
-        // Inline body: --body X, -b X, --body=X, -bX.
-        if (a == "--body" || a == "-b") && i + 1 < args.len() {
-            out.push(a.to_string());
-            out.push(stamp(&args[i + 1]));
-            stamped = true;
-            i += 2;
-            continue;
-        }
-        if let Some(v) = a.strip_prefix("--body=") {
-            out.push(format!("--body={}", stamp(v)));
-            stamped = true;
-            i += 1;
-            continue;
-        }
-        if let Some(v) = short("-b").filter(|v| !v.is_empty()) {
-            out.push(format!("-b{}", stamp(v)));
-            stamped = true;
-            i += 1;
-            continue;
-        }
-        // Body from a file (or stdin): moved onto the command line so no
-        // temporary file is needed.
-        let file = if (a == "--body-file" || a == "-F") && i + 1 < args.len() {
-            Some((args[i + 1].as_str(), 2))
-        } else if let Some(v) = a.strip_prefix("--body-file=") {
-            Some((v, 1))
-        } else {
-            short("-F").map(|v| (v, 1))
+impl Shim<'_> {
+    /// The gh arguments with the byline and origin tag prepended to the
+    /// body, where there is one.
+    pub fn rewrite(&self, args: Vec<String>) -> Vec<String> {
+        let Some((c, s)) = command_words(&args) else {
+            return args;
         };
-        if let Some((path, used)) = file {
-            let Ok(text) = read(path) else {
-                return args; // let gh report the unreadable file
-            };
-            let body = stamp(&text);
-            if body.len() > MAX_INLINE_BODY {
-                return args;
-            }
-            out.push("--body".to_string());
-            out.push(body);
-            stamped = true;
-            i += used;
-            continue;
+        if !is_tagged(&args[c], &args[s]) {
+            return args;
         }
-        out.push(a.to_string());
-        i += 1;
+        let (origin, reviewer) = (self.origin, self.reviewer);
+        let delegate = args[s] == "create" && assigns_bot(&args[s + 1..], self.bot);
+        let on_repo = repo_in_args(&args[s + 1..])
+            .or_else(|| self.gh_repo.and_then(repo_of))
+            .or_else(|| (self.checkout)());
+        let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate, reviewer);
+        let mut out: Vec<String> = args[..=s].to_vec();
+        let mut stamped = false;
+        let mut i = s + 1;
+        while i < args.len() {
+            let a = args[i].as_str();
+            if a == "--" {
+                out.extend_from_slice(&args[i..]);
+                break;
+            }
+            let short = |flag: &str| a.strip_prefix(flag).filter(|_| !a.starts_with("--"));
+            // Inline body: --body X, -b X, --body=X, -bX.
+            if (a == "--body" || a == "-b") && i + 1 < args.len() {
+                out.push(a.to_string());
+                out.push(stamp(&args[i + 1]));
+                stamped = true;
+                i += 2;
+                continue;
+            }
+            if let Some(v) = a.strip_prefix("--body=") {
+                out.push(format!("--body={}", stamp(v)));
+                stamped = true;
+                i += 1;
+                continue;
+            }
+            if let Some(v) = short("-b").filter(|v| !v.is_empty()) {
+                out.push(format!("-b{}", stamp(v)));
+                stamped = true;
+                i += 1;
+                continue;
+            }
+            // Body from a file (or stdin): moved onto the command line so no
+            // temporary file is needed.
+            let file = if (a == "--body-file" || a == "-F") && i + 1 < args.len() {
+                Some((args[i + 1].as_str(), 2))
+            } else if let Some(v) = a.strip_prefix("--body-file=") {
+                Some((v, 1))
+            } else {
+                short("-F").map(|v| (v, 1))
+            };
+            if let Some((path, used)) = file {
+                let Ok(text) = (self.read)(path) else {
+                    return args; // let gh report the unreadable file
+                };
+                let body = stamp(&text);
+                if body.len() > MAX_INLINE_BODY {
+                    return args;
+                }
+                out.push("--body".to_string());
+                out.push(body);
+                stamped = true;
+                i += used;
+                continue;
+            }
+            out.push(a.to_string());
+            i += 1;
+        }
+        // An approval needs no body, but should still say where it came from.
+        // Without an action flag gh would prompt (or reject --body), so those
+        // are left alone.
+        let has_action = args[s + 1..].iter().any(|a| {
+            matches!(
+                a.as_str(),
+                "--approve" | "-a" | "--request-changes" | "-r" | "--comment" | "-c"
+            )
+        });
+        if !stamped && args[c] == "pr" && args[s] == "review" && has_action {
+            out.insert(s + 1, stamp(""));
+            out.insert(s + 1, "--body".to_string());
+        }
+        out
     }
-    // An approval needs no body, but should still say where it came from.
-    // Without an action flag gh would prompt (or reject --body), so those
-    // are left alone.
-    let has_action = args[s + 1..].iter().any(|a| {
-        matches!(
-            a.as_str(),
-            "--approve" | "-a" | "--request-changes" | "-r" | "--comment" | "-c"
-        )
-    });
-    if !stamped && args[c] == "pr" && args[s] == "review" && has_action {
-        out.insert(s + 1, own_tag());
-        out.insert(s + 1, "--body".to_string());
-    }
-    out
 }
 
 #[cfg(test)]
@@ -299,8 +385,9 @@ mod tests {
         Origin::new("acme/widgets", 12).unwrap()
     }
 
-    fn tag() -> String {
-        o().tag()
+    /// The first line of a post on the session's own repository.
+    fn line() -> String {
+        o().first_line(Some("acme/widgets"), false, false)
     }
 
     fn args(s: &[&str]) -> Vec<String> {
@@ -311,27 +398,243 @@ mod tests {
         Err(std::io::Error::other("no files in tests"))
     }
 
+    fn same_repo() -> Option<String> {
+        Some("acme/widgets".into())
+    }
+
+    fn unknown() -> Option<String> {
+        None
+    }
+
+    /// A shim in a checkout of the session's own repository, no `GH_REPO`.
+    fn shim(origin: &Origin) -> Shim<'_> {
+        Shim {
+            origin,
+            bot: None,
+            reviewer: false,
+            gh_repo: None,
+            read: &no_files,
+            checkout: &same_repo,
+        }
+    }
+
+    fn rewrite(a: Vec<String>) -> Vec<String> {
+        let o = o();
+        shim(&o).rewrite(a)
+    }
+
     fn parse_tag(body: &str) -> crate::origin::Tag {
         crate::origin::parse(body).unwrap()
     }
 
     #[test]
     fn stamps_inline_bodies_in_every_spelling() {
-        let expect = format!("hello\n\n{}", tag());
+        let expect = format!("{}\n\nhello", line());
         for a in [
             args(&["issue", "comment", "3", "--body", "hello"]),
             args(&["issue", "comment", "3", "-b", "hello"]),
             args(&["issue", "comment", "3", "--body=hello"]),
             args(&["issue", "comment", "3", "-bhello"]),
             args(&["pr", "create", "--title", "t", "--body", "hello", "--draft"]),
-            args(&["pr", "comment", "--body", "hello", "--repo", "a/b"]),
+            args(&["pr", "comment", "--body", "hello", "--repo", "acme/widgets"]),
             args(&["pr", "review", "--approve", "--body", "hello"]),
             args(&["issue", "create", "-t", "t", "-b", "hello"]),
         ] {
-            let out = rewrite(a.clone(), &o(), None, false, &no_files);
+            let out = rewrite(a.clone());
             assert_eq!(out.len(), a.len(), "{a:?}");
             let joined = out.join("\x00");
             assert!(joined.contains(&expect), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn byline_follows_the_repository_posted_to() {
+        let short = format!("🤖#12 {}\n\nhi", o().tag());
+        let long = format!("🤖acme/widgets#12 {}\n\nhi", o().tag());
+        // --repo in every spelling, compared case-insensitively.
+        for a in [
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "--repo",
+                "ACME/widgets",
+            ]),
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "-R",
+                "acme/widgets",
+            ]),
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "--repo=acme/widgets",
+            ]),
+            args(&["issue", "comment", "3", "--body", "hi", "-Racme/widgets"]),
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "-R",
+                "github.com/acme/widgets",
+            ]),
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "-R",
+                "https://github.com/acme/widgets",
+            ]),
+            args(&[
+                "issue",
+                "comment",
+                "https://github.com/acme/widgets/issues/3",
+                "--body",
+                "hi",
+            ]),
+            args(&[
+                "pr",
+                "comment",
+                "--body",
+                "hi",
+                "https://github.com/acme/widgets/pull/3",
+            ]),
+        ] {
+            let out = rewrite(a.clone());
+            assert!(out.contains(&short), "{a:?} -> {out:?}");
+        }
+        for a in [
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "--repo",
+                "acme/other",
+            ]),
+            args(&[
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hi",
+                "-R",
+                "other/widgets",
+            ]),
+            args(&[
+                "issue",
+                "comment",
+                "https://github.com/acme/other/issues/3",
+                "--body",
+                "hi",
+            ]),
+            args(&["issue", "create", "-t", "t", "-b", "hi", "-R", "acme/other"]),
+        ] {
+            let out = rewrite(a.clone());
+            assert!(out.contains(&long), "{a:?} -> {out:?}");
+        }
+        // A URL in the body is not the item.
+        let out = rewrite(args(&[
+            "issue",
+            "comment",
+            "3",
+            "--body",
+            "https://github.com/acme/other/pull/1",
+        ]));
+        assert!(out[4].starts_with("🤖#12 "), "{out:?}");
+        let out = rewrite(args(&[
+            "pr",
+            "create",
+            "-t",
+            "https://github.com/acme/other",
+            "-b",
+            "hi",
+        ]));
+        assert!(out.contains(&short), "{out:?}");
+        // Without --repo the checkout decides; GH_REPO outranks it, as in gh.
+        let o = o();
+        let other = || Some("acme/other".to_string());
+        let mut s = shim(&o);
+        s.checkout = &other;
+        let out = s.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
+        assert!(out.contains(&long), "{out:?}");
+        let out = s.rewrite(args(&[
+            "issue",
+            "comment",
+            "3",
+            "--body",
+            "hi",
+            "-R",
+            "acme/widgets",
+        ]));
+        assert!(
+            out.contains(&short),
+            "--repo outranks the checkout: {out:?}"
+        );
+        s.gh_repo = Some("acme/widgets");
+        let out = s.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
+        assert!(out.contains(&short), "{out:?}");
+        s.gh_repo = Some("ACME/OTHER");
+        let out = s.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
+        assert!(out.contains(&long), "{out:?}");
+        // Nothing says: the long form, which links from anywhere.
+        let mut s = shim(&o);
+        s.checkout = &unknown;
+        let out = s.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
+        assert!(out.contains(&long), "{out:?}");
+        // The checkout is not consulted when it is not needed.
+        let boom = || -> Option<String> { panic!("checkout looked at") };
+        let mut s = shim(&o);
+        s.checkout = &boom;
+        s.rewrite(args(&[
+            "issue", "comment", "3", "--body", "hi", "-R", "a/b",
+        ]));
+        s.rewrite(args(&["pr", "list"]));
+    }
+
+    #[test]
+    fn repositories_are_read_out_of_any_spelling() {
+        for (given, want) in [
+            ("acme/widgets", Some("acme/widgets")),
+            (" acme/widgets ", Some("acme/widgets")),
+            ("github.com/acme/widgets", Some("acme/widgets")),
+            ("https://github.com/acme/widgets", Some("acme/widgets")),
+            ("https://github.com/acme/widgets/", Some("acme/widgets")),
+            ("https://github.com/acme/widgets.git", Some("acme/widgets")),
+            (
+                "https://github.com/acme/widgets/pull/12",
+                Some("acme/widgets"),
+            ),
+            (
+                "https://github.com/acme/widgets/issues/12#issuecomment-1",
+                Some("acme/widgets"),
+            ),
+            ("git@github.com:acme/widgets.git", Some("acme/widgets")),
+            (
+                "ssh://git@github.com/acme/widgets.git",
+                Some("acme/widgets"),
+            ),
+            ("ssh://git@github.com:22/acme/widgets", Some("acme/widgets")),
+            ("acme", None),
+            ("", None),
+            ("https://github.com/", None),
+            ("https://github.com/acme", None),
+        ] {
+            assert_eq!(repo_of(given).as_deref(), want, "{given:?}");
         }
     }
 
@@ -341,93 +644,103 @@ mod tests {
             assert!(p == "notes.md" || p == "-");
             Ok("from file\n".into())
         };
-        let expect = format!("from file\n\n{}", tag());
-        let out = rewrite(
-            args(&["pr", "create", "-t", "t", "--body-file", "notes.md"]),
-            &o(),
-            None,
-            false,
-            &read,
-        );
+        let o = o();
+        let mut s = shim(&o);
+        s.read = &read;
+        let expect = format!("{}\n\nfrom file", line());
+        let out = s.rewrite(args(&[
+            "pr",
+            "create",
+            "-t",
+            "t",
+            "--body-file",
+            "notes.md",
+        ]));
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
-        let out = rewrite(
-            args(&["pr", "create", "-t", "t", "-F", "-"]),
-            &o(),
-            None,
-            false,
-            &read,
-        );
+        let out = s.rewrite(args(&["pr", "create", "-t", "t", "-F", "-"]));
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
-        let out = rewrite(
-            args(&["issue", "comment", "1", "--body-file=notes.md"]),
-            &o(),
-            None,
-            false,
-            &read,
-        );
+        let out = s.rewrite(args(&["issue", "comment", "1", "--body-file=notes.md"]));
         assert_eq!(out, args(&["issue", "comment", "1", "--body", &expect]));
-        let out = rewrite(
-            args(&["issue", "comment", "1", "-Fnotes.md", "-R", "a/b"]),
-            &o(),
-            None,
-            false,
-            &read,
-        );
+        let out = s.rewrite(args(&[
+            "issue",
+            "comment",
+            "1",
+            "-Fnotes.md",
+            "-R",
+            "acme/widgets",
+        ]));
         assert_eq!(
             out,
-            args(&["issue", "comment", "1", "--body", &expect, "-R", "a/b"])
+            args(&[
+                "issue",
+                "comment",
+                "1",
+                "--body",
+                &expect,
+                "-R",
+                "acme/widgets"
+            ])
         );
         // Unreadable file: untouched, gh reports it.
         let a = args(&["issue", "comment", "1", "--body-file", "missing"]);
-        assert_eq!(rewrite(a.clone(), &o(), None, false, &no_files), a);
+        assert_eq!(rewrite(a.clone()), a);
     }
 
     #[test]
     fn reviews_without_a_body_get_one() {
-        let out = rewrite(
-            args(&["pr", "review", "7", "--approve"]),
-            &o(),
-            None,
-            false,
-            &no_files,
-        );
+        let out = rewrite(args(&["pr", "review", "7", "--approve"]));
         assert_eq!(
             out,
-            args(&["pr", "review", "--body", &tag(), "7", "--approve"])
+            args(&["pr", "review", "--body", &line(), "7", "--approve"])
+        );
+        let out = rewrite(args(&[
+            "pr",
+            "review",
+            "7",
+            "--approve",
+            "-R",
+            "acme/other",
+        ]));
+        assert_eq!(
+            out,
+            args(&[
+                "pr",
+                "review",
+                "--body",
+                &o().first_line(None, false, false),
+                "7",
+                "--approve",
+                "-R",
+                "acme/other"
+            ])
         );
     }
 
     #[test]
     fn reviewer_sessions_stamp_their_role() {
-        let rtag = o().reviewer_tag();
-        let out = rewrite(
-            args(&["pr", "review", "12", "--request-changes", "--body", "nits"]),
-            &o(),
-            None,
-            true,
-            &no_files,
-        );
-        assert_eq!(out[5], format!("nits\n\n{rtag}"));
-        let out = rewrite(
-            args(&["pr", "review", "12", "--approve"]),
-            &o(),
-            None,
-            true,
-            &no_files,
-        );
+        let rline = o().first_line(Some("acme/widgets"), false, true);
+        assert_eq!(rline, format!("🤖#12 (reviewer) {}", o().reviewer_tag()));
+        let o = o();
+        let mut s = shim(&o);
+        s.reviewer = true;
+        let out = s.rewrite(args(&[
+            "pr",
+            "review",
+            "12",
+            "--request-changes",
+            "--body",
+            "nits",
+        ]));
+        assert_eq!(out[5], format!("{rline}\n\nnits"));
+        let out = s.rewrite(args(&["pr", "review", "12", "--approve"]));
         assert_eq!(
             out,
-            args(&["pr", "review", "--body", &rtag, "12", "--approve"])
+            args(&["pr", "review", "--body", &rline, "12", "--approve"])
         );
-        let out = rewrite(
-            args(&["pr", "comment", "12", "--body", "question"]),
-            &o(),
-            None,
-            true,
-            &no_files,
-        );
-        assert!(out[4].ends_with(&rtag));
+        let out = s.rewrite(args(&["pr", "comment", "12", "--body", "question"]));
+        assert!(out[4].starts_with(&rline));
         assert!(!parse_tag(&out[4]).is_delegate());
+        assert!(parse_tag(&out[4]).is_reviewer());
     }
 
     #[test]
@@ -443,7 +756,7 @@ mod tests {
             args(&["--version"]),
             args(&[]),
         ] {
-            assert_eq!(rewrite(a.clone(), &o(), None, false, &no_files), a, "{a:?}");
+            assert_eq!(rewrite(a.clone()), a, "{a:?}");
         }
     }
 
@@ -454,21 +767,34 @@ mod tests {
             args(&["issue", "comment", "3", "--body"]),
             args(&["issue", "comment", "3", "--body-file"]),
         ] {
-            assert_eq!(rewrite(a.clone(), &o(), None, false, &no_files), a, "{a:?}");
+            assert_eq!(rewrite(a.clone()), a, "{a:?}");
         }
     }
 
     #[test]
     fn already_tagged_bodies_are_left_alone() {
-        let body = format!("done\n\n{}", tag());
-        let a = args(&["issue", "comment", "3", "--body", &body]);
-        assert_eq!(rewrite(a.clone(), &o(), None, false, &no_files), a);
+        for body in [
+            format!("{}\n\ndone", line()),
+            format!("{}\n\ndone", o().tag()),
+            format!("{}\n\ndone", o().first_line(None, false, false)),
+        ] {
+            let a = args(&["issue", "comment", "3", "--body", &body]);
+            assert_eq!(rewrite(a.clone()), a);
+        }
+        // A tag at the end, where posts used to carry it, is not the post's
+        // own any more: the line goes on top.
+        let old = format!("done\n\n{}", o().tag());
+        let out = rewrite(args(&["issue", "comment", "3", "--body", &old]));
+        assert_eq!(out[4], format!("{}\n\n{old}", line()));
     }
 
     #[test]
     fn creating_and_assigning_the_bot_is_a_hand_off() {
-        let delegate = format!("child\n\n{}", o().delegate_tag());
-        let plain = format!("child\n\n{}", tag());
+        let delegate = format!("🤖#12 {}\n\nchild", o().delegate_tag());
+        let plain = format!("{}\n\nchild", line());
+        let o = o();
+        let mut s = shim(&o);
+        s.bot = Some("OverlayBot");
         for a in [
             args(&[
                 "issue",
@@ -511,7 +837,7 @@ mod tests {
                 "@me",
             ]),
         ] {
-            let out = rewrite(a.clone(), &o(), Some("OverlayBot"), false, &no_files);
+            let out = s.rewrite(a.clone());
             assert!(out.contains(&delegate), "{a:?} -> {out:?}");
         }
         // Assigning someone else, assigning on a comment, or not knowing the
@@ -570,18 +896,33 @@ mod tests {
                 Some("OverlayBot"),
             ),
         ] {
-            let out = rewrite(a.clone(), &o(), bot, false, &no_files);
+            s.bot = bot;
+            let out = s.rewrite(a.clone());
             assert!(out.contains(&plain), "{a:?} -> {out:?}");
         }
         // @me is the bot even without SSF_BOT: gh runs with the bot's token.
-        let out = rewrite(
-            args(&["issue", "create", "-t", "t", "-b", "child", "-a", "@me"]),
-            &o(),
-            None,
-            false,
-            &no_files,
-        );
+        let out = rewrite(args(&[
+            "issue", "create", "-t", "t", "-b", "child", "-a", "@me",
+        ]));
         assert!(out.contains(&delegate));
+        // A hand-off on another repository: long byline, delegate tag.
+        s.bot = Some("OverlayBot");
+        let out = s.rewrite(args(&[
+            "issue",
+            "create",
+            "-R",
+            "acme/other",
+            "-t",
+            "t",
+            "-b",
+            "child",
+            "-a",
+            "OverlayBot",
+        ]));
+        assert!(
+            out.contains(&format!("🤖acme/widgets#12 {}\n\nchild", o.delegate_tag())),
+            "{out:?}"
+        );
     }
 
     #[test]

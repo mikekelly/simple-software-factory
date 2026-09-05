@@ -1319,8 +1319,9 @@ are resumed on the first pass that finds it: {err:#}"
     }
 
     /// Parse origin tags out of the item body and its timeline, and flag posts
-    /// by the bot that carry none: the gh shim was not in effect in whichever
-    /// session made them, so nothing can tell which session that was.
+    /// by the bot that carry none: a person typed them as the bot, or the gh
+    /// shim was not in effect in whichever session made them, and nothing
+    /// can tell which.
     fn record_origins(
         &mut self,
         repo: &RepoConfig,
@@ -1336,7 +1337,7 @@ are resumed on the first pass that finds it: {err:#}"
                     repo = repo.name,
                     issue = issue.number,
                     url,
-                    "post by @{login} without an origin tag (gh shim not in effect)"
+                    "post by @{login} without an origin tag (a person, or the gh shim not in effect)"
                 );
             }
         }
@@ -1363,20 +1364,17 @@ are resumed on the first pass that finds it: {err:#}"
             if !is_new && !edited {
                 continue;
             }
-            // The bot's own activity (its comments, commits, PRs) would only
-            // echo the agent's work back at it. Things done *to* the bot,
-            // like being assigned, always count. A comment that carries an
-            // origin tag is kept here: it came from one session and may be
-            // news to another, so it is sorted out per recipient
-            // (`for_recipient`) instead.
+            // The bot's own commits and cross-references would only echo
+            // the agent's work back at it. Things done *to* the bot, like
+            // being assigned, always count. The bot's comments are kept:
+            // one that carries an origin tag came from one session and may
+            // be news to another, so it is sorted out per recipient
+            // (`for_recipient`) instead; one without a tag was typed by a
+            // person using the bot account (every session stamps its
+            // posts), so it is delivered like any human's.
             let own = actor_of(ev).eq_ignore_ascii_case(&self.login);
-            let echo = matches!(
-                kind,
-                "commented" | "cross-referenced" | "referenced" | "committed"
-            );
-            let tagged = kind == "commented"
-                && origin::parse(crate::github::value_str(ev, &["body"]).unwrap_or("")).is_some();
-            if own && echo && !tagged && !self.cfg.daemon.include_own_events {
+            let echo = matches!(kind, "cross-referenced" | "referenced" | "committed");
+            if own && echo && !self.cfg.daemon.include_own_events {
                 debug!(key, "skipping bot's own event");
                 continue;
             }
@@ -3423,7 +3421,7 @@ mod tests {
         let mut e = engine();
         let r = repo();
         seeded(&mut e, 1, Some("bot/issue-1"), true);
-        let tagged = issue(7, "bot", Some("child\n\n<!-- ssf: origin=o/r#1 -->"));
+        let tagged = issue(7, "bot", Some("<!-- ssf: origin=o/r#1 -->\n\nchild"));
         let scan = origin::scan(&tagged, &[], "bot");
         assert_eq!(e.find_owner(&r, &tagged, None, &scan), Some(1));
         // Through a chain: the PR was bound to the issue, a comment-opened
@@ -3536,14 +3534,14 @@ mod tests {
         let timeline = vec![
             comment(1, "alice", "human"),
             comment(2, "bot", "untagged bot comment"),
-            comment(3, "bot", "from one\n\n<!-- ssf: origin=o/r#1 -->"),
-            comment(4, "bot", "from three\n\n<!-- ssf: origin=o/r#3 -->"),
+            comment(3, "bot", "<!-- ssf: origin=o/r#1 -->\n\nfrom one"),
+            comment(4, "bot", "<!-- ssf: origin=o/r#3 -->\n\nfrom three"),
             comment(
                 5,
                 "bot",
-                "from the PR's session\n\n<!-- ssf: origin=o/r#7 -->",
+                "<!-- ssf: origin=o/r#7 -->\n\nfrom the PR's session",
             ),
-            comment(6, "bot", "from elsewhere\n\n<!-- ssf: origin=x/y#2 -->"),
+            comment(6, "bot", "<!-- ssf: origin=x/y#2 -->\n\nfrom elsewhere"),
         ];
         let d = e.diff(&BTreeMap::new(), &timeline);
         let keys: Vec<&str> = d.rendered.iter().map(|r| r.key.as_str()).collect();
@@ -3551,34 +3549,66 @@ mod tests {
             keys,
             vec![
                 "commented:1",
+                "commented:2",
                 "commented:3",
                 "commented:4",
                 "commented:5",
                 "commented:6"
             ],
-            "the untagged bot comment keeps today's rule; tagged ones stay"
+            "the untagged bot comment is a person's; tagged ones stay"
         );
         assert_eq!(d.seen.len(), 6, "everything is recorded as seen");
-        assert!(d.rendered[1].text.contains("(from the agent on o/r#1)"));
+        assert!(
+            d.rendered[1]
+                .text
+                .contains("@bot commented (not from a session) (u2):\n  > untagged bot comment"),
+            "{}",
+            d.rendered[1].text
+        );
+        assert!(d.rendered[1].origin.is_none());
+        assert!(d.rendered[2].text.contains("(from the agent on o/r#1)"));
 
-        // Session 1 (which also acts on PR 7) does not get its own posts back.
+        // Session 1 (which also acts on PR 7) does not get its own posts
+        // back; the person's post reaches everyone.
         let mine = e.for_recipient(&d.rendered, "o/r#1");
         let keys: Vec<&str> = mine.iter().map(|r| r.key.as_str()).collect();
-        assert_eq!(keys, vec!["commented:1", "commented:4", "commented:6"]);
+        assert_eq!(
+            keys,
+            vec!["commented:1", "commented:2", "commented:4", "commented:6"]
+        );
         // Session 3 sees session 1's (and the PR's) comments, not its own.
         let theirs = e.for_recipient(&d.rendered, "o/r#3");
         let keys: Vec<&str> = theirs.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(
             keys,
-            vec!["commented:1", "commented:3", "commented:5", "commented:6"]
+            vec![
+                "commented:1",
+                "commented:2",
+                "commented:3",
+                "commented:5",
+                "commented:6"
+            ]
         );
         // Case-insensitive on the repository, like everything else.
-        assert_eq!(e.for_recipient(&d.rendered, "O/R#3").len(), 4);
+        assert_eq!(e.for_recipient(&d.rendered, "O/R#3").len(), 5);
         assert_eq!(e.acting_session("o/r#7"), "o/r#1");
         assert_eq!(e.acting_session("x/y#2"), "x/y#2");
         assert_eq!(e.acting_session("garbage"), "garbage");
         e.cfg.daemon.include_own_events = true;
-        assert_eq!(e.for_recipient(&d.rendered, "o/r#1").len(), 5);
+        assert_eq!(e.for_recipient(&d.rendered, "o/r#1").len(), 6);
+
+        // The bot's commits and cross-references are still its own echo,
+        // and a plain `gh` comment by the bot login is not.
+        let timeline = vec![
+            json!({"event":"cross-referenced","id":20,"actor":{"login":"bot"},"created_at":"t",
+                "source":{"issue":{"title":"x","html_url":"u"}}}),
+            json!({"event":"referenced","id":21,"actor":{"login":"bot"},"commit_id":"abc","created_at":"t"}),
+            comment(22, "bot", "typed by hand as the bot"),
+        ];
+        e.cfg.daemon.include_own_events = false;
+        let d = e.diff(&BTreeMap::new(), &timeline);
+        let keys: Vec<&str> = d.rendered.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, vec!["commented:22"]);
     }
 
     #[tokio::test]
@@ -3758,10 +3788,10 @@ mod tests {
         // reach the reviewer; neither gets its own posts back.
         let timeline = vec![
             comment(1, "alice", "please review"),
-            comment(2, "bot", "on it\n\n<!-- ssf: origin=o/r#1 -->"),
+            comment(2, "bot", "<!-- ssf: origin=o/r#1 -->\n\non it"),
             json!({"event":"reviewed","id":3,"user":{"login":"bot"},"state":"changes_requested",
-                "body":"nits\n\n<!-- ssf: origin=o/r#7 role=reviewer -->","created_at":"t"}),
-            comment(4, "bot", "fixed\n\n<!-- ssf: origin=o/r#1 -->"),
+                "body":"<!-- ssf: origin=o/r#7 role=reviewer -->\n\nnits","created_at":"t"}),
+            comment(4, "bot", "<!-- ssf: origin=o/r#1 -->\n\nfixed"),
         ];
         let d = e.diff(&BTreeMap::new(), &timeline);
         assert_eq!(d.rendered.len(), 4);
@@ -3857,14 +3887,14 @@ mod tests {
         assert!(!posted(&[]));
         assert!(!posted(&[labeled(1, "Review")]));
         assert!(!posted(&[
-            review(1, "bot", "old\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"),
+            review(1, "bot", "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nold"),
             labeled(2, "review"),
         ]));
         // The reviewer's review after the label fulfils it; a human's, or
         // another label, does not.
         assert!(posted(&[
             labeled(1, "review"),
-            review(2, "bot", "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"),
+            review(2, "bot", "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nlgtm"),
         ]));
         assert!(!posted(&[labeled(1, "review"), review(2, "alice", "lgtm")]));
         // A review with no tag (shim not in effect) still counts; one from
@@ -3872,19 +3902,19 @@ mod tests {
         assert!(posted(&[labeled(1, "review"), review(2, "bot", "lgtm")]));
         assert!(!posted(&[
             labeled(1, "review"),
-            review(2, "bot", "self-approved\n\n<!-- ssf: origin=o/r#1 -->"),
+            review(2, "bot", "<!-- ssf: origin=o/r#1 -->\n\nself-approved"),
         ]));
         // A label added again after the review asks for another one.
         assert!(!posted(&[
             labeled(1, "review"),
-            review(2, "bot", "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"),
+            review(2, "bot", "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nlgtm"),
             labeled(3, "review"),
         ]));
         // A label that came with the pull request has no event of its own.
         assert!(posted(&[review(
             1,
             "bot",
-            "lgtm\n\n<!-- ssf: origin=o/r#7 role=reviewer -->"
+            "<!-- ssf: origin=o/r#7 role=reviewer -->\n\nlgtm"
         )]));
     }
 
@@ -3954,7 +3984,7 @@ mod tests {
     fn last_bot_comment_is_the_final_word() {
         let timeline = vec![
             json!({"event":"commented","id":1,"user":{"login":"bot"},"body":"first <!-- ssf: origin=o/r#5 -->","html_url":"u1"}),
-            json!({"event":"commented","id":2,"user":{"login":"bot"},"body":"done\n\n<!-- ssf: origin=o/r#5 -->","html_url":"u2"}),
+            json!({"event":"commented","id":2,"user":{"login":"bot"},"body":"<!-- ssf: origin=o/r#5 -->\n\ndone","html_url":"u2"}),
             json!({"event":"commented","id":3,"user":{"login":"alice"},"body":"thanks","html_url":"u3"}),
             json!({"event":"closed","id":4,"actor":{"login":"alice"}}),
         ];

@@ -181,21 +181,22 @@ everything git and GitHub related is the bot, whatever the human's own
 | Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email` |
 | Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key) |
 | Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT`, and `SSF_ROLE=reviewer` in a reviewer session (`ssf launch --role reviewer`) |
-| Which session posted what | a `gh` shim first on `PATH` that stamps posts with an origin tag (below) |
+| Which session posted what | a `gh` shim first on `PATH` that starts every post with a byline and origin tag (below) |
 
 Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
 outrank every config file, and only inside the agent's process tree. The
 initial prompt tells the agent that plain `gh` and `git push` act as the bot.
-Because activity by the bot login is filtered out of follow-up messages, the
-agent's own comments are not echoed back to it (`daemon.include_own_events`
-turns that off). `ssf token` still prints the token for any other use.
+The bot's own commits and cross-references are filtered out of follow-up
+messages, and its comments are sorted per session by their origin tag, so
+an agent's own posts are not echoed back to it (`daemon.include_own_events`
+turns both off). `ssf token` still prints the token for any other use.
 
 ## What the agent is told
 
 ssf's own prompting is the bare functional minimum. The initial prompt is
 the item (title, description, boards, everything that has happened on it)
 followed by the facts an agent needs in order to act at all: which bot it
-is and that its credentials are set, the origin tag rule, where new activity
+is and that its credentials are set, the byline and origin tag rule, where new activity
 arrives, what to do when the work is done, and the hard rules only ssf knows
 (act only as the bot, do not close the issue, do not merge, keep the board
 card accurate). One line points at `ssf guide`, which prints the reference
@@ -223,44 +224,73 @@ onboarding and delivery, using the bot token's `project` scope; if it fails
 the prompt simply carries no boards section and the daemon logs why. Closed
 boards are left out.
 
-## Origin tags: which session posted what
+## Bylines and origin tags: which session posted what
 
-GitHub shows the same bot account for every session, so ssf encodes the
-session in the content. Everything an agent posts ends with an invisible
-marker naming the item its workspace belongs to:
+GitHub shows the same bot account for every session, so ssf puts the
+session in the content. Everything an agent posts starts with one line that
+is both a byline for people and a tag for the daemon, then a blank line:
 
 ```
-<!-- ssf: origin=owner/repo#N -->
+🤖#16 <!-- ssf: origin=owner/repo#16 -->
 ```
+
+The byline is `🤖#N` when the post is on the same repository as the
+session's item and `🤖owner/repo#N` on another; GitHub renders either as a
+link to the item, so a reader can tell a session's posts from a person's
+at a glance and see which session wrote them, even when the "bot" is
+someone's own account. A reviewer session's byline is `🤖#N (reviewer)`.
+The HTML comment after it is invisible in the rendered post and is what the
+daemon reads. (Because the byline links to the origin item, GitHub adds a
+"referenced in ..." event on that item for every post: the daemon skips the
+bot's own cross-references, and for people the trail on the item shows
+where its session has posted.)
 
 `ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
-directory first on the agent's `PATH`. Invoked as `gh`, ssf appends the tag
-to the body of `issue create`, `issue comment`, `pr create`, `pr comment`
-and `pr review` (whether given as `--body`, `--body=`, `-b`, `--body-file`
-or `-F -`; a review without a body gets one that is only the tag) and execs
-the real gh with everything else untouched. The shim reads only its
-environment, writes nothing and leaves stdin and the terminal alone, so it
-works inside read-only sandboxes and does not break gh's interactive flows.
-Outside a session (no `SSF_ISSUE`) it is a plain pass-through. Bodies that
-already carry the tag are not stamped twice, and the initial prompt asks the
-agent to add the tag itself whenever it posts some other way (`gh api`,
-`gh pr create --fill`, a harness that resets `PATH`).
+directory first on the agent's `PATH`. Invoked as `gh`, ssf prepends the
+line to the body of `issue create`, `issue comment`, `pr create`,
+`pr comment` and `pr review` (whether given as `--body`, `--body=`, `-b`,
+`--body-file` or `-F -`; a review without a body gets one that is only the
+line) and execs the real gh with everything else untouched. To pick the
+byline's form it works out the repository posted to the way gh does:
+`--repo`/`-R`, an item given as a URL, `GH_REPO`, else the checkout's
+`origin` remote (`git config --get remote.origin.url`); when none of those
+says, the long form is used, which links from anywhere. Beyond that the
+shim reads only its environment, writes nothing and leaves stdin and the
+terminal alone, so it works inside read-only sandboxes and does not break
+gh's interactive flows. Outside a session (no `SSF_ISSUE`) it is a plain
+pass-through. Bodies that already start with the tag are not stamped
+twice, and the initial prompt asks the agent to add the line itself
+whenever it posts some other way (`gh api`, `gh pr create --fill`, a
+harness that resets `PATH`).
 
 The daemon parses tags out of every item body and comment it reads, and
-honours a tag only where the shim puts it: on the last non-blank line of the
-body (the last tag on that line, so a hand-written tag followed by the
-shim's is read as the shim's). A tag anywhere else, in a fenced or indented
-code block, a pasted transcript or a quote reply, is content: it neither
-attributes the post nor binds an item to the session it names, and a bot
-post whose only tag is quoted counts as untagged. In
+honours a tag only where the shim puts it: on the first non-blank line of
+the body (the first tag on that line, so the shim's line, which goes before
+anything the agent wrote by hand, is the one read). Failing that, a tag on
+the last non-blank line still counts (the last one on that line): posts
+made before the byline carried it there, and the daemon re-reads timelines
+on relaunch and for delegation report-backs, so they stay attributed. The
+first line wins when both carry one. A tag anywhere else, in a fenced or
+indented code block, a pasted transcript or a quote reply, is content: it
+neither attributes the post nor binds an item to the session it names, and
+a bot post whose only tag is quoted counts as untagged. In
 `ssf status --json` each tracked item shows `origin` (the session that opened
 it, for PRs and issues an agent created), `origins` (timeline event key to
 session, for tagged comments and reviews) and `untagged` (posts by the bot
-that carry no tag, meaning the shim was not in effect where they were made).
-Untagged bot posts are also warned about in the logs and reported by
-`ssf doctor`, which additionally checks that the real gh is installed and
-that the shim links to the running ssf. When comments are shown to an
-agent, the tag is stripped and replaced by "(from session owner/repo#N)".
+that carry no tag). Untagged bot posts are also noted in the logs and
+reported by `ssf doctor`, which additionally checks that the real gh is
+installed and that the shim links to the running ssf. When posts are shown
+to an agent, the byline and tag are stripped and replaced by "(from the
+agent on owner/repo#N)".
+
+**A person posting as the bot.** Since every session stamps its posts, a
+comment, review or item by the bot login *without* a tag was typed by a
+person using the bot account (someone who enrolled their own GitHub account
+as the factory's bot, say). It is delivered to agents like any human's post,
+with the login as actor and marked "(not from a session)", so the factory
+hears that person. It still counts as untagged for `ssf status` and
+`ssf doctor`, since nothing distinguishes it from a session whose shim was
+not in effect, and an untagged item body binds the item to no session.
 
 The tag can carry more fields. Two are defined: `mode=delegate`,
 which the shim adds when an `issue create` or `pr create` assigns the bot
@@ -268,7 +298,8 @@ itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
 session's own (below); and `role=reviewer`, which the shim adds to everything
 posted from a reviewer session (`SSF_ROLE=reviewer` in its environment), so
 a review by the bot on its own pull request is told apart from the author's
-posts and shown as "(from the reviewer session on owner/repo#N)".
+posts and shown as "(from the reviewer session on owner/repo#N)". The
+byline does not encode the mode.
 
 ## Ownership: one session per item
 
@@ -444,8 +475,8 @@ recipient rather than by author: a bot comment whose tag names a different
 session is delivered like a human's, labelled "(from the agent on
 owner/repo#M)", while a comment tagged with the recipient's own session
 (or an item that session acts on) is the self-echo and stays filtered.
-Untagged bot comments keep the old rule (never delivered, unless
-`daemon.include_own_events`). So session A talks to session B by
+An untagged bot comment is a person's (above) and reaches every recipient,
+marked "(not from a session)". So session A talks to session B by
 commenting on B's issue with `gh`: B's agent receives it labelled as coming
 from A, and A does not receive its own comment back, even when A is
 subscribed to B's issue. This is the default channel between agents:
@@ -634,7 +665,7 @@ omarchy plugin validate ./omarchy-plugin
 Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
 (reconciliation loop), `src/sessions.rs` (harness session capture and resume),
-`src/origin.rs` (origin tags), `src/shim.rs` (the `gh` shim), `src/ipc.rs`
+`src/origin.rs` (bylines and origin tags), `src/shim.rs` (the `gh` shim), `src/ipc.rs`
 (the CLI-to-daemon socket behind `sub`, `unsub` and `tell`),
 `src/status.rs` (the joined item/session view behind `status`, `peers` and the
 widget), `src/ui.rs` (Omarchy integration),
