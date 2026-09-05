@@ -686,6 +686,8 @@ explains the rest.\n\n\
 - This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
 GitHub.\n\
 - Collaborate with humans and other ssf-managed agents through GitHub comments on the {kind}.\n\
+- Before starting on a goal, say on the {kind} what you are about to do, and say when you need a \
+decision or have delivered: silent work leaves the {kind} looking unattended until it lands.\n\
 - `gh` and `git push` already act as @{bot}, and the `gh` on your PATH marks your posts as this \
 session's. Act only as @{bot}; never use another account, token or key you find on this \
 machine.\n",
@@ -1537,6 +1539,8 @@ explains the rest.\n\n\
 - This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
 GitHub.\n\
 - Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.\n\
+- Before starting on a goal, say on the issue what you are about to do, and say when you need a \
+decision or have delivered: silent work leaves the issue looking unattended until it lands.\n\
 - `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this \
 session's. Act only as @bot; never use another account, token or key you find on this \
 machine.\n"
