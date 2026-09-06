@@ -303,6 +303,9 @@ ssf repo remove acme/widgets
 ssf config get daemon.poll_interval_secs
 ssf config set daemon.poll_interval_secs 60
 ssf config set daemon.instructions "Always open PRs as drafts."
+ssf config set daemon.allowed_users '["mikekelly", "alice"]'   # who may drive the agents (see below)
+ssf repo set acme/widgets --allowed-users alice,bob             # for one repository, replacing the instance list
+ssf repo set acme/widgets --clear allowed_users
 ssf status --json
 ssf peers [--repo owner/name] [--all] [--json]
 ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --as owner/repo#N)
@@ -333,8 +336,10 @@ nothing else has to talk to Orca. Its `sessions` array has one entry per item:
 | `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
 
-`repos[].issues[]` carries the same objects, and `orca.available` says
-whether Orca answered. `ssf peers` prints the same data as a terminal table:
+`repos[].issues[]` carries the same objects, `repos[].allowed_users` says
+who may drive each repository (`anyone_allowed` at the top is whether the
+wildcard is on anywhere; the bar widget warns while it is), and
+`orca.available` says whether Orca answered. `ssf peers` prints the same data as a terminal table:
 by default the active sessions on `$SSF_REPO` (so an agent sees who else is
 on its repository, and itself marked "(you)"), or on every watched repository
 outside a session; `--all` includes retired sessions. `ssf guide` tells
@@ -372,6 +377,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](#reviewer-sessions)); `""` turns the label trigger off |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#under-the-hood)) |
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
+| `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](#inside-a-microvm-firecracker)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
 | `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
 | `vm.vcpus`, `vm.mem_mib` | `2`, `4096` | The guest's size |
@@ -387,6 +393,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.path` | | Register an existing checkout instead of cloning |
 | `repo.prompt_file` | `SSF.md` | The per-project prompt file (below), relative to the worktree unless absolute or `~/` |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories |
+| `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 
 Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
 `ORCA_CLI_COMMAND`, `HERDR_COMMAND`, `RUST_LOG`.
@@ -475,7 +482,65 @@ permission mode of your own or a tool deny list in the agent's own syntax
 Copilot, `--exclude-tools` for Pi). Behavioural limits (do not merge, do not
 close issues) belong in the [per-project prompt
 file](#the-per-project-prompt-file), not in the command. ssf has no
-allow/deny list of its own.
+tool allow/deny list of its own; who may *drive* the agents is the next
+section.
+
+### Who may drive the factory
+
+Everything that reaches the bot on GitHub comes from whoever can write on
+the repository, and a comment is relayed straight into a running agent's
+terminal. `allowed_users` says whose word counts:
+
+```toml
+[daemon]
+allowed_users = ["mikekelly", "alice"]      # for every repository below
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+allowed_users = ["mikekelly"]               # replaces the instance list here
+```
+
+- **Unset** (a fresh install): the repository's collaborators with push
+  access. The daemon fetches them once per pass (an unchanged answer is a
+  free 304) and `ssf doctor` prints the list per repository. If they cannot
+  be fetched, an organisation repository where the token lacks `read:org`
+  say, and none were fetched before, the pass fails for that repository and
+  nothing is acted on until either the fetch works or a list is configured;
+  `ssf status` shows the error and `ssf doctor` says how to fix it.
+- **A repository list replaces the instance list** rather than extending
+  it, so one repository can be narrowed as well as widened; `[]` is nobody
+  but the bot. Logins compare case-insensitively.
+- **The bot itself always counts**, tagged posts and untagged ones alike
+  (whoever types as the bot holds its token).
+- **App accounts** such as `github-actions[bot]` or
+  `github-project-automation[bot]` are ordinary logins: listed explicitly
+  or not at all, and never part of the collaborator default.
+
+What the list does: an item only gets a session when an allowed login
+asked for it, read from the item's timeline: who assigned the bot (latest
+assignment), who mentioned it (body, comment or review), who requested the
+review or added the `review` label. One that nobody allowed asked for is
+logged once at info level with the login and trigger, and not read again
+until it changes; an allowed user assigning or mentioning the bot later
+brings it in. On a running session, events by anyone else are dropped
+before delivery, so a non-listed user's comment on an owned item reaches
+neither the owner nor its subscribers or reviewer. Commits are the one
+event without a login and pass (pushing needs write access to the branch);
+unassigning or closing still retires a session, since stopping work is
+safe. One limit to know: the timeline says who posted a body or comment,
+not who edited it, and anyone with write access can edit anyone's text, so
+the list is a boundary against the internet, not a hard one among people
+who can already push. Prompts are unchanged: this is all daemon-side.
+
+`"*"` means anyone on GitHub. It is never accepted silently: `ssf config set
+daemon.allowed_users '["*"]'` and `ssf repo set <repo> --allowed-users '*'`
+refuse it unless you type `yes` (nothing shorter) to the risk at the terminal or pass
+`--accept-anyone-risk`, either of which writes `accepted_anyone_risk = true`
+next to the list (setting a plain list again removes it). A hand-edited
+file with `"*"` and no marker is refused at load with the fix spelled out,
+`ssf status` prints a warning while the wildcard is in effect, and the bar
+widget shows one and turns its icon urgent.
 
 ## Drivers: Orca and herdr
 

@@ -27,6 +27,9 @@ Panel {
   readonly property bool serviceEnabled: status && status.service_enabled === true
   readonly property bool serviceActive: status && status.service_active === true
   readonly property string lastError: status && status.last_error ? String(status.last_error) : ""
+  // The wildcard allow-list is in effect on some repository: anyone with a
+  // GitHub account can drive the agents. Shown as a warning until it is not.
+  readonly property bool anyoneAllowed: status && status.anyone_allowed === true
   readonly property var repos: status && status.repos instanceof Array ? status.repos : []
   readonly property bool orcaAvailable: !status || !status.orca || status.orca.available !== false
   readonly property var sessions: liveSessions()
@@ -42,7 +45,7 @@ Panel {
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color barIconColor: waitingCount > 0 ? urgent
+  readonly property color barIconColor: waitingCount > 0 || anyoneAllowed ? urgent
     : serviceActive && signedIn ? barForeground : Qt.darker(barForeground, 1.55)
 
   // Cursor rows: repos first, then sessions, then the action strip.
@@ -181,6 +184,7 @@ Panel {
     if (!serviceEnabled) return "Service disabled"
     if (!serviceActive) return "Service not running"
     if (lastError !== "") return "Last pass failed"
+    if (anyoneAllowed) return "Open to anyone on GitHub"
     var n = sessions.length
     if (n === 0) return repos.length === 0 ? "No repositories watched" : "Watching " + repos.length + (repos.length === 1 ? " repository" : " repositories")
     var parts = [n + (n === 1 ? " session" : " sessions")]
@@ -386,6 +390,17 @@ Panel {
         font.pixelSize: Style.font.bodySmall
       }
 
+      // ---- Wildcard allow-list warning ----------------------------------
+      Text {
+        visible: root.anyoneAllowed
+        width: parent.width
+        text: "\uf071  allowed_users is \"*\": anyone with a GitHub account can drive the agents. Set the logins with `ssf repo set <repo> --allowed-users` or `ssf config set daemon.allowed_users`."
+        color: root.urgent
+        wrapMode: Text.Wrap
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
       // ---- Sign-in nudge -------------------------------------------------
       Button {
         visible: root.loaded && !root.signedIn
@@ -442,7 +457,7 @@ Panel {
               anchors.right: parent.right
               anchors.rightMargin: Style.spacing.controlPaddingX
               anchors.verticalCenter: parent.verticalCenter
-              text: [modelData.harness, modelData.model, modelData.effort].filter(function(x) { return !!x }).join(" · ")
+              text: [modelData.harness, modelData.model, modelData.effort, modelData.anyone_allowed === true ? "open to anyone" : ""].filter(function(x) { return !!x }).join(" · ")
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

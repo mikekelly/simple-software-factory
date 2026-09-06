@@ -479,6 +479,49 @@ impl GitHub {
         })
     }
 
+    /// The repository's collaborators (every affiliation), as GitHub
+    /// returns them, with ETag support; `allow::pushers` keeps the ones
+    /// with push access. Needs push access itself, and `read:org` on an
+    /// organisation's repository.
+    pub async fn collaborators(
+        &self,
+        owner: &str,
+        repo: &str,
+        etag: Option<&str>,
+    ) -> Result<Conditional<Vec<Value>>> {
+        let first = format!(
+            "{}?per_page=100",
+            self.url(&format!("repos/{owner}/{repo}/collaborators"))
+        );
+        let mut req = self.get(&first);
+        if let Some(tag) = etag {
+            req = req.header(IF_NONE_MATCH, tag);
+        }
+        let resp = req.send().await.with_context(|| format!("GET {first}"))?;
+        let resp = Self::check(resp, &format!("listing collaborators of {owner}/{repo}")).await?;
+        if resp.status() == StatusCode::NOT_MODIFIED {
+            return Ok(Conditional::NotModified);
+        }
+        let new_etag = header_str(&resp, ETAG);
+        let mut next = next_link(&resp);
+        let mut out: Vec<Value> = resp.json().await.context("decoding collaborators")?;
+        while let Some(url) = next.take() {
+            let resp = self
+                .get(&url)
+                .send()
+                .await
+                .with_context(|| format!("GET {url}"))?;
+            let resp = Self::check(resp, "paging collaborators").await?;
+            next = next_link(&resp);
+            let page: Vec<Value> = resp.json().await.context("decoding collaborators page")?;
+            out.extend(page);
+        }
+        Ok(Conditional::Modified {
+            value: out,
+            etag: new_etag,
+        })
+    }
+
     /// Branch details of a pull request.
     pub async fn pull(&self, owner: &str, repo: &str, number: u64) -> Result<PrInfo> {
         let url = self.url(&format!("repos/{owner}/{repo}/pulls/{number}"));

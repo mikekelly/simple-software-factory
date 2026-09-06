@@ -60,6 +60,14 @@
 # review_label = "review"                      # label that asks for a review of a session's own PR (GitHub refuses review requests from the author); "" disables
 # resume_on_start = true                       # after a reboot, start again the sessions whose terminals are gone (running ones are left alone)
 # startup_orca_wait_secs = 120                 # wait this long for Orca at daemon start (every 10 s) before the first poll
+# Who may drive the factory: only these GitHub logins' assignments, mentions,
+# review requests, labels and comments count (case-insensitive; the bot
+# itself always does). Unset: each repository's collaborators with push
+# access, fetched by the daemon. ["*"] means anyone on GitHub and is refused
+# unless accepted_anyone_risk = true stands next to it (written by
+# `ssf config set daemon.allowed_users '["*"]' --accept-anyone-risk`).
+# allowed_users = ["mikekelly", "github-actions[bot]"]
+# accepted_anyone_risk = false
 
 # One [[repo]] per watched repository.
 [[repo]]
@@ -74,3 +82,4 @@ harness = "claude"                             # agent id: see `ssf agents`
 # base_branch = "origin/main"
 # instructions = "Run `make test` before opening a PR."
 # prompt_file = "SSF.md"                       # file appended to the initial prompt (see SSF.example.md); relative to the worktree unless absolute
+# allowed_users = ["mikekelly"]                # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
