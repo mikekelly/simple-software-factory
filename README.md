@@ -620,7 +620,10 @@ the daemon skips the bot's own cross-references, and for people the trail
 on the item shows where its session has posted.)
 
 `ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
-directory first on the agent's `PATH`. Invoked as `gh`, ssf prepends the
+directory first on the agent's `PATH` (next to it, `ssf` links to the same
+binary, so the `ssf` commands the prompts name run the daemon's own build
+rather than an older package on the shell's `PATH`; `ssf doctor` says
+when the two differ). Invoked as `gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
 `pr comment` and `pr review` (whether given as `--body`, `--body=`, `-b`,
 `--body-file` or `-F -`; a review without a body gets one that is only the
@@ -765,7 +768,9 @@ The reviewer session is:
 - its own agent, launched with `SSF_ROLE=reviewer` (so the gh wrapper tags its
   posts `role=reviewer`), and a review-specific prompt: the PR, its
   description and history, then how to review (`git diff base...head`,
-  `gh pr review <n> --approve|--request-changes|--comment`), never commit,
+  `gh pr review <n> --comment`, since GitHub refuses approve and
+  request-changes from the account that opened the PR, so the verdict goes
+  in the body), never commit,
   push, merge or touch the board, and that the author is another session of
   the same bot;
 - the session id `owner/repo#N:reviewer`. It is listed by `ssf peers` as

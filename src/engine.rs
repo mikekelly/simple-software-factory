@@ -3682,13 +3682,14 @@ fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
     cur
 }
 
-/// The last comment the bot left on an item, as its session's final word.
 /// Whether the bot's reviewer session has posted a review on the pull
 /// request since the review label was last added (or at all, if the label
 /// came with the pull request). Only a review from the reviewer session
 /// counts: one tagged `role=reviewer` for this PR (`me`), or an untagged one
 /// (the shim not in effect); a review tagged with another session's origin
-/// is that session's doing, not the reviewer's.
+/// is that session's doing, not the reviewer's. A plain comment never
+/// counts, even the reviewer's own: that is how it talks to the author
+/// before reviewing.
 fn review_posted_since_label(timeline: &[Value], label: &str, bot: &str, me: &str) -> bool {
     let mut posted = false;
     for ev in timeline {
@@ -3715,6 +3716,7 @@ fn review_posted_since_label(timeline: &[Value], label: &str, bot: &str, me: &st
     posted
 }
 
+/// The last comment the bot left on an item, as its session's final word.
 fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
     timeline
         .iter()

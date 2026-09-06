@@ -49,8 +49,15 @@ pub fn capture(harness: &str, cwd: &str, since: SystemTime) -> Option<String> {
     }
 }
 
+/// Where Claude Code keeps the transcripts of sessions started in `cwd`:
+/// `~/.claude/projects/<cwd>` with every character outside `[A-Za-z0-9]`
+/// turned into `-`, so `/a/b.worktrees/c_d` becomes `-a-b-worktrees-c-d`.
 pub fn claude_project_dir(cwd: &str) -> PathBuf {
-    home().join(".claude/projects").join(cwd.replace('/', "-"))
+    let encoded: String = cwd
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    home().join(".claude/projects").join(encoded)
 }
 
 fn capture_claude(cwd: &str, since: SystemTime) -> Option<String> {
@@ -145,6 +152,21 @@ mod tests {
     fn claude_dir_encoding_matches_observed_layout() {
         let d = claude_project_dir("/home/mk/orca/workspaces/x/issue-1");
         assert!(d.ends_with(".claude/projects/-home-mk-orca-workspaces-x-issue-1"));
+        // Dots (herdr worktrees live in `<clone>.worktrees/`), underscores
+        // and anything else non-alphanumeric become dashes too (seen on
+        // disk during the #56 smoke test).
+        let d = claude_project_dir(
+            "/home/mk/ssf/projects/ssf-herdr-smoke.worktrees/issue-1-add-a-contributing-md",
+        );
+        assert!(
+            d.ends_with(
+                ".claude/projects/-home-mk-ssf-projects-ssf-herdr-smoke-worktrees-issue-1-add-a-contributing-md"
+            ),
+            "{}",
+            d.display()
+        );
+        let d = claude_project_dir("/home/mk/code/my_project/a b");
+        assert!(d.ends_with(".claude/projects/-home-mk-code-my-project-a-b"));
     }
 
     #[test]

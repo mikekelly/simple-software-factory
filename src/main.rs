@@ -384,8 +384,8 @@ enum ServiceCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // `ssf launch` links `~/.config/ssf/bin/gh` to this binary; invoked under
-    // that name we are the gh shim, not the daemon.
+    // `ssf launch` links `~/.config/ssf/bin/gh` (and `ssf`) to this binary;
+    // invoked under the gh name we are the gh shim, not the daemon.
     if shim::invoked_as_gh() {
         shim::run();
     }
@@ -1995,24 +1995,64 @@ async fn doctor() -> Result<()> {
             "GitHub CLI (gh) not installed; agents cannot post as the bot".into(),
         ),
     }
-    let shim_ok = shim::target()
-        .and_then(|t| std::fs::canonicalize(t).ok())
-        .is_some_and(|t| {
-            std::env::current_exe()
-                .and_then(std::fs::canonicalize)
-                .is_ok_and(|me| me == t)
-        });
+    let me = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+    let is_me = |p: &std::path::Path| me.is_some() && std::fs::canonicalize(p).ok() == me;
+    // Both links (gh and ssf) have to point at this binary for agents to
+    // post as the bot and run this daemon's CLI.
+    let links: Vec<(&str, Option<PathBuf>)> = shim::LINKS
+        .iter()
+        .map(|name| (*name, std::fs::read_link(shim::dir().join(name)).ok()))
+        .collect();
+    let links_ok = links.iter().all(|(_, t)| t.as_deref().is_some_and(is_me));
+    let where_ = format!(
+        "{} links in {}",
+        shim::LINKS.join(" and "),
+        shim::dir().display()
+    );
+    if links_ok {
+        check(true, format!("{where_} point at this ssf"));
+    } else if links.iter().all(|(_, t)| t.is_none()) {
+        check(
+            false,
+            format!("{where_} not installed yet (ssf launch creates them when an agent starts)"),
+        );
+    } else {
+        let odd = links
+            .iter()
+            .map(|(name, t)| match t {
+                Some(t) if is_me(t) => format!("{name} ok"),
+                Some(t) => format!("{name} -> {}", t.display()),
+                None => format!("{name} missing"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        check(
+            false,
+            format!(
+                "{where_} do not all point at this ssf ({odd}); ssf launch relinks them when an agent starts"
+            ),
+        );
+    }
+    // Informational: the shim directory goes first on an agent's PATH, so
+    // another ssf on PATH only matters to a person typing in their shell.
     check(
-        shim_ok,
-        format!(
-            "gh shim at {} {}",
-            shim::path().display(),
-            if shim_ok {
-                "links to this ssf"
-            } else {
-                "not installed yet (ssf launch creates it when an agent starts)"
+        true,
+        match (me.is_some(), shim::ssf_on_path()) {
+            (true, Some(p)) if is_me(&p) => {
+                format!("ssf on PATH at {} is this binary", p.display())
             }
-        ),
+            (true, Some(p)) => format!(
+                "ssf on PATH at {} is not this binary; commands typed in a shell run that one, agents run this one",
+                p.display()
+            ),
+            (false, Some(p)) => format!(
+                "ssf on PATH at {}; cannot tell whether it is this binary",
+                p.display()
+            ),
+            (_, None) => {
+                "no ssf on PATH; agents run this one through the shim directory".to_string()
+            }
+        },
     );
     let st = state::State::load().unwrap_or_default();
     let untagged: Vec<String> = st
