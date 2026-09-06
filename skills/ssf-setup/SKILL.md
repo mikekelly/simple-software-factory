@@ -174,7 +174,8 @@ Decisions, per repository:
   login (`claude auth login`, ...); inside the VM, with `ssf vm login
   <harness>` (Step 5). ssf does not handle first-run onboarding. `ssf
   doctor` prints one line per harness in use saying whether it is signed
-  in there; a login that later expires blocks the session (Step 8).
+  in there, or that it cannot tell (Copilot keeps its login in a keyring);
+  a login that later expires blocks the session (Step 8).
 - **`model`, `effort`**: optional. Claude, Codex, Gemini and Grok take Orca's
   model ids (`opus`, `sonnet`, `gpt-5.5`, ...) and effort levels; Pi, Oh My
   Pi, OpenCode and Copilot take their own `provider/model` ids. `ssf models
@@ -424,7 +425,8 @@ Things to know when operating it:
   signed in, restarts the harness with its conversation resumed and
   delivers what was held; a person running `/login` in the terminal lifts
   it too. `ssf doctor` prints one line per harness in use saying whether it
-  is signed in (in the guest, when `vm.enabled`), so run it first.
+  is signed in, or that it cannot tell (in the guest, when `vm.enabled`),
+  so run it first.
 - `ssf doctor` also lists untagged posts by the bot (posts made without
   the byline, i.e. typed by a person or made outside the wrapper).
 
