@@ -382,13 +382,18 @@ reaches them while the daemon is down, and it delivers what they missed
 when it comes back. With the factory in a microVM, stopping the service
 shuts the guest down cleanly.
 
-**Uninstalling.** `ssf ui uninstall` removes the bar widget and menu
-entries, `ssf auth logout` revokes the bot's keys on GitHub and forgets
-it, `ssf vm destroy --yes` removes the microVM and its disks, then
+**Uninstalling.** While the daemon is still running, `ssf purge
+--dry-run` lists the workspaces of closed items and whether each is clean
+and pushed, and `ssf status` shows the open ones; deal with anything
+unpushed first. Then, in this order: `ssf ui service disable` (stops the
+service, and the guest with it), `ssf ui uninstall` (the bar widget and
+menu entries), `ssf auth logout` (revokes the bot's keys on GitHub and
+forgets it), `ssf vm destroy --yes` (the microVM and its disks), then
 `sudo pacman -R ssf`. Left for you to remove by hand: `~/.config/ssf`
-(config and the bot's key), `~/.local/state/ssf` (state), and the clones
-and worktrees under `~/ssf/projects` (or Orca's projects), which may hold
-unpushed work; `ssf purge --dry-run` lists what is in them first.
+(config and the bot's key), `~/.local/state/ssf` (state, and the marker
+that keeps a disabled service off, so a reinstall stays stopped until
+`ssf ui service enable`), and the clones and worktrees under
+`~/ssf/projects` (or Orca's projects), which may hold unpushed work.
 
 ## The rest of the story
 

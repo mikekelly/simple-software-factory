@@ -591,14 +591,20 @@ Things to know when operating it:
   login. Agents already running are left where they are and get what
   they missed when the daemon is back. With `vm.enabled`, stopping the
   service shuts the guest down cleanly.
-- **Uninstalling**: `ssf ui uninstall` (widget and menu entries), `ssf
-  auth logout` (revokes the bot's keys on GitHub and forgets it), `ssf vm
-  destroy --yes` (the VM and its disks), then `sudo pacman -R ssf`
-  (**Person:** sudo). Left behind on purpose, for the person to remove by
-  hand once they have checked them: `~/.config/ssf`, `~/.local/state/ssf`,
-  and the clones and worktrees under `~/ssf/projects` (or Orca's
-  projects), which may hold unpushed work; `ssf purge --dry-run` lists
-  them first. The bot GitHub account itself is not touched.
+- **Uninstalling**, in this order, since `purge` needs the running daemon
+  and the service must be down before the VM goes: `ssf purge --dry-run`
+  (the workspaces of closed items and whether each is clean and pushed)
+  and `ssf status` (the open ones), and settle anything unpushed; `ssf ui
+  service disable` (stops the service and, with `vm.enabled`, the guest);
+  `ssf ui uninstall` (widget and menu entries); `ssf auth logout` (revokes
+  the bot's keys on GitHub and forgets it); `ssf vm destroy --yes` (the VM
+  and its disks); then `sudo pacman -R ssf` (**Person:** sudo). Left
+  behind on purpose, for the person to remove by hand once they have
+  checked them: `~/.config/ssf`, `~/.local/state/ssf` (it also holds the
+  `disabled` marker, so a reinstall stays stopped until `ssf ui service
+  enable`), and the clones and worktrees under `~/ssf/projects` (or
+  Orca's projects), which may hold unpushed work. The bot GitHub account
+  itself is not touched.
 
 README: [Everyday
 commands](https://github.com/mikekelly/simple-software-factory#everyday-commands); docs: [Workspaces after
