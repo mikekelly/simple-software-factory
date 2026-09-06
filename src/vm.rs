@@ -64,8 +64,15 @@ pub fn forwards(name: &str) -> bool {
     FORWARDED.contains(&name)
 }
 
-/// Set in the guest so a forwarded command never forwards again.
+/// Set in the guest (the units, `/etc/environment`, and the prefix of a
+/// forwarded command) so ssf knows it is inside the VM: a forwarded command
+/// never forwards again, and the prompts say the agent has root there.
 pub const GUEST_ENV: &str = "SSF_VM_GUEST";
+
+/// Is this process inside the factory's VM?
+pub fn in_guest() -> bool {
+    std::env::var_os(GUEST_ENV).is_some()
+}
 
 fn firecracker_url() -> String {
     format!(
@@ -1396,6 +1403,11 @@ mod tests {
         assert!(st.ssh);
         let who = vm.ssh_output(&["id", "-un"]).unwrap();
         assert_eq!(who, GUEST_USER);
+        // Root through sudo, no password, and the guest knows it is one.
+        let root = vm.ssh_output(&["sudo", "-n", "id", "-u"]).unwrap();
+        assert_eq!(root, "0");
+        let guide = vm.ssh_output(&["ssf", "guide"]).unwrap();
+        assert!(guide.contains(crate::prompt::VM_GUEST_LINE), "{guide}");
         let cfg_text = vm
             .ssh_output(&["cat", &format!("{GUEST_HOME}/.config/ssf/config.toml")])
             .unwrap();
