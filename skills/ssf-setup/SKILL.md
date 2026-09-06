@@ -48,8 +48,8 @@ dev build is for working on ssf itself or running an unreleased branch.
 
 Both need Omarchy (Arch-based; the bar widget and menu entries are
 Omarchy-specific, the daemon and CLI are not), `gh` (github-cli), and one
-driver installed: Orca (`orca-ide-bin`, signed in) or herdr. See Step 4 for
-which.
+driver installed: herdr (the default) or Orca (`orca-ide-bin`, signed in).
+See Step 4 for which.
 
 **Package** (from a checkout of the repository):
 
@@ -231,12 +231,22 @@ for the allow list; every key with a comment: `config.example.toml`.
 
 ## Step 4: choose the driver (Orca or herdr)
 
-The `driver` key (top-level; `ssf config set driver herdr`) picks where
-workspaces and terminals live. A `[[repo]]` can override it, so one daemon
-can run some repositories in Orca and others in herdr. `ssf doctor` checks
-every driver in use.
+The `driver` key (top-level; `ssf config set driver orca`) picks where
+workspaces and terminals live; herdr when unset. A `[[repo]]` can override
+it, so one daemon can run some repositories in Orca and others in herdr.
+`ssf doctor` checks every driver in use, and when `driver` is unset both
+it and `ssf config show` print a note saying which driver the repositories
+run in and how to pin it.
 
-- **`orca`** (default): the Orca desktop app. Needs `orca-ide-bin`
+- **`herdr`** (default): the herdr terminal workspace manager. Needs a
+  running herdr session (start `herdr` in a terminal and leave it). ssf
+  clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree
+  per item in `<name>.worktrees/` next to the clone. herdr only runs the
+  agents it recognises (`herdr agent start --help`; `crush` is not among
+  them), and `ssf repo add --driver herdr` warns about a harness it does
+  not. Pick herdr for a terminal-only machine, over ssh, or as the driver
+  inside the VM (Step 5).
+- **`orca`**: the Orca desktop app. Needs `orca-ide-bin`
   installed, signed in and running (the daemon waits for it at start).
   Workspaces are Orca worktrees linked to the issue number; the bar widget
   opens them in Orca. `orca.command` defaults to
@@ -244,14 +254,14 @@ every driver in use.
   the app, so do not point at that). Repositories Orca has no project for
   are cloned under `orca.projects_dir` (`~/orca/projects`). Pick Orca to
   watch agents work in a GUI and take over a terminal.
-- **`herdr`**: the herdr terminal workspace manager. Needs a running herdr
-  session (start `herdr` in a terminal and leave it). ssf clones under
-  `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item in
-  `<name>.worktrees/` next to the clone. herdr only runs the agents it
-  recognises (`herdr agent start --help`; `crush` is not among them), and
-  `ssf repo add --driver herdr` warns about a harness it does not. Pick
-  herdr for a terminal-only machine, over ssh, or as the driver inside the
-  VM (Step 5).
+
+**Upgrading an install from before 2026-09-06:** the default was Orca until
+then. A `config.toml` that never set `driver` moves to herdr on upgrade
+without any edit of its own; the daemon logs a warning at start (when
+Orca's CLI is installed) and `ssf doctor` / `ssf config show` print the
+note. Run `ssf config set driver orca` before or right after the upgrade
+to keep the factory on Orca; `ssf config set driver herdr` makes the new
+default explicit and silences the note.
 
 Either way the agent is started through `ssf launch`, which supplies the
 bot identity, the `gh` wrapper that adds the byline, and the `ssf`

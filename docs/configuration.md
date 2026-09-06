@@ -30,7 +30,7 @@ instructions = "Run `make test` before opening a PR."
 |-----|---------|---------|
 | `github.api_url` | `https://api.github.com` | GitHub Enterprise: `https://ghe.example.com/api/v3` |
 | `github.login`, `github.email`, `github.ssh_key_path`, `github.ssh_key_id`, `github.signing_key_id` | set by `ssf auth login` | The bot's login, commit email, enrolled key and the ids of its two entries on GitHub (so `ssf auth logout` can revoke them); edit `email` if the bot has a public address |
-| `driver` | `orca` | What runs the agents: `orca` or `herdr` (see [Drivers](drivers.md)) |
+| `driver` | `herdr` | What runs the agents: `herdr` or `orca` (see [Drivers](drivers.md)). Unset, `ssf config show` and `ssf doctor` say which is in effect; the default was `orca` until 2026-09-06, so an older file that never set it now runs in herdr unless it says `driver = "orca"` |
 | `orca.command` | `/usr/lib/orca-ide/bin/orca-ide` | Orca CLI binary (`/usr/bin/orca-ide` launches the app, not the CLI) |
 | `orca.host` | `local` | The Orca host projects and worktrees are created on |
 | `orca.projects_dir` | `~/orca/projects` | Where repositories are cloned when Orca has no project for them |

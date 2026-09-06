@@ -1587,6 +1587,11 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
             } else {
                 println!("# {}", config::config_path().display());
                 print!("{}", toml::to_string_pretty(&cfg)?);
+                if let Some(note) = cfg.driver_note() {
+                    println!();
+                    println!("# driver in effect: {}", cfg.default_driver());
+                    println!("#   {note}");
+                }
                 // Who may drive each repository, resolved from the file
                 // alone (the collaborator default is fetched by the daemon;
                 // `ssf doctor` shows it).
@@ -1602,6 +1607,10 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
         }
         ConfigCommand::Get { key } => {
             let cfg = Config::load()?;
+            if key == "driver" && cfg.driver.is_none() {
+                println!("{}", cfg.default_driver());
+                return Ok(());
+            }
             let value: toml::Value = toml::Value::try_from(&cfg)?;
             let mut cur = &value;
             for part in key.split('.') {
@@ -1874,6 +1883,14 @@ async fn run(once: bool) -> Result<()> {
     }
     if cfg.repos.is_empty() && once {
         bail!("no repositories configured; run `ssf repo add owner/name --harness claude` first");
+    }
+    // An install from before herdr became the default, still without a
+    // `driver` line, changes driver on this upgrade: say so once, where
+    // Orca is around to have been the one in use.
+    if let Some(note) = cfg.driver_note()
+        && std::path::Path::new(&cfg.orca.command).exists()
+    {
+        tracing::warn!("{note}");
     }
     let engine = engine::Engine::new(cfg).await?;
     if once {
@@ -2457,6 +2474,9 @@ async fn doctor() -> Result<()> {
             }
         }
     }
+    if let Some(note) = cfg.driver_note() {
+        println!("note {note}");
+    }
     // Each harness a repository uses, signed in where this runs (the host,
     // or the guest: with the factory in a VM `ssf doctor` is forwarded
     // there, so the check happens where the agents are).
@@ -2680,7 +2700,7 @@ async fn doctor() -> Result<()> {
         true,
         format!(
             "new clones go under {}",
-            cfg.projects_dir(cfg.driver).display()
+            cfg.projects_dir(cfg.default_driver()).display()
         ),
     );
     if problems > 0 {

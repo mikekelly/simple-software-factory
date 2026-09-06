@@ -918,8 +918,10 @@ mod tests {
 
     #[test]
     fn json_keeps_the_old_issue_fields() {
+        let mut cfg = cfg();
+        cfg.driver = Some(DriverKind::Orca);
         let snap = Snapshot {
-            cfg: cfg(),
+            cfg,
             state: state_with(vec![item(1, Some("r1::/w/one"))]),
             workspaces: Vec::new(),
             down: vec![DriverKind::Orca],

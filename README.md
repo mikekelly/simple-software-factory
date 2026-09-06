@@ -7,8 +7,8 @@ its own agent. The agents know about each other, about the project board, and
 about the notes your repository keeps for them.
 
 ssf is a small daemon for [Omarchy](https://omarchy.org/). It runs the
-agents in [Orca](https://onorca.dev/) by default, or in
-[herdr](https://herdr.dev/), so you can watch them work, take over, or
+agents in [herdr](https://herdr.dev/) by default, or in
+[Orca](https://onorca.dev/), so you can watch them work, take over, or
 nudge them at any time (see [Drivers](docs/drivers.md)). Nothing
 runs in the cloud: the daemon polls GitHub and drives the multiplexer, and
 the agents are the ones you already have installed (Claude Code, Codex,
@@ -202,10 +202,10 @@ steps below and the decisions at each one. Then ask the agent to set up ssf
 (`/ssf-setup` in Claude Code).
 
 ssf runs on [Omarchy](https://omarchy.org/). Install
-[Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in, or install
-[herdr](https://herdr.dev/) and set `driver = "herdr"` (see
-[Drivers](docs/drivers.md)). Then build and install ssf from this
-checkout:
+[herdr](https://herdr.dev/) (the default driver), or install
+[Orca](https://onorca.dev/) (`orca-ide-bin`), sign in and set `driver =
+"orca"` (see [Drivers](docs/drivers.md)). Then build and install ssf from
+this checkout:
 
 ```sh
 cd packaging && makepkg -si
@@ -267,12 +267,14 @@ Click the factory icon in the bar, or open the Omarchy menu and pick
 
 Then assign an issue or pull request to the bot on GitHub, @mention it, or
 put the `review` label on a pull request the bot opened. Within a poll
-interval (10 s by default) a workspace shows up in Orca, and in the widget
+interval (10 s by default) a workspace shows up in herdr (or in Orca, with
+`driver = "orca"`), and in the widget
 under "Sessions": one row per agent session with the issue or PR (click the
 title for GitHub), its GitHub state (open, closed, merged, draft), the
 agent's state (working, waiting, idle, done), what it last said or the tool
 it is running, the branch and when it was last active. Clicking a row opens
-the workspace in Orca. The bar icon turns urgent while an agent is waiting
+the workspace in the driver. The bar icon turns urgent while an agent is
+waiting
 for input.
 
 The same can be done from a terminal:
@@ -287,6 +289,7 @@ printf '%s' "$TOKEN" | ssf auth login --token   # a pasted token instead of gh
 ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
 ssf repo add acme/widgets --harness claude
+ssf config set driver orca        # sessions in Orca instead of herdr (the default)
 ssf status
 ssf peers                         # the agent sessions and what each is doing
 ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket

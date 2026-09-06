@@ -12,9 +12,10 @@ pub const DEFAULT_ORCA_COMMAND: &str = "/usr/lib/orca-ide/bin/orca-ide";
 #[serde(rename_all = "lowercase")]
 pub enum DriverKind {
     /// The Orca desktop app and CLI (`orca-ide`).
-    #[default]
     Orca,
-    /// The herdr terminal workspace manager (`herdr`).
+    /// The herdr terminal workspace manager (`herdr`); the default since
+    /// 2026-09-06 (it was Orca before, see `Config::driver_note`).
+    #[default]
     Herdr,
 }
 
@@ -60,9 +61,12 @@ impl std::fmt::Display for DriverKind {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Driver that repositories use unless they set their own.
-    #[serde(default)]
-    pub driver: DriverKind,
+    /// Driver that repositories use unless they set their own; herdr when
+    /// not set (`default_driver`). Kept optional so a file that never set
+    /// it stays that way through `ssf config set` / `ssf repo add`, and
+    /// `driver_note` can say the default is what is in effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<DriverKind>,
     #[serde(default)]
     pub github: GithubConfig,
     #[serde(default)]
@@ -760,9 +764,15 @@ impl Config {
         })
     }
 
+    /// The instance-wide driver: the top-level `driver`, or herdr when the
+    /// file does not set one.
+    pub fn default_driver(&self) -> DriverKind {
+        self.driver.unwrap_or_default()
+    }
+
     /// The driver a repository's sessions run under.
     pub fn driver_for(&self, repo: &RepoConfig) -> DriverKind {
-        repo.driver.unwrap_or(self.driver)
+        repo.driver.unwrap_or_else(|| self.default_driver())
     }
 
     /// Every driver some repository uses (the default one when there are
@@ -770,11 +780,38 @@ impl Config {
     pub fn drivers_in_use(&self) -> Vec<DriverKind> {
         let mut out: Vec<DriverKind> = self.repos.iter().map(|r| self.driver_for(r)).collect();
         if out.is_empty() {
-            out.push(self.driver);
+            out.push(self.default_driver());
         }
         out.sort();
         out.dedup();
         out
+    }
+
+    /// Why repositories run where they do when the file leaves `driver`
+    /// unset: the default moved from Orca to herdr on 2026-09-06, so an
+    /// install that relied on the old default changes driver on upgrade
+    /// without any edit of its own. `None` when `driver` is set or every
+    /// repository picks its own.
+    pub fn driver_note(&self) -> Option<String> {
+        if self.driver.is_some() {
+            return None;
+        }
+        let relying: Vec<&str> = self
+            .repos
+            .iter()
+            .filter(|r| r.driver.is_none())
+            .map(|r| r.name.as_str())
+            .collect();
+        if relying.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "`driver` is not set in config.toml, so {} run{} in {} (the default; it was Orca until 2026-09-06). \
+             Keep Orca with `ssf config set driver orca`, or make herdr explicit with `ssf config set driver herdr`.",
+            relying.join(", "),
+            if relying.len() == 1 { "s" } else { "" },
+            DriverKind::default().label()
+        ))
     }
 }
 
@@ -829,7 +866,7 @@ driver = "orca"
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.driver, DriverKind::Herdr);
+        assert_eq!(cfg.driver, Some(DriverKind::Herdr));
         assert_eq!(cfg.driver_for(&cfg.repos[0]), DriverKind::Herdr);
         assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Orca);
         assert_eq!(
@@ -842,8 +879,9 @@ driver = "orca"
                 .ends_with("orca/projects")
         );
         let empty = Config::default();
-        assert_eq!(empty.driver, DriverKind::Orca);
-        assert_eq!(empty.drivers_in_use(), vec![DriverKind::Orca]);
+        assert_eq!(empty.driver, None);
+        assert_eq!(empty.default_driver(), DriverKind::Herdr);
+        assert_eq!(empty.drivers_in_use(), vec![DriverKind::Herdr]);
         assert_eq!("Herdr".parse::<DriverKind>().unwrap(), DriverKind::Herdr);
         assert!("tmux".parse::<DriverKind>().is_err());
         // The per-repo choice round-trips through the file.
@@ -852,6 +890,71 @@ driver = "orca"
         let again: Config = toml::from_str(&text).unwrap();
         assert_eq!(again.repos[1].driver, Some(DriverKind::Orca));
         assert_eq!(again.repos[0].driver, None);
+    }
+
+    #[test]
+    fn herdr_is_the_default_driver_and_repos_fall_back_to_it() {
+        let cfg: Config = toml::from_str(
+            r#"
+[orca]
+projects_dir = "~/orca/projects"
+[[repo]]
+name = "a/b"
+harness = "claude"
+[[repo]]
+name = "c/d"
+harness = "claude"
+driver = "orca"
+"#,
+        )
+        .unwrap();
+        assert_eq!(DriverKind::default(), DriverKind::Herdr);
+        assert_eq!(cfg.driver, None);
+        assert_eq!(cfg.default_driver(), DriverKind::Herdr);
+        assert_eq!(cfg.driver_for(&cfg.repos[0]), DriverKind::Herdr);
+        assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Orca);
+        assert_eq!(
+            cfg.drivers_in_use(),
+            vec![DriverKind::Orca, DriverKind::Herdr]
+        );
+        // The unset key stays unset through a save, so a later
+        // `ssf repo add` does not silently pin the new default.
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(!text.starts_with("driver"), "{text}");
+        assert!(!text.contains("\ndriver = \"herdr\""), "{text}");
+        let again: Config = toml::from_str(&text).unwrap();
+        assert_eq!(again.driver, None);
+    }
+
+    #[test]
+    fn driver_note_only_when_a_repo_relies_on_the_unset_default() {
+        let mut cfg: Config = toml::from_str(
+            r#"
+[[repo]]
+name = "a/b"
+harness = "claude"
+[[repo]]
+name = "c/d"
+harness = "claude"
+driver = "orca"
+"#,
+        )
+        .unwrap();
+        let note = cfg.driver_note().expect("a/b relies on the default");
+        assert!(note.contains("a/b runs in herdr"), "{note}");
+        assert!(!note.contains("c/d"), "{note}");
+        assert!(note.contains("ssf config set driver orca"), "{note}");
+        // Set explicitly (either way): nothing to say.
+        cfg.driver = Some(DriverKind::Orca);
+        assert_eq!(cfg.driver_note(), None);
+        cfg.driver = Some(DriverKind::Herdr);
+        assert_eq!(cfg.driver_note(), None);
+        // Unset, but every repository picks its own: nothing to say.
+        cfg.driver = None;
+        cfg.repos[0].driver = Some(DriverKind::Herdr);
+        assert_eq!(cfg.driver_note(), None);
+        // No repositories at all: nothing runs anywhere yet.
+        assert_eq!(Config::default().driver_note(), None);
     }
 
     fn parse(toml_src: &str) -> Result<Config> {
