@@ -218,6 +218,16 @@ impl Credential {
             }
             return Ok(Credential::File(expand_tilde(path)));
         }
+        // A helper: a command (`!...`), a program path, or a bare helper
+        // name with options (`store`, `cache --timeout=3600`). A word with
+        // a colon in it is a misspelt `token:`/`file:` rather than any of
+        // those.
+        let word = s.split_whitespace().next().unwrap_or("");
+        if !(s.starts_with('!') || s.starts_with('/')) && word.contains(':') {
+            bail!(
+                "`{s}` is not bot, token:<login> or file:<path>; a credential helper starts with `!` or `/` or is a helper name such as `store`"
+            );
+        }
         Ok(Credential::Helper(s.to_string()))
     }
 
@@ -1653,6 +1663,18 @@ harness = "claude"
         assert!(Credential::parse("").is_err());
         assert!(Credential::parse("token:").is_err());
         assert!(Credential::parse("file: ").is_err());
+        assert!(
+            Credential::parse("tokn:ann").is_err(),
+            "a misspelt kind is not a helper"
+        );
+        assert_eq!(
+            Credential::parse("cache --timeout=3600").unwrap(),
+            Credential::Helper("cache --timeout=3600".into())
+        );
+        assert_eq!(
+            Credential::parse("/usr/lib/git-core/git-credential-libsecret").unwrap(),
+            Credential::Helper("/usr/lib/git-core/git-credential-libsecret".into())
+        );
         for c in [
             Credential::Bot,
             Credential::Token("ann".into()),

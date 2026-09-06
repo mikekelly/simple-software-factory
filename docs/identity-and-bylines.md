@@ -84,9 +84,14 @@ What `ssf launch` then does, per repository:
   `file:<path>` reads a token from a file. Any other value is used as
   `credential.helper` verbatim (`!gh auth git-credential`, `store`, ...).
   `ssf git-credential` answers according to `SSF_REPO`, so one daemon can
-  push as different people for different repositories. SSH remotes are
-  not affected: `GIT_SSH_COMMAND` stays pinned to the bot's enrolled key,
-  so pushing as a person means an HTTPS clone URL.
+  push as different people for different repositories; without `SSF_REPO`
+  (outside a session) it answers the bot's token, whatever `[git]` says.
+  SSH remotes are not affected: `GIT_SSH_COMMAND` stays pinned to the
+  bot's enrolled key, so pushing as a person means an HTTPS clone URL.
+  `token:<login>` reads gh's store from inside the session; where gh keeps
+  tokens in the desktop keyring, a session started by the systemd unit may
+  not reach it even though `ssf doctor` in a terminal does. If doctor
+  passes but pushes fail in a session, use `file:<path>` instead.
 - **`gh` and the API** are the bot in every case: `GH_TOKEN` is the bot's,
   posts carry the bot's byline, the daemon polls as the bot. The daemon's
   own clones and fetches never run under `ssf launch` and stay the bot as

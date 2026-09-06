@@ -845,6 +845,22 @@ fn launch_env(cfg: &Config, repo: Option<&RepoConfig>, me: &str, have_token: boo
     out
 }
 
+/// Whose token `ssf git-credential` answers with: the effective identity's
+/// for the session's repository (`SSF_REPO`; a repository the config does
+/// not list gets `[git]` alone). The identity's credential is for the
+/// agents' pushes, so outside a session (no `SSF_REPO`: the daemon's own
+/// clones and fetches, a shell in the VM guest) it is the bot, whatever
+/// `[git]` says.
+fn push_credential(cfg: &Config, session_repo: Option<&str>) -> config::Credential {
+    match session_repo {
+        Some(name) => {
+            let repo = cfg.repos.iter().find(|r| r.name.eq_ignore_ascii_case(name));
+            cfg.git_identity(repo).credential
+        }
+        None => config::Credential::Bot,
+    }
+}
+
 /// `--git-signing-key`: `false` (or `off`, `none`) means unsigned, anything
 /// else is the key's path.
 fn parse_signing_key(value: &str) -> config::SigningKey {
@@ -863,10 +879,11 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// The credential helper `ssf launch` configures: answers HTTPS requests
-/// for the GitHub host with the token of whoever the config says pushes
-/// for `SSF_REPO` (the bot by default). Outside a session, or for another
-/// host, it answers nothing and git moves on.
+/// The credential helper `ssf launch` configures (and the VM guest's
+/// `.gitconfig` names): answers HTTPS requests for the GitHub host with
+/// the token of whoever the config says pushes for `SSF_REPO` (the bot by
+/// default), and with the bot's outside a session. For another host it
+/// answers nothing and git moves on.
 fn git_credential(op: &str) -> Result<()> {
     if op != "get" {
         return Ok(());
@@ -887,13 +904,7 @@ fn git_credential(op: &str) -> Result<()> {
     if protocol != "https" || !host.eq_ignore_ascii_case(&wanted) {
         return Ok(());
     }
-    let repo = std::env::var("SSF_REPO").ok().and_then(|name| {
-        cfg.repos
-            .iter()
-            .find(|r| r.name.eq_ignore_ascii_case(&name))
-            .cloned()
-    });
-    let token = match cfg.git_identity(repo.as_ref()).credential {
+    let token = match push_credential(&cfg, std::env::var("SSF_REPO").ok().as_deref()) {
         config::Credential::Bot => cfg.github_token(),
         config::Credential::Token(login) => ghcli::token_for(&wanted, &login),
         config::Credential::File(path) => std::fs::read_to_string(&path)
@@ -3231,7 +3242,39 @@ mod tests {
             config::Credential::Token("ann".into())
         );
         assert!(config_set_at(&path, "git.credential", "token:", false).is_err());
+        let err = config_set_at(&path, "git.credential", "tokn:ann", false).unwrap_err();
+        assert!(format!("{err:#}").contains("token:"), "{err:#}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_helper_answers_as_the_bot_outside_a_session() {
+        let mut cfg = Config::default();
+        cfg.github.login = Some("acme-bot".into());
+        cfg.git.credential = Some("token:ann".into());
+        cfg.repos.push(RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            git: config::GitConfig {
+                credential: Some("file:/t".into()),
+                ..Default::default()
+            },
+            ..RepoConfig::default()
+        });
+        assert_eq!(
+            push_credential(&cfg, Some("o/r")),
+            config::Credential::File(PathBuf::from("/t"))
+        );
+        assert_eq!(
+            push_credential(&cfg, Some("O/R")),
+            config::Credential::File(PathBuf::from("/t"))
+        );
+        assert_eq!(
+            push_credential(&cfg, Some("o/other")),
+            config::Credential::Token("ann".into())
+        );
+        // The daemon's clones and a guest shell: never the person.
+        assert_eq!(push_credential(&cfg, None), config::Credential::Bot);
     }
 
     #[test]
