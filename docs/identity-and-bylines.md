@@ -117,7 +117,9 @@ Things to know before switching it on:
   repositories the factory works on.
 - The prompts still tell the agent that `git push` acts as the bot; with a
   person's credential it acts as that person. The agent does not need to
-  know, but a push refused by branch protection now names that account.
+  know, but a push refused by branch protection now names that account
+  (making the line conditional is
+  [#99](https://github.com/mikekelly/simple-software-factory/issues/99)).
 
 `ssf doctor` prints the effective identity per repository (who commits,
 signed with what, who pushes) and checks that the key and the token are
