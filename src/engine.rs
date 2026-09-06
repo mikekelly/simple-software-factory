@@ -6227,8 +6227,10 @@ mod tests {
             ];
             for text in texts {
                 // As the harness would show it: at the bottom of the screen,
-                // after the agent's prompt marker.
-                let screen = format!("⏺ {text}\n\n❯ ");
+                // after the agent's prompt marker, and without the `[ssf]`
+                // marker, which would make the echo skip pass over the very
+                // line under test.
+                let screen = format!("⏺ {}\n\n❯ ", text.replace("[ssf]", ""));
                 for judge in harnesses {
                     assert_eq!(
                         login_dialog(judge, &screen),

@@ -214,8 +214,10 @@ quoted the phrase) is skipped. Every text ssf itself puts on a screen or
 that agents read (the comments below, the message after a restart, the
 `BLOCKED:` lines, the refusal `ssf tell` prints) is worded without those
 phrases, and a test pins that. What remains is an agent quoting the exact
-phrase in its own answer; that costs one restart after the retry wait,
-with the "signed in again" comment if it took long, and nothing more.
+phrase in its own answer, or a quoted comment line the terminal wrapped
+past the quote marker; that costs one blocked comment and one restart
+after the retry wait, with the "signed in again" comment if it took long,
+and nothing more: the restarted screen is clean.
 
 - **Told once.** One comment lands on the session's item, as the session
   (`🤖#N says:` ... `[ssf] This session's Claude Code is at its sign-in
