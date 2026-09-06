@@ -1,6 +1,6 @@
 ---
 name: ssf-setup
-description: Guided setup and configuration of Simple Software Factory (ssf), the Omarchy daemon that turns GitHub issues assigned to a bot account into coding-agent sessions in Orca or herdr. Use when installing ssf, signing in the bot account, writing or changing ~/.config/ssf/config.toml ([github], [[repo]], [daemon], [vm]), choosing between the Orca and herdr drivers, running the factory inside the Firecracker microVM (ssf vm), writing a repository's SSF.md, setting up the review label or project board conventions, or operating a running factory (ssf status, doctor, tell, sub, release, purge).
+description: Guided setup and configuration of Simple Software Factory (ssf), the Omarchy daemon that turns GitHub issues assigned to a bot account into coding-agent sessions in Orca or herdr. Use when installing ssf, signing in the bot account, writing or changing ~/.config/ssf/config.toml ([github], [[repo]], [daemon], [vm]), choosing between the Orca and herdr drivers, running the factory inside the Firecracker microVM (ssf vm) and signing harnesses in there (ssf vm login), writing a repository's SSF.md, setting up the review label or project board conventions, or operating a running factory (ssf status, doctor, tell, sub, release, purge), including a session blocked on an expired harness login.
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
@@ -29,8 +29,9 @@ ssf is installed, `/usr/share/doc/ssf/` holds the same README and `docs/`.
    installed and the bot is signed in.
 2. If ssf is already installed, run `ssf doctor` and `ssf status` first and
    read them before changing anything. `doctor` checks the GitHub token and
-   its scopes, every driver in use, the configured harnesses, the `gh`
-   wrapper and the daemon socket; most setup problems show up there.
+   its scopes, every driver in use, the configured harnesses and whether
+   each is signed in where it runs, the `gh` wrapper and the daemon socket;
+   most setup problems show up there.
 3. Prefer the CLI (`ssf repo add`, `ssf config set`, `ssf auth login`) over
    editing `config.toml` by hand: the CLI validates harness, model and
    effort ids, and the daemon picks changes up on its next poll without a
@@ -169,8 +170,11 @@ Decisions, per repository:
 
 - **`harness`** (required): the agent program. `claude`, `codex`, `gemini`,
   `grok`, `pi`, `omp`, `opencode`, `copilot`, `crush`. Sign each harness in
-  once, by hand, on the machine that runs the daemon: ssf does not handle
-  login or first-run onboarding.
+  once, by hand, where the agents run: on the host, with the harness's own
+  login (`claude auth login`, ...); inside the VM, with `ssf vm login
+  <harness>` (Step 5). ssf does not handle first-run onboarding. `ssf
+  doctor` prints one line per harness in use saying whether it is signed
+  in there; a login that later expires blocks the session (Step 8).
 - **`model`, `effort`**: optional. Claude, Codex, Gemini and Grok take Orca's
   model ids (`opus`, `sonnet`, `gpt-5.5`, ...) and effort levels; Pi, Oh My
   Pi, OpenCode and Copilot take their own `provider/model` ids. `ssf models
@@ -178,13 +182,21 @@ Decisions, per repository:
   Changing the harness resets both. Do not also put `--model`/`--effort`
   in `command`. See the table under [Models and effort
   levels](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md#models-and-effort-levels).
-- **`command`**: leave unset unless the agent must run differently. The
-  default is the harness's permission-free command (`ssf agents --json`
-  shows it as `launch_command`, e.g. `claude --dangerously-skip-permissions
-  --disallowedTools AskUserQuestion`), because nobody sits at the terminal
-  to approve anything. Set it for a permission mode or tool deny list in the
-  agent's own syntax. Behavioural limits (do not merge, do not close issues)
-  go in `SSF.md` (Step 6), not here.
+- **`command`**: **decide whether the agent may run unattended with every
+  permission granted.** Unless `command` is set, every harness starts with
+  its permission-free command (`ssf agents --json` shows it as
+  `launch_command`; the table is under
+  [Permissions](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md#permissions),
+  e.g. `claude --dangerously-skip-permissions --disallowedTools
+  AskUserQuestion`), because nobody sits at the terminal to approve
+  anything and an agent that asks waits forever. That is the whole of the
+  agent's sandbox on the host (it runs as the person's Unix user; the VM in
+  Step 5 is the wall). Set `command` (`ssf repo set owner/name --command
+  "..."`, `--clear command` to go back) for a permission mode or tool deny
+  list in the agent's own syntax, e.g. `--disallowedTools 'Bash(git
+  push:*)'` for Claude Code, `--deny` for Grok, `--exclude-tools` for Pi.
+  Behavioural limits (do not merge, do not close issues) go in `SSF.md`
+  (Step 6), not here.
 - **`driver`**: only when this repository should run in a different driver
   than the top-level default (Step 4).
 - **`path`**: register an existing checkout instead of cloning.
@@ -207,13 +219,14 @@ GitHub Enterprise (`https://ghe.example.com/api/v3`).
 | `cleanup_grace_secs` | `900` | How long a reviewer session gets to finish after its PR closes before its read-only workspace is removed anyway; item workspaces are never removed by ssf |
 | `resume_on_start` | `true` | Bring interrupted sessions back after a reboot; `startup_orca_wait_secs` (`120`) is how long to wait for the driver first |
 | `include_own_events` | `false` | Leave off: on, each agent sees its own commits and posts echoed back |
-| `allowed_users` | the collaborators with push access | Whose assignments, mentions, review requests, labels and comments the agents act on, e.g. `'["mikekelly"]'`; a `[[repo]]` can set its own, replacing this one (`ssf repo set owner/name --allowed-users alice,bob`). `["*"]` is anyone on GitHub and is refused without `--accept-anyone-risk` (or a `yes` at the terminal); never pass that flag on the user's behalf |
+| `allowed_users` | the collaborators with push access | Whose assignments, mentions, review requests, labels and comments the agents act on, e.g. `'["mikekelly"]'`; a `[[repo]]` can set its own, replacing this one (`ssf repo set owner/name --allowed-users alice,bob`; `[]` is nobody but the bot). `ssf doctor` prints the list in effect per repository. `["*"]` is anyone on GitHub and is refused without `--accept-anyone-risk` (or a `yes` at the terminal); never pass that flag on the user's behalf |
 
 `daemon.cleanup_on_close` is accepted but does nothing. Check: `ssf status`
 lists the repository; then assign an issue to the bot and a workspace should
 appear within a poll interval. Full key table:
 [Configuration](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md);
-every key with a comment: `config.example.toml`.
+[Who may drive the factory](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md#who-may-drive-the-factory)
+for the allow list; every key with a comment: `config.example.toml`.
 
 ## Step 4: choose the driver (Orca or herdr)
 
@@ -251,7 +264,11 @@ agents run as the person's Unix user and can read their home directory,
 keyring and SSH agent. `ssf vm` moves the daemon, herdr and every agent
 session into a microVM; the host keeps only what builds, starts and reaches
 the guest. Inside, the driver is always herdr (Orca is a desktop app), so a
-repository that says `orca` runs in herdr there.
+repository that says `orca` runs in herdr there. Sessions run as the guest's
+`ssf` user, which has passwordless `sudo` for everything: an agent there
+installs packages, edits units and reboots the guest as it likes, and its
+first prompt says so. The VM is the boundary; `ssf vm reset` or `ssf vm
+destroy` undoes whatever it did.
 
 Needs: `/dev/kvm` usable by the user (world-writable on Omarchy), and
 `fakeroot`, `bsdtar` (libarchive), `mkfs.ext4` (e2fsprogs), `curl`,
@@ -262,33 +279,59 @@ image. No root.
 ssf vm build                 # once, a few minutes: downloads Firecracker, gvproxy, a kernel; makes and provisions the image
 ssf config set vm.enabled true
 systemctl --user restart ssf.service   # or ssf vm start when running by hand
-ssf vm status
+ssf vm status                # up, daemon answering, and a logins: line per harness
+ssf vm login claude          # sign the harness in inside the guest (one per harness in use)
 ssf status                   # runs inside the guest from now on
 ```
 
-Decisions in `[vm]`:
+**Harness logins in the guest.** Nothing from the host home is visible
+there, so each harness needs a sign-in of its own. **Decide: `ssf vm
+login`, or copy a credential with `files`.**
 
-- **`files`**: how a harness login gets into the guest. Nothing from the
-  host home is visible there, so list the credential files the harness
-  keeps, e.g. `files = ["~/.claude/.credentials.json"]`; they land at the
-  same path under the guest user's home (`src:dest` places one elsewhere).
-  Copied at every start; change it and `ssf vm restart`.
+- **`ssf vm login <harness>`** (the normal way) runs the harness's own
+  browser-less login inside the guest, in the person's terminal: a page to
+  open on the host and a code to paste back (Claude Code, Gemini, OpenCode,
+  Pi, Oh My Pi) or a device code (Codex, Copilot, Grok, Crush). Without a
+  harness it lists those installed in the guest and asks. Like `ssf auth
+  login`, it needs the person at the terminal: give them the command and
+  say what to expect. The credential lives on the data disk (`reset` keeps
+  it, `destroy` removes it). Check: `ssf vm status` shows the harness under
+  `logins:` (`--json`: `logins` with `installed` and `logged_in`), and
+  `ssf doctor` says it is signed in there.
+- **`[vm] files`** copies an existing login in instead, e.g. `files =
+  ["~/.claude/.credentials.json"]`, landing at the same path under the guest
+  user's home (`src:dest` places one elsewhere); copied at every start,
+  change it and `ssf vm restart`. Warn before suggesting it: a copied
+  credential *is* the host's session, not a second login. A logout on
+  either side, or Claude Code's token rotation on expiry, ends both, so a
+  guest agent that runs `claude auth logout` signs the person out on the
+  host. `ssf vm login` never logs anything out; prefer it.
+
+Other decisions in `[vm]`:
+
 - **`vcpus`, `mem_mib`, `data_gib`, `root_gib`**: size. The data disk
-  (state, clones, worktrees, the guest home) persists across `reset`; the
-  root disk is remade from the image.
+  (state, clones, worktrees, the guest home with the harness logins)
+  persists across `reset`; the root disk is remade from the image.
 - **`ssh_port`** (`2222` on `127.0.0.1`) if it clashes.
 
 The build's harness list is best effort (whatever npm or a release tarball
-provide) and is printed at the end of `ssf vm build`; edit
+provide; Oh My Pi gets the glibc release binary, the musl one does not run
+in the guest) and is printed at the end of `ssf vm build`, one line per
+harness with its version or the failure. Edit
 `/usr/share/ssf/vm/guest/provision.sh` and `ssf vm build --force` for a
-different image. After that: `ssf vm sync` pushes a changed config and
-token into the running guest; `ssf vm restart` is needed for a new `ssf`
-binary or `vm.files`; `ssf vm reset` remakes the root disk and keeps the
-data; `ssf vm destroy --yes` removes everything. `ssf vm attach` opens
-herdr in the guest, `ssf vm ssh` a shell, `ssf vm logs` the guest daemon's
-journal, `ssf vm console` the serial console, `ssf vm ssh-config` an
-`~/.ssh/config` entry. Docs: [Inside a
-microVM](https://github.com/mikekelly/simple-software-factory/blob/master/docs/vm.md).
+different image. An image built before the guest had `sudo`, the `ssf`
+user or a working harness needs the same `ssf vm build --force` followed by
+`ssf vm reset` (a fresh root disk; the data disk and its logins stay).
+After that: `ssf vm sync` pushes a changed config and token into the
+running guest; `ssf vm restart` is needed for a new `ssf` binary or
+`vm.files`; `ssf vm reset` remakes the root disk and keeps the data; `ssf
+vm destroy --yes` removes everything. `ssf vm attach` opens herdr in the
+guest, `ssf vm ssh` a shell, `ssf vm logs` the guest daemon's journal,
+`ssf vm console` the serial console, `ssf vm ssh-config` an `~/.ssh/config`
+entry. Docs: [Inside a
+microVM](https://github.com/mikekelly/simple-software-factory/blob/master/docs/vm.md),
+[Harness
+logins](https://github.com/mikekelly/simple-software-factory/blob/master/docs/vm.md#harness-logins).
 
 ## Step 6: per-project notes (`SSF.md`)
 
@@ -347,7 +390,7 @@ appears and the agent starts with the whole story so far.
 ```sh
 ssf status [--json]           # every tracked item, its session and what the driver reports
 ssf peers [--all]             # the agent sessions and what each is doing
-ssf doctor                    # token, scopes, drivers, harnesses, gh wrapper, daemon socket
+ssf doctor                    # token, scopes, drivers, harnesses and their sign-in, gh wrapper, daemon socket
 ssf tell 12 "stop, I'm changing the spec"   # paste into that session's terminal (12:reviewer for a reviewer)
 ssf sub 12 | ssf unsub 12     # follow an item from a shell (--as owner/repo#N to act as a session)
 ssf release 12 [--force]      # remove a closed item's workspace once its branch is on origin
@@ -369,12 +412,27 @@ Things to know when operating it:
   pass for scratch tests.
 - With `vm.enabled`, `status`, `peers`, `tell`, `sub`, `release`, `purge`
   and `doctor` run inside the guest; `ssf vm status` says whether it is up.
+- **A session shows as blocked** when its harness login expired or was
+  revoked under it (Claude Code sits at `Login expired`, the others at
+  their sign-in screens). `ssf status` prints a `BLOCKED:` line naming the
+  harness, since when and the fix (`--json`: `blocked` on the session,
+  `blocked_sessions` at the top); the widget turns urgent with the same
+  line; the item got one comment. ssf holds the item's activity and refuses
+  `tell` meanwhile, and nothing is lost. The fix is the sign-in where the
+  agents run: `claude auth login` (or the harness's own login) on the host,
+  `ssf vm login <harness>` in the guest. ssf checks every pass and, once
+  signed in, restarts the harness with its conversation resumed and
+  delivers what was held; a person running `/login` in the terminal lifts
+  it too. `ssf doctor` prints one line per harness in use saying whether it
+  is signed in (in the guest, when `vm.enabled`), so run it first.
 - `ssf doctor` also lists untagged posts by the bot (posts made without
   the byline, i.e. typed by a person or made outside the wrapper).
 
 README: [Everyday
 commands](https://github.com/mikekelly/simple-software-factory#everyday-commands); docs: [Workspaces after
-close](https://github.com/mikekelly/simple-software-factory/blob/master/docs/sessions.md#workspaces-after-close-release-and-purge).
+close](https://github.com/mikekelly/simple-software-factory/blob/master/docs/sessions.md#workspaces-after-close-release-and-purge),
+[A harness that is not signed
+in](https://github.com/mikekelly/simple-software-factory/blob/master/docs/sessions.md#a-harness-that-is-not-signed-in).
 
 ## Checklist for a first install
 
@@ -382,7 +440,8 @@ close](https://github.com/mikekelly/simple-software-factory/blob/master/docs/ses
 2. `makepkg -si`; `systemctl --user status ssf.service` active.
 3. `ssf auth login` as the bot; `ssf auth status`, `ssf doctor` clean.
 4. Bot has write access to the repository; a `review` label exists.
-5. Each harness signed in by hand on this machine.
+5. Each harness signed in where the agents run: by hand on this machine, or
+   `ssf vm login <harness>` in the guest; `ssf doctor` says so per harness.
 6. `ssf repo add owner/name --harness <id>`; `ssf status` lists it.
 7. `SSF.md` at the repository root.
 8. Assign an issue to the bot; a workspace appears and the agent comments.
