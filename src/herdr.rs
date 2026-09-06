@@ -539,7 +539,7 @@ impl Herdr {
     }
 
     /// Wait until herdr sees an agent in the pane and it is ready for input,
-    /// answering the folder-trust dialog Claude Code shows on a new
+    /// answering the folder-trust dialog Claude Code and Codex show on a new
     /// worktree.
     pub async fn settle_harness(&self, pane_id: &str, harness: &str) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
@@ -571,11 +571,13 @@ impl Herdr {
             if state != "blocked" {
                 return Ok(());
             }
-            let text = self.screen(pane_id).await?.join("\n").to_lowercase();
-            if text.contains("trust this folder") {
+            let text = self.screen(pane_id).await?.join("\n");
+            if let Some(answer) = crate::driver::trust_dialog(&text) {
                 info!(pane_id, "accepting the folder trust dialog");
-                self.run(&["agent", "send-keys", pane_id, "down"]).await?;
-                tokio::time::sleep(Duration::from_millis(300)).await;
+                if answer == crate::driver::TrustAnswer::DownEnter {
+                    self.run(&["agent", "send-keys", pane_id, "down"]).await?;
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                }
                 self.run(&["agent", "send-keys", pane_id, "enter"]).await?;
                 tokio::time::sleep(Duration::from_millis(1500)).await;
                 continue;

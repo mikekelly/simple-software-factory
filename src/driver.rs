@@ -21,6 +21,35 @@ use crate::herdr::Herdr;
 use crate::orca::{Delivery, Orca, ProjectSetup, WorkspaceInfo, Worktree};
 use crate::release::git;
 
+/// Keys that accept a harness's first-run trust question.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustAnswer {
+    /// The accepting option is already selected.
+    Enter,
+    /// The accepting option is the second one.
+    DownEnter,
+}
+
+/// If `screen` shows a harness asking whether to trust the worktree, the keys
+/// that say yes. The default launch commands answer this with a flag where
+/// one exists (Gemini, Pi, Copilot); Claude Code and Codex have none, and
+/// a `repo.command` may drop the flags, so the drivers answer the dialog
+/// from the screen. Claude Code preselects *No, exit*; Codex preselects
+/// *Yes, continue*; Gemini and Pi preselect *Trust*.
+pub fn trust_dialog(screen: &str) -> Option<TrustAnswer> {
+    let text = screen.to_lowercase();
+    if text.contains("trust this folder") {
+        Some(TrustAnswer::DownEnter)
+    } else if text.contains("trust the contents of this directory")
+        || text.contains("trust the files in this folder")
+        || text.contains("trust project folder")
+    {
+        Some(TrustAnswer::Enter)
+    } else {
+        None
+    }
+}
+
 /// One configured driver.
 #[derive(Clone)]
 pub enum Driver {
@@ -640,6 +669,29 @@ mod tests {
         assert_eq!(number_of_name("issue-12x"), None);
         assert_eq!(number_of_name("scratch"), None);
         assert_eq!(number_of_name("issue-"), None);
+    }
+
+    #[test]
+    fn trust_dialogs_of_each_harness_are_recognised() {
+        // Claude Code: "No, exit" comes first.
+        let claude = "Quick safety check: Is this a project you created or one you trust?\n\
+❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel";
+        assert_eq!(trust_dialog(claude), Some(TrustAnswer::DownEnter));
+        // Codex: "Yes, continue" comes first.
+        let codex = "Do you trust the contents of this directory? Working with untrusted \
+contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2. No, quit";
+        assert_eq!(trust_dialog(codex), Some(TrustAnswer::Enter));
+        // Gemini and Pi, when started without --skip-trust / --approve.
+        let gemini = "Do you trust the files in this folder?\n● 1. Trust folder (wt)\n  2. Trust parent folder\n  3. Don't trust";
+        assert_eq!(trust_dialog(gemini), Some(TrustAnswer::Enter));
+        let pi = "Trust project folder?\n/tmp/wt\n→ Trust\n  Trust parent folder";
+        assert_eq!(trust_dialog(pi), Some(TrustAnswer::Enter));
+        // A ready prompt, or unrelated text, is not a dialog.
+        assert_eq!(trust_dialog("❯ \n⏵⏵ bypass permissions on"), None);
+        assert_eq!(
+            trust_dialog("Folder /tmp/wt has been added to trusted folders."),
+            None
+        );
     }
 
     #[test]

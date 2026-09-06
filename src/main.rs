@@ -275,7 +275,7 @@ enum RepoCommand {
         /// Base ref for issue worktrees.
         #[arg(long)]
         base_branch: Option<String>,
-        /// Command that starts the harness (default: the harness id), e.g. "claude --dangerously-skip-permissions".
+        /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
         /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5); see `ssf agents --json`.
@@ -305,6 +305,7 @@ enum RepoCommand {
         clone_url: Option<String>,
         #[arg(long)]
         base_branch: Option<String>,
+        /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
         /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5).

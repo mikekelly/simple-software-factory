@@ -337,7 +337,9 @@ pub struct RepoConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<DriverKind>,
     /// Shell command that starts the harness (run through `ssf launch`, which
-    /// exports the bot credentials). Defaults to the harness id.
+    /// exports the bot credentials). Defaults to the harness's permission-free
+    /// command (`models::default_command`): sessions are unattended, so the
+    /// harness must never stop to ask.
     #[serde(
         default,
         alias = "relaunch_command",
@@ -403,9 +405,13 @@ impl RepoConfig {
     }
 
     /// The command that starts the harness, with the configured model and
-    /// effort level applied.
+    /// effort level applied: `command` when set, else the harness's
+    /// permission-free default.
     pub fn harness_command(&self) -> String {
-        let base = self.command.clone().unwrap_or_else(|| self.harness.clone());
+        let base = self
+            .command
+            .clone()
+            .unwrap_or_else(|| crate::models::default_command(&self.harness));
         crate::models::apply_to_command(
             &base,
             &self.harness,
@@ -725,7 +731,46 @@ model = "gpt-5.5"
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.repos[0].harness_command(), "codex -m gpt-5.5");
+        assert_eq!(
+            cfg.repos[0].harness_command(),
+            "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
+        );
+    }
+
+    #[test]
+    fn default_command_is_permission_free_and_command_overrides_it() {
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+
+[[repo]]
+name = "acme/gadgets"
+harness = "claude"
+command = "claude --permission-mode acceptEdits"
+
+[[repo]]
+name = "acme/other"
+harness = "aider"
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.repos[0].harness_command(),
+            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+        );
+        assert_eq!(
+            cfg.repos[1].harness_command(),
+            "claude --permission-mode acceptEdits"
+        );
+        assert_eq!(cfg.repos[2].harness_command(), "aider");
+        // Resuming builds on the same base.
+        assert_eq!(
+            crate::sessions::resume_command("claude", &cfg.repos[0].harness_command(), "abc")
+                .unwrap(),
+            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --resume abc"
+        );
     }
 
     #[test]
