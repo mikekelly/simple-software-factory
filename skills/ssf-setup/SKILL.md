@@ -243,9 +243,10 @@ run in and how to pin it.
   clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree
   per item in `<name>.worktrees/` next to the clone. herdr only runs the
   agents it recognises (`herdr agent start --help`; `crush` is not among
-  them), and `ssf repo add --driver herdr` warns about a harness it does
-  not. Pick herdr for a terminal-only machine, over ssh, or as the driver
-  inside the VM (Step 5).
+  them), and `ssf repo add` / `ssf repo set` warn about a harness it does
+  not for any repository that ends up in herdr (by the default or
+  `--driver herdr`). Pick herdr for a terminal-only machine, over ssh, or
+  as the driver inside the VM (Step 5).
 - **`orca`**: the Orca desktop app. Needs `orca-ide-bin`
   installed, signed in and running (the daemon waits for it at start).
   Workspaces are Orca worktrees linked to the issue number; the bar widget

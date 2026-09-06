@@ -233,7 +233,7 @@ widget) and a **Factory** submenu in the Omarchy menu.
 
 The service is the intended way to run the factory: it comes back with the
 next login after a reboot (unless it was switched off with the toggle),
-waits for Orca, and resumes the agent sessions the reboot cut off. A dev
+waits for the driver, and resumes the agent sessions the reboot cut off. A dev
 build started by hand (`ssf run`) does the same on start, but nothing
 restarts it for you (see [Development](docs/development.md)).
 

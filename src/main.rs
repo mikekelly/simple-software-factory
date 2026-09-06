@@ -1309,9 +1309,6 @@ fn repo(command: RepoCommand) -> Result<()> {
             let path = expand_checkout(path)?;
             check_harness(&harness);
             let driver = driver.map(|d| d.parse()).transpose()?;
-            if driver == Some(config::DriverKind::Herdr) {
-                check_herdr_harness(&harness);
-            }
             let mut entry = RepoConfig {
                 name: name.clone(),
                 harness,
@@ -1328,6 +1325,11 @@ fn repo(command: RepoCommand) -> Result<()> {
                 accepted_anyone_risk: false,
             };
             entry.validate_launch_prefs()?;
+            // herdr runs only the agents it recognises, so warn for a
+            // repository that ends up there, by its own choice or the default.
+            if cfg.driver_for(&entry) == config::DriverKind::Herdr {
+                check_herdr_harness(&entry.harness);
+            }
             if let Some(list) = allowed_users {
                 set_repo_allowed_users(&mut entry, &list, accept_anyone_risk)?;
             }
@@ -1367,6 +1369,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                 .iter()
                 .position(|x| x.name.eq_ignore_ascii_case(&name))
                 .with_context(|| format!("{name} is not configured; use `ssf repo add`"))?;
+            let default_driver = cfg.default_driver();
             let entry = &mut cfg.repos[pos];
             if let Some(h) = harness {
                 check_harness(&h);
@@ -1388,7 +1391,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             if let Some(d) = driver {
                 entry.driver = Some(d.parse()?);
             }
-            if entry.driver == Some(config::DriverKind::Herdr) {
+            if entry.driver.unwrap_or(default_driver) == config::DriverKind::Herdr {
                 check_herdr_harness(&entry.harness);
             }
             if let Some(p) = expand_checkout(path)? {
