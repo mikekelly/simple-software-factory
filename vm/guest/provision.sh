@@ -92,8 +92,8 @@ fi
 for c in claude codex gemini copilot opencode pi grok crush omp; do
     if ! command -v "$c" >/dev/null 2>&1; then
         echo "provision: $c not installed" >&2
-    elif v=$("$c" --version 2>&1 | head -1); then
-        echo "provision: $c $v"
+    elif v=$("$c" --version 2>&1); then
+        echo "provision: $c ${v%%$'\n'*}"
     else
         echo "provision: $c does not run: $v" >&2
     fi
