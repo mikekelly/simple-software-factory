@@ -24,7 +24,11 @@ binding wins):
   with `gh pr create --fill`, falls back to).
 - **Triggers go to the owner.** Assigning or mentioning the bot on an owned
   item is delivered to the owner's agent as activity, never to a new
-  session. If the owner has been retired or its workspace removed, it is
+  session. When an issue a session filed itself is assigned to the bot, that
+  activity ends with one line saying the issue is the session's to work on
+  and that nobody else is spawned for it (an assignment otherwise reads as
+  bookkeeping, and the session waits for a second session that never
+  comes). If the owner has been retired or its workspace removed, it is
   brought back the way any lost session is (workspace re-created from its
   branch, conversation resumed), rather than replaced. A retired owner's
   workspace cannot be released or purged while items bound to it are still
