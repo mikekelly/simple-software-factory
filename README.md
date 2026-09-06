@@ -194,18 +194,29 @@ collaborators with push access, or a list you set (see
 
 ## Install
 
-**Install the setup skill.** If a coding agent (Claude Code, Codex, Cursor,
-...) is going to set ssf up for you, `npx skills add
-mikekelly/simple-software-factory` installs the `ssf-setup` skill from
-[`skills/ssf-setup`](skills/ssf-setup/SKILL.md): a guided walk through the
-steps below and the decisions at each one. Then ask the agent to set up ssf
-(`/ssf-setup` in Claude Code).
+Run the install script on Omarchy. It builds and installs the package,
+starts the service, and installs the `ssf-setup` skill for your coding
+agent, which then walks you through the rest (`/ssf-setup` in Claude
+Code, or just ask it to set up ssf):
 
-ssf runs on [Omarchy](https://omarchy.org/). Install
-[herdr](https://herdr.dev/) (the default driver), or install
-[Orca](https://onorca.dev/) (`orca-ide-bin`), sign in and set `driver =
-"orca"` (see [Drivers](docs/drivers.md)). Then build and install ssf from
-this checkout:
+```sh
+bash <(curl -fsSL https://raw.githubusercontent.com/mikekelly/simple-software-factory/master/install.sh) --deps
+```
+
+[`install.sh`](install.sh) refuses on anything that is not Arch-based,
+clones the repository under `~/.local/src` (or builds the checkout it is
+run from), runs `makepkg -si` (the one step that asks for your sudo
+password), and with `--deps` also installs what the default setup needs:
+[herdr](https://herdr.dev/), `github-cli` and the tools that build the
+microVM image. `--dry-run` shows the plan, `--dev` runs the service from a
+dev build, and re-running it upgrades. The skill,
+[`skills/ssf-setup`](skills/ssf-setup/SKILL.md), is the runbook an agent
+follows: the package, the bot account, the microVM with herdr inside
+(the default; or the agents on this machine, in herdr or in
+[Orca](https://onorca.dev/)), the harness sign-in, a repository and its
+`SSF.md`. Without the script, `npx skills add
+mikekelly/simple-software-factory` installs the skill, and this does the
+build from a checkout:
 
 ```sh
 cd packaging && makepkg -si

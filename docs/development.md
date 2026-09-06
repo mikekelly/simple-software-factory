@@ -22,11 +22,13 @@ than by expecting to see it live.
 
 ## A dev build as the service
 
-Install the package once (for the unit and the widget) and point the unit
-at the build with a drop-in, then `systemctl --user daemon-reload &&
-systemctl --user restart ssf.service`. Keep the build outside any worktree
-an agent might release, and remove the drop-in when the package is
-reinstalled from master:
+`./install.sh --dev` does this: it installs the package once if it is
+not (for the unit and the widget), builds `target/release/ssf`, writes
+the drop-in below pointing the unit at the build, then `systemctl --user
+daemon-reload && systemctl --user restart ssf.service`. Keep the build
+outside any worktree an agent might release, and remove the drop-in when
+the package is reinstalled from master (a plain `./install.sh` says when
+one is there):
 
 ```ini
 # ~/.config/systemd/user/ssf.service.d/dev-build.conf
@@ -64,6 +66,7 @@ service does, but nothing restarts it for you.
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
 | `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget and the menu flows |
+| `install.sh` | the install script: clone or update, `makepkg -si` (or `--dev`), the service, the skill, `ssf doctor` |
 | `packaging/` | PKGBUILD, systemd unit, pacman install script |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill, installed with `npx skills add` |
 | `docs/` | the reference behind the README, installed under `/usr/share/doc/ssf/` |
