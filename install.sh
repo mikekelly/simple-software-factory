@@ -49,9 +49,10 @@ usage: install.sh [options]
                    without it they are checked and named
   --nocheck        skip the package's test run (makepkg --nocheck)
   --no-skill       do not install the ssf-setup skill
-  --agent LIST     which agents `npx skills add` installs the skill for
-                   (comma-separated, e.g. claude-code,codex; SSF_SKILL_AGENTS;
-                   default: let the skills CLI detect them)
+  --agent LIST     which agents `npx skills add` installs the skill for:
+                   comma-separated here (claude-code,codex), passed to the
+                   skills CLI as one -a per agent (SSF_SKILL_AGENTS; default:
+                   let the skills CLI detect them)
   --dry-run        print what would run and change nothing
   -h, --help       this
 USAGE
@@ -84,6 +85,12 @@ run() {
   printf '    $ %s\n' "$*"
   [ "$DRY_RUN" = 1 ] || "$@"
 }
+# The same, in a directory that may not exist yet on a dry run.
+run_in() {
+  local dir="$1"; shift
+  printf '    $ (cd %s && %s)\n' "$dir" "$*"
+  [ "$DRY_RUN" = 1 ] || (cd "$dir" && "$@")
+}
 
 # 1. Arch only: the package is a PKGBUILD and the service is a systemd user unit.
 if [ -r /etc/os-release ]; then
@@ -112,6 +119,7 @@ if [ -z "$SRC" ] && [ -n "$here" ]; then
   if [ -n "$(git -C "$SRC" status --porcelain 2>/dev/null)" ]; then
     note "the working tree has local changes; they are what gets built"
   fi
+  [ -z "$REF" ] || note "--ref $REF ignored: this checkout is built as it is"
 elif [ -d "${SRC:=$HOME/.local/src/simple-software-factory}/.git" ]; then
   say "Updating $SRC"
   if [ -n "$(git -C "$SRC" status --porcelain)" ]; then
@@ -136,14 +144,21 @@ fi
 
 # 3. What the default setup (the microVM with herdr) needs beyond the package.
 # `makepkg -s` installs depends and makedepends (cargo, jq, ...) itself.
+# herdr comes from the Omarchy repository, so elsewhere it is named, not installed.
 missing=()
 for p in herdr github-cli fakeroot libarchive e2fsprogs openssh curl; do
   pacman -Qq "$p" >/dev/null 2>&1 || missing+=("$p")
 done
 if [ ${#missing[@]} -gt 0 ]; then
   if [ "$DEPS" = 1 ]; then
-    say "Installing what the default setup needs: ${missing[*]}"
-    run sudo pacman -S --needed --noconfirm "${missing[@]}"
+    if [ "${ID:-}" != omarchy ] && [ "${missing[0]}" = herdr ]; then
+      note "herdr is in the Omarchy package repository (pkgs.omarchy.org); install it by hand on plain Arch"
+      missing=("${missing[@]:1}")
+    fi
+    if [ ${#missing[@]} -gt 0 ]; then
+      say "Installing what the default setup needs: ${missing[*]}"
+      run sudo pacman -S --needed --noconfirm "${missing[@]}"
+    fi
   else
     say "Not installed (needed for the default setup; --deps installs them): ${missing[*]}"
     note "sudo pacman -S --needed ${missing[*]}"
@@ -156,17 +171,19 @@ fi
 # 4. Build and install.
 if [ "$MODE" = package ] || ! pacman -Qq ssf >/dev/null 2>&1; then
   say "Building and installing the package (makepkg -si; pacman asks for your sudo password)"
-  args=(-si --needed --noconfirm)
+  args=(-si --noconfirm)
   [ "$NOCHECK" = 1 ] && args+=(--nocheck)
   # PKGBUILD builds the working tree it lives in; -f rebuilds when the
-  # version did not change, so a re-run installs what is checked out now.
-  (cd "$SRC/packaging" && run makepkg -f "${args[@]}")
+  # version did not change (a dirty tree, a re-run at the same commit), and
+  # pacman -U without --needed reinstalls it, so a re-run installs what is
+  # checked out now.
+  run_in "$SRC/packaging" makepkg -f "${args[@]}"
 fi
 
 dropin="$HOME/.config/systemd/user/ssf.service.d/dev-build.conf"
 if [ "$MODE" = dev ]; then
   say "Building the dev binary"
-  (cd "$SRC" && run cargo build --release)
+  run_in "$SRC" cargo build --release
   bin="$SRC/target/release/ssf"
   say "Pointing ssf.service at $bin"
   note "drop-in: $dropin"
@@ -213,9 +230,13 @@ if [ "$SKILL" = 1 ]; then
   if command -v npx >/dev/null; then
     say "Installing the ssf-setup skill for your coding agent"
     skill_args=(add "$SRC" --skill ssf-setup -g -y)
-    [ -n "$AGENTS" ] && skill_args+=(-a "$AGENTS")
+    # The skills CLI takes one -a per agent.
+    IFS=, read -r -a agent_list <<<"$AGENTS"
+    for a in "${agent_list[@]}"; do
+      [ -n "$a" ] && skill_args+=(-a "$a")
+    done
     if ! run npx -y skills "${skill_args[@]}"; then
-      note "skill install failed; run it yourself: npx skills add $REPO_URL --skill ssf-setup -g"
+      note "skill install failed; run it yourself: npx skills add $SRC --skill ssf-setup -g"
     fi
   else
     note "npx is not on PATH (pacman -S nodejs npm), so the skill was not installed; later: npx skills add $REPO_URL --skill ssf-setup -g"

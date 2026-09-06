@@ -91,7 +91,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/mikekelly/simple-software-fa
 | `--dev` | build `./target/release/ssf` and run the service from it through a drop-in (below) |
 | `--src DIR`, `--ref REF` | another clone location; a branch or tag |
 | `--nocheck` | skip the package's test run (faster; the package is the same) |
-| `--no-skill`, `--agent LIST` | skip the skill, or install it for named agents (`claude-code,codex`) instead of the ones the skills CLI detects |
+| `--no-skill`, `--agent LIST` | skip the skill, or install it for named agents (comma-separated, `claude-code,codex`; the script passes one `-a` per agent to the skills CLI) instead of the ones the skills CLI detects |
 
 **Person:** `makepkg -si` (and `--deps`) call `sudo`, which asks for
 their password; an agent's shell cannot answer it. Run the script where
@@ -103,7 +103,9 @@ Check: `systemctl --user status ssf.service` is active, the **Software
 Factory** icon is in the bar next to Omarchy's Agents widget, and `ssf
 doctor` fails only on the bot (`bot identity not recorded`) until Step 2.
 `ssf` is `/usr/bin/ssf`; the skill landed under the agent's skills
-directory (`~/.claude/skills/ssf-setup` for Claude Code). Logs:
+directory (`~/.claude/skills/ssf-setup` for Claude Code, a symlink into
+`~/.agents/skills/ssf-setup`, which is a copy, so it survives the clone
+moving; re-run the script to update it). Logs:
 `journalctl --user -fu ssf.service`.
 
 **By hand**, the same thing is `git clone
