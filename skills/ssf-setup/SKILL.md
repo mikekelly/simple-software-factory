@@ -30,7 +30,8 @@ ssf is installed, `/usr/share/doc/ssf/` holds the same README and `docs/`.
 2. If ssf is already installed, run `ssf doctor` and `ssf status` first and
    read them before changing anything. `doctor` checks the GitHub token and
    its scopes, every driver in use, the configured harnesses and whether
-   each is signed in where it runs, the `gh` wrapper and the daemon socket;
+   each is signed in where it runs, the git identity each repository's
+   agents commit and push with, the `gh` wrapper and the daemon socket;
    most setup problems show up there.
 3. Prefer the CLI (`ssf repo add`, `ssf config set`, `ssf auth login`) over
    editing `config.toml` by hand: the CLI validates harness, model and
@@ -150,6 +151,31 @@ bot; the gh sign-in itself stays.
 `ssf token` prints the token for anything else that needs it (an agent runs
 `GH_TOKEN="$(ssf token)" gh ...`). Check: `ssf auth status` names the bot
 and `ssf doctor` is happy with the scopes.
+
+**Decide: commit as the bot, or as you.** By default the commits are the
+bot's too (`acme-bot <id+acme-bot@users.noreply.github.com>`, signed with
+its key). If the person wants the history and their contribution graph to
+show them, while `gh`, the posts and the daemon stay the bot, set a `[git]`
+table, instance-wide or per repository:
+
+```sh
+ssf config set git '{ name = "Ann Person", email = "ann@example.com" }'   # both at once; one alone is refused
+ssf config set git.signing_key ~/.ssh/id_ed25519      # optional: sign with the person's key (unsigned otherwise)
+ssf repo set acme/widgets --git-credential token:ann  # optional: push as @ann with the token gh holds for her
+```
+
+Ask before choosing: the email must be verified on the person's GitHub
+account (or be their `id+login@users.noreply.github.com`) for the avatar
+and the graph; a signing key only shows *Verified* if it is registered on
+that same account, so do not sign a person's commits with the bot's key;
+`credential = token:<login>` needs that account signed in to `gh` on the
+machine the agents run on (in a VM, the token is copied to the seed disk)
+and an HTTPS `clone_url`, since SSH remotes always use the bot's key, and
+it puts the person's token within the agent's reach. Author and committer
+are always the same identity. `ssf doctor` prints, per repository, who
+commits, signed with what and who pushes, and fails when the key or the
+token is missing; `ssf config show` prints the same lines from the file.
+Docs: [Committing as a person](https://github.com/mikekelly/simple-software-factory/blob/master/docs/identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot).
 
 README: [Set up](https://github.com/mikekelly/simple-software-factory#set-up);
 docs: [Identity and bylines](https://github.com/mikekelly/simple-software-factory/blob/master/docs/identity-and-bylines.md).
@@ -452,9 +478,11 @@ in](https://github.com/mikekelly/simple-software-factory/blob/master/docs/sessio
 1. Orca signed in and running, or a herdr session running.
 2. `makepkg -si`; `systemctl --user status ssf.service` active.
 3. `ssf auth login` as the bot; `ssf auth status`, `ssf doctor` clean.
-4. Bot has write access to the repository; a `review` label exists.
-5. Each harness signed in where the agents run: by hand on this machine, or
+4. Commits as the bot (default) or as the person (`[git]` table); `ssf
+   doctor` shows the identity per repository.
+5. Bot has write access to the repository; a `review` label exists.
+6. Each harness signed in where the agents run: by hand on this machine, or
    `ssf vm login <harness>` in the guest; `ssf doctor` says so per harness.
-6. `ssf repo add owner/name --harness <id>`; `ssf status` lists it.
-7. `SSF.md` at the repository root.
-8. Assign an issue to the bot; a workspace appears and the agent comments.
+7. `ssf repo add owner/name --harness <id>`; `ssf status` lists it.
+8. `SSF.md` at the repository root.
+9. Assign an issue to the bot; a workspace appears and the agent comments.

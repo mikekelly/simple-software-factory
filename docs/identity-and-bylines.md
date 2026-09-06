@@ -1,6 +1,6 @@
 # Identity and bylines: who the agent is on GitHub, and which session posted what
 
-How `ssf launch` makes everything git and GitHub inside an agent's process act as the bot, and how the byline and origin tag tell one session's posts from another's and from a person's. For whoever reads the bot's posts or debugs attribution; agents get the short version from `ssf guide`.
+How `ssf launch` makes everything git and GitHub inside an agent's process act as the bot (or, for commits, as a person you name), and how the byline and origin tag tell one session's posts from another's and from a person's. For whoever reads the bot's posts or debugs attribution; agents get the short version from `ssf guide`.
 
 ## How the agent gets the bot's identity
 
@@ -13,8 +13,8 @@ everything git and GitHub related is the bot, whatever the human's own
 | `gh` and the GitHub API | `GH_TOKEN`, `GITHUB_TOKEN` (read from gh's keyring for the bot account, or from a pasted token / `SSF_GITHUB_TOKEN`) |
 | HTTPS pushes | a git credential helper (`ssf git-credential`) that answers with the token, placed ahead of any configured helper |
 | SSH pushes | `GIT_SSH_COMMAND` pinned to the enrolled bot key with `IdentitiesOnly=yes` |
-| Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email` |
-| Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key) |
+| Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email`: the bot's login and email, unless `[git]` names a person (below) |
+| Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key); a person's key when `[git]` gives one |
 | Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT`, and `SSF_ROLE=reviewer` in a reviewer session (`ssf launch --role reviewer`) |
 | Which session posted what | a `gh` wrapper first on `PATH` that starts every post with the byline (below) |
 
@@ -31,6 +31,93 @@ agents run as your Unix user inside your session, so a determined agent can
 still read your own gh token from the keyring or use your SSH agent. ssf
 tells agents to act only as the bot and to report missing permissions
 instead. For real isolation, run the factory [inside a microVM](vm.md).
+
+## Committing as a person while gh stays the bot
+
+A factory can drive GitHub as the bot (issues, comments, PRs, labels,
+boards) while the commits carry a person's name, so the history and the
+contribution graph attribute the work to them rather than to `acme-bot`.
+The `[git]` table in `config.toml` says who, instance-wide, and a
+`[repo.git]` table on a `[[repo]]` overrides it key by key:
+
+```toml
+[git]
+name = "Ann Person"
+email = "ann@example.com"           # verified on Ann's GitHub account (or her id+login@users.noreply.github.com)
+# signing_key = "~/.ssh/id_ed25519" # sign with this SSH key; false for unsigned (the default for a person)
+# credential = "bot"                # who pushes over HTTPS: bot | token:<gh login> | file:<token file> | a credential helper
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+[repo.git]
+credential = "token:ann"            # this repository's pushes go out as @ann, with the token gh holds for her
+```
+
+```sh
+ssf config set git '{ name = "Ann Person", email = "ann@example.com" }'
+ssf repo set acme/widgets --git-signing-key ~/.ssh/id_ed25519 --git-credential token:ann
+ssf repo set acme/widgets --clear git            # back to [git]; --clear git.credential for one key
+```
+
+What `ssf launch` then does, per repository:
+
+- **Author and committer** are the person, in `GIT_AUTHOR_*`,
+  `GIT_COMMITTER_*` and `user.*`. They are always the same identity:
+  there is no way to make them differ. GitHub attributes a commit to the
+  account whose verified email is the *author* email, and a committer that
+  is someone else reads as "applied by", which is not what attribution is
+  for. `name` and `email` go together; setting one without the other is
+  refused.
+- **Signing** is off for a person unless `signing_key` names a key. A
+  signature only shows as *Verified* when the key is registered as a
+  signing key on the account that owns the author email, so the bot's key
+  under a person's name would be worse than no signature. The key must be
+  readable by the user the daemon runs as; a missing file leaves the
+  commits unsigned and `ssf launch` says so on stderr, `ssf doctor` before
+  that. `signing_key = false` turns signing off for the bot too.
+- **Pushes** are separate from authorship. `credential = "bot"` (the
+  default) pushes the person's commits with the bot's token, as today.
+  `token:<login>` pushes as that account with the token `gh` holds for it
+  on the machine the agents run on (`gh auth token --user <login>`; the
+  bot's `GH_CONFIG_DIR` and `GH_TOKEN` are set aside for that one lookup).
+  `file:<path>` reads a token from a file. Any other value is used as
+  `credential.helper` verbatim (`!gh auth git-credential`, `store`, ...).
+  `ssf git-credential` answers according to `SSF_REPO`, so one daemon can
+  push as different people for different repositories. SSH remotes are
+  not affected: `GIT_SSH_COMMAND` stays pinned to the bot's enrolled key,
+  so pushing as a person means an HTTPS clone URL.
+- **`gh` and the API** are the bot in every case: `GH_TOKEN` is the bot's,
+  posts carry the bot's byline, the daemon polls as the bot. The daemon's
+  own clones and fetches never run under `ssf launch` and stay the bot as
+  well.
+
+Things to know before switching it on:
+
+- The email has to be one GitHub knows as the person's for the avatar,
+  the link to their profile and their contribution graph; an unknown
+  email gives a commit with a name and no account behind it.
+- Whoever's credential pushes needs write access to the branch, and
+  branch protection (required status, "restrict who can push") applies to
+  that account. The bot still needs write access for everything `gh` does.
+- The [allow-list](configuration.md#who-may-drive-the-factory) is
+  untouched: commits are the one timeline event without a login and pass
+  whoever authored them. Ownership binds items to sessions through PR
+  heads and origin tags, never through commit authors.
+- `token:<login>` puts that person's token within the agent's reach for
+  the length of the session (the helper hands it to git, and an agent can
+  call the helper). On bare metal that is no wider than what the agent
+  already has as your Unix user; in the [VM](vm.md) the token is copied
+  onto the seed disk, so the guest holds it. Prefer a token scoped to the
+  repositories the factory works on.
+- The prompts still tell the agent that `git push` acts as the bot; with a
+  person's credential it acts as that person. The agent does not need to
+  know, but a push refused by branch protection now names that account.
+
+`ssf doctor` prints the effective identity per repository (who commits,
+signed with what, who pushes) and checks that the key and the token are
+there; `ssf config show` prints the same lines from the file alone, and
+`ssf auth status` shows the instance-wide identity next to the bot's own.
 
 ## Bylines and origin tags: which session posted what
 

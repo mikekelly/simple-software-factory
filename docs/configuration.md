@@ -30,6 +30,9 @@ instructions = "Run `make test` before opening a PR."
 |-----|---------|---------|
 | `github.api_url` | `https://api.github.com` | GitHub Enterprise: `https://ghe.example.com/api/v3` |
 | `github.login`, `github.email`, `github.ssh_key_path`, `github.ssh_key_id`, `github.signing_key_id` | set by `ssf auth login` | The bot's login, commit email, enrolled key and the ids of its two entries on GitHub (so `ssf auth logout` can revoke them); edit `email` if the bot has a public address |
+| `git.name`, `git.email` | the bot's login and email | Author and committer of the agents' commits, when a person rather than the bot (see [Committing as a person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)); both or neither. `gh` stays the bot |
+| `git.signing_key` | the bot's key for the bot, unsigned for a person | SSH key to sign commits and tags with (a path), or `false` for unsigned |
+| `git.credential` | `bot` | Who pushes over HTTPS: `bot` (the bot's token), `token:<login>` (the token gh holds for that account where the agents run), `file:<path>` (a token file), or a git credential helper string used as `credential.helper`. SSH remotes always use the bot's key |
 | `driver` | `herdr` | What runs the agents: `herdr` or `orca` (see [Drivers](drivers.md)). Unset, `ssf config show` and `ssf doctor` say which is in effect; the default was `orca` until 2026-09-06, so an older file that never set it now runs in herdr unless it says `driver = "orca"` |
 | `orca.command` | `/usr/lib/orca-ide/bin/orca-ide` | Orca CLI binary (`/usr/bin/orca-ide` launches the app, not the CLI) |
 | `orca.host` | `local` | The Orca host projects and worktrees are created on |
@@ -71,13 +74,18 @@ instructions = "Run `make test` before opening a PR."
 | `repo.prompt_file` | `SSF.md` | The per-project prompt file (below), relative to the worktree unless absolute or `~/` |
 | `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
+| `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |
 
 The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with
 `--driver`, `--path`, `--clone-url`, `--base-branch`, `--command`,
 `--model`, `--effort`, `--instructions`, `--prompt-file`,
 `--allowed-users` and `--accept-anyone-risk`; `ssf repo set` changes some
-of those and `--clear <field>` unsets one; `ssf config get|set
-<dotted.key> [value]` for everything else.
+of those, sets `--git-name`, `--git-email`, `--git-signing-key` and
+`--git-credential`, and `--clear <field>` unsets one (`git` for the whole
+`[repo.git]` table, `git.credential` for one key); `ssf config get|set
+<dotted.key> [value]` for everything else. A value that starts with `[`
+or `{` is read as TOML, so `ssf config set git '{ name = "Ann Person",
+email = "ann@example.com" }'` sets both halves of an identity at once.
 
 Environment overrides: `SSF_GITHUB_TOKEN` (the token), `SSF_CONFIG_DIR`
 and `SSF_STATE_DIR` (where config and state live; a scratch factory uses

@@ -78,8 +78,226 @@ pub struct Config {
     /// Running the whole factory inside a Firecracker microVM (see `ssf vm`).
     #[serde(default)]
     pub vm: VmConfig,
+    /// Who the agents' commits are by and who pushes them, when not the
+    /// bot; a `[[repo]]` can override any key with its own `[repo.git]`.
+    #[serde(default, skip_serializing_if = "GitConfig::is_empty")]
+    pub git: GitConfig,
     #[serde(default, rename = "repo")]
     pub repos: Vec<RepoConfig>,
+}
+
+/// The git identity agents commit with, instance-wide (`[git]`) or per
+/// repository (`[repo.git]`). Every key is optional and the two tables are
+/// merged key by key, the repository's winning; what is left unset comes
+/// from the bot (`github.login`, its noreply email, its enrolled key, its
+/// token). `gh` and the GitHub API are the bot whatever stands here.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct GitConfig {
+    /// Author and committer name; set together with `email`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Author and committer email: one the person's GitHub account has
+    /// verified, or their `id+login@users.noreply.github.com`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// SSH key to sign commits and tags with (a path), or `false` for
+    /// unsigned. Unset: the bot's enrolled key when the identity is the
+    /// bot's, unsigned when it is a person's (a signature by a key that
+    /// is not registered on the author's account shows as unverified).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signing_key: Option<SigningKey>,
+    /// Who pushes over HTTPS: `bot` (the default), `token:<login>` (the
+    /// token gh holds for that account on this machine), `file:<path>` (a
+    /// file holding a token), or a git credential helper string used as
+    /// `credential.helper` (`!gh auth git-credential`, `store`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+}
+
+/// `signing_key = "<path>"` or `signing_key = false`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum SigningKey {
+    Path(String),
+    Off(bool),
+}
+
+impl GitConfig {
+    pub fn is_empty(&self) -> bool {
+        *self == GitConfig::default()
+    }
+
+    /// This table with `over` laid on top, key by key.
+    pub fn merged(&self, over: &GitConfig) -> GitConfig {
+        GitConfig {
+            name: over.name.clone().or_else(|| self.name.clone()),
+            email: over.email.clone().or_else(|| self.email.clone()),
+            signing_key: over
+                .signing_key
+                .clone()
+                .or_else(|| self.signing_key.clone()),
+            credential: over.credential.clone().or_else(|| self.credential.clone()),
+        }
+    }
+
+    /// What a table has to satisfy on its own (the merge is checked again
+    /// per repository, since name and email may come from different levels).
+    fn validate(&self, where_: &str) -> Result<()> {
+        if let Some(SigningKey::Off(true)) = self.signing_key {
+            bail!("{where_}.signing_key is a path to an SSH key, or false; `true` says nothing");
+        }
+        if let Some(SigningKey::Path(p)) = &self.signing_key
+            && p.trim().is_empty()
+        {
+            bail!("{where_}.signing_key is empty; give a path, or false");
+        }
+        for (key, value) in [("name", &self.name), ("email", &self.email)] {
+            if value.as_deref().is_some_and(|v| v.trim().is_empty()) {
+                bail!("{where_}.{key} is empty");
+            }
+        }
+        if let Some(c) = &self.credential {
+            Credential::parse(c).with_context(|| format!("{where_}.credential"))?;
+        }
+        Ok(())
+    }
+
+    /// Name and email go together (author and committer are one person):
+    /// the base `[git]` table has both or neither, and a `[repo.git]` that
+    /// sets one over an empty base has to set the other too.
+    fn validate_merged(&self, where_: &str) -> Result<()> {
+        let (set, missing) = match (&self.name, &self.email) {
+            (Some(_), None) => ("name", "email"),
+            (None, Some(_)) => ("email", "name"),
+            _ => return Ok(()),
+        };
+        bail!(
+            "{where_}: git.{set} is set without git.{missing}; a commit identity needs both, e.g. \
+             `ssf config set git '{{ name = \"Ann Person\", email = \"ann@example.com\" }}'` \
+             or `ssf repo set <owner/name> --git-name ... --git-email ...`"
+        )
+    }
+}
+
+/// Who pushes over HTTPS, parsed from `git.credential`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Credential {
+    /// The bot's token through `ssf git-credential` (the default).
+    Bot,
+    /// The token gh holds for this login on the machine the agent runs on.
+    Token(String),
+    /// A file holding a token, read by `ssf git-credential` at push time.
+    File(PathBuf),
+    /// A git credential helper string, set as `credential.helper` verbatim.
+    Helper(String),
+}
+
+impl Credential {
+    pub fn parse(s: &str) -> Result<Credential> {
+        let s = s.trim();
+        if s.is_empty() {
+            bail!(
+                "credential is empty; use bot, token:<login>, file:<path> or a credential helper"
+            );
+        }
+        if s.eq_ignore_ascii_case("bot") {
+            return Ok(Credential::Bot);
+        }
+        if let Some(login) = s.strip_prefix("token:") {
+            let login = login.trim().trim_start_matches('@');
+            if login.is_empty() {
+                bail!("token: needs the gh login whose token to use, e.g. token:alice");
+            }
+            return Ok(Credential::Token(login.to_string()));
+        }
+        if let Some(path) = s.strip_prefix("file:") {
+            let path = path.trim();
+            if path.is_empty() {
+                bail!("file: needs the path of a file holding the token");
+            }
+            return Ok(Credential::File(expand_tilde(path)));
+        }
+        Ok(Credential::Helper(s.to_string()))
+    }
+
+    /// The config value that names this credential.
+    pub fn to_config(&self) -> String {
+        match self {
+            Credential::Bot => "bot".into(),
+            Credential::Token(l) => format!("token:{l}"),
+            Credential::File(p) => format!("file:{}", p.display()),
+            Credential::Helper(h) => h.clone(),
+        }
+    }
+
+    /// A line for `ssf doctor` and `ssf config show`.
+    pub fn describe(&self, bot: &str) -> String {
+        match self {
+            Credential::Bot => format!("pushes as @{bot} (the bot)"),
+            Credential::Token(l) => format!("pushes as @{l} (gh keyring token)"),
+            Credential::File(p) => format!("pushes with the token in {}", p.display()),
+            Credential::Helper(h) => format!("pushes through credential helper `{h}`"),
+        }
+    }
+}
+
+/// Where the effective identity's name and email come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySource {
+    /// The bot's own login and email (nothing configured).
+    Bot,
+    /// `[git]`.
+    Instance,
+    /// `[repo.git]` (at least one of name/email).
+    Repo,
+}
+
+/// The git identity `ssf launch` gives an agent, after the merge and the
+/// bot defaults.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitIdentity {
+    /// Author and committer; `None` when neither the bot nor `[git]` is
+    /// known (a fresh install before `ssf auth login`).
+    pub name: Option<String>,
+    pub email: Option<String>,
+    pub source: IdentitySource,
+    /// Private key to sign with; `None` means unsigned. The file may be
+    /// missing: `ssf launch` then leaves signing off and says so.
+    pub signing_key: Option<PathBuf>,
+    pub credential: Credential,
+}
+
+impl GitIdentity {
+    pub fn is_bot(&self) -> bool {
+        self.source == IdentitySource::Bot
+    }
+
+    /// `Name <email>` or a note that nothing is recorded.
+    pub fn who(&self) -> String {
+        match (&self.name, &self.email) {
+            (Some(n), Some(e)) => format!("{n} <{e}>"),
+            _ => "(no identity recorded; run `ssf auth login` or set [git])".to_string(),
+        }
+    }
+
+    /// One line: who commits, signed how, who pushes.
+    pub fn describe(&self, bot: &str) -> String {
+        let signed = match &self.signing_key {
+            Some(k) => format!("signed with {}", k.display()),
+            None => "unsigned".to_string(),
+        };
+        let source = match self.source {
+            IdentitySource::Bot => "the bot",
+            IdentitySource::Instance => "[git]",
+            IdentitySource::Repo => "[repo.git]",
+        };
+        format!(
+            "commits as {} ({source}), {signed}, {}",
+            self.who(),
+            self.credential.describe(bot)
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -495,6 +713,9 @@ pub struct RepoConfig {
     /// See `DaemonConfig::accepted_anyone_risk`; needed for `"*"` here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accepted_anyone_risk: bool,
+    /// Git identity for this repository's agents, key by key over `[git]`.
+    #[serde(default, skip_serializing_if = "GitConfig::is_empty")]
+    pub git: GitConfig,
 }
 
 /// Name of the per-project prompt file when `repo.prompt_file` is not set.
@@ -631,12 +852,18 @@ impl Config {
                 crate::allow::RISK_KEY
             );
         }
+        self.git.validate("git")?;
+        self.git.validate_merged("[git]")?;
         for r in &self.repos {
             r.split()?;
             if r.harness.trim().is_empty() {
                 bail!("repo {}: harness must not be empty", r.name);
             }
             r.validate_launch_prefs()?;
+            r.git.validate(&format!("repo {}: git", r.name))?;
+            self.git
+                .merged(&r.git)
+                .validate_merged(&format!("repo {}", r.name))?;
             if r.allowed_users
                 .as_deref()
                 .is_some_and(crate::allow::is_wildcard)
@@ -753,6 +980,65 @@ impl Config {
             "gh keyring"
         } else {
             "none"
+        }
+    }
+
+    /// The `[git]` settings in effect for a repository: `[repo.git]` over
+    /// `[git]`, key by key (`[git]` alone without a repository).
+    pub fn git_settings(&self, repo: Option<&RepoConfig>) -> GitConfig {
+        match repo {
+            Some(r) => self.git.merged(&r.git),
+            None => self.git.clone(),
+        }
+    }
+
+    /// The identity `ssf launch` gives an agent working on `repo`: the
+    /// merged `[git]` settings with the bot filling in whatever is unset.
+    pub fn git_identity(&self, repo: Option<&RepoConfig>) -> GitIdentity {
+        let settings = self.git_settings(repo);
+        let source = match (&settings.name, &settings.email) {
+            (None, None) => IdentitySource::Bot,
+            _ if repo.is_some_and(|r| r.git.name.is_some() || r.git.email.is_some()) => {
+                IdentitySource::Repo
+            }
+            _ => IdentitySource::Instance,
+        };
+        let (name, email) = match source {
+            IdentitySource::Bot => {
+                let name = self.github.login.clone();
+                let email = name.as_ref().map(|login| {
+                    self.github
+                        .email
+                        .clone()
+                        .unwrap_or_else(|| format!("{login}@users.noreply.github.com"))
+                });
+                (name, email)
+            }
+            _ => (settings.name.clone(), settings.email.clone()),
+        };
+        let bot_key = self
+            .github
+            .ssh_key_path
+            .as_deref()
+            .map(expand_tilde)
+            .filter(|_| self.github.signing_key_id.is_some());
+        let signing_key = match &settings.signing_key {
+            Some(SigningKey::Path(p)) => Some(expand_tilde(p)),
+            Some(SigningKey::Off(_)) => None,
+            None if source == IdentitySource::Bot => bot_key,
+            None => None,
+        };
+        let credential = settings
+            .credential
+            .as_deref()
+            .and_then(|c| Credential::parse(c).ok())
+            .unwrap_or(Credential::Bot);
+        GitIdentity {
+            name,
+            email,
+            source,
+            signing_key,
+            credential,
         }
     }
 
@@ -1254,5 +1540,165 @@ harness = "claude"
             "collaborators with push access (default)"
         );
         assert!(!cfg.anyone_allowed_anywhere());
+    }
+
+    fn bot_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.github.login = Some("acme-bot".into());
+        cfg.github.email = Some("1+acme-bot@users.noreply.github.com".into());
+        cfg.github.ssh_key_path = Some("/keys/acme-bot_ed25519".into());
+        cfg.github.signing_key_id = Some(7);
+        cfg.repos.push(RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..RepoConfig::default()
+        });
+        cfg
+    }
+
+    #[test]
+    fn git_identity_is_the_bot_unless_configured() {
+        let cfg = bot_config();
+        let id = cfg.git_identity(Some(&cfg.repos[0]));
+        assert!(id.is_bot());
+        assert_eq!(id.name.as_deref(), Some("acme-bot"));
+        assert_eq!(
+            id.email.as_deref(),
+            Some("1+acme-bot@users.noreply.github.com")
+        );
+        assert_eq!(
+            id.signing_key.as_deref(),
+            Some(Path::new("/keys/acme-bot_ed25519"))
+        );
+        assert_eq!(id.credential, Credential::Bot);
+        // Nothing recorded at all: no identity, still the bot credential.
+        let empty = Config::default();
+        let id = empty.git_identity(None);
+        assert!(id.name.is_none() && id.email.is_none() && id.signing_key.is_none());
+        assert!(id.who().contains("no identity"));
+        // A bot without a signing key enrolled signs nothing.
+        let mut cfg = bot_config();
+        cfg.github.signing_key_id = None;
+        assert!(cfg.git_identity(None).signing_key.is_none());
+    }
+
+    #[test]
+    fn git_tables_merge_key_by_key_with_the_repo_winning() {
+        let mut cfg = bot_config();
+        cfg.git = GitConfig {
+            name: Some("Ann Person".into()),
+            email: Some("ann@example.com".into()),
+            signing_key: None,
+            credential: Some("token:ann".into()),
+        };
+        // Instance identity: a person, unsigned by default, pushing as herself.
+        let id = cfg.git_identity(Some(&cfg.repos[0]));
+        assert_eq!(id.source, IdentitySource::Instance);
+        assert_eq!(id.who(), "Ann Person <ann@example.com>");
+        assert!(
+            id.signing_key.is_none(),
+            "a person is unsigned unless a key is given"
+        );
+        assert_eq!(id.credential, Credential::Token("ann".into()));
+        // The repo overrides one key and adds a signing key.
+        cfg.repos[0].git = GitConfig {
+            email: Some("ann@work.example".into()),
+            signing_key: Some(SigningKey::Path("~/.ssh/id_ed25519".into())),
+            credential: Some("bot".into()),
+            ..GitConfig::default()
+        };
+        let id = cfg.git_identity(Some(&cfg.repos[0]));
+        assert_eq!(id.source, IdentitySource::Repo);
+        assert_eq!(id.who(), "Ann Person <ann@work.example>");
+        assert_eq!(
+            id.signing_key,
+            Some(expand_tilde("~/.ssh/id_ed25519")),
+            "signing key comes from the repo table"
+        );
+        assert_eq!(id.credential, Credential::Bot);
+        // `[git]` alone still applies with no repository given.
+        assert_eq!(
+            cfg.git_identity(None).credential,
+            Credential::Token("ann".into())
+        );
+        // Turning the bot's signing off without changing who commits.
+        let mut cfg = bot_config();
+        cfg.git.signing_key = Some(SigningKey::Off(false));
+        let id = cfg.git_identity(Some(&cfg.repos[0]));
+        assert!(id.is_bot());
+        assert!(id.signing_key.is_none());
+        assert!(
+            id.describe("acme-bot").contains("unsigned"),
+            "{}",
+            id.describe("acme-bot")
+        );
+    }
+
+    #[test]
+    fn credential_values_parse() {
+        assert_eq!(Credential::parse("bot").unwrap(), Credential::Bot);
+        assert_eq!(Credential::parse(" Bot ").unwrap(), Credential::Bot);
+        assert_eq!(
+            Credential::parse("token:@ann").unwrap(),
+            Credential::Token("ann".into())
+        );
+        assert_eq!(
+            Credential::parse("file:/run/secrets/gh").unwrap(),
+            Credential::File(PathBuf::from("/run/secrets/gh"))
+        );
+        assert_eq!(
+            Credential::parse("!gh auth git-credential").unwrap(),
+            Credential::Helper("!gh auth git-credential".into())
+        );
+        assert!(Credential::parse("").is_err());
+        assert!(Credential::parse("token:").is_err());
+        assert!(Credential::parse("file: ").is_err());
+        for c in [
+            Credential::Bot,
+            Credential::Token("ann".into()),
+            Credential::File(PathBuf::from("/t")),
+            Credential::Helper("store".into()),
+        ] {
+            assert_eq!(Credential::parse(&c.to_config()).unwrap(), c);
+        }
+    }
+
+    #[test]
+    fn git_tables_are_validated_at_load() {
+        let load = |text: &str| -> Result<Config> {
+            let cfg: Config = toml::from_str(text)?;
+            cfg.validate()?;
+            Ok(cfg)
+        };
+        let ok = load(
+            "[git]\nname = \"Ann\"\nemail = \"ann@example.com\"\nsigning_key = false\n\n\
+             [[repo]]\nname = \"o/r\"\nharness = \"claude\"\n[repo.git]\ncredential = \"token:ann\"\n",
+        )
+        .unwrap();
+        assert_eq!(ok.git.signing_key, Some(SigningKey::Off(false)));
+        assert_eq!(ok.repos[0].git.credential.as_deref(), Some("token:ann"));
+        // Name without email, at one level or across two.
+        assert!(load("[git]\nname = \"Ann\"\n").is_err());
+        let err =
+            load("[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n[repo.git]\nemail = \"a@b\"\n")
+                .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("git.email is set without git.name"),
+            "{err:#}"
+        );
+        // Email at the instance and name on the repo is a whole identity.
+        assert!(
+            load(
+                "[git]\nemail = \"a@b\"\n[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n[repo.git]\nname = \"Ann\"\n"
+            )
+            .is_err(),
+            "the instance table alone is still half an identity"
+        );
+        assert!(load("[git]\nsigning_key = true\n").is_err());
+        assert!(load("[git]\ncredential = \"token:\"\n").is_err());
+        assert!(load("[git]\nunknown = 1\n").is_err());
+        // An empty table round-trips to nothing.
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(!text.contains("[git]"), "{text}");
     }
 }

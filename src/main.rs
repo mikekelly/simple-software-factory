@@ -413,7 +413,20 @@ enum RepoCommand {
         /// Accept that `--allowed-users '*'` lets ANYONE on GitHub drive this repository.
         #[arg(long)]
         accept_anyone_risk: bool,
-        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file, allowed_users.
+        /// Commit author and committer name for this repository's agents (with --git-email); default: the [git] table, else the bot.
+        #[arg(long, value_name = "NAME")]
+        git_name: Option<String>,
+        /// Commit author and committer email: one the person's GitHub account has verified.
+        #[arg(long, value_name = "EMAIL")]
+        git_email: Option<String>,
+        /// SSH key to sign commits with, or `false` for unsigned (default: the bot's key for the bot, unsigned for a person).
+        #[arg(long, value_name = "PATH|false")]
+        git_signing_key: Option<String>,
+        /// Who pushes over HTTPS: bot, token:<gh login>, file:<token file>, or a git credential helper string.
+        #[arg(long, value_name = "WHO")]
+        git_credential: Option<String>,
+        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file, allowed_users,
+        /// git (the whole [repo.git] table) or git.name, git.email, git.signing_key, git.credential.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },
@@ -652,22 +665,25 @@ fn launch(
     let cfg = Config::load().unwrap_or_default();
     let mut cmd = std::process::Command::new("sh");
     cmd.arg("-c").arg(command.join(" "));
-    // Git configuration is injected through GIT_CONFIG_* so it beats the
-    // human's ~/.gitconfig (identity, signing key, credential helpers) inside
-    // the agent's shell only.
-    let mut git: Vec<(String, String)> = Vec::new();
-    match cfg.github_token() {
-        Ok(token) => {
-            cmd.env("GH_TOKEN", &token).env("GITHUB_TOKEN", &token);
-            // Our helper first and any configured ones dropped, so HTTPS pushes
-            // go out as the bot rather than as whoever is logged into gh.
-            let me = std::env::current_exe()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "ssf".into());
-            git.push(("credential.helper".into(), String::new()));
-            git.push(("credential.helper".into(), format!("!{me} git-credential")));
-        }
-        Err(e) => eprintln!("ssf launch: no bot credentials exported ({e:#})"),
+    let me = std::env::current_exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "ssf".into());
+    let repo_cfg = repo
+        .as_deref()
+        .and_then(|name| cfg.repos.iter().find(|r| r.name.eq_ignore_ascii_case(name)));
+    let token = cfg.github_token();
+    if let Err(e) = &token {
+        eprintln!("ssf launch: no bot credentials exported ({e:#})");
+    }
+    let plan = launch_env(&cfg, repo_cfg, &me, token.is_ok());
+    for note in &plan.notes {
+        eprintln!("ssf launch: {note}");
+    }
+    if let Ok(token) = &token {
+        cmd.env("GH_TOKEN", token).env("GITHUB_TOKEN", token);
+    }
+    for (k, v) in &plan.env {
+        cmd.env(k, v);
     }
     // gh must only ever see the bot. Its own config dir would expose every
     // account in the human's keyring to `gh auth token --user ...`, so point
@@ -676,57 +692,15 @@ fn launch(
     if std::fs::create_dir_all(&gh_dir).is_ok() {
         cmd.env("GH_CONFIG_DIR", &gh_dir);
     }
-    if let Some(login) = cfg.github.login.as_deref() {
-        let email = cfg
-            .github
-            .email
-            .clone()
-            .unwrap_or_else(|| format!("{login}@users.noreply.github.com"));
-        for var in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
-            cmd.env(var, login);
-        }
-        for var in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
-            cmd.env(var, &email);
-        }
-        git.push(("user.name".into(), login.to_string()));
-        git.push(("user.email".into(), email));
-    }
-    match cfg
-        .github
-        .ssh_key_path
-        .as_deref()
-        .filter(|p| std::path::Path::new(p).exists())
-    {
-        Some(key) => {
-            cmd.env(
-                "GIT_SSH_COMMAND",
-                format!("ssh -i {} -o IdentitiesOnly=yes", shell_quote(key)),
-            );
-            if cfg.github.signing_key_id.is_some() {
-                let pubkey = keys::public_path(std::path::Path::new(key));
-                git.push(("gpg.format".into(), "ssh".into()));
-                git.push((
-                    "user.signingkey".into(),
-                    pubkey.to_string_lossy().to_string(),
-                ));
-                git.push(("commit.gpgsign".into(), "true".into()));
-                git.push(("tag.gpgsign".into(), "true".into()));
-            } else {
-                git.push(("commit.gpgsign".into(), "false".into()));
-            }
-        }
-        None => {
-            // No bot key: make sure commits are not signed with the human's key.
-            git.push(("commit.gpgsign".into(), "false".into()));
-            git.push(("tag.gpgsign".into(), "false".into()));
-        }
-    }
+    // Git configuration is injected through GIT_CONFIG_* so it beats the
+    // human's ~/.gitconfig (identity, signing key, credential helpers) inside
+    // the agent's shell only.
     let base: usize = std::env::var("GIT_CONFIG_COUNT")
         .ok()
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
-    cmd.env("GIT_CONFIG_COUNT", (base + git.len()).to_string());
-    for (i, (k, v)) in git.iter().enumerate() {
+    cmd.env("GIT_CONFIG_COUNT", (base + plan.git.len()).to_string());
+    for (i, (k, v)) in plan.git.iter().enumerate() {
         cmd.env(format!("GIT_CONFIG_KEY_{}", base + i), k)
             .env(format!("GIT_CONFIG_VALUE_{}", base + i), v);
     }
@@ -778,10 +752,121 @@ fn launch(
     Err(anyhow::Error::from(err).context("exec failed"))
 }
 
+/// What `ssf launch` puts in the agent's environment for git: variables,
+/// `GIT_CONFIG_*` entries (in order) and notes for stderr.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct LaunchEnv {
+    env: Vec<(String, String)>,
+    git: Vec<(String, String)>,
+    notes: Vec<String>,
+}
+
+/// The git side of an agent's environment for `repo` (`None`: `[git]`
+/// alone): the effective identity as author and committer, signing with
+/// its key or off, and who pushes. `gh` is not touched here: it is the bot
+/// through `GH_TOKEN`, whatever the identity. `have_token` says whether
+/// the bot token could be resolved, which the bot credential needs.
+fn launch_env(cfg: &Config, repo: Option<&RepoConfig>, me: &str, have_token: bool) -> LaunchEnv {
+    use config::Credential;
+    let mut out = LaunchEnv::default();
+    let identity = cfg.git_identity(repo);
+    // Pushes: our helper first and any configured ones dropped, so HTTPS
+    // pushes go out as who the config says rather than as whoever is
+    // logged into gh. The helper reads the config (and SSF_REPO) itself.
+    match &identity.credential {
+        Credential::Bot if !have_token => {}
+        Credential::Bot | Credential::Token(_) | Credential::File(_) => {
+            out.git.push(("credential.helper".into(), String::new()));
+            out.git
+                .push(("credential.helper".into(), format!("!{me} git-credential")));
+        }
+        Credential::Helper(h) => {
+            out.git.push(("credential.helper".into(), String::new()));
+            out.git.push(("credential.helper".into(), h.clone()));
+        }
+    }
+    if let (Some(name), Some(email)) = (&identity.name, &identity.email) {
+        for var in ["GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"] {
+            out.env.push((var.into(), name.clone()));
+        }
+        for var in ["GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"] {
+            out.env.push((var.into(), email.clone()));
+        }
+        out.git.push(("user.name".into(), name.clone()));
+        out.git.push(("user.email".into(), email.clone()));
+    }
+    // SSH remotes always use the bot's enrolled key: a person's credential
+    // is for HTTPS. The key doubles as the bot's signing key.
+    if let Some(key) = cfg
+        .github
+        .ssh_key_path
+        .as_deref()
+        .map(config::expand_tilde)
+        .filter(|p| p.exists())
+    {
+        out.env.push((
+            "GIT_SSH_COMMAND".into(),
+            format!(
+                "ssh -i {} -o IdentitiesOnly=yes",
+                shell_quote(&key.to_string_lossy())
+            ),
+        ));
+    }
+    match &identity.signing_key {
+        Some(key) if key.exists() => {
+            // git hands user.signingkey to ssh-keygen: the public key file
+            // when there is one (the private key next to it, or the agent,
+            // does the signing), else the private key itself.
+            let pubkey = keys::public_path(key);
+            let signing = if pubkey.exists() { pubkey } else { key.clone() };
+            out.git.push(("gpg.format".into(), "ssh".into()));
+            out.git.push((
+                "user.signingkey".into(),
+                signing.to_string_lossy().to_string(),
+            ));
+            out.git.push(("commit.gpgsign".into(), "true".into()));
+            out.git.push(("tag.gpgsign".into(), "true".into()));
+        }
+        Some(key) => {
+            out.notes.push(format!(
+                "signing key {} is missing; commits go out unsigned",
+                key.display()
+            ));
+            out.git.push(("commit.gpgsign".into(), "false".into()));
+            out.git.push(("tag.gpgsign".into(), "false".into()));
+        }
+        None => {
+            // Nothing to sign with: make sure commits are not signed with
+            // the human's key either.
+            out.git.push(("commit.gpgsign".into(), "false".into()));
+            out.git.push(("tag.gpgsign".into(), "false".into()));
+        }
+    }
+    out
+}
+
+/// `--git-signing-key`: `false` (or `off`, `none`) means unsigned, anything
+/// else is the key's path.
+fn parse_signing_key(value: &str) -> config::SigningKey {
+    let v = value.trim();
+    if ["false", "off", "none", "no"]
+        .iter()
+        .any(|w| v.eq_ignore_ascii_case(w))
+    {
+        config::SigningKey::Off(false)
+    } else {
+        config::SigningKey::Path(v.to_string())
+    }
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// The credential helper `ssf launch` configures: answers HTTPS requests
+/// for the GitHub host with the token of whoever the config says pushes
+/// for `SSF_REPO` (the bot by default). Outside a session, or for another
+/// host, it answers nothing and git moves on.
 fn git_credential(op: &str) -> Result<()> {
     if op != "get" {
         return Ok(());
@@ -802,10 +887,27 @@ fn git_credential(op: &str) -> Result<()> {
     if protocol != "https" || !host.eq_ignore_ascii_case(&wanted) {
         return Ok(());
     }
-    let Ok(token) = cfg.github_token() else {
-        return Ok(());
+    let repo = std::env::var("SSF_REPO").ok().and_then(|name| {
+        cfg.repos
+            .iter()
+            .find(|r| r.name.eq_ignore_ascii_case(&name))
+            .cloned()
+    });
+    let token = match cfg.git_identity(repo.as_ref()).credential {
+        config::Credential::Bot => cfg.github_token(),
+        config::Credential::Token(login) => ghcli::token_for(&wanted, &login),
+        config::Credential::File(path) => std::fs::read_to_string(&path)
+            .map(|t| t.trim().to_string())
+            .with_context(|| format!("reading the token file {}", path.display())),
+        // A helper string is set as credential.helper itself; we are not
+        // in the chain then.
+        config::Credential::Helper(_) => return Ok(()),
     };
-    println!("username=x-access-token\npassword={token}");
+    match token {
+        Ok(t) if !t.trim().is_empty() => println!("username=x-access-token\npassword={t}"),
+        Ok(_) => eprintln!("ssf git-credential: the token is empty"),
+        Err(e) => eprintln!("ssf git-credential: {e:#}"),
+    }
     Ok(())
 }
 
@@ -1010,6 +1112,7 @@ async fn auth(command: AuthCommand) -> Result<()> {
                 .ssh_key_path
                 .as_deref()
                 .is_some_and(|p| std::path::Path::new(p).exists());
+            let identity = cfg.git_identity(None);
             if json {
                 println!(
                     "{}",
@@ -1017,7 +1120,17 @@ async fn auth(command: AuthCommand) -> Result<()> {
                         "login": me.login, "type": me.kind, "id": me.id,
                         "email": cfg.github.email,
                         "ssh_key": cfg.github.ssh_key_path, "ssh_key_present": key_ok,
-                        "ssh_key_id": cfg.github.ssh_key_id, "signing_key_id": cfg.github.signing_key_id
+                        "ssh_key_id": cfg.github.ssh_key_id, "signing_key_id": cfg.github.signing_key_id,
+                        "git": {
+                            "name": identity.name, "email": identity.email,
+                            "source": match identity.source {
+                                config::IdentitySource::Bot => "bot",
+                                config::IdentitySource::Instance => "git",
+                                config::IdentitySource::Repo => "repo.git",
+                            },
+                            "signing_key": identity.signing_key,
+                            "credential": identity.credential.to_config(),
+                        }
                     })
                 );
                 return Ok(());
@@ -1038,13 +1151,19 @@ async fn auth(command: AuthCommand) -> Result<()> {
                 }
             }
             println!(
-                "Commit identity: {} <{}>",
+                "Bot commit identity: {} <{}>",
                 me.login,
                 cfg.github
                     .email
                     .as_deref()
                     .unwrap_or("(not set; run `ssf auth login`)")
             );
+            if !identity.is_bot() || identity.credential != config::Credential::Bot {
+                println!(
+                    "Git identity ([git]; repositories may override, see `ssf doctor`): {}",
+                    identity.describe(&me.login)
+                );
+            }
             let id_or = |v: Option<u64>| {
                 v.map(|i| i.to_string())
                     .unwrap_or_else(|| "not enrolled".into())
@@ -1323,6 +1442,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                 prompt_file,
                 allowed_users: None,
                 accepted_anyone_risk: false,
+                git: config::GitConfig::default(),
             };
             entry.validate_launch_prefs()?;
             // herdr runs only the agents it recognises, so warn for a
@@ -1362,6 +1482,10 @@ fn repo(command: RepoCommand) -> Result<()> {
             prompt_file,
             allowed_users,
             accept_anyone_risk,
+            git_name,
+            git_email,
+            git_signing_key,
+            git_credential,
             clear,
         } => {
             let pos = cfg
@@ -1421,8 +1545,25 @@ fn repo(command: RepoCommand) -> Result<()> {
             if let Some(list) = allowed_users {
                 set_repo_allowed_users(entry, &list, accept_anyone_risk)?;
             }
+            if let Some(n) = git_name {
+                entry.git.name = Some(n.trim().to_string());
+            }
+            if let Some(e) = git_email {
+                entry.git.email = Some(e.trim().to_string());
+            }
+            if let Some(k) = git_signing_key {
+                entry.git.signing_key = Some(parse_signing_key(&k));
+            }
+            if let Some(c) = git_credential {
+                entry.git.credential = Some(c.trim().to_string());
+            }
             for field in clear {
                 match field.as_str() {
+                    "git" => entry.git = config::GitConfig::default(),
+                    "git.name" => entry.git.name = None,
+                    "git.email" => entry.git.email = None,
+                    "git.signing_key" => entry.git.signing_key = None,
+                    "git.credential" => entry.git.credential = None,
                     "driver" => entry.driver = None,
                     "path" => entry.path = None,
                     "clone_url" => entry.clone_url = None,
@@ -1441,8 +1582,16 @@ fn repo(command: RepoCommand) -> Result<()> {
             }
             entry.validate_launch_prefs()?;
             let updated = entry.name.clone();
+            cfg.validate()?;
+            let identity = cfg.git_identity(cfg.repos.get(pos));
             cfg.save()?;
             println!("Updated {updated}");
+            if !identity.is_bot() || identity.credential != config::Credential::Bot {
+                println!(
+                    "{updated}: {}",
+                    identity.describe(cfg.github.login.as_deref().unwrap_or("bot"))
+                );
+            }
             Ok(())
         }
         RepoCommand::Remove { name } => {
@@ -1605,6 +1754,21 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
                         println!("#   {}: {}", r.name, cfg.access_summary(r));
                     }
                 }
+                // The git identity per repository: [repo.git] over [git]
+                // over the bot (`ssf doctor` checks the key and token).
+                let bot = cfg.github.login.as_deref().unwrap_or("bot");
+                println!();
+                println!("# git identity (commits and pushes; gh is always the bot):");
+                if cfg.repos.is_empty() {
+                    println!("#   {}", cfg.git_identity(None).describe(bot));
+                }
+                for r in &cfg.repos {
+                    println!(
+                        "#   {}: {}",
+                        r.name,
+                        cfg.git_identity(Some(r)).describe(bot)
+                    );
+                }
             }
             Ok(())
         }
@@ -1717,12 +1881,11 @@ fn parse_toml_scalar(value: &str) -> toml::Value {
     if let Ok(i) = value.parse::<i64>() {
         return toml::Value::Integer(i);
     }
-    if value.starts_with('[') {
-        if let Ok(v) = toml::from_str::<toml::Table>(&format!("v = {value}")) {
-            if let Some(x) = v.get("v") {
-                return x.clone();
-            }
-        }
+    if (value.starts_with('[') || value.starts_with('{'))
+        && let Ok(v) = toml::from_str::<toml::Table>(&format!("v = {value}"))
+        && let Some(x) = v.get("v")
+    {
+        return x.clone();
     }
     toml::Value::String(value.to_string())
 }
@@ -2592,6 +2755,56 @@ async fn doctor() -> Result<()> {
                 format!("{}: checkout at {p}", r.name),
             );
         }
+        // The git identity its agents commit and push with, and whether
+        // what it needs (a key, a token) is here where the agents run.
+        let identity = cfg.git_identity(Some(r));
+        check(
+            identity.name.is_some(),
+            format!("{}: {}", r.name, identity.describe(&bot)),
+        );
+        if let Some(key) = &identity.signing_key {
+            check(
+                key.exists(),
+                format!(
+                    "{}: signing key {} {}",
+                    r.name,
+                    key.display(),
+                    if key.exists() {
+                        "present"
+                    } else {
+                        "missing (commits would go out unsigned)"
+                    }
+                ),
+            );
+        }
+        match &identity.credential {
+            config::Credential::Token(login) => {
+                let host = cfg.github.git_host();
+                match ghcli::token_for(&host, login) {
+                    Ok(_) => check(
+                        true,
+                        format!("{}: gh holds a token for @{login} {place}", r.name),
+                    ),
+                    Err(e) => check(
+                        false,
+                        format!(
+                            "{}: no token for @{login} {place} ({e:#}); sign @{login} in to gh here, or use file:<path>",
+                            r.name
+                        ),
+                    ),
+                }
+            }
+            config::Credential::File(path) => check(
+                path.exists(),
+                format!(
+                    "{}: token file {} {}",
+                    r.name,
+                    path.display(),
+                    if path.exists() { "present" } else { "missing" }
+                ),
+            ),
+            _ => {}
+        }
     }
     match shim::real_gh() {
         Some(gh) => check(true, format!("GitHub CLI at {}", gh.display())),
@@ -2819,5 +3032,215 @@ mod tests {
             "{err:#}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git_value<'a>(plan: &'a LaunchEnv, key: &str) -> Vec<&'a str> {
+        plan.git
+            .iter()
+            .filter(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    fn env_value<'a>(plan: &'a LaunchEnv, key: &str) -> Option<&'a str> {
+        plan.env
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn launch_env_is_the_bot_by_default() {
+        let dir = scratch_dir("launch-bot");
+        let key = dir.join("bot_ed25519");
+        std::fs::write(&key, "k").unwrap();
+        std::fs::write(keys::public_path(&key), "p").unwrap();
+        let mut cfg = Config::default();
+        cfg.github.login = Some("acme-bot".into());
+        cfg.github.ssh_key_path = Some(key.to_string_lossy().to_string());
+        cfg.github.signing_key_id = Some(1);
+        cfg.repos.push(RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..RepoConfig::default()
+        });
+        let plan = launch_env(&cfg, cfg.repos.first(), "/opt/ssf", true);
+        assert_eq!(env_value(&plan, "GIT_AUTHOR_NAME"), Some("acme-bot"));
+        assert_eq!(env_value(&plan, "GIT_COMMITTER_NAME"), Some("acme-bot"));
+        assert_eq!(
+            env_value(&plan, "GIT_AUTHOR_EMAIL"),
+            Some("acme-bot@users.noreply.github.com")
+        );
+        assert_eq!(
+            env_value(&plan, "GIT_COMMITTER_EMAIL"),
+            env_value(&plan, "GIT_AUTHOR_EMAIL")
+        );
+        assert_eq!(
+            git_value(&plan, "credential.helper"),
+            vec!["", "!/opt/ssf git-credential"]
+        );
+        assert_eq!(git_value(&plan, "gpg.format"), vec!["ssh"]);
+        assert_eq!(
+            git_value(&plan, "user.signingkey"),
+            vec![keys::public_path(&key).to_string_lossy().as_ref()]
+        );
+        assert_eq!(git_value(&plan, "commit.gpgsign"), vec!["true"]);
+        assert_eq!(git_value(&plan, "tag.gpgsign"), vec!["true"]);
+        assert!(
+            env_value(&plan, "GIT_SSH_COMMAND")
+                .unwrap()
+                .contains("IdentitiesOnly=yes")
+        );
+        assert!(plan.notes.is_empty(), "{:?}", plan.notes);
+        // Without a token there is no bot helper to configure.
+        let plan = launch_env(&cfg, cfg.repos.first(), "/opt/ssf", false);
+        assert!(git_value(&plan, "credential.helper").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn launch_env_commits_as_the_configured_person() {
+        let dir = scratch_dir("launch-person");
+        let bot_key = dir.join("bot_ed25519");
+        std::fs::write(&bot_key, "k").unwrap();
+        let person_key = dir.join("id_ed25519");
+        std::fs::write(&person_key, "k").unwrap();
+        let mut cfg = Config::default();
+        cfg.github.login = Some("acme-bot".into());
+        cfg.github.ssh_key_path = Some(bot_key.to_string_lossy().to_string());
+        cfg.github.signing_key_id = Some(1);
+        cfg.git.name = Some("Ann Person".into());
+        cfg.git.email = Some("ann@example.com".into());
+        cfg.repos.push(RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..RepoConfig::default()
+        });
+        // A person with nothing else: unsigned, bot pushes the commits.
+        let plan = launch_env(&cfg, cfg.repos.first(), "/opt/ssf", true);
+        assert_eq!(env_value(&plan, "GIT_AUTHOR_NAME"), Some("Ann Person"));
+        assert_eq!(env_value(&plan, "GIT_COMMITTER_NAME"), Some("Ann Person"));
+        assert_eq!(
+            env_value(&plan, "GIT_AUTHOR_EMAIL"),
+            Some("ann@example.com")
+        );
+        assert_eq!(git_value(&plan, "user.name"), vec!["Ann Person"]);
+        assert_eq!(git_value(&plan, "user.email"), vec!["ann@example.com"]);
+        assert!(git_value(&plan, "gpg.format").is_empty());
+        assert_eq!(git_value(&plan, "commit.gpgsign"), vec!["false"]);
+        assert_eq!(git_value(&plan, "tag.gpgsign"), vec!["false"]);
+        assert_eq!(
+            git_value(&plan, "credential.helper"),
+            vec!["", "!/opt/ssf git-credential"]
+        );
+        // SSH remotes still go through the bot's key.
+        assert!(
+            env_value(&plan, "GIT_SSH_COMMAND")
+                .unwrap()
+                .contains("bot_ed25519")
+        );
+        // Their own key (no .pub next to it: the private path is used) and
+        // their own token, set on the repository.
+        cfg.repos[0].git.signing_key = Some(config::SigningKey::Path(
+            person_key.to_string_lossy().to_string(),
+        ));
+        cfg.repos[0].git.credential = Some("token:ann".into());
+        let plan = launch_env(&cfg, cfg.repos.first(), "/opt/ssf", true);
+        assert_eq!(git_value(&plan, "gpg.format"), vec!["ssh"]);
+        assert_eq!(
+            git_value(&plan, "user.signingkey"),
+            vec![person_key.to_string_lossy().as_ref()]
+        );
+        assert_eq!(git_value(&plan, "commit.gpgsign"), vec!["true"]);
+        assert_eq!(
+            git_value(&plan, "credential.helper"),
+            vec!["", "!/opt/ssf git-credential"],
+            "the token is looked up by the helper, per SSF_REPO"
+        );
+        // A helper string replaces ours; a missing key means unsigned, with a note.
+        cfg.repos[0].git.credential = Some("!gh auth git-credential".into());
+        cfg.repos[0].git.signing_key = Some(config::SigningKey::Path(
+            dir.join("gone").to_string_lossy().to_string(),
+        ));
+        let plan = launch_env(&cfg, cfg.repos.first(), "/opt/ssf", true);
+        assert_eq!(
+            git_value(&plan, "credential.helper"),
+            vec!["", "!gh auth git-credential"]
+        );
+        assert_eq!(git_value(&plan, "commit.gpgsign"), vec!["false"]);
+        assert!(
+            plan.notes.iter().any(|n| n.contains("gone")),
+            "{:?}",
+            plan.notes
+        );
+        // Another repository without an override is the instance identity.
+        let other = RepoConfig {
+            name: "o/s".into(),
+            harness: "claude".into(),
+            ..RepoConfig::default()
+        };
+        let plan = launch_env(&cfg, Some(&other), "/opt/ssf", true);
+        assert_eq!(env_value(&plan, "GIT_AUTHOR_NAME"), Some("Ann Person"));
+        assert_eq!(git_value(&plan, "commit.gpgsign"), vec!["false"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_set_writes_the_git_table_whole() {
+        let dir = scratch_dir("config-set-git");
+        let path = dir.join("config.toml");
+        // One half of an identity is refused, with the way to set both.
+        let err = config_set_at(&path, "git.name", "Ann", false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("ssf config set git '{"),
+            "{err:#}"
+        );
+        assert!(!path.exists());
+        config_set_at(
+            &path,
+            "git",
+            r#"{ name = "Ann Person", email = "ann@example.com" }"#,
+            false,
+        )
+        .unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.git.name.as_deref(), Some("Ann Person"));
+        assert_eq!(cfg.git.email.as_deref(), Some("ann@example.com"));
+        // With both there, one key at a time is fine.
+        config_set_at(&path, "git.email", "ann@work.example", false).unwrap();
+        config_set_at(&path, "git.signing_key", "false", false).unwrap();
+        config_set_at(&path, "git.credential", "token:ann", false).unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(cfg.git.email.as_deref(), Some("ann@work.example"));
+        assert_eq!(cfg.git.signing_key, Some(config::SigningKey::Off(false)));
+        assert_eq!(
+            cfg.git_identity(None).credential,
+            config::Credential::Token("ann".into())
+        );
+        assert!(config_set_at(&path, "git.credential", "token:", false).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn signing_key_flag_reads_false_as_off() {
+        assert_eq!(parse_signing_key("false"), config::SigningKey::Off(false));
+        assert_eq!(parse_signing_key(" OFF "), config::SigningKey::Off(false));
+        assert_eq!(
+            parse_signing_key("~/.ssh/id_ed25519"),
+            config::SigningKey::Path("~/.ssh/id_ed25519".into())
+        );
     }
 }

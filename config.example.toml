@@ -13,6 +13,16 @@
 # ssh_key_id = 0
 # signing_key_id = 0
 
+# Who the agents' commits are by, when not the bot: gh, the API and the
+# daemon stay the bot; only the commit author/committer (and, if you say
+# so, the signature and the push) become this person. A [[repo]] overrides
+# any key in its own [repo.git]. See docs/identity-and-bylines.md.
+[git]
+# name = "Ann Person"                          # author and committer; set with email or not at all
+# email = "ann@example.com"                    # an address verified on Ann's GitHub account, or her id+login@users.noreply.github.com
+# signing_key = "~/.ssh/id_ed25519"            # SSH key to sign with, or false; default: the bot's key for the bot, unsigned for a person
+# credential = "bot"                           # who pushes over HTTPS: bot | token:<gh login> | file:<token file> | a git credential helper string
+
 # What runs the agents: "herdr" (default) or "orca". A [[repo]] can pick
 # its own with `driver = "..."`. The default was Orca until 2026-09-06; a
 # file that leaves this unset runs its repositories in herdr, and
@@ -88,3 +98,8 @@ harness = "claude"                             # agent id: see `ssf agents`
 # instructions = "Run `make test` before opening a PR."
 # prompt_file = "SSF.md"                       # file appended to the initial prompt (see SSF.example.md); relative to the worktree unless absolute
 # allowed_users = ["mikekelly"]                # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
+# [repo.git]                                   # this repository's commit identity, each key over the [git] table above
+# name = "Ann Person"
+# email = "ann@example.com"
+# signing_key = "~/.ssh/id_ed25519"
+# credential = "token:ann"                     # push as @ann with the token gh holds for her (needs an HTTPS clone_url)

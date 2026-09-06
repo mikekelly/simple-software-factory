@@ -60,14 +60,21 @@ At every start the host writes a small seed disk with the `ssf` binary,
 `config.toml` rewritten for the guest (`driver = "herdr"`, clones under
 `/var/lib/ssf/projects`, no `repo.path`), the bot token (resolved the way
 `ssf token` does, so the host keyring itself is never copied), the bot's
-own SSH key if `ssf auth login` enrolled one, the ssh public key the host
-uses to reach the guest, and the files `vm.files` lists
+own SSH key if `ssf auth login` enrolled one, whatever a `[git]` or
+`[repo.git]` table names (a `signing_key` is copied to
+`~/.config/ssf/keys/`, a `token:<login>` is resolved from gh here and
+written to `~/.config/ssf/git-tokens/<login>`, a `file:` token is copied
+there too, and the guest config points at the copies; see [Committing as a
+person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)),
+the ssh public key the host uses to reach the guest, and the files `vm.files` lists
 (`files = ["~/.claude/.credentials.json"]` lands at the same place under
 the guest user's home; `src:dest` places a file elsewhere; see [Harness
 logins](#harness-logins) before copying a login that way). Nothing else
 from the host home is visible in the guest: no `~/.ssh`, no
 `~/.gitconfig`, no other accounts. Commits are signed only if the bot key
-is enrolled.
+is enrolled or `[git]` names a key. `ssf vm sync` moves `[git]` name and
+email into the running guest; a new key or token needs `ssf vm restart`,
+which writes the seed again (sync says so when the guest lacks one).
 
 ## Harness logins
 

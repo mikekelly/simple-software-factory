@@ -254,7 +254,9 @@ Click the factory icon in the bar, or open the Omarchy menu and pick
   token lacks the scopes for that (`repo`, `project`,
   `admin:public_key`, `admin:ssh_signing_key`), ssf asks gh to add them.
   `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
-  itself stays.
+  itself stays. If the commits should carry your own name rather than the
+  bot's, a `[git]` table in the config says so while `gh` stays the bot
+  (see [Committing as a person](docs/identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)).
 - **Watch a repository**: type `owner/name` and pick the agent that works it.
   The agent list comes from Omarchy's agent catalogue and only shows agents
   that are installed. (The configuration calls the agent program the
