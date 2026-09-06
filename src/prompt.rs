@@ -1082,6 +1082,38 @@ was interrupted and what remains."
     s
 }
 
+pub struct LoginBack<'a> {
+    /// The harness's display name (`Claude Code`).
+    pub harness: &'a str,
+    /// When the login prompt was first seen.
+    pub since: &'a str,
+    pub number: u64,
+    pub title: &'a str,
+    pub url: &'a str,
+    pub reviewer: bool,
+}
+
+/// The one message a session gets after its harness sat at a login prompt
+/// (an expired or revoked login) and has been started again now that the
+/// login is back. A resumed harness has its memory; a fresh one gets the
+/// item's story ahead of this.
+pub fn login_back_prompt(it: &LoginBack) -> String {
+    let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
+    let what = if it.reviewer {
+        format!("the reviewer session for pull request {item}")
+    } else {
+        format!("the session for {item}")
+    };
+    format!(
+        "[ssf] Your {} login expired at {} and has been restored: this terminal was started again \
+with your conversation resumed. This is {what}.\n\nNothing you sent while the login was gone \
+reached anyone, and no `[ssf]` message reached you; what happened on the item meanwhile follows \
+as further `[ssf]` messages. Work out where you got to (`git status`, `git log`, your last \
+comments) and carry on.",
+        it.harness, it.since
+    )
+}
+
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let item = short_ref(issue, ctx);

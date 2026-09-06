@@ -14,7 +14,7 @@ use crate::driver::Drivers;
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
 use crate::orca::WorkspaceInfo;
-use crate::state::{IssueState, State};
+use crate::state::{Blocked, IssueState, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
 /// the bar widget polls this, so it must never hang.
@@ -120,6 +120,47 @@ pub struct Session {
     /// The matching `orca worktree ps` row, verbatim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceInfo>,
+    /// The session cannot take prompts: its harness is at a login prompt
+    /// (`reason` is `login`; `harness`, `detail`, `since` say which, what
+    /// the screen showed and from when). Deliveries are held until the
+    /// login is back; a person has to sign the harness in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<BlockedView>,
+}
+
+/// A session's block, for `ssf status --json` and the widget.
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockedView {
+    pub reason: String,
+    pub harness: String,
+    pub detail: String,
+    pub since: String,
+    /// What a person runs to lift it.
+    pub fix: String,
+}
+
+impl BlockedView {
+    fn from(b: &Blocked) -> Self {
+        Self {
+            reason: b.reason.clone(),
+            harness: b.harness.clone(),
+            detail: b.detail.clone(),
+            since: b.since.clone(),
+            fix: crate::login::how_to_sign_in(&b.harness),
+        }
+    }
+
+    /// One line for a person: `Claude Code not signed in since 3m (Login
+    /// expired · Please run /login); `claude auth login` on the host`.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} not signed in since {} ({}); run {}",
+            crate::login::display_name(&self.harness),
+            ago(Some(&self.since)),
+            self.detail,
+            self.fix
+        )
+    }
 }
 
 impl Session {
@@ -226,6 +267,9 @@ impl Snapshot {
             // The wildcard allow-list is in effect somewhere: the widget
             // shows a warning while it is.
             "anyone_allowed": self.cfg.anyone_allowed_anywhere(),
+            // Sessions whose harness is not signed in (the widget shows an
+            // urgent line per one).
+            "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
             // Keyed `orca` from when it was the only driver; the widget reads it.
             "orca": {
                 "available": self.available(),
@@ -444,6 +488,7 @@ fn join(
         last_activity_at: ws.and_then(|w| w.last_activity_at.clone()),
         column: ws.and_then(|w| w.column.clone()),
         workspace: ws.cloned(),
+        blocked: item.blocked.as_ref().map(BlockedView::from),
     }
 }
 
@@ -546,6 +591,9 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             });
         }
         out.push_str(&format!("         {}\n", facts.join("  ·  ")));
+        if let Some(b) = &s.blocked {
+            out.push_str(&format!("         BLOCKED: {}\n", b.describe()));
+        }
         if let Some(t) = &s.tool {
             out.push_str(&format!("         tool: {}\n", one_line(t, 100)));
         }
@@ -603,6 +651,16 @@ pub fn render_status(snap: &Snapshot) -> String {
         out.push_str("\nno repositories configured\n");
     }
     let sessions = snap.sessions();
+    for s in sessions.iter().filter(|s| s.blocked.is_some()) {
+        out.push_str(&format!(
+            "BLOCKED: {}: {}\n",
+            s.id,
+            s.blocked
+                .as_ref()
+                .map(BlockedView::describe)
+                .unwrap_or_default()
+        ));
+    }
     for r in &snap.cfg.repos {
         out.push_str(&format!("\n{} (harness: {})\n", r.name, r.harness));
         out.push_str(&format!(
@@ -644,6 +702,9 @@ pub fn render_status(snap: &Snapshot) -> String {
                     "          workspace released {}\n",
                     ago(s.released_at.as_deref())
                 ));
+            }
+            if let Some(b) = &s.blocked {
+                out.push_str(&format!("          BLOCKED: {}\n", b.describe()));
             }
             if let Some(m) = &s.last_assistant_message {
                 out.push_str(&format!("          said: {}\n", one_line(m, 100)));
@@ -920,6 +981,52 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("said: Opened PR #2. Done."), "{text}");
+    }
+
+    #[test]
+    fn a_blocked_session_is_flagged_everywhere() {
+        let mut it = item(1, Some("r1::/w/one"));
+        it.blocked = Some(Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired · Please run /login".into(),
+            since: "2026-09-06T14:30:00Z".into(),
+            reported: true,
+            credential: None,
+            retried_at: None,
+        });
+        let st = state_with(vec![it, item(2, None)]);
+        let s = sessions(&cfg(), &st, Some(&[]));
+        let b = s[0].blocked.as_ref().unwrap();
+        assert_eq!(b.reason, "login");
+        assert!(b.fix.contains("claude auth login"), "{}", b.fix);
+        assert!(
+            b.describe().starts_with("Claude Code not signed in since"),
+            "{}",
+            b.describe()
+        );
+        assert!(s[1].blocked.is_none());
+        let table = render_peers(&s, None);
+        assert!(
+            table.contains("BLOCKED: Claude Code not signed in"),
+            "{table}"
+        );
+        let snap = Snapshot {
+            cfg: cfg(),
+            state: st,
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        let v = snap.to_json();
+        assert_eq!(v["blocked_sessions"], json!(["acme/widgets#1"]));
+        assert_eq!(v["sessions"][0]["blocked"]["harness"], "claude");
+        assert!(v["sessions"][1]["blocked"].is_null());
+        let text = render_status(&snap);
+        assert!(
+            text.contains("BLOCKED: acme/widgets#1: Claude Code not signed in"),
+            "{text}"
+        );
     }
 
     #[test]

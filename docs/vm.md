@@ -110,6 +110,20 @@ rotation Claude Code does on expiry, ends both; a guest agent that runs
 `claude auth logout` signs you out on the host. `ssf vm login` gives the
 guest a login of its own and never logs anything out.
 
+## Logins
+
+A copied credential is one shared login, not a second one: whatever the
+guest does to it (a logout, the token rotation a harness does on expiry)
+hits the host's session too, and vice versa. So never run a harness's
+logout in the guest on a copied file. When a login expires or is revoked
+under a running session, ssf notices (the session shows as blocked in
+`ssf status` and the widget, and its item gets one comment), holds its
+activity, and resumes the session on its own once the guest is signed in
+again (see [A harness that is not signed
+in](sessions.md#a-harness-that-is-not-signed-in)). `ssf doctor`, which
+runs inside the guest when `[vm] enabled`, has one line per harness the
+repositories use saying whether it is signed in there.
+
 ## What the agent can do there
 
 The `ssf` user has passwordless `sudo` for everything

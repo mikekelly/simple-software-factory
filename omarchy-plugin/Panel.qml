@@ -30,6 +30,10 @@ Panel {
   // The wildcard allow-list is in effect on some repository: anyone with a
   // GitHub account can drive the agents. Shown as a warning until it is not.
   readonly property bool anyoneAllowed: status && status.anyone_allowed === true
+  // Sessions whose harness sits at a login prompt: nothing reaches them
+  // until a person signs the harness in, so they are shown as urgent.
+  readonly property var blockedSessions: status && status.blocked_sessions instanceof Array ? status.blocked_sessions : []
+  readonly property int blockedCount: blockedSessions.length
   readonly property var repos: status && status.repos instanceof Array ? status.repos : []
   readonly property bool orcaAvailable: !status || !status.orca || status.orca.available !== false
   readonly property var sessions: liveSessions()
@@ -45,7 +49,7 @@ Panel {
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property color barIconColor: waitingCount > 0 || anyoneAllowed ? urgent
+  readonly property color barIconColor: waitingCount > 0 || anyoneAllowed || blockedCount > 0 ? urgent
     : serviceActive && signedIn ? barForeground : Qt.darker(barForeground, 1.55)
 
   // Cursor rows: repos first, then sessions, then the action strip.
@@ -95,7 +99,18 @@ Panel {
     return ""
   }
 
+  function isBlocked(s) { return !!(s && s.blocked && typeof s.blocked === "object") }
+
+  function blockedLine(s) {
+    var b = s.blocked
+    var name = String(b.harness || "harness")
+    if (name === "claude") name = "Claude Code"
+    else if (name === "codex") name = "Codex"
+    return name + " not signed in since " + (ago(b.since) || "?") + ": run " + String(b.fix || "its login")
+  }
+
   function agentLabel(s) {
+    if (isBlocked(s)) return "not signed in"
     switch (String(s.agent_state || "")) {
       case "working": return "working"
       case "waiting": return "waiting"
@@ -110,6 +125,7 @@ Panel {
   }
 
   function agentColor(s) {
+    if (isBlocked(s)) return urgent
     switch (String(s.agent_state || "")) {
       case "working": return foreground
       case "waiting": return urgent
@@ -124,8 +140,10 @@ Panel {
     return flat
   }
 
-  // What the agent is up to: its last message, else the tool it is running.
+  // What the agent is up to: its last message, else the tool it is running;
+  // for a blocked session, what a person has to do.
   function activityLine(s) {
+    if (isBlocked(s)) return "\uf071  " + blockedLine(s)
     if (s.last_assistant_message) return firstLine(s.last_assistant_message, 200)
     if (s.tool) return "▸ " + firstLine(s.tool, 200)
     return ""
@@ -184,6 +202,7 @@ Panel {
     if (!serviceEnabled) return "Service disabled"
     if (!serviceActive) return "Service not running"
     if (lastError !== "") return "Last pass failed"
+    if (blockedCount > 0) return blockedCount + (blockedCount === 1 ? " session" : " sessions") + " not signed in"
     if (anyoneAllowed) return "Open to anyone on GitHub"
     var n = sessions.length
     if (n === 0) return repos.length === 0 ? "No repositories watched" : "Watching " + repos.length + (repos.length === 1 ? " repository" : " repositories")
@@ -395,6 +414,17 @@ Panel {
         visible: root.anyoneAllowed
         width: parent.width
         text: "\uf071  allowed_users is \"*\": anyone with a GitHub account can drive the agents. Set the logins with `ssf repo set <repo> --allowed-users` or `ssf config set daemon.allowed_users`."
+        color: root.urgent
+        wrapMode: Text.Wrap
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      // ---- Harness login gone --------------------------------------------
+      Text {
+        visible: root.blockedCount > 0
+        width: parent.width
+        text: "\uf071  " + (root.blockedCount === 1 ? "A session's harness" : root.blockedCount + " sessions' harnesses") + " sat at a login prompt (login expired or missing): nothing reaches " + (root.blockedCount === 1 ? "it" : "them") + " until the harness is signed in again. See the session rows for the command; ssf resumes them on its own afterwards."
         color: root.urgent
         wrapMode: Text.Wrap
         font.family: root.fontFamily

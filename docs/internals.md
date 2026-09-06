@@ -87,6 +87,7 @@ driver. Its `sessions` array has one entry per item:
 | `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
 | `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
 | `origin`, `posts_by_session`, `untagged_posts` | attribution (see [Identity and bylines](identity-and-bylines.md)): the session that opened the item, how many posts each session made on it, and how many bot posts carry no tag |
+| `blocked` | set while the session cannot take prompts because its harness is at a login prompt: `reason` (`login`), `harness`, `detail` (what the screen said), `since`, `fix` (the command to run); `blocked_sessions` at the top lists the ids (see [A harness that is not signed in](sessions.md#a-harness-that-is-not-signed-in)) |
 | `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | the driver. `agent_state` is the driver's own (Orca: `working`, `waiting`, `done`, `open`; herdr: `idle`, `working`, `blocked`, `done`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (driver not running); `workspace` is the raw workspace row |
 
 `repos[].issues[]` carries the same objects, `repos[].allowed_users` says

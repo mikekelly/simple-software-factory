@@ -289,7 +289,7 @@ ssf agents                        # which agents Omarchy knows and which are ins
 ssf repo add acme/widgets --harness claude
 ssf status
 ssf peers                         # the agent sessions and what each is doing
-ssf doctor                        # token and scopes, drivers, harnesses, gh wrapper, daemon socket
+ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket
 ```
 
 Put an `SSF.md` at the root of the repository to tell agents how you want

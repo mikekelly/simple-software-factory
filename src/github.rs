@@ -618,6 +618,29 @@ impl GitHub {
         Ok(())
     }
 
+    /// Leave a comment on an issue or pull request; returns its URL.
+    pub async fn comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        body: &str,
+    ) -> Result<String> {
+        let url = self.url(&format!("repos/{owner}/{repo}/issues/{number}/comments"));
+        let resp = self
+            .post(&url)
+            .json(&serde_json::json!({ "body": body }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        let resp = Self::check(resp, &format!("commenting on {owner}/{repo}#{number}")).await?;
+        let v: Value = resp.json().await.unwrap_or(Value::Null);
+        Ok(v.get("html_url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string())
+    }
+
     /// Full timeline for an issue, oldest first, all pages.
     pub async fn timeline(&self, owner: &str, repo: &str, number: u64) -> Result<Vec<Value>> {
         let mut url = Some(format!(

@@ -13,6 +13,7 @@ use crate::config::{Config, RepoConfig};
 use crate::driver::{Driver, Drivers, Relaunch};
 use crate::github::{Conditional, GitHub, Issue, PrInfo};
 use crate::ipc::{Request, Response};
+use crate::login::{self, LoginState, Probe};
 use crate::orca::{Delivery, Worktree};
 use crate::origin::{self, Origin};
 use crate::prompt::{
@@ -21,7 +22,7 @@ use crate::prompt::{
 };
 use crate::release::{self, git};
 use crate::sessions;
-use crate::state::{Ignored, IssueState, State, now_iso};
+use crate::state::{Blocked, Ignored, IssueState, State, now_iso};
 use crate::status::{reviewer_session_id, session_id};
 
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
@@ -32,6 +33,45 @@ const MAX_DELIVERY_FAILURES: u32 = 5;
 /// workspace for a person. The synchronous refusal `ssf release` prints is
 /// not counted: only the daemon's own refusals can loop.
 pub const MAX_RELEASE_REFUSALS: u32 = 3;
+
+/// How long a blocked session waits between attempts to start its harness
+/// again when the login check cannot tell whether the login is back (or
+/// claims it is while the harness disagrees).
+const LOGIN_RETRY: Duration = Duration::from_secs(600);
+
+/// A block shorter than this gets no "resumed" comment on the item.
+const LOGIN_QUIET: Duration = Duration::from_secs(300);
+
+/// The delivery was refused because the session is blocked (its harness
+/// is not signed in): the prompt is not lost, the item's bookkeeping is
+/// left as it was, and the activity is delivered once the session is
+/// back. Not a failure to count against the item.
+#[derive(Debug, Clone)]
+pub struct SessionBlocked {
+    pub session: String,
+    pub blocked: Blocked,
+}
+
+impl std::fmt::Display for SessionBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the session on {} is blocked: {} is not signed in since {} ({}); sign in with {}",
+            self.session,
+            login::display_name(&self.blocked.harness),
+            self.blocked.since,
+            self.blocked.detail,
+            login::how_to_sign_in(&self.blocked.harness)
+        )
+    }
+}
+
+impl std::error::Error for SessionBlocked {}
+
+fn is_blocked(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.downcast_ref::<SessionBlocked>().is_some())
+}
 
 /// Marks an error from the reviewer side of a pull request, so it is
 /// counted against the reviewer session rather than the PR's own record.
@@ -71,6 +111,9 @@ pub struct Engine {
     /// so each is an info line once and debug after: `diff` walks whole
     /// timelines again for relaunch texts and stories.
     dropped_logged: std::sync::Mutex<BTreeSet<String>>,
+    /// Whether a harness is signed in where this daemon runs
+    /// (`login::probe`; the tests supply their own).
+    probe: std::sync::Arc<dyn Fn(&str) -> Probe + Send + Sync>,
 }
 
 /// The cached collaborator list of one repository.
@@ -216,6 +259,7 @@ impl Engine {
             collaborators: BTreeMap::new(),
             refused_reviews: BTreeMap::new(),
             dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
+            probe: std::sync::Arc::new(login::probe),
         })
     }
 
@@ -933,6 +977,9 @@ are resumed on the first pass that finds it: {err:#}"
     async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
         let (owner, name) = repo.split()?;
         self.refresh_collaborators(repo, owner, name).await?;
+        // Sessions whose harness sits at a login prompt are found (and
+        // brought back) before anything is delivered this pass.
+        self.check_logins(repo).await;
         let rs = self.state.repo_mut(&repo.name).clone();
 
         // Four listings, one per trigger. Each carries its own ETag; a 304
@@ -1092,6 +1139,11 @@ are resumed on the first pass that finds it: {err:#}"
                     self.failures
                         .remove(&(reviewer_session_id(&repo.name, 0), issue.number));
                 }
+                // Held, not failed: the item is looked at again when its
+                // listing changes, and in full once the session is back.
+                Err(e) if is_blocked(&e) => {
+                    debug!(repo = repo.name, issue = issue.number, "held: {e:#}");
+                }
                 Err(e) if e.downcast_ref::<ReviewerFailure>().is_some() => {
                     all_ok = false;
                     self.note_reviewer_failure(repo, issue.number, &e);
@@ -1112,9 +1164,26 @@ are resumed on the first pass that finds it: {err:#}"
             .map(|s| s.number)
             .collect();
         for number in stale {
-            if let Err(e) = self.retire_issue(repo, owner, name, number).await {
-                all_ok = false;
-                warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");
+            // A blocked session cannot be told its item closed; the item
+            // stays active in the record until the session is back.
+            let acting = Slot::Item(self.owner_of(repo, number));
+            if self.peek(repo, acting).is_some_and(|s| s.blocked.is_some()) {
+                debug!(
+                    repo = repo.name,
+                    issue = number,
+                    "retirement held: the session is blocked"
+                );
+                continue;
+            }
+            match self.retire_issue(repo, owner, name, number).await {
+                Ok(()) => {}
+                Err(e) if is_blocked(&e) => {
+                    debug!(repo = repo.name, issue = number, "retirement held: {e:#}");
+                }
+                Err(e) => {
+                    all_ok = false;
+                    warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");
+                }
             }
         }
 
@@ -1396,6 +1465,12 @@ are resumed on the first pass that finds it: {err:#}"
                     e.last_prompt_at = Some(now_iso());
                     e.prompts_sent += 1;
                 }
+                Err(e) if is_blocked(&e) => debug!(
+                    repo = repo.name,
+                    issue = issue.number,
+                    subscriber = sid,
+                    "subscriber not told: {e:#}"
+                ),
                 Err(e) => warn!(
                     repo = repo.name,
                     issue = issue.number,
@@ -1404,6 +1479,290 @@ are resumed on the first pass that finds it: {err:#}"
                 ),
             }
         }
+    }
+
+    // ---- sessions blocked on a login ------------------------------------
+
+    /// The sessions of a repository that can be blocked: the same ones the
+    /// startup pass looks at (owning, active, with a workspace).
+    async fn check_logins(&mut self, repo: &RepoConfig) {
+        let candidates = self.resume_candidates(repo);
+        if candidates.is_empty() {
+            return;
+        }
+        let ps = match self.driver(repo).ps().await {
+            Ok(p) => p,
+            Err(e) => {
+                debug!(repo = repo.name, "login check skipped: {e:#}");
+                return;
+            }
+        };
+        for slot in candidates {
+            let st = self.record(repo, slot).clone();
+            let Some(wt) = st.worktree_id.clone() else {
+                continue;
+            };
+            if let Some(b) = st.blocked.clone() {
+                self.recover(repo, slot, &st, b).await;
+                continue;
+            }
+            // Only an idle harness is read: a working one is not at a login
+            // prompt, and its screen may quote anything.
+            if ps.iter().any(|w| w.worktree_id == wt && w.is_working()) {
+                continue;
+            }
+            let handle = match self
+                .driver(repo)
+                .live_handle(&wt, st.terminal_handle.as_deref())
+                .await
+            {
+                Ok(Some(h)) => h,
+                _ => continue,
+            };
+            let Ok(screen) = self.driver(repo).screen(&handle).await else {
+                continue;
+            };
+            if let Some(detail) = crate::driver::login_dialog(&repo.harness, &screen.join("\n")) {
+                self.record(repo, slot).terminal_handle = Some(handle);
+                self.set_blocked(repo, slot, detail);
+                self.report_blocked(repo, slot).await;
+            }
+        }
+        if let Err(e) = self.state.save() {
+            error!("saving state: {e:#}");
+        }
+    }
+
+    /// Record that the session's harness is at a login prompt. Nothing is
+    /// delivered to it from now on; the item is told once (see
+    /// `report_blocked`) and the login is checked every pass.
+    fn set_blocked(&mut self, repo: &RepoConfig, slot: Slot, detail: String) -> Blocked {
+        let session = slot_id(&repo.name, slot);
+        let probe = (self.probe)(&repo.harness);
+        let e = self.record(repo, slot);
+        if let Some(b) = &e.blocked {
+            return b.clone();
+        }
+        warn!(
+            repo = repo.name,
+            session,
+            harness = repo.harness,
+            detail,
+            "session is blocked: {} is not signed in; sign in with {}",
+            login::display_name(&repo.harness),
+            login::how_to_sign_in(&repo.harness)
+        );
+        let b = Blocked {
+            reason: Blocked::LOGIN.into(),
+            harness: repo.harness.clone(),
+            detail,
+            since: now_iso(),
+            reported: false,
+            credential: probe.fingerprint,
+            retried_at: None,
+        };
+        e.blocked = Some(b.clone());
+        b
+    }
+
+    /// One comment on the session's item, as the session, saying the
+    /// harness is not signed in and how to fix it. Best effort: a comment
+    /// that cannot be posted is logged and not retried.
+    async fn report_blocked(&mut self, repo: &RepoConfig, slot: Slot) {
+        let st = self.record(repo, slot).clone();
+        let Some(b) = st.blocked.clone().filter(|b| !b.reported) else {
+            return;
+        };
+        let body = format!(
+            "{}\n\n[ssf] This session's {} login has expired or is missing: its terminal shows \
+`{}`, so nothing reaches the agent. Sign in with {}; ssf checks every pass and resumes the \
+session on its own once the login is back. Activity on this item is held until then.",
+            self.session_byline(repo, slot),
+            login::display_name(&b.harness),
+            b.detail,
+            login::how_to_sign_in(&b.harness)
+        );
+        self.record(repo, slot).blocked.as_mut().unwrap().reported = true;
+        match self.post_comment(repo, slot.number(), &body).await {
+            Ok(url) => info!(
+                repo = repo.name,
+                session = slot_id(&repo.name, slot),
+                url,
+                "told the item the session is blocked"
+            ),
+            Err(e) => warn!(
+                repo = repo.name,
+                session = slot_id(&repo.name, slot),
+                "could not tell the item the session is blocked: {e:#}"
+            ),
+        }
+    }
+
+    /// The first line of a post the daemon makes on behalf of a session:
+    /// the session's byline and origin tag, so the post reads as the
+    /// session's and is filtered as its own echo.
+    fn session_byline(&self, repo: &RepoConfig, slot: Slot) -> String {
+        match Origin::new(&repo.name, slot.number()) {
+            Some(o) => o.first_line(Some(&repo.name), false, slot.is_reviewer()),
+            None => String::new(),
+        }
+    }
+
+    async fn post_comment(&self, repo: &RepoConfig, number: u64, body: &str) -> Result<String> {
+        let (owner, name) = repo.split()?;
+        self.gh.comment(owner, name, number, body).await
+    }
+
+    /// A blocked session, once per pass: told the item if that is still
+    /// owed; lifted if its harness has moved past the login prompt (a
+    /// person ran `/login` in the terminal) or is gone (the next delivery
+    /// starts it again and checks); otherwise, when the login check says
+    /// the credential is back (a new credential file, or a signed-in
+    /// answer after the retry interval), the stuck harness is quit and
+    /// started again with its conversation resumed, then given one message
+    /// and, through the listings fetched afresh, whatever was held.
+    async fn recover(&mut self, repo: &RepoConfig, slot: Slot, st: &IssueState, b: Blocked) {
+        let session = slot_id(&repo.name, slot);
+        if !b.reported {
+            self.report_blocked(repo, slot).await;
+        }
+        let Some(wt) = st.worktree_id.clone() else {
+            return;
+        };
+        let handle = match self
+            .driver(repo)
+            .live_handle(&wt, st.terminal_handle.as_deref())
+            .await
+        {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                info!(
+                    session,
+                    "the blocked harness is gone; the next delivery starts it again"
+                );
+                self.unblock(repo, slot, &b, false).await;
+                return;
+            }
+            Err(e) => {
+                debug!(session, "cannot check the blocked session: {e:#}");
+                return;
+            }
+        };
+        let Ok(screen) = self.driver(repo).screen(&handle).await else {
+            return;
+        };
+        if crate::driver::login_dialog(&repo.harness, &screen.join("\n")).is_none() {
+            info!(
+                session,
+                "the harness is past its login prompt; deliveries resume"
+            );
+            self.unblock(repo, slot, &b, false).await;
+            return;
+        }
+        let probe = (self.probe)(&repo.harness);
+        let changed = probe.fingerprint.is_some() && probe.fingerprint != b.credential;
+        let last = b.retried_at.as_deref().unwrap_or(&b.since);
+        let due = changed || age(last) >= LOGIN_RETRY;
+        if probe.state == LoginState::SignedOut || !due {
+            debug!(session, state = ?probe.state, changed, "still blocked ({})", probe.detail);
+            return;
+        }
+        info!(
+            session,
+            state = ?probe.state,
+            changed,
+            "the login looks back ({}); starting the harness again",
+            probe.detail
+        );
+        if let Err(e) = self.driver(repo).stop_agent(&wt, &handle).await {
+            warn!(session, "could not quit the blocked harness: {e:#}");
+            if let Some(cur) = self.record(repo, slot).blocked.as_mut() {
+                cur.retried_at = Some(now_iso());
+                cur.credential = probe.fingerprint;
+            }
+            return;
+        }
+        self.record(repo, slot).blocked = None;
+        let text = prompt::login_back_prompt(&prompt::LoginBack {
+            harness: &login::display_name(&repo.harness),
+            since: &b.since,
+            number: st.number,
+            title: &st.title,
+            url: &st.html_url,
+            reviewer: slot.is_reviewer(),
+        });
+        match self.deliver(repo, slot, &text, None).await {
+            Ok(d) => {
+                let e = self.record(repo, slot);
+                e.terminal_handle = Some(d.handle);
+                e.last_prompt_at = Some(now_iso());
+                e.prompts_sent += 1;
+                self.unblock(repo, slot, &b, true).await;
+            }
+            Err(e) if is_blocked(&e) => {
+                // The harness came back to the same prompt: the login is
+                // not really there. Keep the old record (the item has been
+                // told), note the attempt.
+                warn!(session, "started again, still at a login prompt: {e:#}");
+                if let Some(cur) = self.record(repo, slot).blocked.as_mut() {
+                    cur.since = b.since.clone();
+                    cur.reported = b.reported;
+                    cur.credential = probe.fingerprint;
+                    cur.retried_at = Some(now_iso());
+                }
+            }
+            Err(e) => {
+                warn!(session, "could not start the harness again: {e:#}");
+                let e = self.record(repo, slot);
+                e.blocked = Some(Blocked {
+                    retried_at: Some(now_iso()),
+                    credential: probe.fingerprint,
+                    ..b
+                });
+            }
+        }
+    }
+
+    /// The session is back: forget the block, fetch every listing in full
+    /// on this pass so what was held is delivered, and, unless it was
+    /// quick, say so on the item.
+    async fn unblock(&mut self, repo: &RepoConfig, slot: Slot, b: &Blocked, relaunched: bool) {
+        self.record(repo, slot).blocked = None;
+        self.forget_etags(repo);
+        let down = age(&b.since);
+        if down < LOGIN_QUIET {
+            return;
+        }
+        let mins = down.as_secs() / 60;
+        let body = format!(
+            "{}\n\n[ssf] {} is signed in again; the session {} after {mins} minute{}, and what \
+happened here meanwhile is being delivered to it.",
+            self.session_byline(repo, slot),
+            login::display_name(&b.harness),
+            if relaunched {
+                "was started again with its conversation resumed"
+            } else {
+                "carried on"
+            },
+            if mins == 1 { "" } else { "s" }
+        );
+        if let Err(e) = self.post_comment(repo, slot.number(), &body).await {
+            warn!(
+                repo = repo.name,
+                session = slot_id(&repo.name, slot),
+                "could not tell the item the session resumed: {e:#}"
+            );
+        }
+    }
+
+    /// Make the next listings full ones, so every item involving the bot
+    /// is looked at again whatever the ETags said.
+    fn forget_etags(&mut self, repo: &RepoConfig) {
+        let rs = self.state.repo_mut(&repo.name);
+        rs.issues_etag = None;
+        rs.mentioned_etag = None;
+        rs.pulls_etag = None;
+        rs.created_etag = None;
     }
 
     fn note_failure(&mut self, repo: &RepoConfig, number: u64, err: &anyhow::Error) {
@@ -3169,6 +3528,29 @@ are resumed on the first pass that finds it: {err:#}"
             Some(id) => self.driver(repo).worktree_exists(id).await?,
             None => false,
         };
+        // A session at a login prompt takes nothing; the prompt is held.
+        // With the stuck harness gone the delivery goes ahead: starting it
+        // again is the way to find out whether the login is back.
+        if let Some(b) = st.blocked.clone() {
+            let stuck = alive
+                && match st.worktree_id.as_deref() {
+                    Some(id) => self.driver(repo).has_live_agent(id).await.unwrap_or(false),
+                    None => false,
+                };
+            if stuck {
+                return Err(SessionBlocked {
+                    session: slot_id(&repo.name, target),
+                    blocked: b,
+                }
+                .into());
+            }
+            debug!(
+                repo = repo.name,
+                session = slot_id(&repo.name, target),
+                "blocked harness is gone; delivering (and checking) anyway"
+            );
+            self.record(repo, target).blocked = None;
+        }
         if !alive {
             self.rehydrate(repo, target).await?;
         }
@@ -3241,6 +3623,20 @@ are resumed on the first pass that finds it: {err:#}"
             );
         }
         self.record(repo, target).terminal_handle = Some(d.handle.clone());
+        // A harness started again on a machine that is not signed in shows
+        // its login prompt instead of taking the prompt: the session is
+        // blocked from here, and the prompt is held for later.
+        if d.relaunched
+            && let Ok(screen) = self.driver(repo).screen(&d.handle).await
+            && let Some(detail) = crate::driver::login_dialog(&repo.harness, &screen.join("\n"))
+        {
+            let b = self.set_blocked(repo, target, detail);
+            return Err(SessionBlocked {
+                session: slot_id(&repo.name, target),
+                blocked: b,
+            }
+            .into());
+        }
         if let (Slot::Item(n), Slot::Item(t)) = (slot, target)
             && t != n
         {
@@ -3989,6 +4385,18 @@ fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
         })
 }
 
+/// How long ago an RFC 3339 time was (zero when it cannot be read).
+fn age(iso: &str) -> Duration {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .and_then(|t| {
+            (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+                .to_std()
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
@@ -4067,6 +4475,11 @@ mod tests {
             collaborators: BTreeMap::new(),
             refused_reviews: BTreeMap::new(),
             dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
+            probe: std::sync::Arc::new(|_| Probe {
+                state: LoginState::Unknown,
+                detail: "test".into(),
+                fingerprint: None,
+            }),
         }
     }
 
@@ -4819,6 +5232,8 @@ mod tests {
         /// list is served with an ETag that changes when it is set.
         collaborators: std::sync::Arc<std::sync::Mutex<Option<Vec<Value>>>>,
         collab_version: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        /// Comments posted (`/repos/o/r/issues/N/comments`), in order.
+        posts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     impl GitHubStub {
@@ -4836,6 +5251,8 @@ mod tests {
             let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
             let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
             let collab_version = Arc::new(AtomicU32::new(1));
+            let posts: Arc<Mutex<Vec<String>>> = Arc::default();
+            let p = posts.clone();
             let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
             let (a, t, k, kv) = (
                 assigned.clone(),
@@ -4863,11 +5280,9 @@ mod tests {
                     }
                     let head = String::from_utf8_lossy(&buf).to_string();
                     let mut lines = head.lines();
-                    let target = lines
-                        .next()
-                        .and_then(|l| l.split(' ').nth(1))
-                        .unwrap_or("")
-                        .to_string();
+                    let first = lines.next().unwrap_or("").to_string();
+                    let method = first.split(' ').next().unwrap_or("").to_string();
+                    let target = first.split(' ').nth(1).unwrap_or("").to_string();
                     let if_none_match = lines.find_map(|l| {
                         let (k, val) = l.split_once(':')?;
                         k.eq_ignore_ascii_case("if-none-match")
@@ -4875,9 +5290,14 @@ mod tests {
                     });
                     h.lock().unwrap().push(target.clone());
                     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-                    let (status, etag, body) = if path == "/repos/o/r/issues"
-                        && query.starts_with("creator=")
-                    {
+                    let (status, etag, body) = if method == "POST" && path.ends_with("/comments") {
+                        p.lock().unwrap().push(path.to_string());
+                        (
+                            "201 Created",
+                            "\"p\"".to_string(),
+                            r#"{"html_url":"https://gh/comment"}"#.to_string(),
+                        )
+                    } else if path == "/repos/o/r/issues" && query.starts_with("creator=") {
                         let etag = format!("\"c{}\"", v.load(Ordering::SeqCst));
                         if if_none_match.as_deref() == Some(etag.as_str()) {
                             ("304 Not Modified", etag, String::new())
@@ -4942,7 +5362,13 @@ mod tests {
                 timelines,
                 collaborators,
                 collab_version,
+                posts,
             }
+        }
+
+        /// The comment endpoints posted to since the last call.
+        fn posts(&self) -> Vec<String> {
+            std::mem::take(&mut *self.posts.lock().unwrap())
         }
 
         fn set_collaborators(&self, list: Option<Vec<Value>>) {
@@ -5358,6 +5784,261 @@ mod tests {
         assert_eq!(st.release_refusals, 1);
         assert!(st.worktree_id.is_some());
     }
+    // ---- sessions blocked on a login ------------------------------------
+
+    const LOGIN_SCREEN: &[&str] = &[
+        "❯ [ssf] New activity on #5:",
+        "",
+        "  Login expired · Please run /login",
+        "",
+        "❯ ",
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+    ];
+    const READY_SCREEN: &[&str] = &["⏺ Done.", "", "❯ ", "  ⏵⏵ bypass permissions on"];
+
+    /// An engine on the stub driver with item 5 seeded on workspace `w5`,
+    /// its agent live in terminal `t5` showing `screen`.
+    fn blocked_setup(stub: &GitHubStub, screen: &[&str]) -> (Engine, crate::driver::StubDriver) {
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![repo()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        let st = e.entry(&repo(), 5);
+        st.title = "Fix the widget".into();
+        st.html_url = "https://gh/5".into();
+        st.worktree_id = Some("w5".into());
+        st.worktree_path = Some("/w/5".into());
+        st.terminal_handle = Some("t5".into());
+        st.agent_session_id = Some("sess-5".into());
+        st.updated_at = Some("u1".into());
+        d.seed("w5", "t5", screen);
+        (e, d)
+    }
+
+    fn probe_returning(e: &mut Engine, state: LoginState, fingerprint: Option<&str>) {
+        let fp = fingerprint.map(str::to_string);
+        e.probe = std::sync::Arc::new(move |_| Probe {
+            state,
+            detail: "test".into(),
+            fingerprint: fp.clone(),
+        });
+    }
+
+    #[tokio::test]
+    async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+        probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
+        // New activity on the item this pass.
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(
+            5,
+            vec![assigned_by(1, "alice"), comment(2, "alice", "please hurry")],
+        );
+        e.tick_repo(&repo()).await.unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().expect("blocked");
+        assert_eq!(b.reason, "login");
+        assert_eq!(b.harness, "claude");
+        assert_eq!(b.detail, "Login expired · Please run /login");
+        assert!(b.reported);
+        assert_eq!(b.credential.as_deref(), Some("cred-old"));
+        // The item was told once, as the session.
+        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        // Nothing was pasted, and the activity is still owed: `updated_at`
+        // did not move, the comment is not marked seen, no failure counted.
+        assert!(d.log().is_empty(), "no delivery into a blocked session");
+        assert_eq!(st.updated_at.as_deref(), Some("u1"));
+        assert!(!st.seen.contains_key("comment:2"), "{:?}", st.seen.keys());
+        assert!(e.failures.is_empty());
+        // A second pass: still blocked, still one comment, still nothing pasted.
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(stub.posts().is_empty());
+        assert!(d.log().is_empty());
+        assert!(e.entry(&repo(), 5).blocked.is_some());
+        // Direct deliveries (a tell, a subscriber's FYI) are refused with
+        // the reason, not silently lost.
+        let err = e
+            .deliver(&repo(), Slot::Item(5), "hello", None)
+            .await
+            .unwrap_err();
+        assert!(is_blocked(&err), "{err:#}");
+        assert!(
+            err.to_string().contains("Claude Code is not signed in"),
+            "{err:#}"
+        );
+        assert!(err.to_string().contains("claude auth login"), "{err:#}");
+        let err = e.tell(None, "o/r#5", "hello").await.unwrap_err();
+        assert!(is_blocked(&err), "{err:#}");
+        assert!(d.log().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_blocked_session_is_started_again_once_the_login_is_back() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+        let since = (chrono::Utc::now() - chrono::Duration::minutes(12))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        e.entry(&repo(), 5).blocked = Some(Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired · Please run /login".into(),
+            since: since.clone(),
+            reported: true,
+            credential: Some("cred-old".into()),
+            retried_at: None,
+        });
+        e.state.repo_mut("o/r").issues_etag = Some("etag".into());
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        // Signed out: nothing happens.
+        probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(e.entry(&repo(), 5).blocked.is_some());
+        assert!(d.log().is_empty());
+        assert!(stub.posts().is_empty());
+        // Signed in, same credential, block younger than the retry
+        // interval as far as the record says? It is 12 minutes old, so
+        // the retry is due; make it fresh first to see it held back.
+        e.entry(&repo(), 5).blocked.as_mut().unwrap().retried_at = Some(now_iso());
+        probe_returning(&mut e, LoginState::SignedIn, Some("cred-old"));
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(e.entry(&repo(), 5).blocked.is_some());
+        assert!(d.log().is_empty(), "not due yet");
+        // A new credential file: the harness is quit and started again
+        // with its conversation resumed, given the login-back message,
+        // the listings are fetched afresh and the item is told.
+        probe_returning(&mut e, LoginState::SignedIn, Some("cred-new"));
+        d.with(|s| s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect());
+        e.tick_repo(&repo()).await.unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "{:?}", st.blocked);
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5");
+        assert_eq!(log[1], "relaunch:w5:true");
+        assert!(
+            log[2].starts_with("deliver:w5:[ssf] Your Claude Code login expired at"),
+            "{log:?}"
+        );
+        assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+        assert_eq!(st.prompts_sent, 1);
+        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        // ETags were dropped by the recovery, then set again by the pass.
+        assert!(e.state.repos["o/r"].issues_etag.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_harness_started_again_onto_the_login_prompt_stays_blocked_quietly() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+        let since = (chrono::Utc::now() - chrono::Duration::minutes(30))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        e.entry(&repo(), 5).blocked = Some(Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired · Please run /login".into(),
+            since: since.clone(),
+            reported: true,
+            credential: Some("cred-old".into()),
+            retried_at: None,
+        });
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        // The check claims signed in but the harness comes back to the
+        // same prompt: the record keeps its start, no second comment, and
+        // the next attempt waits for the retry interval.
+        probe_returning(&mut e, LoginState::Unknown, None);
+        d.with(|s| s.relaunch_screen = LOGIN_SCREEN.iter().map(|l| l.to_string()).collect());
+        e.tick_repo(&repo()).await.unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.expect("still blocked");
+        assert_eq!(b.since, since);
+        assert!(b.reported);
+        assert!(b.retried_at.is_some());
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5");
+        assert_eq!(log[1], "relaunch:w5:true");
+        assert!(stub.posts().is_empty(), "the item was told already");
+        // And not again on the very next pass.
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(d.log().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_person_signing_in_at_the_terminal_lifts_the_block_without_a_restart() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+        e.entry(&repo(), 5).blocked = Some(Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired · Please run /login".into(),
+            since: now_iso(),
+            reported: true,
+            credential: None,
+            retried_at: None,
+        });
+        e.state.repo_mut("o/r").issues_etag = Some("etag".into());
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(
+            5,
+            vec![assigned_by(1, "alice"), comment(2, "alice", "go on")],
+        );
+        probe_returning(&mut e, LoginState::Unknown, None);
+        e.tick_repo(&repo()).await.unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none());
+        // No restart, and the held activity went in on the same pass.
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(
+            log[0].starts_with("deliver:w5:[ssf] New activity"),
+            "{log:?}"
+        );
+        assert_eq!(st.updated_at.as_deref(), Some("u2"));
+        // Quick, so no "resumed" comment.
+        assert!(stub.posts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_relaunch_that_lands_on_a_login_prompt_blocks_the_session() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+        // The agent is gone (a reboot); the machine is not signed in.
+        d.with(|s| {
+            s.live.clear();
+            s.relaunch_screen = LOGIN_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        probe_returning(&mut e, LoginState::SignedOut, None);
+        let err = e
+            .deliver(&repo(), Slot::Item(5), "[ssf] hello", None)
+            .await
+            .unwrap_err();
+        assert!(is_blocked(&err), "{err:#}");
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().expect("blocked");
+        assert!(!b.reported, "the comment is left to the pass");
+        assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+        let log = d.log();
+        assert_eq!(log[0], "relaunch:w5:true");
+        // The next pass reports it, once.
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(e.entry(&repo(), 5).blocked.as_ref().unwrap().reported);
+        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(stub.posts().is_empty());
+        // A working agent is never read for a login prompt.
+        let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+        d.with(|s| {
+            s.working.insert("w5".into());
+        });
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        e.tick_repo(&repo()).await.unwrap();
+        assert!(e.entry(&repo(), 5).blocked.is_none());
+    }
+
     fn assigned_item(number: u64, author: &str, updated_at: &str) -> Value {
         json!({
             "number": number, "title": "t", "body": "do it", "html_url": format!("https://gh/{number}"),

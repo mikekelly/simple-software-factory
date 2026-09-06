@@ -200,6 +200,45 @@ pub struct IssueState {
     /// but no workspace, no owner and no session of its own.
     #[serde(default)]
     pub subscriber_only: bool,
+    /// The session's harness cannot act: its screen shows a login prompt
+    /// (see [`Blocked`]). Nothing is delivered while this is set; the
+    /// daemon checks every pass whether the login is back and resumes the
+    /// session itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked: Option<Blocked>,
+}
+
+/// Why a session cannot take prompts, and what has been done about it.
+/// Only one reason exists so far: the harness is not signed in (its login
+/// expired, was revoked, or was never there). The record keeps what the
+/// screen said, when it was seen, whether the item has been told, the
+/// credential file's identity at the time (a new login rewrites it) and
+/// when the harness was last started again to check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Blocked {
+    /// `login` for now.
+    pub reason: String,
+    /// The harness that showed the prompt.
+    #[serde(default)]
+    pub harness: String,
+    /// The screen line that gave it away.
+    #[serde(default)]
+    pub detail: String,
+    pub since: String,
+    /// A comment saying so has been left on the session's item.
+    #[serde(default)]
+    pub reported: bool,
+    /// `login::fingerprint` of the credential when the block was noticed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    /// When the harness was last started again to see whether the login
+    /// is back (bounded to every ten minutes when the check cannot tell).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retried_at: Option<String>,
+}
+
+impl Blocked {
+    pub const LOGIN: &'static str = "login";
 }
 
 pub fn state_path() -> PathBuf {

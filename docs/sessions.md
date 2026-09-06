@@ -193,6 +193,59 @@ even when A is subscribed to B's issue. This is the default channel between
 agents: `ssf guide` says so, and a `tell` message repeats in one line that
 the answer goes on the item.
 
+## A harness that is not signed in
+
+A harness login can go away under a running session: the token expires,
+or it is revoked (a logout elsewhere on a copied credential does that,
+see [Inside a microVM](vm.md#logins)). Claude Code then answers every
+prompt with `Login expired · Please run /login` and waits; the other
+harnesses show their sign-in screens. Nothing inside the session can fix
+it, and to the driver the agent looks alive and idle, so without help ssf
+would keep pasting activity into a terminal that cannot act.
+
+So every pass, for each session whose agent is idle, ssf reads the bottom
+of its screen and, if it shows the harness's login prompt (the phrases
+are the harnesses' own: `Please run /login`, `Select login method`,
+`Sign in with ChatGPT`, `How would you like to authenticate`, `Use /login
+to log into a provider`, and so on; `driver::login_dialog` has the list
+per harness), marks the session **blocked**:
+
+- **Told once.** One comment lands on the session's item, as the session
+  (`🤖#N says:` ... `[ssf] This session's Claude Code login has expired or
+  is missing ... Sign in with `claude auth login` on the host`; inside the
+  VM the fix is `ssf vm login claude`), the log gets a warning, and the
+  session shows as blocked in `ssf status` (a `BLOCKED:` line naming the
+  harness, since when, what the screen said and the command to run;
+  `--json` carries it as `blocked` on the session and `blocked_sessions`
+  at the top), in `ssf peers`, and in the bar widget (urgent, with the
+  same line on the session's row).
+- **Nothing is delivered.** Activity on the item, tells, FYIs and the
+  closing message are held: the item's bookkeeping is left as it was
+  (`updated_at`, the seen events), so what happened meanwhile is
+  delivered in full once the session is back. `ssf tell` to a blocked
+  session is refused with the reason. A harness that ssf starts again
+  (after a reboot, say) and that comes up on its login screen is caught
+  the same way.
+- **Checked every pass.** ssf asks the harness where it runs (the host,
+  or the guest with the factory in a VM): `claude auth status --json`
+  for Claude Code, `codex login status` for Codex, the credential file
+  (`~/.gemini/oauth_creds.json`, `~/.pi/agent/auth.json`, ...) or an API
+  key in the environment for the others. When the login is back (a new
+  credential file, or a signed-in answer, retried at most every ten
+  minutes when the check cannot tell), ssf quits the stuck harness, starts
+  it again with its conversation resumed, gives it one message saying
+  what happened, and fetches every listing in full so the held activity
+  follows. A person who runs `/login` in the terminal instead lifts the
+  block on the next pass with no restart. If the block lasted more than
+  five minutes the item gets one more comment saying the session resumed.
+
+`ssf doctor` prints one line per harness the configured repositories use
+(`Claude Code signed in on the host (claude auth status: signed in)`, or
+`FAIL ... not signed in ...` with the command to run; `note ... cannot
+tell` for a harness ssf has no check for, such as Copilot's keyring), and
+with the factory in a VM it is forwarded into the guest, so the check
+happens where the agents are.
+
 ## Workspaces after close: release and purge
 
 ssf never deletes a workspace that might hold unpushed work. Closing an

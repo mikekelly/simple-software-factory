@@ -757,6 +757,36 @@ impl Orca {
         Ok(())
     }
 
+    /// The live agent terminal a delivery would paste into: `preferred`
+    /// if it is still one, else any.
+    pub async fn live_handle(
+        &self,
+        worktree_id: &str,
+        preferred: Option<&str>,
+    ) -> Result<Option<String>> {
+        let terminals = self.list_terminals(worktree_id).await?;
+        let alive = |t: &Terminal| t.agent_identity.is_some() && t.connected && t.writable;
+        Ok(preferred
+            .and_then(|h| terminals.iter().find(|t| t.handle == h && alive(t)))
+            .or_else(|| terminals.iter().find(|t| alive(t)))
+            .map(|t| t.handle.clone()))
+    }
+
+    /// Close the agent's terminal (Orca ends the process with it) and wait
+    /// until the workspace has no live agent, so the next delivery starts
+    /// the harness again rather than pasting into a dead one.
+    pub async fn stop_agent(&self, worktree_id: &str, handle: &str) -> Result<()> {
+        self.run(&["terminal", "close", "--terminal", handle])
+            .await?;
+        for _ in 0..10 {
+            if !self.has_live_agent(worktree_id).await? {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        bail!("{handle} is still a live agent terminal after being closed")
+    }
+
     /// Paste `text` into the terminal as one bracketed-paste block, then press Enter.
     pub async fn send_prompt(&self, handle: &str, text: &str) -> Result<()> {
         let pasted = format!("{PASTE_START}{}{PASTE_END}", text.trim_end());
