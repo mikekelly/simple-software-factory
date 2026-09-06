@@ -189,6 +189,13 @@ configuration, and how the pieces above are put together.
 
 ## Install
 
+**Install the setup skill.** If a coding agent (Claude Code, Codex, Cursor,
+...) is going to set ssf up for you, `npx skills add
+mikekelly/simple-software-factory` installs the `ssf-setup` skill from
+[`skills/ssf-setup`](skills/ssf-setup/SKILL.md): a guided walk through the
+steps below and the decisions at each one. Then ask the agent to set up ssf
+(`/ssf-setup` in Claude Code).
+
 ssf runs on [Omarchy](https://omarchy.org/). Install
 [Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in, or install
 [herdr](https://herdr.dev/) and set `driver = "herdr"` (see
@@ -540,7 +547,7 @@ plus Firecracker's seccomp filter.
 ```
 ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)
 ssf config set vm.enabled true
-ssf ui service restart    # or: ssf vm start
+systemctl --user restart ssf.service   # or: ssf vm start
 ssf status                # runs inside the guest from now on
 ssf vm attach             # herdr in the guest, in this terminal
 ```
@@ -1117,6 +1124,21 @@ SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # live-test t
 omarchy plugin validate ./omarchy-plugin
 ```
 
+To run a dev build as the service, install the package once (for the unit
+and the widget) and point the unit at the build with a drop-in, then
+`systemctl --user daemon-reload && systemctl --user restart ssf.service`.
+Keep the build outside any worktree an agent might release, and remove the
+drop-in when the package is reinstalled from master:
+
+```ini
+# ~/.config/systemd/user/ssf.service.d/dev-build.conf
+[Service]
+ExecStartPre=
+ExecStartPre=-/home/you/src/simple-software-factory/target/release/ssf ui install --quiet
+ExecStart=
+ExecStart=/home/you/src/simple-software-factory/target/release/ssf run
+```
+
 Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
 (the polling loop), `src/sessions.rs` (agent session capture and resume),
@@ -1125,4 +1147,5 @@ Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/status.rs` (the joined item/session view behind `status`, `peers` and the
 widget), `src/ui.rs` (Omarchy integration),
 `omarchy-plugin/` (Quickshell bar widget), `bin/ssf-ui` (menu flows),
-`packaging/` (PKGBUILD, systemd unit, pacman install script).
+`packaging/` (PKGBUILD, systemd unit, pacman install script), `skills/`
+(the `ssf-setup` agent skill, installed with `npx skills add`).
