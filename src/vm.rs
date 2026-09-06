@@ -259,7 +259,7 @@ impl Vm {
             .cfg
             .ssh_port
             .checked_add(1)
-            .unwrap_or(self.cfg.ssh_port - 1);
+            .unwrap_or_else(|| self.cfg.ssh_port.saturating_sub(1));
         let gv = self.spawn_gvproxy(&boot, port)?;
         let result = self.provision(&boot, &console).await;
         kill(gv, libc::SIGTERM);
