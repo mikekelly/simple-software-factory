@@ -5,6 +5,7 @@
 //! into that agent.
 
 mod agents;
+mod allow;
 mod config;
 mod driver;
 mod engine;
@@ -29,7 +30,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use std::io::{IsTerminal, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 use config::{Config, RepoConfig, split_repo_name};
@@ -358,6 +359,13 @@ enum RepoCommand {
         /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
         #[arg(long, value_name = "PATH")]
         prompt_file: Option<String>,
+        /// Logins that may drive this repository, comma-separated, replacing daemon.allowed_users
+        /// (default: the collaborators with push access); `*` means anyone and needs --accept-anyone-risk.
+        #[arg(long, value_name = "LOGINS")]
+        allowed_users: Option<String>,
+        /// Accept that `--allowed-users '*'` lets ANYONE on GitHub drive this repository.
+        #[arg(long)]
+        accept_anyone_risk: bool,
     },
     /// Change some settings of a watched repository, keeping the rest.
     Set {
@@ -387,7 +395,14 @@ enum RepoCommand {
         /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
         #[arg(long, value_name = "PATH")]
         prompt_file: Option<String>,
-        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file.
+        /// Logins that may drive this repository, comma-separated, replacing daemon.allowed_users;
+        /// `*` means anyone and needs --accept-anyone-risk.
+        #[arg(long, value_name = "LOGINS")]
+        allowed_users: Option<String>,
+        /// Accept that `--allowed-users '*'` lets ANYONE on GitHub drive this repository.
+        #[arg(long)]
+        accept_anyone_risk: bool,
+        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file, allowed_users.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },
@@ -414,7 +429,13 @@ enum ConfigCommand {
     /// Read one setting, e.g. `ssf config get daemon.poll_interval_secs`.
     Get { key: String },
     /// Change one setting, e.g. `ssf config set daemon.poll_interval_secs 60`.
-    Set { key: String, value: String },
+    Set {
+        key: String,
+        value: String,
+        /// Accept that `daemon.allowed_users '["*"]'` lets ANYONE on GitHub drive the factory.
+        #[arg(long)]
+        accept_anyone_risk: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1201,6 +1222,8 @@ fn repo(command: RepoCommand) -> Result<()> {
             effort,
             instructions,
             prompt_file,
+            allowed_users,
+            accept_anyone_risk,
         } => {
             let (owner, r) = split_repo_name(&name)?;
             let name = format!("{owner}/{r}");
@@ -1210,7 +1233,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             if driver == Some(config::DriverKind::Herdr) {
                 check_herdr_harness(&harness);
             }
-            let entry = RepoConfig {
+            let mut entry = RepoConfig {
                 name: name.clone(),
                 harness,
                 driver,
@@ -1222,8 +1245,13 @@ fn repo(command: RepoCommand) -> Result<()> {
                 base_branch,
                 instructions,
                 prompt_file,
+                allowed_users: None,
+                accepted_anyone_risk: false,
             };
             entry.validate_launch_prefs()?;
+            if let Some(list) = allowed_users {
+                set_repo_allowed_users(&mut entry, &list, accept_anyone_risk)?;
+            }
             let action = if let Some(pos) = cfg
                 .repos
                 .iter()
@@ -1251,6 +1279,8 @@ fn repo(command: RepoCommand) -> Result<()> {
             effort,
             instructions,
             prompt_file,
+            allowed_users,
+            accept_anyone_risk,
             clear,
         } => {
             let pos = cfg
@@ -1306,6 +1336,9 @@ fn repo(command: RepoCommand) -> Result<()> {
             if prompt_file.is_some() {
                 entry.prompt_file = prompt_file;
             }
+            if let Some(list) = allowed_users {
+                set_repo_allowed_users(entry, &list, accept_anyone_risk)?;
+            }
             for field in clear {
                 match field.as_str() {
                     "driver" => entry.driver = None,
@@ -1317,6 +1350,10 @@ fn repo(command: RepoCommand) -> Result<()> {
                     "effort" => entry.effort = None,
                     "instructions" => entry.instructions = None,
                     "prompt_file" => entry.prompt_file = None,
+                    "allowed_users" => {
+                        entry.allowed_users = None;
+                        entry.accepted_anyone_risk = false;
+                    }
                     other => bail!("cannot clear unknown field {other}"),
                 }
             }
@@ -1363,6 +1400,9 @@ fn repo(command: RepoCommand) -> Result<()> {
                 if let Some(b) = &r.base_branch {
                     extra.push(format!("base={b}"));
                 }
+                if let Some(a) = &r.allowed_users {
+                    extra.push(format!("allowed_users={}", a.join(",")));
+                }
                 println!(
                     "{:<40} harness={}{}",
                     r.name,
@@ -1388,6 +1428,71 @@ fn expand_checkout(path: Option<String>) -> Result<Option<String>> {
     Ok(Some(p.to_string_lossy().to_string()))
 }
 
+/// Parse a comma-separated `--allowed-users` value: logins, or `*`.
+fn parse_allowed_users(list: &str) -> Vec<String> {
+    list.split([',', ' '])
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.trim_start_matches('@').to_string())
+        .collect()
+}
+
+/// Set a repository's allow-list, with the wildcard only after consent.
+fn set_repo_allowed_users(entry: &mut RepoConfig, list: &str, accepted: bool) -> Result<()> {
+    let logins = parse_allowed_users(list);
+    if allow::is_wildcard(&logins) {
+        confirm_anyone_risk(accepted, &format!("repository {}", entry.name))?;
+        entry.accepted_anyone_risk = true;
+    } else {
+        entry.accepted_anyone_risk = false;
+    }
+    entry.allowed_users = Some(logins);
+    Ok(())
+}
+
+/// The one affordance for opening the factory to everyone: an explicit
+/// flag, or a yes typed at a terminal after the risk is spelled out. Anything
+/// else (a script, a pipe) is refused with the flag named.
+fn confirm_anyone_risk(accepted: bool, what: &str) -> Result<()> {
+    anyone_risk_decision(accepted, std::io::stdin().is_terminal(), what, || {
+        eprint!("Type yes to accept that risk: ");
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        let a = line.trim().to_ascii_lowercase();
+        Ok(a == "yes" || a == "y")
+    })
+}
+
+/// The decision behind `confirm_anyone_risk`, with the terminal factored
+/// out: `ask` is only consulted at an interactive terminal, after the risk
+/// has been printed.
+fn anyone_risk_decision(
+    accepted: bool,
+    interactive: bool,
+    what: &str,
+    ask: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    if accepted {
+        return Ok(());
+    }
+    let risk = format!(
+        "allowed_users \"*\" lets ANYONE with a GitHub account drive {what}: \
+         every assignment, mention, review request, label and comment reaches an unattended \
+         agent running with the bot's credentials, so anyone on the internet can make it act \
+         and can put text in front of it."
+    );
+    if !interactive {
+        bail!("{risk}\nRefusing without --accept-anyone-risk.");
+    }
+    eprintln!("{risk}");
+    if ask()? {
+        Ok(())
+    } else {
+        bail!("not accepted; nothing changed")
+    }
+}
+
 fn config_cmd(command: ConfigCommand) -> Result<()> {
     match command {
         ConfigCommand::Path => {
@@ -1404,6 +1509,16 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
             } else {
                 println!("# {}", config::config_path().display());
                 print!("{}", toml::to_string_pretty(&cfg)?);
+                // Who may drive each repository, resolved from the file
+                // alone (the collaborator default is fetched by the daemon;
+                // `ssf doctor` shows it).
+                if !cfg.repos.is_empty() {
+                    println!();
+                    println!("# who can drive ssf (allowed_users):");
+                    for r in &cfg.repos {
+                        println!("#   {}: {}", r.name, cfg.access_summary(r));
+                    }
+                }
             }
             Ok(())
         }
@@ -1425,21 +1540,34 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
             }
             Ok(())
         }
-        ConfigCommand::Set { key, value } => {
+        ConfigCommand::Set {
+            key,
+            value,
+            accept_anyone_risk,
+        } => config_set_at(&config::config_path(), &key, &value, accept_anyone_risk),
+    }
+}
+
+/// `ssf config set`: one key in the file at `path`, validated before it is
+/// written. `daemon.allowed_users` is special: a wildcard is written only
+/// with consent (`accepted`, or a yes at the terminal) and gets its marker;
+/// any other list drops the marker.
+fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool) -> Result<()> {
+    {
+        {
             if key == "github.token" || key == "github" {
                 bail!("credentials are managed with `ssf auth login`, not `config set`");
             }
             if key.starts_with("repo") {
                 bail!("repositories are managed with `ssf repo add|set|remove`");
             }
-            let path = config::config_path();
-            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            let raw = std::fs::read_to_string(path).unwrap_or_default();
             let mut table: toml::Table = toml::from_str(&raw).context("parsing config")?;
             let parts: Vec<&str> = key.split('.').collect();
             if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
                 bail!("invalid key {key}");
             }
-            let parsed = parse_toml_scalar(&value);
+            let parsed = parse_toml_scalar(value);
             let mut cur: &mut toml::Table = &mut table;
             for part in &parts[..parts.len() - 1] {
                 let next = cur
@@ -1449,15 +1577,47 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
                     .as_table_mut()
                     .with_context(|| format!("{part} is not a table"))?;
             }
-            cur.insert(parts[parts.len() - 1].to_string(), parsed);
+            if key == "daemon.allowed_users" {
+                let logins: Vec<String> = parsed
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .or_else(|| parsed.as_str().map(parse_allowed_users))
+                    .with_context(|| {
+                        format!("{key} takes a list of logins, e.g. '[\"alice\", \"bob\"]'")
+                    })?;
+                let marker = if allow::is_wildcard(&logins) {
+                    confirm_anyone_risk(accepted, "every repository this daemon watches")?;
+                    true
+                } else {
+                    false
+                };
+                // The marker stands only next to a wildcard, so a later
+                // hand edit that adds one is refused again.
+                if marker {
+                    cur.insert(allow::RISK_KEY.to_string(), toml::Value::Boolean(true));
+                } else {
+                    cur.remove(allow::RISK_KEY);
+                }
+                cur.insert(
+                    parts[parts.len() - 1].to_string(),
+                    toml::Value::Array(logins.into_iter().map(toml::Value::String).collect()),
+                );
+            } else {
+                cur.insert(parts[parts.len() - 1].to_string(), parsed);
+            }
             let text = toml::to_string_pretty(&table)?;
             // Validate before writing so a typo cannot break the daemon.
-            let _: Config =
+            let checked: Config =
                 toml::from_str(&text).with_context(|| format!("{key} is not a valid setting"))?;
+            checked.validate()?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            config::write_atomic(&path, text.as_bytes(), 0o600)?;
+            config::write_atomic(path, text.as_bytes(), 0o600)?;
             println!("{key} = {value}");
             Ok(())
         }
@@ -2209,7 +2369,52 @@ async fn doctor() -> Result<()> {
         ),
     );
     let installed = agents::list();
+    let gh = cfg
+        .github_token()
+        .ok()
+        .and_then(|t| github::GitHub::new(&cfg.github.api_url, &t).ok());
+    let bot = cfg.github.login.clone().unwrap_or_else(|| "the bot".into());
     for r in &cfg.repos {
+        // Who may drive it: the configured list, or the collaborators with
+        // push access fetched the way the daemon does.
+        match cfg.allowed_users(r) {
+            Some((list, source)) => {
+                let l = allow::AllowList::new(&bot, list.iter().map(String::as_str), source);
+                if l.is_anyone() {
+                    println!("WARN {}: allowed users: {}", r.name, l.describe());
+                } else {
+                    check(true, format!("{}: allowed users: {}", r.name, l.describe()));
+                }
+            }
+            None => match (&gh, r.split()) {
+                (Some(gh), Ok((owner, name))) => match gh.collaborators(owner, name, None).await {
+                    Ok(github::Conditional::Modified { value, .. }) => {
+                        let l = allow::AllowList::new(
+                            &bot,
+                            allow::pushers(&value).iter().map(String::as_str),
+                            allow::Source::Collaborators,
+                        );
+                        check(true, format!("{}: allowed users: {}", r.name, l.describe()));
+                    }
+                    Ok(github::Conditional::NotModified) => {}
+                    Err(e) => check(
+                        false,
+                        format!(
+                            "{}: allowed users: collaborators could not be fetched, so nothing is acted on; \
+                             list them with `ssf repo set {} --allowed-users alice,bob` (or daemon.allowed_users): {e:#}",
+                            r.name, r.name
+                        ),
+                    ),
+                },
+                _ => check(
+                    false,
+                    format!(
+                        "{}: allowed users: the collaborators with push access (cannot be fetched without a token)",
+                        r.name
+                    ),
+                ),
+            },
+        }
         let cmd = r.harness_command();
         let bin = cmd.split_whitespace().next().unwrap_or("");
         let ok = which(bin).is_some() || installed.iter().any(|a| a.id == r.harness && a.installed);
@@ -2367,5 +2572,85 @@ mod tests {
         assert!(item_ref("7", None).is_err());
         assert!(item_ref("7:author", Some(&me)).is_err());
         assert!(item_ref("nonsense", Some(&me)).is_err());
+    }
+    #[test]
+    fn allowed_users_flags_parse_logins_and_the_wildcard() {
+        assert_eq!(
+            parse_allowed_users("Alice, @bob,carol"),
+            vec!["Alice", "bob", "carol"]
+        );
+        assert_eq!(parse_allowed_users("*"), vec!["*"]);
+        assert!(parse_allowed_users("").is_empty());
+        let mut entry = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        set_repo_allowed_users(&mut entry, "alice,bob", false).unwrap();
+        assert_eq!(
+            entry.allowed_users.as_deref(),
+            Some(&["alice".to_string(), "bob".to_string()][..])
+        );
+        assert!(!entry.accepted_anyone_risk);
+        set_repo_allowed_users(&mut entry, "*", true).unwrap();
+        assert!(entry.accepted_anyone_risk);
+        // Back to a list: the marker goes, so a later hand edit is refused.
+        set_repo_allowed_users(&mut entry, "alice", false).unwrap();
+        assert!(!entry.accepted_anyone_risk);
+    }
+
+    #[test]
+    fn the_wildcard_is_refused_without_consent() {
+        assert!(anyone_risk_decision(true, false, "x", || unreachable!()).is_ok());
+        let err = anyone_risk_decision(false, false, "x", || unreachable!()).unwrap_err();
+        assert!(err.to_string().contains("--accept-anyone-risk"), "{err}");
+        assert!(err.to_string().contains("ANYONE"), "{err}");
+        assert!(anyone_risk_decision(false, true, "x", || Ok(false)).is_err());
+        assert!(anyone_risk_decision(false, true, "x", || Ok(true)).is_ok());
+    }
+
+    #[test]
+    fn config_set_writes_the_wildcard_only_with_its_marker() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-config-set-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        config_set_at(&path, "daemon.allowed_users", r#"["*"]"#, true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("accepted_anyone_risk = true"), "{text}");
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.anyone_allowed_anywhere());
+        // A list again: the marker goes with the wildcard.
+        config_set_at(&path, "daemon.allowed_users", r#"["Alice", "bob"]"#, false).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("accepted_anyone_risk"), "{text}");
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            cfg.daemon.allowed_users.as_deref(),
+            Some(&["Alice".to_string(), "bob".to_string()][..])
+        );
+        // A bare login list works too.
+        config_set_at(&path, "daemon.allowed_users", "carol", false).unwrap();
+        let cfg = Config::load_from(&path).unwrap();
+        assert_eq!(
+            cfg.daemon.allowed_users.as_deref(),
+            Some(&["carol".to_string()][..])
+        );
+        // A hand edit that adds the wildcard without the marker is refused
+        // at load, and by any later `config set` of another key.
+        std::fs::write(&path, "[daemon]\nallowed_users = [\"*\"]\n").unwrap();
+        assert!(Config::load_from(&path).is_err());
+        let err = config_set_at(&path, "daemon.poll_interval_secs", "5", false).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("--accept-anyone-risk"),
+            "{err:#}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -208,6 +208,8 @@ impl Snapshot {
                     "model": r.model,
                     "effort": r.effort,
                     "path": r.path,
+                    "allowed_users": self.cfg.access_summary(r),
+                    "anyone_allowed": self.cfg.anyone_allowed(r),
                     "issues": issues,
                 })
             })
@@ -221,6 +223,9 @@ impl Snapshot {
             "last_error": self.state.last_error,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
             "config_path": crate::config::config_path(),
+            // The wildcard allow-list is in effect somewhere: the widget
+            // shows a warning while it is.
+            "anyone_allowed": self.cfg.anyone_allowed_anywhere(),
             // Keyed `orca` from when it was the only driver; the widget reads it.
             "orca": {
                 "available": self.available(),
@@ -589,12 +594,21 @@ pub fn render_status(snap: &Snapshot) -> String {
         "config:  {}\n",
         crate::config::config_path().display()
     ));
+    if snap.cfg.anyone_allowed_anywhere() {
+        out.push_str(
+            "WARNING: allowed_users is \"*\": anyone with a GitHub account can drive the agents\n",
+        );
+    }
     if snap.cfg.repos.is_empty() {
         out.push_str("\nno repositories configured\n");
     }
     let sessions = snap.sessions();
     for r in &snap.cfg.repos {
         out.push_str(&format!("\n{} (harness: {})\n", r.name, r.harness));
+        out.push_str(&format!(
+            "  allowed users: {}\n",
+            snap.cfg.access_summary(r)
+        ));
         if !st.repos.contains_key(&r.name) {
             out.push_str("  (not polled yet)\n");
             continue;

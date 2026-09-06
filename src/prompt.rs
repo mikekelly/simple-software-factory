@@ -1567,6 +1567,8 @@ mod tests {
             base_branch: None,
             instructions: Some("Run the tests.".into()),
             prompt_file: None,
+            allowed_users: None,
+            accepted_anyone_risk: false,
         };
         let d = cfg();
         let ctx = PromptContext {

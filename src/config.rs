@@ -368,6 +368,19 @@ pub struct DaemonConfig {
     /// the startup pass runs on the first poll that finds Orca ready.
     #[serde(default = "default_startup_orca_wait")]
     pub startup_orca_wait_secs: u64,
+    /// GitHub logins whose assignments, mentions, review requests, labels
+    /// and posts ssf acts on, for every repository that has no list of its
+    /// own (case-insensitive; the bot itself is always accepted). Unset:
+    /// each repository's collaborators with push access. `"*"` means
+    /// anyone on GitHub and needs `accepted_anyone_risk = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_users: Option<Vec<String>>,
+    /// The operator has accepted that `allowed_users = ["*"]` lets anyone
+    /// on GitHub drive the factory. Written by `ssf config set` after a
+    /// confirmation or `--accept-anyone-risk`; a wildcard without it is
+    /// refused at load.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepted_anyone_risk: bool,
 }
 
 impl DaemonConfig {
@@ -391,6 +404,8 @@ impl Default for DaemonConfig {
             review_label: default_review_label(),
             resume_on_start: true,
             startup_orca_wait_secs: default_startup_orca_wait(),
+            allowed_users: None,
+            accepted_anyone_risk: false,
         }
     }
 }
@@ -468,6 +483,14 @@ pub struct RepoConfig {
     /// in the repository; a missing file is simply not mentioned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_file: Option<String>,
+    /// Logins that may drive this repository, replacing
+    /// `daemon.allowed_users` (an empty list is nobody but the bot). Unset:
+    /// the instance list, else the collaborators with push access.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_users: Option<Vec<String>>,
+    /// See `DaemonConfig::accepted_anyone_risk`; needed for `"*"` here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepted_anyone_risk: bool,
 }
 
 /// Name of the per-project prompt file when `repo.prompt_file` is not set.
@@ -583,14 +606,97 @@ impl Config {
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let cfg: Config =
             toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
-        for r in &cfg.repos {
+        cfg.validate()?;
+        Ok(cfg)
+    }
+
+    /// What a config has to satisfy beyond parsing: repository names and
+    /// launch settings, and a wildcard allow-list only with its marker.
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .daemon
+            .allowed_users
+            .as_deref()
+            .is_some_and(crate::allow::is_wildcard)
+            && !self.daemon.accepted_anyone_risk
+        {
+            bail!(
+                "daemon.allowed_users contains \"*\", which lets ANYONE on GitHub drive the factory, \
+                 without daemon.{} = true; run `ssf config set daemon.allowed_users '[\"*\"]' --accept-anyone-risk` \
+                 to accept that, or list the logins instead",
+                crate::allow::RISK_KEY
+            );
+        }
+        for r in &self.repos {
             r.split()?;
             if r.harness.trim().is_empty() {
                 bail!("repo {}: harness must not be empty", r.name);
             }
             r.validate_launch_prefs()?;
+            if r.allowed_users
+                .as_deref()
+                .is_some_and(crate::allow::is_wildcard)
+                && !r.accepted_anyone_risk
+            {
+                bail!(
+                    "repo {}: allowed_users contains \"*\", which lets ANYONE on GitHub drive the factory there, \
+                     without {} = true on the repo; run `ssf repo set {} --allowed-users '*' --accept-anyone-risk` \
+                     to accept that, or list the logins instead",
+                    r.name,
+                    crate::allow::RISK_KEY,
+                    r.name
+                );
+            }
         }
-        Ok(cfg)
+        Ok(())
+    }
+
+    /// The configured allow-list for a repository, with where it comes
+    /// from; `None` when neither the repo nor the instance sets one (the
+    /// collaborators with push access stand in, fetched by the daemon).
+    pub fn allowed_users<'a>(
+        &'a self,
+        repo: &'a RepoConfig,
+    ) -> Option<(&'a [String], crate::allow::Source)> {
+        if let Some(l) = &repo.allowed_users {
+            return Some((l, crate::allow::Source::Repo));
+        }
+        self.daemon
+            .allowed_users
+            .as_deref()
+            .map(|l| (l, crate::allow::Source::Instance))
+    }
+
+    /// Whether the wildcard is in effect for a repository.
+    pub fn anyone_allowed(&self, repo: &RepoConfig) -> bool {
+        self.allowed_users(repo)
+            .is_some_and(|(l, _)| crate::allow::is_wildcard(l))
+    }
+
+    /// Whether any repository is open to anyone (with no repositories, the
+    /// instance list decides).
+    pub fn anyone_allowed_anywhere(&self) -> bool {
+        if self.repos.is_empty() {
+            return self
+                .daemon
+                .allowed_users
+                .as_deref()
+                .is_some_and(crate::allow::is_wildcard);
+        }
+        self.repos.iter().any(|r| self.anyone_allowed(r))
+    }
+
+    /// One line on who may drive a repository, from the config alone.
+    pub fn access_summary(&self, repo: &RepoConfig) -> String {
+        match self.allowed_users(repo) {
+            Some((l, source)) => crate::allow::AllowList::new(
+                self.github.login.as_deref().unwrap_or("bot"),
+                l.iter().map(String::as_str),
+                source,
+            )
+            .describe(),
+            None => "collaborators with push access (default)".to_string(),
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -914,5 +1020,136 @@ effort = "low"
         let out = toml::to_string_pretty(&cfg).unwrap();
         assert!(out.contains("model = \"sonnet\""), "{out}");
         assert!(out.contains("effort = \"low\""), "{out}");
+    }
+    #[test]
+    fn a_wildcard_allow_list_needs_its_marker() {
+        let err = parse(
+            r#"
+[daemon]
+allowed_users = ["*"]
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("--accept-anyone-risk"),
+            "{err:#}"
+        );
+        assert!(
+            format!("{err:#}").contains("daemon.allowed_users"),
+            "{err:#}"
+        );
+        let cfg = parse(
+            r#"
+[daemon]
+allowed_users = ["*"]
+accepted_anyone_risk = true
+"#,
+        )
+        .unwrap();
+        assert!(cfg.anyone_allowed_anywhere());
+        let err = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+allowed_users = ["alice", "*"]
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("acme/widgets"), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("ssf repo set acme/widgets"),
+            "{err:#}"
+        );
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+allowed_users = ["alice", "*"]
+accepted_anyone_risk = true
+
+[[repo]]
+name = "acme/gadgets"
+harness = "claude"
+allowed_users = ["alice"]
+"#,
+        )
+        .unwrap();
+        assert!(cfg.anyone_allowed(&cfg.repos[0]));
+        assert!(!cfg.anyone_allowed(&cfg.repos[1]));
+        assert!(cfg.anyone_allowed_anywhere());
+        // The marker round-trips only when set.
+        let out = toml::to_string_pretty(&cfg).unwrap();
+        assert_eq!(
+            out.matches("accepted_anyone_risk = true").count(),
+            1,
+            "{out}"
+        );
+        assert!(!out.contains("accepted_anyone_risk = false"), "{out}");
+    }
+
+    #[test]
+    fn the_repo_list_replaces_the_instance_list() {
+        let cfg = parse(
+            r#"
+[github]
+login = "bot"
+
+[daemon]
+allowed_users = ["Alice"]
+
+[[repo]]
+name = "acme/a"
+harness = "claude"
+
+[[repo]]
+name = "acme/b"
+harness = "claude"
+allowed_users = ["bob"]
+
+[[repo]]
+name = "acme/c"
+harness = "claude"
+allowed_users = []
+"#,
+        )
+        .unwrap();
+        use crate::allow::Source;
+        let (a, b, c) = (&cfg.repos[0], &cfg.repos[1], &cfg.repos[2]);
+        assert_eq!(
+            cfg.allowed_users(a).map(|(l, s)| (l.to_vec(), s)),
+            Some((vec!["Alice".to_string()], Source::Instance))
+        );
+        assert_eq!(
+            cfg.allowed_users(b).map(|(l, s)| (l.to_vec(), s)),
+            Some((vec!["bob".to_string()], Source::Repo))
+        );
+        assert_eq!(
+            cfg.allowed_users(c).map(|(l, s)| (l.to_vec(), s)),
+            Some((vec![], Source::Repo))
+        );
+        assert_eq!(cfg.access_summary(a), "@alice (instance list)");
+        assert_eq!(cfg.access_summary(b), "@bob (repo list)");
+        assert_eq!(
+            cfg.access_summary(c),
+            "nobody but the bot (repo list: empty)"
+        );
+        assert!(!cfg.anyone_allowed_anywhere());
+        // Neither set: the collaborators, fetched by the daemon.
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/a"
+harness = "claude"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.allowed_users(&cfg.repos[0]).is_none());
+        assert_eq!(
+            cfg.access_summary(&cfg.repos[0]),
+            "collaborators with push access (default)"
+        );
+        assert!(!cfg.anyone_allowed_anywhere());
     }
 }

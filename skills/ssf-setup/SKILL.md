@@ -206,6 +206,7 @@ GitHub Enterprise (`https://ghe.example.com/api/v3`).
 | `cleanup_grace_secs` | `900` | How long a reviewer session gets to finish after its PR closes before its read-only workspace is removed anyway; item workspaces are never removed by ssf |
 | `resume_on_start` | `true` | Bring interrupted sessions back after a reboot; `startup_orca_wait_secs` (`120`) is how long to wait for the driver first |
 | `include_own_events` | `false` | Leave off: on, each agent sees its own commits and posts echoed back |
+| `allowed_users` | the collaborators with push access | Whose assignments, mentions, review requests, labels and comments the agents act on, e.g. `'["mikekelly"]'`; a `[[repo]]` can set its own, replacing this one (`ssf repo set owner/name --allowed-users alice,bob`). `["*"]` is anyone on GitHub and is refused without `--accept-anyone-risk` (or a `yes` at the terminal); never pass that flag on the user's behalf |
 
 `daemon.cleanup_on_close` is accepted but does nothing. Check: `ssf status`
 lists the repository; then assign an issue to the bot and a workspace should

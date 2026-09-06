@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, error, info, warn};
 
+use crate::allow::{self, AllowList, Source};
 use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
 use crate::driver::{Driver, Drivers, Relaunch};
@@ -57,6 +58,23 @@ pub struct Engine {
     /// gone) has not run yet; each runs on the first pass that finds that
     /// driver ready.
     startup_pending: Vec<DriverKind>,
+    /// Per repository, the collaborators with push access: the allow-list
+    /// when the config sets none (see `allow`). Refreshed once per pass
+    /// against an ETag; a repository that has never been fetched is not
+    /// polled at all (nothing is trusted on a guess).
+    collaborators: BTreeMap<String, Collaborators>,
+    /// Review requests refused because nobody allowed asked, keyed by
+    /// item with the `updated_at` they were refused at, so an unchanged
+    /// pull request is not re-read every pass.
+    refused_reviews: BTreeMap<(String, u64), String>,
+}
+
+/// The cached collaborator list of one repository.
+#[derive(Debug, Clone, Default)]
+struct Collaborators {
+    /// Logins with push access, as GitHub gave them.
+    logins: Vec<String>,
+    etag: Option<String>,
 }
 
 /// The ignore record of a bot-opened item nothing binds to (see
@@ -191,7 +209,112 @@ impl Engine {
             state,
             failures: BTreeMap::new(),
             startup_pending,
+            collaborators: BTreeMap::new(),
+            refused_reviews: BTreeMap::new(),
         })
+    }
+
+    /// Who may drive a repository: its configured list, else the instance
+    /// list, else the collaborators fetched this pass (an empty list until
+    /// they have been, so nothing slips through on a guess).
+    fn allow_list(&self, repo: &RepoConfig) -> AllowList {
+        match self.cfg.allowed_users(repo) {
+            Some((list, source)) => {
+                AllowList::new(&self.login, list.iter().map(String::as_str), source)
+            }
+            None => AllowList::new(
+                &self.login,
+                self.collaborators
+                    .get(&repo.name)
+                    .map(|c| c.logins.iter().map(String::as_str))
+                    .into_iter()
+                    .flatten(),
+                Source::Collaborators,
+            ),
+        }
+    }
+
+    /// Bring the collaborator list of a repository up to date, when the
+    /// config leaves the allow-list to it. A fetch that fails keeps the
+    /// last good list with a warning; with none cached the pass fails for
+    /// this repository rather than running open or shut on a guess.
+    async fn refresh_collaborators(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+    ) -> Result<()> {
+        if self.cfg.allowed_users(repo).is_some() {
+            return Ok(());
+        }
+        let etag = self
+            .collaborators
+            .get(&repo.name)
+            .and_then(|c| c.etag.clone());
+        match self.gh.collaborators(owner, name, etag.as_deref()).await {
+            Ok(Conditional::NotModified) => Ok(()),
+            Ok(Conditional::Modified { value, etag }) => {
+                let logins = allow::pushers(&value);
+                let before = self.collaborators.get(&repo.name).map(|c| &c.logins);
+                if before != Some(&logins) {
+                    info!(
+                        repo = repo.name,
+                        logins = logins.join(", "),
+                        "allowed users are the collaborators with push access"
+                    );
+                }
+                self.collaborators
+                    .insert(repo.name.clone(), Collaborators { logins, etag });
+                Ok(())
+            }
+            Err(e) if self.collaborators.contains_key(&repo.name) => {
+                warn!(
+                    repo = repo.name,
+                    "collaborators could not be refreshed; keeping the last list: {e:#}"
+                );
+                Ok(())
+            }
+            Err(e) => Err(e.context(format!(
+                "collaborators of {} could not be fetched and no allowed_users is configured; \
+                 nothing is acted on until one of the two works (see `ssf doctor`)",
+                repo.name
+            ))),
+        }
+    }
+
+    /// Whether whoever asked the bot onto an item (see `allow::askers`) is
+    /// allowed to; `Err` says who was not, for the log.
+    fn gate(
+        &self,
+        repo: &RepoConfig,
+        issue: &Issue,
+        timeline: &[Value],
+        triggers: &[String],
+    ) -> std::result::Result<(), String> {
+        let asks = allow::askers(
+            issue,
+            timeline,
+            triggers,
+            &self.login,
+            self.cfg.daemon.review_label(),
+        );
+        allow::check(&self.allow_list(repo), &asks)
+    }
+
+    /// An item nobody allowed asked for: said once, and not looked at again
+    /// until it changes (an allowed user assigning or mentioning the bot
+    /// later brings it in).
+    fn refuse(&mut self, repo: &RepoConfig, issue: &Issue, triggers: &[String], why: &str) {
+        info!(
+            repo = repo.name,
+            issue = issue.number,
+            "ignoring {}: {why}",
+            issue.html_url
+        );
+        self.state
+            .repo_mut(&repo.name)
+            .ignored
+            .insert(issue.number, Ignored::new(issue, triggers));
     }
 
     pub async fn run_forever(mut self) -> Result<()> {
@@ -426,7 +549,7 @@ are resumed on the first pass that finds it: {err:#}"
                 .await
                 .with_context(|| format!("fetching {target}"))?;
             let timeline = self.gh.timeline(owner, name, number).await?;
-            let seen = self.diff(&BTreeMap::new(), &timeline).seen;
+            let seen = self.diff(&repo, &BTreeMap::new(), &timeline).seen;
             let is_pr = issue.is_pull_request();
             let e = self.entry(&repo, number);
             e.title = issue.title.clone();
@@ -762,6 +885,7 @@ are resumed on the first pass that finds it: {err:#}"
 
     async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
         let (owner, name) = repo.split()?;
+        self.refresh_collaborators(repo, owner, name).await?;
         let rs = self.state.repo_mut(&repo.name).clone();
 
         // Four listings, one per trigger. Each carries its own ETag; a 304
@@ -1060,7 +1184,7 @@ are resumed on the first pass that finds it: {err:#}"
                 }
             };
             self.record_origins(repo, &issue, &timeline);
-            let diff = self.diff(&st.seen, &timeline);
+            let diff = self.diff(repo, &st.seen, &timeline);
             let closed = issue.state == "closed";
             let merged = closed
                 && issue.is_pull_request()
@@ -1452,10 +1576,18 @@ are resumed on the first pass that finds it: {err:#}"
         scan
     }
 
-    fn diff(&self, seen: &BTreeMap<String, String>, timeline: &[Value]) -> Diff {
+    /// What is new on an item's timeline since `seen`, rendered for the
+    /// prompts. Events by a login that may not drive the repository are
+    /// left out (and still counted as seen): they are neither delivered to
+    /// the owner nor fanned out. Commits carry no login (`author.name` is
+    /// a git name) and pass; pushing needs write access to the branch.
+    fn diff(&self, repo: &RepoConfig, seen: &BTreeMap<String, String>, timeline: &[Value]) -> Diff {
+        let allowed = self.allow_list(repo);
         let mut rendered = Vec::new();
         let mut observed = BTreeMap::new();
+        let mut filtered: Value;
         for ev in timeline {
+            let mut ev = ev;
             let Some(key) = event_key(ev) else { continue };
             let kind = ev.get("event").and_then(Value::as_str).unwrap_or("");
             let marker = crate::github::value_str(ev, &["updated_at"])
@@ -1477,11 +1609,48 @@ are resumed on the first pass that finds it: {err:#}"
             // (`for_recipient`) instead; one without a tag was typed by a
             // person using the bot account (every session stamps its
             // posts), so it is delivered like any human's.
-            let own = actor_of(ev).eq_ignore_ascii_case(&self.login);
+            let actor = actor_of(ev);
+            let own = actor.eq_ignore_ascii_case(&self.login);
             let echo = matches!(kind, "cross-referenced" | "referenced" | "committed");
             if own && echo && !self.cfg.daemon.include_own_events {
                 debug!(key, "skipping bot's own event");
                 continue;
+            }
+            match kind {
+                "committed" => {}
+                // A batch of review comments: each has its own author.
+                "line-commented" | "commit-commented" => {
+                    let Some(comments) = ev.get("comments").and_then(Value::as_array) else {
+                        continue;
+                    };
+                    let kept: Vec<Value> = comments
+                        .iter()
+                        .filter(|c| {
+                            let who = crate::github::value_str(c, &["user", "login"])
+                                .unwrap_or("unknown");
+                            let ok = allowed.allows(who);
+                            if !ok {
+                                dropped(&key, who);
+                            }
+                            ok
+                        })
+                        .cloned()
+                        .collect();
+                    if kept.is_empty() {
+                        continue;
+                    }
+                    if kept.len() != comments.len() {
+                        filtered = ev.clone();
+                        filtered["comments"] = Value::Array(kept);
+                        ev = &filtered;
+                    }
+                }
+                _ => {
+                    if !allowed.allows(&actor) {
+                        dropped(&key, &actor);
+                        continue;
+                    }
+                }
             }
             if let Some(r) = render_event(ev, edited, &self.cfg.daemon, &self.login) {
                 rendered.push(r);
@@ -1589,6 +1758,25 @@ are resumed on the first pass that finds it: {err:#}"
         let running = rv.as_ref().is_some_and(|r| r.seeded && r.active);
         match (asked.is_empty(), running) {
             (false, false) => {
+                // Only an allowed user's request (or label) starts the
+                // reviewer; a refused one is remembered until the pull
+                // request changes, so it is not re-read every pass.
+                let key = (repo.name.clone(), issue.number);
+                if self.refused_reviews.get(&key) == Some(&issue.updated_at) {
+                    return Ok(());
+                }
+                let timeline = self.gh.timeline(owner, name, issue.number).await?;
+                if let Err(why) = self.gate(repo, issue, &timeline, &asked) {
+                    info!(
+                        repo = repo.name,
+                        issue = issue.number,
+                        "not starting a reviewer for {}: {why}",
+                        issue.html_url
+                    );
+                    self.refused_reviews.insert(key, issue.updated_at.clone());
+                    return Ok(());
+                }
+                self.refused_reviews.remove(&key);
                 self.start_reviewer(repo, owner, name, issue, &st, rv, asked)
                     .await
             }
@@ -1719,12 +1907,12 @@ are resumed on the first pass that finds it: {err:#}"
         }
         if again {
             let prior = prior.unwrap();
-            let diff = self.diff(&prior.seen, &timeline);
+            let diff = self.diff(repo, &prior.seen, &timeline);
             let mine = self.for_recipient(&diff.rendered, &me);
             let rst = self.record(repo, slot).clone();
             let ctx = self.ctx(repo, &rst);
             let text = prompt::review_again_prompt(issue, &mine, &ctx);
-            let all = self.diff(&BTreeMap::new(), &timeline).rendered;
+            let all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
             let all = self.for_recipient(&all, &me);
             let mut relaunch = prompt::review_prompt(issue, &all, &ctx);
             relaunch.push_str("\n\n");
@@ -1742,7 +1930,7 @@ are resumed on the first pass that finds it: {err:#}"
             e.prompts_sent += 1;
             return Ok(());
         }
-        let diff = self.diff(&BTreeMap::new(), &timeline);
+        let diff = self.diff(repo, &BTreeMap::new(), &timeline);
         let mine = self.for_recipient(&diff.rendered, &me);
         // A workspace left from an earlier, unfinished attempt is reused.
         let mut existing: Option<Worktree> = None;
@@ -1883,7 +2071,7 @@ are resumed on the first pass that finds it: {err:#}"
             Some(t) => t,
             None => self.gh.timeline(owner, name, number).await?,
         };
-        let diff = self.diff(&rv.seen, &timeline);
+        let diff = self.diff(repo, &rv.seen, &timeline);
         let mine = self.for_recipient(&diff.rendered, &me);
         if mine.is_empty() {
             let e = self.record(repo, slot);
@@ -1904,7 +2092,7 @@ are resumed on the first pass that finds it: {err:#}"
         };
         let ctx = self.ctx(repo, &rv);
         let text = prompt::review_followup_prompt(issue, &mine, &ctx);
-        let mut all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        let mut all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
         all.retain(|r| !diff.rendered.iter().any(|n| n.key == r.key));
         let all = self.for_recipient(&all, &me);
         let mut relaunch = prompt::review_prompt(issue, &all, &ctx);
@@ -1965,7 +2153,7 @@ are resumed on the first pass that finds it: {err:#}"
                     &fetched
                 }
             };
-            let diff = self.diff(&rv.seen, timeline);
+            let diff = self.diff(repo, &rv.seen, timeline);
             let mine = self.for_recipient(&diff.rendered, &me);
             seen = Some(diff.seen);
             if alive {
@@ -2072,6 +2260,18 @@ are resumed on the first pass that finds it: {err:#}"
             ?triggers,
             "onboarding"
         );
+        // Who asked comes first: an item nobody allowed asked for gets no
+        // project, no workspace and no session.
+        let timeline = self.gh.timeline(owner, name, issue.number).await?;
+        if let Err(why) = self.gate(repo, issue, &timeline, &triggers) {
+            self.refuse(repo, issue, &triggers, &why);
+            return Ok(());
+        }
+        // Whatever it was ignored as before, it is being looked at afresh.
+        self.state
+            .repo_mut(&repo.name)
+            .ignored
+            .remove(&issue.number);
         let setup = self
             .driver(repo)
             .ensure_project(
@@ -2087,8 +2287,7 @@ are resumed on the first pass that finds it: {err:#}"
             (true, None) => Some(self.gh.pull(owner, name, issue.number).await?),
             (false, _) => None,
         };
-        let timeline = self.gh.timeline(owner, name, issue.number).await?;
-        let diff = self.diff(&BTreeMap::new(), &timeline);
+        let diff = self.diff(repo, &BTreeMap::new(), &timeline);
 
         let prior = self
             .state
@@ -2124,14 +2323,9 @@ are resumed on the first pass that finds it: {err:#}"
         let since_prior = prior
             .as_ref()
             .filter(|p| p.subscriber_only)
-            .map(|p| self.diff(&p.seen, &timeline).rendered);
+            .map(|p| self.diff(repo, &p.seen, &timeline).rendered);
         let scan = self.record_origins(repo, issue, &timeline);
         let by_bot = issue.author().eq_ignore_ascii_case(&self.login);
-        // Whatever it was ignored as before, it is being looked at afresh.
-        self.state
-            .repo_mut(&repo.name)
-            .ignored
-            .remove(&issue.number);
 
         // Who acts on this item. An item a session opened belongs to that
         // session (first binding wins: it never spawns a second one), unless
@@ -2349,7 +2543,7 @@ are resumed on the first pass that finds it: {err:#}"
         let number = slot.number();
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
-        let all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        let all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
         let me = match slot {
             Slot::Item(n) => self.acting_on(repo, n),
             Slot::Reviewer(n) => reviewer_session_id(&repo.name, n),
@@ -2538,7 +2732,7 @@ are resumed on the first pass that finds it: {err:#}"
     ) -> Result<()> {
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
         self.record_origins(repo, issue, &timeline);
-        let diff = self.diff(&st.seen, &timeline);
+        let diff = self.diff(repo, &st.seen, &timeline);
         // Subscribers hear first: the owner's own posts are news to them,
         // and a failed delivery to the owner must not replay to them.
         self.fan_out(repo, issue, &diff.rendered, Fyi::Activity, false, &[])
@@ -2572,7 +2766,7 @@ are resumed on the first pass that finds it: {err:#}"
         let text = prompt::followup_prompt(issue, &mine, &ctx);
         // A harness started from scratch has lost its memory, so it gets the
         // whole story rather than just the delta.
-        let mut all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        let mut all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
         all.retain(|r| !diff.rendered.iter().any(|n| n.key == r.key));
         let all = self.for_recipient(&all, &self.acting_on(repo, issue.number));
         let mut relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
@@ -2601,14 +2795,18 @@ are resumed on the first pass that finds it: {err:#}"
         issue: &Issue,
         st: IssueState,
     ) -> Result<()> {
+        let timeline = self.gh.timeline(owner, name, issue.number).await?;
+        if let Err(why) = self.gate(repo, issue, &timeline, &st.triggers) {
+            self.refuse(repo, issue, &st.triggers, &why);
+            return Ok(());
+        }
         info!(
             repo = repo.name,
             issue = issue.number,
             "issue assigned again; reactivating"
         );
-        let timeline = self.gh.timeline(owner, name, issue.number).await?;
         self.record_origins(repo, issue, &timeline);
-        let diff = self.diff(&st.seen, &timeline);
+        let diff = self.diff(repo, &st.seen, &timeline);
         self.refresh_projects(repo, owner, name, issue.number).await;
         let st = IssueState {
             projects: self.entry(repo, issue.number).projects.clone(),
@@ -2619,7 +2817,7 @@ are resumed on the first pass that finds it: {err:#}"
         let mine = self.for_recipient(&diff.rendered, &me);
         let ctx = self.ctx(repo, &st);
         let text = prompt::reassigned_prompt(issue, &mine, &ctx);
-        let all = self.diff(&BTreeMap::new(), &timeline).rendered;
+        let all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
         let all = self.for_recipient(&all, &me);
         let relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
         let d = self
@@ -2704,7 +2902,7 @@ are resumed on the first pass that finds it: {err:#}"
                 );
             }
         }
-        let diff = self.diff(&st.seen, &timeline);
+        let diff = self.diff(repo, &st.seen, &timeline);
         let session = self.owner_of(repo, number);
         let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, session));
         let ctx = self.ctx(repo, &st);
@@ -3782,6 +3980,25 @@ async fn checkout_branch(path: &str, branch: &str) -> Result<()> {
 }
 
 /// `open`, `closed` or `merged`, as `ssf status` reports it.
+/// Log an event left out of a delivery because of the allow-list. Project
+/// automation and other `[bot]` accounts fire on every card move, so they
+/// go at debug; a person's post is worth an info line.
+fn dropped(key: &str, who: &str) {
+    if allow::is_bot_account(who) {
+        debug!(
+            key,
+            actor = who,
+            "dropping event by an unlisted bot account"
+        );
+    } else {
+        info!(
+            key,
+            actor = who,
+            "dropping event: @{who} is not an allowed user"
+        );
+    }
+}
+
 fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
     if merged || pr.is_some_and(|p| p.merged) {
         "merged".into()
@@ -3799,8 +4016,13 @@ mod tests {
 
     fn engine() -> Engine {
         let _ = rustls::crypto::ring::default_provider().install_default();
+        // These tests are about everything but access: anyone may drive.
+        // The allow-list tests below set their own lists.
+        let mut cfg = Config::default();
+        cfg.daemon.allowed_users = Some(vec!["*".into()]);
+        cfg.daemon.accepted_anyone_risk = true;
         Engine {
-            cfg: Config::default(),
+            cfg,
             gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
             drivers: Drivers::from_list(vec![Driver::Orca(crate::orca::Orca::new(
                 crate::config::OrcaConfig {
@@ -3813,6 +4035,8 @@ mod tests {
             state: State::default(),
             failures: BTreeMap::new(),
             startup_pending: Vec::new(),
+            collaborators: BTreeMap::new(),
+            refused_reviews: BTreeMap::new(),
         }
     }
 
@@ -4021,7 +4245,7 @@ mod tests {
             ),
             comment(6, "bot", "<!-- ssf: origin=x/y#2 -->\n\nfrom elsewhere"),
         ];
-        let d = e.diff(&BTreeMap::new(), &timeline);
+        let d = e.diff(&r, &BTreeMap::new(), &timeline);
         let keys: Vec<&str> = d.rendered.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(
             keys,
@@ -4084,7 +4308,7 @@ mod tests {
             comment(22, "bot", "typed by hand as the bot"),
         ];
         e.cfg.daemon.include_own_events = false;
-        let d = e.diff(&BTreeMap::new(), &timeline);
+        let d = e.diff(&r, &BTreeMap::new(), &timeline);
         let keys: Vec<&str> = d.rendered.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(keys, vec!["commented:22"]);
     }
@@ -4271,7 +4495,7 @@ mod tests {
                 "body":"<!-- ssf: origin=o/r#7 role=reviewer -->\n\nnits","created_at":"t"}),
             comment(4, "bot", "<!-- ssf: origin=o/r#1 -->\n\nfixed"),
         ];
-        let d = e.diff(&BTreeMap::new(), &timeline);
+        let d = e.diff(&r, &BTreeMap::new(), &timeline);
         assert_eq!(d.rendered.len(), 4);
         let keys = |v: &[Rendered]| v.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
         assert_eq!(
@@ -4556,6 +4780,15 @@ mod tests {
         /// Bumped to give the creator listing a new ETag: the next request
         /// gets a full listing, whatever it carries.
         created_etag: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        /// Open items assigned to the bot, as the assignee listing reports
+        /// them (a fresh ETag every time: always a full listing).
+        assigned: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+        /// Timelines by item number (`[]` for an unknown item).
+        timelines: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Vec<Value>>>>,
+        /// The collaborators endpoint: `None` answers 403 (no access), a
+        /// list is served with an ETag that changes when it is set.
+        collaborators: std::sync::Arc<std::sync::Mutex<Option<Vec<Value>>>>,
+        collab_version: std::sync::Arc<std::sync::atomic::AtomicU32>,
     }
 
     impl GitHubStub {
@@ -4569,7 +4802,17 @@ mod tests {
             let hits: Arc<Mutex<Vec<String>>> = Arc::default();
             let created: Arc<Mutex<Vec<Value>>> = Arc::default();
             let created_etag = Arc::new(AtomicU32::new(1));
+            let assigned: Arc<Mutex<Vec<Value>>> = Arc::default();
+            let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
+            let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
+            let collab_version = Arc::new(AtomicU32::new(1));
             let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
+            let (a, t, k, kv) = (
+                assigned.clone(),
+                timelines.clone(),
+                collaborators.clone(),
+                collab_version.clone(),
+            );
             tokio::spawn(async move {
                 let other_etags = AtomicU32::new(1);
                 loop {
@@ -4602,25 +4845,55 @@ mod tests {
                     });
                     h.lock().unwrap().push(target.clone());
                     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-                    let (status, etag, body) =
-                        if path == "/repos/o/r/issues" && query.starts_with("creator=") {
-                            let etag = format!("\"c{}\"", v.load(Ordering::SeqCst));
-                            if if_none_match.as_deref() == Some(etag.as_str()) {
-                                ("304 Not Modified", etag, String::new())
-                            } else {
-                                let items = Value::Array(c.lock().unwrap().clone());
-                                ("200 OK", etag, items.to_string())
-                            }
-                        } else if path == "/repos/o/r/issues" || path == "/repos/o/r/pulls" {
-                            let n = other_etags.fetch_add(1, Ordering::SeqCst);
-                            ("200 OK", format!("\"o{n}\""), "[]".to_string())
+                    let (status, etag, body) = if path == "/repos/o/r/issues"
+                        && query.starts_with("creator=")
+                    {
+                        let etag = format!("\"c{}\"", v.load(Ordering::SeqCst));
+                        if if_none_match.as_deref() == Some(etag.as_str()) {
+                            ("304 Not Modified", etag, String::new())
                         } else {
-                            (
-                                "500 Internal Server Error",
-                                "\"none\"".to_string(),
-                                r#"{"message":"the test expected no fetch"}"#.to_string(),
-                            )
-                        };
+                            let items = Value::Array(c.lock().unwrap().clone());
+                            ("200 OK", etag, items.to_string())
+                        }
+                    } else if path == "/repos/o/r/issues" && query.starts_with("assignee=") {
+                        let n = other_etags.fetch_add(1, Ordering::SeqCst);
+                        let items = Value::Array(a.lock().unwrap().clone());
+                        ("200 OK", format!("\"o{n}\""), items.to_string())
+                    } else if path == "/repos/o/r/issues" || path == "/repos/o/r/pulls" {
+                        let n = other_etags.fetch_add(1, Ordering::SeqCst);
+                        ("200 OK", format!("\"o{n}\""), "[]".to_string())
+                    } else if path == "/repos/o/r/collaborators" {
+                        let etag = format!("\"k{}\"", kv.load(Ordering::SeqCst));
+                        match k.lock().unwrap().clone() {
+                                None => (
+                                    "403 Forbidden",
+                                    etag,
+                                    r#"{"message":"Must have push access to view repository collaborators."}"#
+                                        .to_string(),
+                                ),
+                                Some(_) if if_none_match.as_deref() == Some(etag.as_str()) => {
+                                    ("304 Not Modified", etag, String::new())
+                                }
+                                Some(list) => ("200 OK", etag, Value::Array(list).to_string()),
+                            }
+                    } else if let Some(n) = path
+                        .strip_prefix("/repos/o/r/issues/")
+                        .and_then(|rest| rest.strip_suffix("/timeline"))
+                        .and_then(|n| n.parse::<u64>().ok())
+                    {
+                        let events = t.lock().unwrap().get(&n).cloned().unwrap_or_default();
+                        (
+                            "200 OK",
+                            "\"t\"".to_string(),
+                            Value::Array(events).to_string(),
+                        )
+                    } else {
+                        (
+                            "500 Internal Server Error",
+                            "\"none\"".to_string(),
+                            r#"{"message":"the test expected no fetch"}"#.to_string(),
+                        )
+                    };
                     let resp = format!(
                         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nETag: {etag}\r\n\
                          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -4635,7 +4908,25 @@ mod tests {
                 hits,
                 created,
                 created_etag,
+                assigned,
+                timelines,
+                collaborators,
+                collab_version,
             }
+        }
+
+        fn set_collaborators(&self, list: Option<Vec<Value>>) {
+            *self.collaborators.lock().unwrap() = list;
+            self.collab_version
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn set_timeline(&self, number: u64, events: Vec<Value>) {
+            self.timelines.lock().unwrap().insert(number, events);
+        }
+
+        fn set_assigned(&self, items: Vec<Value>) {
+            *self.assigned.lock().unwrap() = items;
         }
 
         /// The request paths since the last call.
@@ -5036,5 +5327,235 @@ mod tests {
         assert!(!st.release_pending);
         assert_eq!(st.release_refusals, 1);
         assert!(st.worktree_id.is_some());
+    }
+    fn assigned_item(number: u64, author: &str, updated_at: &str) -> Value {
+        json!({
+            "number": number, "title": "t", "body": "do it", "html_url": format!("https://gh/{number}"),
+            "state": "open", "user": {"login": author}, "assignees": [{"login": "bot"}],
+            "created_at": "x", "updated_at": updated_at
+        })
+    }
+
+    fn assigned_by(id: u64, who: &str) -> Value {
+        json!({"event":"assigned","id":id,"actor":{"login":who},"assignee":{"login":"bot"},"created_at":"t"})
+    }
+
+    #[test]
+    fn events_by_unlisted_users_are_not_delivered() {
+        let mut e = engine();
+        e.cfg.daemon.allowed_users = Some(vec!["alice".into()]);
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        let timeline = vec![
+            comment(1, "alice", "hi"),
+            comment(2, "Mallory", "evil"),
+            comment(3, "bot", "<!-- ssf: origin=o/r#1 -->\n\nfrom one"),
+            comment(4, "bot", "typed as the bot"),
+            json!({"event":"labeled","id":5,"actor":{"login":"mallory"},"label":{"name":"review"},"created_at":"t"}),
+            json!({"event":"labeled","id":6,"actor":{"login":"ALICE"},"label":{"name":"bug"},"created_at":"t"}),
+            json!({"event":"committed","sha":"abc123def","author":{"name":"Mallory","date":"t"},"message":"m"}),
+            json!({"event":"reviewed","id":8,"user":{"login":"mallory"},"state":"approved","body":"lgtm","created_at":"t"}),
+            json!({"event":"line-commented","id":9,"comments":[
+                {"id":91,"user":{"login":"mallory"},"body":"x","path":"a","line":1,"created_at":"t"},
+                {"id":92,"user":{"login":"alice"},"body":"y","path":"a","line":2,"created_at":"t"}]}),
+            json!({"event":"commented","id":10,"user":{"login":"github-project-automation[bot]"},"body":"moved","created_at":"t"}),
+            json!({"event":"line-commented","id":11,"comments":[
+                {"id":93,"user":{"login":"mallory"},"body":"z","path":"a","line":1,"created_at":"t"}]}),
+        ];
+        let keys = |d: &Diff| d.rendered.iter().map(|r| r.key.clone()).collect::<Vec<_>>();
+        let d = e.diff(&r, &BTreeMap::new(), &timeline);
+        assert_eq!(
+            keys(&d),
+            vec![
+                "commented:1",
+                "commented:3",
+                "commented:4",
+                "labeled:6",
+                "committed:abc123def",
+                "line-commented:9"
+            ]
+        );
+        // Only alice's line comment is rendered out of the batch.
+        let batch = &d.rendered[5];
+        assert!(
+            batch.text.contains("@alice") && !batch.text.contains("mallory"),
+            "{}",
+            batch.text
+        );
+        // Everything is still counted as seen, so nothing dropped comes
+        // back as news later.
+        assert_eq!(d.seen.len(), 11);
+        // A repository list replaces the instance list.
+        e.cfg.repos[0].allowed_users = Some(vec!["MALLORY".into()]);
+        let r = e.cfg.repos[0].clone();
+        let d = e.diff(&r, &BTreeMap::new(), &timeline);
+        assert_eq!(
+            keys(&d),
+            vec![
+                "commented:2",
+                "commented:3",
+                "commented:4",
+                "labeled:5",
+                "committed:abc123def",
+                "reviewed:8",
+                "line-commented:9",
+                "line-commented:11"
+            ]
+        );
+        // The wildcard delivers everything, bot accounts included.
+        e.cfg.repos[0].allowed_users = Some(vec!["*".into()]);
+        let r = e.cfg.repos[0].clone();
+        assert_eq!(e.diff(&r, &BTreeMap::new(), &timeline).rendered.len(), 11);
+        // No list at all and no collaborators fetched yet: nobody but the bot.
+        e.cfg.repos[0].allowed_users = None;
+        e.cfg.daemon.allowed_users = None;
+        let r = e.cfg.repos[0].clone();
+        assert_eq!(
+            keys(&e.diff(&r, &BTreeMap::new(), &timeline)),
+            vec!["commented:3", "commented:4", "committed:abc123def"]
+        );
+        assert_eq!(e.allow_list(&r).source, Source::Collaborators);
+    }
+
+    #[tokio::test]
+    async fn items_asked_for_by_unlisted_users_are_ignored_until_an_allowed_user_asks() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        e.cfg.daemon.allowed_users = Some(vec!["Alice".into()]);
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        stub.set_assigned(vec![assigned_item(5, "mallory", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "mallory")]);
+        e.tick_repo(&r).await.unwrap();
+        let rs = e.state.repos.get("o/r").unwrap();
+        assert_eq!(
+            rs.ignored.get(&5).map(|i| i.updated_at.as_str()),
+            Some("u1")
+        );
+        assert!(rs.issues.get(&5).is_none_or(|s| !s.seeded), "no session");
+        assert!(e.failures.is_empty(), "a refusal is not a failure");
+        assert!(stub.hits().iter().any(|h| h.contains("/issues/5/timeline")));
+        // Unchanged: not read again.
+        e.tick_repo(&r).await.unwrap();
+        assert!(!stub.hits().iter().any(|h| h.contains("/issues/5/")));
+        // Alice assigns the bot herself: the item changed, and now it is
+        // taken on. The driver is not there in this test, so onboarding
+        // fails after the gate, which is the point: the ignore record is
+        // gone and a delivery failure is counted instead.
+        stub.set_assigned(vec![assigned_item(5, "mallory", "u2")]);
+        stub.set_timeline(5, vec![assigned_by(1, "mallory"), assigned_by(2, "alice")]);
+        e.tick_repo(&r).await.unwrap();
+        let rs = e.state.repos.get("o/r").unwrap();
+        assert!(!rs.ignored.contains_key(&5));
+        assert_eq!(e.failures.get(&("o/r".to_string(), 5)), Some(&1));
+    }
+
+    #[tokio::test]
+    async fn a_retired_item_assigned_again_by_an_unlisted_user_stays_retired() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        e.cfg.daemon.allowed_users = Some(vec!["alice".into()]);
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 5, Some("bot/issue-5"), false);
+        e.entry(&r, 5).triggers = vec!["assigned".into()];
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice"), assigned_by(2, "mallory")]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(!e.peek(&r, Slot::Item(5)).unwrap().active);
+        assert!(e.state.repos["o/r"].ignored.contains_key(&5));
+        assert!(e.failures.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_review_asked_by_an_unlisted_user_does_not_start_the_reviewer() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        e.cfg.daemon.allowed_users = Some(vec!["alice".into()]);
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        seeded(&mut e, 7, None, true);
+        e.entry(&r, 7).shares_workspace_of = Some(1);
+        e.entry(&r, 7).pr = Some(pr("bot/issue-1"));
+        let mut issue7 = issue(7, "bot", None);
+        issue7.pull_request = Some(json!({}));
+        issue7.updated_at = "u1".into();
+        let ask = |id: u64, who: &str| {
+            json!({"event":"review_requested","id":id,"actor":{"login":who},
+                "requested_reviewer":{"login":"bot"},"created_at":"t"})
+        };
+        stub.set_timeline(7, vec![ask(1, "mallory")]);
+        let triggers = vec!["review_requested".to_string()];
+        e.reconcile_reviewer(&r, "o", "r", &issue7, &triggers)
+            .await
+            .unwrap();
+        assert!(e.peek(&r, Slot::Reviewer(7)).is_none());
+        assert_eq!(
+            e.refused_reviews.get(&("o/r".to_string(), 7)),
+            Some(&"u1".to_string())
+        );
+        // Unchanged: not read again.
+        stub.hits();
+        e.reconcile_reviewer(&r, "o", "r", &issue7, &triggers)
+            .await
+            .unwrap();
+        assert!(stub.hits().is_empty());
+        // Alice asks too: the reviewer is started (and, with no driver in
+        // this test, fails there rather than at the gate).
+        issue7.updated_at = "u2".into();
+        stub.set_timeline(7, vec![ask(1, "mallory"), ask(2, "alice")]);
+        let err = e
+            .reconcile_reviewer(&r, "o", "r", &issue7, &triggers)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("orca-for-ssf-tests"), "{err:#}");
+        assert!(!e.refused_reviews.contains_key(&("o/r".to_string(), 7)));
+    }
+
+    #[tokio::test]
+    async fn collaborators_with_push_access_are_the_default_list() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        e.cfg.daemon.allowed_users = None;
+        e.cfg.daemon.accepted_anyone_risk = false;
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        // No list and no answer from GitHub: the pass fails, closed.
+        let err = e.tick_repo(&r).await.unwrap_err();
+        assert!(format!("{err:#}").contains("collaborators"), "{err:#}");
+        assert!(!e.allow_list(&r).allows("alice"));
+        stub.set_collaborators(Some(vec![
+            json!({"login": "Alice", "permissions": {"pull": true, "push": true}}),
+            json!({"login": "reader", "permissions": {"pull": true, "push": false}}),
+            json!({"login": "some-app[bot]", "permissions": {"push": true}}),
+        ]));
+        e.tick_repo(&r).await.unwrap();
+        let l = e.allow_list(&r);
+        assert!(l.allows("alice") && l.allows("ALICE") && l.allows("bot"));
+        assert!(!l.allows("reader") && !l.allows("some-app[bot]"));
+        assert_eq!(l.source, Source::Collaborators);
+        assert_eq!(l.describe(), "@alice (collaborators with push access)");
+        // Once per pass, conditionally: the second answer is a 304.
+        stub.hits();
+        e.tick_repo(&r).await.unwrap();
+        let hits = stub.hits();
+        assert_eq!(
+            hits.iter().filter(|h| h.contains("/collaborators")).count(),
+            1
+        );
+        assert!(e.allow_list(&r).allows("alice"));
+        // A refresh that fails keeps the last list.
+        stub.set_collaborators(None);
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.allow_list(&r).allows("alice"));
+        // A configured list is used instead, and nothing is fetched.
+        e.cfg.repos[0].allowed_users = Some(vec![]);
+        let r = e.cfg.repos[0].clone();
+        stub.hits();
+        e.tick_repo(&r).await.unwrap();
+        assert!(!stub.hits().iter().any(|h| h.contains("/collaborators")));
+        assert!(!e.allow_list(&r).allows("alice"));
+        assert_eq!(e.allow_list(&r).source, Source::Repo);
     }
 }
