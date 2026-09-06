@@ -56,7 +56,7 @@ instructions = "Run `make test` before opening a PR."
 | `vm.vcpus`, `vm.mem_mib` | `2`, `4096` | The guest's size |
 | `vm.data_gib`, `vm.root_gib` | `20`, `8` | The persistent data disk (state, clones, worktrees; sparse) and the root image `ssf vm build` makes |
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
-| `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`); how a harness login such as `~/.claude/.credentials.json` gets in |
+| `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
 | `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Use binaries or images of your own instead of the downloaded ones |
 | `repo.name` | | `owner/name` on GitHub (required) |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |

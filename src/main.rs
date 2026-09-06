@@ -247,6 +247,15 @@ enum VmCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Sign a harness in inside the guest: its login runs there in this
+    /// terminal (a URL to open here and a code to paste back, or a device
+    /// code); the credential is written in the guest, nothing is copied from
+    /// this machine. Without a harness, pick one from those installed.
+    Login {
+        /// `claude`, `codex`, `gemini`, `copilot`, `opencode`, `pi`, `omp`,
+        /// `grok` or `crush`.
+        harness: Option<String>,
+    },
     /// Attach to herdr's session in the guest, in this terminal.
     Attach,
     /// A shell in the guest, or run a command there.
@@ -1122,6 +1131,74 @@ fn confirm(question: &str) -> Result<bool> {
     Ok(a.is_empty() || a == "y" || a == "yes")
 }
 
+/// `claude logged in, codex not logged in (omp not installed)`.
+fn login_summary(states: &[vm::LoginState]) -> String {
+    let mut parts: Vec<String> = states
+        .iter()
+        .filter(|s| s.installed)
+        .map(|s| {
+            format!(
+                "{} {}",
+                s.harness,
+                if s.logged_in {
+                    "logged in"
+                } else {
+                    "not logged in"
+                }
+            )
+        })
+        .collect();
+    let missing: Vec<&str> = states
+        .iter()
+        .filter(|s| !s.installed)
+        .map(|s| s.harness.as_str())
+        .collect();
+    if !missing.is_empty() {
+        parts.push(format!("({} not installed)", missing.join(", ")));
+    }
+    parts.join(", ")
+}
+
+/// Terminal picker over the harnesses installed in the guest; `None` when
+/// the person picks nothing.
+fn pick_login(states: &[vm::LoginState]) -> Result<Option<&'static vm::Login>> {
+    let installed: Vec<&vm::LoginState> = states.iter().filter(|s| s.installed).collect();
+    if installed.is_empty() {
+        bail!("no harness CLI is installed in the guest (`ssf vm build --force` for a new image)");
+    }
+    println!("Which harness to sign in inside the VM?");
+    for (i, s) in installed.iter().enumerate() {
+        println!(
+            "  {}) {}{}",
+            i + 1,
+            s.harness,
+            if s.logged_in { "  (logged in)" } else { "" }
+        );
+    }
+    println!("  q) nothing");
+    loop {
+        eprint!("> ");
+        std::io::stderr().flush()?;
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        let a = line.trim();
+        if a.is_empty() || a.eq_ignore_ascii_case("q") {
+            return Ok(None);
+        }
+        let chosen = match a.parse::<usize>() {
+            Ok(n) if (1..=installed.len()).contains(&n) => Some(installed[n - 1].harness.as_str()),
+            _ => installed
+                .iter()
+                .map(|s| s.harness.as_str())
+                .find(|h| h.eq_ignore_ascii_case(a)),
+        };
+        if let Some(l) = chosen.and_then(vm::login) {
+            return Ok(Some(l));
+        }
+        eprintln!("a number from the list, a harness name, or q");
+    }
+}
+
 /// Terminal picker over gh's accounts; `None` means "sign in another one".
 fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>> {
     if accounts.is_empty() {
@@ -1714,8 +1791,44 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                     }
                 );
                 println!("daemon:   {}", st.daemon.as_deref().unwrap_or("unknown"));
+                if !st.logins.is_empty() {
+                    println!("logins:   {}", login_summary(&st.logins));
+                }
             }
             Ok(())
+        }
+        VmCommand::Login { harness } => {
+            let login = match harness {
+                Some(h) => vm::login(&h).with_context(|| {
+                    format!(
+                        "no login flow for `{h}`; one of {}",
+                        vm::LOGINS
+                            .iter()
+                            .map(|l| l.harness)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })?,
+                None => {
+                    let states = vm
+                        .logins()
+                        .context("asking the guest (is the VM up? `ssf vm status`)")?;
+                    match pick_login(&states)? {
+                        Some(l) => l,
+                        None => return Ok(()),
+                    }
+                }
+            };
+            if vm.login(login)? {
+                println!("{}: logged in inside the VM", login.harness);
+                Ok(())
+            } else {
+                bail!(
+                    "{}: no credential at ~/{} in the guest; see the output above",
+                    login.harness,
+                    login.credential
+                )
+            }
         }
         VmCommand::Attach => exit_with(vm.attach()?),
         VmCommand::Ssh { command } => exit_with(vm.shell(&command)?),

@@ -26,7 +26,8 @@ The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
 ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)
 ssf config set vm.enabled true
 systemctl --user restart ssf.service   # or: ssf vm start
-ssf vm status             # whether the VM runs and its daemon answers
+ssf vm status             # whether the VM runs and its daemon answers, and which harnesses are logged in there
+ssf vm login              # sign a harness in inside the guest (see below)
 ssf status                # runs inside the guest from now on
 ssf vm attach             # herdr in the guest, in this terminal
 ```
@@ -60,12 +61,54 @@ At every start the host writes a small seed disk with the `ssf` binary,
 `/var/lib/ssf/projects`, no `repo.path`), the bot token (resolved the way
 `ssf token` does, so the host keyring itself is never copied), the bot's
 own SSH key if `ssf auth login` enrolled one, the ssh public key the host
-uses to reach the guest, and the files `vm.files` lists. That last one is
-how a harness login gets in: `files = ["~/.claude/.credentials.json"]`
-lands at the same place under the guest user's home; `src:dest` places a
-file elsewhere. Nothing else from the host home is visible in the guest:
-no `~/.ssh`, no `~/.gitconfig`, no other accounts. Commits are signed only
-if the bot key is enrolled.
+uses to reach the guest, and the files `vm.files` lists
+(`files = ["~/.claude/.credentials.json"]` lands at the same place under
+the guest user's home; `src:dest` places a file elsewhere; see [Harness
+logins](#harness-logins) before copying a login that way). Nothing else
+from the host home is visible in the guest: no `~/.ssh`, no
+`~/.gitconfig`, no other accounts. Commits are signed only if the bot key
+is enrolled.
+
+## Harness logins
+
+The agents in the guest need their own sign-in: the guest has no keyring,
+no browser and none of your home directory. `ssf vm login [<harness>]`
+runs the harness's login inside the guest, in your terminal, using the
+flow that works without a browser next to it: a page to open here and a
+code to paste back (Claude Code, Gemini, OpenCode, Pi, Oh My Pi) or a
+device code (Codex, Copilot, Grok, Crush). ssf opens the page in your
+browser when it can (the URL is printed either way) and, once the login
+exits, says whether the credential landed. Without a harness it lists
+those installed in the guest and asks which. Nothing is copied from this
+machine and nothing is port-forwarded; the harnesses' browser-callback
+variants are their desktop defaults only. The credential stays in the
+guest's home, on the data disk: `ssf vm reset` keeps it, `ssf vm destroy`
+removes it with everything else. `ssf vm status` shows one entry per
+harness (`logins:`, and `logins` in `--json` with `installed` and
+`logged_in`).
+
+| harness | what runs in the guest | you do | credential (guest home) |
+|---|---|---|---|
+| claude | `claude auth login` | sign in on the page, paste the code back | `.claude/.credentials.json` |
+| codex | `codex login --device-auth` | enter the code on the page | `.codex/auth.json` |
+| gemini | `NO_BROWSER=true gemini` | pick a method in its dialog, open the URL, paste the code, `/quit` | `.gemini/oauth_creds.json` |
+| copilot | `copilot login --device-code` | enter the code on the page | `.copilot/config.json` |
+| opencode | `opencode auth login` | pick provider and method; OAuth prints a URL and takes the code | `.local/share/opencode/auth.json` |
+| pi | `pi`, then `/login` | pick method and provider, open the URL, paste the code or redirect URL | `.pi/agent/auth.json` |
+| omp | `omp`, then `/login` | as Pi | `.omp/agent/auth.json` |
+| grok | `grok login --device-auth` | confirm the code on the page | `.grok/auth.json` |
+| crush | `crush login copilot` | Enter, then the code on the page | `.config/github-copilot/apps.json` |
+
+Copilot's and Crush's files are what their documentation names; the
+others were watched being written. API keys go through the same commands
+(each offers the option) or the harness's environment variable.
+
+`[vm] files` remains the way to copy an existing login in, with one
+warning: a copied credential is the same session as the one on your
+machine, not a second login. A logout on either side, or the token
+rotation Claude Code does on expiry, ends both; a guest agent that runs
+`claude auth logout` signs you out on the host. `ssf vm login` gives the
+guest a login of its own and never logs anything out.
 
 ## What the agent can do there
 
