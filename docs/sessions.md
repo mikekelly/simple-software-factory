@@ -201,7 +201,7 @@ the answer goes on the item.
 
 A harness login can go away under a running session: the token expires,
 or it is revoked (a logout elsewhere on a copied credential does that,
-see [Inside a microVM](vm.md#logins)). Claude Code then answers every
+see [Inside a microVM](vm.md#harness-logins)). Claude Code then answers every
 prompt with `Login expired · Please run /login` and waits; the other
 harnesses show their sign-in screens. Nothing inside the session can fix
 it, and to the driver the agent looks alive and idle, so without help ssf
