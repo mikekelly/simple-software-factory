@@ -352,6 +352,14 @@ note. Run `ssf config set driver orca` before or right after the upgrade
 to keep the factory on Orca; `ssf config set driver herdr` makes the new
 default explicit and silences the note.
 
+**Switching drivers** (either way, by the default or a repository's own
+`driver`): every item keeps its record, and at its next activity its
+workspace is re-created on the new driver, in the new driver's worktree
+directory, from the item's branch. The old checkouts stay where they are
+(Orca's worktrees, or `<name>.worktrees/` next to the herdr clone) for you
+to clean up; the daemon logs `workspace was made by orca; re-creating it
+on herdr` per item as it happens.
+
 Either way the agent is started through `ssf launch`, which supplies the
 bot identity, the `gh` wrapper that adds the byline, and the `ssf`
 commands, so nothing changes for the agent. Check: `ssf doctor` reports

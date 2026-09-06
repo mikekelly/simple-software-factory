@@ -230,6 +230,21 @@ impl Driver {
         self.kind().label()
     }
 
+    /// Could this driver have written `repo_id`? A record that says which
+    /// driver made its workspace is not judged by this; one from before
+    /// that was kept is (see `Engine::drop_foreign_binding`).
+    pub fn owns_repo_id(&self, repo_id: &str) -> bool {
+        match self {
+            // The stub's own id, or a real driver's shape for the kind the
+            // stub stands in for.
+            #[cfg(test)]
+            Driver::Stub(_) => {
+                repo_id == "stub" || DriverKind::of_repo_id(repo_id) == Some(self.kind())
+            }
+            _ => DriverKind::of_repo_id(repo_id) == Some(self.kind()),
+        }
+    }
+
     /// The executable the driver runs.
     pub fn command(&self) -> &str {
         match self {
@@ -282,8 +297,15 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.find_worktree_for_issue(repo_id, number).await,
             Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, number).await,
+            // The stub fails on a checkout it does not own, as the real
+            // drivers do on another driver's id.
             #[cfg(test)]
-            Driver::Stub(_) => Ok(None),
+            Driver::Stub(_) => {
+                if repo_id != "stub" {
+                    bail!("checkout {repo_id} is not a directory (a repo id from another driver?)");
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -950,6 +972,12 @@ pub fn parse_worktree_list(text: &str) -> Vec<LocalWorktree> {
 
 /// The linked worktrees of the checkout (not the checkout itself).
 pub async fn local_worktrees(repo_root: &str) -> Result<Vec<LocalWorktree>> {
+    // Said plainly rather than left to git's "cannot change to": the
+    // usual way to get here is a repo id another driver wrote (an Orca
+    // uuid) taken for a checkout path.
+    if !Path::new(repo_root).is_dir() {
+        bail!("checkout {repo_root} is not a directory (a repo id from another driver?)");
+    }
     let text = git(repo_root, &["worktree", "list", "--porcelain"]).await?;
     let root = Path::new(repo_root)
         .canonicalize()
@@ -1014,6 +1042,35 @@ mod tests {
         );
         assert_eq!(redacted("claude --model haiku"), "claude --model haiku");
         assert!(!redacted(wrapper).contains("gho_"));
+    }
+
+    #[tokio::test]
+    async fn worktree_listing_refuses_a_repo_id_that_is_no_directory() {
+        let err = local_worktrees("1b790ad2-4421-43dc-9f46-f7c09d0c321f")
+            .await
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("is not a directory"), "{msg}");
+        assert!(msg.contains("1b790ad2"), "{msg}");
+        assert!(!msg.contains("cannot change to"), "{msg}");
+    }
+
+    #[test]
+    fn a_repo_id_names_the_driver_that_wrote_it() {
+        assert_eq!(
+            DriverKind::of_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"),
+            Some(DriverKind::Orca)
+        );
+        assert_eq!(
+            DriverKind::of_repo_id("/home/me/ssf/projects/widgets"),
+            Some(DriverKind::Herdr)
+        );
+        assert_eq!(DriverKind::of_repo_id(""), None);
+        assert_eq!(DriverKind::of_repo_id("relative/path"), None);
+        let stub = Driver::Stub(StubDriver::new(DriverKind::Herdr));
+        assert!(stub.owns_repo_id("stub"));
+        assert!(stub.owns_repo_id("/home/me/ssf/projects/widgets"));
+        assert!(!stub.owns_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"));
     }
 
     #[test]

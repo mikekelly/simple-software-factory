@@ -14,9 +14,15 @@ others in herdr. `ssf doctor` checks every driver in use, and with
 repositories run in and why. The default was Orca until 2026-09-06: a
 config from before that leaves `driver` unset moves to herdr on upgrade,
 and the daemon logs a warning at start when Orca's CLI is installed; `ssf
-config set driver orca` keeps it where it was. To keep the agents (and the
-daemon) away from your home directory altogether, the whole factory can
-run inside a microVM instead (see [Inside a microVM](vm.md)).
+config set driver orca` keeps it where it was. A switch either way, by the
+default or a repository's own `driver`, does not touch the items: each
+record remembers which driver made its workspace, and at the item's next
+activity the workspace is re-created on the new driver (in the new
+driver's worktree directory, from the item's branch) with the activity
+delivered as usual. The old checkouts stay where they are for you to clean
+up. To keep the agents (and the daemon) away from your home directory
+altogether, the whole factory can run inside a microVM instead (see
+[Inside a microVM](vm.md)).
 
 A pass skips the repositories of a driver that is not answering while the
 others carry on; the outage shows as the error in `ssf status`, and that

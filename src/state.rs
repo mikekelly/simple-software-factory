@@ -94,9 +94,17 @@ pub struct IssueState {
     /// Last known terminal handle running the harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_handle: Option<String>,
-    /// Orca repo id the workspace belongs to (first half of the worktree id).
+    /// The driver's id for the repository the workspace belongs to: Orca's
+    /// repo id (the first half of the worktree id) or, for herdr, the path
+    /// of the checkout. Only meaningful to the driver named in `driver`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_id: Option<String>,
+    /// The driver (`orca`, `herdr`) that made the workspace and wrote
+    /// `repo_id` and `worktree_id`. A record from before this was kept has
+    /// none, and is judged by the shape of its `repo_id` when the driver of
+    /// the repository has changed since (see `Engine::drop_foreign_binding`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver: Option<String>,
     /// Name the workspace was created with, reused when it is re-created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_name: Option<String>,
