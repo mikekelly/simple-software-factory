@@ -1124,6 +1124,21 @@ SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # live-test t
 omarchy plugin validate ./omarchy-plugin
 ```
 
+To run a dev build as the service, install the package once (for the unit
+and the widget) and point the unit at the build with a drop-in, then
+`systemctl --user daemon-reload && systemctl --user restart ssf.service`.
+Keep the build outside any worktree an agent might release, and remove the
+drop-in when the package is reinstalled from master:
+
+```ini
+# ~/.config/systemd/user/ssf.service.d/dev-build.conf
+[Service]
+ExecStartPre=
+ExecStartPre=-/home/you/src/simple-software-factory/target/release/ssf ui install --quiet
+ExecStart=
+ExecStart=/home/you/src/simple-software-factory/target/release/ssf run
+```
+
 Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
 `src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
 (the polling loop), `src/sessions.rs` (agent session capture and resume),

@@ -86,9 +86,12 @@ ExecStart=/home/you/src/simple-software-factory/target/release/ssf run
 Then `systemctl --user daemon-reload && systemctl --user restart
 ssf.service`. Keep the build outside any Orca or herdr worktree that an
 agent might release. Remove the drop-in when the package is reinstalled
-from master; `ssf doctor` warns when the `ssf` on PATH and the running
-daemon differ. A dev build started by hand resumes interrupted sessions on
-start like the service does, but nothing restarts it for you.
+from master. Run `./target/release/ssf doctor` rather than the packaged
+`ssf doctor`: `doctor` says whether the `ssf` on PATH is the binary running
+it, so only the dev build's own `doctor` shows the two differ (agents run
+the daemon's binary either way). A dev build started by hand resumes
+interrupted sessions on start like the service does, but nothing restarts
+it for you.
 
 Scratch runs that touch nothing of the real factory use their own
 directories: `SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev
@@ -122,7 +125,8 @@ and access to any project boards it should keep up to date.
   and `ssf-ui login` are the same flow with menus.
 - A pasted token: `printf '%s' "$TOKEN" | ssf auth login --token`. It is
   stored in `~/.config/ssf/token` (mode 0600). Use a classic personal access
-  token with the scopes below (fine-grained tokens do not offer the key scopes).
+  token with the scopes below: ssf checks the classic scope list gh reports,
+  so a fine-grained token shows up as missing all of them.
 - `SSF_GITHUB_TOKEN` in the daemon's environment overrides both, for
   scratch runs.
 
