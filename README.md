@@ -9,10 +9,11 @@ about the notes your repository keeps for them.
 ssf is a small daemon for [Omarchy](https://omarchy.org/). It runs the
 agents in [Orca](https://onorca.dev/) by default, or in
 [herdr](https://herdr.dev/), so you can watch them work, take over, or
-nudge them at any time (see [Drivers](#drivers-orca-and-herdr)). Nothing
+nudge them at any time (see [Drivers](docs/drivers.md)). Nothing
 runs in the cloud: the daemon polls GitHub and drives the multiplexer, and
 the agents are the ones you already have installed (Claude Code, Codex,
-...).
+...). If you would rather keep the agents off your machine altogether, the
+whole factory can run [inside a microVM](docs/vm.md).
 
 ## One issue, start to finish
 
@@ -140,17 +141,19 @@ linked to it. A post from the agent on issue #31 looks like this on GitHub:
 A reviewer's byline reads `🤖#29 (reviewer) says:`. The posts quoted above
 from #18 predate the byline (it arrived with #32 on 2026-09-05, and the
 `says:` with #42) and carried the same mark out of sight at the end of the
-body; every post since carries it on the first line. A post by the bot account *without* a byline was typed
-by a person.
+body; every post since carries it on the first line. A post by the bot
+account *without* a byline was typed by a person. How the byline works,
+and how the daemon reads it, is in
+[Identity and bylines](docs/identity-and-bylines.md).
 
 ## The key ideas
 
-- **One agent per issue or pull request.** Each gets its own Orca workspace
-  (a git worktree on its own branch) and its own agent session, from the
-  moment the bot is assigned, @mentioned, or asked to review until the item
-  is closed. Comment on the issue and the agent hears it. Close the issue
-  and the agent wraps up; its workspace stays until the agent, or a
-  person, says it can go.
+- **One agent per issue or pull request.** Each gets its own workspace
+  (a git worktree on its own branch, in Orca or herdr) and its own agent
+  session, from the moment the bot is assigned, @mentioned, or asked to
+  review until the item is closed. Comment on the issue and the agent hears
+  it. Close the issue and the agent wraps up; its workspace stays until the
+  agent, or a person, says it can go.
 - **Agents know the project.** An agent is told the issue, everything that
   has happened on it, the project boards it is on and their columns, and
   the notes your repository keeps in `SSF.md` (how you want work done,
@@ -164,28 +167,30 @@ by a person.
   typed straight into an agent's terminal, kept for nudges that would be
   noise on the item.
 - **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
-  in Orca (or herdr), and starts the agents you have installed, with the bot's
-  credentials, so what the agents do on GitHub is done as the bot (see
-  [Notes and limitations](#notes-and-limitations-v1) for what that does
-  and does not isolate).
+  in Orca (or herdr), and starts the agents you have installed, with the
+  bot's credentials, so what the agents do on GitHub is done as the bot.
+  On your own machine that is a default rather than a wall (the agents run
+  as you); the [microVM](docs/vm.md) is the wall.
 
 ## How it works
 
 Every few seconds ssf asks GitHub for the open issues and pull requests that
 involve the bot. For a new one it creates a workspace (in Orca or in herdr,
-depending on the [driver](#drivers-orca-and-herdr)), checked out on a
+depending on the [driver](docs/drivers.md)), checked out on a
 branch for the issue (or on the pull request's branch, so pushes update
 the pull request), and starts the agent there with the whole story so far.
 From then on every new comment, review, label or push on the item is pasted
 into that agent's terminal as a message: it steers the agent if it is busy
 and wakes it if it is idle. If a terminal is gone, or the whole workspace,
 ssf brings it back and resumes the same conversation, including after a
-reboot. When the item is closed the agent is told to push what is worth keeping
-and, only then, to release its workspace; ssf never deletes one that might
-hold work (see [Workspaces after close](#workspaces-after-close-release-and-purge)).
+reboot. When the item is closed the agent is told to push what is worth
+keeping and, only then, to release its workspace; ssf never deletes one
+that might hold work (see
+[Workspaces after close](docs/sessions.md#workspaces-after-close-release-and-purge)).
 
-The rest of this file is reference: install and set up, the command line,
-configuration, and how the pieces above are put together.
+Only people you allow can drive it: by default the repository's
+collaborators with push access, or a list you set (see
+[Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
 
 ## Install
 
@@ -199,7 +204,7 @@ steps below and the decisions at each one. Then ask the agent to set up ssf
 ssf runs on [Omarchy](https://omarchy.org/). Install
 [Orca](https://onorca.dev/) (`orca-ide-bin`) and sign in, or install
 [herdr](https://herdr.dev/) and set `driver = "herdr"` (see
-[Drivers](#drivers-orca-and-herdr)). Then build and install ssf from this
+[Drivers](docs/drivers.md)). Then build and install ssf from this
 checkout:
 
 ```sh
@@ -215,6 +220,9 @@ The package installs:
 | `/usr/lib/systemd/user/ssf.service` | background service, enabled for every user via `graphical-session.target.wants` |
 | `/usr/share/ssf/omarchy-plugin/` | the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
+| `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
+| `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
+| `/usr/share/doc/ssf/` | this file and `docs/` |
 
 The service starts with the graphical session, and the package's install
 hook also starts it in any session that is running at install time, so there
@@ -225,9 +233,9 @@ widget) and a **Factory** submenu in the Omarchy menu.
 
 The service is the intended way to run the factory: it comes back with the
 next login after a reboot (unless it was switched off with the toggle),
-waits for Orca, and resumes the agent sessions the reboot cut off (see
-[Restarts](#under-the-hood)). A dev build started by hand (`ssf run`) does the
-same on start, but nothing restarts it for you.
+waits for Orca, and resumes the agent sessions the reboot cut off. A dev
+build started by hand (`ssf run`) does the same on start, but nothing
+restarts it for you (see [Development](docs/development.md)).
 
 ## Set up
 
@@ -244,12 +252,15 @@ Click the factory icon in the bar, or open the Omarchy menu and pick
   generates a dedicated ed25519 key under `~/.config/ssf/keys/` and enrolls it
   on the bot account as both an SSH key and a commit signing key. If the gh
   token lacks the scopes for that (`repo`, `project`,
-  `admin:public_key`, `admin:ssh_signing_key`), ssf asks gh to add them. `ssf auth logout`
-  revokes the keys and forgets the bot; the gh sign-in itself stays.
+  `admin:public_key`, `admin:ssh_signing_key`), ssf asks gh to add them.
+  `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
+  itself stays.
 - **Watch a repository**: type `owner/name` and pick the agent that works it.
   The agent list comes from Omarchy's agent catalogue and only shows agents
   that are installed. (The configuration calls the agent program the
-  *harness*: `claude`, `codex`, `gemini`, ...)
+  *harness*: `claude`, `codex`, `gemini`, ...) Sign each agent in once, by
+  hand, on this machine; ssf starts them with the flags that let them run
+  unattended (see [Permissions](docs/configuration.md#permissions)).
 - **Manage repositories**: change the agent, model or effort level for a
   repository, or stop watching it.
 - The toggle in the panel header enables or disables the service.
@@ -278,14 +289,17 @@ ssf agents                        # which agents Omarchy knows and which are ins
 ssf repo add acme/widgets --harness claude
 ssf status
 ssf peers                         # the agent sessions and what each is doing
-ssf doctor
+ssf doctor                        # token and scopes, drivers, harnesses, gh wrapper, daemon socket
 ```
 
 Put an `SSF.md` at the root of the repository to tell agents how you want
-them to work; [`SSF.example.md`](SSF.example.md) is a starting point (see
-[The per-project prompt file](#the-per-project-prompt-file)).
+them to work: when to comment, what to run before a PR, what the board
+columns mean, who reviews. [`SSF.example.md`](SSF.example.md) is a starting
+point, and this repository's own [`SSF.md`](SSF.md) is what produced the
+comments quoted above (see
+[The per-project prompt file](docs/configuration.md#the-per-project-prompt-file)).
 
-## Management CLI (for humans and for agents)
+## Everyday commands
 
 Everything except the credentials is scriptable, so an agent on the machine
 can reconfigure the factory:
@@ -293,20 +307,15 @@ can reconfigure the factory:
 ```sh
 ssf repo list --json
 ssf repo add acme/widgets --harness codex --instructions "Run make test before opening a PR."
-ssf repo set acme/widgets --harness claude --command "claude --dangerously-skip-permissions --disallowedTools 'Bash(git push:*)'"
-ssf repo set acme/widgets --model opus --effort high
+ssf repo set acme/widgets --model opus --effort high    # ssf models <agent> lists the ids
 ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
-ssf models pi                     # ids the installed agent takes
 ssf repo set acme/widgets --clear model --clear effort
-ssf repo set acme/widgets --prompt-file .github/ssf.md   # instead of SSF.md
+ssf repo set acme/widgets --allowed-users alice,bob     # who may drive this repository
 ssf repo remove acme/widgets
 ssf config get daemon.poll_interval_secs
 ssf config set daemon.poll_interval_secs 60
 ssf config set daemon.instructions "Always open PRs as drafts."
-ssf config set daemon.allowed_users '["mikekelly", "alice"]'   # who may drive the agents (see below)
-ssf repo set acme/widgets --allowed-users alice,bob             # for one repository, replacing the instance list
-ssf repo set acme/widgets --clear allowed_users
-ssf status --json
+ssf status --json                 # every tracked item, its session and what the driver reports
 ssf peers [--repo owner/name] [--all] [--json]
 ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --as owner/repo#N)
 ssf unsub 12
@@ -316,914 +325,40 @@ ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspa
 ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
+journalctl --user -fu ssf.service
 ```
 
-Config changes are picked up on the next poll; no restart needed. `ssf config
-set` refuses to touch `github.token`; use `ssf auth login` (interactive) for
-that.
-
-`ssf status --json` joins what ssf knows about every tracked item with what
-Orca reports about the workspace working on it (`orca worktree ps`), so
-nothing else has to talk to Orca. Its `sessions` array has one entry per item:
-
-| Field | From |
-|-------|------|
-| `id`, `repo`, `number`, `kind` (`issue`/`pull_request`), `title`, `url` | ssf; `id` is the session identity `owner/repo#N` |
-| `github_state` (`open`/`closed`/`merged`), `active`, `triggers`, `pr` | GitHub, as of the last poll |
-| `owner`, `subscribers`, `subscriber_only`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `subscribers` are the sessions that hear about it without acting on it; `subscriber_only` marks an item tracked only for them (no owner, no workspace); `delegated_by` names the session that handed the item off (`mode=delegate`) |
-| `reviewing` | on a session of kind `reviewer` (id `owner/repo#N:reviewer`): the pull request it reviews (see [Reviewer sessions](#reviewer-sessions)) |
-| `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `harness` | ssf's delivery record |
-| `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
-| `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | Orca. `agent_state` is Orca's (`working`, `waiting`, `done`, `open`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (Orca not running); `workspace` is the raw `worktree ps` row |
-
-`repos[].issues[]` carries the same objects, `repos[].allowed_users` says
-who may drive each repository (`anyone_allowed` at the top is whether the
-wildcard is on anywhere; the bar widget warns while it is), and
-`orca.available` says whether Orca answered. `ssf peers` prints the same data as a terminal table:
-by default the active sessions on `$SSF_REPO` (so an agent sees who else is
-on its repository, and itself marked "(you)"), or on every watched repository
-outside a session; `--all` includes retired sessions. `ssf guide` tells
-agents about it.
-
-## Configuration
-
-`~/.config/ssf/config.toml` (see `config.example.toml` for every key):
-
-```toml
-[daemon]
-poll_interval_secs = 30
-
-[[repo]]
-name = "acme/widgets"
-harness = "claude"
-model = "opus"
-effort = "high"
-instructions = "Run `make test` before opening a PR."
-```
-
-| Key | Default | Meaning |
-|-----|---------|---------|
-| `github.api_url` | `https://api.github.com` | GitHub Enterprise: `https://ghe.example.com/api/v3` |
-| `github.login`, `github.email`, `github.ssh_key_path` | set by `ssf auth login` | The bot's identity and key; edit `email` if the bot has a public address |
-| `driver` | `orca` | What runs the agents: `orca` or `herdr` (see [Drivers](#drivers-orca-and-herdr)) |
-| `orca.command` | `/usr/lib/orca-ide/bin/orca-ide` | Orca CLI binary (`/usr/bin/orca-ide` launches the app, not the CLI) |
-| `orca.projects_dir` | `~/orca/projects` | Where repositories are cloned when Orca has no project for them |
-| `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
-| `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
-| `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
-| `daemon.instructions` | | Extra instructions appended to every initial prompt |
-| `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](#workspaces-after-close-release-and-purge)); still accepted so old files load |
-| `daemon.cleanup_grace_secs` | `900` | How long a reviewer session gets to finish before its read-only workspace is removed anyway; item workspaces are not affected |
-| `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](#reviewer-sessions)); `""` turns the label trigger off |
-| `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#under-the-hood)) |
-| `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
-| `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
-| `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](#inside-a-microvm-firecracker)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
-| `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
-| `vm.vcpus`, `vm.mem_mib` | `2`, `4096` | The guest's size |
-| `vm.data_gib`, `vm.root_gib` | `20`, `8` | The persistent data disk (state, clones, worktrees; sparse) and the root image `ssf vm build` makes |
-| `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
-| `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`); how a harness login such as `~/.claude/.credentials.json` gets in |
-| `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Use binaries or images of your own instead of the downloaded ones |
-| `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
-| `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
-| `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
-| `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
-| `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
-| `repo.path` | | Register an existing checkout instead of cloning |
-| `repo.prompt_file` | `SSF.md` | The per-project prompt file (below), relative to the worktree unless absolute or `~/` |
-| `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories |
-| `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
-
-Environment overrides: `SSF_GITHUB_TOKEN`, `SSF_CONFIG_DIR`, `SSF_STATE_DIR`,
-`ORCA_CLI_COMMAND`, `HERDR_COMMAND`, `RUST_LOG`.
-
-### The per-project prompt file
-
-Notes that only matter to ssf agents, and so do not belong in `CLAUDE.md` or
-`AGENTS.md` (which conventions the project boards use, who to ask about what,
-how the humans want PRs written up, ...), go in an `SSF.md` at the root of
-the repository. When an agent is started for an item, ssf reads the file from
-the item's own checkout (so a PR branch that changes it is seen with its own
-version) and appends it to the initial prompt under a "Project notes" heading,
-after `daemon.instructions` and `repo.instructions`. The same text is included
-when an agent is started again from scratch, and a reviewer session gets it
-too. No file, or an empty one, adds nothing. `repo.prompt_file` names another
-file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
-path for notes you would rather not commit.
-
-This is also where working style goes. ssf's prompts carry rules, not
-advice, so a repository that wants its agents told to comment when they
-start and finish, to ask rather than guess, to commit as they go, or how to
-review, says so here. [`SSF.example.md`](SSF.example.md) (installed as
-`/usr/share/ssf/SSF.example.md`) is a starting point with exactly those
-lines; this repository's own [`SSF.md`](SSF.md) is what produced the
-comments quoted above.
-
-### Models and effort levels
-
-For the agents Orca has a model catalogue for, `repo.model` and `repo.effort`
-use the same identifiers as Orca's own `--model`/`--effort` options (`orca
-orchestration worker-start`). Pi, Oh My Pi, OpenCode and Copilot are not in
-Orca's catalogue; they take their own `provider/model` ids (Pi and Oh My Pi
-reach many providers, OpenRouter among them) and their own thinking or
-reasoning levels. Either way ssf turns the setting into the agent's
-command-line flags when it starts the agent, including when it resumes a
-session:
-
-| Agent | Model ids | Effort levels | What is appended to the command |
-|-------|-----------|---------------|---------------------------------|
-| `claude` | `fable`, `opus`, `sonnet`, `haiku`, or a full model name | `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
-| `codex` | `gpt-5.5`, `gpt-5.2-codex`, ... | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | `-m <id> -c model_reasoning_effort=<level>` |
-| `gemini` | `gemini-3-pro-preview`, `gemini-2.5-pro`, ... | none | `-m <id>` |
-| `grok` | `grok-4.6`, `grok-4.5` | `low`, `medium`, `high`, `xhigh` | `-m <id> --reasoning-effort <level>` |
-| `pi` | `provider/model` as in `pi --list-models`, e.g. `openrouter/anthropic/claude-sonnet-4` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --thinking <level>` |
-| `omp` | `provider/model` as in `omp models`, e.g. `openai-codex/gpt-5.4` | as `pi`, plus `auto` | `--model <id> --thinking <level>` |
-| `opencode` | `provider/model` as in `opencode models` | none | `-m <id>` |
-| `copilot` | `auto` or a model name | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
-
-`ssf models <agent>` prints the ids to choose from, asking the installed
-agent for its list where it has one (`pi`, `omp`, `opencode`); the menu's
-*Change model* picker uses the same list. Crush has no model flag for its
-terminal interface, so ssf refuses a model for it. Model ids are passed through as given, so
-a model the list does not mention works as long as the agent knows it;
-effort levels must be ones the agent accepts. Changing the agent of a
-repository resets both, since the ids belong to the agent. Keep
-`--model`/`--effort` out of `repo.command` when you set them here, or the
-agent sees the flag twice.
-
-### Permissions
-
-Nobody sits at an ssf terminal, so an agent that stops to ask whether it may
-run a command waits forever. Unless `repo.command` says otherwise, ssf
-therefore starts every agent with the flags that let it run unattended:
-
-| Agent | Default command | What still shows up at start |
-|-------|-----------------|------------------------------|
-| `claude` | `claude --dangerously-skip-permissions --disallowedTools AskUserQuestion` | the folder-trust question (ssf answers it) |
-| `codex` | `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust` | the directory-trust question (ssf answers it) |
-| `gemini` | `gemini --yolo --skip-trust` | nothing |
-| `grok` | `grok --always-approve` | nothing |
-| `pi` | `pi --approve` (Pi has no tool approvals; the flag trusts the repository's `.pi/` files) | nothing |
-| `omp` | `omp --auto-approve` | nothing |
-| `opencode` | `opencode --auto` | nothing |
-| `copilot` | `copilot --allow-all` | nothing (the flag trusts the folder too) |
-| `crush` | `crush --yolo` | an offer to create `AGENTS.md`, which the first prompt dismisses |
-
-`ssf agents --json` shows the default as `launch_command`. Claude Code's
-`AskUserQuestion` tool is switched off because it, too, waits for a person
-at the terminal; the agent is told to ask on the issue instead. Login and
-first-run onboarding are not covered: sign each agent in once, by hand, on
-the machine that runs the daemon.
-
-Set `repo.command` to run an agent differently, for instance with a
-permission mode of your own or a tool deny list in the agent's own syntax
-(`--disallowedTools` for Claude Code, `--deny` for Grok, `--deny-tool` for
-Copilot, `--exclude-tools` for Pi). Behavioural limits (do not merge, do not
-close issues) belong in the [per-project prompt
-file](#the-per-project-prompt-file), not in the command. ssf has no
-tool allow/deny list of its own; who may *drive* the agents is the next
-section.
-
-### Who may drive the factory
-
-Everything that reaches the bot on GitHub comes from whoever can write on
-the repository, and a comment is relayed straight into a running agent's
-terminal. `allowed_users` says whose word counts:
-
-```toml
-[daemon]
-allowed_users = ["mikekelly", "alice"]      # for every repository below
-
-[[repo]]
-name = "acme/widgets"
-harness = "claude"
-allowed_users = ["mikekelly"]               # replaces the instance list here
-```
-
-- **Unset** (a fresh install): the repository's collaborators with push
-  access. The daemon fetches them once per pass (an unchanged answer is a
-  free 304) and `ssf doctor` prints the list per repository. If they cannot
-  be fetched, an organisation repository where the token lacks `read:org`
-  say, and none were fetched before, the pass fails for that repository and
-  nothing is acted on until either the fetch works or a list is configured;
-  `ssf status` shows the error and `ssf doctor` says how to fix it.
-- **A repository list replaces the instance list** rather than extending
-  it, so one repository can be narrowed as well as widened; `[]` is nobody
-  but the bot. Logins compare case-insensitively.
-- **The bot itself always counts**, tagged posts and untagged ones alike
-  (whoever types as the bot holds its token).
-- **App accounts** such as `github-actions[bot]` or
-  `github-project-automation[bot]` are ordinary logins: listed explicitly
-  or not at all, and never part of the collaborator default.
-
-What the list does: an item only gets a session when an allowed login
-asked for it, read from the item's timeline: who assigned the bot (latest
-assignment), who mentioned it (body, comment or review), who requested the
-review or added the `review` label. One that nobody allowed asked for is
-logged once at info level with the login and trigger, and not read again
-until it changes; an allowed user assigning or mentioning the bot later
-brings it in. On a running session, events by anyone else are dropped
-before delivery, so a non-listed user's comment on an owned item reaches
-neither the owner nor its subscribers or reviewer. Commits are the one
-event without a login and pass (pushing needs write access to the branch);
-unassigning or closing still retires a session, since stopping work is
-safe. One limit to know: the timeline says who posted a body or comment,
-not who edited it, and anyone with write access can edit anyone's text, so
-the list is a boundary against the internet, not a hard one among people
-who can already push. Prompts are unchanged: this is all daemon-side.
-
-`"*"` means anyone on GitHub. It is never accepted silently: `ssf config set
-daemon.allowed_users '["*"]'` and `ssf repo set <repo> --allowed-users '*'`
-refuse it unless you type `yes` (nothing shorter) to the risk at the terminal or pass
-`--accept-anyone-risk`, either of which writes `accepted_anyone_risk = true`
-next to the list (setting a plain list again removes it). A hand-edited
-file with `"*"` and no marker is refused at load with the fix spelled out,
-`ssf status` prints a warning while the wildcard is in effect, and the bar
-widget shows one and turns its icon urgent.
-
-## Drivers: Orca and herdr
-
-The daemon does not care what holds the agents' terminals. Everything it
-asks for (a checkout of the repository, a workspace per item on the item's
-branch, starting the agent there, pasting a message in, whether the agent
-is still there or busy, removing the workspace) goes through a *driver*,
-and there are two. The `driver` key picks the default for the whole
-instance; a `[[repo]]` can set its own, so one daemon can run some
-repositories in Orca and others in herdr. `ssf doctor` checks every driver
-in use. To keep the agents (and the daemon) away from your home directory
-altogether, the whole factory can run inside a microVM instead (see
-[Inside a microVM](#inside-a-microvm-firecracker)). A pass skips the repositories of a driver that is not answering
-while the others carry on; the outage shows as the error in `ssf status`,
-and that driver's sessions show an unknown agent state until it answers
-(the other driver's are reported as usual). The startup pass runs per
-driver, on the first pass that finds that driver ready. Cloud-hosted agent
-sessions are not a driver yet; they need a different shape (no local
-terminal, no local `ssf`) and are tracked in
-[#49](https://github.com/mikekelly/simple-software-factory/issues/49).
-
-**`orca`** (the default) is the Orca desktop app and its CLI, as described
-throughout this file: Orca keeps the projects, worktrees are linked to the
-issue number, terminals belong to the workspace, and the bar widget's
-"open workspace" goes there.
-
-**`herdr`** is the [herdr](https://herdr.dev/) terminal workspace manager
-(a herdr session has to be running). ssf clones the repository itself under
-`herdr.projects_dir` (or uses `repo.path`), makes a git worktree per item
-in `<name>.worktrees/` next to the clone, opens it as a herdr workspace
-and runs the agent in the workspace's root pane through the same
-`ssf launch` wrapper as with Orca, so the bot identity, the `gh` shim and
-the `ssf` commands all work. herdr recognises the agent in the pane and
-reports its state (`idle`, `working`, `blocked`, `done`); messages go in
-with `herdr agent prompt`, which pastes and submits them. Claude Code's and
-Codex's folder-trust questions are answered on start. herdr keeps no link between a
-workspace and an issue, so ssf finds a workspace it lost track of by the
-worktree's name (`issue-N-...`), and remembers a workspace as herdr's id
-plus the checkout it was opened on (`w7@/path`). Before prompting or
-removing, ssf asks herdr which worktree that workspace is bound to; a
-workspace id herdr has since given to something else is treated as gone
-rather than touched, and a shell in the workspace that has `cd`'d
-elsewhere changes nothing. herdr also opens one workspace for the clone itself
-the first time it opens a worktree of it; that one is left alone. Clicking
-a session in the bar widget focuses its herdr workspace. herdr can only run
-the agents it recognises in a pane (`herdr agent start --help` lists them;
-`crush` from `ssf agents` is not among them in herdr 0.8.2); `ssf repo add
---driver herdr` warns when the harness is not on that list, and a start
-with one that is not gives up after `herdr.tui_idle_timeout_ms`.
-
-## Inside a microVM (Firecracker)
-
-Everything above runs on your machine as you: the agents can read your
-home directory, your keyring and whatever else you have open. `ssf vm`
-moves the whole factory (the daemon, herdr and every agent session) into a
-[Firecracker](https://firecracker-microvm.github.io/) microVM, and leaves
-the host only what builds, starts, stops and reaches the guest. The
-drivers are untouched; the guest runs herdr (Orca is a desktop app and
-needs a display the guest does not have, so a repository that says
-`driver = "orca"` runs in herdr there). Nothing needs root: Firecracker
-runs as you given `/dev/kvm` (world-writable on Omarchy; the `kvm` group
-elsewhere), the guest's network is
-[gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) (a
-user-mode TCP/IP stack on the host end of a vsock, so no tap, bridge or
-firewall rule on the host), and the images are made with `fakeroot` and
-`mkfs.ext4 -d`. The jailer is not used (it needs root); isolation is KVM
-plus Firecracker's seccomp filter.
-
-```
-ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)
-ssf config set vm.enabled true
-systemctl --user restart ssf.service   # or: ssf vm start
-ssf status                # runs inside the guest from now on
-ssf vm attach             # herdr in the guest, in this terminal
-```
-
-**The image.** `ssf vm build` unpacks the Arch bootstrap tarball, adds
-the guest scripts and units, turns the tree into an ext4 image and boots
-it once with a provisioning init that installs `base`, `openssh`, `git`,
-`github-cli`, `nodejs`, `tmux`, the harness CLIs from `ssf agents` that
-npm or a release tarball provide (Claude Code, Codex, Gemini, Copilot,
-OpenCode, Pi, Grok, Crush; each is best effort and listed at the end of
-the build), an `ssf` user that is root through `sudo` (Claude Code refuses
-its permission-free mode as root, so nothing runs as root itself), the
-host's own herdr binary and herdr's
-agent integrations (its state-reporting hooks) for the agents present. The list
-lives in `vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed);
-edit it and run `ssf vm build --force` for a new image. The `ssf` binary
-is not in the image: every start takes the host's, so the guest always
-runs the package you installed.
-
-**What gets in, and what does not.** At every start the host writes a
-small seed disk with the `ssf` binary, `config.toml` rewritten for the
-guest (`driver = "herdr"`, clones under `/var/lib/ssf/projects`, no
-`repo.path`), the bot token (resolved the way `ssf token` does, so the
-host keyring itself is never copied), the bot's own SSH key if `ssf auth
-login` enrolled one, the ssh public key the host uses to reach the guest,
-and the files `vm.files` lists. That last one is how a harness login gets
-in: `files = ["~/.claude/.credentials.json"]` lands at the same place
-under the guest user's home; `src:dest` places a file elsewhere. Nothing
-else from the host home is visible in the guest: no `~/.ssh`, no
-`~/.gitconfig`, no other accounts. Commits are signed only if the bot key
-is enrolled.
-
-**What the agent can do there.** The `ssf` user has passwordless `sudo`
-for everything (`vm/guest/sudoers`), so an agent in the guest installs
-packages (`sudo pacman -S ...`), adds tools, edits the units, restarts
-services and reboots as it sees fit; the first prompt and `ssf guide` say
-so with one line inside the VM (`SSF_VM_GUEST=1` in the guest's
-environment is how ssf knows) and say nothing on bare metal, where the
-agent has whatever the human running ssf has. The VM is the isolation
-boundary: whatever the agent does to the guest stays on that VM's two
-disks, the host is untouched, and `ssf vm reset` (a fresh root disk) or
-`ssf vm destroy` puts it back.
-
-**Reaching it.** gvproxy publishes the guest's sshd on
-`127.0.0.1:<vm.ssh_port>`, keyed by a key made per VM. With `vm.enabled`
-the commands that talk to the daemon (`status`, `peers`, `sub`, `unsub`,
-`subs`, `tell`, `release`, `purge`, `doctor`, `run --once`) run inside
-the guest over that connection, so the bar widget, `ssf status --json`
-and `ssf tell` work as before; `ssf vm run -- <args>` does it explicitly
-and `ssf vm ssh [-- cmd]` gives a shell. `ssf vm attach` attaches to
-herdr's session in the guest in your terminal; `ssf vm ssh-config` prints
-an `~/.ssh/config` entry so `herdr --remote ssf-default` (herdr's thin
-client) and plain `ssh ssf-default` work too. Clicking a session in the
-bar widget opens a terminal attached to the guest. `ssf vm logs` follows
-the guest daemon's journal and `ssf vm console` shows the serial console.
-
-**Persistence.** Each VM has, under `<vm.dir>/<name>/`, a `root.ext4`
-(a copy-on-write copy of the image: instant on btrfs, a full copy
-elsewhere) with the packages, and a `data.ext4` (`vm.data_gib`, sparse)
-mounted at `/var/lib/ssf` with everything that matters: ssf's state, the
-clones and the worktrees, and the guest user's home (herdr's session
-state, the harness transcripts, caches), which is bind-mounted from
-there. `ssf vm stop` shuts the guest down cleanly (Ctrl-Alt-Del
-through Firecracker's API); on the next start the guest daemon's own
-`resume_on_start` brings the sessions back in herdr, as after a reboot on
-bare metal. Editing the config on the host takes `ssf vm sync` (pushes
-config and token and restarts the guest daemon) or `ssf vm restart` (a
-new seed: needed for a new `ssf` binary or `vm.files`). `ssf vm reset`
-remakes the root disk from a rebuilt image and keeps the data disk, so
-sessions survive it (the guest home is copied from the image only when the
-data disk is new, so a rebuilt image's hooks and `~/.claude.json` reach an
-existing VM only through `ssf vm destroy`, or by hand);
-`ssf vm destroy --yes` removes the VM. Firecracker and gvproxy are
-started in a session of their own, so a VM started from a terminal
-(`ssf vm start`) outlives that shell and any later `ssf` command. The
-systemd service is different: `ssf run` starts the VM if it is not up and
-owns it from then on, so stopping or restarting the service shuts the
-guest down (cleanly, over Firecracker's API) and a crash of the host
-daemon ends it with the service's cgroup. With the VM stopped, `ssf status`
-says so instead of forwarding (the bar widget shows the service as
-stopped).
-
-## What the agent is told
-
-ssf's own prompting is the bare functional minimum. The initial prompt is
-the item (title, description, boards, everything that has happened on it)
-followed by "How to work on this", which says only what ssf owns:
-
-```
-You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, because #16 was assigned to @bot.
-
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` explains the rest.
-
-- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on GitHub.
-- Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.
-- Before starting on a goal, say on the issue what you are about to do, and say when you need a decision or have delivered: silent work leaves the issue looking unattended until it lands.
-- `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this session's. Act only as @bot; never use another account, token or key you find on this machine.
-```
-
-The reason is whatever brought the item to ssf (assigned, mentioned, a
-review request or the review label, opened by the bot or handed off by
-another session). A pull request adds one line saying how the worktree
-relates to it (on its branch, or unable to push to a fork's) and that
-`gh pr comment` and `gh pr review` are the way to answer; a handed-off item
-adds one saying which session follows it; a factory inside a
-[microVM](#inside-a-microvm-firecracker) adds one saying the agent has root
-there through `sudo`. The board rule sits with the boards. `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf
-tell`, items a session opens and hand-offs, reviewer sessions, the byline,
-the `Closes #N` suggestion) from the same binary, so it cannot drift from
-the daemon. Follow-up messages carry the activity and at most one line
-after it.
-
-Every message names its item once: `#N "title"` with the URL on first
-mention (the header of a first message, or of an FYI), `#N` alone in later
-messages about the session's own item. Cross-repository references are
-`owner/repo#N`, which GitHub links. Timestamps on activity lines are
-`2026-09-04 17:40Z`, or just `17:40Z` when the date is today's.
-
-Nothing in the prompt is about branches or worktrees: the agent decides for
-itself whether to stay on the branch ssf created, switch, or add worktrees
-of its own (for subagents, say). ssf binds a pull request to a session by
-the origin tag first and by the head branch second, so a PR from any branch
-still routes to the session that opened it, and `ssf release`/`ssf purge`
-only ever remove the session's own Orca worktree. Anything about *how* the agent should work
-(comment when it starts and finishes, ask rather than guess, commit as it
-goes, open a PR that references the issue, do not close or merge, how to
-review) is the repository's to say, in its
-[prompt file](#the-per-project-prompt-file); ssf does not repeat it on
-every message.
-
-## Project boards
-
-If the issue or pull request is on any GitHub project (v2) boards, the initial
-prompt lists them under a "Project boards" heading: each board's name and URL,
-the card's current Status, the Status options the board offers, and the
-`gh project item-edit` command (with the project, item, field and option ids
-filled in) that changes it. The agent is told to keep the card's Status
-accurate and that which column fits is its call. ssf itself never moves
-cards and prescribes no mapping from events to columns; put any
-repository-specific conventions about columns in the per-repository
-instructions. The lookup is one GraphQL query per
-onboarding and delivery, using the bot token's `project` scope; if it fails
-the prompt simply carries no boards section and the daemon logs why. Closed
-boards are left out.
-
-## How the agent gets the bot's identity
-
-Agents are started through `ssf launch`, which builds an environment in which
-everything git and GitHub related is the bot, whatever the human's own
-`~/.gitconfig`, `gh auth` or SSH agent say:
-
-| What | How |
-|------|-----|
-| `gh` and the GitHub API | `GH_TOKEN`, `GITHUB_TOKEN` (read from gh's keyring for the bot account, or from a pasted token / `SSF_GITHUB_TOKEN`) |
-| HTTPS pushes | a git credential helper (`ssf git-credential`) that answers with the token, placed ahead of any configured helper |
-| SSH pushes | `GIT_SSH_COMMAND` pinned to the enrolled bot key with `IdentitiesOnly=yes` |
-| Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email` |
-| Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key) |
-| Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT`, and `SSF_ROLE=reviewer` in a reviewer session (`ssf launch --role reviewer`) |
-| Which session posted what | a `gh` wrapper first on `PATH` that starts every post with the byline (below) |
-
-Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
-outrank every config file, and only inside the agent's process tree. The
-initial prompt tells the agent that plain `gh` and `git push` act as the bot.
-The bot's own commits and cross-references are filtered out of follow-up
-messages, and its comments are sorted per session by their byline, so
-an agent's own posts are not echoed back to it (`daemon.include_own_events`
-turns both off). `ssf token` still prints the token for any other use.
-
-## Bylines and origin tags: which session posted what
-
-GitHub shows the same bot account for every session, so ssf puts the
-session in the content. Everything an agent posts starts with one line that
-is both a byline for people and a tag for the daemon, then a blank line:
-
-```
-🤖#16 says: <!-- ssf: origin=owner/repo#16 -->
-```
-
-The byline is `🤖#N says:` when the post is on the same repository as the
-session's item and `🤖owner/repo#N says:` on another; GitHub renders the
-item in either as a link to it, so a reader can tell a session's posts from
-a person's at a glance and see which session wrote them, even when the
-"bot" is someone's own account. A reviewer session's byline is
-`🤖#N (reviewer) says:`. Posts from before #42 have the byline without
-`says:`; the daemon reads those the same way.
-The HTML comment after it (the *origin tag*) is invisible in the rendered
-post and is what the daemon reads. (Because the byline links to the origin
-item, GitHub adds a "referenced in ..." event on that item for every post:
-the daemon skips the bot's own cross-references, and for people the trail
-on the item shows where its session has posted.)
-
-`ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
-directory first on the agent's `PATH` (next to it, `ssf` links to the same
-binary, so the `ssf` commands the prompts name run the daemon's own build
-rather than an older package on the shell's `PATH`; `ssf doctor` says
-when the two differ). Invoked as `gh`, ssf prepends the
-line to the body of `issue create`, `issue comment`, `pr create`,
-`pr comment` and `pr review` (whether given as `--body`, `--body=`, `-b`,
-`--body-file` or `-F -`; a review without a body gets one that is only the
-line) and runs the real gh with everything else untouched. To pick the
-byline's form it works out the repository posted to the way gh does:
-`--repo`/`-R`, an item given as a URL, `GH_REPO`, else the checkout's
-`origin` remote (`git config --get remote.origin.url`); when none of those
-says, the long form is used, which links from anywhere. Beyond that the
-wrapper reads only its environment, writes nothing and leaves stdin and the
-terminal alone, so it works inside read-only sandboxes and does not break
-gh's interactive flows. Outside a session (no `SSF_ISSUE`) it is a plain
-pass-through. Bodies that already start with the tag are not stamped
-twice, and `ssf guide` tells the agent to add the line itself
-whenever it posts some other way (`gh api`, `gh pr create --fill`, an
-agent that resets `PATH`).
-
-The daemon parses tags out of every item body and comment it reads, and
-honours a tag only where the wrapper puts it: on the first non-blank line of
-the body (the first tag on that line, so the wrapper's line, which goes before
-anything the agent wrote by hand, is the one read). Failing that, a tag on
-the last non-blank line still counts (the last one on that line): posts
-made before the byline carried it there, and the daemon re-reads timelines
-on relaunch and for delegation report-backs, so they stay attributed. The
-first line wins when both carry one. A tag anywhere else, in a fenced or
-indented code block, a pasted transcript or a quote reply, is content: it
-neither attributes the post nor binds an item to the session it names, and
-a bot post whose only tag is quoted counts as untagged. In
-`ssf status --json` each tracked item shows `origin` (the session that opened
-it, for PRs and issues an agent created), `origins` (timeline event key to
-session, for tagged comments and reviews) and `untagged` (posts by the bot
-that carry no tag). Untagged bot posts are also noted in the logs and
-reported by `ssf doctor`, which additionally checks that the real gh is
-installed and that the wrapper links to the running ssf. When posts are shown
-to an agent, the byline and tag are stripped and replaced by "(from the
-agent on owner/repo#N)".
-
-**A person posting as the bot.** Since every session stamps its posts, a
-comment, review or item by the bot login *without* a tag was typed by a
-person using the bot account (someone who enrolled their own GitHub account
-as the factory's bot, say). It is delivered to agents like any human's post,
-with the login as actor and marked "(not from a session)", so the factory
-hears that person. It still counts as untagged for `ssf status` and
-`ssf doctor`, since nothing distinguishes it from a session whose wrapper was
-not in effect, and an untagged item body binds the item to no session.
-
-The tag can carry more fields. Two are defined: `mode=delegate`,
-which the wrapper adds when an `issue create` or `pr create` assigns the bot
-itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
-session's own (below); and `role=reviewer`, which the wrapper adds to everything
-posted from a reviewer session (`SSF_ROLE=reviewer` in its environment), so
-a review by the bot on its own pull request is told apart from the author's
-posts and shown as "(from the reviewer session on owner/repo#N)". The
-byline does not encode the mode.
-
-## Ownership: one session per item
-
-GitHub has one bot identity, so without help a human's @mention or review
-request on a pull request the bot opened would start a second agent next
-to the one that wrote it. ssf instead binds every item to at most one
-owning session, decided once when the item is first discovered (first
-binding wins):
-
-- **Opened by a session.** An issue or PR whose body carries a session's
-  origin tag belongs to that session. The bot's own open items are polled
-  (a fourth listing, `creator=<bot>`), so a session hears about the PR it
-  opened without anyone assigning or mentioning the bot: it gets one
-  message saying the item is now tracked for it, then every later comment,
-  review, review request, assignment and the closure, all into the same
-  agent, with `SSF_ISSUE` unchanged. The agent's own posts on it are
-  filtered out as usual.
-- **A PR on a session's branch.** A same-repo pull request whose head branch
-  is the branch of a tracked workspace belongs to that workspace's session,
-  tag or no tag (this is what a PR opened by hand from an agent's branch, or
-  with `gh pr create --fill`, falls back to).
-- **Triggers go to the owner.** Assigning or mentioning the bot on an owned
-  item is delivered to the owner's agent as activity, never to a new
-  session. If the owner has been retired or its workspace removed, it is
-  brought back the way any lost session is (workspace re-created from its
-  branch, conversation resumed), rather than replaced. A retired owner's
-  workspace cannot be released or purged while items bound to it are still
-  open. The
-  one exception is a review asked on an owned pull request (a review
-  request, or the `review` label), which gets a reviewer session (below):
-  the author is told that, and not to review its own work.
-- **Hand-offs.** An item a session creates *and assigns the bot to* in the
-  same `gh ... create` command is a delegation: the tag carries
-  `mode=delegate`, the item gets a fresh session of its own, and the creating
-  session is subscribed to it (see below): it sees the child's activity as
-  FYI messages, and when the child is closed or merged it gets a single
-  message with the outcome and the child's final comment (the last comment
-  the bot left on it). The child is told it was handed off and to leave a
-  clear final comment. `ssf guide` explains this rule to agents, so an
-  agent that wants a separate worker uses `--assignee`, and one that wants
-  to keep an item simply opens it.
-- **Nothing to bind to.** A bot-opened item with no usable tag, no branch
-  match and no human trigger is left alone (logged once) rather than given
-  a session nobody asked for; assigning or mentioning the bot on it later
-  starts one as usual. It is looked at again when it changes on GitHub *or*
-  when it shows up on another listing (assigned, mentioned, review
-  requested), whichever comes first: an assignment made just before the
-  first pass saw the item can be older than the `updated_at` it was ignored
-  with, so listing membership is part of what "unchanged" means. What it
-  was ignored with is kept in `state.json` (under `ignored`, per
-  repository), so a daemon restart does not fetch every such item again the
-  next time a listing changes; the record goes when the item leaves every
-  listing. (A state file from before this record existed still costs one
-  walk on the first pass that sees a change.) Items opened from a session
-  on a *different* repository are not bound across repositories.
-
-`ssf status --json` shows the binding as `owner` / `shares_workspace_of`
-and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
-and "handed off by ...".
-
-## Reviewer sessions
-
-A session must not review its own pull request, so a review asked of the
-bot on a PR that one of its sessions owns (opened from it, or on its branch)
-does not go to that session. ssf starts a **reviewer session** instead. A
-review is asked for in one of two ways:
-
-- **The `review` label** (`daemon.review_label`; set it to `""` to turn the
-  trigger off). This is the way for a PR the bot opened: GitHub refuses a
-  review request from a pull request's own author (`gh pr edit --add-reviewer
-  <bot>` silently adds nothing on such a PR), so a human, or the author's
-  agent, adds the label instead (`gh pr edit N --add-label review`). The
-  label is the request: once the reviewer has posted a review newer than the
-  label, ssf removes the label and stands the reviewer down, and adding it
-  again asks for another look. The label must exist in the repository, and
-  the bot needs write (triage) access to take it off; if removing it fails,
-  the failure is logged against the reviewer session and retried on the
-  next poll.
-- **A review request** from the bot, on a PR the bot did not open but which a
-  session owns (a PR opened by hand from an agent's branch). GitHub drops the
-  request once the review is posted, or when it is withdrawn.
-
-The reviewer session is:
-
-- a second workspace, `review-<n>-<title>`, checked out at the PR's head
-  (`origin/<branch>`) on a local branch of its own, so nothing the reviewer
-  does can move the PR; the reviewer is told it is a read-only checkout and
-  how to refresh it after the author pushes;
-- its own agent, launched with `SSF_ROLE=reviewer` (so the gh wrapper tags its
-  posts `role=reviewer`), and a review-specific prompt: the PR, its
-  description and history, then how to review (`git diff base...head`,
-  `gh pr review <n> --comment`, since GitHub refuses approve and
-  request-changes from the account that opened the PR, so the verdict goes
-  in the body), never commit,
-  push, merge or touch the board, and that the author is another session of
-  the same bot;
-- the session id `owner/repo#N:reviewer`. It is listed by `ssf peers` as
-  kind `rev` ("reviewer session for owner/repo#N"), can be reached with
-  `ssf tell N:reviewer "..."` (or `owner/repo#N:reviewer`), and can `ssf sub`
-  other items as itself; it owns nothing and cannot be subscribed to (follow
-  the PR instead).
-
-The author session keeps the PR: the label (or review request) is delivered
-to it as activity with a note that a reviewer session has it, and the review
-itself arrives as activity marked "from the reviewer session on
-owner/repo#N". The author answers on the PR and pushes fixes as it would for
-a human reviewer; its replies reach the reviewer marked "from the agent on
-owner/repo#A". To get another look it adds the `review` label again (`ssf guide`
-says so).
-
-The reviewer lives as long as the request: while the label is on the PR (or
-the bot is a requested reviewer), new activity on the PR (pushes, replies) is
-delivered to it as `[ssf] New activity on #N`. Posting the review fulfils
-the request (ssf removes the label, or GitHub drops the review request), and
-the reviewer is stood down (told to stop, its record kept). Only a review counts, not a comment: a review by the
-bot with the reviewer's origin tag, or without any tag; one tagged with
-another session's origin is that session's doing. A repeated request brings
-the same session back, with what happened in between, resuming its
-conversation (and re-creating its workspace at the PR's current head if that
-was removed). When the PR is closed or merged the reviewer is told, its
-workspace is marked completed and, being a read-only checkout that never
-holds work of its own, removed on its own once the agent is idle (or after
-`daemon.cleanup_grace_secs`). Reviewer state
-lives next to the items in `state.json` under `reviewers`, keyed by PR
-number; its `triggers` say what asked for the review (`review_label`,
-`review_requested`).
-
-Only same-repository PRs owned by a session get a reviewer. A PR the bot did
-not write (a human's PR the bot is asked to review, or one assigned to it
-without a session of its own on the branch) is handled as before: a session
-of its own, on the PR's branch, which reviews when asked.
-
-## Subscriptions and cross-session comments
-
-Exactly one session acts on an item; any number can hear about it. Each
-item carries a list of subscriber sessions next to its owner, and every
-delivery about the item (new activity, closure, the bot being dropped from
-it, or the item getting a session of its own) is fanned out to them with
-FYI framing: `[ssf] FYI: new activity on issue #N "title" (url):`, `[ssf]
-FYI: issue #N ... has been closed`, and so on, ending with one line saying
-it is for information only and how to stop them. Subscriptions live in the state
-file, so they survive relaunches and a session being brought back; a session
-that retires (its item closed, or the bot dropped from it) is unsubscribed
-everywhere.
-
-The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` (plus
-`SSF_ROLE` for a reviewer) inside a session, or `--as owner/repo#N` (or
-`owner/repo#N:reviewer`) from a human shell (an item bound to another
-session counts as that session):
-
-- `ssf sub <n|owner/repo#n>` / `ssf unsub ...` follow or drop an item.
-  Subscribing to an item nothing tracks yet makes it tracked as
-  *subscriber-only*: polled every pass for activity, no workspace, no owner;
-  what happened before the subscription is not replayed. If the bot is later
-  assigned to it (or it is otherwise bound), it gets a session as usual and
-  the subscribers are told; when nobody follows it any more it is dropped.
-- `ssf subs` lists what this session follows and who follows its items
-  (`--json` for detail); `ssf peers` shows subscribers per session.
-- `ssf tell <n> "message"` pastes a message into the terminal of the session
-  acting on that item (`<n>:reviewer` for a PR's reviewer session), through
-  the daemon's own delivery path (so the agent is relaunched or resumed first
-  if its terminal is gone). It arrives as an
-  `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
-  or "from a human at the terminal" without `--as`. For an operator it is the
-  steering tool ("stop, I'm changing the spec"). Between agents it is the
-  exception: the default channel is a comment on the item (below), and
-  `ssf guide` tells agents to keep `tell` for operational nudges that would
-  be noise on the item ("master moved, rebase", "terminal is being replaced")
-  and for reaching a session whose item is already closed. Tells are not
-  mirrored to GitHub, so anything someone might need to find later
-  (decisions, questions that change scope, status) goes on the item.
-- Delegating parents are subscribed to their children automatically.
-
-`sub`, `unsub` and `tell` talk to the running daemon over a Unix socket in
-the state directory (`ssf.sock`), because the daemon owns the state and the
-delivery path; `ssf doctor` reports whether it answers. `subs` and `peers`
-read the state file and work without it.
-
-**Cross-session comments.** Comments the bot posts carry the origin tag of
-the session that made them (see above), and delivery is sorted out per
-recipient rather than by author: a bot comment whose tag names a different
-session is delivered like a human's, labelled "(from the agent on
-owner/repo#M)", while a comment tagged with the recipient's own session
-(or an item that session acts on) is the self-echo and stays filtered.
-An untagged bot comment is a person's (above) and reaches every recipient,
-marked "(not from a session)". So session A talks to session B by
-commenting on B's issue with `gh`: B's agent receives it labelled as coming
-from A, and A does not receive its own comment back, even when A is
-subscribed to B's issue. This is the default channel between agents:
-`ssf guide` says so, and a `tell` message repeats in one line that the
-answer goes on the item.
-
-## Workspaces after close: release and purge
-
-ssf never deletes a workspace that might hold unpushed work. Closing an
-issue is a signal anyone can send, an agent included, and the moment the
-agent looks idle is not the moment its last commit is safe. So when an item
-closes (or the bot is unassigned) the agent gets one message and the
-worktree is left exactly as it is, whatever state it is in. The message
-tells the agent to commit what is worth keeping, push, leave a final
-comment, and then, only if everything is on origin, run `ssf release`.
-
-- **`ssf release`** (inside the session, or `ssf release 12` /
-  `--as owner/repo#12` from a shell) asks the daemon to remove the
-  session's workspace after checking, in the worktree, that the tree is
-  clean (no modified or untracked files; ignored build artefacts do not
-  count), that the checked-out branch is on origin with no unpushed
-  commits, and that no stash entry was made on that branch. If any check
-  fails it prints what would be lost and refuses; nothing is removed.
-  A person who has looked can pass `--force` (from a shell, not inside the
-  session). The daemon removes the workspace, and its terminal, on its next
-  pass, running the checks once more first. If that re-check finds work
-  (the tree changed after the agent asked, or a push did not land) the
-  release is dropped and the agent gets one `[ssf] Release ... refused`
-  message naming what would be lost, so it can fix that and ask again.
-  After three such refusals on the same item the daemon stops telling the
-  agent, refuses further `ssf release` from it, and marks the item
-  "release given up, workspace kept" (in `ssf status`, `ssf peers --all`
-  and `ssf purge --dry-run`) for a person to deal with; only the daemon's
-  own refusals count, not the ones `ssf release` prints straight away.
-  A release is also refused while the item is still open and assigned, or
-  while the session still owns open items (a pull request bound to it,
-  say), and one already accepted is dropped if the item comes back to life
-  before the pass. Reviewer sessions look after themselves and are not
-  released by hand.
-- **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
-  for what agents left behind: every workspace whose item is closed and
-  whose session has no running agent, listed with its state (`clean and
-  pushed`, `dirty`, `unpushed commits`, `unknown` for a detached head or an
-  unreachable origin, `agent running`). The clean and pushed ones are
-  removed; the rest are reported and kept unless `--force`. Workspaces of
-  open items, of sessions that still own open items, and with a running
-  agent are never touched. `--older-than` limits it to items retired more
-  than that many days ago; `--json` gives the same rows as data.
-- **What the record says.** A released or purged item is marked
-  `released` (with `released_at`), and `ssf status`/`ssf peers --all` show
-  "retired, workspace kept", "retired, workspace released" or "retired,
-  release given up, workspace kept" for closed items, so a person can see
-  what is lying around. The old `daemon.cleanup_on_close` key is accepted
-  but does nothing.
-- **Coming back is unchanged.** A released or purged workspace is re-created
-  from its branch on origin on the item's next event (reopening,
-  re-assignment, a comment on a bound pull request), and the conversation
-  resumes.
-
-## Under the hood
-
-The details behind [How it works](#how-it-works).
-
-- **Polling, not webhooks.** Every `poll_interval_secs` ssf makes four
-  listings per repository (assigned to the bot, mentioning the bot, review
-  requested from the bot, opened by the bot), as conditional requests, so a
-  listing that has not changed costs nothing against the rate limit. Only
-  items whose `updated_at` moved get their timeline fetched again.
-- **Pull requests.** Review comments, reviews, force-pushes and merges are
-  rendered like issue activity. A PR from a fork gets a workspace on the base
-  branch and the agent is told it cannot push to the fork.
-- **One workspace per issue.** The binding lives in
-  `~/.local/state/ssf/state.json` and is also recoverable from the driver
-  (Orca links the worktree to the issue number; the others name it after
-  it), so a lost state file re-attaches instead of creating a second
-  workspace.
-- **Delivery into the agent's terminal.** Messages are pasted with bracketed
-  paste so multi-line text arrives as one message, then Enter. Claude Code
-  queues it as a steering message while busy, or runs it when idle.
-- **Bringing a session back.** After the first message ssf records the
-  agent's conversation id (Claude Code and Codex keep transcripts on disk).
-  If the agent's terminal is gone, ssf starts it again with `--resume <id>`
-  (Codex: `codex resume <id>`) and sends only the new events; if resuming
-  fails or the agent has no resume support, it starts fresh and resends the
-  whole issue context (the session's own item, even when what triggered the
-  relaunch was activity on an item it owns). If the workspace itself is
-  gone, ssf re-creates it from the old branch (local or `origin/`) and does
-  the same. Claude Code resumes a session from any directory, so this works
-  even when the new worktree has a different path.
-- **First-run dialogs.** Claude Code and Codex ask whether to trust a new
-  folder; ssf answers it so unattended launches do not stall. Approval
-  prompts never appear because of the [default commands](#permissions).
-- **Restarts.** A daemon restart is invisible to
-  agents: the state is on disk, Orca keeps the terminals, and delivery finds
-  them again. A machine restart takes the terminals with it, so the daemon
-  runs a startup pass once Orca first answers: every active session that
-  owns its workspace and has no live agent terminal is started again through
-  the same path as any relaunch (`--resume` when a session id was captured,
-  fresh with the item's story otherwise), with one message saying it was
-  interrupted and telling it to check `git status`/`git log` and carry on,
-  or say on the item what is left. Relaunches happen one at a time, each
-  waiting for its agent to settle. Sessions that are still running are not
-  touched, workspaces that are gone are brought back on their next event,
-  and sessions whose workspace was released or is about to be are skipped.
-  At start
-  the daemon waits for Orca (`daemon.startup_orca_wait_secs`, checking every
-  ten seconds) before its first poll; if Orca is still not up by then,
-  polling starts anyway and the pass runs on the first poll that finds it.
-  `daemon.resume_on_start = false` turns the pass off. `ssf run --once` runs
-  it too.
-- **Retirement.** Closed or unassigned issues get one final message (push,
-  final comment, then `ssf release` if everything is on origin) and are
-  marked inactive; the workspace is marked completed in Orca and left in
-  place. Removal is the agent's (`ssf release`) or a person's (`ssf purge`)
-  to ask for, and is refused whenever the worktree holds anything that is
-  not on origin (see [Workspaces after close](#workspaces-after-close-release-and-purge)).
-  Re-assigning or reopening the issue re-creates a released workspace and
-  resumes the conversation.
-
-## Notes and limitations (v1)
-
-- The bot identity is a default, not a security boundary. Agents run as your
-  Unix user inside your session, so a determined agent can still read your own
-  gh token from the keyring or use your SSH agent. ssf tells agents to act
-  only as the bot and to report missing permissions instead; real isolation
-  would need a sandbox (bubblewrap without the session bus) or a dedicated
-  Unix user for the factory.
-- Session resume (and therefore memory across relaunches) is implemented for
-  Claude Code and Codex; other agents are restarted with the full issue
-  context instead.
-- One agent per issue; a second assignee is not coordinated with. A session
-  owns what it opens only within its own repository.
-- `ssf status` asks every driver in use for its workspace list on every call
-  (a few hundred milliseconds); when a driver is not running the ssf side is
-  still reported and its sessions' agent states show as unknown. The JSON
-  keeps the `orca` key (`available`, `error`, `workspaces`, now with `down`)
-  for the bar widget, whichever drivers are in use.
-- The bar widget and menu entries are installed per user on first service
-  start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
-- Logs: `journalctl --user -fu ssf.service`.
-
-## Development
-
-```sh
-cargo build && cargo test
-SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
-  ./target/debug/ssf repo add you/sandbox --harness claude
-SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
-  ./target/debug/ssf run --once     # agents launched by this run read the same SSF_* locations
-SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # live-test the widget
-omarchy plugin validate ./omarchy-plugin
-```
-
-To run a dev build as the service, install the package once (for the unit
-and the widget) and point the unit at the build with a drop-in, then
-`systemctl --user daemon-reload && systemctl --user restart ssf.service`.
-Keep the build outside any worktree an agent might release, and remove the
-drop-in when the package is reinstalled from master:
-
-```ini
-# ~/.config/systemd/user/ssf.service.d/dev-build.conf
-[Service]
-ExecStartPre=
-ExecStartPre=-/home/you/src/simple-software-factory/target/release/ssf ui install --quiet
-ExecStart=
-ExecStart=/home/you/src/simple-software-factory/target/release/ssf run
-```
-
-Layout: `src/github.rs` (REST client), `src/orca.rs` (Orca CLI wrapper),
-`src/prompt.rs` (timeline rendering and prompt templates), `src/engine.rs`
-(the polling loop), `src/sessions.rs` (agent session capture and resume),
-`src/origin.rs` (bylines and origin tags), `src/shim.rs` (the `gh` wrapper), `src/ipc.rs`
-(the CLI-to-daemon socket behind `sub`, `unsub` and `tell`),
-`src/status.rs` (the joined item/session view behind `status`, `peers` and the
-widget), `src/ui.rs` (Omarchy integration),
-`omarchy-plugin/` (Quickshell bar widget), `bin/ssf-ui` (menu flows),
-`packaging/` (PKGBUILD, systemd unit, pacman install script), `skills/`
-(the `ssf-setup` agent skill, installed with `npx skills add`).
+Config changes are picked up on the next poll; no restart needed. Every
+key, with its default, is in [Configuration](docs/configuration.md).
+
+Things to know when operating it:
+
+- ssf never removes a workspace on its own. Closing an item tells the agent
+  to push, comment and run `ssf release`; `ssf purge` is your sweep for what
+  was left. Both refuse when anything is not on origin unless `--force`.
+- `tell` is not mirrored to GitHub; decisions go on the item as comments,
+  which the agent receives like any other activity.
+- A daemon restart is invisible to agents; a reboot triggers the startup
+  pass that relaunches interrupted sessions.
+- A review of a bot-opened pull request is asked for with the `review`
+  label (GitHub refuses a review request from a PR's own author); a
+  separate reviewer agent posts it and ssf takes the label off.
+
+## The rest of the story
+
+The reference, one file per area. Each starts with a line saying what it
+covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
+
+| Read | When you want to know |
+|------|-----------------------|
+| [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` prompt file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
+| [Drivers](docs/drivers.md) | Orca versus herdr, and what each one does with workspaces and terminals |
+| [Inside a microVM](docs/vm.md) | running the whole factory in a Firecracker VM: the image, what gets in, reaching it, what persists |
+| [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and what is left to `SSF.md` |
+| [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |
+| [Sessions](docs/sessions.md) | which session owns an item, reviewer sessions, following and messaging other sessions, release and purge |
+| [Under the hood](docs/internals.md) | polling, delivery, resume and restarts; the `ssf status --json` fields; known limits |
+| [Development](docs/development.md) | building, scratch runs, a dev build as the service, the source layout |
+
+Agents get their own reference from `ssf guide`, printed by the running
+binary so it cannot drift from the daemon.

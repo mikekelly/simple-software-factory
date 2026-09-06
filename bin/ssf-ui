@@ -9,7 +9,7 @@ usage() {
   cat <<USAGE
 Usage: ssf-ui <command>
 
-  login                 Sign in the bot account (paste a GitHub token)
+  login                 Sign in the bot account (an account gh knows, or the browser)
   add-repo              Pick a repository and the agent that works it
   edit-repo <owner/name> Change the agent, model or effort for a repository, or stop watching it
   manage-repos          Choose a watched repository to edit
