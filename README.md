@@ -586,16 +586,18 @@ the guest daemon's journal and `ssf vm console` shows the serial console.
 
 **Persistence.** Each VM has, under `<vm.dir>/<name>/`, a `root.ext4`
 (a copy-on-write copy of the image: instant on btrfs, a full copy
-elsewhere) that keeps packages, caches, herdr's session state and the
-harness transcripts across restarts, and a `data.ext4` (`vm.data_gib`,
-sparse) mounted at `/var/lib/ssf` with ssf's state, the clones and the
-worktrees. `ssf vm stop` shuts the guest down cleanly (Ctrl-Alt-Del
+elsewhere) with the packages, and a `data.ext4` (`vm.data_gib`, sparse)
+mounted at `/var/lib/ssf` with everything that matters: ssf's state, the
+clones and the worktrees, and the guest user's home (herdr's session
+state, the harness transcripts, caches), which is bind-mounted from
+there. `ssf vm stop` shuts the guest down cleanly (Ctrl-Alt-Del
 through Firecracker's API); on the next start the guest daemon's own
 `resume_on_start` brings the sessions back in herdr, as after a reboot on
 bare metal. Editing the config on the host takes `ssf vm sync` (pushes
 config and token and restarts the guest daemon) or `ssf vm restart` (a
 new seed: needed for a new `ssf` binary or `vm.files`). `ssf vm reset`
-remakes the root disk from a rebuilt image and keeps the data disk;
+remakes the root disk from a rebuilt image and keeps the data disk, so
+sessions survive it;
 `ssf vm destroy --yes` removes the VM. Firecracker and gvproxy run
 detached, so an `ssf` restart on the host does not touch the guest;
 `ssf run` (the systemd unit) starts the VM if it is not up and shuts it

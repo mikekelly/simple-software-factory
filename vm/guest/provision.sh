@@ -20,10 +20,10 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 # permission-free mode as root).
 id ssf >/dev/null 2>&1 || useradd -m -U -s /bin/bash ssf
 install -d -m 700 -o ssf -g ssf /home/ssf/.ssh /home/ssf/.config
-# Claude Code's first-run questions are answered up front: the VM is the
-# sandbox its bypass-permissions warning asks for. A `[vm] files` entry for
-# ~/.claude.json replaces this.
-printf '{"hasCompletedOnboarding": true, "bypassPermissionsModeAccepted": true}\n' > /home/ssf/.claude.json
+# Claude Code's onboarding (theme, login method) is marked done so a
+# session goes straight to work; a `[vm] files` entry for ~/.claude.json
+# replaces this. Its bypass-permissions acceptance is answered by the driver.
+printf '{"hasCompletedOnboarding": true}\n' > /home/ssf/.claude.json
 chown ssf:ssf /home/ssf/.claude.json
 # Environment for ssh sessions and the units: ssf's state lives on the data disk.
 cat > /etc/environment <<'ENV'
@@ -86,6 +86,13 @@ if [ -n "$omp_url" ]; then
         *) install -m755 omp.dl /usr/local/bin/omp ;;
     esac) || echo "provision: omp install failed" >&2
 fi
+# herdr's agent integrations (hooks that report the agent's state to herdr),
+# for the ssf user, for every agent that is installed.
+for a in claude codex copilot pi omp opencode grok; do
+    if command -v "$a" >/dev/null 2>&1; then
+        su ssf -c "/usr/local/bin/herdr integration install $a" || echo "provision: herdr integration $a failed" >&2
+    fi
+done
 # Services: network, seed, sshd, herdr, ssf.
 systemctl enable gvforwarder.service ssf-net.service ssf-seed.service sshd.service herdr-server.service ssf.service
 systemctl disable systemd-networkd.service systemd-resolved.service 2>/dev/null || true
