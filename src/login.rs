@@ -10,7 +10,7 @@
 //! credential revokes the session it was copied from (see `docs/vm.md`).
 
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -42,7 +42,9 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
-/// The file a harness writes when a person signs in, if ssf knows it.
+/// The file a harness writes when a person signs in, if ssf knows it:
+/// the `vm::LOGINS` table's path under this home, except where the
+/// harness's own environment moves it (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`).
 pub fn credential_path(harness: &str) -> Option<PathBuf> {
     let p = match harness {
         "claude" => std::env::var("CLAUDE_CONFIG_DIR")
@@ -53,12 +55,7 @@ pub fn credential_path(harness: &str) -> Option<PathBuf> {
             .map(PathBuf::from)
             .unwrap_or_else(|_| home().join(".codex"))
             .join("auth.json"),
-        "gemini" => home().join(".gemini/oauth_creds.json"),
-        "opencode" => home().join(".local/share/opencode/auth.json"),
-        "pi" => home().join(".pi/agent/auth.json"),
-        "omp" => home().join(".omp/agent/auth.json"),
-        "grok" => home().join(".grok/auth.json"),
-        _ => return None,
+        other => home().join(crate::vm::login(other)?.credential),
     };
     Some(p)
 }
@@ -212,17 +209,21 @@ fn probe_codex() -> Probe {
 }
 
 /// A harness without a status command: signed in when its credential
-/// file has content or an API key is in the environment.
+/// file has content (and, where the file exists before any login, the
+/// token in it) or an API key is in the environment.
 fn probe_file(harness: &str) -> Probe {
     let key = key_in_env(harness);
     let path = credential_path(harness);
+    let must_contain = crate::vm::login(harness).and_then(|l| l.must_contain);
     let present = path
         .as_ref()
-        .and_then(|p| std::fs::metadata(p).ok())
-        .is_some_and(|m| m.len() > 2);
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .is_some_and(|text| {
+            text.trim().len() > 2 && must_contain.is_none_or(|needle| text.contains(needle))
+        });
     let shown = path
-        .as_ref()
-        .map(|p| tilde(p))
+        .as_deref()
+        .map(tilde)
         .unwrap_or_else(|| "no credential file known".into());
     let (state, detail) = match (present, key) {
         (true, _) => (LoginState::SignedIn, format!("{shown} present")),
@@ -246,7 +247,7 @@ fn probe_file(harness: &str) -> Probe {
     }
 }
 
-fn tilde(p: &PathBuf) -> String {
+fn tilde(p: &Path) -> String {
     let s = p.to_string_lossy().to_string();
     match home().to_str() {
         Some(h) if s.starts_with(h) => format!("~{}", &s[h.len()..]),
@@ -259,19 +260,28 @@ pub fn probe(harness: &str) -> Probe {
     match harness {
         "claude" => probe_claude(),
         "codex" => probe_codex(),
-        "gemini" | "opencode" | "pi" | "omp" | "grok" => probe_file(harness),
-        "copilot" => match key_in_env("copilot") {
-            Some(var) => Probe {
-                state: LoginState::SignedIn,
-                detail: format!("{var} set"),
-                fingerprint: None,
-            },
-            None => Probe {
+        // Copilot keeps its login in the keyring where there is one (the
+        // host); the file in the table is its fallback (the guest).
+        "copilot" => match (probe_file("copilot"), crate::vm::in_guest()) {
+            (p, _) if p.state == LoginState::SignedIn => p,
+            (p, true) => p,
+            (p, false) => Probe {
                 state: LoginState::Unknown,
-                detail: "copilot keeps its login in the keyring; run `copilot login --device-code` if in doubt".into(),
-                fingerprint: None,
+                detail: format!(
+                    "{}; on the host copilot may hold its login in the keyring",
+                    p.detail
+                ),
+                fingerprint: p.fingerprint,
             },
         },
+        // Crush's providers live in its config; the table's file is only
+        // its Copilot login.
+        "crush" => Probe {
+            state: LoginState::Unknown,
+            detail: "crush keeps its providers in its config; `crush login` or an API key".into(),
+            fingerprint: None,
+        },
+        other if crate::vm::login(other).is_some() => probe_file(other),
         _ => Probe {
             state: LoginState::Unknown,
             detail: format!("ssf has no login check for {harness}"),
@@ -285,15 +295,12 @@ pub fn probe(harness: &str) -> Probe {
 /// <harness>` (or `ssf vm ssh` and the same command) provides.
 pub fn how_to_sign_in(harness: &str) -> String {
     let host = match harness {
-        "claude" => "claude auth login".to_string(),
-        "codex" => "codex login --device-auth".to_string(),
         "gemini" => "gemini (pick \"Sign in with Google\")".to_string(),
-        "copilot" => "copilot login --device-code".to_string(),
-        "opencode" => "opencode auth login".to_string(),
         "pi" | "omp" => format!("{harness}, then /login"),
-        "grok" => "grok login --device-auth".to_string(),
-        "crush" => "crush login".to_string(),
-        other => format!("sign {other} in"),
+        other => match crate::vm::login(other) {
+            Some(l) => l.argv.join(" "),
+            None => format!("sign {other} in"),
+        },
     };
     if crate::vm::in_guest() {
         format!("`ssf vm login {harness}` on the host (or `ssf vm ssh`, then `{host}`)")
@@ -339,8 +346,13 @@ mod tests {
                 .unwrap()
                 .ends_with(".pi/agent/auth.json")
         );
-        assert!(credential_path("copilot").is_none());
-        assert!(credential_path("crush").is_none());
+        // The rest follow the VM login table.
+        assert!(
+            credential_path("copilot")
+                .unwrap()
+                .ends_with(".copilot/config.json")
+        );
+        assert!(credential_path("nope").is_none());
     }
 
     #[test]
