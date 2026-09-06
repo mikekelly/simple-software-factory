@@ -1,4 +1,5 @@
-# Simple Software Factory configuration (~/.config/ssf/config.toml).
+# Simple Software Factory configuration (~/.config/ssf/config.toml); every key
+# is explained in docs/configuration.md.
 # Most of this is written for you by `ssf repo add`, the bar widget, or
 # `ssf config set`; the token lives in ~/.config/ssf/token (0600).
 
@@ -29,7 +30,7 @@
 
 
 # The whole factory (daemon, herdr, sessions) inside a Firecracker microVM
-# instead of on this machine; see `ssf vm --help` and the README. With
+# instead of on this machine; see `ssf vm --help` and docs/vm.md. With
 # `enabled = true`, `ssf run` starts and watches the VM, and `ssf status`,
 # `tell`, `peers`, `sub`, `release`, `purge` and `doctor` run inside it.
 [vm]

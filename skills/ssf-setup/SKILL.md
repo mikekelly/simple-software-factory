@@ -15,10 +15,11 @@ repository is configured with, and pastes every later comment, review, label
 or push into that agent's terminal. Nothing runs in the cloud.
 
 This skill walks a person through the decisions, in order. Each step says
-what to decide, what to run, and how to check it. The README holds the full
-reference; links below point at its sections rather than repeating them:
-<https://github.com/mikekelly/simple-software-factory#readme>. When ssf is
-installed, `/usr/share/doc/ssf/README.md` is the same file.
+what to decide, what to run, and how to check it. The reference is the
+README (orientation, install, the everyday commands) and the files under
+`docs/` (one per area); links below point at them rather than repeating
+them: <https://github.com/mikekelly/simple-software-factory#readme>. When
+ssf is installed, `/usr/share/doc/ssf/` holds the same README and `docs/`.
 
 ## How to use this skill
 
@@ -97,8 +98,8 @@ Scratch runs that touch nothing of the real factory use their own
 directories: `SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev
 SSF_GITHUB_TOKEN=$(gh auth token) ./target/release/ssf run --once`.
 
-README: [Install](https://github.com/mikekelly/simple-software-factory#install),
-[Development](https://github.com/mikekelly/simple-software-factory#development).
+README: [Install](https://github.com/mikekelly/simple-software-factory#install);
+docs: [Development](https://github.com/mikekelly/simple-software-factory/blob/master/docs/development.md).
 
 ## Step 2: the bot account
 
@@ -149,8 +150,8 @@ bot; the gh sign-in itself stays.
 `GH_TOKEN="$(ssf token)" gh ...`). Check: `ssf auth status` names the bot
 and `ssf doctor` is happy with the scopes.
 
-README: [Set up](https://github.com/mikekelly/simple-software-factory#set-up),
-[How the agent gets the bot's identity](https://github.com/mikekelly/simple-software-factory#how-the-agent-gets-the-bots-identity).
+README: [Set up](https://github.com/mikekelly/simple-software-factory#set-up);
+docs: [Identity and bylines](https://github.com/mikekelly/simple-software-factory/blob/master/docs/identity-and-bylines.md).
 
 ## Step 3: watch a repository (`[[repo]]`)
 
@@ -175,8 +176,8 @@ Decisions, per repository:
   Pi, OpenCode and Copilot take their own `provider/model` ids. `ssf models
   <harness>` prints the choices, asking the installed agent where it can.
   Changing the harness resets both. Do not also put `--model`/`--effort`
-  in `command`. See the README table under [Models and effort
-  levels](https://github.com/mikekelly/simple-software-factory#models-and-effort-levels).
+  in `command`. See the table under [Models and effort
+  levels](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md#models-and-effort-levels).
 - **`command`**: leave unset unless the agent must run differently. The
   default is the harness's permission-free command (`ssf agents --json`
   shows it as `launch_command`, e.g. `claude --dangerously-skip-permissions
@@ -210,8 +211,8 @@ GitHub Enterprise (`https://ghe.example.com/api/v3`).
 
 `daemon.cleanup_on_close` is accepted but does nothing. Check: `ssf status`
 lists the repository; then assign an issue to the bot and a workspace should
-appear within a poll interval. Full key table: README
-[Configuration](https://github.com/mikekelly/simple-software-factory#configuration);
+appear within a poll interval. Full key table:
+[Configuration](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md);
 every key with a comment: `config.example.toml`.
 
 ## Step 4: choose the driver (Orca or herdr)
@@ -240,8 +241,8 @@ every driver in use.
 
 Either way the agent is started through `ssf launch`, which supplies the
 bot identity, the `gh` wrapper that adds the byline, and the `ssf`
-commands, so nothing changes for the agent. README:
-[Drivers](https://github.com/mikekelly/simple-software-factory#drivers-orca-and-herdr).
+commands, so nothing changes for the agent. Docs:
+[Drivers](https://github.com/mikekelly/simple-software-factory/blob/master/docs/drivers.md).
 
 ## Step 5: inside a microVM (optional)
 
@@ -286,8 +287,8 @@ binary or `vm.files`; `ssf vm reset` remakes the root disk and keeps the
 data; `ssf vm destroy --yes` removes everything. `ssf vm attach` opens
 herdr in the guest, `ssf vm ssh` a shell, `ssf vm logs` the guest daemon's
 journal, `ssf vm console` the serial console, `ssf vm ssh-config` an
-`~/.ssh/config` entry. README: [Inside a
-microVM](https://github.com/mikekelly/simple-software-factory#inside-a-microvm-firecracker).
+`~/.ssh/config` entry. Docs: [Inside a
+microVM](https://github.com/mikekelly/simple-software-factory/blob/master/docs/vm.md).
 
 ## Step 6: per-project notes (`SSF.md`)
 
@@ -311,8 +312,8 @@ It is read from the item's own checkout, so a PR that changes it is seen
 with its own version. `repo.prompt_file` points at another file, inside the
 worktree (`.github/ssf.md`) or an absolute path for notes not to commit.
 `CLAUDE.md`/`AGENTS.md` stay for what every user of the repository wants;
-`SSF.md` is for what only ssf agents need. README: [The per-project prompt
-file](https://github.com/mikekelly/simple-software-factory#the-per-project-prompt-file).
+`SSF.md` is for what only ssf agents need. Docs: [The per-project prompt
+file](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md#the-per-project-prompt-file).
 
 ## Step 7: boards and the `review` label
 
@@ -333,9 +334,9 @@ reviewer session on a read-only checkout, the review arrives on the PR
 (as a comment review, since the bot cannot approve its own PR), ssf removes
 the label, and adding it again asks for another look. The bot needs triage
 access to remove the label. A review *request* to the bot works for PRs
-the bot did not open. README: [Reviewer
-sessions](https://github.com/mikekelly/simple-software-factory#reviewer-sessions),
-[Project boards](https://github.com/mikekelly/simple-software-factory#project-boards).
+the bot did not open. Docs: [Reviewer
+sessions](https://github.com/mikekelly/simple-software-factory/blob/master/docs/sessions.md#reviewer-sessions),
+[Project boards](https://github.com/mikekelly/simple-software-factory/blob/master/docs/prompts.md#project-boards).
 
 ## Step 8: day to day
 
@@ -371,10 +372,9 @@ Things to know when operating it:
 - `ssf doctor` also lists untagged posts by the bot (posts made without
   the byline, i.e. typed by a person or made outside the wrapper).
 
-README: [Management
-CLI](https://github.com/mikekelly/simple-software-factory#management-cli-for-humans-and-for-agents),
-[Workspaces after
-close](https://github.com/mikekelly/simple-software-factory#workspaces-after-close-release-and-purge).
+README: [Everyday
+commands](https://github.com/mikekelly/simple-software-factory#everyday-commands); docs: [Workspaces after
+close](https://github.com/mikekelly/simple-software-factory/blob/master/docs/sessions.md#workspaces-after-close-release-and-purge).
 
 ## Checklist for a first install
 
