@@ -19,9 +19,20 @@ pub struct Rendered {
     pub origin: Option<String>,
     /// For a `labeled`/`unlabeled` event, the label's name.
     pub label: Option<String>,
+    /// For an `assigned`/`unassigned` event, the assignee's login.
+    pub assignee: Option<String>,
 }
 
 impl Rendered {
+    /// Whether this event assigns the item to the bot.
+    pub fn assigns(&self, bot: &str) -> bool {
+        self.key.starts_with("assigned:")
+            && self
+                .assignee
+                .as_deref()
+                .is_some_and(|a| a.eq_ignore_ascii_case(bot))
+    }
+
     /// Whether this event asks the bot for a review of the item: a review
     /// request, or the review label being added.
     pub fn asks_review(&self, review_label: Option<&str>) -> bool {
@@ -332,11 +343,17 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     };
     let label = matches!(kind.as_str(), "labeled" | "unlabeled")
         .then(|| value_str(ev, &["label", "name"]).unwrap_or("?").to_string());
+    let assignee = matches!(kind.as_str(), "assigned" | "unassigned").then(|| {
+        value_str(ev, &["assignee", "login"])
+            .unwrap_or("someone")
+            .to_string()
+    });
     Some(Rendered {
         key,
         text,
         origin,
         label,
+        assignee,
     })
 }
 
@@ -499,16 +516,21 @@ impl PromptContext<'_> {
         ctx.because()
     }
 
-    /// How the item came to be routed to another session's agent.
-    fn owned_because(&self, issue: &Issue) -> String {
+    /// The item was opened by the session it is bound to: the bot's own
+    /// item, whose origin tag names the owner.
+    fn creator_owned(&self, issue: &Issue) -> bool {
         let by_bot = issue.author().eq_ignore_ascii_case(self.bot_login);
-        let tagged = issue
+        issue
             .body
             .as_deref()
             .and_then(origin::parse)
             .filter(|_| by_bot)
-            .is_some_and(|t| Some(t.origin.number) == self.owner);
-        if tagged {
+            .is_some_and(|t| Some(t.origin.number) == self.owner)
+    }
+
+    /// How the item came to be routed to another session's agent.
+    fn owned_because(&self, issue: &Issue) -> String {
+        if self.creator_owned(issue) {
             "this session opened it".to_string()
         } else if let Some(pr) = self.pr {
             format!("its branch `{}` is this workspace's branch", pr.head_ref)
@@ -763,19 +785,50 @@ fn extras(ctx: &PromptContext, reviewer: bool) -> String {
 
 pub fn followup_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let head = format!("[ssf] New activity on {}:", short_ref(issue, ctx));
-    let tail = match ctx.reviewer_session(issue).filter(|_| {
-        events
-            .iter()
-            .any(|e| e.asks_review(ctx.daemon.review_label()))
-    }) {
-        Some(r) => format!(
+    let asks_review = events
+        .iter()
+        .any(|e| e.asks_review(ctx.daemon.review_label()));
+    let mut tails = Vec::new();
+    if let Some(r) = ctx.reviewer_session(issue).filter(|_| asks_review) {
+        tails.push(format!(
             "The review asked of @{} is not yours to do: a separate reviewer session ({r}) \
 reviews what this session wrote, and its review arrives here as activity.",
             ctx.bot_login
-        ),
-        None => String::new(),
+        ));
+    }
+    if let Some(line) = owned_tail(issue, events, ctx, asks_review) {
+        tails.push(line);
+    }
+    assemble(&head, events, &tails.join(" "))
+}
+
+/// A trigger arriving on an item the session filed itself reads like
+/// bookkeeping ("assigned @bot") unless the consequence is said: the item
+/// is that session's to work on, and no other session is started for it.
+/// A review asked on an owned pull request is the reviewer's, said above,
+/// so only an issue gets this line for a review ask.
+fn owned_tail(
+    issue: &Issue,
+    events: &[Rendered],
+    ctx: &PromptContext,
+    asks_review: bool,
+) -> Option<String> {
+    if ctx.owner.is_none() || !ctx.creator_owned(issue) {
+        return None;
+    }
+    let bot = ctx.bot_login;
+    let what = if events.iter().any(|e| e.assigns(bot)) {
+        format!("is now assigned to @{bot}")
+    } else if asks_review && ctx.pr.is_none() {
+        format!("now asks @{bot} for a review")
+    } else {
+        return None;
     };
-    assemble(&head, events, &tail)
+    Some(format!(
+        "#{} {what}. You filed it, so it is yours: work on it in this workspace; nobody else is \
+spawned for it.",
+        issue.number
+    ))
 }
 
 /// First message about an item that is routed to another session's agent
@@ -1409,8 +1462,9 @@ this session follows and who follows its items.\n\n\
 Issues and pull requests you open stay with you: ssf recognises the origin tag on them and \
 delivers their activity (comments, reviews, review requests, assignments, closure) here \
 instead of starting another session; `SSF_ISSUE` does not change. A pull request opened on \
-this workspace's branch is yours too, tag or no tag. Referencing the item in a pull request's \
-body (`Closes #N`) links the two on GitHub, which then closes the issue when the pull request \
+this workspace's branch is yours too, tag or no tag. An issue you opened that is later assigned \
+to @{bot} is still yours, and you are told so; nobody else is spawned for it. Referencing the \
+item in a pull request's body (`Closes #N`) links the two on GitHub, which then closes the issue when the pull request \
 is merged; the repository's own notes say how it wants pull requests.\n\n\
 To hand a piece of work to a separate agent instead, create the issue (or pull request) with \
 `--assignee {bot}` in the same `gh ... create` command: the tag then carries `mode=delegate` \
@@ -1749,6 +1803,109 @@ machine.\n"
     }
 
     #[test]
+    fn followup_says_a_filed_issue_is_yours_when_assigned() {
+        // #83: the session on #81 filed it; the project manager assigned
+        // the bot. Read as bookkeeping, the session waited for a second
+        // session that creator ownership never starts.
+        let filed: Issue = serde_json::from_value(json!({
+            "number": 83, "title": "VM: omp does not run",
+            "body": "🤖#81 says: <!-- ssf: origin=o/r#81 -->\n\nThe guest's omp binary fails.",
+            "html_url": "https://gh/83", "state": "open", "user": {"login": "bot"},
+            "created_at": "t", "updated_at": "t"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let d = cfg();
+        let triggers = vec!["assigned".to_string(), "created".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &d,
+            bot_login: "bot",
+            driver: DriverKind::Orca,
+            pr: None,
+            triggers: &triggers,
+            owner: Some(81),
+            delegated_by: None,
+            projects: &[],
+            project_prompt: None,
+            vm_guest: false,
+        };
+        let ev = json!({"event":"assigned","id":9,"actor":{"login":"bot"},"assignee":{"login":"bot"},
+            "created_at":"2026-01-05T15:04:00Z"});
+        let assigned = render_event(&ev, false, &d, "bot").unwrap();
+        assert!(assigned.assigns("bot"));
+        assert!(!assigned.assigns("alice"));
+        let status = Rendered {
+            key: "project_v2_item_status_changed:10".into(),
+            text: "- [t] @bot project v2 item status changed".into(),
+            origin: None,
+            label: None,
+            assignee: None,
+        };
+        let f = followup_prompt(&filed, &[assigned.clone(), status.clone()], &ctx);
+        assert_eq!(
+            f,
+            "[ssf] New activity on #83 \"VM: omp does not run\":\n\n\
+- 2026-01-05 15:04Z @bot assigned @bot\n- [t] @bot project v2 item status changed\n\n\
+#83 is now assigned to @bot. You filed it, so it is yours: work on it in this workspace; \
+nobody else is spawned for it.",
+            "{f}"
+        );
+        // Ordinary activity on the same item carries no such line, nor
+        // does an assignment to someone else.
+        let f = followup_prompt(&filed, std::slice::from_ref(&status), &ctx);
+        assert!(!f.contains("yours"), "{f}");
+        let other = json!({"event":"assigned","id":11,"actor":{"login":"bot"},"assignee":{"login":"alice"},
+            "created_at":"t"});
+        let other = render_event(&other, false, &d, "bot").unwrap();
+        let f = followup_prompt(&filed, &[other], &ctx);
+        assert!(!f.contains("yours"), "{f}");
+        // Not the FYI shape: a subscriber is not told to work on it.
+        let fyi = fyi_prompt(
+            &filed,
+            std::slice::from_ref(&assigned),
+            &ctx,
+            None,
+            false,
+            Fyi::Activity,
+        );
+        assert!(!fyi.contains("yours"), "{fyi}");
+        // An issue bound some other way (no tag naming the owner) or the
+        // session's own item gets nothing either.
+        let mut foreign = filed.clone();
+        foreign.body = Some("<!-- ssf: origin=o/r#2 -->\n\nx".into());
+        let f = followup_prompt(&foreign, std::slice::from_ref(&assigned), &ctx);
+        assert!(!f.contains("yours"), "{f}");
+        let own = PromptContext {
+            owner: None,
+            ..ctx.clone()
+        };
+        let f = followup_prompt(&filed, std::slice::from_ref(&assigned), &own);
+        assert_eq!(
+            f,
+            "[ssf] New activity on #83:\n\n- 2026-01-05 15:04Z @bot assigned @bot\n"
+        );
+        // The review label on a filed issue: no reviewer session exists
+        // for an issue, so the same rule is said.
+        let labelled = Rendered {
+            key: "labeled:12".into(),
+            text: "- [t] @alice added label \"review\"".into(),
+            origin: None,
+            label: Some("review".into()),
+            assignee: None,
+        };
+        let f = followup_prompt(&filed, &[labelled], &ctx);
+        assert!(
+            f.ends_with("#83 now asks @bot for a review. You filed it, so it is yours: work on it in this workspace; nobody else is spawned for it."),
+            "{f}"
+        );
+    }
+
+    #[test]
     fn initial_prompt_is_the_bare_minimum() {
         use crate::github::StatusOption;
         let issue: Issue = serde_json::from_value(json!({
@@ -1797,6 +1954,7 @@ machine.\n"
             text: "- [2026-09-04T20:45:16Z] @OverlayBot assigned @OverlayBot".into(),
             origin: None,
             label: None,
+            assignee: None,
         };
         let p = initial_prompt(&issue, &[ev], &ctx);
         assert!(
@@ -1914,6 +2072,7 @@ machine.\n"
             text: "- [t] @alice commented (u):\n  > hi".into(),
             origin: None,
             label: None,
+            assignee: None,
         };
         let p = fyi_prompt(
             &issue,
@@ -1998,6 +2157,7 @@ For information only; you will not hear about it again unless it comes back."
             text: "- [t] @alice requested a review from @bot".into(),
             origin: None,
             label: None,
+            assignee: None,
         };
         let p = tracked_prompt(&pr_issue, &[ev], &ctx);
         assert!(p.starts_with(
@@ -2130,6 +2290,7 @@ For information only; you will not hear about it again unless it comes back."
             text: "- [t] @alice requested a review from @bot".into(),
             origin: None,
             label: None,
+            assignee: None,
         };
         let p = review_prompt(&pr_issue, &[ev.clone()], &ctx);
         assert!(p.contains(
@@ -2218,6 +2379,7 @@ For information only; you will not hear about it again unless it comes back."
             text: "- [t] @alice commented".into(),
             origin: None,
             label: None,
+            assignee: None,
         };
         let fu = followup_prompt(&pr_issue, &[other], &ctx);
         assert!(!fu.contains("reviewer session"));
@@ -2366,6 +2528,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             text: String::new(),
             origin: None,
             label: None,
+            assignee: None,
         };
         assert!(request.asks_review(None));
 
