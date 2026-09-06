@@ -295,7 +295,7 @@ pub fn probe(harness: &str) -> Probe {
 /// <harness>` (or `ssf vm ssh` and the same command) provides.
 pub fn how_to_sign_in(harness: &str) -> String {
     let host = match harness {
-        "gemini" => "gemini (pick \"Sign in with Google\")".to_string(),
+        "gemini" => "gemini (pick the Google account option)".to_string(),
         "pi" | "omp" => format!("{harness}, then /login"),
         other => match crate::vm::login(other) {
             Some(l) => l.argv.join(" "),

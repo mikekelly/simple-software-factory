@@ -232,9 +232,13 @@ pub struct Blocked {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
     /// When the harness was last started again to see whether the login
-    /// is back (bounded to every ten minutes when the check cannot tell).
+    /// is back.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retried_at: Option<String>,
+    /// How many such restarts came back to the prompt: the wait before
+    /// the next doubles each time (from ten minutes, capped at an hour).
+    #[serde(default)]
+    pub retries: u32,
 }
 
 impl Blocked {

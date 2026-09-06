@@ -133,6 +133,10 @@ pub struct Session {
 pub struct BlockedView {
     pub reason: String,
     pub harness: String,
+    /// The harness for people (`Claude Code`).
+    pub harness_name: String,
+    /// The screen line that gave it away (for the log and this JSON; the
+    /// texts people and agents see leave it out, see `driver::login_dialog`).
     pub detail: String,
     pub since: String,
     /// What a person runs to lift it.
@@ -140,24 +144,24 @@ pub struct BlockedView {
 }
 
 impl BlockedView {
-    fn from(b: &Blocked) -> Self {
+    pub fn from_blocked(b: &Blocked) -> Self {
         Self {
             reason: b.reason.clone(),
             harness: b.harness.clone(),
+            harness_name: crate::login::display_name(&b.harness),
             detail: b.detail.clone(),
             since: b.since.clone(),
             fix: crate::login::how_to_sign_in(&b.harness),
         }
     }
 
-    /// One line for a person: `Claude Code not signed in since 3m (Login
-    /// expired · Please run /login); `claude auth login` on the host`.
+    /// One line for a person: `Claude Code at its sign-in prompt since
+    /// 3m; run `claude auth login` on the host`.
     pub fn describe(&self) -> String {
         format!(
-            "{} not signed in since {} ({}); run {}",
-            crate::login::display_name(&self.harness),
+            "{} at its sign-in prompt since {}; run {}",
+            self.harness_name,
             ago(Some(&self.since)),
-            self.detail,
             self.fix
         )
     }
@@ -488,7 +492,7 @@ fn join(
         last_activity_at: ws.and_then(|w| w.last_activity_at.clone()),
         column: ws.and_then(|w| w.column.clone()),
         workspace: ws.cloned(),
-        blocked: item.blocked.as_ref().map(BlockedView::from),
+        blocked: item.blocked.as_ref().map(BlockedView::from_blocked),
     }
 }
 
@@ -994,21 +998,24 @@ mod tests {
             reported: true,
             credential: None,
             retried_at: None,
+            retries: 0,
         });
         let st = state_with(vec![it, item(2, None)]);
         let s = sessions(&cfg(), &st, Some(&[]));
         let b = s[0].blocked.as_ref().unwrap();
         assert_eq!(b.reason, "login");
         assert!(b.fix.contains("claude auth login"), "{}", b.fix);
+        assert_eq!(b.harness_name, "Claude Code");
         assert!(
-            b.describe().starts_with("Claude Code not signed in since"),
+            b.describe()
+                .starts_with("Claude Code at its sign-in prompt since"),
             "{}",
             b.describe()
         );
         assert!(s[1].blocked.is_none());
         let table = render_peers(&s, None);
         assert!(
-            table.contains("BLOCKED: Claude Code not signed in"),
+            table.contains("BLOCKED: Claude Code at its sign-in prompt"),
             "{table}"
         );
         let snap = Snapshot {
@@ -1024,7 +1031,7 @@ mod tests {
         assert!(v["sessions"][1]["blocked"].is_null());
         let text = render_status(&snap);
         assert!(
-            text.contains("BLOCKED: acme/widgets#1: Claude Code not signed in"),
+            text.contains("BLOCKED: acme/widgets#1: Claude Code at its sign-in prompt"),
             "{text}"
         );
     }

@@ -68,6 +68,16 @@ const LOGIN_TAIL_LINES: usize = 15;
 /// 2.1.258, Codex 0.152.0, Gemini 0.57.0, Grok 1.0, Pi 0.84, Oh My Pi,
 /// OpenCode 1.18, Crush 0.92, seen live with an empty config home) and
 /// from Claude Code's own list of errors a person has to fix.
+///
+/// Two things keep an agent's own screen from tripping this: only the
+/// bottom of the screen counts, and a line inside echoed `[ssf]` text (a
+/// pasted prompt, or activity delivered from the item, where a person may
+/// well have quoted the phrase) is skipped: from a line carrying `[ssf]`
+/// through the bullet and quote lines (`- `, `> `) that follow it. Every
+/// string ssf itself writes into a terminal or that agents read stays
+/// free of these phrases (`prompt::login_back_prompt`, the blocked and
+/// resumed comments, `BlockedView::describe`, `SessionBlocked`), which
+/// `engine::tests::ssf_texts_never_look_like_a_login_prompt` pins.
 pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
     let tail: Vec<&str> = screen
         .lines()
@@ -75,9 +85,25 @@ pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
         .filter(|l| !l.is_empty())
         .collect();
     let start = tail.len().saturating_sub(LOGIN_TAIL_LINES);
-    let text = tail[start..].join("\n").to_lowercase();
+    let mut in_echo = false;
+    let candidates: Vec<&str> = tail[start..]
+        .iter()
+        .copied()
+        .filter(|l| {
+            if l.contains("[ssf]") {
+                in_echo = true;
+                return false;
+            }
+            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
+                return false;
+            }
+            in_echo = false;
+            true
+        })
+        .collect();
+    let text = candidates.join("\n").to_lowercase();
     // What every harness says one way or another.
-    let common: &[&str] = &["not logged in", "please run /login"];
+    let common: &[&str] = &["not logged in"];
     let own: &[&str] = match harness {
         "claude" => &[
             "login expired",
@@ -99,11 +125,10 @@ pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
             "no authentication method selected",
             "sign in with google",
         ],
-        "copilot" => &["run /login", "copilot login"],
+        "copilot" => &["run /login"],
         "grok" => &[
             "approve in your browser to finish signing in",
             "waiting for approval",
-            "grok login",
         ],
         "pi" | "omp" => &[
             "use /login to log into a provider",
@@ -120,7 +145,7 @@ pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
         .chain(own.iter())
         .find(|p| text.contains(**p))?;
     // The line it was found on, as the harness printed it.
-    let line = tail[start..]
+    let line = candidates
         .iter()
         .find(|l| l.to_lowercase().contains(hit))
         .map(|l| l.trim_matches(|c: char| c == '│' || c == '┃' || c.is_whitespace()))
@@ -1134,6 +1159,16 @@ contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2.
         // A harness ssf knows nothing about still gets the common phrases.
         assert!(login_dialog("other", "Error: not logged in").is_some());
         assert_eq!(login_dialog("other", "all good"), None);
+        // Echoed `[ssf]` text does not count: a person quoting the phrase
+        // in a comment, delivered as activity and still on the screen.
+        let quoted = "❯ [ssf] New activity on #5 \"Fix it\" (https://gh/5):\n\n\
+- 15:20Z @mike commented (https://gh/c1):\n  > the terminal says Login expired · Please run /login, is that you?\n\
+- 15:21Z @mike assigned @bot\n\n⏺ Yes, and I am fine now.\n\n❯ ";
+        assert_eq!(login_dialog("claude", quoted), None);
+        // But the harness's own answer right after the echo still does.
+        assert!(login_dialog("claude", expired).is_some());
+        let after_echo = "❯ [ssf] New activity on #5:\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
+        assert!(login_dialog("claude", after_echo).is_some());
     }
 
     #[test]

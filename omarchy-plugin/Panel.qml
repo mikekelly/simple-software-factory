@@ -103,14 +103,12 @@ Panel {
 
   function blockedLine(s) {
     var b = s.blocked
-    var name = String(b.harness || "harness")
-    if (name === "claude") name = "Claude Code"
-    else if (name === "codex") name = "Codex"
-    return name + " not signed in since " + (ago(b.since) || "?") + ": run " + String(b.fix || "its login")
+    var name = String(b.harness_name || b.harness || "harness")
+    return name + " at its sign-in prompt since " + (ago(b.since) || "?") + ": run " + String(b.fix || "its sign-in")
   }
 
   function agentLabel(s) {
-    if (isBlocked(s)) return "not signed in"
+    if (isBlocked(s)) return "sign-in needed"
     switch (String(s.agent_state || "")) {
       case "working": return "working"
       case "waiting": return "waiting"
@@ -202,7 +200,7 @@ Panel {
     if (!serviceEnabled) return "Service disabled"
     if (!serviceActive) return "Service not running"
     if (lastError !== "") return "Last pass failed"
-    if (blockedCount > 0) return blockedCount + (blockedCount === 1 ? " session" : " sessions") + " not signed in"
+    if (blockedCount > 0) return blockedCount + (blockedCount === 1 ? " session needs" : " sessions need") + " a sign-in"
     if (anyoneAllowed) return "Open to anyone on GitHub"
     var n = sessions.length
     if (n === 0) return repos.length === 0 ? "No repositories watched" : "Watching " + repos.length + (repos.length === 1 ? " repository" : " repositories")
@@ -424,7 +422,7 @@ Panel {
       Text {
         visible: root.blockedCount > 0
         width: parent.width
-        text: "\uf071  " + (root.blockedCount === 1 ? "A session's harness" : root.blockedCount + " sessions' harnesses") + " sat at a login prompt (login expired or missing): nothing reaches " + (root.blockedCount === 1 ? "it" : "them") + " until the harness is signed in again. See the session rows for the command; ssf resumes them on its own afterwards."
+        text: "\uf071  " + (root.blockedCount === 1 ? "A session's harness" : root.blockedCount + " sessions' harnesses") + " sat at a sign-in prompt (the session expired or was revoked): nothing reaches " + (root.blockedCount === 1 ? "it" : "them") + " until the harness is signed in again. See the session rows for the command; ssf resumes them on its own afterwards."
         color: root.urgent
         wrapMode: Text.Wrap
         font.family: root.fontFamily
