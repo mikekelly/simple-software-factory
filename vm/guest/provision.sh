@@ -66,13 +66,6 @@ for d in /usr/lib/node_modules/*/ /usr/lib/node_modules/@*/*/; do
         (cd "$d" && npm run postinstall) || echo "provision: postinstall of $d failed" >&2
     fi
 done
-for c in claude codex gemini copilot opencode pi grok; do
-    if command -v "$c" >/dev/null 2>&1; then
-        echo "provision: $c $("$c" --version 2>&1 | head -1)"
-    else
-        echo "provision: $c not installed" >&2
-    fi
-done
 # Crush ships release tarballs.
 crush_url=$(curl -fsSL https://api.github.com/repos/charmbracelet/crush/releases/latest \
     | jq -r '.assets[] | select(.name | test("_Linux_x86_64.tar.gz$")) | .browser_download_url' | head -1 || true)
@@ -82,9 +75,10 @@ else
     curl -fsSL "$crush_url" | tar -xz -C /tmp && install -m755 /tmp/crush*/crush /usr/local/bin/crush \
         || echo "provision: crush install failed" >&2
 fi
-# Oh My Pi ships release binaries.
+# Oh My Pi ships release binaries: the glibc one (`omp-linux-x64`), not
+# the musl one next to it, whose loader the guest does not have.
 omp_url=$(curl -fsSL https://api.github.com/repos/can1357/oh-my-pi/releases/latest \
-    | jq -r '.assets[] | select(.name | test("linux.*(x64|x86_64|amd64)")) | .browser_download_url' | head -1 || true)
+    | jq -r '.assets[] | select(.name | test("^omp-linux-(x64|x86_64|amd64)$")) | .browser_download_url' | head -1 || true)
 if [ -z "$omp_url" ]; then
     echo "provision: omp release not found (GitHub API unreachable or rate-limited); skipped" >&2
 else
@@ -94,6 +88,16 @@ else
         *) install -m755 omp.dl /usr/local/bin/omp ;;
     esac) || echo "provision: omp install failed" >&2
 fi
+# Every harness CLI answers --version, or the build log says which did not.
+for c in claude codex gemini copilot opencode pi grok crush omp; do
+    if ! command -v "$c" >/dev/null 2>&1; then
+        echo "provision: $c not installed" >&2
+    elif v=$("$c" --version 2>&1); then
+        echo "provision: $c ${v%%$'\n'*}"
+    else
+        echo "provision: $c does not run: $v" >&2
+    fi
+done
 # herdr's agent integrations (hooks that report the agent's state to herdr,
 # and for Claude Code the setting that skips its bypass-permissions warning),
 # for the ssf user, for every agent that is installed. herdr wants the
