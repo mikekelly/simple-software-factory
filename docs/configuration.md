@@ -6,9 +6,11 @@ Every key in `~/.config/ssf/config.toml`, the per-project prompt file, model and
 `ssf config set` and the bar widget;
 [`config.example.toml`](../config.example.toml) (installed as
 `/usr/share/ssf/config.example.toml`) shows every key with a comment. The
-token lives in `~/.config/ssf/token` (mode 0600), never in this file:
-`ssf config set` refuses to touch `github.token`; use `ssf auth login`
-for that. Changes are picked up on the next poll; no restart needed.
+token is never in this file: a pasted one (`ssf auth login --token`) lives
+in `~/.config/ssf/token` (mode 0600), otherwise it is read from gh's
+keyring when needed. `ssf config set` refuses to touch `github.token`; use
+`ssf auth login` for that. Changes are picked up on the next poll; no
+restart needed.
 
 ```toml
 [daemon]
@@ -45,7 +47,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)); still accepted so old files load |
 | `daemon.cleanup_grace_secs` | `900` | How long a reviewer session gets to finish before its read-only workspace is removed anyway; item workspaces are not affected |
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](sessions.md#reviewer-sessions)); `""` turns the label trigger off |
-| `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#under-the-hood)) |
+| `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |

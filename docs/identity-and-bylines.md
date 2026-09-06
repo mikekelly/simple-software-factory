@@ -88,9 +88,10 @@ indented code block, a pasted transcript or a quote reply, is content: it
 neither attributes the post nor binds an item to the session it names, and
 a bot post whose only tag is quoted counts as untagged. In
 `ssf status --json` each tracked item shows `origin` (the session that opened
-it, for PRs and issues an agent created), `origins` (timeline event key to
-session, for tagged comments and reviews) and `untagged` (posts by the bot
-that carry no tag). Untagged bot posts are also noted in the logs and
+it, for PRs and issues an agent created), `posts_by_session` (how many
+tagged comments and reviews each session made on it) and `untagged_posts`
+(how many posts by the bot carry no tag); `state.json` keeps the detail
+behind them as `origins` (timeline event key to session) and `untagged`. Untagged bot posts are also noted in the logs and
 reported by `ssf doctor`, which additionally checks that the real gh is
 installed and that the wrapper links to the running ssf. When posts are shown
 to an agent, the byline and tag are stripped and replaced by "(from the
