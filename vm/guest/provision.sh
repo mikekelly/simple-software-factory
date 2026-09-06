@@ -20,6 +20,11 @@ ln -sf /usr/share/zoneinfo/UTC /etc/localtime
 # permission-free mode as root).
 id ssf >/dev/null 2>&1 || useradd -m -U -s /bin/bash ssf
 install -d -m 700 -o ssf -g ssf /home/ssf/.ssh /home/ssf/.config
+# Claude Code's first-run questions are answered up front: the VM is the
+# sandbox its bypass-permissions warning asks for. A `[vm] files` entry for
+# ~/.claude.json replaces this.
+printf '{"hasCompletedOnboarding": true, "bypassPermissionsModeAccepted": true}\n' > /home/ssf/.claude.json
+chown ssf:ssf /home/ssf/.claude.json
 # Environment for ssh sessions and the units: ssf's state lives on the data disk.
 cat > /etc/environment <<'ENV'
 SSF_STATE_DIR=/var/lib/ssf/state

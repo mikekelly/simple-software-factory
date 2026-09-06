@@ -29,4 +29,12 @@ if [ -f /seed/files.list ]; then
         install -D -m600 -o ssf -g ssf "/seed/files/$n" "$dest"
     done < /seed/files.list
 fi
+# git in the guest (the daemon's own clones, and a shell) pushes and pulls
+# as the bot: the token through ssf's credential helper, no other helper.
+cat > /home/ssf/.gitconfig <<'GIT'
+[credential]
+	helper =
+	helper = !/usr/local/bin/ssf git-credential
+GIT
+chown ssf:ssf /home/ssf/.gitconfig
 chown -R ssf:ssf /home/ssf/.config

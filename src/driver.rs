@@ -35,10 +35,14 @@ pub enum TrustAnswer {
 /// one exists (Gemini, Pi, Copilot); Claude Code and Codex have none, and
 /// a `repo.command` may drop the flags, so the drivers answer the dialog
 /// from the screen. Claude Code preselects *No, exit*; Codex preselects
-/// *Yes, continue*; Gemini and Pi preselect *Trust*.
+/// *Yes, continue*; Gemini and Pi preselect *Trust*. Claude Code's one-time
+/// acceptance of its bypass-permissions mode (shown on a machine that never
+/// ran it that way, such as a fresh VM) is answered the same way.
 pub fn trust_dialog(screen: &str) -> Option<TrustAnswer> {
     let text = screen.to_lowercase();
-    if text.contains("trust this folder") {
+    if text.contains("trust this folder")
+        || (text.contains("bypass permissions mode") && text.contains("yes, i accept"))
+    {
         Some(TrustAnswer::DownEnter)
     } else if text.contains("trust the contents of this directory")
         || text.contains("trust the files in this folder")
@@ -677,6 +681,15 @@ mod tests {
         let claude = "Quick safety check: Is this a project you created or one you trust?\n\
 ❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel";
         assert_eq!(trust_dialog(claude), Some(TrustAnswer::DownEnter));
+        // Claude Code's bypass-permissions acceptance, once per machine.
+        let bypass = "WARNING: Claude Code running in Bypass Permissions mode\n\
+In Bypass Permissions mode, Claude Code will not ask for your approval before running \
+potentially dangerous commands.\n❯ No, exit\n  Yes, I accept\nEnter to confirm · Esc to cancel";
+        assert_eq!(trust_dialog(bypass), Some(TrustAnswer::DownEnter));
+        assert_eq!(
+            trust_dialog("⏵⏵ bypass permissions on (shift+tab to cycle)"),
+            None
+        );
         // Codex: "Yes, continue" comes first.
         let codex = "Do you trust the contents of this directory? Working with untrusted \
 contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2. No, quit";
