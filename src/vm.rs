@@ -31,7 +31,9 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
-use crate::config::{Config, DriverKind, VmConfig, expand_tilde};
+use crate::config::{
+    Config, Credential, DriverKind, GitConfig, SigningKey, VmConfig, expand_tilde,
+};
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
@@ -788,6 +790,14 @@ impl Vm {
             guest.github.ssh_key_id = None;
             guest.github.signing_key_id = None;
         }
+        let host_name = host.github.git_host();
+        guest_git(
+            host,
+            &mut guest,
+            &tree.join("config/keys"),
+            &tree.join("config/git-tokens"),
+            &|login| crate::ghcli::token_for(&host_name, login),
+        )?;
         let toml = toml::to_string_pretty(&guest).context("serialising the guest config")?;
         write_private(&tree.join("config/config.toml"), toml.as_bytes())?;
         match host.github_token() {
@@ -1005,6 +1015,26 @@ impl Vm {
             && let Ok(cur) = toml::from_str::<Config>(&current)
         {
             guest.github.ssh_key_path = cur.github.ssh_key_path;
+            let mut missing = keep_guest_git(&mut guest.git, &cur.git);
+            for r in &mut guest.repos {
+                if let Some(c) = cur
+                    .repos
+                    .iter()
+                    .find(|c| c.name.eq_ignore_ascii_case(&r.name))
+                {
+                    missing.extend(
+                        keep_guest_git(&mut r.git, &c.git)
+                            .into_iter()
+                            .map(|m| format!("{} ({})", m, r.name)),
+                    );
+                }
+            }
+            if !missing.is_empty() {
+                warn!(
+                    "the guest does not have {} yet; `ssf vm restart` seeds it",
+                    missing.join(", ")
+                );
+            }
         }
         let toml = toml::to_string_pretty(&guest)?;
         let token = host.github_token().ok();
@@ -1212,6 +1242,157 @@ pub fn guest_config(host: &Config) -> Config {
     g.vm = VmConfig::default();
     g.daemon.startup_orca_wait_secs = 0;
     g
+}
+
+/// Where the seed puts a person's signing key and token in the guest.
+pub const GUEST_KEYS_DIR: &str = "/home/ssf/.config/ssf/keys";
+pub const GUEST_TOKENS_DIR: &str = "/home/ssf/.config/ssf/git-tokens";
+
+/// Rewrite the `[git]` tables (instance and per repository) for the guest,
+/// which has none of the host's files: a signing key the host names is
+/// copied into `keys_dir` and the guest path put in its place; a
+/// `token:<login>` is resolved here with `resolve_token` (gh's keyring)
+/// and written to `tokens_dir` as a file the guest reads (`file:...`), and
+/// a `file:<path>` is copied the same way. A helper string passes through
+/// as it is. A key or file that is missing here is reported and the
+/// setting turned off (unsigned) or left for `ssf doctor` in the guest.
+pub fn guest_git(
+    host: &Config,
+    guest: &mut Config,
+    keys_dir: &Path,
+    tokens_dir: &Path,
+    resolve_token: &dyn Fn(&str) -> Result<String>,
+) -> Result<()> {
+    let mut copied: std::collections::BTreeMap<PathBuf, String> = Default::default();
+    let mut tables: Vec<(String, &GitConfig, &mut GitConfig)> =
+        vec![("[git]".to_string(), &host.git, &mut guest.git)];
+    for (h, g) in host.repos.iter().zip(guest.repos.iter_mut()) {
+        tables.push((format!("repo {}", h.name), &h.git, &mut g.git));
+    }
+    for (where_, from, to) in tables {
+        if let Some(SigningKey::Path(p)) = &from.signing_key {
+            let key = expand_tilde(p);
+            if key.exists() {
+                let name = place(&key, keys_dir, &mut copied)?;
+                let pubkey = crate::keys::public_path(&key);
+                if pubkey.exists() {
+                    std::fs::copy(&pubkey, keys_dir.join(format!("{name}.pub")))?;
+                }
+                to.signing_key = Some(SigningKey::Path(format!("{GUEST_KEYS_DIR}/{name}")));
+            } else {
+                warn!(
+                    "{where_}: signing key {} does not exist; commits in the VM go out unsigned",
+                    key.display()
+                );
+                to.signing_key = Some(SigningKey::Off(false));
+            }
+        }
+        match from.credential.as_deref().map(Credential::parse) {
+            Some(Ok(Credential::Token(login))) => match resolve_token(&login) {
+                Ok(t) => {
+                    std::fs::create_dir_all(tokens_dir)?;
+                    write_private(
+                        &tokens_dir.join(&login),
+                        format!("{}\n", t.trim()).as_bytes(),
+                    )?;
+                    to.credential = Some(format!("file:{GUEST_TOKENS_DIR}/{login}"));
+                }
+                Err(e) => warn!(
+                    "{where_}: no token for @{login} here ({e:#}); pushes in the VM as @{login} will fail until it is signed in to gh on the host and the VM restarted"
+                ),
+            },
+            Some(Ok(Credential::File(path))) => {
+                if path.exists() {
+                    let name = place(&path, tokens_dir, &mut copied)?;
+                    to.credential = Some(format!("file:{GUEST_TOKENS_DIR}/{name}"));
+                } else {
+                    warn!(
+                        "{where_}: token file {} does not exist; pushes in the VM with it will fail",
+                        path.display()
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Copy `src` into `dir` under its own file name (a numbered one when two
+/// different files share a name), once per host path.
+fn place(
+    src: &Path,
+    dir: &Path,
+    copied: &mut std::collections::BTreeMap<PathBuf, String>,
+) -> Result<String> {
+    if let Some(name) = copied.get(src) {
+        return Ok(name.clone());
+    }
+    std::fs::create_dir_all(dir)?;
+    let base = src
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".into());
+    let mut name = base.clone();
+    let mut n = 1;
+    while copied.values().any(|v| v == &name) {
+        n += 1;
+        name = format!("{base}.{n}");
+    }
+    std::fs::copy(src, dir.join(&name)).with_context(|| format!("copying {}", src.display()))?;
+    set_mode(&dir.join(&name), 0o600)?;
+    copied.insert(src.to_path_buf(), name.clone());
+    Ok(name)
+}
+
+/// `ssf vm sync` moves settings, not files: where the host names a key or
+/// a token that the seed carried in, the guest keeps the copy's path.
+/// Returns what the guest does not have yet (a new key, another login's
+/// token), which `ssf vm restart` seeds; `false`, `bot` and helper strings
+/// sync as they are.
+pub fn keep_guest_git(host: &mut GitConfig, guest: &GitConfig) -> Vec<String> {
+    let mut missing = Vec::new();
+    let stem = |p: &Path| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    // The seed names a copy after the host file, with `.N` when two files
+    // share a name.
+    let is_copy_of = |guest_path: &str, dir: &str, name: &str| {
+        let expected = format!("{dir}/{name}");
+        guest_path == expected
+            || guest_path
+                .strip_prefix(&format!("{expected}."))
+                .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
+    };
+    if let Some(SigningKey::Path(p)) = &host.signing_key {
+        let name = stem(&expand_tilde(p));
+        match &guest.signing_key {
+            Some(SigningKey::Path(g)) if is_copy_of(g, GUEST_KEYS_DIR, &name) => {
+                host.signing_key = guest.signing_key.clone();
+            }
+            _ => missing.push(format!("signing key {p}")),
+        }
+    }
+    let wanted = match host.credential.as_deref().map(Credential::parse) {
+        Some(Ok(Credential::Token(login))) => Some((login.clone(), format!("token for @{login}"))),
+        Some(Ok(Credential::File(path))) => {
+            Some((stem(&path), format!("token file {}", path.display())))
+        }
+        _ => None,
+    };
+    if let Some((name, what)) = wanted {
+        match guest.credential.as_deref().map(Credential::parse) {
+            Some(Ok(Credential::File(g)))
+                if is_copy_of(&g.to_string_lossy(), GUEST_TOKENS_DIR, &name) =>
+            {
+                host.credential = guest.credential.clone();
+            }
+            _ => missing.push(what),
+        }
+    }
+    missing
 }
 
 /// Repositories the host config runs in Orca: worth a warning, since the
@@ -1836,5 +2017,141 @@ mod tests {
         vm.stop().await.unwrap();
         assert!(!vm.running());
         vm.destroy().await.unwrap();
+    }
+
+    #[test]
+    fn guest_git_carries_keys_and_tokens_in_and_rewrites_the_paths() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-guest-git-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key = dir.join("id_ed25519");
+        std::fs::write(&key, "private").unwrap();
+        std::fs::write(crate::keys::public_path(&key), "public").unwrap();
+        let other_key = dir.join("other").join("id_ed25519");
+        std::fs::create_dir_all(other_key.parent().unwrap()).unwrap();
+        std::fs::write(&other_key, "other private").unwrap();
+        let token_file = dir.join("pat");
+        std::fs::write(&token_file, "ghp_file\n").unwrap();
+        let mut host = Config {
+            git: GitConfig {
+                name: Some("Ann".into()),
+                email: Some("ann@example.com".into()),
+                signing_key: Some(SigningKey::Path(key.to_string_lossy().to_string())),
+                credential: Some("token:ann".into()),
+            },
+            ..Config::default()
+        };
+        host.repos.push(RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            git: GitConfig {
+                signing_key: Some(SigningKey::Path(other_key.to_string_lossy().to_string())),
+                credential: Some(format!("file:{}", token_file.display())),
+                ..GitConfig::default()
+            },
+            ..RepoConfig::default()
+        });
+        host.repos.push(RepoConfig {
+            name: "o/s".into(),
+            harness: "claude".into(),
+            git: GitConfig {
+                signing_key: Some(SigningKey::Path(
+                    dir.join("missing").to_string_lossy().to_string(),
+                )),
+                credential: Some("!gh auth git-credential".into()),
+                ..GitConfig::default()
+            },
+            ..RepoConfig::default()
+        });
+        let mut guest = guest_config(&host);
+        let keys = dir.join("seed/keys");
+        let tokens = dir.join("seed/tokens");
+        guest_git(&host, &mut guest, &keys, &tokens, &|login| {
+            assert_eq!(login, "ann");
+            Ok("ghp_keyring".to_string())
+        })
+        .unwrap();
+        // Name and email go through untouched; the key and its .pub are copied.
+        assert_eq!(guest.git.name.as_deref(), Some("Ann"));
+        assert_eq!(
+            guest.git.signing_key,
+            Some(SigningKey::Path(format!("{GUEST_KEYS_DIR}/id_ed25519")))
+        );
+        assert_eq!(
+            std::fs::read_to_string(keys.join("id_ed25519")).unwrap(),
+            "private"
+        );
+        assert_eq!(
+            std::fs::read_to_string(keys.join("id_ed25519.pub")).unwrap(),
+            "public"
+        );
+        // The keyring token becomes a file the guest reads.
+        assert_eq!(
+            guest.git.credential.as_deref(),
+            Some(format!("file:{GUEST_TOKENS_DIR}/ann").as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(tokens.join("ann")).unwrap(),
+            "ghp_keyring\n"
+        );
+        // The repo's key shares a name with the instance one: numbered.
+        assert_eq!(
+            guest.repos[0].git.signing_key,
+            Some(SigningKey::Path(format!("{GUEST_KEYS_DIR}/id_ed25519.2")))
+        );
+        assert_eq!(
+            std::fs::read_to_string(keys.join("id_ed25519.2")).unwrap(),
+            "other private"
+        );
+        assert_eq!(
+            guest.repos[0].git.credential.as_deref(),
+            Some(format!("file:{GUEST_TOKENS_DIR}/pat").as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(tokens.join("pat")).unwrap(),
+            "ghp_file\n"
+        );
+        // A missing key turns signing off; a helper string passes through.
+        assert_eq!(guest.repos[1].git.signing_key, Some(SigningKey::Off(false)));
+        assert_eq!(
+            guest.repos[1].git.credential.as_deref(),
+            Some("!gh auth git-credential")
+        );
+        // sync: the guest keeps the copies the host's settings stand for,
+        // and says what a restart would bring.
+        let mut synced = host.git.clone();
+        assert!(keep_guest_git(&mut synced, &guest.git).is_empty());
+        assert_eq!(synced.signing_key, guest.git.signing_key);
+        assert_eq!(synced.credential, guest.git.credential);
+        let mut synced = host.repos[0].git.clone();
+        assert!(keep_guest_git(&mut synced, &guest.repos[0].git).is_empty());
+        assert_eq!(synced.signing_key, guest.repos[0].git.signing_key);
+        let mut changed = host.git.clone();
+        changed.credential = Some("token:bob".into());
+        changed.signing_key = Some(SigningKey::Path("/elsewhere/new_key".into()));
+        let missing = keep_guest_git(&mut changed, &guest.git);
+        assert_eq!(missing.len(), 2, "{missing:?}");
+        assert!(missing.iter().any(|m| m.contains("@bob")), "{missing:?}");
+        assert_eq!(
+            changed.credential.as_deref(),
+            Some("token:bob"),
+            "left for the guest's doctor to report"
+        );
+        // Settings that need no file sync as they are.
+        let mut off = GitConfig {
+            signing_key: Some(SigningKey::Off(false)),
+            credential: Some("bot".into()),
+            ..GitConfig::default()
+        };
+        assert!(keep_guest_git(&mut off, &guest.git).is_empty());
+        assert_eq!(off.signing_key, Some(SigningKey::Off(false)));
+        assert_eq!(off.credential.as_deref(), Some("bot"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

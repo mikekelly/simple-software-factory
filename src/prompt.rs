@@ -1683,6 +1683,7 @@ mod tests {
             prompt_file: None,
             allowed_users: None,
             accepted_anyone_risk: false,
+            git: Default::default(),
         };
         let d = cfg();
         let ctx = PromptContext {

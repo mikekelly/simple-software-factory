@@ -78,9 +78,16 @@ pub fn accounts(host: &str) -> Result<Vec<Account>> {
     Ok(parsed.hosts.get(host).cloned().unwrap_or_default())
 }
 
+/// The token gh's own store holds for `login`. Inside an agent session
+/// `GH_CONFIG_DIR` points at ssf's empty gh directory and `GH_TOKEN` is the
+/// bot, so both are dropped: this is the one place that reads another
+/// account's token on purpose (`git.credential = "token:<login>"`).
 pub fn token_for(host: &str, login: &str) -> Result<String> {
     let out = Command::new("gh")
         .args(["auth", "token", "--hostname", host, "--user", login])
+        .env_remove("GH_CONFIG_DIR")
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
         .output()
         .context("running gh auth token")?;
     if !out.status.success() {
