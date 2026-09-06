@@ -1407,7 +1407,7 @@ mod tests {
         let root = vm.ssh_output(&["sudo", "-n", "id", "-u"]).unwrap();
         assert_eq!(root, "0");
         let guide = vm.ssh_output(&["ssf", "guide"]).unwrap();
-        assert!(guide.contains("`sudo` is root"), "{guide}");
+        assert!(guide.contains(crate::prompt::VM_GUEST_LINE), "{guide}");
         let cfg_text = vm
             .ssh_output(&["cat", &format!("{GUEST_HOME}/.config/ssf/config.toml")])
             .unwrap();

@@ -1281,15 +1281,15 @@ with what happened in between."
     assemble(&head, events, tail)
 }
 
-/// The reference an agent pulls on demand with `ssf guide`: how sessions,
-/// other sessions, following items, hand-offs and reviewer sessions work.
-/// The initial prompt points here and carries only what an agent needs in
-/// order to act at all; printed by the binary so it cannot drift from it.
 /// What a session inside the factory's VM is told about the machine, in the
 /// first prompt and in `ssf guide`.
 pub const VM_GUEST_LINE: &str = "This machine is a VM of the factory's own: `sudo` is root without \
 a password, so install and change what you need.";
 
+/// The reference an agent pulls on demand with `ssf guide`: how sessions,
+/// other sessions, following items, hand-offs and reviewer sessions work.
+/// The initial prompt points here and carries only what an agent needs in
+/// order to act at all; printed by the binary so it cannot drift from it.
 pub fn guide(bot: &str, review_label: Option<&str>, vm_guest: bool) -> String {
     let ask_again = match review_label {
         Some(l) => format!(
