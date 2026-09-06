@@ -6,7 +6,7 @@
 # the local-copy prepare() below.
 
 pkgname=ssf
-pkgver=0.1.0.r143.g29a9f3b
+pkgver=0.1.0.r145.g5308cc9
 pkgrel=1
 pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in Orca or herdr"
 arch=('x86_64' 'aarch64')
@@ -89,5 +89,7 @@ package() {
   install -m644 vm/guest/units/*.service "$pkgdir/usr/share/ssf/vm/guest/units/"
   install -Dm644 SSF.example.md "$pkgdir/usr/share/ssf/SSF.example.md"
   install -Dm644 README.md "$pkgdir/usr/share/doc/ssf/README.md"
+  install -d "$pkgdir/usr/share/doc/ssf/docs"
+  install -m644 docs/*.md "$pkgdir/usr/share/doc/ssf/docs/"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/ssf/LICENSE"
 }
