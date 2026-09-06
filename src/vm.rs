@@ -79,6 +79,8 @@ pub struct Vm {
     pub base: PathBuf,
     /// `<base>/<name>`.
     pub dir: PathBuf,
+    /// The `ssf` binary the guest gets: this one, normally.
+    pub binary: Option<PathBuf>,
 }
 
 /// What `ssf vm status` reports.
@@ -105,6 +107,16 @@ impl Vm {
             cfg: cfg.vm.clone(),
             base,
             dir,
+            binary: None,
+        }
+    }
+
+    fn binary(&self) -> Result<PathBuf> {
+        match &self.binary {
+            Some(p) => Ok(p.clone()),
+            None => std::env::current_exe()
+                .and_then(std::fs::canonicalize)
+                .context("locating the ssf binary"),
         }
     }
 
@@ -583,10 +595,7 @@ impl Vm {
         let _ = std::fs::remove_dir_all(&tree);
         std::fs::create_dir_all(tree.join("config"))?;
         set_mode(&tree, 0o700)?;
-        let me = std::env::current_exe()
-            .and_then(std::fs::canonicalize)
-            .context("locating the ssf binary")?;
-        std::fs::copy(&me, tree.join("ssf"))?;
+        std::fs::copy(self.binary()?, tree.join("ssf"))?;
         let mut guest = guest_config(host);
         if let Some(key) = host
             .github
@@ -781,10 +790,20 @@ impl Vm {
         Ok(st)
     }
 
-    /// A shell, or a command, in the guest.
+    /// A shell, or a command line passed to the guest's shell as given
+    /// (`ssf vm ssh -- ls -la /var/lib/ssf`).
     pub fn shell(&self, args: &[String]) -> Result<ExitStatus> {
         let tty = stdin_is_tty();
-        Ok(self.ssh(args, tty && args.is_empty() || tty).status()?)
+        let mut cmd = Command::new("ssh");
+        cmd.args(self.ssh_args(!tty));
+        if tty {
+            cmd.arg("-t");
+        }
+        cmd.arg(self.target());
+        if !args.is_empty() {
+            cmd.arg("--").arg(args.join(" "));
+        }
+        Ok(cmd.status()?)
     }
 
     /// Attach to herdr's persistent session in the guest, in this terminal.
@@ -1343,7 +1362,10 @@ mod tests {
         cfg.vm.ssh_port = 2299;
         cfg.vm.data_gib = 2;
         cfg.github.login = Some("test-bot".into());
-        let vm = Vm::new(&cfg);
+        let mut vm = Vm::new(&cfg);
+        // Under `cargo test` this process is the test harness, not ssf.
+        let exe = std::env::current_exe().unwrap();
+        vm.binary = Some(exe.parent().unwrap().join("../ssf").canonicalize().unwrap());
         assert!(vm.rootfs().exists(), "no image; run `ssf vm build` first");
         vm.destroy().await.unwrap();
         vm.start(&cfg).await.unwrap();
