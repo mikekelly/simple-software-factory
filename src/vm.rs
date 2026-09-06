@@ -59,6 +59,143 @@ pub const FORWARDED: [&str; 10] = [
     "status", "peers", "sub", "unsub", "subs", "tell", "release", "purge", "doctor", "run",
 ];
 
+/// How a harness signs in inside the guest: the flow that works from a
+/// terminal with no browser next to it (a URL and a code to paste back, or
+/// a device code), the file it writes under the guest home, and a status
+/// command where it has one. `ssf vm login` runs `argv` over ssh with a
+/// tty; `ssf vm status` (and `doctor`) use `check()` to say who is logged
+/// in. Every harness has such a flow, so nothing is port-forwarded: the
+/// browser-callback variants bind the guest's loopback on random ports
+/// (Codex's is 1455) and are their defaults on a desktop only.
+#[derive(Debug, Clone, Copy)]
+pub struct Login {
+    pub harness: &'static str,
+    /// The login command line, run in the guest home with a tty.
+    pub argv: &'static [&'static str],
+    /// The credential file, relative to the guest home.
+    pub credential: &'static str,
+    /// The file only counts when it contains this (Copilot's config file
+    /// exists before any login).
+    pub must_contain: Option<&'static str>,
+    /// A status command to show after the login, when the harness has one.
+    pub status: &'static [&'static str],
+    /// Whether ssf may open the first URL the login prints in the host
+    /// browser: only the plain-text flows; a full-screen TUI wraps its URL
+    /// across lines and the person drives it anyway.
+    pub open_url: bool,
+    /// What the person does once it starts.
+    pub hint: &'static str,
+}
+
+pub const LOGINS: &[Login] = &[
+    Login {
+        harness: "claude",
+        argv: &["claude", "auth", "login"],
+        credential: ".claude/.credentials.json",
+        must_contain: None,
+        status: &["claude", "auth", "status"],
+        open_url: true,
+        hint: "sign in on the page, then paste the code it shows back here",
+    },
+    Login {
+        harness: "codex",
+        argv: &["codex", "login", "--device-auth"],
+        credential: ".codex/auth.json",
+        must_contain: None,
+        status: &["codex", "login", "status"],
+        open_url: true,
+        hint: "enter the one-time code on the page",
+    },
+    Login {
+        harness: "gemini",
+        argv: &["env", "NO_BROWSER=true", "gemini"],
+        credential: ".gemini/oauth_creds.json",
+        must_contain: None,
+        status: &[],
+        open_url: false,
+        hint: "Gemini starts: pick \"Sign in with Google\" (or an API key), open the URL it prints, paste the code back, then /quit",
+    },
+    Login {
+        harness: "copilot",
+        argv: &["copilot", "login", "--device-code"],
+        credential: ".copilot/config.json",
+        must_contain: Some("token"),
+        status: &[],
+        open_url: true,
+        hint: "enter the one-time code on the page",
+    },
+    Login {
+        harness: "opencode",
+        argv: &["opencode", "auth", "login"],
+        credential: ".local/share/opencode/auth.json",
+        must_contain: None,
+        status: &["opencode", "auth", "list"],
+        open_url: false,
+        hint: "pick the provider and method; OAuth methods print a URL and take the code back, API keys are pasted",
+    },
+    Login {
+        harness: "pi",
+        argv: &["pi"],
+        credential: ".pi/agent/auth.json",
+        must_contain: None,
+        status: &[],
+        open_url: false,
+        hint: "Pi starts: type /login, pick the method and provider, open the URL it prints, paste the code or the redirect URL back, then ctrl+d",
+    },
+    Login {
+        harness: "omp",
+        argv: &["omp"],
+        credential: ".omp/agent/auth.json",
+        must_contain: None,
+        status: &[],
+        open_url: false,
+        hint: "Oh My Pi starts: type /login, pick the method and provider, open the URL it prints, paste the code back, then ctrl+d",
+    },
+    Login {
+        harness: "grok",
+        argv: &["grok", "login", "--device-auth"],
+        credential: ".grok/auth.json",
+        must_contain: None,
+        status: &[],
+        open_url: true,
+        hint: "confirm the code on the page",
+    },
+    Login {
+        harness: "crush",
+        argv: &["crush", "login", "copilot"],
+        credential: ".config/github-copilot/apps.json",
+        must_contain: None,
+        status: &[],
+        open_url: true,
+        hint: "press Enter, then enter the one-time code on the page",
+    },
+];
+
+/// The login table entry for a harness id (`claude`, `codex`, ...).
+pub fn login(harness: &str) -> Option<&'static Login> {
+    LOGINS.iter().find(|l| l.harness == harness)
+}
+
+impl Login {
+    /// A shell test that succeeds when the credential is in place, run in
+    /// the guest home.
+    pub fn check(&self) -> String {
+        let file = shell_join(&[self.credential.to_string()]);
+        match self.must_contain {
+            Some(s) => format!("grep -qs {} {file}", shell_join(&[s.to_string()])),
+            None => format!("test -s {file}"),
+        }
+    }
+}
+
+/// One harness's login state in the guest.
+#[derive(Debug, Clone, Serialize)]
+pub struct LoginState {
+    pub harness: String,
+    pub installed: bool,
+    pub logged_in: bool,
+}
+
 /// Does `ssf <name>` run in the guest when the factory is in a VM?
 pub fn forwards(name: &str) -> bool {
     FORWARDED.contains(&name)
@@ -113,6 +250,8 @@ pub struct VmStatus {
     pub ssh: bool,
     /// `systemctl is-active ssf` in the guest, when reachable.
     pub daemon: Option<String>,
+    /// Per-harness login state in the guest (empty when not reachable).
+    pub logins: Vec<LoginState>,
 }
 
 impl Vm {
@@ -927,7 +1066,88 @@ impl Vm {
             ssh_port: self.cfg.ssh_port,
             ssh,
             daemon: if ssh { self.daemon_state() } else { None },
+            logins: if ssh {
+                self.logins().unwrap_or_default()
+            } else {
+                Vec::new()
+            },
         }
+    }
+
+    // ---- harness logins ----
+
+    /// Every harness's login state in the guest, in one ssh round trip.
+    pub fn logins(&self) -> Result<Vec<LoginState>> {
+        let script: String = LOGINS
+            .iter()
+            .map(|l| {
+                format!(
+                    "i=0; s=0; command -v {h} >/dev/null 2>&1 && i=1; {check} && s=1; echo {h} $i $s; ",
+                    h = l.harness,
+                    check = l.check()
+                )
+            })
+            .collect();
+        let out = self.ssh_output(&["sh", "-c", &script])?;
+        Ok(parse_login_states(&out))
+    }
+
+    /// Run a harness's login in the guest with this terminal. The first
+    /// URL it prints is opened in the host browser when the flow is plain
+    /// text and the host has a display (it stays on screen either way).
+    /// Returns whether the credential is in place afterwards.
+    pub fn login(&self, l: &Login) -> Result<bool> {
+        if !self.ssh_ok() {
+            bail!("the VM is not reachable; `ssf vm start` first");
+        }
+        let remote: Vec<String> = l.argv.iter().map(|s| s.to_string()).collect();
+        println!(
+            "{}: running `{}` in the VM; {}.",
+            l.harness,
+            remote.join(" "),
+            l.hint
+        );
+        let mut cmd = self.ssh(&remote, true);
+        let status = if l.open_url && host_has_display() {
+            // ssh keeps the terminal raw and the remote pty from stdin;
+            // its output passes through here to be watched for the URL.
+            let mut child = cmd.stdout(Stdio::piped()).spawn().context("running ssh")?;
+            let mut pipe = child.stdout.take().expect("piped stdout");
+            let mut out = std::io::stdout().lock();
+            let mut scan = UrlScanner::default();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = std::io::Read::read(&mut pipe, &mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut out, &buf[..n])?;
+                std::io::Write::flush(&mut out)?;
+                if let Some(url) = scan.feed(&buf[..n])
+                    && open_in_browser(&url)
+                {
+                    // The terminal is raw while ssh runs.
+                    let _ = std::io::Write::write_all(
+                        &mut out,
+                        b"\r\n(ssf: opened that URL in your browser)\r\n",
+                    );
+                }
+            }
+            child.wait()?
+        } else {
+            cmd.status().context("running ssh")?
+        };
+        if !status.success() {
+            eprintln!("{}: login exited with {status}", l.harness);
+        }
+        let ok = self.ssh_output(&["sh", "-c", &l.check()]).is_ok();
+        if ok
+            && !l.status.is_empty()
+            && let Ok(s) = self.ssh_output(l.status)
+        {
+            println!("{s}");
+        }
+        Ok(ok)
     }
 
     /// Remake the root disk from the image at the next start; the data
@@ -1193,6 +1413,109 @@ fn which(name: &str) -> Option<PathBuf> {
         .find(|c| c.is_file())
 }
 
+/// `<harness> <installed> <logged in>` lines from `Vm::logins`' script.
+pub fn parse_login_states(out: &str) -> Vec<LoginState> {
+    out.lines()
+        .filter_map(|line| {
+            let mut f = line.split_whitespace();
+            Some(LoginState {
+                harness: f.next()?.to_string(),
+                installed: f.next()? == "1",
+                logged_in: f.next()? == "1",
+            })
+        })
+        .collect()
+}
+
+/// Finds the first complete `https://` URL in a byte stream (terminal
+/// escapes stripped), once.
+#[derive(Default)]
+pub struct UrlScanner {
+    text: String,
+    esc: Esc,
+    done: bool,
+}
+
+/// Where the scanner is inside a terminal escape sequence.
+#[derive(Default, PartialEq)]
+enum Esc {
+    #[default]
+    None,
+    /// Just after ESC: the next byte says what follows.
+    Start,
+    /// CSI (`ESC [`): runs to a final byte in `@`..`~`.
+    Csi,
+    /// OSC, DCS, APC, PM (`ESC ]`, `P`, `_`, `^`): runs to BEL or `ESC \`.
+    Str,
+    /// ESC inside a string: `\` ends it, anything else continues it.
+    StrEnd,
+    /// Charset selection (`ESC (`, `ESC )`): one more byte.
+    One,
+}
+
+impl UrlScanner {
+    pub fn feed(&mut self, bytes: &[u8]) -> Option<String> {
+        if self.done {
+            return None;
+        }
+        for &b in bytes {
+            self.esc = match self.esc {
+                Esc::None if b == 0x1b => Esc::Start,
+                Esc::None => {
+                    self.text
+                        .push(if b.is_ascii_control() { ' ' } else { b as char });
+                    Esc::None
+                }
+                // Anything else after ESC is a two-byte sequence (ESC 7,
+                // ESC =, ...).
+                Esc::Start => match b {
+                    b'[' => Esc::Csi,
+                    b']' | b'P' | b'_' | b'^' => Esc::Str,
+                    b'(' | b')' => Esc::One,
+                    _ => Esc::None,
+                },
+                Esc::Csi if (0x40..=0x7e).contains(&b) => Esc::None,
+                Esc::Csi => Esc::Csi,
+                Esc::Str if b == 0x07 => Esc::None,
+                Esc::Str if b == 0x1b => Esc::StrEnd,
+                Esc::Str => Esc::Str,
+                Esc::StrEnd if b == b'\\' => Esc::None,
+                Esc::StrEnd => Esc::Str,
+                Esc::One => Esc::None,
+            };
+        }
+        let Some(start) = self.text.find("https://") else {
+            // Nothing pending: keep only the tail that could begin a URL.
+            let keep = self.text.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+            self.text.drain(..keep);
+            return None;
+        };
+        let rest = &self.text[start..];
+        let end = rest.find(|c: char| c.is_whitespace() || "\"'<>".contains(c))?;
+        let url = rest[..end].to_string();
+        self.done = true;
+        self.text.clear();
+        Some(url)
+    }
+}
+
+/// Whether a browser can open on this host.
+fn host_has_display() -> bool {
+    (std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some())
+        && which("xdg-open").is_some()
+}
+
+/// Open a URL in the host browser, detached; false when that failed.
+fn open_in_browser(url: &str) -> bool {
+    Command::new("xdg-open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .is_ok()
+}
+
 /// A command line for the remote shell.
 pub fn shell_join(args: &[String]) -> String {
     args.iter()
@@ -1370,6 +1693,80 @@ mod tests {
             "ssf tell 'o/r#1' 'hi there'"
         );
         assert_eq!(shell_join(&["it's".into()]), "'it'\\''s'");
+    }
+
+    #[test]
+    fn every_known_agent_has_a_login_flow() {
+        for a in crate::agents::list() {
+            let l = login(&a.id).unwrap_or_else(|| panic!("no login for {}", a.id));
+            assert!(!l.argv.is_empty());
+            assert!(
+                !l.credential.starts_with('/'),
+                "{} is home-relative",
+                l.credential
+            );
+            assert!(!l.hint.is_empty());
+        }
+        assert!(login("cursor").is_none());
+    }
+
+    #[test]
+    fn login_checks_are_shell_tests_in_the_home() {
+        assert_eq!(
+            login("claude").unwrap().check(),
+            "test -s .claude/.credentials.json"
+        );
+        assert_eq!(
+            login("copilot").unwrap().check(),
+            "grep -qs token .copilot/config.json"
+        );
+    }
+
+    #[test]
+    fn login_states_parse_the_script_output() {
+        let s = parse_login_states("claude 1 1\ncodex 1 0\nomp 0 0\nbroken line\n");
+        assert_eq!(s.len(), 3);
+        assert!(s[0].installed && s[0].logged_in);
+        assert!(s[1].installed && !s[1].logged_in);
+        assert!(!s[2].installed && !s[2].logged_in);
+    }
+
+    #[test]
+    fn url_scanner_finds_the_first_complete_url_once() {
+        let mut sc = UrlScanner::default();
+        assert_eq!(
+            sc.feed(b"If the browser didn't open, visit: https://claude.com/oauth?code=tr"),
+            None
+        );
+        assert_eq!(
+            sc.feed(b"ue&state=x\r\nPaste code here >"),
+            Some("https://claude.com/oauth?code=true&state=x".into())
+        );
+        assert_eq!(sc.feed(b"https://second.example/\n"), None);
+        // Colour escapes around and inside the URL are dropped.
+        let mut sc = UrlScanner::default();
+        assert_eq!(
+            sc.feed(b"\x1b[1mvisit \x1b[4mhttps://auth.openai.com/codex/device\x1b[0m\n"),
+            Some("https://auth.openai.com/codex/device".into())
+        );
+        let mut sc = UrlScanner::default();
+        assert_eq!(sc.feed(b"no url here\n"), None);
+        // Two-byte escapes (cursor save, keypad mode) and an OSC title do
+        // not swallow the URL; the buffer stays bounded while nothing is pending.
+        let mut sc = UrlScanner::default();
+        assert_eq!(
+            sc.feed(b"\x1b7\x1b=\x1b]0;title\x07\x1b[?25lvisit https://x.example/a\n"),
+            Some("https://x.example/a".into())
+        );
+        let mut sc = UrlScanner::default();
+        for _ in 0..1000 {
+            assert_eq!(sc.feed(b"some plain output line\n"), None);
+        }
+        assert!(sc.text.len() < 64, "{}", sc.text.len());
+        assert_eq!(
+            sc.feed(b"then https://y.example/ done"),
+            Some("https://y.example/".into())
+        );
     }
 
     #[test]
