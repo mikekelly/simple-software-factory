@@ -241,6 +241,18 @@ impl Credential {
         }
     }
 
+    /// Who `git push` acts as, for the first prompt, when not the bot.
+    pub fn prompt_pusher(&self) -> Option<String> {
+        match self {
+            Credential::Bot => None,
+            Credential::Token(l) => Some(format!("@{l}")),
+            Credential::File(p) => Some(format!("the account whose token is in `{}`", p.display())),
+            Credential::Helper(h) => {
+                Some(format!("whoever the credential helper `{h}` answers for"))
+            }
+        }
+    }
+
     /// A line for `ssf doctor` and `ssf config show`.
     pub fn describe(&self, bot: &str) -> String {
         match self {

@@ -7,8 +7,8 @@ appends the file to every agent's initial prompt under "Project notes".
 
 ssf's own prompts carry only the facts it owns (which bot the agent is, that
 the terminal is unmanned and GitHub is where people read, to say on the item
-what it is about to do before starting, that `gh` and `git push` act as the
-bot, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
+what it is about to do before starting, that `gh` acts as the bot and who
+`git push` acts as, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
 branches and pull requests, is yours to say, here. The lines below are the
 ones ssf used to say itself; keep the ones you want.
 -->

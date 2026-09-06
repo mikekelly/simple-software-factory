@@ -376,6 +376,9 @@ pub struct PromptContext<'a> {
     pub project_prompt: Option<ProjectPrompt>,
     /// The factory runs inside its own VM, where the agent has root.
     pub vm_guest: bool,
+    /// Who `git push` acts as when `[git].credential` names someone other
+    /// than the bot (`Credential::prompt_pusher`); `None` is the bot.
+    pub pushes_as: Option<String>,
 }
 
 /// Contents of the per-project prompt file (`SSF.md` by default): notes the
@@ -703,6 +706,19 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
         DriverKind::Orca => "the Orca multiplexer",
         DriverKind::Herdr => "the herdr multiplexer",
     };
+    // Pushes go out as the bot unless `[git].credential` says someone
+    // else; the agent needs no other behaviour, but a refused push then
+    // names that account.
+    let (acts_as, only) = match &ctx.pushes_as {
+        None => (
+            format!("`gh` and `git push` already act as @{bot}"),
+            format!("as @{bot}"),
+        ),
+        Some(who) => (
+            format!("`gh` already acts as @{bot} and `git push` as {who}"),
+            "through those".to_string(),
+        ),
+    };
     let mut s = format!(
         "\n## How to work on this\n\n\
 You are an automatically spawned coding agent for the GitHub account @{bot}. Simple Software \
@@ -715,8 +731,8 @@ GitHub.\n\
 - Collaborate with humans and other ssf-managed agents through GitHub comments on the {kind}.\n\
 - Before starting on a goal, say on the {kind} what you are about to do, and say when you need a \
 decision or have delivered: silent work leaves the {kind} looking unattended until it lands.\n\
-- `gh` and `git push` already act as @{bot}, and the `gh` on your PATH marks your posts as this \
-session's. Act only as @{bot}; never use another account, token or key you find on this \
+- {acts_as}, and the `gh` on your PATH marks your posts as this \
+session's. Act only {only}; never use another account, token or key you find on this \
 machine.\n",
         ctx.spawned_because(n)
     );
@@ -1573,6 +1589,7 @@ mod tests {
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         assert!(instructions(&issue, &ctx).contains("through the herdr multiplexer"));
         ctx.driver = DriverKind::Orca;
@@ -1698,6 +1715,7 @@ mod tests {
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.starts_with(
@@ -1778,6 +1796,7 @@ machine.\n"
                 text: "Cards go to Review when a PR is open.".into(),
             }),
             vm_guest: false,
+            pushes_as: None,
             ..ctx
         };
         let p = initial_prompt(&issue, &[], &ctx);
@@ -1832,6 +1851,7 @@ machine.\n"
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let ev = json!({"event":"assigned","id":9,"actor":{"login":"bot"},"assignee":{"login":"bot"},
             "created_at":"2026-01-05T15:04:00Z"});
@@ -1947,6 +1967,7 @@ nobody else is spawned for it.",
             projects: &boards,
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -1968,6 +1989,70 @@ nobody else is spawned for it.",
         );
         let how = &p[p.find("## How to work on this").unwrap()..];
         assert!(!how.contains("card"));
+    }
+
+    #[test]
+    fn a_person_credential_names_who_pushes() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({
+            "number": 16, "title": "T", "html_url": "https://x/16", "body": "", "state": "open",
+            "user": {"login": "h"}, "labels": [], "assignees": [],
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let daemon = DaemonConfig::default();
+        let triggers = vec!["assigned".to_string()];
+        let mut ctx = PromptContext {
+            repo: &repo,
+            daemon: &daemon,
+            bot_login: "bot",
+            driver: DriverKind::Herdr,
+            pr: None,
+            triggers: &triggers,
+            owner: None,
+            delegated_by: None,
+            projects: &[],
+            project_prompt: None,
+            vm_guest: false,
+            pushes_as: Some("@ann".into()),
+        };
+        let p = instructions(&issue, &ctx);
+        assert!(
+            p.contains(
+                "- `gh` already acts as @bot and `git push` as @ann, and the `gh` on your PATH"
+            ),
+            "{p}"
+        );
+        assert!(
+            p.contains("Act only through those; never use another account"),
+            "{p}"
+        );
+        assert!(!p.contains("Act only as @bot"), "{p}");
+        ctx.pushes_as = None;
+        let p = instructions(&issue, &ctx);
+        assert!(
+            p.contains("- `gh` and `git push` already act as @bot, and"),
+            "{p}"
+        );
+        assert!(p.contains("Act only as @bot;"), "{p}");
+        // The other credential kinds get a description rather than a login.
+        assert_eq!(
+            crate::config::Credential::File("/t".into())
+                .prompt_pusher()
+                .unwrap(),
+            "the account whose token is in `/t`"
+        );
+        assert!(
+            crate::config::Credential::Helper("store".into())
+                .prompt_pusher()
+                .unwrap()
+                .contains("`store`")
+        );
+        assert!(crate::config::Credential::Bot.prompt_pusher().is_none());
     }
 
     #[test]
@@ -1997,6 +2082,7 @@ nobody else is spawned for it.",
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         assert!(!instructions(&issue, &ctx).contains("sudo"));
         assert!(!guide("bot", None, false).contains("sudo"));
@@ -2065,6 +2151,7 @@ nobody else is spawned for it.",
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -2150,6 +2237,7 @@ For information only; you will not hear about it again unless it comes back."
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -2279,6 +2367,7 @@ For information only; you will not hear about it again unless it comes back."
                 text: "Keep cargo test green.".into(),
             }),
             vm_guest: false,
+            pushes_as: None,
         };
         assert_eq!(
             ctx.reviewer_session(&pr_issue).as_deref(),
@@ -2505,6 +2594,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let labeled = json!({"event": "labeled", "id": 5, "actor": {"login": "alice"},
             "label": {"name": "Review"}, "created_at": "t"});
@@ -2631,6 +2721,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             projects: &boards,
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("## Project boards\n\n- Roadmap (https://gh/p/1): Status is \"Todo\". Options: \"Todo\", \"In Progress\".\n"));
@@ -2809,6 +2900,7 @@ accurate; which column fits is your call.\n\n## Description"
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(
@@ -3012,6 +3104,7 @@ accurate; which column fits is your call.\n\n## Description"
             projects: &boards,
             project_prompt: Some(notes.clone()),
             vm_guest: false,
+            pushes_as: None,
         };
         let owned_pr = PromptContext {
             pr: Some(&pr),
@@ -3020,6 +3113,7 @@ accurate; which column fits is your call.\n\n## Description"
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
             ..own.clone()
         };
         let child = PromptContext {
@@ -3031,12 +3125,14 @@ accurate; which column fits is your call.\n\n## Description"
             projects: &[],
             project_prompt: None,
             vm_guest: false,
+            pushes_as: None,
             ..own.clone()
         };
         let reviewer = PromptContext {
             triggers: &requested_t,
             project_prompt: Some(notes.clone()),
             vm_guest: false,
+            pushes_as: None,
             ..owned_pr.clone()
         };
         let final_comment = FinalComment {

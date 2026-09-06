@@ -20,7 +20,8 @@ everything git and GitHub related is the bot, whatever the human's own
 
 Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
 outrank every config file, and only inside the agent's process tree. The
-initial prompt tells the agent that plain `gh` and `git push` act as the bot.
+initial prompt tells the agent that plain `gh` and `git push` act as the bot
+(or, with a person's credential, who `git push` acts as instead).
 The bot's own commits and cross-references are filtered out of follow-up
 messages, and its comments are sorted per session by their byline, so
 an agent's own posts are not echoed back to it (`daemon.include_own_events`
@@ -115,11 +116,9 @@ Things to know before switching it on:
   already has as your Unix user; in the [VM](vm.md) the token is copied
   onto the seed disk, so the guest holds it. Prefer a token scoped to the
   repositories the factory works on.
-- The prompts still tell the agent that `git push` acts as the bot; with a
-  person's credential it acts as that person. The agent does not need to
-  know, but a push refused by branch protection now names that account
-  (making the line conditional is
-  [#99](https://github.com/mikekelly/simple-software-factory/issues/99)).
+- The first prompt names who `git push` acts as when it is not the bot
+  (`@ann` for `token:ann`, a description for a `file:` token or a helper),
+  so a push refused by branch protection is no surprise to the agent.
 
 `ssf doctor` prints the effective identity per repository (who commits,
 signed with what, who pushes) and checks that the key and the token are
