@@ -31,6 +31,19 @@ impl DriverKind {
         }
     }
 
+    /// The driver whose repo ids look like `repo_id`: herdr's is the path
+    /// of the checkout, Orca's is a uuid. For records from before the
+    /// driver was written down next to the id.
+    pub fn of_repo_id(repo_id: &str) -> Option<DriverKind> {
+        if std::path::Path::new(repo_id).is_absolute() {
+            Some(DriverKind::Herdr)
+        } else if !repo_id.is_empty() && !repo_id.contains('/') {
+            Some(DriverKind::Orca)
+        } else {
+            None
+        }
+    }
+
     /// How the driver is called in messages.
     pub fn label(self) -> &'static str {
         match self {

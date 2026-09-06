@@ -1930,6 +1930,7 @@ are resumed on the first pass that finds it: {err:#}"
         e.worktree_id = o.worktree_id;
         e.worktree_path = o.worktree_path;
         e.repo_id = o.repo_id;
+        e.driver = o.driver;
         e.branch = o.branch;
         e.terminal_handle = o.terminal_handle;
         e.agent_session_id = o.agent_session_id;
@@ -2326,6 +2327,7 @@ are resumed on the first pass that finds it: {err:#}"
                 &self.cfg.projects_dir(self.cfg.driver_for(repo)),
             )
             .await?;
+        let driver = self.cfg.driver_for(repo);
         let timeline = self.gh.timeline(owner, name, number).await?;
         let wt_name = prior
             .as_ref()
@@ -2336,6 +2338,7 @@ are resumed on the first pass that finds it: {err:#}"
             e.title = issue.title.clone();
             e.html_url = issue.html_url.clone();
             e.repo_id = Some(setup.repo_id.clone());
+            e.driver = Some(driver.id().into());
             e.worktree_name = Some(wt_name.clone());
             e.kind = Some("reviewer".into());
             e.triggers = asked;
@@ -2666,9 +2669,11 @@ are resumed on the first pass that finds it: {err:#}"
     }
 
     fn remember_worktree(&mut self, repo: &RepoConfig, slot: Slot, wt: &Worktree) {
+        let driver = self.cfg.driver_for(repo);
         let e = self.record(repo, slot);
         e.worktree_id = Some(wt.id.clone());
         e.worktree_path = Some(wt.path.clone());
+        e.driver = Some(driver.id().into());
         if let Some((r, _)) = wt.id.split_once("::") {
             e.repo_id = Some(r.to_string());
         }
@@ -2743,11 +2748,13 @@ are resumed on the first pass that finds it: {err:#}"
             .as_ref()
             .and_then(|s| s.worktree_name.clone())
             .unwrap_or_else(|| prompt::worktree_name_for(issue.number, &issue.title, is_pr));
+        let driver = self.cfg.driver_for(repo);
         {
             let e = self.entry(repo, issue.number);
             e.title = issue.title.clone();
             e.html_url = issue.html_url.clone();
             e.repo_id = Some(setup.repo_id.clone());
+            e.driver = Some(driver.id().into());
             e.worktree_name = Some(wt_name.clone());
             e.kind = Some(if is_pr {
                 "pull_request".into()
@@ -3689,30 +3696,81 @@ are resumed on the first pass that finds it: {err:#}"
         Ok(d)
     }
 
-    /// Re-create the workspace for an issue whose Orca worktree is gone,
+    /// A binding written by a driver other than the one the repository runs
+    /// in now (`driver` changed since the workspace was made) is dropped
+    /// before the workspace is looked for, so the item goes through the
+    /// current driver's project setup as a new one would, rather than the
+    /// old driver's repo id being handed to the new driver as its own (an
+    /// Orca uuid taken for a checkout path, or the other way round). The
+    /// workspace name and branch stay, so the branch is picked up as the
+    /// base as for any re-created workspace. A record from before the
+    /// driver was written down is judged by the shape of its repo id.
+    fn drop_foreign_binding(&mut self, repo: &RepoConfig, slot: Slot) {
+        let current = self.cfg.driver_for(repo);
+        let st = self.record(repo, slot).clone();
+        let Some(repo_id) = st.repo_id.as_deref() else {
+            return;
+        };
+        let made_by = match st.driver.as_deref() {
+            Some(d) => d.to_string(),
+            None if self.driver(repo).owns_repo_id(repo_id) => return,
+            None => DriverKind::of_repo_id(repo_id)
+                .map(|k| k.id().to_string())
+                .unwrap_or_else(|| "another driver".into()),
+        };
+        if made_by == current.id() {
+            return;
+        }
+        info!(
+            repo = repo.name,
+            session = slot_id(&repo.name, slot),
+            "workspace was made by {made_by}; re-creating it on {}",
+            current.id()
+        );
+        let e = self.record(repo, slot);
+        e.repo_id = None;
+        e.driver = None;
+        e.worktree_id = None;
+        e.worktree_path = None;
+        e.terminal_handle = None;
+    }
+
+    /// The current driver's id for the repository, from the record when
+    /// it has one and from the driver's project setup otherwise; written
+    /// back so the next look does not set the project up again.
+    async fn repo_id_for(&mut self, repo: &RepoConfig, slot: Slot) -> Result<String> {
+        if let Some(r) = self.record(repo, slot).repo_id.clone() {
+            return Ok(r);
+        }
+        let (owner, name) = repo.split()?;
+        let driver = self.cfg.driver_for(repo);
+        let repo_id = self
+            .driver(repo)
+            .ensure_project(
+                owner,
+                name,
+                &repo.clone_url(),
+                repo.path.as_deref(),
+                &self.cfg.projects_dir(driver),
+            )
+            .await?
+            .repo_id;
+        let e = self.record(repo, slot);
+        e.repo_id = Some(repo_id.clone());
+        e.driver = Some(driver.id().into());
+        Ok(repo_id)
+    }
+
+    /// Re-create the workspace for an issue whose worktree is gone,
     /// starting from its old branch when that still exists.
     async fn rehydrate(&mut self, repo: &RepoConfig, slot: Slot) -> Result<()> {
         let number = slot.number();
         if slot.is_reviewer() {
             return self.rehydrate_reviewer(repo, number).await;
         }
+        self.drop_foreign_binding(repo, slot);
+        let repo_id = self.repo_id_for(repo, slot).await?;
         let st = self.entry(repo, number).clone();
-        let repo_id = match st.repo_id.clone() {
-            Some(r) => r,
-            None => {
-                let (owner, name) = repo.split()?;
-                self.driver(repo)
-                    .ensure_project(
-                        owner,
-                        name,
-                        &repo.clone_url(),
-                        repo.path.as_deref(),
-                        &self.cfg.projects_dir(self.cfg.driver_for(repo)),
-                    )
-                    .await?
-                    .repo_id
-            }
-        };
         if let Some(existing) = self
             .driver(repo)
             .find_worktree_for_issue(&repo_id, number)
@@ -3812,23 +3870,10 @@ are resumed on the first pass that finds it: {err:#}"
     /// head rather than from the reviewer's old local branch.
     async fn rehydrate_reviewer(&mut self, repo: &RepoConfig, number: u64) -> Result<()> {
         let slot = Slot::Reviewer(number);
+        self.drop_foreign_binding(repo, slot);
+        let repo_id = self.repo_id_for(repo, slot).await?;
         let st = self.record(repo, slot).clone();
         let (owner, name) = repo.split()?;
-        let repo_id = match st.repo_id.clone() {
-            Some(r) => r,
-            None => {
-                self.driver(repo)
-                    .ensure_project(
-                        owner,
-                        name,
-                        &repo.clone_url(),
-                        repo.path.as_deref(),
-                        &self.cfg.projects_dir(self.cfg.driver_for(repo)),
-                    )
-                    .await?
-                    .repo_id
-            }
-        };
         // The PR's own record may have a workspace linked to the same number
         // (a PR onboarded on its own); anything else linked to it is ours.
         let own = self.entry(repo, number).worktree_id.clone();
@@ -5831,6 +5876,138 @@ mod tests {
         assert!(!st.release_pending);
         assert_eq!(st.release_refusals, 1);
         assert!(st.worktree_id.is_some());
+    }
+
+    // ---- a driver switch --------------------------------------------------
+
+    /// Replays issue #105: after `driver` went from Orca to herdr, an item
+    /// from before the switch still carried Orca's repo id, which the herdr
+    /// driver took for a checkout path. Each delivery failed on it, and the
+    /// item recovered only once five failures had it re-onboarded. Now the
+    /// first delivery re-creates the workspace on the current driver.
+    #[tokio::test]
+    async fn a_workspace_made_by_the_old_driver_is_re_created_on_the_new_one() {
+        const ORCA_REPO: &str = "1b790ad2-4421-43dc-9f46-f7c09d0c321f";
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.driver = Some(DriverKind::Herdr);
+        e.cfg.repos = vec![repo()];
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        seeded(&mut e, 5, Some("bot/issue-5-fix-the-widget"), true);
+        {
+            let st = e.entry(&repo(), 5);
+            st.title = "Fix the widget".into();
+            st.html_url = "https://gh/5".into();
+            st.worktree_name = Some("issue-5-fix-the-widget".into());
+            // As a state file from before the driver was written down has it.
+            st.driver = None;
+            st.repo_id = Some(ORCA_REPO.into());
+            st.worktree_id = Some(format!(
+                "{ORCA_REPO}::/home/me/orca/projects/r.worktrees/issue-5-fix-the-widget"
+            ));
+            st.worktree_path =
+                Some("/home/me/orca/projects/r.worktrees/issue-5-fix-the-widget".into());
+            st.terminal_handle = Some("orca-terminal".into());
+        }
+        let delivered = e
+            .deliver(&repo(), Slot::Item(5), "hello", None)
+            .await
+            .unwrap();
+        assert!(delivered.relaunched);
+        let st = e.entry(&repo(), 5).clone();
+        // The binding went through the current driver's project setup.
+        assert_eq!(st.repo_id.as_deref(), Some("stub"));
+        assert_eq!(st.driver.as_deref(), Some("herdr"));
+        assert_eq!(
+            st.worktree_id.as_deref(),
+            Some("stub::/stub.worktrees/issue-5-fix-the-widget"),
+            "re-created under its old name"
+        );
+        assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+        assert!(st.seeded, "not re-onboarded");
+        assert!(e.failures.is_empty(), "no failure counted");
+        let log = d.log();
+        assert_eq!(
+            log[0],
+            "relaunch:stub::/stub.worktrees/issue-5-fix-the-widget:false"
+        );
+        assert!(
+            log[1].starts_with("deliver:stub::/stub.worktrees/issue-5-fix-the-widget:"),
+            "{log:?}"
+        );
+        // The record now says herdr: the next delivery finds the workspace
+        // as it is and nothing is re-created.
+        e.deliver(&repo(), Slot::Item(5), "again", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            d.log(),
+            vec!["deliver:stub::/stub.worktrees/issue-5-fix-the-widget:again"]
+        );
+        assert_eq!(
+            e.entry(&repo(), 5).worktree_id.as_deref(),
+            Some("stub::/stub.worktrees/issue-5-fix-the-widget")
+        );
+
+        // And the other way round: a record that says herdr, with the
+        // checkout path as its repo id, once the repository runs in Orca.
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.driver = Some(DriverKind::Orca);
+        {
+            let st = e.entry(&repo(), 5);
+            st.driver = Some("herdr".into());
+            st.repo_id = Some("/home/me/ssf/projects/r".into());
+            st.worktree_id =
+                Some("w7@/home/me/ssf/projects/r.worktrees/issue-5-fix-the-widget".into());
+            st.worktree_path =
+                Some("/home/me/ssf/projects/r.worktrees/issue-5-fix-the-widget".into());
+        }
+        e.deliver(&repo(), Slot::Item(5), "hello", None)
+            .await
+            .unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.repo_id.as_deref(), Some("stub"));
+        assert_eq!(st.driver.as_deref(), Some("orca"));
+        assert_eq!(
+            st.worktree_id.as_deref(),
+            Some("stub::/stub.worktrees/issue-5-fix-the-widget")
+        );
+        assert!(e.failures.is_empty());
+        assert_eq!(
+            d.log()[0],
+            "relaunch:stub::/stub.worktrees/issue-5-fix-the-widget:false"
+        );
+    }
+
+    /// A record from before the driver was written down whose repo id fits
+    /// the current driver is left alone: no re-creation for its own sake.
+    #[tokio::test]
+    async fn a_binding_that_fits_the_current_driver_is_kept() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.driver = Some(DriverKind::Herdr);
+        e.cfg.repos = vec![repo()];
+        seeded(&mut e, 5, None, true);
+        {
+            let st = e.entry(&repo(), 5);
+            st.driver = None;
+            st.repo_id = Some("stub".into());
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+        }
+        d.seed("w5", "t5", READY_SCREEN);
+        e.deliver(&repo(), Slot::Item(5), "hello", None)
+            .await
+            .unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.worktree_id.as_deref(), Some("w5"));
+        assert_eq!(st.repo_id.as_deref(), Some("stub"));
+        assert_eq!(d.log(), vec!["deliver:w5:hello"]);
     }
     // ---- sessions blocked on a login ------------------------------------
 
