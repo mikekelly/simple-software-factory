@@ -4501,6 +4501,8 @@ mod tests {
         let mut cfg = Config::default();
         cfg.daemon.allowed_users = Some(vec!["*".into()]);
         cfg.daemon.accepted_anyone_risk = true;
+        // The stand-in driver below is Orca; herdr is the default now.
+        cfg.driver = Some(DriverKind::Orca);
         Engine {
             cfg,
             gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
@@ -4541,7 +4543,7 @@ mod tests {
         assert_eq!(e.driver(&orca).kind(), DriverKind::Orca);
         assert_eq!(e.driver(&herdr).kind(), DriverKind::Herdr);
         // And the other way: the default switched, Orca no longer used.
-        e.cfg.driver = DriverKind::Herdr;
+        e.cfg.driver = Some(DriverKind::Herdr);
         e.cfg.repos = vec![herdr.clone()];
         e.sync_drivers();
         assert_eq!(e.drivers.kinds(), vec![DriverKind::Herdr]);

@@ -13,9 +13,11 @@
 # ssh_key_id = 0
 # signing_key_id = 0
 
-# What runs the agents: "orca" (default) or "herdr". A [[repo]] can pick
-# its own with `driver = "..."`.
-# driver = "orca"
+# What runs the agents: "herdr" (default) or "orca". A [[repo]] can pick
+# its own with `driver = "..."`. The default was Orca until 2026-09-06; a
+# file that leaves this unset runs its repositories in herdr, and
+# `ssf config show` / `ssf doctor` say so. Pin it to keep Orca.
+# driver = "herdr"
 
 [orca]
 # command = "/usr/lib/orca-ide/bin/orca-ide"   # the Orca CLI (not /usr/bin/orca-ide, which launches the app)

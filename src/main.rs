@@ -1309,9 +1309,6 @@ fn repo(command: RepoCommand) -> Result<()> {
             let path = expand_checkout(path)?;
             check_harness(&harness);
             let driver = driver.map(|d| d.parse()).transpose()?;
-            if driver == Some(config::DriverKind::Herdr) {
-                check_herdr_harness(&harness);
-            }
             let mut entry = RepoConfig {
                 name: name.clone(),
                 harness,
@@ -1328,6 +1325,11 @@ fn repo(command: RepoCommand) -> Result<()> {
                 accepted_anyone_risk: false,
             };
             entry.validate_launch_prefs()?;
+            // herdr runs only the agents it recognises, so warn for a
+            // repository that ends up there, by its own choice or the default.
+            if cfg.driver_for(&entry) == config::DriverKind::Herdr {
+                check_herdr_harness(&entry.harness);
+            }
             if let Some(list) = allowed_users {
                 set_repo_allowed_users(&mut entry, &list, accept_anyone_risk)?;
             }
@@ -1367,6 +1369,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                 .iter()
                 .position(|x| x.name.eq_ignore_ascii_case(&name))
                 .with_context(|| format!("{name} is not configured; use `ssf repo add`"))?;
+            let default_driver = cfg.default_driver();
             let entry = &mut cfg.repos[pos];
             if let Some(h) = harness {
                 check_harness(&h);
@@ -1388,7 +1391,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             if let Some(d) = driver {
                 entry.driver = Some(d.parse()?);
             }
-            if entry.driver == Some(config::DriverKind::Herdr) {
+            if entry.driver.unwrap_or(default_driver) == config::DriverKind::Herdr {
                 check_herdr_harness(&entry.harness);
             }
             if let Some(p) = expand_checkout(path)? {
@@ -1587,6 +1590,11 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
             } else {
                 println!("# {}", config::config_path().display());
                 print!("{}", toml::to_string_pretty(&cfg)?);
+                if let Some(note) = cfg.driver_note() {
+                    println!();
+                    println!("# driver in effect: {}", cfg.default_driver());
+                    println!("#   {note}");
+                }
                 // Who may drive each repository, resolved from the file
                 // alone (the collaborator default is fetched by the daemon;
                 // `ssf doctor` shows it).
@@ -1602,6 +1610,10 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
         }
         ConfigCommand::Get { key } => {
             let cfg = Config::load()?;
+            if key == "driver" && cfg.driver.is_none() {
+                println!("{}", cfg.default_driver());
+                return Ok(());
+            }
             let value: toml::Value = toml::Value::try_from(&cfg)?;
             let mut cur = &value;
             for part in key.split('.') {
@@ -1874,6 +1886,14 @@ async fn run(once: bool) -> Result<()> {
     }
     if cfg.repos.is_empty() && once {
         bail!("no repositories configured; run `ssf repo add owner/name --harness claude` first");
+    }
+    // An install from before herdr became the default, still without a
+    // `driver` line, changes driver on this upgrade: say so once, where
+    // Orca is around to have been the one in use.
+    if let Some(note) = cfg.driver_note()
+        && std::path::Path::new(&cfg.orca.command).exists()
+    {
+        tracing::warn!("{note}");
     }
     let engine = engine::Engine::new(cfg).await?;
     if once {
@@ -2457,6 +2477,9 @@ async fn doctor() -> Result<()> {
             }
         }
     }
+    if let Some(note) = cfg.driver_note() {
+        println!("note {note}");
+    }
     // Each harness a repository uses, signed in where this runs (the host,
     // or the guest: with the factory in a VM `ssf doctor` is forwarded
     // there, so the check happens where the agents are).
@@ -2680,7 +2703,7 @@ async fn doctor() -> Result<()> {
         true,
         format!(
             "new clones go under {}",
-            cfg.projects_dir(cfg.driver).display()
+            cfg.projects_dir(cfg.default_driver()).display()
         ),
     );
     if problems > 0 {

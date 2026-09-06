@@ -7,9 +7,14 @@ asks for (a checkout of the repository, a workspace per item on the item's
 branch, starting the agent there, pasting a message in, whether the agent
 is still there or busy, removing the workspace) goes through a *driver*,
 and there are two. The `driver` key picks the default for the whole
-instance; a `[[repo]]` can set its own (`ssf repo add ... --driver herdr`),
-so one daemon can run some repositories in Orca and others in herdr.
-`ssf doctor` checks every driver in use. To keep the agents (and the
+instance (herdr when unset); a `[[repo]]` can set its own (`ssf repo add
+... --driver orca`), so one daemon can run some repositories in Orca and
+others in herdr. `ssf doctor` checks every driver in use, and with
+`driver` unset both it and `ssf config show` say which driver the
+repositories run in and why. The default was Orca until 2026-09-06: a
+config from before that leaves `driver` unset moves to herdr on upgrade,
+and the daemon logs a warning at start when Orca's CLI is installed; `ssf
+config set driver orca` keeps it where it was. To keep the agents (and the
 daemon) away from your home directory altogether, the whole factory can
 run inside a microVM instead (see [Inside a microVM](vm.md)).
 
@@ -35,7 +40,7 @@ dialog ssf cannot answer: a session showing one is marked blocked and
 brought back once a person has signed the harness in (see [A harness that
 is not signed in](sessions.md#a-harness-that-is-not-signed-in)).
 
-## `orca` (the default)
+## `orca`
 
 The [Orca](https://onorca.dev/) desktop app and its CLI. Orca keeps the
 projects (repositories it has no project for are cloned under
@@ -47,7 +52,7 @@ daemon waits for it at start (`daemon.startup_orca_wait_secs`).
 `/usr/lib/orca-ide/bin/orca-ide` (`/usr/bin/orca-ide` launches the app).
 Pick Orca to watch agents work in a GUI and take over a terminal.
 
-## `herdr`
+## `herdr` (the default)
 
 The [herdr](https://herdr.dev/) terminal workspace manager (a herdr
 session has to be running: start `herdr` in a terminal and leave it). ssf

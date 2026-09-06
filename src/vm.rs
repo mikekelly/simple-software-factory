@@ -1202,7 +1202,7 @@ fn clean_sockets(boot: &BootFiles) {
 /// checkouts, and the VM section off so nothing forwards again.
 pub fn guest_config(host: &Config) -> Config {
     let mut g = host.clone();
-    g.driver = DriverKind::Herdr;
+    g.driver = Some(DriverKind::Herdr);
     g.herdr.command = GUEST_HERDR.to_string();
     g.herdr.projects_dir = GUEST_PROJECTS_DIR.to_string();
     for r in &mut g.repos {
@@ -1600,6 +1600,7 @@ mod tests {
     #[test]
     fn guest_config_is_herdr_only_on_the_data_disk() {
         let mut host = Config::default();
+        host.driver = Some(DriverKind::Orca);
         host.vm.enabled = true;
         host.vm.files = vec!["~/.claude/.credentials.json".into()];
         host.herdr.projects_dir = "~/ssf/projects".into();
@@ -1620,7 +1621,7 @@ mod tests {
             vec!["o/r".to_string(), "o/s".to_string()]
         );
         let g = guest_config(&host);
-        assert_eq!(g.driver, DriverKind::Herdr);
+        assert_eq!(g.driver, Some(DriverKind::Herdr));
         assert!(!g.vm.enabled);
         assert!(g.vm.files.is_empty());
         assert_eq!(g.herdr.projects_dir, GUEST_PROJECTS_DIR);
