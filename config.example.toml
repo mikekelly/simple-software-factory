@@ -43,7 +43,8 @@
 # data_gib = 20                                # persistent data disk: state, clones, worktrees (sparse)
 # root_gib = 8                                 # size of the root image `ssf vm build` makes
 # ssh_port = 2222                              # the guest's sshd on 127.0.0.1
-# files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start; `src:dest` to place them. Prefer `ssf vm login`: a copied login is the same session as yours (a logout in the guest signs you out here too)
+# files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start; `src:dest` to place them
+#                                              # (a copied login is the same session as yours: a guest logout signs you out here too; prefer `ssf vm login`)
 # firecracker = "..."                          # binaries and images, when not the downloaded ones under `dir`
 # gvproxy = "..."
 # kernel = "..."

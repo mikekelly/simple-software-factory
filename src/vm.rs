@@ -1432,8 +1432,25 @@ pub fn parse_login_states(out: &str) -> Vec<LoginState> {
 #[derive(Default)]
 pub struct UrlScanner {
     text: String,
-    esc: bool,
+    esc: Esc,
     done: bool,
+}
+
+/// Where the scanner is inside a terminal escape sequence.
+#[derive(Default, PartialEq)]
+enum Esc {
+    #[default]
+    None,
+    /// Just after ESC: the next byte says what follows.
+    Start,
+    /// CSI (`ESC [`): runs to a final byte in `@`..`~`.
+    Csi,
+    /// OSC, DCS, APC, PM (`ESC ]`, `P`, `_`, `^`): runs to BEL or `ESC \`.
+    Str,
+    /// ESC inside a string: `\` ends it, anything else continues it.
+    StrEnd,
+    /// Charset selection (`ESC (`, `ESC )`): one more byte.
+    One,
 }
 
 impl UrlScanner {
@@ -1442,20 +1459,37 @@ impl UrlScanner {
             return None;
         }
         for &b in bytes {
-            if self.esc {
-                // CSI/OSC/other escapes end at a letter-ish final byte.
-                if b.is_ascii_alphabetic() || b == 0x07 || b == b'\\' || b == b'~' {
-                    self.esc = false;
+            self.esc = match self.esc {
+                Esc::None if b == 0x1b => Esc::Start,
+                Esc::None => {
+                    self.text
+                        .push(if b.is_ascii_control() { ' ' } else { b as char });
+                    Esc::None
                 }
-            } else if b == 0x1b {
-                self.esc = true;
-            } else if b.is_ascii_control() {
-                self.text.push(' ');
-            } else {
-                self.text.push(b as char);
-            }
+                // Anything else after ESC is a two-byte sequence (ESC 7,
+                // ESC =, ...).
+                Esc::Start => match b {
+                    b'[' => Esc::Csi,
+                    b']' | b'P' | b'_' | b'^' => Esc::Str,
+                    b'(' | b')' => Esc::One,
+                    _ => Esc::None,
+                },
+                Esc::Csi if (0x40..=0x7e).contains(&b) => Esc::None,
+                Esc::Csi => Esc::Csi,
+                Esc::Str if b == 0x07 => Esc::None,
+                Esc::Str if b == 0x1b => Esc::StrEnd,
+                Esc::Str => Esc::Str,
+                Esc::StrEnd if b == b'\\' => Esc::None,
+                Esc::StrEnd => Esc::Str,
+                Esc::One => Esc::None,
+            };
         }
-        let start = self.text.find("https://")?;
+        let Some(start) = self.text.find("https://") else {
+            // Nothing pending: keep only the tail that could begin a URL.
+            let keep = self.text.rfind(char::is_whitespace).map_or(0, |i| i + 1);
+            self.text.drain(..keep);
+            return None;
+        };
         let rest = &self.text[start..];
         let end = rest.find(|c: char| c.is_whitespace() || "\"'<>".contains(c))?;
         let url = rest[..end].to_string();
@@ -1717,6 +1751,22 @@ mod tests {
         );
         let mut sc = UrlScanner::default();
         assert_eq!(sc.feed(b"no url here\n"), None);
+        // Two-byte escapes (cursor save, keypad mode) and an OSC title do
+        // not swallow the URL; the buffer stays bounded while nothing is pending.
+        let mut sc = UrlScanner::default();
+        assert_eq!(
+            sc.feed(b"\x1b7\x1b=\x1b]0;title\x07\x1b[?25lvisit https://x.example/a\n"),
+            Some("https://x.example/a".into())
+        );
+        let mut sc = UrlScanner::default();
+        for _ in 0..1000 {
+            assert_eq!(sc.feed(b"some plain output line\n"), None);
+        }
+        assert!(sc.text.len() < 64, "{}", sc.text.len());
+        assert_eq!(
+            sc.feed(b"then https://y.example/ done"),
+            Some("https://y.example/".into())
+        );
     }
 
     #[test]
