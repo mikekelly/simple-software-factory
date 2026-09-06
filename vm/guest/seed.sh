@@ -7,10 +7,11 @@
 set -euo pipefail
 mkdir -p /seed /var/lib/ssf
 mount -o ro /dev/vdc /seed
-if ! mount /dev/vdb /var/lib/ssf 2>/dev/null; then
-    mkfs.ext4 -q -L ssf-data /dev/vdb
-    mount /dev/vdb /var/lib/ssf
-fi
+# The host formats the data disk before the first boot. It is checked and
+# mounted here, never formatted: a mount that fails stops this unit, and
+# with it sshd, herdr and the daemon, rather than lose what is on it.
+fsck.ext4 -p /dev/vdb >/dev/null || true
+mount /dev/vdb /var/lib/ssf
 # The home directory: on the data disk, seeded from the image's on first use.
 if [ ! -d /var/lib/ssf/home ]; then
     cp -a /home/ssf /var/lib/ssf/home

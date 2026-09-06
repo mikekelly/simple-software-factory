@@ -470,14 +470,43 @@ async fn main() -> Result<()> {
         .install_default()
         .ok();
     // With the factory in a VM, the commands that talk to the daemon run
-    // inside the guest, where the daemon is.
+    // inside the guest, where the daemon is. With the VM down, `status`
+    // says so the way it says the service is stopped on bare metal (the
+    // bar widget polls it); the others cannot do anything.
     if let Some(name) = forwarded_name(&cli.command)
         && std::env::var_os(vm::GUEST_ENV).is_none()
         && let Ok(cfg) = Config::load()
         && cfg.vm.enabled
     {
+        let vm = vm::Vm::new(&cfg);
+        if !vm.running() {
+            match cli.command {
+                Command::Status { json: true } => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "vm": "stopped", "service_active": false,
+                            "service_enabled": ui::service_enabled(),
+                            "sessions": [], "repos": [],
+                        })
+                    );
+                    return Ok(());
+                }
+                Command::Status { json: false } => {
+                    println!(
+                        "vm:      {} is not running (`ssf vm start`, or `ssf ui service enable`)",
+                        cfg.vm.name
+                    );
+                    return Ok(());
+                }
+                _ => bail!(
+                    "the factory runs in VM {}, which is not running; `ssf vm start` first",
+                    cfg.vm.name
+                ),
+            }
+        }
         let args: Vec<String> = std::env::args().skip(1).collect();
-        let st = vm::Vm::new(&cfg)
+        let st = vm
             .exec_ssf(&args)
             .with_context(|| format!("running `ssf {name}` in the VM"))?;
         std::process::exit(st.code().unwrap_or(1));
@@ -1464,8 +1493,7 @@ fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Run { once: true } => "run",
         _ => return None,
     };
-    debug_assert!(vm::FORWARDED.contains(&name) || name == "run");
-    Some(name)
+    vm::forwards(name).then_some(name)
 }
 
 async fn vm_cmd(command: VmCommand) -> Result<()> {

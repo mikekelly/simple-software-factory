@@ -71,15 +71,19 @@ for c in claude codex gemini copilot opencode pi grok; do
 done
 # Crush ships release tarballs.
 crush_url=$(curl -fsSL https://api.github.com/repos/charmbracelet/crush/releases/latest \
-    | jq -r '.assets[] | select(.name | test("_Linux_x86_64.tar.gz$")) | .browser_download_url' | head -1)
-if [ -n "$crush_url" ]; then
+    | jq -r '.assets[] | select(.name | test("_Linux_x86_64.tar.gz$")) | .browser_download_url' | head -1 || true)
+if [ -z "$crush_url" ]; then
+    echo "provision: crush release not found (GitHub API unreachable or rate-limited); skipped" >&2
+else
     curl -fsSL "$crush_url" | tar -xz -C /tmp && install -m755 /tmp/crush*/crush /usr/local/bin/crush \
         || echo "provision: crush install failed" >&2
 fi
 # Oh My Pi ships release binaries.
 omp_url=$(curl -fsSL https://api.github.com/repos/can1357/oh-my-pi/releases/latest \
-    | jq -r '.assets[] | select(.name | test("linux.*(x64|x86_64|amd64)")) | .browser_download_url' | head -1)
-if [ -n "$omp_url" ]; then
+    | jq -r '.assets[] | select(.name | test("linux.*(x64|x86_64|amd64)")) | .browser_download_url' | head -1 || true)
+if [ -z "$omp_url" ]; then
+    echo "provision: omp release not found (GitHub API unreachable or rate-limited); skipped" >&2
+else
     (cd /tmp && curl -fsSL -o omp.dl "$omp_url" && case "$omp_url" in
         *.tar.gz|*.tgz) tar -xzf omp.dl && install -m755 "$(find . -maxdepth 2 -type f -name omp | head -1)" /usr/local/bin/omp ;;
         *.zip) unzip -o omp.dl >/dev/null && install -m755 "$(find . -maxdepth 2 -type f -name omp | head -1)" /usr/local/bin/omp ;;

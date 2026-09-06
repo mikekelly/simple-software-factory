@@ -598,11 +598,18 @@ bare metal. Editing the config on the host takes `ssf vm sync` (pushes
 config and token and restarts the guest daemon) or `ssf vm restart` (a
 new seed: needed for a new `ssf` binary or `vm.files`). `ssf vm reset`
 remakes the root disk from a rebuilt image and keeps the data disk, so
-sessions survive it;
-`ssf vm destroy --yes` removes the VM. Firecracker and gvproxy run
-detached, so an `ssf` restart on the host does not touch the guest;
-`ssf run` (the systemd unit) starts the VM if it is not up and shuts it
-down when the service stops.
+sessions survive it (the guest home is copied from the image only when the
+data disk is new, so a rebuilt image's hooks and `~/.claude.json` reach an
+existing VM only through `ssf vm destroy`, or by hand);
+`ssf vm destroy --yes` removes the VM. Firecracker and gvproxy are
+started in a session of their own, so a VM started from a terminal
+(`ssf vm start`) outlives that shell and any later `ssf` command. The
+systemd service is different: `ssf run` starts the VM if it is not up and
+owns it from then on, so stopping or restarting the service shuts the
+guest down (cleanly, over Firecracker's API) and a crash of the host
+daemon ends it with the service's cgroup. With the VM stopped, `ssf status`
+says so instead of forwarding (the bar widget shows the service as
+stopped).
 
 ## What the agent is told
 

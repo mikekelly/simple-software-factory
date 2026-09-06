@@ -35,7 +35,10 @@ use crate::config::{Config, DriverKind, VmConfig, expand_tilde};
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
-/// A Firecracker CI guest kernel: virtio-blk, vsock, tun and overlayfs built in.
+/// A Firecracker CI guest kernel: virtio-blk, vsock, tun and overlayfs built
+/// in. These dated CI artifacts get pruned eventually; when the download
+/// fails, `[vm] kernel` points at a kernel of your own (any x86_64 vmlinux
+/// with those drivers built in does).
 pub const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260902-a6146c8bb213-0/x86_64/vmlinux-6.1.182";
 pub const BOOTSTRAP_URL: &str =
     "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst";
@@ -50,10 +53,16 @@ const GUEST_CID: u32 = 3;
 const NET_PORT: u32 = 1024;
 
 /// Commands that act on the daemon and so run inside the guest when the
-/// factory is there.
-pub const FORWARDED: [&str; 9] = [
-    "status", "peers", "sub", "unsub", "subs", "tell", "release", "purge", "doctor",
+/// factory is there (`run` only as `run --once`; plain `run` supervises the
+/// VM from the host).
+pub const FORWARDED: [&str; 10] = [
+    "status", "peers", "sub", "unsub", "subs", "tell", "release", "purge", "doctor", "run",
 ];
+
+/// Does `ssf <name>` run in the guest when the factory is in a VM?
+pub fn forwards(name: &str) -> bool {
+    FORWARDED.contains(&name)
+}
 
 /// Set in the guest so a forwarded command never forwards again.
 pub const GUEST_ENV: &str = "SSF_VM_GUEST";
@@ -192,6 +201,12 @@ impl Vm {
     /// Download what is missing, make the base image from the bootstrap
     /// tarball and boot it once to provision it.
     pub async fn build(&self, force: bool) -> Result<()> {
+        if std::env::consts::ARCH != "x86_64" {
+            bail!(
+                "the VM image is x86_64 only for now (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {}",
+                std::env::consts::ARCH
+            );
+        }
         let scripts = scripts_dir()?;
         std::fs::create_dir_all(self.base.join("dl"))
             .with_context(|| format!("creating {}", self.base.display()))?;
@@ -239,7 +254,13 @@ impl Vm {
             ))?,
         )?;
         clean_sockets(&boot);
-        let gv = self.spawn_gvproxy(&boot, self.cfg.ssh_port + 1)?;
+        // The build's own gvproxy, next to a VM that may be running.
+        let port = self
+            .cfg
+            .ssh_port
+            .checked_add(1)
+            .unwrap_or(self.cfg.ssh_port - 1);
+        let gv = self.spawn_gvproxy(&boot, port)?;
         let result = self.provision(&boot, &console).await;
         kill(gv, libc::SIGTERM);
         result?;
@@ -1151,8 +1172,8 @@ fn run_ok(cmd: &mut Command, what: &str) -> Result<()> {
 }
 
 pub fn stdin_is_tty() -> bool {
-    // SAFETY: isatty only inspects the descriptor.
-    unsafe { libc::isatty(0) == 1 }
+    use std::io::IsTerminal;
+    std::io::stdin().is_terminal()
 }
 
 fn which(name: &str) -> Option<PathBuf> {
