@@ -133,7 +133,7 @@ fn worktree_rows(v: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
-/// A workspace's checkout root and item number, from the cwd of its panes:
+/// A workspace's checkout root and item number, from its checkout path:
 /// ssf's worktrees live in `<root>.worktrees/<name>`.
 fn root_and_item(cwd: &str) -> (Option<String>, Option<(u64, bool)>) {
     let p = Path::new(cwd);
@@ -157,7 +157,9 @@ fn root_and_item(cwd: &str) -> (Option<String>, Option<(u64, bool)>) {
 }
 
 /// Join `herdr workspace list`, `herdr pane list` and `herdr agent list`
-/// into the engine's view.
+/// into the engine's view. A workspace's checkout is the worktree herdr
+/// has it bound to; only a workspace not on a worktree is placed by the
+/// cwd of its first pane, which follows whatever a shell in it does.
 pub fn join_ps(workspaces: &Value, panes: &[Pane], agents: &[Agent]) -> Vec<WorkspaceInfo> {
     workspaces
         .get("workspaces")
@@ -167,7 +169,12 @@ pub fn join_ps(workspaces: &Value, panes: &[Pane], agents: &[Agent]) -> Vec<Work
         .filter_map(|w| {
             let id = s(w, "workspace_id")?;
             let ws_panes: Vec<&Pane> = panes.iter().filter(|p| p.workspace_id == id).collect();
-            let cwd = ws_panes.iter().find_map(|p| p.cwd.clone());
+            let cwd = w
+                .pointer("/worktree/checkout_path")
+                .and_then(Value::as_str)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string)
+                .or_else(|| ws_panes.iter().find_map(|p| p.cwd.clone()));
             let (root, item) = cwd.as_deref().map(root_and_item).unwrap_or((None, None));
             let ws_agents: Vec<AgentInfo> = agents
                 .iter()
@@ -771,6 +778,10 @@ mod tests {
         let cwd = h.panes(ws).await.unwrap()[0].cwd.clone();
         assert_eq!(cwd.as_deref(), Some("/"), "herdr did not see the cd");
         assert!(h.worktree_exists(&wt.id).await.unwrap());
+        let away = h.ps().await.unwrap();
+        let row = away.iter().find(|r| r.worktree_id == wt.id).unwrap();
+        assert_eq!(row.linked_issue, Some(3));
+        assert_eq!(row.repo_id, root);
         let back = format!("cd '{}'", wt.path);
         h.run(&["pane", "run", &root_pane, &back]).await.unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -905,16 +916,32 @@ mod tests {
 
     #[test]
     fn joins_workspaces_panes_and_agents() {
+        // w2's shell has cd'd away: herdr's binding places it, not the pane.
+        // w7 is bound but has no pane; w8 is not on a worktree, so its pane
+        // cwd is all there is.
         let ws = json!({"workspaces": [
-            {"workspace_id": "w2", "label": "issue-3-x", "agent_status": "working"},
-            {"workspace_id": "w5", "label": "scratch", "agent_status": "idle"}
+            {"workspace_id": "w2", "label": "issue-3-x", "agent_status": "working",
+             "worktree": {"checkout_path": "/p/widgets.worktrees/issue-3-x",
+                          "is_linked_worktree": true, "repo_root": "/p/widgets"}},
+            {"workspace_id": "w5", "label": "scratch", "agent_status": "idle"},
+            {"workspace_id": "w7", "label": "issue-4-y", "agent_status": "idle",
+             "worktree": {"checkout_path": "/p/widgets.worktrees/issue-4-y"}},
+            {"workspace_id": "w8", "label": "loose", "agent_status": "idle"}
         ]});
-        let panes = vec![Pane {
-            pane_id: "w2:p1".into(),
-            workspace_id: "w2".into(),
-            cwd: Some("/p/widgets.worktrees/issue-3-x".into()),
-            agent: Some("claude".into()),
-        }];
+        let panes = vec![
+            Pane {
+                pane_id: "w2:p1".into(),
+                workspace_id: "w2".into(),
+                cwd: Some("/".into()),
+                agent: Some("claude".into()),
+            },
+            Pane {
+                pane_id: "w8:p1".into(),
+                workspace_id: "w8".into(),
+                cwd: Some("/p/widgets.worktrees/issue-5-z".into()),
+                agent: None,
+            },
+        ];
         let agents = vec![Agent {
             pane_id: "w2:p1".into(),
             workspace_id: "w2".into(),
@@ -924,10 +951,16 @@ mod tests {
             title: Some("cargo test".into()),
         }];
         let rows = join_ps(&ws, &panes, &agents);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].worktree_id, "w2@/p/widgets.worktrees/issue-3-x");
         assert_eq!(rows[0].repo_id, "/p/widgets");
+        assert_eq!(rows[0].path, "/p/widgets.worktrees/issue-3-x");
         assert_eq!(rows[1].worktree_id, "w5");
+        assert_eq!(rows[2].worktree_id, "w7@/p/widgets.worktrees/issue-4-y");
+        assert_eq!(rows[2].linked_issue, Some(4));
+        assert_eq!(rows[2].live_terminals, 0);
+        assert_eq!(rows[3].worktree_id, "w8@/p/widgets.worktrees/issue-5-z");
+        assert_eq!(rows[3].linked_issue, Some(5));
         assert_eq!(
             split_id(&rows[0].worktree_id),
             ("w2", Some("/p/widgets.worktrees/issue-3-x"))
