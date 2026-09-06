@@ -8,6 +8,7 @@ Wants=network-online.target
 User=ssf
 Group=ssf
 Environment=HOME=/home/ssf
+Environment=SSF_VM_GUEST=1
 Environment=SSF_STATE_DIR=/var/lib/ssf/state
 Environment=HERDR_COMMAND=/usr/local/bin/herdr
 Environment=RUST_LOG=info

@@ -16,8 +16,8 @@ sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
 locale-gen
 echo 'LANG=en_US.UTF-8' > /etc/locale.conf
 ln -sf /usr/share/zoneinfo/UTC /etc/localtime
-# The unprivileged user everything runs as (Claude Code refuses its
-# permission-free mode as root).
+# The user everything runs as: not root, because Claude Code refuses its
+# permission-free mode as root, but root through sudo (see sudoers).
 id ssf >/dev/null 2>&1 || useradd -m -U -s /bin/bash ssf
 install -d -m 700 -o ssf -g ssf /home/ssf/.ssh /home/ssf/.config
 # Claude Code's onboarding (theme, login method) is marked done so a
@@ -25,14 +25,18 @@ install -d -m 700 -o ssf -g ssf /home/ssf/.ssh /home/ssf/.config
 # replaces this. Its bypass-permissions acceptance is answered by the driver.
 printf '{"hasCompletedOnboarding": true}\n' > /home/ssf/.claude.json
 chown ssf:ssf /home/ssf/.claude.json
-# Environment for ssh sessions and the units: ssf's state lives on the data disk.
+# Environment for ssh sessions and the units: ssf's state lives on the data
+# disk, and SSF_VM_GUEST tells ssf (the daemon's prompts, `ssf guide`, the
+# forwarded commands) that it is inside the guest.
 cat > /etc/environment <<'ENV'
 SSF_STATE_DIR=/var/lib/ssf/state
 HERDR_COMMAND=/usr/local/bin/herdr
+SSF_VM_GUEST=1
 ENV
 cat > /etc/profile.d/ssf.sh <<'PROF'
 export SSF_STATE_DIR=/var/lib/ssf/state
 export HERDR_COMMAND=/usr/local/bin/herdr
+export SSF_VM_GUEST=1
 PROF
 # sshd: keys only, the ssf user only.
 cat > /etc/ssh/sshd_config.d/ssf.conf <<'SSHD'

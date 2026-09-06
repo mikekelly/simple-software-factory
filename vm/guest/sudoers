@@ -1,10 +1,6 @@
-# The ssf user may restart its own services, read the journal and shut the
-# guest down, so `ssf vm sync`, `ssf vm logs` and `ssf vm stop` work over
-# ssh without a root login. Nothing else.
-Cmnd_Alias SSF_UNITS = /usr/bin/systemctl restart ssf, /usr/bin/systemctl restart ssf.service, \
-    /usr/bin/systemctl restart herdr-server, /usr/bin/systemctl restart herdr-server.service, \
-    /usr/bin/systemctl stop ssf, /usr/bin/systemctl stop ssf.service, \
-    /usr/bin/systemctl start ssf, /usr/bin/systemctl start ssf.service, \
-    /usr/bin/systemctl status *, /usr/bin/journalctl *, \
-    /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot
-ssf ALL=(root) NOPASSWD: SSF_UNITS
+# The ssf user is root through sudo, no password: the VM is the isolation
+# boundary, and the agent runs its own machine (installs packages, manages
+# the units, reboots). Sessions still run as ssf, not root, because Claude
+# Code refuses its permission-free mode as root. `ssf vm sync`, `ssf vm
+# logs` and `ssf vm stop` use the same rule over ssh.
+ssf ALL=(ALL) NOPASSWD: ALL

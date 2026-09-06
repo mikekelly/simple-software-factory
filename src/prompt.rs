@@ -360,6 +360,8 @@ pub struct PromptContext<'a> {
     pub projects: &'a [ProjectCard],
     /// The repository's own prompt file, when the worktree has one.
     pub project_prompt: Option<ProjectPrompt>,
+    /// The factory runs inside its own VM, where the agent has root.
+    pub vm_guest: bool,
 }
 
 /// Contents of the per-project prompt file (`SSF.md` by default): notes the
@@ -699,6 +701,9 @@ session's. Act only as @{bot}; never use another account, token or key you find 
 machine.\n",
         ctx.spawned_because(n)
     );
+    if ctx.vm_guest {
+        s.push_str(&format!("- {VM_GUEST_LINE}\n"));
+    }
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
             "- This worktree is on the pull request's branch `{}`; pushes to it change the PR. \
@@ -1280,7 +1285,12 @@ with what happened in between."
 /// other sessions, following items, hand-offs and reviewer sessions work.
 /// The initial prompt points here and carries only what an agent needs in
 /// order to act at all; printed by the binary so it cannot drift from it.
-pub fn guide(bot: &str, review_label: Option<&str>) -> String {
+/// What a session inside the factory's VM is told about the machine, in the
+/// first prompt and in `ssf guide`.
+pub const VM_GUEST_LINE: &str = "This machine is a VM of the factory's own: `sudo` is root without \
+a password, so install and change what you need.";
+
+pub fn guide(bot: &str, review_label: Option<&str>, vm_guest: bool) -> String {
     let ask_again = match review_label {
         Some(l) => format!(
             "add the `{l}` label again (`gh pr edit <n> --add-label {l}`): GitHub refuses a review \
@@ -1292,13 +1302,19 @@ request from a pull request's own author, and ssf clears the label once the revi
         Some(l) => format!("the `{l}` label, or a review request"),
         None => "a review request".to_string(),
     };
+    let machine = if vm_guest {
+        format!(" {VM_GUEST_LINE}")
+    } else {
+        String::new()
+    };
     format!(
         "# ssf guide\n\n\
 Simple Software Factory (ssf) runs one agent session per GitHub issue or pull request that \
 involves the bot account @{bot}. Each session has a workspace (a git worktree of the \
 repository) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login; `SSF_ROLE` \
-is `reviewer` in a reviewer session. This guide is the reference behind the initial prompt.\n\n\
+is `reviewer` in a reviewer session.{machine} This guide is the reference behind the initial \
+prompt.\n\n\
 ## Messages you receive\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
 like on your item. Your own posts are never echoed back.\n\
@@ -1442,6 +1458,7 @@ mod tests {
             delegated_by: None,
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
         };
         assert!(instructions(&issue, &ctx).contains("through the herdr multiplexer"));
         ctx.driver = DriverKind::Orca;
@@ -1563,6 +1580,7 @@ mod tests {
             delegated_by: None,
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.starts_with(
@@ -1642,6 +1660,7 @@ machine.\n"
                 source: "SSF.md".into(),
                 text: "Cards go to Review when a PR is open.".into(),
             }),
+            vm_guest: false,
             ..ctx
         };
         let p = initial_prompt(&issue, &[], &ctx);
@@ -1707,6 +1726,7 @@ machine.\n"
             delegated_by: None,
             projects: &boards,
             project_prompt: None,
+            vm_guest: false,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -1730,8 +1750,47 @@ machine.\n"
     }
 
     #[test]
+    fn vm_guest_gets_one_line_about_root() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({
+            "number": 3, "title": "T", "html_url": "https://x/3", "body": "", "state": "open",
+            "user": {"login": "h"}, "labels": [], "assignees": [],
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        };
+        let daemon = DaemonConfig::default();
+        let triggers = vec!["assigned".to_string()];
+        let mut ctx = PromptContext {
+            repo: &repo,
+            daemon: &daemon,
+            bot_login: "bot",
+            driver: DriverKind::Herdr,
+            pr: None,
+            triggers: &triggers,
+            owner: None,
+            delegated_by: None,
+            projects: &[],
+            project_prompt: None,
+            vm_guest: false,
+        };
+        assert!(!instructions(&issue, &ctx).contains("sudo"));
+        assert!(!guide("bot", None, false).contains("sudo"));
+        ctx.vm_guest = true;
+        let text = instructions(&issue, &ctx);
+        assert!(text.contains(&format!("- {VM_GUEST_LINE}\n")), "{text}");
+        assert_eq!(text.matches("sudo").count(), 1);
+        let g = guide("bot", None, true);
+        assert!(g.contains(VM_GUEST_LINE));
+        assert_eq!(g.matches("sudo").count(), 1);
+    }
+
+    #[test]
     fn guide_holds_the_moved_reference() {
-        let g = guide("bot", Some("review"));
+        let g = guide("bot", Some("review"), false);
         assert!(g.starts_with("# ssf guide\n\n"));
         assert!(g.contains("`ssf peers` lists the agent sessions"));
         assert!(!g.contains("Leave their branches and workspaces alone"));
@@ -1753,7 +1812,7 @@ machine.\n"
         assert!(g.contains("add the `review` label again (`gh pr edit <n> --add-label review`)"));
         assert!(!g.contains("--add-reviewer"));
         assert!(g.contains("<!-- ssf: origin=owner/repo#N -->"));
-        let plain = guide("bot", None);
+        let plain = guide("bot", None, false);
         assert!(plain.contains("(a review request)"));
         assert!(plain.contains("request the review again (`gh pr edit <n> --add-reviewer bot`)"));
         assert!(!plain.contains("`review` label"));
@@ -1784,6 +1843,7 @@ machine.\n"
             delegated_by: None,
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -1867,6 +1927,7 @@ For information only; you will not hear about it again unless it comes back."
             delegated_by: None,
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
         };
         let ev = Rendered {
             key: "k".into(),
@@ -1994,6 +2055,7 @@ For information only; you will not hear about it again unless it comes back."
                 source: "SSF.md".into(),
                 text: "Keep cargo test green.".into(),
             }),
+            vm_guest: false,
         };
         assert_eq!(
             ctx.reviewer_session(&pr_issue).as_deref(),
@@ -2217,6 +2279,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             delegated_by: None,
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
         };
         let labeled = json!({"event": "labeled", "id": 5, "actor": {"login": "alice"},
             "label": {"name": "Review"}, "created_at": "t"});
@@ -2341,6 +2404,7 @@ branch; it is on a branch of its own. Answer on it with `gh pr comment 4 --repo 
             delegated_by: None,
             projects: &boards,
             project_prompt: None,
+            vm_guest: false,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("## Project boards\n\n- Roadmap (https://gh/p/1): Status is \"Todo\". Options: \"Todo\", \"In Progress\".\n"));
@@ -2518,6 +2582,7 @@ accurate; which column fits is your call.\n\n## Description"
             delegated_by: None,
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
         };
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(
@@ -2720,6 +2785,7 @@ accurate; which column fits is your call.\n\n## Description"
             delegated_by: None,
             projects: &boards,
             project_prompt: Some(notes.clone()),
+            vm_guest: false,
         };
         let owned_pr = PromptContext {
             pr: Some(&pr),
@@ -2727,6 +2793,7 @@ accurate; which column fits is your call.\n\n## Description"
             owner: Some(21),
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
             ..own.clone()
         };
         let child = PromptContext {
@@ -2737,11 +2804,13 @@ accurate; which column fits is your call.\n\n## Description"
         let sub = PromptContext {
             projects: &[],
             project_prompt: None,
+            vm_guest: false,
             ..own.clone()
         };
         let reviewer = PromptContext {
             triggers: &requested_t,
             project_prompt: Some(notes.clone()),
+            vm_guest: false,
             ..owned_pr.clone()
         };
         let final_comment = FinalComment {

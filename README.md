@@ -558,8 +558,9 @@ it once with a provisioning init that installs `base`, `openssh`, `git`,
 `github-cli`, `nodejs`, `tmux`, the harness CLIs from `ssf agents` that
 npm or a release tarball provide (Claude Code, Codex, Gemini, Copilot,
 OpenCode, Pi, Grok, Crush; each is best effort and listed at the end of
-the build), an unprivileged `ssf` user (Claude Code refuses its
-permission-free mode as root), the host's own herdr binary and herdr's
+the build), an `ssf` user that is root through `sudo` (Claude Code refuses
+its permission-free mode as root, so nothing runs as root itself), the
+host's own herdr binary and herdr's
 agent integrations (its state-reporting hooks) for the agents present. The list
 lives in `vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed);
 edit it and run `ssf vm build --force` for a new image. The `ssf` binary
@@ -578,6 +579,17 @@ under the guest user's home; `src:dest` places a file elsewhere. Nothing
 else from the host home is visible in the guest: no `~/.ssh`, no
 `~/.gitconfig`, no other accounts. Commits are signed only if the bot key
 is enrolled.
+
+**What the agent can do there.** The `ssf` user has passwordless `sudo`
+for everything (`vm/guest/sudoers`), so an agent in the guest installs
+packages (`sudo pacman -S ...`), adds tools, edits the units, restarts
+services and reboots as it sees fit; the first prompt and `ssf guide` say
+so with one line inside the VM (`SSF_VM_GUEST=1` in the guest's
+environment is how ssf knows) and say nothing on bare metal, where the
+agent has whatever the human running ssf has. The VM is the isolation
+boundary: whatever the agent does to the guest stays on that VM's two
+disks, the host is untouched, and `ssf vm reset` (a fresh root disk) or
+`ssf vm destroy` puts it back.
 
 **Reaching it.** gvproxy publishes the guest's sshd on
 `127.0.0.1:<vm.ssh_port>`, keyed by a key made per VM. With `vm.enabled`
@@ -640,8 +652,9 @@ review request or the review label, opened by the bot or handed off by
 another session). A pull request adds one line saying how the worktree
 relates to it (on its branch, or unable to push to a fork's) and that
 `gh pr comment` and `gh pr review` are the way to answer; a handed-off item
-adds one saying which session follows it. The board rule sits with the
-boards. `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf
+adds one saying which session follows it; a factory inside a
+[microVM](#inside-a-microvm-firecracker) adds one saying the agent has root
+there through `sudo`. The board rule sits with the boards. `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf
 tell`, items a session opens and hand-offs, reviewer sessions, the byline,
 the `Closes #N` suggestion) from the same binary, so it cannot drift from
 the daemon. Follow-up messages carry the activity and at most one line

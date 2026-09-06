@@ -474,7 +474,7 @@ async fn main() -> Result<()> {
     // says so the way it says the service is stopped on bare metal (the
     // bar widget polls it); the others cannot do anything.
     if let Some(name) = forwarded_name(&cli.command)
-        && std::env::var_os(vm::GUEST_ENV).is_none()
+        && !vm::in_guest()
         && let Ok(cfg) = Config::load()
         && cfg.vm.enabled
     {
@@ -589,7 +589,10 @@ async fn main() -> Result<()> {
                 .or_else(|| state::State::load().ok().and_then(|s| s.bot_login))
                 .unwrap_or_else(|| "<bot>".into());
             let daemon = Config::load().map(|c| c.daemon).unwrap_or_default();
-            print!("{}", prompt::guide(&bot, daemon.review_label()));
+            print!(
+                "{}",
+                prompt::guide(&bot, daemon.review_label(), vm::in_guest())
+            );
             Ok(())
         }
         Command::Doctor => doctor().await,

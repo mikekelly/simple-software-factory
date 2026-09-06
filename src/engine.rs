@@ -1305,6 +1305,7 @@ are resumed on the first pass that finds it: {err:#}"
             delegated_by: st.delegated_by.as_deref(),
             projects: &st.projects,
             project_prompt,
+            vm_guest: crate::vm::in_guest(),
         }
     }
 
@@ -2848,7 +2849,8 @@ are resumed on the first pass that finds it: {err:#}"
 
     /// `ssf launch ...` wrapper that puts the bot credentials and issue
     /// identity into the harness's environment. The daemon's own config and
-    /// state locations are passed along so the wrapper reads the same files.
+    /// state locations are passed along so the wrapper reads the same files,
+    /// and the VM guest flag so `ssf guide` in the session knows where it is.
     fn launch_command(
         &self,
         repo: &RepoConfig,
@@ -2861,7 +2863,12 @@ are resumed on the first pass that finds it: {err:#}"
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| "ssf".to_string());
         let mut prefix = String::new();
-        for var in ["SSF_CONFIG_DIR", "SSF_STATE_DIR", "SSF_GITHUB_TOKEN"] {
+        for var in [
+            "SSF_CONFIG_DIR",
+            "SSF_STATE_DIR",
+            "SSF_GITHUB_TOKEN",
+            crate::vm::GUEST_ENV,
+        ] {
             if let Ok(v) = std::env::var(var) {
                 prefix.push_str(&format!("{var}={} ", shell_quote(&v)));
             }
