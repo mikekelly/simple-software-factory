@@ -28,6 +28,25 @@
 # tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
 
 
+# The whole factory (daemon, herdr, sessions) inside a Firecracker microVM
+# instead of on this machine; see `ssf vm --help` and the README. With
+# `enabled = true`, `ssf run` starts and watches the VM, and `ssf status`,
+# `tell`, `peers`, `sub`, `release`, `purge` and `doctor` run inside it.
+[vm]
+# enabled = false
+# name = "default"                             # disks live in <dir>/<name>/
+# dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs
+# vcpus = 2
+# mem_mib = 4096
+# data_gib = 20                                # persistent data disk: state, clones, worktrees (sparse)
+# root_gib = 8                                 # size of the root image `ssf vm build` makes
+# ssh_port = 2222                              # the guest's sshd on 127.0.0.1
+# files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start (harness logins); `src:dest` to place them
+# firecracker = "..."                          # binaries and images, when not the downloaded ones under `dir`
+# gvproxy = "..."
+# kernel = "..."
+# rootfs = "..."
+
 [daemon]
 # poll_interval_secs = 10
 # include_own_events = false                   # deliver the bot's own commits/cross-references and each session's posts back to it

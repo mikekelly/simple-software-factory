@@ -23,6 +23,7 @@ mod shim;
 mod state;
 mod status;
 mod ui;
+mod vm;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -190,6 +191,13 @@ enum Command {
         #[command(subcommand)]
         command: UiCommand,
     },
+    /// Run the whole factory (daemon, herdr, sessions) inside a Firecracker
+    /// microVM instead of on this machine: build the image, start, stop
+    /// and reach the guest.
+    Vm {
+        #[command(subcommand)]
+        command: VmCommand,
+    },
     /// Run a command (normally an agent) with the bot's GitHub credentials in
     /// its environment: GH_TOKEN, GITHUB_TOKEN, a git credential helper, and
     /// SSF_REPO / SSF_ISSUE / SSF_ISSUE_URL for the issue being worked.
@@ -213,6 +221,66 @@ enum Command {
     GitCredential {
         /// get | store | erase
         op: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum VmCommand {
+    /// Download Firecracker, gvproxy and a guest kernel, make the root
+    /// image from the Arch bootstrap tarball and provision it (git, gh,
+    /// herdr, the harness CLIs). No root needed.
+    Build {
+        /// Make a new image even if one exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Boot the VM (making its disks on first use) and wait for its daemon.
+    Start,
+    /// Shut the VM down cleanly.
+    Stop,
+    /// Stop, then start (picks up a new ssf binary and `[vm] files`).
+    Restart,
+    /// Whether the VM runs and its daemon answers.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Attach to herdr's session in the guest, in this terminal.
+    Attach,
+    /// A shell in the guest, or run a command there.
+    Ssh {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        command: Vec<String>,
+    },
+    /// Run an `ssf` command inside the guest (`ssf vm run -- status --json`).
+    Run {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
+        args: Vec<String>,
+    },
+    /// Push this machine's config and token into the running guest and
+    /// restart its daemon.
+    Sync,
+    /// The guest daemon's journal.
+    Logs {
+        #[arg(long, short = 'f')]
+        follow: bool,
+        #[arg(long, short = 'n', default_value_t = 200)]
+        lines: u32,
+    },
+    /// The guest's serial console log (kernel and systemd messages).
+    Console {
+        #[arg(long, short = 'f')]
+        follow: bool,
+    },
+    /// An `~/.ssh/config` entry for the guest (`herdr --remote ssf-<name>`).
+    SshConfig,
+    /// Remake the root disk from the image at the next start; state,
+    /// clones and worktrees on the data disk stay.
+    Reset,
+    /// Remove the VM and all its disks.
+    Destroy {
+        #[arg(long, short = 'y')]
+        yes: bool,
     },
 }
 
@@ -401,6 +469,48 @@ async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .ok();
+    // With the factory in a VM, the commands that talk to the daemon run
+    // inside the guest, where the daemon is. With the VM down, `status`
+    // says so the way it says the service is stopped on bare metal (the
+    // bar widget polls it); the others cannot do anything.
+    if let Some(name) = forwarded_name(&cli.command)
+        && std::env::var_os(vm::GUEST_ENV).is_none()
+        && let Ok(cfg) = Config::load()
+        && cfg.vm.enabled
+    {
+        let vm = vm::Vm::new(&cfg);
+        if !vm.running() {
+            match cli.command {
+                Command::Status { json: true } => {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "vm": "stopped", "service_active": false,
+                            "service_enabled": ui::service_enabled(),
+                            "sessions": [], "repos": [],
+                        })
+                    );
+                    return Ok(());
+                }
+                Command::Status { json: false } => {
+                    println!(
+                        "vm:      {} is not running (`ssf vm start`, or `ssf ui service enable`)",
+                        cfg.vm.name
+                    );
+                    return Ok(());
+                }
+                _ => bail!(
+                    "the factory runs in VM {}, which is not running; `ssf vm start` first",
+                    cfg.vm.name
+                ),
+            }
+        }
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let st = vm
+            .exec_ssf(&args)
+            .with_context(|| format!("running `ssf {name}` in the VM"))?;
+        std::process::exit(st.code().unwrap_or(1));
+    }
 
     match cli.command {
         Command::Auth { command } => auth(command).await,
@@ -483,6 +593,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Command::Doctor => doctor().await,
+        Command::Vm { command } => vm_cmd(command).await,
         Command::Ui { command } => ui_cmd(command),
         Command::Launch {
             repo,
@@ -1367,8 +1478,127 @@ fn parse_toml_scalar(value: &str) -> toml::Value {
     toml::Value::String(value.to_string())
 }
 
+/// The name of a command that runs in the guest when the factory is in a VM.
+fn forwarded_name(cmd: &Command) -> Option<&'static str> {
+    let name = match cmd {
+        Command::Status { .. } => "status",
+        Command::Peers { .. } => "peers",
+        Command::Sub { .. } => "sub",
+        Command::Unsub { .. } => "unsub",
+        Command::Subs { .. } => "subs",
+        Command::Tell { .. } => "tell",
+        Command::Release { .. } => "release",
+        Command::Purge { .. } => "purge",
+        Command::Doctor => "doctor",
+        Command::Run { once: true } => "run",
+        _ => return None,
+    };
+    vm::forwards(name).then_some(name)
+}
+
+async fn vm_cmd(command: VmCommand) -> Result<()> {
+    let cfg = Config::load()?;
+    let vm = vm::Vm::new(&cfg);
+    match command {
+        VmCommand::Build { force } => vm.build(force).await,
+        VmCommand::Start => {
+            let orca = vm::orca_repos(&cfg);
+            if !orca.is_empty() {
+                eprintln!(
+                    "note: {} run in herdr inside the VM (Orca needs a desktop)",
+                    orca.join(", ")
+                );
+            }
+            vm.start(&cfg).await
+        }
+        VmCommand::Stop => vm.stop().await,
+        VmCommand::Restart => {
+            vm.stop().await?;
+            vm.start(&cfg).await
+        }
+        VmCommand::Status { json } => {
+            let st = vm.status().await;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&st)?);
+            } else {
+                println!(
+                    "vm:       {} ({}){}",
+                    st.name,
+                    st.dir,
+                    if st.enabled {
+                        ""
+                    } else {
+                        "  [vm] enabled = false"
+                    }
+                );
+                println!(
+                    "image:    {}",
+                    if st.image {
+                        "built"
+                    } else {
+                        "missing (ssf vm build)"
+                    }
+                );
+                println!(
+                    "state:    {}",
+                    match (st.running, st.firecracker_pid) {
+                        (true, Some(p)) => format!("running (firecracker pid {p})"),
+                        _ => "stopped".to_string(),
+                    }
+                );
+                println!(
+                    "ssh:      {}",
+                    if st.ssh {
+                        format!("127.0.0.1:{} answers", st.ssh_port)
+                    } else {
+                        "not reachable".to_string()
+                    }
+                );
+                println!("daemon:   {}", st.daemon.as_deref().unwrap_or("unknown"));
+            }
+            Ok(())
+        }
+        VmCommand::Attach => exit_with(vm.attach()?),
+        VmCommand::Ssh { command } => exit_with(vm.shell(&command)?),
+        VmCommand::Run { args } => exit_with(vm.exec_ssf(&args)?),
+        VmCommand::Sync => vm.sync(&cfg),
+        VmCommand::Logs { follow, lines } => exit_with(vm.logs(follow, lines)?),
+        VmCommand::Console { follow } => {
+            let log = vm.console_log();
+            let mut cmd = std::process::Command::new("tail");
+            cmd.arg("-n").arg("200");
+            if follow {
+                cmd.arg("-f");
+            }
+            exit_with(cmd.arg(&log).status()?)
+        }
+        VmCommand::SshConfig => {
+            print!("{}", vm.ssh_config());
+            Ok(())
+        }
+        VmCommand::Reset => vm.reset().await,
+        VmCommand::Destroy { yes } => {
+            if !yes {
+                bail!(
+                    "this removes {} and everything in it; pass --yes",
+                    vm.dir.display()
+                );
+            }
+            vm.destroy().await
+        }
+    }
+}
+
+fn exit_with(st: std::process::ExitStatus) -> Result<()> {
+    std::process::exit(st.code().unwrap_or(1));
+}
+
 async fn run(once: bool) -> Result<()> {
     let cfg = Config::load()?;
+    if cfg.vm.enabled {
+        // The factory lives in the VM: start it and stay with it.
+        return vm::Vm::new(&cfg).supervise(&cfg).await;
+    }
     if cfg.repos.is_empty() && once {
         bail!("no repositories configured; run `ssf repo add owner/name --harness claude` first");
     }

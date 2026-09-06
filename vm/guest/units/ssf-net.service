@@ -1,0 +1,13 @@
+[Unit]
+Description=The tap, address, route and DNS gvforwarder uses
+DefaultDependencies=no
+After=sysinit.target
+Before=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/ssf/net-up.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

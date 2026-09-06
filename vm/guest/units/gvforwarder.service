@@ -1,0 +1,15 @@
+[Unit]
+Description=Guest side of gvisor-tap-vsock (network over vsock to gvproxy on the host)
+DefaultDependencies=no
+After=ssf-net.service
+Requires=ssf-net.service
+Before=network-online.target sshd.service ssf.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/gvforwarder -url vsock://2:1024/connect -iface tap0 -mtu 1500 -preexisting
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

@@ -14,6 +14,11 @@ Type=simple
 # Install the bar widget and menu entries on first start; harmless when done.
 ExecStartPre=-/usr/bin/ssf ui install --quiet
 ExecStart=/usr/bin/ssf run
+# With `[vm] enabled`, `ssf run` starts a Firecracker VM in a session of its
+# own and shuts it down cleanly on SIGTERM; only the main process gets the
+# signal, the VM is told by ssf.
+KillMode=mixed
+TimeoutStopSec=90
 Restart=on-failure
 RestartSec=15
 Environment=RUST_LOG=info

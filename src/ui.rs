@@ -371,8 +371,12 @@ pub fn set_service_enabled(enabled: bool) -> Result<()> {
 }
 
 pub fn service_active() -> bool {
-    Command::new("systemctl")
-        .args(["--user", "is-active", "--quiet", SERVICE])
+    // Inside the VM the daemon is a system unit of the guest.
+    let mut cmd = Command::new("systemctl");
+    if std::env::var_os(crate::vm::GUEST_ENV).is_none() {
+        cmd.arg("--user");
+    }
+    cmd.args(["is-active", "--quiet", SERVICE])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

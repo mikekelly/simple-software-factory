@@ -71,6 +71,9 @@ pub struct Config {
     pub herdr: HerdrConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    /// Running the whole factory inside a Firecracker microVM (see `ssf vm`).
+    #[serde(default)]
+    pub vm: VmConfig,
     #[serde(default, rename = "repo")]
     pub repos: Vec<RepoConfig>,
 }
@@ -218,6 +221,99 @@ fn default_ssf_projects_dir() -> String {
 
 fn default_tui_timeout() -> u64 {
     90_000
+}
+
+/// `[vm]`: the daemon, herdr and the sessions inside a Firecracker microVM
+/// instead of on this machine. The host keeps only what builds, starts,
+/// stops and reaches the guest (`ssf vm ...`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VmConfig {
+    /// Run the factory in the VM: `ssf run` on the host starts and watches
+    /// the guest instead of polling GitHub itself, and the daemon-facing
+    /// commands (`status`, `tell`, `peers`, ...) run inside the guest.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Name of the VM (its disks live in `<dir>/<name>/`).
+    #[serde(default = "default_vm_name")]
+    pub name: String,
+    /// Where the image, kernel, binaries and the VMs are kept.
+    #[serde(default = "default_vm_dir")]
+    pub dir: String,
+    /// The Firecracker binary; `<dir>/firecracker` (downloaded by `ssf vm build`) when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub firecracker: Option<String>,
+    /// The gvproxy binary (user-mode networking); `<dir>/gvproxy` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gvproxy: Option<String>,
+    /// The guest kernel; `<dir>/vmlinux` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<String>,
+    /// The root image `ssf vm build` makes; `<dir>/rootfs.ext4` when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rootfs: Option<String>,
+    #[serde(default = "default_vm_vcpus")]
+    pub vcpus: u32,
+    #[serde(default = "default_vm_mem_mib")]
+    pub mem_mib: u32,
+    /// Size of the persistent data disk (state, clones and worktrees), made sparse.
+    #[serde(default = "default_vm_data_gib")]
+    pub data_gib: u32,
+    /// Size of the root image `ssf vm build` makes.
+    #[serde(default = "default_vm_root_gib")]
+    pub root_gib: u32,
+    /// Port on 127.0.0.1 where the guest's sshd is reachable.
+    #[serde(default = "default_vm_ssh_port")]
+    pub ssh_port: u16,
+    /// Host files copied into the guest at every start, as `src` or
+    /// `src:dest` (`~` allowed; a relative `dest` is under the guest user's
+    /// home, and a bare `src` under the host home lands at the same place
+    /// there). This is how a harness login gets in, for example
+    /// `~/.claude/.credentials.json`.
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+impl Default for VmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            name: default_vm_name(),
+            dir: default_vm_dir(),
+            firecracker: None,
+            gvproxy: None,
+            kernel: None,
+            rootfs: None,
+            vcpus: default_vm_vcpus(),
+            mem_mib: default_vm_mem_mib(),
+            data_gib: default_vm_data_gib(),
+            root_gib: default_vm_root_gib(),
+            ssh_port: default_vm_ssh_port(),
+            files: Vec::new(),
+        }
+    }
+}
+
+fn default_vm_name() -> String {
+    "default".to_string()
+}
+fn default_vm_dir() -> String {
+    "~/.local/share/ssf/vm".to_string()
+}
+fn default_vm_vcpus() -> u32 {
+    2
+}
+fn default_vm_mem_mib() -> u32 {
+    4096
+}
+fn default_vm_data_gib() -> u32 {
+    20
+}
+fn default_vm_root_gib() -> u32 {
+    8
+}
+fn default_vm_ssh_port() -> u16 {
+    2222
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

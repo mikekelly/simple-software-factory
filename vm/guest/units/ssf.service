@@ -1,0 +1,21 @@
+[Unit]
+Description=Simple Software Factory daemon (inside the VM)
+After=ssf-seed.service ssf-net.service herdr-server.service
+Requires=ssf-seed.service
+Wants=network-online.target
+
+[Service]
+User=ssf
+Group=ssf
+Environment=HOME=/home/ssf
+Environment=SSF_STATE_DIR=/var/lib/ssf/state
+Environment=HERDR_COMMAND=/usr/local/bin/herdr
+Environment=RUST_LOG=info
+Environment=LANG=en_US.UTF-8
+WorkingDirectory=/home/ssf
+ExecStart=/usr/local/bin/ssf run
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
