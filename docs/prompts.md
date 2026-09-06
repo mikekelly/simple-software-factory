@@ -18,7 +18,12 @@ New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf 
 ```
 
 "Through the Orca multiplexer" reads "through the herdr multiplexer" under
-the herdr [driver](drivers.md). The reason is whatever brought the item to
+the herdr [driver](drivers.md). When `[git].credential` (or the
+repository's) names someone other than the bot, the fourth line reads
+"`gh` already acts as @bot and `git push` as @ann, and ... Act only
+through those; ..." (a `file:` token or a helper string is described
+rather than named); see [Committing as a
+person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot). The reason is whatever brought the item to
 ssf (assigned, mentioned, a review request or the review label, opened by
 the bot or handed off by another session). A pull request adds one line
 saying how the worktree relates to it (on its branch, or unable to push to

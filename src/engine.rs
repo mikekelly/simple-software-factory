@@ -1872,6 +1872,7 @@ are resumed on the first pass that finds it: {err:#}"
             projects: &st.projects,
             project_prompt,
             vm_guest: crate::vm::in_guest(),
+            pushes_as: self.cfg.git_identity(Some(repo)).credential.prompt_pusher(),
         }
     }
 
