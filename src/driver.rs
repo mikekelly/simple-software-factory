@@ -235,8 +235,12 @@ impl Driver {
     /// that was kept is (see `Engine::drop_foreign_binding`).
     pub fn owns_repo_id(&self, repo_id: &str) -> bool {
         match self {
+            // The stub's own id, or a real driver's shape for the kind the
+            // stub stands in for.
             #[cfg(test)]
-            Driver::Stub(_) => true,
+            Driver::Stub(_) => {
+                repo_id == "stub" || DriverKind::of_repo_id(repo_id) == Some(self.kind())
+            }
             _ => DriverKind::of_repo_id(repo_id) == Some(self.kind()),
         }
     }
@@ -293,8 +297,15 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.find_worktree_for_issue(repo_id, number).await,
             Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, number).await,
+            // The stub fails on a checkout it does not own, as the real
+            // drivers do on another driver's id.
             #[cfg(test)]
-            Driver::Stub(_) => Ok(None),
+            Driver::Stub(_) => {
+                if repo_id != "stub" {
+                    bail!("checkout {repo_id} is not a directory (a repo id from another driver?)");
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -1058,7 +1069,8 @@ mod tests {
         assert_eq!(DriverKind::of_repo_id("relative/path"), None);
         let stub = Driver::Stub(StubDriver::new(DriverKind::Herdr));
         assert!(stub.owns_repo_id("stub"));
-        assert!(stub.owns_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"));
+        assert!(stub.owns_repo_id("/home/me/ssf/projects/widgets"));
+        assert!(!stub.owns_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"));
     }
 
     #[test]
