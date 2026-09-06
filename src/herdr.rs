@@ -133,7 +133,7 @@ fn worktree_rows(v: &Value) -> impl Iterator<Item = &Value> {
         .flatten()
 }
 
-/// A workspace's checkout root and item number, from the cwd of its panes:
+/// A workspace's checkout root and item number, from its checkout path:
 /// ssf's worktrees live in `<root>.worktrees/<name>`.
 fn root_and_item(cwd: &str) -> (Option<String>, Option<(u64, bool)>) {
     let p = Path::new(cwd);
