@@ -167,6 +167,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     let at = fmt_when(&when(ev), &today);
     let head = |what: &str| format!("- {at} @{actor} {what}");
     let mut origin: Option<String> = None;
+    let mut assignee: Option<String> = None;
     let text = match kind.as_str() {
         "commented" => {
             let raw = value_str(ev, &["body"]).unwrap_or("");
@@ -186,6 +187,7 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         }
         "assigned" | "unassigned" => {
             let who = value_str(ev, &["assignee", "login"]).unwrap_or("someone");
+            assignee = Some(who.to_string());
             head(&format!("{kind} @{who}"))
         }
         "labeled" | "unlabeled" => {
@@ -343,11 +345,6 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
     };
     let label = matches!(kind.as_str(), "labeled" | "unlabeled")
         .then(|| value_str(ev, &["label", "name"]).unwrap_or("?").to_string());
-    let assignee = matches!(kind.as_str(), "assigned" | "unassigned").then(|| {
-        value_str(ev, &["assignee", "login"])
-            .unwrap_or("someone")
-            .to_string()
-    });
     Some(Rendered {
         key,
         text,
@@ -813,7 +810,7 @@ fn owned_tail(
     ctx: &PromptContext,
     asks_review: bool,
 ) -> Option<String> {
-    if ctx.owner.is_none() || !ctx.creator_owned(issue) {
+    if !ctx.creator_owned(issue) {
         return None;
     }
     let bot = ctx.bot_login;
@@ -1464,8 +1461,9 @@ delivers their activity (comments, reviews, review requests, assignments, closur
 instead of starting another session; `SSF_ISSUE` does not change. A pull request opened on \
 this workspace's branch is yours too, tag or no tag. An issue you opened that is later assigned \
 to @{bot} is still yours, and you are told so; nobody else is spawned for it. Referencing the \
-item in a pull request's body (`Closes #N`) links the two on GitHub, which then closes the issue when the pull request \
-is merged; the repository's own notes say how it wants pull requests.\n\n\
+item in a pull request's body (`Closes #N`) links the two on GitHub, which then closes the \
+issue when the pull request is merged; the repository's own notes say how it wants pull \
+requests.\n\n\
 To hand a piece of work to a separate agent instead, create the issue (or pull request) with \
 `--assignee {bot}` in the same `gh ... create` command: the tag then carries `mode=delegate` \
 and the item gets a session of its own. You are subscribed to it automatically, so its \
