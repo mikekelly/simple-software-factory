@@ -552,7 +552,8 @@ it once with a provisioning init that installs `base`, `openssh`, `git`,
 npm or a release tarball provide (Claude Code, Codex, Gemini, Copilot,
 OpenCode, Pi, Grok, Crush; each is best effort and listed at the end of
 the build), an unprivileged `ssf` user (Claude Code refuses its
-permission-free mode as root) and the host's own herdr binary. The list
+permission-free mode as root), the host's own herdr binary and herdr's
+agent integrations (its state-reporting hooks) for the agents present. The list
 lives in `vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed);
 edit it and run `ssf vm build --force` for a new image. The `ssf` binary
 is not in the image: every start takes the host's, so the guest always

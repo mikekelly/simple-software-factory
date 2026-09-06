@@ -86,8 +86,12 @@ if [ -n "$omp_url" ]; then
         *) install -m755 omp.dl /usr/local/bin/omp ;;
     esac) || echo "provision: omp install failed" >&2
 fi
-# herdr's agent integrations (hooks that report the agent's state to herdr),
-# for the ssf user, for every agent that is installed.
+# herdr's agent integrations (hooks that report the agent's state to herdr,
+# and for Claude Code the setting that skips its bypass-permissions warning),
+# for the ssf user, for every agent that is installed. herdr wants the
+# agent's config directory to exist first.
+install -d -o ssf -g ssf /home/ssf/.claude /home/ssf/.codex /home/ssf/.copilot \
+    /home/ssf/.pi/agent /home/ssf/.omp/agent /home/ssf/.config/opencode /home/ssf/.grok
 for a in claude codex copilot pi omp opencode grok; do
     if command -v "$a" >/dev/null 2>&1; then
         su ssf -c "/usr/local/bin/herdr integration install $a" || echo "provision: herdr integration $a failed" >&2
