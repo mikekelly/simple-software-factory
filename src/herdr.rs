@@ -611,6 +611,46 @@ impl Herdr {
         Ok(pane)
     }
 
+    /// The live agent pane a delivery would go to: `preferred` if it is
+    /// still one, else any in the workspace.
+    pub async fn live_handle(&self, id: &str, preferred: Option<&str>) -> Result<Option<String>> {
+        let (ws, _) = split_id(id);
+        let agents = self.agents().await?;
+        let live: Vec<&Agent> = agents.iter().filter(|a| a.workspace_id == ws).collect();
+        Ok(preferred
+            .and_then(|h| live.iter().find(|a| a.pane_id == h))
+            .or_else(|| live.first())
+            .map(|a| a.pane_id.clone()))
+    }
+
+    /// Quit the agent in a pane: Ctrl-C twice (which ends every harness at
+    /// a prompt or a login screen), and if herdr still sees an agent there
+    /// after a few seconds, close the pane; the workspace keeps its other
+    /// panes and `launch` opens a new tab when none is free.
+    pub async fn stop_agent(&self, id: &str, pane_id: &str) -> Result<()> {
+        let (ws, _) = split_id(id);
+        for _ in 0..2 {
+            let _ = self.run(&["pane", "send-keys", pane_id, "ctrl+c"]).await;
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+        let gone = |agents: &[Agent]| !agents.iter().any(|a| a.pane_id == pane_id);
+        for _ in 0..6 {
+            if gone(&self.agents().await?) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        warn!(pane_id, "agent did not quit on ctrl+c; closing the pane");
+        self.run(&["pane", "close", pane_id]).await?;
+        for _ in 0..6 {
+            if gone(&self.agents().await?) {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        bail!("an agent is still reported in pane {pane_id} of workspace {ws}")
+    }
+
     /// Give the agent in a pane a prompt. `agent prompt` pastes for us; if
     /// it refuses because the agent is at a question, the text is pasted
     /// raw like Orca does (the harness queues it).

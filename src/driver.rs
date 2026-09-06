@@ -54,11 +54,114 @@ pub fn trust_dialog(screen: &str) -> Option<TrustAnswer> {
     }
 }
 
+/// How many lines at the bottom of the screen a login prompt is looked
+/// for in: the harness's own status line, its answer to the last prompt
+/// and its login screen all sit there, while an agent quoting the same
+/// words in a file it is reading scrolls past above.
+const LOGIN_TAIL_LINES: usize = 15;
+
+/// If `screen` shows `harness` asking for a login (an expired session, a
+/// revoked token, or a fresh machine with no credential), what it says.
+/// A session whose screen shows this is blocked on auth, not idle:
+/// prompts pasted into it are lost, and nothing inside the session can
+/// fix it. The phrases come from the harnesses themselves (Claude Code
+/// 2.1.258, Codex 0.152.0, Gemini 0.57.0, Grok 1.0, Pi 0.84, Oh My Pi,
+/// OpenCode 1.18, Crush 0.92, seen live with an empty config home) and
+/// from Claude Code's own list of errors a person has to fix.
+///
+/// Two things keep an agent's own screen from tripping this: only the
+/// bottom of the screen counts, and a line inside echoed `[ssf]` text (a
+/// pasted prompt, or activity delivered from the item, where a person may
+/// well have quoted the phrase) is skipped: from a line carrying `[ssf]`
+/// through the bullet and quote lines (`- `, `> `) that follow it. Every
+/// string ssf itself writes into a terminal or that agents read stays
+/// free of these phrases (`prompt::login_back_prompt`, the blocked and
+/// resumed comments, `BlockedView::describe`, `SessionBlocked`), which
+/// `engine::tests::ssf_texts_never_look_like_a_login_prompt` pins.
+pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
+    let tail: Vec<&str> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = tail.len().saturating_sub(LOGIN_TAIL_LINES);
+    let mut in_echo = false;
+    let candidates: Vec<&str> = tail[start..]
+        .iter()
+        .copied()
+        .filter(|l| {
+            if l.contains("[ssf]") {
+                in_echo = true;
+                return false;
+            }
+            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
+                return false;
+            }
+            in_echo = false;
+            true
+        })
+        .collect();
+    let text = candidates.join("\n").to_lowercase();
+    // What every harness says one way or another.
+    let common: &[&str] = &["not logged in"];
+    let own: &[&str] = match harness {
+        "claude" => &[
+            "login expired",
+            "run /login",
+            "select login method",
+            "oauth token expired",
+            "oauth token revoked",
+            "run claude auth login",
+            "invalid api key",
+        ],
+        "codex" => &[
+            "sign in with chatgpt",
+            "re-run codex login",
+            "run codex login",
+            "provide your own api key",
+        ],
+        "gemini" => &[
+            "how would you like to authenticate",
+            "no authentication method selected",
+            "sign in with google",
+        ],
+        "copilot" => &["run /login"],
+        "grok" => &[
+            "approve in your browser to finish signing in",
+            "waiting for approval",
+        ],
+        "pi" | "omp" => &[
+            "use /login to log into a provider",
+            "no models available",
+            "select provider to login",
+            "set up your providers",
+        ],
+        "opencode" => &["run /connect to add an ai provider"],
+        "crush" => &["let's choose a provider and model"],
+        _ => &[],
+    };
+    let hit = common
+        .iter()
+        .chain(own.iter())
+        .find(|p| text.contains(**p))?;
+    // The line it was found on, as the harness printed it.
+    let line = candidates
+        .iter()
+        .find(|l| l.to_lowercase().contains(hit))
+        .map(|l| l.trim_matches(|c: char| c == '│' || c == '┃' || c.is_whitespace()))
+        .unwrap_or(hit);
+    Some(line.chars().take(120).collect())
+}
+
 /// One configured driver.
 #[derive(Clone)]
 pub enum Driver {
     Orca(Orca),
     Herdr(Herdr),
+    /// For tests: a driver whose workspaces, agents and screens are set by
+    /// the test (see `StubDriver`).
+    #[cfg(test)]
+    Stub(StubDriver),
 }
 
 /// How a prompt is delivered when the agent has to be started again: the
@@ -118,6 +221,8 @@ impl Driver {
         match self {
             Driver::Orca(_) => DriverKind::Orca,
             Driver::Herdr(_) => DriverKind::Herdr,
+            #[cfg(test)]
+            Driver::Stub(d) => d.kind,
         }
     }
 
@@ -130,6 +235,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.command(),
             Driver::Herdr(d) => d.command(),
+            #[cfg(test)]
+            Driver::Stub(_) => "stub",
         }
     }
 
@@ -138,6 +245,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.status().await.map(|_| ()),
             Driver::Herdr(d) => d.status().await,
+            #[cfg(test)]
+            Driver::Stub(_) => Ok(()),
         }
     }
 
@@ -159,6 +268,8 @@ impl Driver {
             Driver::Herdr(_) => {
                 ensure_local_checkout(repo, clone_url, existing_path, projects_dir).await
             }
+            #[cfg(test)]
+            Driver::Stub(d) => d.ensure_project(),
         }
     }
 
@@ -171,6 +282,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.find_worktree_for_issue(repo_id, number).await,
             Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, number).await,
+            #[cfg(test)]
+            Driver::Stub(_) => Ok(None),
         }
     }
 
@@ -190,6 +303,8 @@ impl Driver {
                     .await
             }
             Driver::Herdr(d) => d.create_worktree(repo_id, name, comment, base_branch).await,
+            #[cfg(test)]
+            Driver::Stub(d) => d.create_worktree(name),
         }
     }
 
@@ -198,6 +313,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.repo_path(repo_id).await,
             Driver::Herdr(_) => Ok(repo_root(repo_id).to_string()),
+            #[cfg(test)]
+            Driver::Stub(_) => Ok("/stub".into()),
         }
     }
 
@@ -231,6 +348,8 @@ impl Driver {
                 d.send_prompt(&handle, text).await?;
                 Ok(handle)
             }
+            #[cfg(test)]
+            Driver::Stub(d) => d.start(worktree_id, text),
         }
     }
 
@@ -239,6 +358,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.worktree_exists(worktree_id).await,
             Driver::Herdr(d) => d.worktree_exists(worktree_id).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.worktree_exists(worktree_id)),
         }
     }
 
@@ -247,6 +368,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.ps().await,
             Driver::Herdr(d) => d.ps().await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.ps()),
         }
     }
 
@@ -255,6 +378,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.agent_busy(worktree_id).await,
             Driver::Herdr(d) => d.agent_busy(worktree_id).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.busy(worktree_id)),
         }
     }
 
@@ -263,6 +388,11 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.remove_worktree(worktree_id).await,
             Driver::Herdr(d) => d.remove_worktree(worktree_id).await,
+            #[cfg(test)]
+            Driver::Stub(d) => {
+                d.remove_worktree(worktree_id);
+                Ok(())
+            }
         }
     }
 
@@ -271,6 +401,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.set_comment(worktree_id, comment).await,
             Driver::Herdr(d) => d.set_comment(worktree_id, comment).await,
+            #[cfg(test)]
+            Driver::Stub(_) => Ok(()),
         }
     }
 
@@ -279,6 +411,8 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.set_status(worktree_id, status).await,
             Driver::Herdr(d) => d.set_status(worktree_id, status).await,
+            #[cfg(test)]
+            Driver::Stub(_) => Ok(()),
         }
     }
 
@@ -288,6 +422,48 @@ impl Driver {
         match self {
             Driver::Orca(d) => d.has_live_agent(worktree_id).await,
             Driver::Herdr(d) => d.has_live_agent(worktree_id).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.live_handle(worktree_id).is_some()),
+        }
+    }
+
+    /// The terminal (pane) of the live agent in the workspace, preferring
+    /// `preferred` when it is still one; `None` when [`Driver::deliver`]
+    /// would have to start the harness again.
+    pub async fn live_handle(
+        &self,
+        worktree_id: &str,
+        preferred: Option<&str>,
+    ) -> Result<Option<String>> {
+        match self {
+            Driver::Orca(d) => d.live_handle(worktree_id, preferred).await,
+            Driver::Herdr(d) => d.live_handle(worktree_id, preferred).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.live_handle(worktree_id)),
+        }
+    }
+
+    /// The rendered screen of a terminal, as lines.
+    pub async fn screen(&self, handle: &str) -> Result<Vec<String>> {
+        match self {
+            Driver::Orca(d) => d.screen(handle).await,
+            Driver::Herdr(d) => d.screen(handle).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.screen(handle)),
+        }
+    }
+
+    /// Quit the agent in a terminal (a harness stuck on a login prompt,
+    /// say) so the next delivery starts it again. The workspace stays.
+    pub async fn stop_agent(&self, worktree_id: &str, handle: &str) -> Result<()> {
+        match self {
+            Driver::Orca(d) => d.stop_agent(worktree_id, handle).await,
+            Driver::Herdr(d) => d.stop_agent(worktree_id, handle).await,
+            #[cfg(test)]
+            Driver::Stub(d) => {
+                d.stop_agent(worktree_id, handle);
+                Ok(())
+            }
         }
     }
 
@@ -318,6 +494,8 @@ impl Driver {
                 d.deliver(worktree_id, preferred_handle, &relaunch, text)
                     .await
             }
+            #[cfg(test)]
+            Driver::Stub(d) => d.deliver(worktree_id, &relaunch, text),
         }
     }
 }
@@ -359,6 +537,195 @@ impl Drivers {
     pub fn iter(&self) -> impl Iterator<Item = &Driver> {
         self.list.iter()
     }
+}
+
+// ---- a driver for tests -------------------------------------------------
+
+/// A driver for the engine tests: no process behind it, just what the
+/// test says exists. Workspaces are created on demand, an agent is "live"
+/// once started or delivered to, every screen is what the test set for
+/// that handle (or the screen a relaunched harness shows), and every
+/// operation is logged so a test can assert what the engine did.
+#[cfg(test)]
+#[derive(Clone, Default)]
+pub struct StubDriver {
+    pub kind: DriverKind,
+    inner: std::sync::Arc<std::sync::Mutex<StubState>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub struct StubState {
+    pub worktrees: std::collections::BTreeSet<String>,
+    /// worktree id -> handle of its live agent.
+    pub live: std::collections::BTreeMap<String, String>,
+    pub working: std::collections::BTreeSet<String>,
+    pub screens: std::collections::BTreeMap<String, Vec<String>>,
+    /// The screen a harness started again shows (a login prompt, say).
+    pub relaunch_screen: Vec<String>,
+    /// `stop:<handle>`, `deliver:<worktree>:<first line>`, `relaunch:<worktree>:<resumed>`.
+    pub log: Vec<String>,
+    handles: u32,
+}
+
+#[cfg(test)]
+impl StubDriver {
+    pub fn new(kind: DriverKind) -> Self {
+        Self {
+            kind,
+            inner: Default::default(),
+        }
+    }
+
+    pub fn with<T>(&self, f: impl FnOnce(&mut StubState) -> T) -> T {
+        f(&mut self.inner.lock().unwrap())
+    }
+
+    /// A workspace with a live, idle agent showing `screen`.
+    pub fn seed(&self, worktree_id: &str, handle: &str, screen: &[&str]) {
+        self.with(|s| {
+            s.worktrees.insert(worktree_id.into());
+            s.live.insert(worktree_id.into(), handle.into());
+            s.screens.insert(
+                handle.into(),
+                screen.iter().map(|l| l.to_string()).collect(),
+            );
+        });
+    }
+
+    pub fn log(&self) -> Vec<String> {
+        self.with(|s| std::mem::take(&mut s.log))
+    }
+
+    fn ensure_project(&self) -> Result<ProjectSetup> {
+        Ok(ProjectSetup {
+            repo_id: "stub".into(),
+            path: "/stub".into(),
+        })
+    }
+
+    fn create_worktree(&self, name: &str) -> Result<Worktree> {
+        let id = format!("stub::/stub.worktrees/{name}");
+        self.with(|s| s.worktrees.insert(id.clone()));
+        Ok(Worktree {
+            path: format!("/stub.worktrees/{name}"),
+            branch: Some(format!("refs/heads/{}", branch_for(name))),
+            id,
+        })
+    }
+
+    fn new_handle(s: &mut StubState, worktree_id: &str) -> String {
+        s.handles += 1;
+        let h = format!("t{}", s.handles);
+        s.live.insert(worktree_id.into(), h.clone());
+        let screen = s.relaunch_screen.clone();
+        s.screens.insert(h.clone(), screen);
+        h
+    }
+
+    fn start(&self, worktree_id: &str, text: &str) -> Result<String> {
+        self.with(|s| {
+            let h = Self::new_handle(s, worktree_id);
+            s.log
+                .push(format!("start:{worktree_id}:{}", first_line(text)));
+            Ok(h)
+        })
+    }
+
+    fn worktree_exists(&self, id: &str) -> bool {
+        self.with(|s| s.worktrees.contains(id))
+    }
+
+    fn ps(&self) -> Vec<WorkspaceInfo> {
+        self.with(|s| {
+            s.worktrees
+                .iter()
+                .map(|id| WorkspaceInfo {
+                    worktree_id: id.clone(),
+                    repo_id: "stub".into(),
+                    path: repo_root(id).to_string(),
+                    agents: s
+                        .live
+                        .get(id)
+                        .map(|_| crate::orca::AgentInfo {
+                            state: if s.working.contains(id) {
+                                "working".into()
+                            } else {
+                                "open".into()
+                            },
+                            ..Default::default()
+                        })
+                        .into_iter()
+                        .collect(),
+                    ..Default::default()
+                })
+                .collect()
+        })
+    }
+
+    fn busy(&self, id: &str) -> bool {
+        self.with(|s| s.working.contains(id))
+    }
+
+    fn remove_worktree(&self, id: &str) {
+        self.with(|s| {
+            s.worktrees.remove(id);
+            s.live.remove(id);
+            s.log.push(format!("remove:{id}"));
+        });
+    }
+
+    fn live_handle(&self, id: &str) -> Option<String> {
+        self.with(|s| s.live.get(id).cloned())
+    }
+
+    fn screen(&self, handle: &str) -> Vec<String> {
+        self.with(|s| s.screens.get(handle).cloned().unwrap_or_default())
+    }
+
+    fn stop_agent(&self, worktree_id: &str, handle: &str) {
+        self.with(|s| {
+            s.live.remove(worktree_id);
+            s.working.remove(worktree_id);
+            s.log.push(format!("stop:{handle}"));
+        });
+    }
+
+    fn deliver(&self, worktree_id: &str, relaunch: &Relaunch<'_>, text: &str) -> Result<Delivery> {
+        self.with(|s| {
+            if !s.worktrees.contains(worktree_id) {
+                bail!("{worktree_id}: no such workspace");
+            }
+            if let Some(h) = s.live.get(worktree_id).cloned() {
+                s.log
+                    .push(format!("deliver:{worktree_id}:{}", first_line(text)));
+                return Ok(Delivery {
+                    handle: h,
+                    relaunched: false,
+                    resumed: false,
+                });
+            }
+            let resumed = relaunch.resume_command.is_some();
+            let h = Self::new_handle(s, worktree_id);
+            s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
+            let body = match relaunch.text {
+                Some(full) if !resumed => full,
+                _ => text,
+            };
+            s.log
+                .push(format!("deliver:{worktree_id}:{}", first_line(body)));
+            Ok(Delivery {
+                handle: h,
+                relaunched: true,
+                resumed,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+fn first_line(text: &str) -> String {
+    text.lines().next().unwrap_or("").chars().take(60).collect()
 }
 
 // ---- the git side shared by the drivers that keep checkouts themselves ----
@@ -705,6 +1072,103 @@ contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2.
             trust_dialog("Folder /tmp/wt has been added to trusted folders."),
             None
         );
+    }
+
+    #[test]
+    fn login_prompts_of_each_harness_are_recognised() {
+        // Claude Code answering a prompt after its token was revoked
+        // (seen live on 2026-09-06, issue #81), and its login screen.
+        let expired = "❯ [ssf] New activity on #81:\n\n  Login expired · Please run /login\n\n\
+❯ \n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+        assert_eq!(
+            login_dialog("claude", expired).as_deref(),
+            Some("Login expired · Please run /login")
+        );
+        let screen = "Welcome to Claude Code v2.1.258\n\
+ Claude Code can be used with your Claude subscription or billed based on API usage through your Console account.\n\
+ Select login method:\n ❯ 1. Claude account with subscription · Pro, Max, Team, or Enterprise\n\
+   2. Anthropic Console account · API usage billing\n   3. 3rd-party platform · Amazon Bedrock, Microsoft Foundry, or Vertex AI";
+        assert!(login_dialog("claude", screen).is_some());
+        assert!(
+            login_dialog(
+                "claude",
+                "API Error: 401 Invalid API key · Please run /login"
+            )
+            .is_some()
+        );
+        assert!(
+            login_dialog(
+                "claude",
+                "Your session has expired. Please run /login to sign in again."
+            )
+            .is_some()
+        );
+        // The same words far up the screen, quoted by a working agent
+        // reading this test, do not count: only the bottom of the screen.
+        let mut quoted = vec![
+            "⏺ Read(src/driver.rs)".to_string(),
+            "  Login expired · Please run /login".to_string(),
+        ];
+        quoted.extend((0..20).map(|i| format!("  line {i} of the file")));
+        quoted.push("❯ ".into());
+        assert_eq!(login_dialog("claude", &quoted.join("\n")), None);
+        // A ready prompt, the trust dialog, or an agent at work.
+        assert_eq!(login_dialog("claude", "❯ \n⏵⏵ bypass permissions on"), None);
+        assert_eq!(
+            login_dialog("claude", "❯ No, exit\n  Yes, I trust this folder"),
+            None
+        );
+        assert_eq!(
+            login_dialog(
+                "claude",
+                "⏺ Running cargo test…\n  Logging in progress in src/login.rs"
+            ),
+            None
+        );
+        // Codex's login screen (0.152.0, empty home).
+        let codex = "  Welcome to Codex, OpenAI's command-line coding agent\n\
+  Sign in with ChatGPT to use Codex as part of your paid plan\n  or connect an API key for usage-based billing\n\
+> 1. Sign in with ChatGPT\n     Usage included with Plus, Pro, Business, and Enterprise plans\n\
+  2. Sign in with Device Code\n  3. Provide your own API key\n  Press enter to continue";
+        assert!(login_dialog("codex", codex).is_some());
+        assert_eq!(
+            login_dialog("codex", "› Working on the tests\n  Auth: OAuth"),
+            None
+        );
+        // Gemini (0.57.0), Grok (device login), Pi (0.84.4), Oh My Pi,
+        // OpenCode (1.18.25) and Crush (0.92.0) with an empty home.
+        let gemini = "│ ? Get started\n│   How would you like to authenticate for this project?\n\
+│   ● 1. Sign in with Google\n│     2. Use Gemini API Key\n│     3. Vertex AI\n│   No authentication method selected.";
+        assert_eq!(
+            login_dialog("gemini", gemini).as_deref(),
+            Some("How would you like to authenticate for this project?")
+        );
+        let grok = "Approve in your browser to finish signing in.\n854F-EX33\nWaiting for approval...\nctrl+q  quit";
+        assert!(login_dialog("grok", grok).is_some());
+        let pi = " Warning: No models available. Use /login to log into a provider via OAuth or API key. See:\n\
+   /home/x/pi/docs/providers.md\n0.0%/0 (auto)     unknown";
+        assert!(login_dialog("pi", pi).is_some());
+        let omp = "Setup step 1 of 5\nSet up your providers\n╭─ Select provider to login ───╮\n│ ❯ ChatGPT Plus/Pro (Codex Subscription) │";
+        assert!(login_dialog("omp", omp).is_some());
+        let opencode = "┃  Ask anything... \"Fix a TODO in the codebase\"\n┃  Build auto · Big Pickle OpenCode Zen\n\
+● Tip Run /connect to add an AI provider and start coding";
+        assert!(login_dialog("opencode", opencode).is_some());
+        let crush =
+            " To start, let's choose a provider and model.\n > Find your fave\n Charm Hyper";
+        assert!(login_dialog("crush", crush).is_some());
+        // A harness ssf knows nothing about still gets the common phrases.
+        assert!(login_dialog("other", "Error: not logged in").is_some());
+        assert_eq!(login_dialog("other", "all good"), None);
+        // Echoed `[ssf]` text does not count: a person quoting the phrase
+        // in a comment, delivered as activity and still on the screen.
+        let quoted = "❯ [ssf] New activity on #5 \"Fix it\" (https://gh/5):\n\n\
+- 15:20Z @mike commented (https://gh/c1):\n  > the terminal says Login expired · Please run /login, is that you?\n\
+- 15:21Z @mike assigned @bot\n\n⏺ Yes, and I am fine now.\n\n❯ ";
+        assert_eq!(login_dialog("claude", quoted), None);
+        // But the harness's own answer right after the echo still does.
+        assert!(login_dialog("claude", expired).is_some());
+        let after_echo = "❯ [ssf] New activity on #5:\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
+        assert!(login_dialog("claude", after_echo).is_some());
     }
 
     #[test]

@@ -1082,6 +1082,68 @@ was interrupted and what remains."
     s
 }
 
+pub struct LoginBack<'a> {
+    /// The harness's display name (`Claude Code`).
+    pub harness: &'a str,
+    /// When the login prompt was first seen.
+    pub since: &'a str,
+    pub number: u64,
+    pub title: &'a str,
+    pub url: &'a str,
+    pub reviewer: bool,
+}
+
+/// The one message a session gets after its harness sat at a login prompt
+/// (an expired or revoked login) and has been started again now that the
+/// login is back. A resumed harness has its memory; a fresh one gets the
+/// item's story ahead of this. Worded, like every text ssf puts on a
+/// screen, without the phrases `driver::login_dialog` looks for.
+pub fn login_back_prompt(it: &LoginBack) -> String {
+    let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
+    let what = if it.reviewer {
+        format!("the reviewer session for pull request {item}")
+    } else {
+        format!("the session for {item}")
+    };
+    format!(
+        "[ssf] Your {} sign-in lapsed at {} and is back: this terminal was started again with \
+your conversation resumed. This is {what}.\n\nNothing you sent while it was lapsed reached \
+anyone, and no `[ssf]` message reached you; what happened on the item meanwhile follows as \
+further `[ssf]` messages. Work out where you got to (`git status`, `git log`, your last \
+comments) and carry on.",
+        it.harness, it.since
+    )
+}
+
+/// The comment ssf leaves on a session's item when the harness is at its
+/// sign-in prompt: `harness` is the display name, `fix` the command a
+/// person runs (`login::how_to_sign_in`). What the screen showed goes to
+/// the log and `status --json`, not here: quoting it would put the very
+/// phrase the recogniser looks for on every screen the comment reaches.
+pub fn blocked_comment(harness: &str, fix: &str) -> String {
+    format!(
+        "[ssf] This session's {harness} is at its sign-in prompt (its session expired, was \
+revoked, or was never set up here), so nothing reaches the agent. Sign in with {fix}; ssf \
+checks every pass and resumes the session on its own once that is done. Activity on this \
+item is held until then."
+    )
+}
+
+/// The comment once the session is back, when the wait was long enough
+/// to be worth a line.
+pub fn resumed_comment(harness: &str, relaunched: bool, mins: u64) -> String {
+    format!(
+        "[ssf] {harness} is signed in again; the session {} after {mins} minute{}, and what \
+happened here meanwhile is being delivered to it.",
+        if relaunched {
+            "was started again with its conversation resumed"
+        } else {
+            "carried on"
+        },
+        if mins == 1 { "" } else { "s" }
+    )
+}
+
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let item = short_ref(issue, ctx);

@@ -14,6 +14,7 @@ mod github;
 mod herdr;
 mod ipc;
 mod keys;
+mod login;
 mod models;
 mod orca;
 mod origin;
@@ -2453,6 +2454,40 @@ async fn doctor() -> Result<()> {
             match d.status().await {
                 Ok(()) => check(true, format!("{} reachable and ready", d.label())),
                 Err(e) => check(false, format!("{}: {e:#}", d.label())),
+            }
+        }
+    }
+    // Each harness a repository uses, signed in where this runs (the host,
+    // or the guest: with the factory in a VM `ssf doctor` is forwarded
+    // there, so the check happens where the agents are).
+    let mut harnesses: Vec<String> = cfg.repos.iter().map(|r| r.harness.clone()).collect();
+    harnesses.sort();
+    harnesses.dedup();
+    let place = if vm::in_guest() {
+        "inside the VM"
+    } else {
+        "on the host"
+    };
+    for h in &harnesses {
+        let probe = login::probe(h);
+        let name = login::display_name(h);
+        match probe.state {
+            login::LoginState::SignedIn => {
+                check(true, format!("{name} signed in {place} ({})", probe.detail))
+            }
+            login::LoginState::SignedOut => check(
+                false,
+                format!(
+                    "{name} not signed in {place} ({}); sign in with {}, or sessions on it stall at its login prompt",
+                    probe.detail,
+                    login::how_to_sign_in(h)
+                ),
+            ),
+            login::LoginState::Unknown => {
+                println!(
+                    "note {name}: cannot tell whether it is signed in {place} ({})",
+                    probe.detail
+                )
             }
         }
     }

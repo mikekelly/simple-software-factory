@@ -30,7 +30,10 @@ ssf under both drivers: Claude Code's folder-trust question and its
 one-off "Bypass Permissions mode" acceptance, Codex's directory-trust
 question, and Gemini's and Pi's trust dialogs when they are started without
 their `--skip-trust`/`--approve` flags (see
-[Permissions](configuration.md#permissions)).
+[Permissions](configuration.md#permissions)). A login prompt is the one
+dialog ssf cannot answer: a session showing one is marked blocked and
+brought back once a person has signed the harness in (see [A harness that
+is not signed in](sessions.md#a-harness-that-is-not-signed-in)).
 
 ## `orca` (the default)
 
