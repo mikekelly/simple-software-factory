@@ -528,11 +528,14 @@ before delivery, so a non-listed user's comment on an owned item reaches
 neither the owner nor its subscribers or reviewer. Commits are the one
 event without a login and pass (pushing needs write access to the branch);
 unassigning or closing still retires a session, since stopping work is
-safe. Prompts are unchanged: this is all daemon-side.
+safe. One limit to know: the timeline says who posted a body or comment,
+not who edited it, and anyone with write access can edit anyone's text, so
+the list is a boundary against the internet, not a hard one among people
+who can already push. Prompts are unchanged: this is all daemon-side.
 
 `"*"` means anyone on GitHub. It is never accepted silently: `ssf config set
 daemon.allowed_users '["*"]'` and `ssf repo set <repo> --allowed-users '*'`
-refuse it unless you answer `yes` to the risk at the terminal or pass
+refuse it unless you type `yes` (nothing shorter) to the risk at the terminal or pass
 `--accept-anyone-risk`, either of which writes `accepted_anyone_risk = true`
 next to the list (setting a plain list again removes it). A hand-edited
 file with `"*"` and no marker is refused at load with the fix spelled out,

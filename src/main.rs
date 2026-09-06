@@ -50,6 +50,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Command {
     /// Manage the bot account credentials (meant for humans; see `ssf ui`).
     Auth {
@@ -1459,8 +1460,7 @@ fn confirm_anyone_risk(accepted: bool, what: &str) -> Result<()> {
         std::io::stderr().flush()?;
         let mut line = String::new();
         std::io::stdin().read_line(&mut line)?;
-        let a = line.trim().to_ascii_lowercase();
-        Ok(a == "yes" || a == "y")
+        Ok(line.trim().eq_ignore_ascii_case("yes"))
     })
 }
 
@@ -1553,75 +1553,71 @@ fn config_cmd(command: ConfigCommand) -> Result<()> {
 /// with consent (`accepted`, or a yes at the terminal) and gets its marker;
 /// any other list drops the marker.
 fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool) -> Result<()> {
-    {
-        {
-            if key == "github.token" || key == "github" {
-                bail!("credentials are managed with `ssf auth login`, not `config set`");
-            }
-            if key.starts_with("repo") {
-                bail!("repositories are managed with `ssf repo add|set|remove`");
-            }
-            let raw = std::fs::read_to_string(path).unwrap_or_default();
-            let mut table: toml::Table = toml::from_str(&raw).context("parsing config")?;
-            let parts: Vec<&str> = key.split('.').collect();
-            if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
-                bail!("invalid key {key}");
-            }
-            let parsed = parse_toml_scalar(value);
-            let mut cur: &mut toml::Table = &mut table;
-            for part in &parts[..parts.len() - 1] {
-                let next = cur
-                    .entry(part.to_string())
-                    .or_insert_with(|| toml::Value::Table(toml::Table::new()));
-                cur = next
-                    .as_table_mut()
-                    .with_context(|| format!("{part} is not a table"))?;
-            }
-            if key == "daemon.allowed_users" {
-                let logins: Vec<String> = parsed
-                    .as_array()
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|v| v.as_str().map(str::to_string))
-                            .collect()
-                    })
-                    .or_else(|| parsed.as_str().map(parse_allowed_users))
-                    .with_context(|| {
-                        format!("{key} takes a list of logins, e.g. '[\"alice\", \"bob\"]'")
-                    })?;
-                let marker = if allow::is_wildcard(&logins) {
-                    confirm_anyone_risk(accepted, "every repository this daemon watches")?;
-                    true
-                } else {
-                    false
-                };
-                // The marker stands only next to a wildcard, so a later
-                // hand edit that adds one is refused again.
-                if marker {
-                    cur.insert(allow::RISK_KEY.to_string(), toml::Value::Boolean(true));
-                } else {
-                    cur.remove(allow::RISK_KEY);
-                }
-                cur.insert(
-                    parts[parts.len() - 1].to_string(),
-                    toml::Value::Array(logins.into_iter().map(toml::Value::String).collect()),
-                );
-            } else {
-                cur.insert(parts[parts.len() - 1].to_string(), parsed);
-            }
-            let text = toml::to_string_pretty(&table)?;
-            // Validate before writing so a typo cannot break the daemon.
-            let checked: Config =
-                toml::from_str(&text).with_context(|| format!("{key} is not a valid setting"))?;
-            checked.validate()?;
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            config::write_atomic(path, text.as_bytes(), 0o600)?;
-            println!("{key} = {value}");
-            Ok(())
-        }
+    if key == "github.token" || key == "github" {
+        bail!("credentials are managed with `ssf auth login`, not `config set`");
     }
+    if key.starts_with("repo") {
+        bail!("repositories are managed with `ssf repo add|set|remove`");
+    }
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    let mut table: toml::Table = toml::from_str(&raw).context("parsing config")?;
+    let parts: Vec<&str> = key.split('.').collect();
+    if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+        bail!("invalid key {key}");
+    }
+    let parsed = parse_toml_scalar(value);
+    let mut cur: &mut toml::Table = &mut table;
+    for part in &parts[..parts.len() - 1] {
+        let next = cur
+            .entry(part.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        cur = next
+            .as_table_mut()
+            .with_context(|| format!("{part} is not a table"))?;
+    }
+    if key == "daemon.allowed_users" {
+        let logins: Vec<String> = parsed
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .or_else(|| parsed.as_str().map(parse_allowed_users))
+            .with_context(|| {
+                format!("{key} takes a list of logins, e.g. '[\"alice\", \"bob\"]'")
+            })?;
+        let marker = if allow::is_wildcard(&logins) {
+            confirm_anyone_risk(accepted, "every repository this daemon watches")?;
+            true
+        } else {
+            false
+        };
+        // The marker stands only next to a wildcard, so a later
+        // hand edit that adds one is refused again.
+        if marker {
+            cur.insert(allow::RISK_KEY.to_string(), toml::Value::Boolean(true));
+        } else {
+            cur.remove(allow::RISK_KEY);
+        }
+        cur.insert(
+            parts[parts.len() - 1].to_string(),
+            toml::Value::Array(logins.into_iter().map(toml::Value::String).collect()),
+        );
+    } else {
+        cur.insert(parts[parts.len() - 1].to_string(), parsed);
+    }
+    let text = toml::to_string_pretty(&table)?;
+    // Validate before writing so a typo cannot break the daemon.
+    let checked: Config =
+        toml::from_str(&text).with_context(|| format!("{key} is not a valid setting"))?;
+    checked.validate()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    config::write_atomic(path, text.as_bytes(), 0o600)?;
+    println!("{key} = {value}");
+    Ok(())
 }
 
 fn parse_toml_scalar(value: &str) -> toml::Value {

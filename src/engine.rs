@@ -67,6 +67,10 @@ pub struct Engine {
     /// item with the `updated_at` they were refused at, so an unchanged
     /// pull request is not re-read every pass.
     refused_reviews: BTreeMap<(String, u64), String>,
+    /// Events already reported as dropped by the allow-list (`repo:key`),
+    /// so each is an info line once and debug after: `diff` walks whole
+    /// timelines again for relaunch texts and stories.
+    dropped_logged: std::sync::Mutex<BTreeSet<String>>,
 }
 
 /// The cached collaborator list of one repository.
@@ -211,6 +215,7 @@ impl Engine {
             startup_pending,
             collaborators: BTreeMap::new(),
             refused_reviews: BTreeMap::new(),
+            dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
         })
     }
 
@@ -299,6 +304,34 @@ impl Engine {
             self.cfg.daemon.review_label(),
         );
         allow::check(&self.allow_list(repo), &asks)
+    }
+
+    /// Log an event left out of a delivery because of the allow-list: an
+    /// info line the first time, debug after (`diff` sees the same events
+    /// again whenever it builds a relaunch text or a story). Project
+    /// automation and other `[bot]` accounts fire on every card move, so
+    /// they are debug from the start.
+    fn dropped(&self, repo: &RepoConfig, key: &str, who: &str) {
+        let first = self
+            .dropped_logged
+            .lock()
+            .map(|mut set| set.insert(format!("{}:{key}", repo.name)))
+            .unwrap_or(false);
+        if first && !allow::is_bot_account(who) {
+            info!(
+                repo = repo.name,
+                key,
+                actor = who,
+                "dropping event: @{who} is not an allowed user"
+            );
+        } else {
+            debug!(
+                repo = repo.name,
+                key,
+                actor = who,
+                "dropping event by @{who}, not an allowed user"
+            );
+        }
     }
 
     /// An item nobody allowed asked for: said once, and not looked at again
@@ -796,6 +829,20 @@ are resumed on the first pass that finds it: {err:#}"
     async fn resume_interrupted(&mut self, kinds: &[DriverKind]) {
         for repo in self.cfg.repos.clone() {
             if self.driver_down(&repo) || !kinds.contains(&self.cfg.driver_for(&repo)) {
+                continue;
+            }
+            // A session started fresh gets its item's story, which is
+            // filtered by the allow-list: the collaborators have to be
+            // known first, or every human post would be left out of it.
+            let refreshed = match repo.split() {
+                Ok((owner, name)) => self.refresh_collaborators(&repo, owner, name).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = refreshed {
+                warn!(
+                    repo = repo.name,
+                    "skipping the startup pass for this repository: {e:#}"
+                );
                 continue;
             }
             let candidates = self.resume_candidates(&repo);
@@ -1630,7 +1677,7 @@ are resumed on the first pass that finds it: {err:#}"
                                 .unwrap_or("unknown");
                             let ok = allowed.allows(who);
                             if !ok {
-                                dropped(&key, who);
+                                self.dropped(repo, &key, who);
                             }
                             ok
                         })
@@ -1647,7 +1694,7 @@ are resumed on the first pass that finds it: {err:#}"
                 }
                 _ => {
                     if !allowed.allows(&actor) {
-                        dropped(&key, &actor);
+                        self.dropped(repo, &key, &actor);
                         continue;
                     }
                 }
@@ -2133,6 +2180,7 @@ are resumed on the first pass that finds it: {err:#}"
             return Ok(());
         }
         let me = reviewer_session_id(&repo.name, number);
+        self.refused_reviews.remove(&(repo.name.clone(), number));
         info!(
             repo = repo.name,
             issue = number,
@@ -3980,25 +4028,6 @@ async fn checkout_branch(path: &str, branch: &str) -> Result<()> {
 }
 
 /// `open`, `closed` or `merged`, as `ssf status` reports it.
-/// Log an event left out of a delivery because of the allow-list. Project
-/// automation and other `[bot]` accounts fire on every card move, so they
-/// go at debug; a person's post is worth an info line.
-fn dropped(key: &str, who: &str) {
-    if allow::is_bot_account(who) {
-        debug!(
-            key,
-            actor = who,
-            "dropping event by an unlisted bot account"
-        );
-    } else {
-        info!(
-            key,
-            actor = who,
-            "dropping event: @{who} is not an allowed user"
-        );
-    }
-}
-
 fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
     if merged || pr.is_some_and(|p| p.merged) {
         "merged".into()
@@ -4037,6 +4066,7 @@ mod tests {
             startup_pending: Vec::new(),
             collaborators: BTreeMap::new(),
             refused_reviews: BTreeMap::new(),
+            dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -5383,8 +5413,11 @@ mod tests {
             batch.text
         );
         // Everything is still counted as seen, so nothing dropped comes
-        // back as news later.
+        // back as news later, and each drop is remembered so it is logged
+        // once (info) however often the timeline is walked again.
         assert_eq!(d.seen.len(), 11);
+        assert!(e.dropped_logged.lock().unwrap().contains("o/r:commented:2"));
+        assert_eq!(e.dropped_logged.lock().unwrap().len(), 6);
         // A repository list replaces the instance list.
         e.cfg.repos[0].allowed_users = Some(vec!["MALLORY".into()]);
         let r = e.cfg.repos[0].clone();
@@ -5511,6 +5544,32 @@ mod tests {
             .unwrap_err();
         assert!(format!("{err:#}").contains("orca-for-ssf-tests"), "{err:#}");
         assert!(!e.refused_reviews.contains_key(&("o/r".to_string(), 7)));
+    }
+
+    #[tokio::test]
+    async fn the_startup_pass_knows_the_collaborators_before_it_resumes_anything() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        e.cfg.daemon.allowed_users = None;
+        e.cfg.daemon.accepted_anyone_risk = false;
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        e.entry(&r, 1).worktree_id = Some("wt1".into());
+        // No answer from GitHub: the repository is skipped, nothing is
+        // resumed on a guess.
+        e.resume_interrupted(&[DriverKind::Orca]).await;
+        assert!(stub.hits().iter().any(|h| h.contains("/collaborators")));
+        assert!(!e.allow_list(&r).allows("alice"));
+        // With an answer, the list is in place before any session is
+        // looked at (the driver is not there in this test, so the session
+        // itself is left alone after that).
+        stub.set_collaborators(Some(vec![
+            json!({"login": "alice", "permissions": {"push": true}}),
+        ]));
+        e.resume_interrupted(&[DriverKind::Orca]).await;
+        assert!(e.allow_list(&r).allows("alice"));
+        assert_eq!(e.allow_list(&r).source, Source::Collaborators);
     }
 
     #[tokio::test]
