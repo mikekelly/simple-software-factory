@@ -49,9 +49,10 @@ end of the build), an `ssf` user that is root through `sudo` (Claude Code
 refuses its permission-free mode as root, so nothing runs as root itself),
 the host's own herdr binary and herdr's agent integrations (its
 state-reporting hooks) for the agents present. The list lives in
-`vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed; `SSF_VM_DIR`
-points at another copy); edit it and run `ssf vm build --force` for a new
-image. The `ssf` binary is not in the image: every start takes the host's,
+`vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed). To change
+it, copy that directory somewhere of your own, edit the copy, and run
+`SSF_VM_DIR=<copy> ssf vm build --force` for a new image; a file edited
+under `/usr/share/ssf/` is overwritten by the next package upgrade. The `ssf` binary is not in the image: every start takes the host's,
 so the guest always runs the package you installed.
 
 ## What gets in, and what does not

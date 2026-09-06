@@ -51,7 +51,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_grace_secs` | `900` | How long a reviewer session gets to finish before its read-only workspace is removed anyway; item workspaces are not affected |
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](sessions.md#reviewer-sessions)); `""` turns the label trigger off |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
-| `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
+| `daemon.startup_orca_wait_secs` | `120` | How long to wait for the driver (herdr or Orca; the key predates herdr) at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
@@ -213,7 +213,8 @@ ssf repo set acme/widgets --clear allowed_users
 ```
 
 - **Unset** (a fresh install): the repository's collaborators with push
-  access. The daemon fetches them once per pass (an unchanged answer is a
+  access, which is GitHub's **Write** role or higher (Write, Maintain,
+  Admin) in **Settings → Collaborators and teams**. The daemon fetches them once per pass (an unchanged answer is a
   free 304) and `ssf doctor` prints the list per repository. If they cannot
   be fetched, an organisation repository where the token lacks `read:org`
   say, and none were fetched before, the pass fails for that repository and

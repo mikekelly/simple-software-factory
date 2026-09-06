@@ -189,7 +189,8 @@ that might hold work (see
 [Workspaces after close](docs/sessions.md#workspaces-after-close-release-and-purge)).
 
 Only people you allow can drive it: by default the repository's
-collaborators with push access, or a list you set (see
+collaborators with push access (GitHub's Write role or higher), or a list
+you set (see
 [Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
 
 ## Install
@@ -253,8 +254,12 @@ restarts it for you (see [Development](docs/development.md)).
 Click the factory icon in the bar, or open the Omarchy menu and pick
 **Factory**. From there:
 
-- **Sign in bot account**: the bot is a GitHub account that the GitHub CLI
-  knows. The flow lists the accounts `gh` already holds and offers "sign in
+- **Sign in bot account**: the bot is a GitHub account of its own, created
+  for the factory rather than yours (every agent post is made as it, and a
+  post by the bot *without* a byline reads as a person's), with Write
+  access on each repository it works and to its project boards. The
+  skill's Step 2 walks through creating one. Sign it in with the GitHub
+  CLI: the flow lists the accounts `gh` already holds and offers "sign in
   another account in the browser", which runs gh's device flow (use a private
   window so GitHub does not reuse your own session); whoever signs in becomes
   the bot. ssf never stores the token: it reads it from gh's keyring when it
@@ -289,6 +294,15 @@ it is running, the branch and when it was last active. Clicking a row opens
 the workspace in the driver. The bar icon turns urgent while an agent is
 waiting
 for input.
+
+A good first issue is small and self-contained, says what "done" looks
+like (a test that passes, a file that changes, a command that works), and
+names what to run before opening a pull request. Assign it to the bot and
+watch the issue: within a couple of minutes the agent comments with what
+it is about to do, and later with the pull request. Put the `review`
+label on the pull request for a second agent's review, answer or merge as
+you would for a colleague, and close the issue when it is done; the agent
+then pushes what is left, comments once more and gives its workspace back.
 
 The same can be done from a terminal:
 
@@ -359,6 +373,22 @@ Things to know when operating it:
 - A review of a bot-opened pull request is asked for with the `review`
   label (GitHub refuses a review request from a PR's own author); a
   separate reviewer agent posts it and ssf takes the label off.
+
+**Stopping it.** The toggle in the bar widget, or `ssf ui service
+disable`, stops the service and keeps it from starting at the next login
+(`enable` turns it back on); `systemctl --user stop ssf.service` stops it
+until the next login. Running agents are left where they are: nothing
+reaches them while the daemon is down, and it delivers what they missed
+when it comes back. With the factory in a microVM, stopping the service
+shuts the guest down cleanly.
+
+**Uninstalling.** `ssf ui uninstall` removes the bar widget and menu
+entries, `ssf auth logout` revokes the bot's keys on GitHub and forgets
+it, `ssf vm destroy --yes` removes the microVM and its disks, then
+`sudo pacman -R ssf`. Left for you to remove by hand: `~/.config/ssf`
+(config and the bot's key), `~/.local/state/ssf` (state), and the clones
+and worktrees under `~/ssf/projects` (or Orca's projects), which may hold
+unpushed work; `ssf purge --dry-run` lists what is in them first.
 
 ## The rest of the story
 

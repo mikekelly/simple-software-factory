@@ -476,7 +476,10 @@ GitHub Enterprise (`https://ghe.example.com/api/v3`).
 `daemon.cleanup_on_close` is accepted but does nothing. Check: `ssf doctor`
 is clean (token, key, driver, harness signed in, the repository's identity
 line) and `ssf status` lists the repository; then assign an issue to the
-bot and a workspace should appear within a poll interval. Full key table:
+bot and a workspace should appear within a poll interval. Suggest a first
+issue that is small and self-contained, says what "done" looks like and
+names what to run before a PR; the agent's first comment on it (what it
+is about to do) is the check that the whole chain works. Full key table:
 [Configuration](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md);
 [Who may drive the factory](https://github.com/mikekelly/simple-software-factory/blob/master/docs/configuration.md#who-may-drive-the-factory)
 for the allow list; every key with a comment: `config.example.toml`.
@@ -582,6 +585,20 @@ Things to know when operating it:
   so run it first.
 - `ssf doctor` also lists untagged posts by the bot (posts made without
   the byline, i.e. typed by a person or made outside the wrapper).
+- **Stopping the factory**: `ssf ui service disable` (or the bar toggle)
+  stops the service and keeps it stopped across logins; `enable` turns it
+  back on; `systemctl --user stop ssf.service` stops it until the next
+  login. Agents already running are left where they are and get what
+  they missed when the daemon is back. With `vm.enabled`, stopping the
+  service shuts the guest down cleanly.
+- **Uninstalling**: `ssf ui uninstall` (widget and menu entries), `ssf
+  auth logout` (revokes the bot's keys on GitHub and forgets it), `ssf vm
+  destroy --yes` (the VM and its disks), then `sudo pacman -R ssf`
+  (**Person:** sudo). Left behind on purpose, for the person to remove by
+  hand once they have checked them: `~/.config/ssf`, `~/.local/state/ssf`,
+  and the clones and worktrees under `~/ssf/projects` (or Orca's
+  projects), which may hold unpushed work; `ssf purge --dry-run` lists
+  them first. The bot GitHub account itself is not touched.
 
 README: [Everyday
 commands](https://github.com/mikekelly/simple-software-factory#everyday-commands); docs: [Workspaces after

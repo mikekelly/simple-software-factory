@@ -1,7 +1,7 @@
 [Unit]
-Description=Simple Software Factory: GitHub issues assigned to the bot become Orca agent workspaces
+Description=Simple Software Factory: GitHub issues assigned to the bot become agent workspaces in herdr or Orca
 Documentation=https://github.com/mikekelly/simple-software-factory
-# Orca (the desktop app) is what we drive, so wait for the graphical session.
+# The bar widget, and Orca when it is the driver, live in the graphical session, so wait for it.
 After=graphical-session.target
 PartOf=graphical-session.target
 ConditionEnvironment=WAYLAND_DISPLAY

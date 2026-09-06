@@ -619,10 +619,11 @@ pub struct DaemonConfig {
     /// plain daemon restart changes nothing.
     #[serde(default = "default_true")]
     pub resume_on_start: bool,
-    /// How long to wait for Orca at daemon start (checking every ten
-    /// seconds) before polling begins, since Orca may still be coming up in
-    /// the same login. If it is not ready by then, polling starts anyway and
-    /// the startup pass runs on the first poll that finds Orca ready.
+    /// How long to wait for the driver at daemon start (checking every ten
+    /// seconds) before polling begins, since Orca or herdr may still be coming
+    /// up in the same login. If it is not ready by then, polling starts anyway
+    /// and the startup pass runs on the first poll that finds the driver ready.
+    /// (The key keeps its name from when Orca was the only driver.)
     #[serde(default = "default_startup_orca_wait")]
     pub startup_orca_wait_secs: u64,
     /// GitHub logins whose assignments, mentions, review requests, labels
