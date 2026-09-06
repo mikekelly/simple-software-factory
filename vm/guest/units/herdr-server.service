@@ -1,0 +1,18 @@
+[Unit]
+Description=herdr headless server (the ssf driver inside the VM)
+After=ssf-seed.service
+Requires=ssf-seed.service
+
+[Service]
+User=ssf
+Group=ssf
+Environment=HOME=/home/ssf
+Environment=TERM=xterm-256color
+Environment=LANG=en_US.UTF-8
+WorkingDirectory=/home/ssf
+ExecStart=/usr/local/bin/herdr server
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -365,6 +365,13 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](#reviewer-sessions)); `""` turns the label trigger off |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](#under-the-hood)) |
 | `daemon.startup_orca_wait_secs` | `120` | How long to wait for Orca at daemon start before the first poll |
+| `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](#inside-a-microvm-firecracker)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
+| `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
+| `vm.vcpus`, `vm.mem_mib` | `2`, `4096` | The guest's size |
+| `vm.data_gib`, `vm.root_gib` | `20`, `8` | The persistent data disk (state, clones, worktrees; sparse) and the root image `ssf vm build` makes |
+| `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
+| `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`); how a harness login such as `~/.claude/.credentials.json` gets in |
+| `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Use binaries or images of your own instead of the downloaded ones |
 | `repo.harness` | | Agent id (`claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush`) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
 | `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
@@ -472,7 +479,9 @@ is still there or busy, removing the workspace) goes through a *driver*,
 and there are two. The `driver` key picks the default for the whole
 instance; a `[[repo]]` can set its own, so one daemon can run some
 repositories in Orca and others in herdr. `ssf doctor` checks every driver
-in use. A pass skips the repositories of a driver that is not answering
+in use. To keep the agents (and the daemon) away from your home directory
+altogether, the whole factory can run inside a microVM instead (see
+[Inside a microVM](#inside-a-microvm-firecracker)). A pass skips the repositories of a driver that is not answering
 while the others carry on; the outage shows as the error in `ssf status`,
 and that driver's sessions show an unknown agent state until it answers
 (the other driver's are reported as usual). The startup pass runs per
@@ -509,6 +518,88 @@ the agents it recognises in a pane (`herdr agent start --help` lists them;
 `crush` from `ssf agents` is not among them in herdr 0.8.2); `ssf repo add
 --driver herdr` warns when the harness is not on that list, and a start
 with one that is not gives up after `herdr.tui_idle_timeout_ms`.
+
+## Inside a microVM (Firecracker)
+
+Everything above runs on your machine as you: the agents can read your
+home directory, your keyring and whatever else you have open. `ssf vm`
+moves the whole factory (the daemon, herdr and every agent session) into a
+[Firecracker](https://firecracker-microvm.github.io/) microVM, and leaves
+the host only what builds, starts, stops and reaches the guest. The
+drivers are untouched; the guest runs herdr (Orca is a desktop app and
+needs a display the guest does not have, so a repository that says
+`driver = "orca"` runs in herdr there). Nothing needs root: Firecracker
+runs as you given `/dev/kvm` (world-writable on Omarchy; the `kvm` group
+elsewhere), the guest's network is
+[gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) (a
+user-mode TCP/IP stack on the host end of a vsock, so no tap, bridge or
+firewall rule on the host), and the images are made with `fakeroot` and
+`mkfs.ext4 -d`. The jailer is not used (it needs root); isolation is KVM
+plus Firecracker's seccomp filter.
+
+```
+ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)
+ssf config set vm.enabled true
+ssf ui service restart    # or: ssf vm start
+ssf status                # runs inside the guest from now on
+ssf vm attach             # herdr in the guest, in this terminal
+```
+
+**The image.** `ssf vm build` unpacks the Arch bootstrap tarball, adds
+the guest scripts and units, turns the tree into an ext4 image and boots
+it once with a provisioning init that installs `base`, `openssh`, `git`,
+`github-cli`, `nodejs`, `tmux`, the harness CLIs from `ssf agents` that
+npm or a release tarball provide (Claude Code, Codex, Gemini, Copilot,
+OpenCode, Pi, Grok, Crush; each is best effort and listed at the end of
+the build), an unprivileged `ssf` user (Claude Code refuses its
+permission-free mode as root) and the host's own herdr binary. The list
+lives in `vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed);
+edit it and run `ssf vm build --force` for a new image. The `ssf` binary
+is not in the image: every start takes the host's, so the guest always
+runs the package you installed.
+
+**What gets in, and what does not.** At every start the host writes a
+small seed disk with the `ssf` binary, `config.toml` rewritten for the
+guest (`driver = "herdr"`, clones under `/var/lib/ssf/projects`, no
+`repo.path`), the bot token (resolved the way `ssf token` does, so the
+host keyring itself is never copied), the bot's own SSH key if `ssf auth
+login` enrolled one, the ssh public key the host uses to reach the guest,
+and the files `vm.files` lists. That last one is how a harness login gets
+in: `files = ["~/.claude/.credentials.json"]` lands at the same place
+under the guest user's home; `src:dest` places a file elsewhere. Nothing
+else from the host home is visible in the guest: no `~/.ssh`, no
+`~/.gitconfig`, no other accounts. Commits are signed only if the bot key
+is enrolled.
+
+**Reaching it.** gvproxy publishes the guest's sshd on
+`127.0.0.1:<vm.ssh_port>`, keyed by a key made per VM. With `vm.enabled`
+the commands that talk to the daemon (`status`, `peers`, `sub`, `unsub`,
+`subs`, `tell`, `release`, `purge`, `doctor`, `run --once`) run inside
+the guest over that connection, so the bar widget, `ssf status --json`
+and `ssf tell` work as before; `ssf vm run -- <args>` does it explicitly
+and `ssf vm ssh [-- cmd]` gives a shell. `ssf vm attach` attaches to
+herdr's session in the guest in your terminal; `ssf vm ssh-config` prints
+an `~/.ssh/config` entry so `herdr --remote ssf-default` (herdr's thin
+client) and plain `ssh ssf-default` work too. Clicking a session in the
+bar widget opens a terminal attached to the guest. `ssf vm logs` follows
+the guest daemon's journal and `ssf vm console` shows the serial console.
+
+**Persistence.** Each VM has, under `<vm.dir>/<name>/`, a `root.ext4`
+(a copy-on-write copy of the image: instant on btrfs, a full copy
+elsewhere) that keeps packages, caches, herdr's session state and the
+harness transcripts across restarts, and a `data.ext4` (`vm.data_gib`,
+sparse) mounted at `/var/lib/ssf` with ssf's state, the clones and the
+worktrees. `ssf vm stop` shuts the guest down cleanly (Ctrl-Alt-Del
+through Firecracker's API); on the next start the guest daemon's own
+`resume_on_start` brings the sessions back in herdr, as after a reboot on
+bare metal. Editing the config on the host takes `ssf vm sync` (pushes
+config and token and restarts the guest daemon) or `ssf vm restart` (a
+new seed: needed for a new `ssf` binary or `vm.files`). `ssf vm reset`
+remakes the root disk from a rebuilt image and keeps the data disk;
+`ssf vm destroy --yes` removes the VM. Firecracker and gvproxy run
+detached, so an `ssf` restart on the host does not touch the guest;
+`ssf run` (the systemd unit) starts the VM if it is not up and shuts it
+down when the service stops.
 
 ## What the agent is told
 
