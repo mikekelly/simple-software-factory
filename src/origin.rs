@@ -4,9 +4,9 @@
 //! API says which agent session posted a comment or opened a pull request.
 //! The content carries it instead, on the first line of every post: a
 //! visible byline (`🤖#N says:`, which GitHub renders with a link to the
-//! session's item; `🤖owner/repo#N says:` on another repository;
-//! `🤖#N (reviewer) says:` from a reviewer session) and, on the same line, an invisible HTML comment
-//! naming the item whose workspace the post came from. The `gh` shim
+//! session's item; `🤖owner/repo#N says:` on another repository) and, on
+//! the same line, an invisible HTML comment naming the item whose
+//! workspace the post came from. The `gh` shim
 //! (`crate::shim`) prepends that line to everything an agent posts; the
 //! daemon parses the tag back out of every body it reads, and honours it
 //! only there, or on the last non-blank line, where posts made before the
@@ -17,11 +17,12 @@
 //! untagged posts reach the agents as a person's.
 //!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
-//! add fields without a new syntax. Two fields are defined: `mode=delegate`
+//! add fields without a new syntax. One field is defined: `mode=delegate`
 //! (the post opened an item that is handed off to a new session rather than
-//! kept by the one that opened it) and `role=reviewer` (the post came from
-//! the reviewer session of the pull request the origin names, not from the
-//! session that wrote it). The byline does not encode the mode.
+//! kept by the one that opened it). The byline does not encode the mode.
+//! Posts made before #115 by the reviewer sessions of the time carry
+//! `role=reviewer` and a `🤖#N (reviewer) says:` byline; both are read as
+//! the item's session's.
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -58,11 +59,6 @@ impl Origin {
         Self::new(&repo, number)
     }
 
-    /// Is this the reviewer session of its item (`SSF_ROLE=reviewer`)?
-    pub fn reviewer_from_env() -> bool {
-        std::env::var("SSF_ROLE").is_ok_and(|r| r.trim() == REVIEWER)
-    }
-
     pub fn new(repo: &str, number: u64) -> Option<Self> {
         let repo = repo.trim();
         crate::config::split_repo_name(repo).ok()?;
@@ -85,52 +81,30 @@ impl Origin {
 
     /// The visible byline: `🤖#N says:` on the origin's own repository,
     /// `🤖owner/repo#N says:` on another (or when `on_repo`, the repository
-    /// posted to, is not known), with ` (reviewer)` before `says:` for the
-    /// reviewer session. GitHub renders the item in either form as a link
-    /// to it.
-    pub fn byline(&self, on_repo: Option<&str>, reviewer: bool) -> String {
+    /// posted to, is not known). GitHub renders the item in either form as
+    /// a link to it.
+    pub fn byline(&self, on_repo: Option<&str>) -> String {
         let item = match on_repo {
             Some(r) if r.trim().eq_ignore_ascii_case(&self.repo) => format!("#{}", self.number),
             _ => self.to_string(),
         };
-        if reviewer {
-            format!("{ROBOT}{item} ({REVIEWER}) {SAYS}")
-        } else {
-            format!("{ROBOT}{item} {SAYS}")
-        }
+        format!("{ROBOT}{item} {SAYS}")
     }
 
     /// The line the shim prepends to a post made on `on_repo`: the byline,
-    /// then the tag (a hand-off's or the reviewer's when asked).
-    pub fn first_line(&self, on_repo: Option<&str>, delegate: bool, reviewer: bool) -> String {
+    /// then the tag (a hand-off's when asked).
+    pub fn first_line(&self, on_repo: Option<&str>, delegate: bool) -> String {
         let tag = if delegate {
             self.delegate_tag()
-        } else if reviewer {
-            self.reviewer_tag()
         } else {
             self.tag()
         };
-        format!("{} {tag}", self.byline(on_repo, reviewer))
+        format!("{} {tag}", self.byline(on_repo))
     }
 
     /// The marker for an item this session hands off to a new session.
     pub fn delegate_tag(&self) -> String {
         format!("{OPEN} {MARK} origin={self} {MODE}={DELEGATE} {CLOSE}")
-    }
-
-    /// The marker the reviewer session of this item appends to its posts.
-    pub fn reviewer_tag(&self) -> String {
-        format!("{OPEN} {MARK} origin={self} {ROLE}={REVIEWER} {CLOSE}")
-    }
-
-    /// Session id of this item's session (`owner/repo#N`), or of its
-    /// reviewer session (`owner/repo#N:reviewer`).
-    pub fn session(&self, reviewer: bool) -> String {
-        if reviewer {
-            format!("{self}:{REVIEWER}")
-        } else {
-            self.to_string()
-        }
     }
 }
 
@@ -138,22 +112,9 @@ impl Origin {
 pub const MODE: &str = "mode";
 /// `mode` value for a hand-off: the item gets its own session.
 pub const DELEGATE: &str = "delegate";
-/// Field naming which of an item's sessions posted: absent for the session
-/// that works on it, `reviewer` for the one reviewing it.
-pub const ROLE: &str = "role";
-/// `role` value for the reviewer session of a pull request.
-pub const REVIEWER: &str = "reviewer";
-
-/// A session id as the CLI, subscriber lists and origin tags name it:
-/// `owner/repo#N` for the session on an item, `owner/repo#N:reviewer` for
-/// the session reviewing pull request N.
-pub fn parse_session(s: &str) -> Option<(Origin, bool)> {
-    let s = s.trim();
-    match s.strip_suffix(&format!(":{REVIEWER}")) {
-        Some(item) => Origin::parse(item).map(|o| (o, true)),
-        None => Origin::parse(s).map(|o| (o, false)),
-    }
-}
+/// The byline word the reviewer sessions of before #115 carried between
+/// the item and `says:`; still recognised when their posts are read.
+const OLD_REVIEWER: &str = "reviewer";
 
 /// A parsed tag: the origin plus any other fields it carried.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,17 +127,6 @@ impl Tag {
     /// Was the item handed off to a session of its own?
     pub fn is_delegate(&self) -> bool {
         self.fields.get(MODE).map(String::as_str) == Some(DELEGATE)
-    }
-
-    /// Did the post come from the reviewer session of the item?
-    pub fn is_reviewer(&self) -> bool {
-        self.fields.get(ROLE).map(String::as_str) == Some(REVIEWER)
-    }
-
-    /// The session that made the post: the origin item's own session, or
-    /// its reviewer.
-    pub fn session(&self) -> String {
-        self.origin.session(self.is_reviewer())
     }
 }
 
@@ -245,28 +195,19 @@ fn is_code(line: &str) -> bool {
 }
 
 /// `body` with the byline and origin tag on a first line of its own,
-/// optionally marking the post as a hand-off, or as the reviewer session's.
-/// `on_repo` is the repository the post goes to, which decides the byline's
-/// form. A body that already starts with this origin's tag is left alone
-/// (the agent added the line by hand), except that a hand-written tag
-/// without `mode=delegate` is not enough for a hand-off, and one without
-/// `role=reviewer` is not enough for a reviewer: the right line goes before
-/// it, and the first tag wins when read. A tag of ours that is not on the
-/// first line does not count, even at the end where `parse` still accepts
-/// the old form, so the body gets the byline at the top anyway.
-pub fn stamp_with(
-    body: &str,
-    origin: &Origin,
-    on_repo: Option<&str>,
-    delegate: bool,
-    reviewer: bool,
-) -> String {
-    if parse_first(body).is_some_and(|t| {
-        &t.origin == origin && (!delegate || t.is_delegate()) && (!reviewer || t.is_reviewer())
-    }) {
+/// optionally marking the post as a hand-off. `on_repo` is the repository
+/// the post goes to, which decides the byline's form. A body that already
+/// starts with this origin's tag is left alone (the agent added the line
+/// by hand), except that a hand-written tag without `mode=delegate` is not
+/// enough for a hand-off: the delegate line goes before it, and the first
+/// tag wins when read. A tag of ours that is not on the first line does
+/// not count, even at the end where `parse` still accepts the old form, so
+/// the body gets the byline at the top anyway.
+pub fn stamp_with(body: &str, origin: &Origin, on_repo: Option<&str>, delegate: bool) -> String {
+    if parse_first(body).is_some_and(|t| &t.origin == origin && (!delegate || t.is_delegate())) {
         return body.to_string();
     }
-    let line = origin.first_line(on_repo, delegate, reviewer);
+    let line = origin.first_line(on_repo, delegate);
     let text = without_leading_blank_lines(body).trim_end();
     if text.is_empty() {
         line
@@ -331,8 +272,9 @@ pub fn strip(body: &str) -> String {
 }
 
 /// Is `s` (the text before a tag on its line) a byline and nothing else:
-/// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)`, either with ` says:`
-/// (posts made before #42 have no `says:`)?
+/// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)` (posts by the
+/// reviewer sessions of before #115), either with ` says:` (posts made
+/// before #42 have no `says:`)?
 fn is_byline(s: &str) -> bool {
     let Some(after) = s.trim_start().strip_prefix(ROBOT) else {
         return false;
@@ -342,7 +284,9 @@ fn is_byline(s: &str) -> bool {
         return false;
     }
     let rest = after[item_len..].trim_start();
-    let rest = rest.strip_prefix(&format!("({REVIEWER})")).unwrap_or(rest);
+    let rest = rest
+        .strip_prefix(&format!("({OLD_REVIEWER})"))
+        .unwrap_or(rest);
     let rest = rest.trim_start().strip_prefix(SAYS).unwrap_or(rest);
     rest.trim().is_empty()
 }
@@ -377,8 +321,8 @@ pub struct Scan {
     /// The same tag with its fields (`mode=delegate` says the opening
     /// session handed the item off rather than keeping it).
     pub origin_tag: Option<Tag>,
-    /// Timeline event key -> session (`owner/repo#N`, or
-    /// `owner/repo#N:reviewer`) that made the comment or review.
+    /// Timeline event key -> session (`owner/repo#N`) that made the
+    /// comment or review.
     pub origins: BTreeMap<String, String>,
     /// Posts by the bot that carry no tag (the shim was not in effect where
     /// they were made): event key -> URL. The item body is keyed `body`.
@@ -400,7 +344,7 @@ pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
                 if key == "body" {
                     body_tag = Some(t.clone());
                 }
-                s.origins.insert(key, t.session());
+                s.origins.insert(key, t.origin.to_string());
             }
             None => {
                 s.untagged.insert(key, url.to_string());
@@ -465,11 +409,11 @@ mod tests {
 
     /// Stamp for a post on the origin's own repository.
     fn stamp(body: &str, origin: &Origin) -> String {
-        stamp_with(body, origin, Some("acme/widgets"), false, false)
+        stamp_with(body, origin, Some("acme/widgets"), false)
     }
 
     fn line() -> String {
-        o().first_line(Some("acme/widgets"), false, false)
+        o().first_line(Some("acme/widgets"), false)
     }
 
     #[test]
@@ -483,42 +427,22 @@ mod tests {
 
     #[test]
     fn byline_names_the_item_the_way_github_links_it() {
-        assert_eq!(o().byline(Some("acme/widgets"), false), "🤖#12 says:");
-        assert_eq!(o().byline(Some("ACME/Widgets"), false), "🤖#12 says:");
-        assert_eq!(
-            o().byline(Some("acme/other"), false),
-            "🤖acme/widgets#12 says:"
-        );
-        assert_eq!(o().byline(None, false), "🤖acme/widgets#12 says:");
-        assert_eq!(
-            o().byline(Some("acme/widgets"), true),
-            "🤖#12 (reviewer) says:"
-        );
-        assert_eq!(
-            o().byline(Some("acme/other"), true),
-            "🤖acme/widgets#12 (reviewer) says:"
-        );
+        assert_eq!(o().byline(Some("acme/widgets")), "🤖#12 says:");
+        assert_eq!(o().byline(Some("ACME/Widgets")), "🤖#12 says:");
+        assert_eq!(o().byline(Some("acme/other")), "🤖acme/widgets#12 says:");
+        assert_eq!(o().byline(None), "🤖acme/widgets#12 says:");
         assert_eq!(
             line(),
             "🤖#12 says: <!-- ssf: origin=acme/widgets#12 -->",
             "byline, then the tag, on one line"
         );
         assert_eq!(
-            o().first_line(None, true, false),
+            o().first_line(None, true),
             "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 mode=delegate -->",
             "the byline does not encode the mode"
         );
-        assert_eq!(
-            o().first_line(Some("acme/widgets"), false, true),
-            "🤖#12 (reviewer) says: <!-- ssf: origin=acme/widgets#12 role=reviewer -->"
-        );
         // The whole line parses back to the tag.
         assert_eq!(parse(&line()).unwrap().origin, o());
-        assert!(
-            parse(&o().first_line(None, false, true))
-                .unwrap()
-                .is_reviewer()
-        );
     }
 
     #[test]
@@ -648,60 +572,46 @@ mod tests {
         let parsed = parse(&t).unwrap();
         assert!(parsed.is_delegate());
         assert!(!parse(&o().tag()).unwrap().is_delegate());
-        let s = stamp_with("hand this off", &o(), Some("acme/widgets"), true, false);
+        let s = stamp_with("hand this off", &o(), Some("acme/widgets"), true);
         assert_eq!(s, format!("🤖#12 says: {t}\n\nhand this off"));
         assert_eq!(
-            stamp_with(&s, &o(), Some("acme/widgets"), true, false),
+            stamp_with(&s, &o(), Some("acme/widgets"), true),
             s,
             "not stamped twice"
         );
         assert_eq!(
-            stamp_with(&s, &o(), Some("acme/widgets"), false, false),
+            stamp_with(&s, &o(), Some("acme/widgets"), false),
             s,
             "a delegate tag is a tag"
         );
         // A hand-written plain tag does not make a hand-off: the delegate
         // line goes before it and is the one that counts.
         let plain = stamp("x", &o());
-        let both = stamp_with(&plain, &o(), Some("acme/widgets"), true, false);
+        let both = stamp_with(&plain, &o(), Some("acme/widgets"), true);
         assert!(both.ends_with(&plain));
         assert!(parse(&both).unwrap().is_delegate());
         assert_eq!(strip(&both), "x");
     }
 
     #[test]
-    fn reviewer_tag_names_the_reviewer_session() {
-        let t = o().reviewer_tag();
-        assert_eq!(t, "<!-- ssf: origin=acme/widgets#12 role=reviewer -->");
-        let parsed = parse(&t).unwrap();
-        assert!(parsed.is_reviewer());
+    fn old_reviewer_posts_read_as_the_items_session() {
+        // Before #115 a pull request had a second, reviewing session whose
+        // posts carried `role=reviewer`; the field is just a field now.
+        let t = "<!-- ssf: origin=acme/widgets#12 role=reviewer -->";
+        let parsed = parse(t).unwrap();
+        assert_eq!(parsed.origin, o());
         assert!(!parsed.is_delegate());
-        assert_eq!(parsed.session(), "acme/widgets#12:reviewer");
-        assert_eq!(parse(&o().tag()).unwrap().session(), "acme/widgets#12");
-        let s = stamp_with("looks good", &o(), Some("acme/widgets"), false, true);
-        assert_eq!(s, format!("🤖#12 (reviewer) says: {t}\n\nlooks good"));
         assert_eq!(
-            stamp_with(&s, &o(), Some("acme/widgets"), false, true),
-            s,
-            "not stamped twice"
+            parsed.fields.get("role").map(String::as_str),
+            Some("reviewer")
         );
-        assert_eq!(strip(&s), "looks good");
-        // A plain tag the reviewer wrote by hand is not enough: the reviewer
-        // line goes before it and wins.
-        let both = stamp_with(&stamp("x", &o()), &o(), Some("acme/widgets"), false, true);
-        assert!(parse(&both).unwrap().is_reviewer());
-        assert_eq!(strip(&both), "x");
-        // Session ids parse back, with or without the role.
-        let (org, rev) = parse_session("acme/widgets#12:reviewer").unwrap();
-        assert_eq!(org, o());
-        assert!(rev);
-        let (org, rev) = parse_session(" acme/widgets#12 ").unwrap();
-        assert_eq!(org, o());
-        assert!(!rev);
-        assert_eq!(o().session(true), "acme/widgets#12:reviewer");
-        assert_eq!(o().session(false), "acme/widgets#12");
-        assert!(parse_session("acme/widgets#12:author").is_none());
-        assert!(parse_session("nonsense").is_none());
+        assert_eq!(
+            strip(&format!("🤖#12 (reviewer) says: {t}\n\nlooks good")),
+            "looks good"
+        );
+        // A session id with the old suffix is not one any more.
+        assert!(Origin::parse("acme/widgets#12:reviewer").is_none());
+        assert_eq!(Origin::parse(" acme/widgets#12 ").unwrap(), o());
     }
 
     #[test]
@@ -729,11 +639,11 @@ mod tests {
         assert!(stamp(quoted, &o()).starts_with(&line()));
         // On another repository the byline spells the repository out.
         assert_eq!(
-            stamp_with("hi", &o(), Some("acme/other"), false, false),
+            stamp_with("hi", &o(), Some("acme/other"), false),
             "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
         );
         assert_eq!(
-            stamp_with("hi", &o(), None, false, false),
+            stamp_with("hi", &o(), None, false),
             "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
         );
         // A hand-written first line with the right tag is left alone, byline
@@ -754,7 +664,12 @@ mod tests {
         assert_eq!(strip("plain"), "plain");
         assert_eq!(strip(&o().tag()), "");
         assert_eq!(strip(&line()), "");
-        assert_eq!(strip(&o().first_line(None, false, true)), "");
+        assert_eq!(
+            strip(
+                "🤖acme/widgets#12 (reviewer) says: <!-- ssf: origin=acme/widgets#12 role=reviewer -->"
+            ),
+            ""
+        );
         let quoted = "> <!-- ssf: origin=a/b#1 -->\nreply";
         assert_eq!(strip(quoted), quoted);
         assert_eq!(
@@ -832,8 +747,8 @@ mod tests {
         );
         assert_eq!(
             s.origins.get("reviewed:5").map(String::as_str),
-            Some("a/b#5:reviewer"),
-            "the reviewer session is told apart from the item's own"
+            Some("a/b#5"),
+            "an old reviewer post is the item's session's"
         );
         assert_eq!(
             s.untagged.get("commented:2").map(String::as_str),

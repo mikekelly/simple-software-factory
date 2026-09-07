@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::{state_dir, write_atomic};
+use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct State {
@@ -52,13 +53,11 @@ pub struct RepoState {
     /// each of them (issue and timeline) again to find nothing new.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ignored: BTreeMap<u64, Ignored>,
-    /// Reviewer sessions, keyed by the pull request they review: a second
-    /// workspace on the PR's branch with an agent that only reviews, started
-    /// when a review is requested from the bot on a PR one of its own
-    /// sessions wrote. Same record shape as an item, but the session id is
-    /// `owner/repo#N:reviewer` and it never owns anything.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub reviewers: BTreeMap<u64, IssueState>,
+    /// Reviewer sessions from before #115 (a second workspace per pull
+    /// request, gone since): read so an old file still loads, dropped with
+    /// one log line by [`State::load_from`], never written back.
+    #[serde(default, rename = "reviewers", skip_serializing)]
+    pub legacy_reviewers: BTreeMap<u64, serde_json::Value>,
 }
 
 /// What an ignored item looked like when it was last examined: GitHub's
@@ -117,9 +116,9 @@ pub struct IssueState {
     /// When the harness was last launched, to find its session file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_at: Option<String>,
-    /// Reviewer workspace to be removed once its agent has wrapped up.
-    /// Item workspaces are never removed on this flag any more (see
-    /// `release_pending`); a stale `true` on one is cleared.
+    /// No longer set: an older daemon marked a workspace to be removed on
+    /// close with it (see `release_pending` for how a workspace goes now).
+    /// A stale `true` is cleared on the next pass.
     #[serde(default)]
     pub cleanup_pending: bool,
     /// `ssf release` passed its checks: the workspace is removed on the
@@ -166,8 +165,7 @@ pub struct IssueState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub github_state: Option<String>,
     /// Why the bot got involved: assigned, mentioned, review_requested,
-    /// created (opened by the bot itself); review_label on a reviewer
-    /// session started by the review label.
+    /// created (opened by the bot itself).
     #[serde(default)]
     pub triggers: Vec<String>,
     /// Pull request branch details.
@@ -268,7 +266,61 @@ impl State {
         }
         let raw =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-        serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+        let mut st: Self =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        st.drop_legacy_reviewers();
+        Ok(st)
+    }
+
+    /// Forget the reviewer records an older daemon wrote (see
+    /// `RepoState::legacy_reviewers`), and the subscriptions those sessions
+    /// held (`owner/repo#N:reviewer` is no session id now, and a subscriber
+    /// that is not a session is skipped with a warning on every delivery),
+    /// saying once which ones.
+    fn drop_legacy_reviewers(&mut self) {
+        let mut ghosts = Vec::new();
+        for (repo, rs) in self.repos.iter_mut() {
+            if rs.legacy_reviewers.is_empty() {
+                continue;
+            }
+            let numbers: Vec<u64> = rs.legacy_reviewers.keys().copied().collect();
+            info!(
+                repo,
+                ?numbers,
+                "dropping reviewer session records from an older ssf; ssf runs one session per item now"
+            );
+            rs.legacy_reviewers.clear();
+        }
+        for rs in self.repos.values_mut() {
+            for st in rs.issues.values_mut() {
+                st.subscribers.retain(|s| {
+                    let keep = crate::origin::Origin::parse(s).is_some();
+                    if !keep {
+                        ghosts.push(s.clone());
+                    }
+                    keep
+                });
+            }
+            // An item tracked only for a subscriber that is gone is not
+            // tracked at all (what `unsubscribe` does when the last one
+            // leaves): dropped when it never had a session, otherwise
+            // back to an ordinary retired record.
+            rs.issues
+                .retain(|_, st| !(st.subscriber_only && st.subscribers.is_empty() && !st.seeded));
+            for st in rs.issues.values_mut() {
+                if st.subscriber_only && st.subscribers.is_empty() {
+                    st.subscriber_only = false;
+                }
+            }
+        }
+        if !ghosts.is_empty() {
+            ghosts.sort();
+            ghosts.dedup();
+            info!(
+                subscribers = ?ghosts,
+                "dropping subscriptions held by sessions that no longer exist"
+            );
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -302,11 +354,6 @@ impl State {
             }
         }
         dropped
-    }
-
-    /// The reviewer session record for pull request `number`, if any.
-    pub fn reviewer(&self, repo: &str, number: u64) -> Option<&IssueState> {
-        self.repos.get(repo)?.reviewers.get(&number)
     }
 }
 
@@ -344,20 +391,55 @@ mod tests {
             .get_mut(&1)
             .unwrap()
             .subscriber_only = true;
-        let rv = IssueState {
-            number: 1,
-            seeded: true,
-            ..Default::default()
-        };
-        st.repo_mut("a/b").reviewers.insert(1, rv);
         let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         assert!(back.repos["a/b"].issues[&1].subscriber_only);
         assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
-        assert!(back.reviewer("a/b", 1).unwrap().seeded);
-        assert!(back.reviewer("a/b", 2).is_none());
-        assert!(back.reviewer("x/y", 1).is_none());
-        // An empty reviewer map is not written out.
-        let plain: State = serde_json::from_str(r#"{"repos":{"a/b":{}}}"#).unwrap();
-        assert!(!serde_json::to_string(&plain).unwrap().contains("reviewers"));
+    }
+
+    #[test]
+    fn reviewer_records_from_an_older_daemon_are_dropped_on_load() {
+        let dir = std::env::temp_dir().join(format!("ssf-state-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        std::fs::write(
+            &path,
+            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,
+                "subscribers":["a/b#7:reviewer","x/y#2"]},
+                "3":{"number":3,"subscriber_only":true,"subscribers":["a/b#7:reviewer"]},
+                "4":{"number":4,"seeded":true,"subscriber_only":true,"subscribers":["a/b#7:reviewer"]},
+                "5":{"number":5,"subscriber_only":true,"subscribers":["a/b#1"]}},
+                "reviewers":{"7":{"number":7,"seeded":true,"kind":"reviewer"}}}}}"#,
+        )
+        .unwrap();
+        let st = State::load_from(&path).unwrap();
+        assert!(st.repos["a/b"].issues[&1].seeded);
+        assert!(st.repos["a/b"].legacy_reviewers.is_empty());
+        assert_eq!(
+            st.repos["a/b"].issues[&1].subscribers,
+            vec!["x/y#2"],
+            "the reviewer's own subscriptions go with it"
+        );
+        assert!(
+            !st.repos["a/b"].issues.contains_key(&3),
+            "tracked only for the reviewer: not tracked any more"
+        );
+        let four = &st.repos["a/b"].issues[&4];
+        assert!(!four.subscriber_only && four.subscribers.is_empty() && four.seeded);
+        assert_eq!(st.repos["a/b"].issues[&5].subscribers, vec!["a/b#1"]);
+        assert!(st.repos["a/b"].issues[&5].subscriber_only);
+        st.save_to(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(!written.contains("reviewers"), "{written}");
+        // A file whose reviewer records were already dropped by an earlier
+        // load can still carry their subscriptions.
+        std::fs::write(
+            &path,
+            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,
+                "subscribers":["a/b#7:reviewer"]}}}}}"#,
+        )
+        .unwrap();
+        let st = State::load_from(&path).unwrap();
+        assert!(st.repos["a/b"].issues[&1].subscribers.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

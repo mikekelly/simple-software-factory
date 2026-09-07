@@ -395,16 +395,6 @@ impl Driver {
         }
     }
 
-    /// Is the agent in this workspace still busy? (Unknown counts as not.)
-    pub async fn agent_busy(&self, worktree_id: &str) -> Result<bool> {
-        match self {
-            Driver::Orca(d) => d.agent_busy(worktree_id).await,
-            Driver::Herdr(d) => d.agent_busy(worktree_id).await,
-            #[cfg(test)]
-            Driver::Stub(d) => Ok(d.busy(worktree_id)),
-        }
-    }
-
     /// Stop the workspace's agent and remove the workspace.
     pub async fn remove_worktree(&self, worktree_id: &str) -> Result<()> {
         match self {
@@ -685,10 +675,6 @@ impl StubDriver {
         })
     }
 
-    fn busy(&self, id: &str) -> bool {
-        self.with(|s| s.working.contains(id))
-    }
-
     fn remove_worktree(&self, id: &str) {
         self.with(|s| {
             s.worktrees.remove(id);
@@ -776,21 +762,20 @@ pub fn branch_for(name: &str) -> String {
     format!("bot/{name}")
 }
 
-/// The item number a workspace name (`issue-12-...`, `pr-12`, `review-12-...`)
-/// was made for, and whether it is a reviewer's.
-pub fn number_of_name(name: &str) -> Option<(u64, bool)> {
+/// The item number a workspace name (`issue-12-...`, `pr-12`) was made
+/// for. A `review-12-...` worktree (the reviewer sessions of before #115)
+/// is nobody's: it is not taken for the pull request's own workspace.
+pub fn number_of_name(name: &str) -> Option<u64> {
     let (prefix, rest) = name.split_once('-')?;
-    let reviewer = match prefix {
-        "issue" | "pr" => false,
-        "review" => true,
-        _ => return None,
-    };
+    if !matches!(prefix, "issue" | "pr") {
+        return None;
+    }
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     let after = &rest[digits.len()..];
     if digits.is_empty() || !(after.is_empty() || after.starts_with('-')) {
         return None;
     }
-    Some((digits.parse().ok()?, reviewer))
+    digits.parse().ok()
 }
 
 /// A clone of the repository under `projects_dir` (or `existing_path`),
@@ -990,11 +975,7 @@ pub async fn local_worktrees(repo_root: &str) -> Result<Vec<LocalWorktree>> {
 }
 
 /// The worktree made for item `number` under `repo_root`, by its name.
-pub async fn find_local_worktree(
-    repo_root: &str,
-    number: u64,
-    reviewer: bool,
-) -> Result<Option<LocalWorktree>> {
+pub async fn find_local_worktree(repo_root: &str, number: u64) -> Result<Option<LocalWorktree>> {
     let dir = worktrees_dir(repo_root);
     for w in local_worktrees(repo_root).await? {
         let p = Path::new(&w.path);
@@ -1002,10 +983,7 @@ pub async fn find_local_worktree(
             continue;
         }
         let name = p.file_name().map(|n| n.to_string_lossy().to_string());
-        if let Some((n, r)) = name.as_deref().and_then(number_of_name)
-            && n == number
-            && r == reviewer
-        {
+        if name.as_deref().and_then(number_of_name) == Some(number) {
             return Ok(Some(w));
         }
     }
@@ -1090,10 +1068,14 @@ mod tests {
 
     #[test]
     fn names_tell_their_item() {
-        assert_eq!(number_of_name("issue-12"), Some((12, false)));
-        assert_eq!(number_of_name("issue-12-fix-it"), Some((12, false)));
-        assert_eq!(number_of_name("pr-7-x"), Some((7, false)));
-        assert_eq!(number_of_name("review-7-x"), Some((7, true)));
+        assert_eq!(number_of_name("issue-12"), Some(12));
+        assert_eq!(number_of_name("issue-12-fix-it"), Some(12));
+        assert_eq!(number_of_name("pr-7-x"), Some(7));
+        assert_eq!(
+            number_of_name("review-7-x"),
+            None,
+            "an old reviewer worktree is not the PR's"
+        );
         assert_eq!(number_of_name("issue-12x"), None);
         assert_eq!(number_of_name("scratch"), None);
         assert_eq!(number_of_name("issue-"), None);

@@ -15,7 +15,7 @@ everything git and GitHub related is the bot, whatever the human's own
 | SSH pushes | `GIT_SSH_COMMAND` pinned to the enrolled bot key with `IdentitiesOnly=yes` |
 | Commit author and committer | `GIT_AUTHOR_*`, `GIT_COMMITTER_*` and `user.name`/`user.email`: the bot's login and email, unless `[git]` names a person (below) |
 | Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key); a person's key when `[git]` gives one |
-| Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT`, and `SSF_ROLE=reviewer` in a reviewer session (`ssf launch --role reviewer`) |
+| Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT` |
 | Which session posted what | a `gh` wrapper first on `PATH` that starts every post with the byline (below) |
 
 Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
@@ -139,9 +139,9 @@ The byline is `🤖#N says:` when the post is on the same repository as the
 session's item and `🤖owner/repo#N says:` on another; GitHub renders the
 item in either as a link to it, so a reader can tell a session's posts from
 a person's at a glance and see which session wrote them, even when the
-"bot" is someone's own account. A reviewer session's byline is
-`🤖#N (reviewer) says:`. Posts from before #42 have the byline without
-`says:`; the daemon reads those the same way.
+"bot" is someone's own account. Posts from before #42 have the byline
+without `says:`, and posts by the reviewer sessions of before #115 read
+`🤖#N (reviewer) says:`; the daemon reads both the same way.
 The HTML comment after it (the *origin tag*) is invisible in the rendered
 post and is what the daemon reads. (Because the byline links to the origin
 item, GitHub adds a "referenced in ..." event on that item for every post:
@@ -199,12 +199,10 @@ hears that person. It still counts as untagged for `ssf status` and
 `ssf doctor`, since nothing distinguishes it from a session whose wrapper was
 not in effect, and an untagged item body binds the item to no session.
 
-The tag can carry more fields. Two are defined: `mode=delegate`,
-which the wrapper adds when an `issue create` or `pr create` assigns the bot
+The tag can carry more fields. One is defined: `mode=delegate`, which
+the wrapper adds when an `issue create` or `pr create` assigns the bot
 itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
-session's own (see [Ownership](sessions.md#ownership-one-session-per-item));
-and `role=reviewer`, which the wrapper adds to everything
-posted from a reviewer session (`SSF_ROLE=reviewer` in its environment), so
-a review by the bot on its own pull request is told apart from the author's
-posts and shown as "(from the reviewer session on owner/repo#N)". The
-byline does not encode the mode.
+session's own (see [Ownership](sessions.md#ownership-one-session-per-item)).
+Posts made before #115 by a reviewer session carry `role=reviewer`; the
+field is read and ignored, so such a post counts as the item's session's.
+The byline does not encode the mode.

@@ -153,15 +153,8 @@ pub struct Ask {
 /// - `mentioned`: everyone whose body, comment or review mentions the bot;
 /// - `review_requested`: the actor of the latest review request naming the
 ///   bot (the author when there is none);
-/// - `review_label`: the actor of the latest addition of the review label;
 /// - `created`: the bot itself.
-pub fn askers(
-    issue: &Issue,
-    timeline: &[Value],
-    triggers: &[String],
-    bot: &str,
-    review_label: Option<&str>,
-) -> Vec<Ask> {
+pub fn askers(issue: &Issue, timeline: &[Value], triggers: &[String], bot: &str) -> Vec<Ask> {
     let mut out = Vec::new();
     let mut push = |trigger: &str, login: &str| {
         let ask = Ask {
@@ -229,17 +222,6 @@ pub fn askers(
                     .map(actor_of)
                     .unwrap_or_else(|| issue.author().to_string());
                 push("review_requested", &actor);
-            }
-            "review_label" => {
-                if let Some(label) = review_label
-                    && let Some(ev) = timeline.iter().rev().find(|ev| {
-                        value_str(ev, &["event"]) == Some("labeled")
-                            && value_str(ev, &["label", "name"])
-                                .is_some_and(|n| n.eq_ignore_ascii_case(label))
-                    })
-                {
-                    push("review_label", &actor_of(ev));
-                }
             }
             "created" => push("created", bot),
             _ => {}
@@ -381,17 +363,11 @@ mod tests {
             ev("labeled", "heidi", json!({"label": {"name": "Review"}})),
             ev("labeled", "ivan", json!({"label": {"name": "bug"}})),
         ];
-        let all: Vec<String> = [
-            "assigned",
-            "mentioned",
-            "review_requested",
-            "review_label",
-            "created",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-        let asks = askers(&i, &timeline, &all, "bot", Some("review"));
+        let all: Vec<String> = ["assigned", "mentioned", "review_requested", "created"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let asks = askers(&i, &timeline, &all, "bot");
         let pairs: Vec<(&str, &str)> = asks
             .iter()
             .map(|a| (a.trigger.as_str(), a.login.as_str()))
@@ -404,7 +380,6 @@ mod tests {
                 ("mentioned", "dave"),
                 ("mentioned", "frank"),
                 ("review_requested", "grace"),
-                ("review_label", "heidi"),
                 ("created", "bot"),
             ]
         );
@@ -418,7 +393,6 @@ mod tests {
                 "mentioned".into(),
             ],
             "bot",
-            None,
         );
         let pairs: Vec<(&str, &str)> = asks
             .iter()

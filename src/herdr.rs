@@ -135,7 +135,7 @@ fn worktree_rows(v: &Value) -> impl Iterator<Item = &Value> {
 
 /// A workspace's checkout root and item number, from its checkout path:
 /// ssf's worktrees live in `<root>.worktrees/<name>`.
-fn root_and_item(cwd: &str) -> (Option<String>, Option<(u64, bool)>) {
+fn root_and_item(cwd: &str) -> (Option<String>, Option<u64>) {
     let p = Path::new(cwd);
     let name = p.file_name().map(|n| n.to_string_lossy().to_string());
     let parent = p
@@ -199,7 +199,7 @@ pub fn join_ps(workspaces: &Value, panes: &[Pane], agents: &[Agent]) -> Vec<Work
                 status: s(w, "agent_status"),
                 is_archived: false,
                 live_terminals: ws_panes.len() as u64,
-                linked_issue: item.filter(|(_, r)| !r).map(|(n, _)| n),
+                linked_issue: item,
                 linked_pr: None,
                 last_activity_at: None,
                 agents: ws_agents,
@@ -383,7 +383,7 @@ impl Herdr {
         repo_root: &str,
         number: u64,
     ) -> Result<Option<Worktree>> {
-        let Some(w) = find_local_worktree(repo_root, number, false).await? else {
+        let Some(w) = find_local_worktree(repo_root, number).await? else {
             return Ok(None);
         };
         let label = Path::new(&w.path)
@@ -431,15 +431,6 @@ impl Herdr {
         let agents = self.agents().await?;
         let panes = parse_panes(&self.run(&["pane", "list"]).await?);
         Ok(join_ps(&workspaces, &panes, &agents))
-    }
-
-    pub async fn agent_busy(&self, id: &str) -> Result<bool> {
-        let (ws, _) = split_id(id);
-        Ok(self
-            .agents()
-            .await?
-            .iter()
-            .any(|a| a.workspace_id == ws && a.status == "working"))
     }
 
     pub async fn has_live_agent(&self, id: &str) -> Result<bool> {
@@ -945,11 +936,13 @@ mod tests {
     fn workspace_cwd_tells_root_and_item() {
         assert_eq!(
             root_and_item("/p/widgets.worktrees/issue-3-x"),
-            (Some("/p/widgets".into()), Some((3, false)))
+            (Some("/p/widgets".into()), Some(3))
         );
+        // A reviewer worktree from before #115 is on the repository but
+        // belongs to no item.
         assert_eq!(
             root_and_item("/p/widgets.worktrees/review-9"),
-            (Some("/p/widgets".into()), Some((9, true)))
+            (Some("/p/widgets".into()), None)
         );
         assert_eq!(root_and_item("/home/me/code/thing"), (None, None));
     }

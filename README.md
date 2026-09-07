@@ -60,56 +60,18 @@ is opened by the bot from the issue's branch. Its description starts with
 > should change: reviewer sessions are included in the pass (...), and the
 > bounded wait defers the first poll but never drops the pass.
 
-**20:35 — the `review` label goes on the pull request.** That asks for a
-review. The agent that wrote the code must not review it, so ssf starts a
-second agent in a read-only checkout of the pull request. Four minutes later
-it posts a review:
-
-> **OverlayBot** reviewed at 20:39
->
-> **Verdict: changes requested** (posted as a comment review because GitHub
-> does not let the bot request changes on its own pull request).
->
-> The design is right and the code does what #18 asked: (...) `cargo test`
-> (75 passing), `cargo fmt --check` and `cargo clippy` are clean here (...)
->
-> One gap I would like fixed before merging, then this is good to go.
->
-> **Candidates miss a retired owner whose delegated items are still active**
-> (`src/engine.rs:611-627`). The item filter is
-> `active && shares_workspace_of.is_none()`. When a parent closes while items
-> bound to its workspace are still open, retirement (...) keeps its workspace
-> for the dependents (...). After a reboot that harness is the one that needs
-> starting again, but the pass skips it twice over (...). Suggested shape:
-> (...) The existing test `startup_pass_looks_at_owning_active_sessions_only`
-> can grow one case (...)
->
-> Observations, no change needed: (...)
-
-ssf removes the label once the review is posted. The review lands in the
-author's session as new activity, and the author answers on the pull request:
-
-> **OverlayBot** commented at 20:42
->
-> Thanks, the gap was real: retirement keeps a closed parent's workspace
-> while items bound to it are open, and their deliveries still route to it,
-> so its harness is the one the pass should bring back. Fixed in 777e390:
-> `resume_candidates` now collects the session that acts on every active,
-> seeded item (...). The test grew the case you suggested (...)
->
-> Also rebased onto master (...), reran `cargo fmt --check`, `cargo clippy`
-> (nothing new) and `cargo test` (76 passing), and rebuilt the package for
-> the pkgver bump. Force-pushed with lease.
-
-It pushes and puts the `review` label back on. The same reviewer comes back
-with what happened in between:
-
-> **OverlayBot** reviewed at 20:43
->
-> **Verdict: approved** (posted as a comment review because GitHub does not
-> let the bot approve its own pull request).
->
-> Looked at 777e390 and the rebase. This is mergeable. (...)
+**20:35 to 20:43 — a second pair of eyes.** In this run a separate
+reviewer agent, which ssf at the time started on a `review` label, found
+one real gap (the startup pass skipped a retired session whose delegated
+items were still open), the author fixed it in 777e390, rebased, reran
+the tests and answered on the pull request, and the reviewer came back
+with "mergeable". ssf no longer starts that second agent: it runs one
+session per item, and the agent that did the work runs that loop itself
+before saying it is done. This repository's `SSF.md` asks for a gauntlet:
+hand the diff, the issue and your claim of what it does to a fresh agent
+that has not seen your reasoning (a subagent, or a different agent and
+model through herdr), ask it to break it, fix what it finds, and go again
+until nothing that matters is left; then say on the issue what it found.
 
 **20:44 — the pull request is merged and the issue closes.** Merging is
 not the agent's call. The closure reaches the author's agent, which leaves
@@ -124,9 +86,9 @@ a last comment on the issue:
 Once the agent is done and everything is on GitHub, it gives its workspace
 back with `ssf release`; ssf never removes one on its own. The branch stays
 on GitHub. Twenty minutes passed between the assignment and the merge. The
-human's part was the assignment, the label and the merge; on this
-repository even those were done by a project-management agent on the
-maintainer's instructions.
+human's part was the assignment and the merge; on this repository even
+those were done by a project-management agent on the maintainer's
+instructions.
 
 **Which agent said what.** GitHub shows the same bot account for every
 agent, so each post an agent makes starts with a byline naming its issue,
@@ -139,8 +101,7 @@ linked to it. A post from the agent on issue #31 looks like this on GitHub:
 > Merged in #32 (c73d0fd). Final note: two commits landed on the branch
 > after the merge (...)
 
-A reviewer's byline reads `🤖#29 (reviewer) says:`. The posts quoted above
-from #18 predate the byline (it arrived with #32 on 2026-09-05, and the
+The posts quoted above from #18 predate the byline (it arrived with #32 on 2026-09-05, and the
 `says:` with #42) and carried the same mark out of sight at the end of the
 body; every post since carries it on the first line. A post by the bot
 account *without* a byline was typed by a person. How the byline works,
@@ -160,8 +121,9 @@ and how the daemon reads it, is in
   the notes your repository keeps in `SSF.md` (how you want work done,
   who to ask, what the columns mean). It can see who else is working on the
   repository, follow other issues, hand work off by opening an issue
-  assigned to the bot, and get its own pull request reviewed by a separate
-  reviewer agent.
+  assigned to the bot, and is expected to put its own work through a
+  gauntlet (a fresh agent it arranges itself) before calling it done: one
+  session per item, the rule for the second pair of eyes in `SSF.md`.
 - **Everything is on GitHub.** Agents talk to people, and to each other,
   through issue and pull request comments. Every post carries the byline of
   the session that made it. The one exception is `ssf tell`, a message
@@ -257,8 +219,7 @@ upgrading, stopping and uninstalling. The short form of the default path:
 
 `ssf doctor` after each step says what is still missing; the document
 shows what a healthy one looks like. Then assign an issue or pull request
-to the bot on GitHub, @mention it, or put the `review` label on a pull
-request the bot opened. Within a poll interval (10 s by default) a
+to the bot on GitHub, or @mention it. Within a poll interval (10 s by default) a
 workspace shows up in the driver and in `ssf status`, and the bar widget
 shows the state of the factory: one row per agent session with the issue
 or PR, its GitHub state, the agent's state, what it last said, the
@@ -268,10 +229,10 @@ A good first issue is small and self-contained, says what "done" looks
 like (a test that passes, a file that changes, a command that works), and
 names what to run before opening a pull request. Assign it to the bot and
 watch the issue: within a couple of minutes the agent comments with what
-it is about to do, and later with the pull request. Put the `review`
-label on the pull request for a second agent's review, answer or merge as
-you would for a colleague, and close the issue when it is done; the agent
-then pushes what is left, comments once more and gives its workspace back.
+it is about to do, and later with the pull request, after the gauntlet
+its `SSF.md` asks for. Read it, answer or merge as you would for a
+colleague, and close the issue when it is done; the agent then pushes
+what is left, comments once more and gives its workspace back.
 
 The same commands, with their variants:
 
@@ -341,9 +302,12 @@ Things to know when operating it:
   which the agent receives like any other activity.
 - A daemon restart is invisible to agents; a reboot triggers the startup
   pass that relaunches interrupted sessions.
-- A review of a bot-opened pull request is asked for with the `review`
-  label (GitHub refuses a review request from a PR's own author); a
-  separate reviewer agent posts it and ssf takes the label off.
+- ssf starts no second session on a pull request the bot opened: the
+  agent that wrote it runs the gauntlet its `SSF.md` asks for (a fresh
+  agent breaks the change, the author fixes and repeats), and its
+  autonomy line says who merges (a person, as shipped). A `review` label
+  does nothing; `ssf doctor` reports a
+  repository without an `SSF.md`.
 
 **Stopping it.** The toggle in the bar widget, or `ssf ui service
 disable`, stops the service and keeps it from starting at the next login
@@ -371,7 +335,7 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
 | [Inside a microVM](docs/vm.md) | running the whole factory in a Firecracker VM: the image, what gets in, reaching it, what persists |
 | [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and what is left to `SSF.md` |
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |
-| [Sessions](docs/sessions.md) | which session owns an item, reviewer sessions, following and messaging other sessions, release and purge |
+| [Sessions](docs/sessions.md) | which session owns an item, second opinions, following and messaging other sessions, release and purge |
 | [Under the hood](docs/internals.md) | polling, delivery, resume and restarts; the `ssf status --json` fields; known limits |
 | [Development](docs/development.md) | building, scratch runs, a dev build as the service, the source layout |
 

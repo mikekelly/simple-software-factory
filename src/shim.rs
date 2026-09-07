@@ -139,7 +139,6 @@ pub fn run() -> ! {
             let shim = Shim {
                 origin: &origin,
                 bot: bot.as_deref(),
-                reviewer: Origin::reviewer_from_env(),
                 gh_repo: gh_repo.as_deref(),
                 read: &read_body_file,
                 checkout: &checkout_repo,
@@ -243,13 +242,11 @@ fn repo_in_args(args: &[String]) -> Option<String> {
 /// What the shim knows about the session it runs in, and how it reads the
 /// world: `read` resolves `--body-file` (a path, or `-` for stdin),
 /// `checkout` names the current checkout's repository. `bot` is the bot
-/// login, to notice a `create --assignee <bot>` hand-off; `reviewer` says
-/// the posts come from the item's reviewer session; `gh_repo` is the
+/// login, to notice a `create --assignee <bot>` hand-off; `gh_repo` is the
 /// `GH_REPO` gh honours over the checkout.
 pub struct Shim<'a> {
     pub origin: &'a Origin,
     pub bot: Option<&'a str>,
-    pub reviewer: bool,
     pub gh_repo: Option<&'a str>,
     pub read: &'a dyn Fn(&str) -> std::io::Result<String>,
     pub checkout: &'a dyn Fn() -> Option<String>,
@@ -318,12 +315,12 @@ impl Shim<'_> {
         if !is_tagged(&args[c], &args[s]) {
             return args;
         }
-        let (origin, reviewer) = (self.origin, self.reviewer);
+        let origin = self.origin;
         let delegate = args[s] == "create" && assigns_bot(&args[s + 1..], self.bot);
         let on_repo = repo_in_args(&args[s + 1..])
             .or_else(|| self.gh_repo.and_then(repo_of))
             .or_else(|| (self.checkout)());
-        let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate, reviewer);
+        let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate);
         let mut out: Vec<String> = args[..=s].to_vec();
         let mut stamped = false;
         let mut i = s + 1;
@@ -407,7 +404,7 @@ mod tests {
 
     /// The first line of a post on the session's own repository.
     fn line() -> String {
-        o().first_line(Some("acme/widgets"), false, false)
+        o().first_line(Some("acme/widgets"), false)
     }
 
     fn args(s: &[&str]) -> Vec<String> {
@@ -431,7 +428,6 @@ mod tests {
         Shim {
             origin,
             bot: None,
-            reviewer: false,
             gh_repo: None,
             read: &no_files,
             checkout: &same_repo,
@@ -441,10 +437,6 @@ mod tests {
     fn rewrite(a: Vec<String>) -> Vec<String> {
         let o = o();
         shim(&o).rewrite(a)
-    }
-
-    fn parse_tag(body: &str) -> crate::origin::Tag {
-        crate::origin::parse(body).unwrap()
     }
 
     #[test]
@@ -727,43 +719,13 @@ mod tests {
                 "pr",
                 "review",
                 "--body",
-                &o().first_line(None, false, false),
+                &o().first_line(None, false),
                 "7",
                 "--approve",
                 "-R",
                 "acme/other"
             ])
         );
-    }
-
-    #[test]
-    fn reviewer_sessions_stamp_their_role() {
-        let rline = o().first_line(Some("acme/widgets"), false, true);
-        assert_eq!(
-            rline,
-            format!("🤖#12 (reviewer) says: {}", o().reviewer_tag())
-        );
-        let o = o();
-        let mut s = shim(&o);
-        s.reviewer = true;
-        let out = s.rewrite(args(&[
-            "pr",
-            "review",
-            "12",
-            "--request-changes",
-            "--body",
-            "nits",
-        ]));
-        assert_eq!(out[5], format!("{rline}\n\nnits"));
-        let out = s.rewrite(args(&["pr", "review", "12", "--approve"]));
-        assert_eq!(
-            out,
-            args(&["pr", "review", "--body", &rline, "12", "--approve"])
-        );
-        let out = s.rewrite(args(&["pr", "comment", "12", "--body", "question"]));
-        assert!(out[4].starts_with(&rline));
-        assert!(!parse_tag(&out[4]).is_delegate());
-        assert!(parse_tag(&out[4]).is_reviewer());
     }
 
     #[test]
@@ -799,7 +761,7 @@ mod tests {
         for body in [
             format!("{}\n\ndone", line()),
             format!("{}\n\ndone", o().tag()),
-            format!("{}\n\ndone", o().first_line(None, false, false)),
+            format!("{}\n\ndone", o().first_line(None, false)),
         ] {
             let a = args(&["issue", "comment", "3", "--body", &body]);
             assert_eq!(rewrite(a.clone()), a);

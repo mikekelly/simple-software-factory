@@ -598,18 +598,16 @@ pub struct DaemonConfig {
     /// still load.
     #[serde(default = "default_true")]
     pub cleanup_on_close: bool,
-    /// How long a reviewer session gets to finish after its review is done
-    /// or its pull request closes before its workspace (a read-only
-    /// checkout) is removed anyway. Item workspaces are not affected.
-    #[serde(default = "default_cleanup_grace")]
-    pub cleanup_grace_secs: u64,
-    /// Label that asks for a review of a pull request one of the bot's own
-    /// sessions wrote: GitHub refuses a review request from a pull request's
-    /// author, so a human (or the author's agent) adds this label instead,
-    /// the reviewer session starts, and ssf removes the label once the
-    /// review is posted. Empty disables the label trigger.
-    #[serde(default = "default_review_label")]
-    pub review_label: String,
+    /// No longer used: it timed the reviewer sessions out, and those went
+    /// with #115 (ssf runs one session per item). Accepted so old config
+    /// files still load; never written back.
+    #[serde(default, skip_serializing)]
+    pub cleanup_grace_secs: Option<u64>,
+    /// No longer used: the label started a reviewer session until #115;
+    /// ssf no longer reacts to any label. Accepted so old config files
+    /// still load; never written back.
+    #[serde(default, skip_serializing)]
+    pub review_label: Option<String>,
     /// Resume interrupted sessions when the daemon starts. After a machine
     /// restart Orca's terminals are gone: every active session whose
     /// workspace still exists but has no live agent is started again
@@ -645,10 +643,18 @@ pub struct DaemonConfig {
 }
 
 impl DaemonConfig {
-    /// The review label, unless the trigger is disabled.
-    pub fn review_label(&self) -> Option<&str> {
-        let l = self.review_label.trim();
-        (!l.is_empty()).then_some(l)
+    /// Keys still in the file that ssf no longer reads, for `ssf doctor`
+    /// to mention: `review_label` and `cleanup_grace_secs` belonged to the
+    /// reviewer sessions removed in #115.
+    pub fn retired_keys(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.review_label.is_some() {
+            out.push("daemon.review_label");
+        }
+        if self.cleanup_grace_secs.is_some() {
+            out.push("daemon.cleanup_grace_secs");
+        }
+        out
     }
 }
 
@@ -661,8 +667,8 @@ impl Default for DaemonConfig {
             max_body_chars: default_max_body_chars(),
             instructions: None,
             cleanup_on_close: true,
-            cleanup_grace_secs: default_cleanup_grace(),
-            review_label: default_review_label(),
+            cleanup_grace_secs: None,
+            review_label: None,
             resume_on_start: true,
             startup_driver_wait_secs: default_startup_driver_wait(),
             allowed_users: None,
@@ -685,13 +691,6 @@ fn default_max_body_chars() -> usize {
 }
 fn default_true() -> bool {
     true
-}
-fn default_review_label() -> String {
-    "review".into()
-}
-
-fn default_cleanup_grace() -> u64 {
-    900
 }
 fn default_startup_driver_wait() -> u64 {
     120
@@ -1343,20 +1342,12 @@ driver = "orca"
     }
 
     #[test]
-    fn the_review_label_defaults_to_review_and_can_be_disabled() {
-        let cfg = parse(
-            r#"
-[[repo]]
-name = "acme/widgets"
-harness = "claude"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.daemon.review_label(), Some("review"));
+    fn the_old_reviewer_keys_still_load_and_are_not_written_back() {
         let cfg = parse(
             r#"
 [daemon]
-review_label = " needs-review "
+review_label = "review"
+cleanup_grace_secs = 900
 
 [[repo]]
 name = "acme/widgets"
@@ -1364,19 +1355,16 @@ harness = "claude"
 "#,
         )
         .unwrap();
-        assert_eq!(cfg.daemon.review_label(), Some("needs-review"));
-        let cfg = parse(
-            r#"
-[daemon]
-review_label = ""
-
-[[repo]]
-name = "acme/widgets"
-harness = "claude"
-"#,
-        )
-        .unwrap();
-        assert_eq!(cfg.daemon.review_label(), None);
+        assert_eq!(cfg.daemon.review_label.as_deref(), Some("review"));
+        assert_eq!(cfg.daemon.cleanup_grace_secs, Some(900));
+        assert_eq!(
+            cfg.daemon.retired_keys(),
+            vec!["daemon.review_label", "daemon.cleanup_grace_secs"]
+        );
+        assert!(DaemonConfig::default().retired_keys().is_empty());
+        let out = toml::to_string(&cfg).unwrap();
+        assert!(!out.contains("review_label"), "{out}");
+        assert!(!out.contains("cleanup_grace_secs"), "{out}");
     }
 
     #[test]
