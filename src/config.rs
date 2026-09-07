@@ -509,13 +509,21 @@ pub struct VmConfig {
     /// The root image `ssf vm build` makes; `<dir>/rootfs.ext4` when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rootfs: Option<String>,
-    #[serde(default = "default_vm_vcpus")]
-    pub vcpus: u32,
-    #[serde(default = "default_vm_mem_mib")]
-    pub mem_mib: u32,
-    /// Size of the persistent data disk (state, clones and worktrees), made sparse.
-    #[serde(default = "default_vm_data_gib")]
-    pub data_gib: u32,
+    /// The guest's vCPUs. Unset: chosen from this machine (its logical
+    /// CPUs minus one, at least 2) and written here by `ssf vm build`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcpus: Option<u32>,
+    /// The guest's memory in MiB. Unset: chosen from this machine (half
+    /// its RAM, at least 4096) and written here by `ssf vm build`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_mib: Option<u32>,
+    /// Size of the persistent data disk (state, clones and worktrees) in
+    /// GiB. The file is sparse, so this reserves nothing on the host. Unset:
+    /// chosen from this machine (half the free space of the filesystem
+    /// holding `dir`, at least 20) and written here by `ssf vm build`; `ssf
+    /// vm grow` enlarges an existing disk and updates this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_gib: Option<u32>,
     /// Size of the root image `ssf vm build` makes.
     #[serde(default = "default_vm_root_gib")]
     pub root_gib: u32,
@@ -541,9 +549,9 @@ impl Default for VmConfig {
             gvproxy: None,
             kernel: None,
             rootfs: None,
-            vcpus: default_vm_vcpus(),
-            mem_mib: default_vm_mem_mib(),
-            data_gib: default_vm_data_gib(),
+            vcpus: None,
+            mem_mib: None,
+            data_gib: None,
             root_gib: default_vm_root_gib(),
             ssh_port: default_vm_ssh_port(),
             files: Vec::new(),
@@ -556,15 +564,6 @@ fn default_vm_name() -> String {
 }
 fn default_vm_dir() -> String {
     "~/.local/share/ssf/vm".to_string()
-}
-fn default_vm_vcpus() -> u32 {
-    2
-}
-fn default_vm_mem_mib() -> u32 {
-    4096
-}
-fn default_vm_data_gib() -> u32 {
-    20
 }
 fn default_vm_root_gib() -> u32 {
     8
@@ -1176,6 +1175,36 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_sizes_stay_unset_until_written_and_old_files_pin_them() {
+        // Unset: not in the file, so a later `ssf vm build` chooses them.
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(!text.contains("vcpus"), "{text}");
+        assert!(!text.contains("mem_mib"), "{text}");
+        assert!(!text.contains("data_gib"), "{text}");
+        assert!(text.contains("root_gib = 8"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.vm.vcpus, None);
+        assert_eq!(back.vm.data_gib, None);
+        // Set: written and read back.
+        let mut cfg = Config::default();
+        cfg.vm.vcpus = Some(3);
+        cfg.vm.mem_mib = Some(15872);
+        cfg.vm.data_gib = Some(80);
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("data_gib = 80"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(
+            (back.vm.vcpus, back.vm.mem_mib, back.vm.data_gib),
+            (Some(3), Some(15872), Some(80))
+        );
+        // A file from before, with the old constants written out, keeps them.
+        let old: Config =
+            toml::from_str("[vm]\nvcpus = 2\nmem_mib = 4096\ndata_gib = 20\n").unwrap();
+        assert_eq!(old.vm.data_gib, Some(20));
+    }
 
     #[test]
     fn drivers_come_from_the_top_level_and_per_repo() {

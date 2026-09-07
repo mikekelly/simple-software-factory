@@ -56,8 +56,9 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
 | `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
-| `vm.vcpus`, `vm.mem_mib` | `2`, `4096` | The guest's size |
-| `vm.data_gib`, `vm.root_gib` | `20`, `8` | The persistent data disk (state, clones, worktrees; sparse) and the root image `ssf vm build` makes |
+| `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
+| `vm.data_gib` | chosen from the machine | The persistent data disk (state, clones, worktrees) in GiB, sparse; unset, `ssf vm build` writes half the free space of the filesystem holding `vm.dir` (at least 20) here; `ssf vm grow` enlarges it later |
+| `vm.root_gib` | `8` | The root image `ssf vm build` makes |
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
 | `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
 | `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Use binaries or images of your own instead of the downloaded ones |

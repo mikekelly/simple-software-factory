@@ -231,11 +231,32 @@ enum Command {
 enum VmCommand {
     /// Download Firecracker, gvproxy and a guest kernel, make the root
     /// image from the Arch bootstrap tarball and provision it (git, gh,
-    /// herdr, the harness CLIs). No root needed.
+    /// herdr, the harness CLIs). No root needed. Also sizes the VM from
+    /// this machine: every `[vm]` size key left unset (`vcpus`: the CPUs
+    /// minus one, at least 2; `mem_mib`: half the RAM, at least 4096;
+    /// `data_gib`: half the free space where the VM lives, at least 20,
+    /// sparse) is chosen, printed and written to config.toml.
     Build {
         /// Make a new image even if one exists.
         #[arg(long)]
         force: bool,
+        /// The guest's vCPUs, written to config.toml instead of the rule.
+        #[arg(long)]
+        vcpus: Option<u32>,
+        /// The guest's memory in MiB, written to config.toml instead of the rule.
+        #[arg(long)]
+        mem_mib: Option<u32>,
+        /// The data disk's size in GiB, written to config.toml instead of the rule.
+        #[arg(long)]
+        data_gib: Option<u32>,
+    },
+    /// Enlarge an existing VM's data disk, keeping what is on it (the VM
+    /// stopped): to the size given, or to the rule for today's free space.
+    /// Never shrinks. Updates `[vm] data_gib`.
+    Grow {
+        /// The new size in GiB (at least the current size).
+        #[arg(long)]
+        data_gib: Option<u32>,
     },
     /// Boot the VM (making its disks on first use) and wait for its daemon.
     Start,
@@ -243,7 +264,8 @@ enum VmCommand {
     Stop,
     /// Stop, then start (picks up a new ssf binary and `[vm] files`).
     Restart,
-    /// Whether the VM runs and its daemon answers.
+    /// Whether the VM runs and its daemon answers, its size, and how full
+    /// the data disk is.
     Status {
         #[arg(long)]
         json: bool,
@@ -1937,7 +1959,28 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
     let cfg = Config::load()?;
     let vm = vm::Vm::new(&cfg);
     match command {
-        VmCommand::Build { force } => vm.build(force).await,
+        VmCommand::Build {
+            force,
+            vcpus,
+            mem_mib,
+            data_gib,
+        } => {
+            let mut cfg = cfg;
+            size_vm(&mut cfg, &vm.base, [vcpus, mem_mib, data_gib])?;
+            vm::Vm::new(&cfg).build(force).await
+        }
+        VmCommand::Grow { data_gib } => {
+            if let Some(n) = vm.grow(data_gib)? {
+                let mut cfg = cfg;
+                cfg.vm.data_gib = Some(n);
+                cfg.save()?;
+                println!(
+                    "[vm] data_gib = {n} written to {}",
+                    config::config_path().display()
+                );
+            }
+            Ok(())
+        }
         VmCommand::Start => {
             let orca = vm::orca_repos(&cfg);
             if !orca.is_empty() {
@@ -1992,6 +2035,20 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                     }
                 );
                 println!("daemon:   {}", st.daemon.as_deref().unwrap_or("unknown"));
+                println!(
+                    "size:     {} vCPUs, {} MiB; data disk {} GiB{}",
+                    st.vcpus,
+                    st.mem_mib,
+                    st.data_gib,
+                    match &st.data {
+                        Some(d) => format!(
+                            ", {}{}",
+                            d.describe(),
+                            if d.is_full() { "; `ssf vm grow`" } else { "" }
+                        ),
+                        None => String::new(),
+                    }
+                );
                 if !st.logins.is_empty() {
                     println!("logins:   {}", login_summary(&st.logins));
                 }
@@ -2064,6 +2121,39 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
 
 fn exit_with(st: std::process::ExitStatus) -> Result<()> {
     std::process::exit(st.code().unwrap_or(1));
+}
+
+/// `ssf vm build`'s sizing: a `--vcpus/--mem-mib/--data-gib` flag is
+/// written to `[vm]`; a key set there stays; a key set nowhere gets the
+/// rule for this machine and is written too. The choice is printed with
+/// where each value came from.
+fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()> {
+    let facts = vm::HostFacts::probe(base)?;
+    let chosen = vm::choose_sizes(&mut cfg.vm, flags, vm::sizes_for(&facts));
+    println!(
+        "this machine: {} CPUs, {} MiB RAM, {} GiB free on {} (where [vm] dir is)",
+        facts.cpus,
+        facts.mem_mib,
+        facts.free_bytes >> 30,
+        facts.mount
+    );
+    println!(
+        "VM size: {} vCPUs ({}), {} MiB RAM ({}), {} GiB data disk ({}; sparse, so it takes host space only as the guest writes)",
+        chosen.sizes.vcpus,
+        chosen.sources[0],
+        chosen.sizes.mem_mib,
+        chosen.sources[1],
+        chosen.sizes.data_gib,
+        chosen.sources[2],
+    );
+    if chosen.changed {
+        cfg.save()?;
+        println!(
+            "written to {} under [vm] (vcpus, mem_mib, data_gib); edit them there, and `ssf vm grow` enlarges the data disk later",
+            config::config_path().display()
+        );
+    }
+    Ok(())
 }
 
 async fn run(once: bool) -> Result<()> {
@@ -2700,6 +2790,43 @@ async fn doctor() -> Result<()> {
                     probe.detail
                 )
             }
+        }
+    }
+    // In the guest: the data disk and the memory, which only show from
+    // inside (the data disk is a sparse file on the host; the guest has
+    // no swap, so short memory means OOM kills, not slowness).
+    if vm::in_guest() {
+        match vm::disk_use(Path::new(vm::GUEST_DATA_DIR)) {
+            Ok(d) => check(
+                !d.is_full(),
+                format!(
+                    "data disk {}{}",
+                    d.describe(),
+                    if d.is_full() {
+                        "; grow it from the host: stop the VM (`systemctl --user stop ssf.service`, or `ssf vm stop` when it was started by hand), `ssf vm grow`, start it again"
+                    } else {
+                        ""
+                    }
+                ),
+            ),
+            Err(e) => println!("note data disk: {e:#}"),
+        }
+        if let Some(m) = std::fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|t| vm::parse_meminfo(&t))
+        {
+            check(
+                !m.is_short(),
+                format!(
+                    "guest memory: {}{}",
+                    m.describe(),
+                    if m.is_short() {
+                        "; raise vm.mem_mib in config.toml on the host and `ssf vm restart`"
+                    } else {
+                        ""
+                    }
+                ),
+            );
         }
     }
     match ipc::call(&ipc::Request::Ping).await {

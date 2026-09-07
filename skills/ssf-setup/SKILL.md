@@ -50,3 +50,9 @@ commands, and the rest of `docs/` is the reference the document links to.
    inside it) unless the person asks for an alternative or the machine
    cannot run the VM (no `/dev/kvm`, not x86_64); the document says
    where the alternatives branch off.
+7. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
+   data disk; it prints what it chose and writes it to `[vm]`) and tell
+   the person what it picked; pass `--vcpus`, `--mem-mib` or
+   `--data-gib` only when they ask for a size. When `ssf doctor` says the
+   data disk is full, `ssf vm grow` (VM stopped) enlarges it without
+   losing anything; see [Size](../../docs/vm.md#size).
