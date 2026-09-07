@@ -381,14 +381,19 @@ repository's items are polled) the daemon:
 2. ends the outgoing agent's pane, leaving the worktree and its branch
    exactly as they are;
 3. retires the outgoing session on the record (its conversation id, its
-   terminal and any block go; the worktree, branch, driver, subscribers
-   and what the item has already seen stay) and stores the target as the
-   item's per-item overrides, so every later launch, resume and
-   re-creation uses the new harness, model and effort;
+   terminal and any block go; the worktree, branch, driver and
+   subscribers stay) and stores the target as the item's per-item
+   overrides, so every later launch, resume and re-creation uses the new
+   harness, model and effort. The retired conversation is remembered as
+   one never to resume: its transcript is the newest one in the
+   workspace when the new harness starts there, and without that the new
+   session would be given the outgoing agent's conversation;
 4. starts the new session in the same worktree, with the new harness's
    permission-free command and the [handed-over first
    prompt](prompts.md): the summary, if there is one, then the item's
-   story as ssf tells it to any new session;
+   story as ssf tells it to any new session. What that story showed
+   counts as seen, comments that arrived since the last poll included,
+   so the pass does not deliver them to the new session a second time;
 5. posts `handed-over` and then the new session's `attached` on the item
    (see [What ssf says on the item](#what-ssf-says-on-the-item)).
 

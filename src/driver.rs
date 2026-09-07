@@ -633,6 +633,12 @@ pub struct StubState {
     /// Every harness started, as `<harness>:<command>`: what a start or a
     /// relaunch would run, for the tests about per-item overrides.
     pub launches: Vec<String>,
+    /// The whole first message of every start (the `log` keeps only its
+    /// first line), for the tests about what a new session is told.
+    pub prompts: Vec<String>,
+    /// When set, the next `start` fails with this message: a harness that
+    /// cannot be started at all.
+    pub start_error: Option<String>,
     handles: u32,
 }
 
@@ -670,6 +676,11 @@ impl StubDriver {
         self.with(|s| std::mem::take(&mut s.launches))
     }
 
+    /// The first messages of the starts since the last call, whole.
+    pub fn prompts(&self) -> Vec<String> {
+        self.with(|s| std::mem::take(&mut s.prompts))
+    }
+
     fn ensure_project(&self) -> Result<ProjectSetup> {
         Ok(ProjectSetup {
             repo_id: "stub".into(),
@@ -698,7 +709,11 @@ impl StubDriver {
 
     fn start(&self, worktree_id: &str, command: &str, harness: &str, text: &str) -> Result<String> {
         self.with(|s| {
+            if let Some(why) = s.start_error.take() {
+                bail!("{why}");
+            }
             let h = Self::new_handle(s, worktree_id);
+            s.prompts.push(text.to_string());
             s.launches.push(format!("{harness}:{command}"));
             s.log
                 .push(format!("start:{worktree_id}:{}", first_line(text)));

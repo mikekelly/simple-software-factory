@@ -26,6 +26,10 @@ use crate::sessions;
 use crate::state::{Blocked, Ignored, IssueState, Overrides, PendingHandover, State, now_iso};
 use crate::status::session_id;
 
+/// How many retired conversation ids an item keeps (see
+/// `IssueState::retired_session_ids`).
+const RETIRED_KEPT: usize = 8;
+
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
 const MAX_DELIVERY_FAILURES: u32 = 5;
 
@@ -152,6 +156,16 @@ impl Ignored {
         triggers.sort();
         fresh.is_none_or(|i| i.updated_at == self.updated_at) && triggers == self.triggers
     }
+}
+
+/// An item's whole story as a new session is told it, and what telling
+/// it counts as: everything in the timeline is now seen, so the pass that
+/// follows does not deliver the same events again (`Engine::onboard`
+/// records the same two things for the session it starts).
+struct Story {
+    text: String,
+    seen: BTreeMap<String, String>,
+    updated_at: String,
 }
 
 /// New events for an issue relative to what has been delivered already.
@@ -2525,25 +2539,29 @@ are resumed on the first pass that finds it: {err:#}"
 
     /// The whole story of an item as its initial prompt would tell it, for
     /// a harness that starts from scratch and needs context for whatever is
-    /// about to be delivered.
+    /// about to be delivered, with what telling it counts as seen.
     async fn story(
         &mut self,
         repo: &RepoConfig,
         number: u64,
         handed_over_from: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<Story> {
         let (owner, name) = repo.split()?;
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
-        let all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
+        let diff = self.diff(repo, &BTreeMap::new(), &timeline);
         let me = self.acting_on(repo, number);
-        let all = self.for_recipient(&all, &me);
+        let all = self.for_recipient(&diff.rendered, &me);
         let st = self.entry(repo, number).clone();
         let ctx = PromptContext {
             handed_over_from,
             ..self.ctx(repo, &st)
         };
-        Ok(prompt::initial_prompt(&issue, &all, &ctx))
+        Ok(Story {
+            text: prompt::initial_prompt(&issue, &all, &ctx),
+            seen: diff.seen,
+            updated_at: issue.updated_at,
+        })
     }
 
     /// Tell the session that handed an item off that it has closed, with the
@@ -3110,7 +3128,7 @@ are resumed on the first pass that finds it: {err:#}"
         let mut story = None;
         if !live && (target != number || relaunch_text.is_none()) {
             match self.story(repo, target, None).await {
-                Ok(s) => story = Some(format!("{s}\n\n{text}")),
+                Ok(s) => story = Some(format!("{}\n\n{text}", s.text)),
                 Err(e) => warn!(
                     repo = repo.name,
                     session = session_id(&repo.name, target),
@@ -3422,10 +3440,21 @@ are resumed on the first pass that finds it: {err:#}"
             else {
                 continue;
             };
+            // The launch time is taken a moment early, since the harness
+            // writes its transcript around it -- but not in a workspace
+            // whose last conversation was retired by a handover: the
+            // seconds before that launch hold the outgoing agent's own
+            // transcript, which `retired` keeps out anyway.
+            let retired = st.retired_session_ids.clone();
+            let slack = if retired.is_empty() {
+                Duration::from_secs(5)
+            } else {
+                Duration::ZERO
+            };
             let since = chrono::DateTime::parse_from_rfc3339(launched)
-                .map(|t| SystemTime::from(t) - Duration::from_secs(5))
+                .map(|t| SystemTime::from(t) - slack)
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            if let Some(id) = sessions::capture(&harness, path, since) {
+            if let Some(id) = sessions::capture(&harness, path, since, &retired) {
                 info!(
                     repo = repo.name,
                     issue = st.number,
@@ -3814,7 +3843,7 @@ are resumed on the first pass that finds it: {err:#}"
             Some("pull_request") => "pull request",
             _ => "issue",
         };
-        let text = prompt::handover_prompt(&from_name, kind, h.summary.as_deref(), &story);
+        let text = prompt::handover_prompt(&from_name, kind, h.summary.as_deref(), &story.text);
         // End the caller's pane. The workspace stays, so the new session
         // opens on the same checkout and branch.
         match self
@@ -3850,7 +3879,19 @@ are resumed on the first pass that finds it: {err:#}"
         // item and its workspace stays.
         {
             let e = self.entry(repo, number);
-            e.agent_session_id = None;
+            // The conversation being dropped is remembered, so the harness
+            // starting in its workspace is never given the outgoing
+            // agent's transcript as its own (`capture_sessions`,
+            // `sessions::capture`).
+            if let Some(old) = e.agent_session_id.take()
+                && !e.retired_session_ids.contains(&old)
+            {
+                e.retired_session_ids.push(old);
+                // Only the last few matter: a workspace is not handed
+                // over dozens of times, and the check is a scan.
+                let extra = e.retired_session_ids.len().saturating_sub(RETIRED_KEPT);
+                e.retired_session_ids.drain(..extra);
+            }
             e.terminal_handle = None;
             e.blocked = None;
             e.launched_at = None;
@@ -3899,7 +3940,14 @@ are resumed on the first pass that finds it: {err:#}"
             e.terminal_handle = Some(handle.clone());
             e.last_prompt_at = Some(now_iso());
             e.prompts_sent += 1;
+            // The story told the new session everything on the item, so
+            // the pass that follows has nothing to deliver again (an
+            // onboarding records the same two things for its session).
+            e.seen = story.seen;
+            e.updated_at = Some(story.updated_at);
         }
+        // Nothing is owed to the session that is gone.
+        self.failures.remove(&(repo.name.clone(), number));
         self.post_event(
             repo,
             number,
@@ -7006,6 +7054,8 @@ mod tests {
             "{err:#}"
         );
         assert!(!e.resume_candidates(&repo()).contains(&5));
+        // Delivery failures counted against the session that is going.
+        e.failures.insert(("o/r".into(), 5), 2);
 
         e.run_handovers(&repo()).await;
         let log = d.log();
@@ -7031,8 +7081,13 @@ mod tests {
                 effort: Some("high".into()),
             })
         );
-        // The old session is retired on the record; the workspace is not.
+        // The old session is retired on the record; the workspace is not,
+        // and nothing counted against it follows the new one.
         assert!(st.agent_session_id.is_none());
+        assert!(e.failures.is_empty());
+        // Its conversation is remembered as retired, so the transcript it
+        // wrote moments ago is not captured as the new session's.
+        assert_eq!(st.retired_session_ids, vec!["sess-5".to_string()]);
         assert!(st.blocked.is_none());
         assert_eq!(st.worktree_id.as_deref(), Some("w5"));
         assert_eq!(st.branch.as_deref(), Some("refs/heads/bot/issue-5"));
@@ -7109,6 +7164,45 @@ mod tests {
              by: a person at the terminal\n\
              ```"
         );
+    }
+
+    /// The new session is told the item's whole story, so what happened
+    /// between the request and the pass is in that first message and is
+    /// not delivered to it a second time by the pass that follows.
+    #[tokio::test]
+    async fn the_story_the_new_session_is_told_counts_as_delivered() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        // A comment lands after the handover was recorded: the pass runs
+        // the handovers before it looks at the item.
+        stub.set_issue(5, assigned_item(5, "alice", "u2"));
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(
+            5,
+            vec![
+                assigned_by(1, "alice"),
+                comment(2, "alice", "one more thing: keep the flag"),
+            ],
+        );
+        e.run_handovers(&repo()).await;
+        let prompts = d.prompts();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert!(
+            prompts[0].contains("one more thing: keep the flag"),
+            "the story carries the new comment: {}",
+            prompts[0]
+        );
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.updated_at.as_deref(), Some("u2"));
+        assert!(st.seen.contains_key("commented:2"), "{:?}", st.seen);
+        // The rest of the pass has nothing left to tell the new session.
+        let _ = (d.log(), stub.post_bodies());
+        e.tick_repo(&repo()).await.unwrap();
+        let log = d.log();
+        assert!(log.is_empty(), "delivered twice: {log:?}");
     }
 
     /// Every launch of the item after a handover uses its overrides: the

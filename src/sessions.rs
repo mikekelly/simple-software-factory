@@ -41,12 +41,21 @@ pub fn resume_failed(screen: &[String]) -> bool {
 }
 
 /// Find the session started in `cwd` after `since`, newest first.
-pub fn capture(harness: &str, cwd: &str, since: SystemTime) -> Option<String> {
+/// `exclude` names conversations that must not be picked up again: the
+/// ones a handover retired, whose transcripts were written moments
+/// before the new harness started in the same workspace and would
+/// otherwise be the newest thing there (see `Engine::finish_handover`).
+pub fn capture(harness: &str, cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
     match harness {
-        "claude" => capture_claude(cwd, since),
-        "codex" => capture_codex(cwd, since),
+        "claude" => capture_claude(cwd, since, exclude),
+        "codex" => capture_codex(cwd, since, exclude),
         _ => None,
     }
+}
+
+/// Is this conversation one the caller has retired?
+fn excluded(id: &str, exclude: &[String]) -> bool {
+    exclude.iter().any(|e| e == id)
 }
 
 /// Where Claude Code keeps the transcripts of sessions started in `cwd`:
@@ -60,31 +69,40 @@ pub fn claude_project_dir(cwd: &str) -> PathBuf {
     home().join(".claude/projects").join(encoded)
 }
 
-fn capture_claude(cwd: &str, since: SystemTime) -> Option<String> {
-    let dir = claude_project_dir(cwd);
+fn capture_claude(cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
+    newest_transcript(&claude_project_dir(cwd), since, exclude)
+}
+
+/// The newest `<session id>.jsonl` in `dir` written at or after `since`,
+/// skipping the ids in `exclude`.
+fn newest_transcript(dir: &Path, since: SystemTime, exclude: &[String]) -> Option<String> {
     let mut best: Option<(SystemTime, String)> = None;
-    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
-        let modified = meta.modified().ok()?;
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
         if modified < since {
             continue;
         }
-        let stem = path.file_stem()?.to_str()?.to_string();
-        if stem.len() < 8 {
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem.len() < 8 || excluded(stem, exclude) {
             continue;
         }
         if best.as_ref().is_none_or(|(t, _)| modified > *t) {
-            best = Some((modified, stem));
+            best = Some((modified, stem.to_string()));
         }
     }
     best.map(|(_, id)| id)
 }
 
-fn capture_codex(cwd: &str, since: SystemTime) -> Option<String> {
+fn capture_codex(cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
     let root = home().join(".codex/sessions");
     let mut best: Option<(SystemTime, String)> = None;
     walk(&root, 0, &mut |path: &Path| {
@@ -120,6 +138,9 @@ fn capture_codex(cwd: &str, since: SystemTime) -> Option<String> {
         let Some(id) = payload.get("id").and_then(|i| i.as_str()) else {
             return;
         };
+        if excluded(id, exclude) {
+            return;
+        }
         if best.as_ref().is_none_or(|(t, _)| modified > *t) {
             best = Some((modified, id.to_string()));
         }
@@ -167,6 +188,58 @@ mod tests {
         );
         let d = claude_project_dir("/home/mk/code/my_project/a b");
         assert!(d.ends_with(".claude/projects/-home-mk-code-my-project-a-b"));
+    }
+
+    /// A handover starts the new harness in the workspace the old one
+    /// was just stopped in, so the retired conversation's transcript is
+    /// the newest file there: it must not be picked up as the new
+    /// session's, or every later relaunch would resume the agent that
+    /// handed the item away.
+    #[test]
+    fn a_retired_conversation_is_not_captured_again() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-sessions-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let since = SystemTime::now() - std::time::Duration::from_secs(60);
+        let older = "11111111-aaaa-4444-8888-000000000001";
+        let newer = "22222222-bbbb-4444-8888-000000000002";
+        std::fs::write(dir.join(format!("{older}.jsonl")), "{}\n").unwrap();
+        std::fs::write(dir.join(format!("{newer}.jsonl")), "{}\n").unwrap();
+        // The newest wins, as it does for a session that just started.
+        let mtime = |name: &str, secs: u64| {
+            let f = std::fs::File::options()
+                .write(true)
+                .open(dir.join(format!("{name}.jsonl")))
+                .unwrap();
+            f.set_modified(SystemTime::now() - std::time::Duration::from_secs(secs))
+                .unwrap();
+        };
+        mtime(older, 30);
+        mtime(newer, 10);
+        assert_eq!(
+            newest_transcript(&dir, since, &[]).as_deref(),
+            Some(newer),
+            "the newest transcript is the session's"
+        );
+        // The retired one is skipped, however new it is.
+        assert_eq!(
+            newest_transcript(&dir, since, &[newer.to_string()]).as_deref(),
+            Some(older)
+        );
+        assert_eq!(
+            newest_transcript(&dir, since, &[newer.to_string(), older.to_string()]),
+            None,
+            "with every conversation retired there is nothing to capture"
+        );
+        // Nothing written since the start is nothing to capture either.
+        assert_eq!(newest_transcript(&dir, SystemTime::now(), &[]), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

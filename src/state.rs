@@ -113,6 +113,14 @@ pub struct IssueState {
     /// Harness conversation id (Claude Code / Codex) for `--resume`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
+    /// Conversations of this item that must never be resumed or captured
+    /// again: what a handover retired (`Engine::finish_handover`). The
+    /// old harness's transcript is the newest one in the workspace when
+    /// the new harness starts there, so without this the new session
+    /// would be given the outgoing agent's conversation id and every
+    /// later relaunch would resume the agent that handed the item away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_session_ids: Vec<String>,
     /// When the harness was last launched, to find its session file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_at: Option<String>,
