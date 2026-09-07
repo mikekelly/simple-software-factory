@@ -108,15 +108,20 @@ struct Status {
     err: String,
 }
 
-/// Read one of a child's pipes to the end on a thread of its own.
-fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<String> {
+/// Read one of a child's pipes to the end on a thread of its own, and
+/// hand what it read back over a channel: the caller waits for it with a
+/// deadline rather than joining, since a reader whose pipe some other
+/// process still holds open never finishes (see [`run`]).
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut s = String::new();
         if let Some(mut p) = pipe {
             let _ = std::io::Read::read_to_string(&mut p, &mut s);
         }
-        s
-    })
+        let _ = tx.send(s);
+    });
+    rx
 }
 
 /// Run a harness's status command with a timeout; `None` when it could
@@ -148,17 +153,28 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Option<Status> {
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                // Nothing is joined here: a grandchild that inherited the
-                // pipes holds them open after the child is killed, and
+                // Nothing is waited for here: a grandchild that inherited
+                // the pipes holds them open after the child is killed, and
                 // waiting for the readers would hang the probe for as
                 // long as it lives. The threads end when the pipes close.
                 return None;
             }
         }
     };
-    // The pipes close with the process that exited, so the readers end.
-    let out = out.join().unwrap_or_default();
-    let err = err.join().unwrap_or_default();
+    // The pipes normally close with the process that exited, so the
+    // readers end at once -- but a status command that forks a daemon of
+    // its own leaves that daemon holding them, and then the readers never
+    // end at all. What is left of the timeout is all they get (a floor,
+    // for a child that exited on the deadline itself: reading an exited
+    // child's pipe is instant); a reader still holding on is left to end
+    // whenever its pipe does.
+    let left = || {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(Duration::from_millis(200))
+    };
+    let out = out.recv_timeout(left()).unwrap_or_default();
+    let err = err.recv_timeout(left()).unwrap_or_default();
     Some(Status {
         ok: status.success(),
         out,
