@@ -2925,8 +2925,12 @@ async fn doctor() -> Result<()> {
                         Ok(false) => check(
                             false,
                             format!(
-                                "no {notes} in {}; start from /usr/share/ssf/SSF.example.md",
-                                r.name
+                                "no {notes} in {}{}; start from /usr/share/ssf/SSF.example.md",
+                                r.name,
+                                match &r.base_branch {
+                                    Some(b) => format!(" on branch {b} (does the branch exist?)"),
+                                    None => String::new(),
+                                }
                             ),
                         ),
                         Err(e) => check(

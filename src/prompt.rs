@@ -385,15 +385,55 @@ impl ProjectPrompt {
                 return None;
             }
         };
-        let text = text.trim();
+        let text = without_html_comments(&text);
         if text.is_empty() {
             return None;
         }
         Some(Self {
             source: repo.prompt_file().to_string(),
-            text: text.to_string(),
+            text,
         })
     }
+}
+
+/// `text` without its HTML comments (`<!-- ... -->`), trimmed, with the
+/// blank runs a removed comment leaves behind collapsed: the comments in
+/// a notes file are for the person editing it (`SSF.example.md` explains
+/// itself in one, and names the other end of its autonomy line in
+/// another), and read as instructions if they reach the agent.
+fn without_html_comments(text: &str) -> String {
+    // Each comment becomes one marker, so a line that held nothing but a
+    // comment can be told from a blank line the author wrote.
+    const MARK: char = '\u{0}';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        out.push(MARK);
+        match rest[start + 4..].find("-->") {
+            Some(end) => rest = &rest[start + 4 + end + 3..],
+            None => {
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
+    let mut lines: Vec<String> = Vec::new();
+    for line in out.lines() {
+        let had_comment = line.contains(MARK);
+        let line = line.replace(MARK, "");
+        let line = line.trim_end();
+        if line.trim().is_empty() {
+            if had_comment || lines.last().is_some_and(|l| l.is_empty()) {
+                continue;
+            }
+            lines.push(String::new());
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    lines.join("\n").trim().to_string()
 }
 
 impl PromptContext<'_> {
@@ -1193,7 +1233,8 @@ agent start --help` lists the kinds; agent flags such as a model go after `--`; 
 safety dialog, which `herdr pane read <pane>` shows, is answered with `herdr agent send-keys \
 <pane> down` and `... enter`), `herdr agent prompt <pane> \"<brief>\" --wait`, `herdr pane read \
 <pane> --lines 200 --format text` (its answer), `herdr workspace close <id>`. Tell it to change \
-nothing; it shares your checkout.\n\n\
+nothing; it shares your checkout, and `ssf peers` may show it as your session until it is \
+closed.\n\n\
 ## Wrapping up\n\n\
 When your item closes, or you are no longer assigned, ssf says so and leaves the workspace \
 exactly as it is: nothing on disk is ever removed on that signal. Commit what is worth \
@@ -1818,6 +1859,7 @@ nobody else is spawned for it.",
         assert!(g.contains("`herdr agent prompt <pane> \"<brief>\" --wait`"));
         assert!(g.contains("`herdr pane read <pane> --lines 200 --format text`"));
         assert!(g.contains("`herdr workspace close <id>`"));
+        assert!(g.contains("`ssf peers` may show it as your session until it is closed"));
         for gone in [
             "reviewer session",
             "SSF_ROLE",
@@ -2277,6 +2319,19 @@ accurate; which column fits is your call.\n\n## Description"
             "{p}"
         );
         assert!(p.contains("## Description\n\nFixes it\n\n## Activity"));
+    }
+
+    #[test]
+    fn html_comments_in_the_notes_do_not_reach_the_agent() {
+        let notes = "# Notes\n\n<!--\nfor the person editing this\n-->\n\n- Autonomy: a person \
+approves everything.\n  <!-- the other end reads: no approval is needed -->\n- Commit as you go.\n";
+        assert_eq!(
+            without_html_comments(notes),
+            "# Notes\n\n- Autonomy: a person approves everything.\n- Commit as you go."
+        );
+        assert_eq!(without_html_comments("  \n<!-- only a comment -->\n"), "");
+        assert_eq!(without_html_comments("a <!-- unterminated"), "a");
+        assert_eq!(without_html_comments("plain\n\ntext\n"), "plain\n\ntext");
     }
 
     #[test]

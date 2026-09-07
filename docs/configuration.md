@@ -118,8 +118,9 @@ advice (see [What the agent is told](prompts.md)), so a repository that
 wants its agents told to comment when they start and finish, to ask rather
 than guess, or to commit as they go, says so here.
 [`SSF.example.md`](../SSF.example.md) (installed as
-`/usr/share/ssf/SSF.example.md`) is a starting point with exactly those
-lines plus the **gauntlet** rule: ssf runs one session per item and starts
+`/usr/share/ssf/SSF.example.md`) is a starting point with those lines,
+who is in charge of the item, how visible to stay, an autonomy line (how
+much a person approves) and the **gauntlet** rule: ssf runs one session per item and starts
 no reviewer, so the boilerplate tells the agent that did the work to have
 a fresh agent break it, fix what it finds and repeat before calling it
 done (see [Second opinions](sessions.md#second-opinions-the-gauntlet)).

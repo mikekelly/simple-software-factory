@@ -508,8 +508,9 @@ and the choice is yours: at one end, everything is approved by a person
 reviews and merges); at the other, no approval is needed (use your
 judgment and gauntlet loops to address the issue and close it out); in
 between, approval for merges only, say. The boilerplate ships the
-cautious end, with the other end in a comment next to it, so flipping it
-is an edit of that one line. The boilerplate also says whose issue it is:
+cautious end, with the other end in a comment next to it (comments are
+stripped before the notes reach an agent), so flipping it is an edit of
+that one line. The boilerplate also says whose issue it is:
 the agent is in charge of it, and its job is to clarify the intended
 outcome, plan the delivery and orchestrate subagents that do the work,
 keeping its own context for managing the issue rather than for

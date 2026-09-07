@@ -273,8 +273,12 @@ impl State {
     }
 
     /// Forget the reviewer records an older daemon wrote (see
-    /// `RepoState::legacy_reviewers`), saying once which ones.
+    /// `RepoState::legacy_reviewers`), and the subscriptions those sessions
+    /// held (`owner/repo#N:reviewer` is no session id now, and a subscriber
+    /// that is not a session is skipped with a warning on every delivery),
+    /// saying once which ones.
     fn drop_legacy_reviewers(&mut self) {
+        let mut ghosts = Vec::new();
         for (repo, rs) in self.repos.iter_mut() {
             if rs.legacy_reviewers.is_empty() {
                 continue;
@@ -286,6 +290,25 @@ impl State {
                 "dropping reviewer session records from an older ssf; ssf runs one session per item now"
             );
             rs.legacy_reviewers.clear();
+        }
+        for rs in self.repos.values_mut() {
+            for st in rs.issues.values_mut() {
+                st.subscribers.retain(|s| {
+                    let keep = crate::origin::Origin::parse(s).is_some();
+                    if !keep {
+                        ghosts.push(s.clone());
+                    }
+                    keep
+                });
+            }
+        }
+        if !ghosts.is_empty() {
+            ghosts.sort();
+            ghosts.dedup();
+            info!(
+                subscribers = ?ghosts,
+                "dropping subscriptions held by sessions that no longer exist"
+            );
         }
     }
 
@@ -369,13 +392,19 @@ mod tests {
         let path = dir.join("state.json");
         std::fs::write(
             &path,
-            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true}},
+            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,
+                "subscribers":["a/b#7:reviewer","x/y#2"]}},
                 "reviewers":{"7":{"number":7,"seeded":true,"kind":"reviewer"}}}}}"#,
         )
         .unwrap();
         let st = State::load_from(&path).unwrap();
         assert!(st.repos["a/b"].issues[&1].seeded);
         assert!(st.repos["a/b"].legacy_reviewers.is_empty());
+        assert_eq!(
+            st.repos["a/b"].issues[&1].subscribers,
+            vec!["x/y#2"],
+            "the reviewer's own subscriptions go with it"
+        );
         st.save_to(&path).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("reviewers"), "{written}");

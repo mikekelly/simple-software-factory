@@ -304,8 +304,9 @@ Things to know when operating it:
   pass that relaunches interrupted sessions.
 - ssf starts no second session on a pull request the bot opened: the
   agent that wrote it runs the gauntlet its `SSF.md` asks for (a fresh
-  agent breaks the change, the author fixes and repeats), and a person
-  merges. A `review` label does nothing; `ssf doctor` reports a
+  agent breaks the change, the author fixes and repeats), and its
+  autonomy line says who merges (a person, as shipped). A `review` label
+  does nothing; `ssf doctor` reports a
   repository without an `SSF.md`.
 
 **Stopping it.** The toggle in the bar widget, or `ssf ui service

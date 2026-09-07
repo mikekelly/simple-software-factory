@@ -91,8 +91,9 @@ of the session's own harness is the default; for complex, risky or
 important work, a different agent and model through herdr, with the
 invocation `ssf guide` prints (a workspace on the session's own worktree,
 an agent started in its pane, one prompt, the answer read from the pane,
-the workspace closed). Nobody re-reviews after the gauntlet; a person (or
-a project-management session) reads the PR and merges. `ssf doctor`
+the workspace closed). Nobody re-reviews after the gauntlet; who merges
+is the notes' autonomy line (the boilerplate ships "a person reviews and
+merges"). `ssf doctor`
 reports a repository with no project notes at all, since without them no
 rule asks for a gauntlet.
 
