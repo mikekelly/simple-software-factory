@@ -7963,6 +7963,8 @@ mod tests {
         assert!(st.overrides.is_some(), "the handover stands");
         assert!(st.terminal_handle.is_none(), "nothing is running");
         let b = st.blocked.clone().expect("blocked");
+        // The login check cannot tell (the default in these tests), so
+        // the block stands as what was seen: the harness would not start.
         assert_eq!(b.reason, Blocked::START);
         assert_eq!(b.harness, "pi");
         assert!(b.reported);
@@ -8096,6 +8098,50 @@ mod tests {
         );
         let log = d.log();
         assert_eq!(log[0], "stop:t5", "{log:?}");
+    }
+
+    /// A harness that would not start and is not signed in where the
+    /// daemon runs is recorded as the sign-in block it really is: that is
+    /// the thing to fix, and the recovery from #85 is the one that fits.
+    #[tokio::test]
+    async fn a_harness_that_will_not_start_and_is_signed_out_is_a_login_block() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        // Accepted while the check cannot tell; signed out by the time
+        // the pass runs (a login that lapsed in between).
+        e.handover("o/r#5", "pi", None, None, None, None)
+            .await
+            .unwrap();
+        probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
+        e.run_handovers(&repo()).await;
+        let b = e.entry(&repo(), 5).blocked.clone().expect("blocked");
+        assert_eq!(b.reason, Blocked::LOGIN);
+        assert_eq!(b.harness, "pi");
+        assert_eq!(b.credential.as_deref(), Some("cred-old"));
+        assert!(
+            b.detail.contains("exited at once"),
+            "what was seen is kept: {}",
+            b.detail
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert!(posts[1].1.contains("reason: not signed in"), "{posts:?}");
+        assert!(
+            posts[1].1.contains(&format!(
+                "fix: {}",
+                login::how_to_sign_in("pi").replace('`', "")
+            )),
+            "{posts:?}"
+        );
+        // And it recovers as a sign-in block does: nothing while the
+        // check still says signed out, whatever the backoff says.
+        let _ = d.log();
+        e.entry(&repo(), 5).blocked.as_mut().unwrap().since = "2020-01-01T00:00:00Z".into();
+        let st = e.entry(&repo(), 5).clone();
+        e.recover(&repo(), 5, &st, b).await;
+        assert!(d.log().is_empty(), "still signed out");
+        assert!(e.entry(&repo(), 5).blocked.is_some());
     }
 
     /// The summary is the point of a handover, so it outlives a new
