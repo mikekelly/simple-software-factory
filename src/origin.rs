@@ -152,11 +152,30 @@ impl Tag {
     }
 }
 
-/// Is `body` one of the daemon's own event posts (its tag carries
-/// `event=`)? Such a post is about the item, not from a session or a
-/// person, and is never shown to an agent.
+/// Is `body` one of the daemon's own event posts: its first non-blank
+/// line is the `🤖 ssf` byline and then a tag carrying `event=`, as
+/// `Origin::event_line` writes it? Such a post is about the item, not
+/// from a session or a person, and is never shown to an agent. The byline
+/// is required, not just the tag: a session's post that starts with a
+/// pasted tag is the session's (and the shim puts its own line first,
+/// see `stamp_with`).
 pub fn is_event_post(body: &str) -> bool {
-    parse(body).is_some_and(|t| t.event().is_some())
+    let Some(first) = body.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    if is_code(first) {
+        return false;
+    }
+    let Some(at) = first.find(OPEN) else {
+        return false;
+    };
+    if first[..at].trim() != format!("{ROBOT} {DAEMON}") {
+        return false;
+    }
+    tags(first)
+        .into_iter()
+        .next()
+        .is_some_and(|t| t.event().is_some())
 }
 
 /// Every ssf tag in `body`, in order of appearance. Tags inside quoted
@@ -231,9 +250,13 @@ fn is_code(line: &str) -> bool {
 /// enough for a hand-off: the delegate line goes before it, and the first
 /// tag wins when read. A tag of ours that is not on the first line does
 /// not count, even at the end where `parse` still accepts the old form, so
-/// the body gets the byline at the top anyway.
+/// the body gets the byline at the top anyway. Nor does a pasted event
+/// tag (`event=`): that is the daemon's form, and a session's post must
+/// not pass for one of the daemon's, so the session line goes on top.
 pub fn stamp_with(body: &str, origin: &Origin, on_repo: Option<&str>, delegate: bool) -> String {
-    if parse_first(body).is_some_and(|t| &t.origin == origin && (!delegate || t.is_delegate())) {
+    if parse_first(body).is_some_and(|t| {
+        &t.origin == origin && t.event().is_none() && (!delegate || t.is_delegate())
+    }) {
         return body.to_string();
     }
     let line = origin.first_line(on_repo, delegate);
@@ -377,8 +400,9 @@ pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
         if !author.eq_ignore_ascii_case(bot) {
             return;
         }
-        match parse(body.unwrap_or("")) {
-            Some(t) if t.event().is_some() => {
+        let body = body.unwrap_or("");
+        match parse(body) {
+            Some(t) if is_event_post(body) => {
                 s.events.insert(key, t.event().unwrap_or("").to_string());
             }
             Some(t) => {
@@ -516,9 +540,36 @@ mod tests {
             "```ssf\nssf attaching agent to issue:\nharness: Claude Code\n```"
         );
         assert_eq!(strip(&first), "");
-        // Its tag is the item's own, so the shim would leave it alone (not
-        // that it ever sees one: the daemon posts through the API).
-        assert_eq!(stamp(&post, &o()), post);
+        // A session's post that starts with a pasted event line, or the
+        // bare tag, is the session's: the shim puts its own line on top
+        // and the result is not an event post.
+        let pasted = format!("{post}\n\nI saw this on the item");
+        assert!(is_event_post(&pasted), "the raw paste looks like one");
+        let stamped = stamp(&pasted, &o());
+        assert!(
+            stamped.starts_with(&format!("{}\n\n{first}", line())),
+            "{stamped}"
+        );
+        assert!(!is_event_post(&stamped));
+        let t = parse(&stamped).unwrap();
+        assert_eq!(t.origin, o());
+        assert!(t.event().is_none());
+        let bare = format!(
+            "{}\n\nlook at this tag",
+            o().tag().replace(" -->", " event=blocked -->")
+        );
+        assert!(!is_event_post(&bare), "no byline, no event post");
+        assert!(stamp(&bare, &o()).starts_with(&line()));
+        assert!(!is_event_post(&stamp(&bare, &o())));
+        // The daemon's own line gets the session line too when the shim
+        // sees it (not that it ever does: the daemon posts through the API).
+        assert_eq!(stamp(&post, &o()), format!("{}\n\n{post}", line()));
+        // A tag with `event=` but another word before it is not the byline.
+        assert!(!is_event_post(&format!("🤖 said {first}")));
+        assert!(
+            !is_event_post(&format!("  🤖 ssf {}", o().tag())),
+            "no event field"
+        );
     }
 
     #[test]
@@ -811,6 +862,7 @@ mod tests {
             json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"body":"inline","html_url":"u8"}]}),
             json!({"event":"commented","id":11,"user":{"login":"bot"},"body":"🤖 ssf <!-- ssf: origin=a/b#5 event=blocked -->\n\n```ssf\nssf holding deliveries to agent on issue:\nharness: Codex\n```","html_url":"u11"}),
             json!({"event":"commented","id":12,"user":{"login":"alice"},"body":"🤖 ssf <!-- ssf: origin=a/b#5 event=blocked -->\n\npasted by a person","html_url":"u12"}),
+            json!({"event":"commented","id":13,"user":{"login":"bot"},"body":"<!-- ssf: origin=a/b#5 event=blocked -->\n\npasted tag, no byline","html_url":"u13"}),
         ];
         let s = scan(&issue, &timeline, "Bot");
         assert_eq!(s.origin.as_deref(), Some("a/b#1"));
@@ -825,6 +877,11 @@ mod tests {
         assert!(!s.untagged.contains_key("commented:11"));
         assert!(!s.events.contains_key("commented:12"));
         assert_eq!(s.events.len(), 1);
+        assert_eq!(
+            s.origins.get("commented:13").map(String::as_str),
+            Some("a/b#5"),
+            "a bot post with a pasted event tag and no byline is a session's"
+        );
         assert_eq!(
             s.origins.get("commented:1").map(String::as_str),
             Some("a/b#1")

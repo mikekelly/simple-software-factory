@@ -1763,7 +1763,7 @@ are resumed on the first pass that finds it: {err:#}"
                     number,
                     Event::GaveUp {
                         failures: count,
-                        last_error: safe_error(&format!("{err:#}")),
+                        last_error: safe_error(&events::one_line(&format!("{err:#}"))),
                     },
                 )
                 .await;
@@ -3784,7 +3784,10 @@ fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
 /// in it (its own words, passed up through a delivery error) are
 /// replaced by `[…]`, and the whole message withheld if it still passes
 /// for a login prompt after that, so the post can never pass for one
-/// when echoed on a screen; the log has it in full.
+/// when echoed on a screen; the log has it in full. `text` must be the
+/// line as it will be posted (`events::one_line`): the prompt check reads
+/// a screen's last lines, and a phrase high up in a long message would
+/// slip past it only to be collapsed onto the one line that is posted.
 fn safe_error(text: &str) -> String {
     let redacted = crate::driver::redact_login_phrases(text);
     if crate::driver::quotes_login_prompt(&redacted) {
@@ -5972,6 +5975,26 @@ mod tests {
         assert!(!crate::driver::quotes_login_prompt(&safe_error(
             "NOT LOGGED IN\nInvalid API key\nSign in with ChatGPT"
         )));
+        // The check reads the form that is posted: a phrase on the second
+        // line of a long screen dump is above what a screen check reads,
+        // but on the one posted line it is right there.
+        let mut dump = String::from(
+            "delivery failed; the screen showed:\nLogin expired · Please run /login\n",
+        );
+        for i in 0..25 {
+            dump.push_str(&format!("│ line {i} of the transcript\n"));
+        }
+        assert!(
+            !crate::driver::quotes_login_prompt(&dump),
+            "out of the tail"
+        );
+        let posted = safe_error(&events::one_line(&dump));
+        assert!(
+            posted.starts_with("delivery failed; the screen showed: […] · Please […] │ line 0"),
+            "{posted}"
+        );
+        assert!(!crate::driver::quotes_login_prompt(&posted));
+        assert!(!posted.contains("run /login"));
     }
 
     /// A relaunch that is not the target's own onboarding (a bound item's
@@ -6328,9 +6351,9 @@ mod tests {
                     "issue",
                     &Event::GaveUp {
                         failures: 5,
-                        last_error: safe_error(
+                        last_error: safe_error(&events::one_line(
                             "orca said:\n```\nLogin expired · Please run /login\n```\nnot logged in",
-                        ),
+                        )),
                     },
                 ),
                 events::comment(

@@ -300,11 +300,12 @@ fn short_branch(branch: &str) -> String {
         .to_string()
 }
 
-/// `v` fit for one `key: value` line: whitespace (newlines included)
-/// collapsed to single spaces, backticks dropped (three in a row would
-/// close the fence, and markdown ones render literally inside it), cut
-/// at `MAX_VALUE_CHARS`.
-fn value(v: &str) -> String {
+/// `v` as one `key: value` line carries it: whitespace (newlines
+/// included) collapsed to single spaces, backticks dropped (three in a
+/// row would close the fence, and markdown ones render literally inside
+/// it), cut at `MAX_VALUE_CHARS`. Public so that text checked before it
+/// is posted (`Engine::safe_error`) is checked in the form it is posted.
+pub fn one_line(v: &str) -> String {
     let mut out: String = v
         .replace('`', "")
         .split_whitespace()
@@ -315,6 +316,17 @@ fn value(v: &str) -> String {
         out.push('\u{2026}');
     }
     out
+}
+
+/// `one_line`, with nothing left rendered as `(empty)` rather than a
+/// bare `key: `.
+fn value(v: &str) -> String {
+    let out = one_line(v);
+    if out.is_empty() {
+        "(empty)".into()
+    } else {
+        out
+    }
 }
 
 /// The whole comment: the byline line with the tag, a blank line, the
@@ -625,6 +637,17 @@ mod tests {
             "{block}"
         );
         assert_eq!(block.matches("```").count(), 2, "{block}");
+        let nothing = Event::GaveUp {
+            failures: 5,
+            last_error: " `` \n\t".into(),
+        };
+        assert!(
+            nothing.block("issue").contains("\nlast error: (empty)\n"),
+            "{}",
+            nothing.block("issue")
+        );
+        assert_eq!(one_line("  a\n`b`  c "), "a b c");
+        assert_eq!(one_line(" ` "), "");
         let long = Event::GaveUp {
             failures: 5,
             last_error: "x".repeat(500),
