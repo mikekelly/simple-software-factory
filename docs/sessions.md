@@ -301,12 +301,17 @@ restarted screen is clean.
   `unblocked` post, saying how long the hold lasted and whether the
   harness was started again.
 
-`ssf doctor` prints one line per harness the configured repositories use
-(`Claude Code signed in on the host (claude auth status: signed in)`, or
-`FAIL ... not signed in ...` with the command to run; `note ... cannot
-tell` for a harness ssf has no check for, such as Copilot's keyring), and
-with the factory in a VM it is forwarded into the guest, so the check
-happens where the agents are.
+`ssf doctor` prints one line per harness in use: `Claude Code signed in
+on the host (claude auth status: signed in)`, or `FAIL ... not signed in
+...` with the command to run, or `note ... cannot tell` for a harness ssf
+has no check for, such as Copilot's keyring. The harnesses in use are the
+ones the configured repositories name and any a [handover](#handover) put
+on an item, and the line for one of those says which item put it there
+(`Pi signed in on the host (~/.pi/agent/auth.json present; used by
+acme/widgets#12 after a handover)`); such a harness is checked for being
+installed too, which nothing else here would look for. With the factory
+in a VM the command is forwarded into the guest, so the check happens
+where the agents are.
 
 ## Handover
 

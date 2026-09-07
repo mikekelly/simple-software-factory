@@ -172,7 +172,13 @@ belongs to:
 
 - **The same harness the repository uses**: the repository's `command`
   still starts the agent, and the override's model and effort replace the
-  repository's; either one left out keeps the repository's.
+  repository's; either one left out keeps the repository's. As
+  everywhere else, the model and effort are appended to `command` as
+  flags rather than rewritten into it, so a `command` that hard-codes a
+  model or effort itself (`command = "claude --model opus"`) wins on the
+  agent's own command line and the handover's model changes nothing but
+  two conflicting flags: keep the model and effort in their own keys on
+  a repository whose items are handed over.
 - **Another harness**: the item runs on that harness with the
   permission-free command from [Permissions](#permissions) (the
   repository's `command` belongs to its own harness and is not reused),

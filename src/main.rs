@@ -2995,10 +2995,35 @@ async fn doctor() -> Result<()> {
             if retired.len() == 1 { "does" } else { "do" }
         );
     }
+    let state = state::State::load().unwrap_or_default();
+    // Harnesses no repository is configured with, because an item was
+    // handed over to one (`ssf handover`): its session runs that harness
+    // where the daemon runs, so it is checked like the configured ones,
+    // and the line says which item put it there.
+    let mut handed_over: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (name, rs) in &state.repos {
+        for it in rs.issues.values().filter(|i| i.active) {
+            let Some(o) = it.overrides.as_ref() else {
+                continue;
+            };
+            if cfg.repos.iter().any(|r| r.harness == o.harness) {
+                continue;
+            }
+            handed_over
+                .entry(o.harness.clone())
+                .or_default()
+                .push(format!("{name}#{}", it.number));
+        }
+    }
+    let used_by = |h: &str| match handed_over.get(h) {
+        Some(items) => format!("; used by {} after a handover", items.join(", ")),
+        None => String::new(),
+    };
     // Each harness a repository uses, signed in where this runs (the host,
     // or the guest: with the factory in a VM `ssf doctor` is forwarded
     // there, so the check happens where the agents are).
     let mut harnesses: Vec<String> = cfg.repos.iter().map(|r| r.harness.clone()).collect();
+    harnesses.extend(handed_over.keys().cloned());
     harnesses.sort();
     harnesses.dedup();
     let place = if vm::in_guest() {
@@ -3010,21 +3035,24 @@ async fn doctor() -> Result<()> {
         let probe = login::probe(h);
         let name = login::display_name(h);
         match probe.state {
-            login::LoginState::SignedIn => {
-                check(true, format!("{name} signed in {place} ({})", probe.detail))
-            }
+            login::LoginState::SignedIn => check(
+                true,
+                format!("{name} signed in {place} ({}{})", probe.detail, used_by(h)),
+            ),
             login::LoginState::SignedOut => check(
                 false,
                 format!(
-                    "{name} not signed in {place} ({}); sign in with {}, or sessions on it stall at its login prompt",
+                    "{name} not signed in {place} ({}{}); sign in with {}, or sessions on it stall at its login prompt",
                     probe.detail,
+                    used_by(h),
                     login::how_to_sign_in(h)
                 ),
             ),
             login::LoginState::Unknown => {
                 println!(
-                    "note {name}: cannot tell whether it is signed in {place} ({})",
-                    probe.detail
+                    "note {name}: cannot tell whether it is signed in {place} ({}{})",
+                    probe.detail,
+                    used_by(h)
                 )
             }
         }
@@ -3093,6 +3121,20 @@ async fn doctor() -> Result<()> {
         .ok()
         .and_then(|t| github::GitHub::new(&cfg.github.api_url, &t).ok());
     let bot = cfg.github.login.clone().unwrap_or_else(|| "the bot".into());
+    // The harnesses handovers put on items, installed where the daemon
+    // runs: no repository names them, so nothing else here would look.
+    for (h, items) in &handed_over {
+        let bin = models::default_command(h);
+        let bin = bin.split_whitespace().next().unwrap_or("");
+        let ok = which(bin).is_some() || installed.iter().any(|a| a.id == *h && a.installed);
+        check(
+            ok,
+            format!(
+                "harness `{h}` installed (used by {} after a handover)",
+                items.join(", ")
+            ),
+        );
+    }
     for r in &cfg.repos {
         // Who may drive it: the configured list, or the collaborators with
         // push access fetched the way the daemon does.
@@ -3319,7 +3361,7 @@ async fn doctor() -> Result<()> {
             }
         },
     );
-    let st = state::State::load().unwrap_or_default();
+    let st = &state;
     let untagged: Vec<String> = st
         .repos
         .values()
