@@ -3385,6 +3385,76 @@ mod tests {
         assert!(item_ref("nonsense", Some(&me)).is_err());
     }
     #[test]
+    fn the_handover_message_names_the_new_stack_and_ends_the_session() {
+        assert_eq!(
+            handover_recorded_text(
+                "o/r#5",
+                "Fix the widget",
+                "Pi",
+                Some("openai/gpt-6"),
+                Some("high"),
+                Some(1234),
+                10,
+            ),
+            "Handover of o/r#5 (\"Fix the widget\") recorded: to Pi (model openai/gpt-6, effort \
+high), with a summary of 1,234 chars.\nThe daemon ends this session on its next pass (within \
+10s) and starts the new one in the same workspace. Stop working now: do not start anything \
+else, and do not run this command again."
+        );
+        let plain = handover_recorded_text("o/r#5", "T", "Codex", None, None, None, 30);
+        assert!(
+            plain.starts_with(
+                "Handover of o/r#5 (\"T\") recorded: to Codex (the harness's default model, the \
+harness's default effort), without a summary."
+            ),
+            "{plain}"
+        );
+        assert!(plain.contains("within 30s"), "{plain}");
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn a_handover_summary_comes_from_the_flag_or_the_file() {
+        let dir = std::env::temp_dir().join(format!("ssf-summary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("summary.md");
+        std::fs::write(&path, "what is left").unwrap();
+        assert_eq!(
+            handover_summary(None, Some(&path)).unwrap().as_deref(),
+            Some("what is left")
+        );
+        assert_eq!(
+            handover_summary(Some("inline".into()), None)
+                .unwrap()
+                .as_deref(),
+            Some("inline")
+        );
+        assert!(handover_summary(None, None).unwrap().is_none());
+        // Empty, and over the cap, are the writer's to fix.
+        std::fs::write(&path, "   \n").unwrap();
+        let e = handover_summary(None, Some(&path)).unwrap_err().to_string();
+        assert!(e.contains("write a summary or pass --no-summary"), "{e}");
+        assert!(
+            handover_summary(Some(String::new()), None)
+                .unwrap_err()
+                .to_string()
+                .contains("the summary is empty")
+        );
+        let long = "x".repeat(ipc::MAX_SUMMARY_CHARS + 1);
+        let e = handover_summary(Some(long), None).unwrap_err().to_string();
+        assert!(e.contains("8,001 characters") && e.contains("8,000"), "{e}");
+        assert!(
+            handover_summary(None, Some(&dir.join("nope.md")))
+                .unwrap_err()
+                .to_string()
+                .contains("reading the summary from")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn allowed_users_flags_parse_logins_and_the_wildcard() {
         assert_eq!(
             parse_allowed_users("Alice, @bob,carol"),
