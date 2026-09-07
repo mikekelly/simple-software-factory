@@ -1,7 +1,7 @@
 //! ssf — Simple Software Factory.
 //!
 //! Watches GitHub repos for issues assigned to a bot account and turns each one
-//! into an Orca workspace running a coding agent, feeding later issue activity
+//! into a workspace (in herdr or Orca) running a coding agent, feeding later issue activity
 //! into that agent.
 
 mod agents;
@@ -40,7 +40,7 @@ use config::{Config, RepoConfig, split_repo_name};
 #[command(
     name = "ssf",
     version,
-    about = "Simple Software Factory: GitHub issues -> Orca agent workspaces"
+    about = "Simple Software Factory: GitHub issues -> agent workspaces in herdr or Orca"
 )]
 struct Cli {
     /// Log verbosity (also honours RUST_LOG).
@@ -85,13 +85,13 @@ enum Command {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
     },
-    /// Run the daemon: poll GitHub and drive Orca.
+    /// Run the daemon: poll GitHub and drive the workspaces (herdr or Orca).
     Run {
         /// Do a single pass and exit.
         #[arg(long)]
         once: bool,
     },
-    /// Show tracked issues and their workspaces, joined with what Orca
+    /// Show tracked issues and their workspaces, joined with what the driver
     /// reports about each agent session.
     Status {
         #[arg(long)]
@@ -187,7 +187,7 @@ enum Command {
     /// following items, hand-offs and reviewer sessions work. The initial
     /// prompt points here.
     Guide,
-    /// Check that GitHub, Orca and the configured harnesses are usable.
+    /// Check that GitHub, the drivers in use and the configured harnesses are usable.
     Doctor,
     /// Omarchy desktop integration: bar widget, menu entries, background service.
     Ui {
@@ -464,7 +464,7 @@ enum ConfigCommand {
 
 #[derive(Subcommand)]
 enum UiCommand {
-    /// Link the bar widget into ~/.config/omarchy/plugins, enable it, add menu entries.
+    /// Copy the bar widget into ~/.config/omarchy/plugins, enable it, add menu entries.
     Install {
         #[arg(long)]
         quiet: bool,

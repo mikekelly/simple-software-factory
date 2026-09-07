@@ -74,7 +74,7 @@
 # cleanup_grace_secs = 900                     # how long a reviewer session gets to finish before its read-only workspace is removed anyway
 # review_label = "review"                      # label that asks for a review of a session's own PR (GitHub refuses review requests from the author); "" disables
 # resume_on_start = true                       # after a reboot, start again the sessions whose terminals are gone (running ones are left alone)
-# startup_orca_wait_secs = 120                 # wait this long for Orca at daemon start (every 10 s) before the first poll
+# startup_orca_wait_secs = 120                 # wait this long for the driver (herdr or Orca) at daemon start (every 10 s) before the first poll
 # Who may drive the factory: only these GitHub logins' assignments, mentions,
 # review requests, labels and comments count (case-insensitive; the bot
 # itself always does). Unset: each repository's collaborators with push

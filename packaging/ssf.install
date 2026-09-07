@@ -21,16 +21,18 @@ post_install() {
   cat <<'MSG'
 ==> Simple Software Factory (ssf) is installed.
     It runs as a per-user service (ssf.service) and starts with the graphical session.
-    Orca must be installed separately (orca-ide-bin) until it is packaged for Omarchy;
-    herdr works instead (driver = "herdr").
+    The agents run in herdr (the default; inside a microVM with `ssf vm`), or in Orca
+    (orca-ide-bin, installed by hand; `ssf config set driver orca`).
 MSG
   if ! _start_for_logged_in_users start; then
     echo "    No running user session found; it starts at next login, or now with:"
     echo "      systemctl --user daemon-reload && systemctl --user start ssf.service"
   fi
   cat <<'MSG'
-    Next: sign in the bot account from the bar widget, the Omarchy menu (Factory), or `ssf-ui login`,
-    then watch a repository (`ssf repo add owner/name --harness claude`).
+    Next: sign in the bot account from the bar widget, the Omarchy menu (Factory), or `ssf-ui login`;
+    build the microVM (`ssf vm build && ssf config set vm.enabled true`) or run on this machine;
+    then watch a repository (`ssf repo add owner/name --harness claude`). The ssf-setup skill
+    walks a coding agent through it; docs: /usr/share/doc/ssf/README.md
 MSG
 }
 
@@ -44,6 +46,7 @@ post_remove() {
   cat <<'MSG'
 ==> ssf removed. Per-user files are left in place:
     ~/.config/ssf (config, bot key), ~/.local/state/ssf (state),
+    ~/ssf/projects (clones and worktrees), ~/.local/share/ssf/vm (the microVM's disks),
     ~/.config/omarchy/plugins/ssf.factory and the Factory menu entries
     (remove with `ssf ui uninstall` before uninstalling, or by hand).
 MSG
