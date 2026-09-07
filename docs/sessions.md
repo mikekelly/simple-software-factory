@@ -405,7 +405,10 @@ repository's items are polled) the daemon:
    harness, model and effort. The retired conversation is remembered as
    one never to resume: its transcript is the newest one in the
    workspace when the new harness starts there, and without that the new
-   session would be given the outgoing agent's conversation;
+   session would be given the outgoing agent's conversation. The last
+   conversation the outgoing harness wrote in that workspace is
+   remembered too, whether or not ssf ever recorded its id, since that
+   transcript is the one lying there for the next harness to adopt;
 4. starts the new session in the same worktree, with what the item's
    overrides make of the repository's launch settings (see [Per-item
    overrides](configuration.md#per-item-overrides): a handover to another

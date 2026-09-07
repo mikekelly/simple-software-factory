@@ -4065,7 +4065,8 @@ deliveries resume"
         // stopped: a story that cannot be assembled is a refusal, not a
         // session ended with nothing to put in its place.
         let from_launch = self.launch_of(repo, number);
-        let from_name = login::display_name(&self.effective(repo, number).harness);
+        let from_harness = self.effective(repo, number).harness;
+        let from_name = login::display_name(&from_harness);
         // Who the new session really takes over from. Normally the
         // harness the item is on; but a handover whose harness never came
         // up left a note of its own, and the session that wrote it is
@@ -4140,16 +4141,25 @@ deliveries resume"
             .filter(|s| s.shares_workspace_of == Some(number))
             .map(|s| s.number)
             .collect();
+        // The conversations the outgoing agent leaves behind: the id on
+        // the record, and whatever its harness last wrote in this
+        // workspace, which is what a session ssf never captured an id for
+        // leaves behind (see `retired_conversations`).
+        let newest = st
+            .worktree_path
+            .as_deref()
+            .and_then(|p| sessions::capture(&from_harness, p, SystemTime::UNIX_EPOCH, &[]));
         // The old session is retired on the record; everything about the
         // item and its workspace stays.
-        let retired = self.entry(repo, number).agent_session_id.take();
+        let retired =
+            retired_conversations(self.entry(repo, number).agent_session_id.take(), newest);
         {
             let e = self.entry(repo, number);
-            // The conversation being dropped is remembered, so the harness
-            // starting in its workspace is never given the outgoing
-            // agent's transcript as its own (`capture_sessions`,
+            // The conversations being dropped are remembered, so the
+            // harness starting in this workspace is never given the
+            // outgoing agent's transcript as its own (`capture_sessions`,
             // `sessions::capture`).
-            retire(e, retired.clone());
+            retire(e, &retired);
             e.terminal_handle = None;
             // The hold, if there was one, was closed just above.
             e.launched_at = None;
@@ -4168,7 +4178,7 @@ deliveries resume"
         for n in bound {
             let e = self.entry(repo, n);
             e.agent_session_id = None;
-            retire(e, retired.clone());
+            retire(e, &retired);
         }
         let eff = self.effective(repo, number);
         let to_launch = self.launch_of(repo, number);
@@ -4543,16 +4553,38 @@ deliveries resume"
     }
 }
 
-/// Remember a conversation as one never to resume or capture again, on
+/// Remember conversations as ones never to resume or capture again, on
 /// one record. Only the last few are kept: a workspace is not handed over
 /// dozens of times, and every capture scans the list.
-fn retire(e: &mut IssueState, id: Option<String>) {
-    let Some(id) = id.filter(|id| !e.retired_session_ids.contains(id)) else {
-        return;
-    };
-    e.retired_session_ids.push(id);
+fn retire(e: &mut IssueState, ids: &[String]) {
+    for id in ids {
+        if !e.retired_session_ids.contains(id) {
+            e.retired_session_ids.push(id.clone());
+        }
+    }
     let extra = e.retired_session_ids.len().saturating_sub(RETIRED_KEPT);
     e.retired_session_ids.drain(..extra);
+}
+
+/// The conversations a handover leaves behind in one workspace: the id
+/// ssf captured for the outgoing session, and the newest transcript its
+/// harness wrote in that workspace, whatever its age.
+///
+/// The second is what keeps a same-harness handover honest. `now_iso`
+/// stamps `handed_over_at` to the whole second, so a transcript the
+/// outgoing agent flushed as it exited can carry an mtime inside the
+/// capture window; and a session whose id was never captured (the pass
+/// that would have done it never ran) leaves nothing on the record to
+/// exclude. Either way the newest transcript in the workspace is the one
+/// the harness starting next would adopt as its own.
+fn retired_conversations(captured: Option<String>, newest: Option<String>) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in [captured, newest].into_iter().flatten() {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 /// How far back `capture_sessions` looks for a workspace's transcript.
@@ -8478,6 +8510,42 @@ mod tests {
             .expect("the handover is posted");
         assert!(handed.1.contains("\nfrom: Pi\n"), "{posts:?}");
         assert!(handed.1.contains("\nto: Codex\n"), "{posts:?}");
+    }
+
+    /// What a handover retires: the conversation on the record and the
+    /// last one its harness wrote in the workspace. The second covers the
+    /// session ssf never captured an id for, and the transcript flushed
+    /// on the way out inside the second `handed_over_at` is stamped to.
+    #[test]
+    fn a_handover_retires_the_workspace_s_last_conversation_too() {
+        let id = |s: &str| Some(s.to_string());
+        // Both known and different: both go.
+        assert_eq!(
+            retired_conversations(id("sess-5"), id("sess-6")),
+            vec!["sess-5".to_string(), "sess-6".to_string()]
+        );
+        // The usual case: the record's id is the newest transcript.
+        assert_eq!(
+            retired_conversations(id("sess-5"), id("sess-5")),
+            vec!["sess-5".to_string()]
+        );
+        // Never captured: the transcript alone is what there is to skip.
+        assert_eq!(
+            retired_conversations(None, id("sess-6")),
+            vec!["sess-6".to_string()]
+        );
+        // A harness that keeps no transcripts (or an empty workspace):
+        // nothing but the record's id.
+        assert_eq!(
+            retired_conversations(id("sess-5"), None),
+            vec!["sess-5".to_string()]
+        );
+        assert!(retired_conversations(None, None).is_empty());
+        // On the record, both are remembered and neither twice.
+        let mut st = IssueState::default();
+        retire(&mut st, &retired_conversations(id("sess-5"), id("sess-6")));
+        retire(&mut st, &retired_conversations(id("sess-6"), None));
+        assert_eq!(st.retired_session_ids, vec!["sess-5", "sess-6"]);
     }
 
     /// Where `capture_sessions` starts looking for a transcript: a moment
