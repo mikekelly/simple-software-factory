@@ -80,7 +80,7 @@ enum Command {
         #[arg(long)]
         installed: bool,
     },
-    /// Read or change daemon settings (dotted keys, e.g. daemon.poll_interval_secs).
+    /// Read or change settings (dotted keys, e.g. daemon.poll_interval_secs, daemon.startup_driver_wait_secs, vm.enabled, driver).
     Config {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
@@ -358,10 +358,11 @@ enum RepoCommand {
         /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
-        /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5); see `ssf agents --json`.
+        /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
+        /// and grok; provider/model for pi, omp, opencode and copilot. `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
-        /// Effort level for the model, as an Orca effort level (e.g. low, medium, high, xhigh, max).
+        /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
         #[arg(long)]
         effort: Option<String>,
         /// Extra instructions appended to the initial prompt for this repo.
@@ -395,10 +396,11 @@ enum RepoCommand {
         /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
-        /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5).
+        /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
+        /// and grok; provider/model for pi, omp, opencode and copilot. `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
-        /// Effort level for the model, as an Orca effort level (e.g. low, medium, high, xhigh, max).
+        /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
         #[arg(long)]
         effort: Option<String>,
         #[arg(long)]

@@ -2,6 +2,9 @@
 name = "ssf"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+repository = "https://github.com/mikekelly/simple-software-factory"
+description = "Simple Software Factory: GitHub issues assigned to a bot become coding-agent workspaces in herdr or Orca"
 
 [dependencies]
 anyhow = "1.0.104"

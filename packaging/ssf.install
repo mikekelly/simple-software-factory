@@ -21,8 +21,8 @@ post_install() {
   cat <<'MSG'
 ==> Simple Software Factory (ssf) is installed.
     It runs as a per-user service (ssf.service) and starts with the graphical session.
-    The agents run in herdr (the default; inside a microVM with `ssf vm`), or in Orca
-    (orca-ide-bin, installed by hand; `ssf config set driver orca`).
+    The agents run in herdr (installed with this package; by default inside a microVM
+    with `ssf vm`), or in Orca (orca-ide-bin, installed by hand; `ssf config set driver orca`).
 MSG
   if ! _start_for_logged_in_users start; then
     echo "    No running user session found; it starts at next login, or now with:"

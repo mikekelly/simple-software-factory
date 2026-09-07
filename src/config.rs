@@ -620,12 +620,16 @@ pub struct DaemonConfig {
     #[serde(default = "default_true")]
     pub resume_on_start: bool,
     /// How long to wait for the driver at daemon start (checking every ten
-    /// seconds) before polling begins, since Orca or herdr may still be coming
+    /// seconds) before polling begins, since herdr or Orca may still be coming
     /// up in the same login. If it is not ready by then, polling starts anyway
     /// and the startup pass runs on the first poll that finds the driver ready.
-    /// (The key keeps its name from when Orca was the only driver.)
-    #[serde(default = "default_startup_orca_wait")]
-    pub startup_orca_wait_secs: u64,
+    /// (`startup_orca_wait_secs`, its name from when Orca was the only
+    /// driver, is still read.)
+    #[serde(
+        default = "default_startup_driver_wait",
+        alias = "startup_orca_wait_secs"
+    )]
+    pub startup_driver_wait_secs: u64,
     /// GitHub logins whose assignments, mentions, review requests, labels
     /// and posts ssf acts on, for every repository that has no list of its
     /// own (case-insensitive; the bot itself is always accepted). Unset:
@@ -661,7 +665,7 @@ impl Default for DaemonConfig {
             cleanup_grace_secs: default_cleanup_grace(),
             review_label: default_review_label(),
             resume_on_start: true,
-            startup_orca_wait_secs: default_startup_orca_wait(),
+            startup_driver_wait_secs: default_startup_driver_wait(),
             allowed_users: None,
             accepted_anyone_risk: false,
         }
@@ -690,7 +694,7 @@ fn default_review_label() -> String {
 fn default_cleanup_grace() -> u64 {
     900
 }
-fn default_startup_orca_wait() -> u64 {
+fn default_startup_driver_wait() -> u64 {
     120
 }
 
@@ -715,11 +719,13 @@ pub struct RepoConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub command: Option<String>,
-    /// Model the harness runs with, as an Orca model id (`opus`, `gpt-5.5`,
-    /// ...); appended to the command as the harness's model flag.
+    /// Model the harness runs with: an Orca model id (`opus`, `gpt-5.5`, ...)
+    /// for claude, codex, gemini and grok, `provider/model` for pi, omp,
+    /// opencode and copilot; appended to the command as the harness's model
+    /// flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// Effort (reasoning) level for the model, as an Orca effort level
+    /// Effort (reasoning) level for the model, one the harness accepts
     /// (`low`, `medium`, `high`, `xhigh`, ...); see `ssf agents --json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
@@ -1212,6 +1218,18 @@ driver = "orca"
         let again: Config = toml::from_str(&text).unwrap();
         assert_eq!(again.repos[1].driver, Some(DriverKind::Orca));
         assert_eq!(again.repos[0].driver, None);
+    }
+
+    #[test]
+    fn startup_wait_reads_its_old_orca_name_and_writes_the_new_one() {
+        let old: Config = toml::from_str("[daemon]\nstartup_orca_wait_secs = 7\n").unwrap();
+        assert_eq!(old.daemon.startup_driver_wait_secs, 7);
+        let new: Config = toml::from_str("[daemon]\nstartup_driver_wait_secs = 9\n").unwrap();
+        assert_eq!(new.daemon.startup_driver_wait_secs, 9);
+        assert_eq!(Config::default().daemon.startup_driver_wait_secs, 120);
+        let text = toml::to_string(&old).unwrap();
+        assert!(text.contains("startup_driver_wait_secs = 7"));
+        assert!(!text.contains("startup_orca_wait_secs"));
     }
 
     #[test]

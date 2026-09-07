@@ -12,14 +12,12 @@ pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent w
 arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'jq' 'systemd')
+depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr')
 makedepends=('cargo')
 optdepends=(
-  'herdr: terminal workspace manager, the default driver (also what runs inside the microVM)'
   'orca-ide-bin: Orca desktop app and CLI, the alternative driver (driver = "orca"; not in the Omarchy repo, install it by hand)'
   'omarchy: bar widget, menu entries and floating-terminal flows'
   'gum: nicer prompts in ssf-ui'
-  'github-cli: lets agents comment on issues as the bot'
   'fakeroot: builds the microVM image (ssf vm build)'
   'libarchive: bsdtar, unpacks the Arch bootstrap tarball for the microVM image'
   'e2fsprogs: mkfs.ext4, makes the microVM disks'

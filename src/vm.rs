@@ -1240,7 +1240,7 @@ pub fn guest_config(host: &Config) -> Config {
         r.path = None;
     }
     g.vm = VmConfig::default();
-    g.daemon.startup_orca_wait_secs = 0;
+    g.daemon.startup_driver_wait_secs = 0;
     g
 }
 
@@ -1813,7 +1813,7 @@ mod tests {
                 .all(|r| r.driver.is_none() && r.path.is_none())
         );
         assert_eq!(g.repos[0].harness, "claude");
-        assert_eq!(g.daemon.startup_orca_wait_secs, 0);
+        assert_eq!(g.daemon.startup_driver_wait_secs, 0);
         // It round-trips through TOML with nothing unknown.
         let text = toml::to_string_pretty(&g).unwrap();
         let back: Config = toml::from_str(&text).unwrap();

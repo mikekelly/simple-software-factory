@@ -425,7 +425,7 @@ impl Engine {
         // bounded while before the first poll rather than skipping passes.
         let mut stop = false;
         if !self.startup_pending.is_empty() {
-            let wait = Duration::from_secs(self.cfg.daemon.startup_orca_wait_secs);
+            let wait = Duration::from_secs(self.cfg.daemon.startup_driver_wait_secs);
             let started = tokio::time::Instant::now();
             loop {
                 let err = match self.check_drivers().await {
