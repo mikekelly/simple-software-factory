@@ -193,8 +193,8 @@ The events, and nothing else:
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
 | `blocked` | deliveries are held because the harness is at its sign-in prompt (below) | `harness`, `reason: not signed in`, `fix:` the command that signs it in |
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again) or `kept` (a person signed in at the terminal) |
-| `gave-up` | five deliveries in a row failed and the binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
-| `released` | the workspace was removed by `ssf release` or `ssf purge` | `by: ssf release` or `by: ssf purge`, `forced: yes` when a person forced it, `branch` |
+| `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
+| `released` | the workspace was removed by `ssf release` or `ssf purge` | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
 
 Handover (`ssf handover`) gets an event of its own when it lands.
 
