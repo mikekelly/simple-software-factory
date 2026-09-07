@@ -191,11 +191,11 @@ The events, and nothing else:
 | `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` when the session was started by a handover (below); on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
 | `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
-| `blocked` | deliveries are held because the harness is at its sign-in prompt (below) | `harness`, `reason: not signed in`, `fix:` the command that signs it in |
+| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched) | `harness`; `reason: not signed in` with `fix:` the command that signs it in, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again) or `kept` (a person signed in at the terminal) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
-| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`); `to`, `to model`, `to effort` (the same for the session starting); `summary: yes` or `no`; `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
+| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no`; `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
 
 The `handed-over` post is what a reader sees when an item changes stack
 (see [Handover](#handover)):
@@ -412,6 +412,22 @@ the recovery in [A harness that is not signed
 in](#a-harness-that-is-not-signed-in). The old session is not brought
 back: the item is on the new harness from here on, and signing that
 harness in is what starts it.
+
+If the new harness cannot be started **at all** (it exits the moment it
+is launched, because the model id is one it refuses, say: ssf checks a
+model id for its shape, not against a list, so an id the harness itself
+rejects shows up here), the item is blocked in the same way, with
+`reason: could not be started: <error>` on the `blocked` post and `fix:
+start <harness> by hand in the workspace, or fix the model or effort and
+hand over again`. There is no `attached` post, because no session
+attached. The recovery is the same restart with the same backoff: ssf
+starts the harness in the workspace again, ten minutes later, then
+twenty, forty, then hourly, and the block lifts as soon as one of those
+takes the prompt (a person who starts the harness in the workspace by
+hand lifts it on the next pass). Handing the item over again, to a
+harness and model that work, is the other way out. A harness that would
+not start and is not signed in where the daemon runs is recorded as the
+login block it really is, since that is the thing to fix.
 
 While a handover is pending, `ssf release` on the item and `ssf tell` to
 it are refused with that as the reason, and the startup pass leaves the

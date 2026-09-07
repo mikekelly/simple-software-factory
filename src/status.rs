@@ -210,13 +210,28 @@ impl BlockedView {
             harness_name: crate::login::display_name(&b.harness),
             detail: b.detail.clone(),
             since: b.since.clone(),
-            fix: crate::login::how_to_sign_in(&b.harness),
+            fix: fix_for(b),
         }
     }
 
+    /// Did the harness never come up, rather than sit at its sign-in
+    /// prompt?
+    fn never_started(&self) -> bool {
+        self.reason == Blocked::START
+    }
+
     /// One line for a person: `Claude Code at its sign-in prompt since
-    /// 3m; run `claude auth login` on the host`.
+    /// 3m; run `claude auth login` on the host`, or, for a harness that
+    /// never came up, what to do about that.
     pub fn describe(&self) -> String {
+        if self.never_started() {
+            return format!(
+                "{} could not be started since {}; {}",
+                self.harness_name,
+                ago(Some(&self.since)),
+                self.fix
+            );
+        }
         format!(
             "{} at its sign-in prompt since {}; run {}",
             self.harness_name,
@@ -224,6 +239,21 @@ impl BlockedView {
             self.fix
         )
     }
+}
+
+/// What a person does about a block: sign the harness in, or, for one
+/// that could not be started at all (a handover to a harness that exits
+/// as it is launched, a model id the harness itself refuses), start it
+/// by hand or hand the item over again with settings that work. Used by
+/// the status commands and by the `blocked` post, so both say the same.
+pub fn fix_for(b: &Blocked) -> String {
+    if b.reason == Blocked::START {
+        return format!(
+            "start {} by hand in the workspace, or fix the model or effort and hand over again",
+            crate::login::display_name(&b.harness)
+        );
+    }
+    crate::login::how_to_sign_in(&b.harness)
 }
 
 impl Session {
@@ -1047,6 +1077,30 @@ mod tests {
         assert!(
             text.contains("BLOCKED: acme/widgets#1: Claude Code at its sign-in prompt"),
             "{text}"
+        );
+        // The other reason: the harness never came up (a handover to a
+        // harness that exits as it is launched).
+        let mut it = item(1, Some("r1::/w/one"));
+        it.blocked = Some(Blocked {
+            reason: Blocked::START.into(),
+            harness: "pi".into(),
+            detail: "pi exited at once: ambiguous model".into(),
+            since: "2026-09-06T14:30:00Z".into(),
+            reported: true,
+            ..Default::default()
+        });
+        let s = sessions(&cfg(), &state_with(vec![it]), Some(&[]));
+        let b = s[0].blocked.as_ref().unwrap();
+        assert!(b.fix.contains("start Pi by hand"), "{}", b.fix);
+        assert!(
+            b.describe().starts_with("Pi could not be started since"),
+            "{}",
+            b.describe()
+        );
+        assert!(
+            render_peers(&s, None).contains("BLOCKED: Pi could not be started since"),
+            "{}",
+            render_peers(&s, None)
         );
     }
 

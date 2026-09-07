@@ -279,19 +279,21 @@ impl PendingHandover {
 }
 
 /// Why a session cannot take prompts, and what has been done about it.
-/// Only one reason exists so far: the harness is not signed in (its login
-/// expired, was revoked, or was never there). The record keeps what the
-/// screen said, when it was seen, whether the item has been told, the
-/// credential file's identity at the time (a new login rewrites it) and
-/// when the harness was last started again to check.
+/// Two reasons: the harness is not signed in (its login expired, was
+/// revoked, or was never there), or the harness could not be started at
+/// all (a handover to a harness that exits the moment it is launched).
+/// The record keeps what the screen or the driver said, when it was
+/// seen, whether the item has been told, the credential file's identity
+/// at the time (a new login rewrites it) and when the harness was last
+/// started again to check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Blocked {
-    /// `login` for now.
+    /// `login` or `start`.
     pub reason: String,
-    /// The harness that showed the prompt.
+    /// The harness that showed the prompt, or would not start.
     #[serde(default)]
     pub harness: String,
-    /// The screen line that gave it away.
+    /// The screen line that gave it away, or the start error.
     #[serde(default)]
     pub detail: String,
     pub since: String,
@@ -313,6 +315,8 @@ pub struct Blocked {
 
 impl Blocked {
     pub const LOGIN: &'static str = "login";
+    /// The harness could not be started in the workspace at all.
+    pub const START: &'static str = "start";
 }
 
 pub fn state_path() -> PathBuf {

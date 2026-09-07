@@ -105,9 +105,14 @@ pub enum Event {
         conversation: Conversation,
         after: &'static str,
     },
-    /// Deliveries are held: the harness is not signed in; `fix` is what a
-    /// person runs (`login::how_to_sign_in`).
-    Blocked { harness: String, fix: String },
+    /// Deliveries are held: the harness is not signed in, or could not
+    /// be started at all. `reason` says which (`not signed in`, `could
+    /// not be started: <error>`), `fix` what a person does about it.
+    Blocked {
+        harness: String,
+        reason: String,
+        fix: String,
+    },
     /// The hold is over; `held` is how long it lasted.
     Unblocked {
         harness: String,
@@ -230,11 +235,15 @@ impl Event {
                     ("after", after.to_string()),
                 ],
             ),
-            Self::Blocked { harness, fix } => (
+            Self::Blocked {
+                harness,
+                reason,
+                fix,
+            } => (
                 format!("holding deliveries to agent on {item_kind}"),
                 vec![
                     ("harness", harness.clone()),
-                    ("reason", "not signed in".into()),
+                    ("reason", reason.clone()),
                     ("fix", fix.clone()),
                 ],
             ),
@@ -277,10 +286,19 @@ impl Event {
                     lines.push(("from", from.harness.clone()));
                     lines.push(("from model", from.model_value()));
                     lines.push(("from effort", from.effort_value()));
+                    // The model and effort lines say `the command's` when
+                    // a command is configured, so the command is named
+                    // here as it is in the `attached` block.
+                    if let Some(c) = set(&from.command) {
+                        lines.push(("from command", c));
+                    }
                 }
                 lines.push(("to", to.harness.clone()));
                 lines.push(("to model", to.model_value()));
                 lines.push(("to effort", to.effort_value()));
+                if let Some(c) = set(&to.command) {
+                    lines.push(("to command", c));
+                }
                 if refused.is_none() {
                     lines.push(("summary", if *summary { "yes" } else { "no" }.into()));
                 }
@@ -667,6 +685,71 @@ mod tests {
         );
     }
 
+    /// A configured command decides an unset model or effort, so the
+    /// block names it on the side that has one, as the `attached` block
+    /// does: without it `the command's` refers to nothing.
+    #[test]
+    fn a_handover_names_a_configured_command_on_each_side() {
+        let ev = Event::HandedOver {
+            from: Launch {
+                model: None,
+                effort: None,
+                command: Some("claude --model opus".into()),
+                ..launch(Some("bot/issue-12-fix"))
+            },
+            to: Launch {
+                harness: "Codex".into(),
+                model: None,
+                effort: Some("medium".into()),
+                command: Some("codex --search".into()),
+                ..launch(None)
+            },
+            summary: true,
+            by: None,
+            refused: None,
+        };
+        check_shape(&comment(&o(), "issue", &ev), "handed-over");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the command's\n\
+             from effort: the command's\n\
+             from command: claude --model opus\n\
+             to: Codex\n\
+             to model: the command's\n\
+             to effort: medium\n\
+             to command: codex --search\n\
+             summary: yes\n\
+             by: a person at the terminal\n\
+             ```"
+        );
+        // A refusal says nothing about the side that stays.
+        let Event::HandedOver { from, to, .. } = ev else {
+            unreachable!()
+        };
+        let refused = Event::HandedOver {
+            from,
+            to,
+            summary: true,
+            by: None,
+            refused: Some("the item is no longer active".into()),
+        };
+        assert_eq!(
+            refused.block("issue"),
+            "```ssf\n\
+             ssf not handing over issue:\n\
+             to: Codex\n\
+             to model: the command's\n\
+             to effort: medium\n\
+             to command: codex --search\n\
+             by: a person at the terminal\n\
+             refused: the item is no longer active\n\
+             ```"
+        );
+    }
+
     #[test]
     fn a_refused_handover_says_only_what_it_would_have_been() {
         let ev = Event::HandedOver {
@@ -748,6 +831,7 @@ mod tests {
     fn blocked_and_unblocked() {
         let ev = Event::Blocked {
             harness: "Claude Code".into(),
+            reason: "not signed in".into(),
             fix: "`claude auth login` on the host".into(),
         };
         let text = comment(&o(), "issue", &ev);
@@ -761,6 +845,27 @@ mod tests {
              harness: Claude Code\n\
              reason: not signed in\n\
              fix: claude auth login on the host\n\
+             ```"
+        );
+        // The other reason: the harness never came up (see
+        // `Engine::finish_handover`).
+        let ev = Event::Blocked {
+            harness: "Pi".into(),
+            reason: "could not be started: pi exited at once".into(),
+            fix:
+                "start Pi by hand in the workspace, or fix the model or effort and hand over again"
+                    .into(),
+        };
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "blocked");
+        assert_eq!(
+            text,
+            "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
+             ```ssf\n\
+             ssf holding deliveries to agent on issue:\n\
+             harness: Pi\n\
+             reason: could not be started: pi exited at once\n\
+             fix: start Pi by hand in the workspace, or fix the model or effort and hand over again\n\
              ```"
         );
         let ev = Event::Unblocked {
@@ -896,6 +1001,7 @@ mod tests {
             },
             Event::Blocked {
                 harness: "x".into(),
+                reason: "not signed in".into(),
                 fix: "y".into(),
             },
             Event::Unblocked {

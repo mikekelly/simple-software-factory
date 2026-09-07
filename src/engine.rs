@@ -65,13 +65,18 @@ pub struct SessionBlocked {
 
 impl std::fmt::Display for SessionBlocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = login::display_name(&self.blocked.harness);
+        let what = if self.blocked.reason == Blocked::START {
+            "could not be started".to_string()
+        } else {
+            "has been at its sign-in prompt".to_string()
+        };
         write!(
             f,
-            "the session on {} is blocked: {} has been at its sign-in prompt since {}; sign in with {}",
+            "the session on {} is blocked: {name} {what} since {}; {}",
             self.session,
-            login::display_name(&self.blocked.harness),
             self.blocked.since,
-            login::how_to_sign_in(&self.blocked.harness)
+            crate::status::fix_for(&self.blocked)
         )
     }
 }
@@ -1550,11 +1555,34 @@ are resumed on the first pass that finds it: {err:#}"
     /// to the prompt) only the attempt is noted, so the item is not told
     /// twice and the next attempt waits longer.
     async fn set_blocked(&mut self, repo: &RepoConfig, number: u64, detail: String) -> Blocked {
+        self.set_blocked_for(repo, number, Blocked::LOGIN, detail)
+            .await
+    }
+
+    /// [`set_blocked`](Self::set_blocked) for a harness that could not be
+    /// started at all (`Blocked::START`): the item is held the same way,
+    /// and `recover` starts it again with the same backoff. A harness
+    /// that would not start and is not signed in where the daemon runs is
+    /// recorded as the login block it really is, so the item is told the
+    /// thing worth fixing.
+    async fn set_blocked_for(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        reason: &str,
+        detail: String,
+    ) -> Blocked {
         let session = session_id(&repo.name, number);
         let harness = self.effective(repo, number).harness;
         let probe = self.probe_harness(&harness).await;
+        let reason = if reason == Blocked::START && probe.state == LoginState::SignedOut {
+            Blocked::LOGIN
+        } else {
+            reason
+        };
         let e = self.entry(repo, number);
         if let Some(cur) = e.blocked.as_mut() {
+            cur.reason = reason.to_string();
             cur.detail = detail;
             cur.credential = probe.fingerprint;
             cur.retried_at = Some(now_iso());
@@ -1564,22 +1592,13 @@ are resumed on the first pass that finds it: {err:#}"
                 repo = repo.name,
                 session,
                 retries = b.retries,
-                "started again and still at its sign-in prompt; next attempt in {}s",
+                "started again and is blocked still; next attempt in {}s",
                 retry_wait(b.retries).as_secs()
             );
             return b;
         }
-        warn!(
-            repo = repo.name,
-            session,
-            harness,
-            detail,
-            "session is blocked: {} is at its sign-in prompt; sign in with {}",
-            login::display_name(&harness),
-            login::how_to_sign_in(&harness)
-        );
         let b = Blocked {
-            reason: Blocked::LOGIN.into(),
+            reason: reason.to_string(),
             harness: harness.clone(),
             detail,
             since: now_iso(),
@@ -1588,26 +1607,52 @@ are resumed on the first pass that finds it: {err:#}"
             retried_at: None,
             retries: 0,
         };
+        warn!(
+            repo = repo.name,
+            session,
+            harness,
+            detail = b.detail,
+            "session is blocked: {} {}; {}",
+            login::display_name(&harness),
+            if reason == Blocked::START {
+                "could not be started"
+            } else {
+                "is at its sign-in prompt"
+            },
+            crate::status::fix_for(&b)
+        );
         e.blocked = Some(b.clone());
         b
     }
 
-    /// The `blocked` event on the session's item, once per block: the
-    /// harness is not signed in, and how to fix it. The record says it has
-    /// been posted whether or not the post went through (`post_event` is
-    /// best effort), so a failed post is not tried again every pass.
+    /// The `blocked` event on the session's item, once per block: why
+    /// deliveries are held (the harness is not signed in, or it could not
+    /// be started at all) and how to fix it. The record says it has been
+    /// posted whether or not the post went through (`post_event` is best
+    /// effort), so a failed post is not tried again every pass.
     async fn report_blocked(&mut self, repo: &RepoConfig, number: u64) {
         let st = self.entry(repo, number).clone();
         let Some(b) = st.blocked.clone().filter(|b| !b.reported) else {
             return;
         };
         self.entry(repo, number).blocked.as_mut().unwrap().reported = true;
+        // The start error is the driver's or the harness's own words, and
+        // the post is read by something that looks for sign-in prompts.
+        let reason = if b.reason == Blocked::START {
+            format!(
+                "could not be started: {}",
+                safe_error(&events::one_line(&b.detail))
+            )
+        } else {
+            "not signed in".to_string()
+        };
         self.post_event(
             repo,
             number,
             Event::Blocked {
                 harness: login::display_name(&b.harness),
-                fix: login::how_to_sign_in(&b.harness),
+                reason,
+                fix: crate::status::fix_for(&b),
             },
         )
         .await;
@@ -1735,7 +1780,8 @@ are resumed on the first pass that finds it: {err:#}"
             state = ?probe.state,
             changed,
             gone = handle.is_none(),
-            "the login looks back ({}); starting the harness again",
+            reason = b.reason,
+            "starting the harness again ({})",
             probe.detail
         );
         if let Some(h) = &handle
@@ -1748,13 +1794,23 @@ are resumed on the first pass that finds it: {err:#}"
             }
             return;
         }
-        let text = prompt::login_back_prompt(&prompt::LoginBack {
-            harness: &login::display_name(&harness),
-            since: &b.since,
-            number: st.number,
-            title: &st.title,
-            url: &st.html_url,
-        });
+        let text = if b.reason == Blocked::START {
+            prompt::start_again_prompt(&prompt::LoginBack {
+                harness: &login::display_name(&harness),
+                since: &b.since,
+                number: st.number,
+                title: &st.title,
+                url: &st.html_url,
+            })
+        } else {
+            prompt::login_back_prompt(&prompt::LoginBack {
+                harness: &login::display_name(&harness),
+                since: &b.since,
+                number: st.number,
+                title: &st.title,
+                url: &st.html_url,
+            })
+        };
         match self.deliver_to(repo, number, &text, None).await {
             Ok(_) => {
                 let e = self.entry(repo, number);
@@ -3690,6 +3746,13 @@ are resumed on the first pass that finds it: {err:#}"
         if !(self.installed)(harness) {
             anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");
         }
+        // Asked afresh rather than off the pass's memo: an operator who
+        // signs the harness in and runs the command again must get the
+        // new answer, not the one from up to a poll interval ago.
+        // Asked afresh rather than off the pass's memo: an operator who
+        // signs the harness in and runs the command again must get the
+        // new answer, not the one from up to a poll interval ago.
+        self.probes.remove(harness);
         let probe = self.probe_harness(harness).await;
         if probe.state == LoginState::SignedOut {
             anyhow::bail!(
@@ -3911,8 +3974,10 @@ are resumed on the first pass that finds it: {err:#}"
             Ok(handle) => handle,
             Err(e) => {
                 // The handover stands (the item keeps the overrides), but
-                // nothing is running: the next delivery starts the new
-                // harness in the workspace.
+                // nothing is running: the item is blocked as it is for a
+                // harness that comes up at its sign-in prompt, with the
+                // same restart-with-backoff recovery, and the old session
+                // is not brought back.
                 warn!(
                     session,
                     harness = eff.harness,
@@ -3924,6 +3989,10 @@ are resumed on the first pass that finds it: {err:#}"
                     handed_over(&from_launch, &to_launch, &h, None),
                 )
                 .await;
+                let why = safe_error(&events::one_line(&format!("{e:#}")));
+                self.set_blocked_for(repo, number, Blocked::START, why)
+                    .await;
+                self.report_blocked(repo, number).await;
                 return;
             }
         };
@@ -6866,9 +6935,51 @@ mod tests {
                     "issue",
                     &Event::Blocked {
                         harness: name.clone(),
+                        reason: "not signed in".into(),
                         fix: fix.clone(),
                     },
                 ),
+                // The other block: a harness that would not start at all,
+                // whose reason line carries the driver's own words.
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::Blocked {
+                        harness: name.clone(),
+                        reason: format!(
+                            "could not be started: {}",
+                            safe_error(&events::one_line(
+                                "herdr said: the pane exited at once\nLogin expired · Please run /login"
+                            ))
+                        ),
+                        fix: crate::status::fix_for(&Blocked {
+                            reason: Blocked::START.into(),
+                            harness: h.into(),
+                            ..b.clone()
+                        }),
+                    },
+                ),
+                prompt::start_again_prompt(&prompt::LoginBack {
+                    harness: &name,
+                    since: &b.since,
+                    number: 5,
+                    title: "Fix it",
+                    url: "https://gh/5",
+                }),
+                crate::status::BlockedView::from_blocked(&Blocked {
+                    reason: Blocked::START.into(),
+                    detail: "the pane exited at once".into(),
+                    ..b.clone()
+                })
+                .describe(),
+                SessionBlocked {
+                    session: "o/r#5".into(),
+                    blocked: Blocked {
+                        reason: Blocked::START.into(),
+                        ..b.clone()
+                    },
+                }
+                .to_string(),
                 events::comment(
                     &o,
                     "issue",
@@ -7278,6 +7389,19 @@ mod tests {
         let err = msg(e.handover("o/r#5", "pi", None, None, None, None).await);
         assert!(err.contains("Pi is not signed in here"), "{err}");
         assert!(err.contains(&login::how_to_sign_in("pi")), "{err}");
+        // The signed-out answer is not remembered: an operator who signs
+        // the harness in and runs the command again is not told the same
+        // thing until the next pass. The memo is left as the refusal set
+        // it; only the check itself now answers differently.
+        e.probe = std::sync::Arc::new(|_| Probe {
+            state: LoginState::SignedIn,
+            detail: "test".into(),
+            fingerprint: None,
+        });
+        e.handover("o/r#5", "pi", None, None, None, None)
+            .await
+            .expect("the fresh login is seen straight away");
+        e.entry(&repo(), 5).handover = None;
         probe_returning(&mut e, LoginState::Unknown, None);
         // The target is what the item already runs.
         assert!(
@@ -7427,6 +7551,75 @@ mod tests {
                 login::how_to_sign_in("pi").replace('`', "")
             )
         );
+    }
+
+    /// The new harness cannot be started at all (a model id it refuses,
+    /// a binary that exits at once): the handover stands, the item is
+    /// blocked with the usual post and the usual recovery, and no
+    /// `attached` claims a session that is not there.
+    #[tokio::test]
+    async fn a_new_harness_that_will_not_start_blocks_the_item() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| {
+            s.start_error = Some("pi exited at once: ambiguous model gpt-5.5".into());
+        });
+        e.handover(
+            "o/r#5",
+            "pi",
+            Some("openai/gpt-6"),
+            None,
+            None,
+            Some("o/r#5"),
+        )
+        .await
+        .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover.is_none(), "carried out, not left pending");
+        assert!(st.overrides.is_some(), "the handover stands");
+        assert!(st.terminal_handle.is_none(), "nothing is running");
+        let b = st.blocked.clone().expect("blocked");
+        assert_eq!(b.reason, Blocked::START);
+        assert_eq!(b.harness, "pi");
+        assert!(b.reported);
+        assert!(b.detail.contains("ambiguous model"), "{}", b.detail);
+        // The item says both, in order, and nothing says a session attached.
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert!(posts[0].1.contains("ssf handing over issue:"), "{posts:?}");
+        assert_eq!(
+            posts[1].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+             ```ssf\n\
+             ssf holding deliveries to agent on issue:\n\
+             harness: Pi\n\
+             reason: could not be started: pi exited at once: ambiguous model gpt-5.5\n\
+             fix: start Pi by hand in the workspace, or fix the model or effort and hand over again\n\
+             ```"
+        );
+        // A person sees it in the status commands.
+        let view = crate::status::BlockedView::from_blocked(&b);
+        assert!(
+            view.describe().starts_with("Pi could not be started since"),
+            "{}",
+            view.describe()
+        );
+        // And the recovery is the usual one: after the wait the harness is
+        // started again in the same workspace, on the item's overrides.
+        let _ = (d.log(), d.launches());
+        if let Some(cur) = e.entry(&repo(), 5).blocked.as_mut() {
+            cur.since = "2020-01-01T00:00:00Z".into();
+        }
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        assert!(e.entry(&repo(), 5).blocked.is_none(), "the block is lifted");
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(launched[0].starts_with("pi:"), "{launched:?}");
+        let log = d.log();
+        assert!(log.iter().any(|l| l.starts_with("relaunch:w5:")), "{log:?}");
     }
 
     fn assigned_item(number: u64, author: &str, updated_at: &str) -> Value {

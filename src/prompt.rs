@@ -1107,6 +1107,22 @@ comments) and carry on.",
     )
 }
 
+/// The one message a session gets after its harness could not be started
+/// at all (a handover to a harness that exits as it is launched, say) and
+/// has now been started again. A fresh harness gets the item's story
+/// ahead of this. Worded, like every text ssf puts on a screen, without
+/// the phrases `driver::login_dialog` looks for.
+pub fn start_again_prompt(it: &LoginBack) -> String {
+    let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
+    format!(
+        "[ssf] Your {} terminal could not be started at {} and has been started again. This is \
+the session for {item}.\n\nNothing reached you while it was down; what happened on the item \
+meanwhile follows as further `[ssf]` messages. Work out where the work got to (`git status`, \
+`git log`, the comments on the item) and carry on.",
+        it.harness, it.since
+    )
+}
+
 /// The first message of a session started by a handover (`ssf handover`):
 /// what happened, the outgoing agent's summary when it left one, then the
 /// item's story exactly as a new session gets it. `from` is the display
