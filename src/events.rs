@@ -610,6 +610,120 @@ mod tests {
     }
 
     #[test]
+    fn handed_over_names_both_ends() {
+        let ev = Event::HandedOver {
+            from: launch(Some("bot/issue-12-fix")),
+            to: Launch {
+                harness: "Pi".into(),
+                model: None,
+                effort: None,
+                ..launch(None)
+            },
+            summary: true,
+            by: Some("acme/widgets#12".into()),
+            refused: None,
+        };
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "handed-over");
+        assert_eq!(
+            text,
+            "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: fable-5.1\n\
+             from effort: high\n\
+             to: Pi\n\
+             to model: the harness's default\n\
+             to effort: the harness's default\n\
+             summary: yes\n\
+             by: acme/widgets#12\n\
+             ```"
+        );
+        // No summary, and nobody's session behind it.
+        let ev = Event::HandedOver {
+            from: launch(Some("bot/issue-12-fix")),
+            to: Launch {
+                harness: "Pi".into(),
+                model: None,
+                effort: None,
+                ..launch(None)
+            },
+            summary: false,
+            by: None,
+            refused: None,
+        };
+        assert!(
+            ev.block("pull request")
+                .starts_with("```ssf\nssf handing over pull request:\n"),
+            "{}",
+            ev.block("pull request")
+        );
+        assert!(
+            ev.block("issue")
+                .ends_with("summary: no\nby: a person at the terminal\n```"),
+            "{}",
+            ev.block("issue")
+        );
+    }
+
+    #[test]
+    fn a_refused_handover_says_only_what_it_would_have_been() {
+        let ev = Event::HandedOver {
+            from: launch(Some("bot/issue-12-fix")),
+            to: Launch {
+                harness: "Codex".into(),
+                model: Some("gpt-6".into()),
+                effort: None,
+                ..launch(None)
+            },
+            summary: true,
+            by: Some("acme/widgets#12".into()),
+            refused: Some("could not stop the running agent:\nno such terminal".into()),
+        };
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "handed-over");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf not handing over issue:\n\
+             to: Codex\n\
+             to model: gpt-6\n\
+             to effort: the harness's default\n\
+             by: acme/widgets#12\n\
+             refused: could not stop the running agent: no such terminal\n\
+             ```"
+        );
+    }
+
+    #[test]
+    fn attached_after_a_handover_names_the_harness_it_came_from() {
+        let ev = Event::Attached(Attach::HandedOver {
+            launch: Launch {
+                harness: "Pi".into(),
+                model: Some("openai/gpt-6".into()),
+                effort: None,
+                ..launch(Some("bot/issue-12-fix"))
+            },
+            from: "Claude Code".into(),
+        });
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "attached");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf attaching agent to issue:\n\
+             harness: Pi\n\
+             model: openai/gpt-6\n\
+             effort: the harness's default\n\
+             driver: herdr\n\
+             branch: bot/issue-12-fix\n\
+             handed over from: Claude Code\n\
+             ```"
+        );
+    }
+
+    #[test]
     fn resumed_says_after_what() {
         let ev = Event::Resumed {
             harness: "Codex".into(),
@@ -793,6 +907,13 @@ mod tests {
                 failures: 1,
                 last_error: "e".into(),
             },
+            Event::HandedOver {
+                from: launch(None),
+                to: launch(None),
+                summary: false,
+                by: None,
+                refused: None,
+            },
             Event::Released {
                 by: "ssf release",
                 forced: false,
@@ -810,6 +931,7 @@ mod tests {
                 "blocked",
                 "unblocked",
                 "gave-up",
+                "handed-over",
                 "released"
             ]
         );

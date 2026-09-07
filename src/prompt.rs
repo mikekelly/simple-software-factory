@@ -1370,6 +1370,75 @@ mod tests {
     }
 
     #[test]
+    fn a_handed_over_session_is_told_where_it_came_from() {
+        let story = "# The item\n\n## How to work on this\n";
+        let p = handover_prompt("Claude Code", "issue", Some("  Branch pushed.  "), story);
+        assert_eq!(
+            p,
+            "You took over this issue from a session on Claude Code that handed it over; its \
+summary follows, then the issue as ssf tells it to a new session.\n\n\
+## Summary from the outgoing session\n\n\
+Branch pushed.\n\n\
+# The item\n\n## How to work on this\n"
+        );
+        let p = handover_prompt("Pi", "pull request", None, story);
+        assert!(
+            p.starts_with(
+                "You took over this pull request from a session on Pi that handed it over. It \
+left no summary; read the pull request below.\n\n"
+            ),
+            "{p}"
+        );
+        assert!(p.ends_with(story), "{p}");
+        assert_eq!(
+            handover_refused_prompt("Pi", "the item is no longer active"),
+            "[ssf] Handover to Pi refused: the item is no longer active. Carry on."
+        );
+    }
+
+    /// The first message of a handed-over session says why it exists, in
+    /// place of the trigger list an ordinary session gets.
+    #[test]
+    fn the_first_message_of_a_handed_over_session_says_who_handed_it_over() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({
+            "number": 18, "title": "T", "html_url": "https://x/18", "body": "b", "state": "open",
+            "user": {"login": "h"}, "labels": [], "assignees": [],
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "pi".into(),
+            ..Default::default()
+        };
+        let daemon = DaemonConfig::default();
+        let triggers = vec!["assigned".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &daemon,
+            bot_login: "bot",
+            driver: DriverKind::Herdr,
+            pr: None,
+            triggers: &triggers,
+            owner: None,
+            delegated_by: None,
+            handed_over_from: Some("Claude Code"),
+            projects: &[],
+            project_prompt: None,
+            vm_guest: false,
+            pushes_as: None,
+        };
+        let p = initial_prompt(&issue, &[], &ctx);
+        assert!(
+            p.contains(
+                "because the agent session on Claude Code working on it handed #18 over to you."
+            ),
+            "{p}"
+        );
+        assert!(!p.contains("was assigned to @bot"), "{p}");
+    }
+
+    #[test]
     fn keys_prefer_ids_and_fall_back_sensibly() {
         assert_eq!(
             event_key(&json!({"event":"commented","id":42})).unwrap(),
@@ -2595,6 +2664,10 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             handed_over_from: None,
             ..own.clone()
         };
+        let handed_over = PromptContext {
+            handed_over_from: Some("Claude Code"),
+            ..own.clone()
+        };
         let sub = PromptContext {
             projects: &[],
             project_prompt: None,
@@ -2676,6 +2749,33 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
                     "master moved after you branched (#14 and #13 merged); please rebase onto origin/master before pushing again.",
                     d.max_body_chars,
                 ),
+            ),
+            (
+                "handover_prompt (a session handed the item over, with a summary)",
+                handover_prompt(
+                    "Claude Code",
+                    "issue",
+                    Some(
+                        "Branch `bot/issue-18-resume-sessions` is pushed and PR #22 is open \
+against it. The startup pass and its tests are done; what is left is the \
+`startup_orca_wait_secs` option and the README section. `cargo test` is green; the packaging \
+bump is not done.",
+                    ),
+                    &initial_prompt(&issue18, &[added.clone(), assigned.clone()], &handed_over),
+                ),
+            ),
+            (
+                "handover_prompt (handed over with no summary)",
+                handover_prompt(
+                    "Claude Code",
+                    "issue",
+                    None,
+                    &initial_prompt(&issue18, &[added.clone(), assigned.clone()], &handed_over),
+                ),
+            ),
+            (
+                "handover_refused_prompt (the daemon could not carry it out)",
+                handover_refused_prompt("Pi", "the item is no longer active"),
             ),
             (
                 "tell_prompt (from a human shell, no session)",

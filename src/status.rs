@@ -1051,6 +1051,71 @@ mod tests {
     }
 
     #[test]
+    fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
+        // #1 has been handed over to Pi; #2 shares its workspace, so it
+        // runs the same harness; #3 has a handover waiting for the pass.
+        let mut one = item(1, Some("r1::/w/one"));
+        one.overrides = Some(Overrides {
+            harness: "pi".into(),
+            model: Some("openai/gpt-6".into()),
+            effort: Some("high".into()),
+        });
+        let mut two = item(2, Some("r1::/w/one"));
+        two.shares_workspace_of = Some(1);
+        let mut three = item(3, Some("r1::/w/three"));
+        three.handover = Some(PendingHandover {
+            harness: "codex".into(),
+            model: None,
+            effort: None,
+            summary: Some("half done".into()),
+            by: Some("acme/widgets#3".into()),
+            requested_at: "2026-09-07T10:00:00Z".into(),
+        });
+        let st = state_with(vec![one, two, three]);
+        let s = sessions(&cfg(), &st, Some(&[]));
+        assert_eq!(s[0].harness, "pi");
+        assert_eq!(s[0].model.as_deref(), Some("openai/gpt-6"));
+        assert_eq!(s[0].effort.as_deref(), Some("high"));
+        assert_eq!(s[1].harness, "pi", "the bound item shares the workspace");
+        assert_eq!(s[2].harness, "claude", "not handed over yet");
+        assert!(s[2].overrides.is_none());
+        let h = s[2].handover.as_ref().unwrap();
+        assert_eq!(h.harness_name, "Codex");
+        assert_eq!(h.summary_chars, Some(9));
+        assert_eq!(
+            h.describe(),
+            "codex, asked by acme/widgets#3",
+            "{}",
+            h.describe()
+        );
+        let table = render_peers(&s, None);
+        assert!(table.contains("handed over to pi"), "{table}");
+        assert!(table.contains("model openai/gpt-6"), "{table}");
+        assert!(
+            table.contains("handover pending: codex, asked by acme/widgets#3"),
+            "{table}"
+        );
+        let snap = Snapshot {
+            cfg: cfg(),
+            state: st,
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        let v = snap.to_json();
+        assert_eq!(v["sessions"][0]["overrides"]["harness"], "pi");
+        assert!(v["sessions"][1]["overrides"]["harness"] == "pi");
+        assert_eq!(v["sessions"][2]["handover"]["harness"], "codex");
+        assert!(v["sessions"][2]["overrides"].is_null());
+        let text = render_status(&snap);
+        assert!(
+            text.contains("handed over: harness=pi model=openai/gpt-6 effort=high"),
+            "{text}"
+        );
+        assert!(text.contains("handover pending: codex"), "{text}");
+    }
+
+    #[test]
     fn ago_buckets() {
         let t = |secs: i64| {
             (chrono::Utc::now() - chrono::Duration::seconds(secs))

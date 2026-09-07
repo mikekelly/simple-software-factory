@@ -453,6 +453,66 @@ mod tests {
     }
 
     #[test]
+    fn handover_fields_are_optional_and_round_trip() {
+        let dir = std::env::temp_dir().join(format!("ssf-handover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        // A file from before handovers loads unchanged.
+        std::fs::write(
+            &path,
+            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,"active":true}}}}}"#,
+        )
+        .unwrap();
+        let mut st = State::load_from(&path).unwrap();
+        let one = st.repos.get_mut("a/b").unwrap().issues.get_mut(&1).unwrap();
+        assert!(one.overrides.is_none() && one.handover.is_none());
+        one.overrides = Some(Overrides {
+            harness: "pi".into(),
+            model: Some("openai/gpt-6".into()),
+            effort: None,
+        });
+        one.handover = Some(PendingHandover {
+            harness: "codex".into(),
+            model: None,
+            effort: Some("high".into()),
+            summary: Some("what is left".into()),
+            by: Some("a/b#1".into()),
+            requested_at: "2026-09-07T10:00:00Z".into(),
+        });
+        st.save_to(&path).unwrap();
+        let back = State::load_from(&path).unwrap();
+        let one = &back.repos["a/b"].issues[&1];
+        assert_eq!(one.overrides.as_ref().unwrap().harness, "pi");
+        assert!(one.overrides.as_ref().unwrap().effort.is_none());
+        let h = one.handover.as_ref().unwrap();
+        assert_eq!(h.harness, "codex");
+        assert_eq!(h.summary.as_deref(), Some("what is left"));
+        assert_eq!(h.overrides().effort.as_deref(), Some("high"));
+        // Nothing set writes neither key.
+        st.repos
+            .get_mut("a/b")
+            .unwrap()
+            .issues
+            .get_mut(&1)
+            .unwrap()
+            .overrides = None;
+        st.repos
+            .get_mut("a/b")
+            .unwrap()
+            .issues
+            .get_mut(&1)
+            .unwrap()
+            .handover = None;
+        st.save_to(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !written.contains("overrides") && !written.contains("handover"),
+            "{written}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn reviewer_records_from_an_older_daemon_are_dropped_on_load() {
         let dir = std::env::temp_dir().join(format!("ssf-state-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();

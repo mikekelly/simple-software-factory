@@ -424,7 +424,7 @@ impl Driver {
                 Ok(handle)
             }
             #[cfg(test)]
-            Driver::Stub(d) => d.start(worktree_id, text),
+            Driver::Stub(d) => d.start(worktree_id, command, harness, text),
         }
     }
 
@@ -630,6 +630,9 @@ pub struct StubState {
     pub relaunch_screen: Vec<String>,
     /// `stop:<handle>`, `deliver:<worktree>:<first line>`, `relaunch:<worktree>:<resumed>`.
     pub log: Vec<String>,
+    /// Every harness started, as `<harness>:<command>`: what a start or a
+    /// relaunch would run, for the tests about per-item overrides.
+    pub launches: Vec<String>,
     handles: u32,
 }
 
@@ -662,6 +665,11 @@ impl StubDriver {
         self.with(|s| std::mem::take(&mut s.log))
     }
 
+    /// The harnesses started since the last call, as `<harness>:<command>`.
+    pub fn launches(&self) -> Vec<String> {
+        self.with(|s| std::mem::take(&mut s.launches))
+    }
+
     fn ensure_project(&self) -> Result<ProjectSetup> {
         Ok(ProjectSetup {
             repo_id: "stub".into(),
@@ -688,9 +696,10 @@ impl StubDriver {
         h
     }
 
-    fn start(&self, worktree_id: &str, text: &str) -> Result<String> {
+    fn start(&self, worktree_id: &str, command: &str, harness: &str, text: &str) -> Result<String> {
         self.with(|s| {
             let h = Self::new_handle(s, worktree_id);
+            s.launches.push(format!("{harness}:{command}"));
             s.log
                 .push(format!("start:{worktree_id}:{}", first_line(text)));
             Ok(h)
@@ -767,6 +776,11 @@ impl StubDriver {
                 });
             }
             let resumed = relaunch.resume_command.is_some();
+            s.launches.push(format!(
+                "{}:{}",
+                relaunch.harness,
+                relaunch.resume_command.unwrap_or(relaunch.command)
+            ));
             let h = Self::new_handle(s, worktree_id);
             s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
             let body = match relaunch.text {

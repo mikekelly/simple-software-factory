@@ -4914,6 +4914,9 @@ mod tests {
         assigned: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         /// Timelines by item number (`[]` for an unknown item).
         timelines: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Vec<Value>>>>,
+        /// Items served by number (`/repos/o/r/issues/N`), for the paths
+        /// that read one item rather than a listing (a session's story).
+        issues: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Value>>>,
         /// The collaborators endpoint: `None` answers 403 (no access), a
         /// list is served with an ETag that changes when it is set.
         collaborators: std::sync::Arc<std::sync::Mutex<Option<Vec<Value>>>>,
@@ -4936,6 +4939,7 @@ mod tests {
             let created_etag = Arc::new(AtomicU32::new(1));
             let assigned: Arc<Mutex<Vec<Value>>> = Arc::default();
             let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
+            let issues: Arc<Mutex<BTreeMap<u64, Value>>> = Arc::default();
             let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
             let collab_version = Arc::new(AtomicU32::new(1));
             let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
@@ -4947,6 +4951,7 @@ mod tests {
                 collaborators.clone(),
                 collab_version.clone(),
             );
+            let i = issues.clone();
             tokio::spawn(async move {
                 let other_etags = AtomicU32::new(1);
                 loop {
@@ -5036,6 +5041,12 @@ mod tests {
                                 }
                                 Some(list) => ("200 OK", etag, Value::Array(list).to_string()),
                             }
+                    } else if let Some(item) = path
+                        .strip_prefix("/repos/o/r/issues/")
+                        .and_then(|n| n.parse::<u64>().ok())
+                        .and_then(|n| i.lock().unwrap().get(&n).cloned())
+                    {
+                        ("200 OK", "\"i\"".to_string(), item.to_string())
                     } else if let Some(n) = path
                         .strip_prefix("/repos/o/r/issues/")
                         .and_then(|rest| rest.strip_suffix("/timeline"))
@@ -5070,6 +5081,7 @@ mod tests {
                 created_etag,
                 assigned,
                 timelines,
+                issues,
                 collaborators,
                 collab_version,
                 posts,
@@ -5090,6 +5102,11 @@ mod tests {
             *self.collaborators.lock().unwrap() = list;
             self.collab_version
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        /// Serve one item by number, for the paths that read it directly.
+        fn set_issue(&self, number: u64, item: Value) {
+            self.issues.lock().unwrap().insert(number, item);
         }
 
         fn set_timeline(&self, number: u64, events: Vec<Value>) {
@@ -6733,6 +6750,19 @@ mod tests {
     /// Every text ssf puts on a screen or that agents read must stay free
     /// of the phrases `driver::login_dialog` looks for, or a healthy
     /// session would be blocked again by its own echo.
+    /// A launch for the texts checked below; the harness is what is
+    /// under test.
+    fn handover_launch(harness: &str) -> events::Launch {
+        events::Launch {
+            harness: harness.to_string(),
+            model: None,
+            effort: None,
+            command: None,
+            driver: "herdr".into(),
+            branch: Some("refs/heads/bot/issue-5".into()),
+        }
+    }
+
     #[test]
     fn ssf_texts_never_look_like_a_login_prompt() {
         use crate::driver::login_dialog;
@@ -6818,6 +6848,60 @@ mod tests {
                         ),
                     },
                 ),
+                prompt::handover_prompt(
+                    &name,
+                    "issue",
+                    Some("Branch pushed; the parser is left."),
+                    "the item's story",
+                ),
+                prompt::handover_prompt(&name, "pull request", None, "the item's story"),
+                prompt::handover_refused_prompt(&name, "the item is no longer active"),
+                prompt::handover_refused_prompt(
+                    &name,
+                    &events::one_line("could not stop the running agent: no such terminal"),
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::HandedOver {
+                        from: handover_launch(&name),
+                        to: handover_launch("Pi"),
+                        summary: true,
+                        by: Some("o/r#5".into()),
+                        refused: None,
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::HandedOver {
+                        from: handover_launch("Pi"),
+                        to: handover_launch(&name),
+                        summary: false,
+                        by: None,
+                        refused: Some(safe_error(&events::one_line(
+                            "could not stop the running agent: Login expired · Please run /login",
+                        ))),
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::Attached(Attach::HandedOver {
+                        launch: handover_launch(&name),
+                        from: "Pi".into(),
+                    }),
+                ),
+                crate::handover_recorded_text(
+                    "o/r#5",
+                    "Fix it",
+                    &name,
+                    Some("fable-5.1"),
+                    Some("high"),
+                    Some(1_234),
+                    10,
+                ),
+                crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, 10),
                 crate::status::BlockedView::from_blocked(&b).describe(),
                 SessionBlocked {
                     session: "o/r#5".into(),
@@ -6841,6 +6925,392 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- handovers ------------------------------------------------------
+
+    /// An item ready to be handed over: item 5 on `w5` with a live agent,
+    /// and enough on the GitHub stub for the new session's story.
+    fn handover_setup(stub: &GitHubStub) -> (Engine, crate::driver::StubDriver) {
+        let (e, d) = blocked_setup(stub, READY_SCREEN);
+        stub.set_issue(5, assigned_item(5, "alice", "u1"));
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        (e, d)
+    }
+
+    /// The whole path of `ssf handover` with a summary: recorded
+    /// synchronously, carried out on the next pass in the same workspace,
+    /// with the two posts and the overrides left on the item.
+    #[tokio::test]
+    async fn a_handover_replaces_the_session_in_the_same_workspace() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let v = e
+            .handover(
+                "o/r#5",
+                "pi",
+                Some("openai/gpt-6"),
+                Some("high"),
+                Some("Branch pushed; the parser is left."),
+                Some("o/r#5"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v["session"], "o/r#5");
+        assert_eq!(v["title"], "Fix the widget");
+        assert_eq!(v["from"]["harness"], "claude");
+        assert_eq!(v["from"]["model"], Value::Null);
+        assert_eq!(v["to"]["harness"], "pi");
+        assert_eq!(v["to"]["model"], "openai/gpt-6");
+        assert_eq!(v["to"]["effort"], "high");
+        assert_eq!(v["summary_chars"], 34);
+        // Recorded and nothing else: the agent that asked is still there.
+        assert!(e.entry(&repo(), 5).handover.is_some());
+        assert!(d.log().is_empty(), "{:?}", d.log());
+        assert!(stub.posts().is_empty());
+        // While it is pending, nothing else touches the session.
+        let err = e
+            .handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("a handover to pi is already pending"),
+            "{err:#}"
+        );
+        let err = e.tell(None, "o/r#5", "hello").await.unwrap_err();
+        assert!(
+            err.to_string().contains("a handover to pi is pending"),
+            "{err:#}"
+        );
+        assert!(!e.resume_candidates(&repo()).contains(&5));
+
+        e.run_handovers(&repo()).await;
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+        assert!(
+            log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+            "{log:?}"
+        );
+        assert_eq!(log.len(), 2, "{log:?}");
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(
+            launched[0].starts_with("pi:") && launched[0].contains("openai/gpt-6"),
+            "{launched:?}"
+        );
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover.is_none(), "carried out");
+        assert_eq!(
+            st.overrides,
+            Some(Overrides {
+                harness: "pi".into(),
+                model: Some("openai/gpt-6".into()),
+                effort: Some("high".into()),
+            })
+        );
+        // The old session is retired on the record; the workspace is not.
+        assert!(st.agent_session_id.is_none());
+        assert!(st.blocked.is_none());
+        assert_eq!(st.worktree_id.as_deref(), Some("w5"));
+        assert_eq!(st.branch.as_deref(), Some("refs/heads/bot/issue-5"));
+        assert!(st.seeded && st.active);
+        assert!(st.terminal_handle.is_some());
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the harness's default\n\
+             from effort: the harness's default\n\
+             to: Pi\n\
+             to model: openai/gpt-6\n\
+             to effort: high\n\
+             summary: yes\n\
+             by: o/r#5\n\
+             ```"
+        );
+        assert_eq!(
+            posts[1].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue:\n\
+             harness: Pi\n\
+             model: openai/gpt-6\n\
+             effort: high\n\
+             driver: orca\n\
+             branch: bot/issue-5\n\
+             handed over from: Claude Code\n\
+             ```"
+        );
+    }
+
+    /// Without a summary, and asked for by a person at a shell: the post
+    /// says both, and the new session is told to read the item.
+    #[tokio::test]
+    async fn a_handover_without_a_summary_says_so() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let log = d.log();
+        assert!(
+            log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+            "{log:?}"
+        );
+        assert_eq!(
+            e.entry(&repo(), 5).overrides,
+            Some(Overrides {
+                harness: "codex".into(),
+                model: None,
+                effort: None,
+            })
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the harness's default\n\
+             from effort: the harness's default\n\
+             to: Codex\n\
+             to model: the harness's default\n\
+             to effort: the harness's default\n\
+             summary: no\n\
+             by: a person at the terminal\n\
+             ```"
+        );
+    }
+
+    /// Every launch of the item after a handover uses its overrides: the
+    /// re-created workspace, and the startup pass.
+    #[tokio::test]
+    async fn the_overrides_outlive_the_handover_pass() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let _ = (d.log(), d.launches(), stub.post_bodies());
+        // The terminal is gone: the startup pass brings the session back,
+        // on the harness the handover put on the item.
+        d.with(|s| {
+            s.live.remove("w5");
+        });
+        e.entry(&repo(), 5).agent_session_id = Some("sess-5".into());
+        e.resume_interrupted(&[DriverKind::Orca]).await;
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(
+            launched[0].starts_with("codex:") && launched[0].contains("resume sess-5"),
+            "{launched:?}"
+        );
+        // And so does a workspace that has to be re-created.
+        let _ = (d.log(), stub.post_bodies());
+        d.with(|s| {
+            s.worktrees.remove("w5");
+            s.live.remove("w5");
+        });
+        e.entry(&repo(), 5).repo_id = Some("stub".into());
+        e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
+        let launched = d.launches();
+        assert!(
+            launched.iter().all(|l| l.starts_with("codex:")),
+            "{launched:?}"
+        );
+    }
+
+    /// Each synchronous refusal, with its reason.
+    #[tokio::test]
+    async fn handovers_are_refused_with_the_reason() {
+        let stub = GitHubStub::start().await;
+        let (mut e, _d) = handover_setup(&stub);
+        let msg = |r: Result<Value>| r.unwrap_err().to_string();
+        // Not a session ssf knows.
+        assert!(
+            msg(e.handover("o/r#9", "pi", None, None, None, None).await)
+                .contains("is not an agent session ssf knows")
+        );
+        // A harness nothing knows, and a model or effort the harness
+        // cannot take.
+        assert!(
+            msg(e.handover("o/r#5", "zzz", None, None, None, None).await)
+                .contains("zzz is not a harness ssf knows")
+        );
+        assert!(
+            msg(e
+                .handover("o/r#5", "pi", None, Some("turbo"), None, None)
+                .await)
+            .contains("is not a level pi accepts")
+        );
+        // Not installed here, then not signed in here.
+        e.installed = std::sync::Arc::new(|_| false);
+        assert!(
+            msg(e.handover("o/r#5", "pi", None, None, None, None).await)
+                .contains("Pi is not installed where the daemon runs")
+        );
+        e.installed = std::sync::Arc::new(|_| true);
+        probe_returning(&mut e, LoginState::SignedOut, None);
+        let err = msg(e.handover("o/r#5", "pi", None, None, None, None).await);
+        assert!(err.contains("Pi is not signed in here"), "{err}");
+        assert!(err.contains(&login::how_to_sign_in("pi")), "{err}");
+        probe_returning(&mut e, LoginState::Unknown, None);
+        // The target is what the item already runs.
+        assert!(
+            msg(e.handover("o/r#5", "claude", None, None, None, None).await)
+                .contains("already on claude with that model and effort")
+        );
+        // A summary longer than the cap.
+        let long = "x".repeat(crate::ipc::MAX_SUMMARY_CHARS + 1);
+        assert!(
+            msg(e
+                .handover("o/r#5", "pi", None, None, Some(&long), None)
+                .await)
+            .contains("the most a handover carries is 8000")
+        );
+        // A release is pending on it.
+        e.entry(&repo(), 5).release_pending = true;
+        assert!(
+            msg(e.handover("o/r#5", "pi", None, None, None, None).await)
+                .contains("a release is pending on this item")
+        );
+        e.entry(&repo(), 5).release_pending = false;
+        // And a release is refused while a handover is pending.
+        e.handover("o/r#5", "pi", None, None, None, None)
+            .await
+            .unwrap();
+        e.entry(&repo(), 5).active = false;
+        assert!(
+            msg(e.release("o/r#5", false).await).contains("a handover to pi is pending"),
+            "a release must not race the handover"
+        );
+        // The item has no running session at all.
+        e.entry(&repo(), 5).handover = None;
+        assert!(
+            msg(e.handover("o/r#5", "pi", None, None, None, None).await)
+                .contains("the item has no running session")
+        );
+    }
+
+    /// A handover the pass cannot carry out: nothing changes, the item
+    /// says so, and the agent that asked is told to carry on.
+    #[tokio::test]
+    async fn a_handover_the_pass_cannot_carry_out_is_refused_on_the_item() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover(
+            "o/r#5",
+            "pi",
+            None,
+            None,
+            Some("what is left"),
+            Some("o/r#5"),
+        )
+        .await
+        .unwrap();
+        // The item is dropped between the request and the pass.
+        e.entry(&repo(), 5).active = false;
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover.is_none(), "the pending handover is off");
+        assert!(st.overrides.is_none(), "nothing was changed");
+        assert_eq!(st.agent_session_id.as_deref(), Some("sess-5"));
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(
+            log[0],
+            "deliver:w5:[ssf] Handover to Pi refused: the item is no longer active. "
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf not handing over issue:\n\
+             to: Pi\n\
+             to model: the harness's default\n\
+             to effort: the harness's default\n\
+             by: o/r#5\n\
+             refused: the item is no longer active\n\
+             ```"
+        );
+    }
+
+    /// The daemon restarting between the request and the pass changes
+    /// nothing: the pending handover is in the state file.
+    #[tokio::test]
+    async fn a_pending_handover_survives_a_restart() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        // As a restart leaves it: the state as written, read back.
+        let written = serde_json::to_string(&e.state).unwrap();
+        let mut e = engine_at(&stub.base);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![repo()];
+        e.state = serde_json::from_str(&written).unwrap();
+        let h = e.entry(&repo(), 5).handover.clone().unwrap();
+        assert_eq!(h.harness, "pi");
+        assert_eq!(h.summary.as_deref(), Some("half done"));
+        e.run_handovers(&repo()).await;
+        assert!(e.entry(&repo(), 5).handover.is_none());
+        assert_eq!(
+            e.entry(&repo(), 5)
+                .overrides
+                .as_ref()
+                .map(|o| o.harness.clone()),
+            Some("pi".into())
+        );
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+        assert!(log[1].starts_with("start:w5:You took over"), "{log:?}");
+    }
+
+    /// The new harness comes up at its own sign-in prompt: the session is
+    /// blocked as any other, and the old one is not brought back.
+    #[tokio::test]
+    async fn a_new_harness_at_its_sign_in_prompt_blocks_the_new_session() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| {
+            s.relaunch_screen = vec!["  Use /login to log into a provider".into(), "❯ ".into()];
+        });
+        e.handover("o/r#5", "pi", None, None, None, Some("o/r#5"))
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.overrides.is_some(), "the handover stands");
+        let b = st.blocked.clone().expect("blocked");
+        assert_eq!(b.harness, "pi");
+        assert!(b.reported);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert!(posts[0].1.contains("ssf handing over issue:"), "{posts:?}");
+        assert_eq!(
+            posts[1].1,
+            format!(
+                "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+                 ```ssf\n\
+                 ssf holding deliveries to agent on issue:\n\
+                 harness: Pi\n\
+                 reason: not signed in\n\
+                 fix: {}\n\
+                 ```",
+                login::how_to_sign_in("pi").replace('`', "")
+            )
+        );
     }
 
     fn assigned_item(number: u64, author: &str, updated_at: &str) -> Value {
