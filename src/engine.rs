@@ -7775,6 +7775,14 @@ mod tests {
             msg(e.handover("o/r#5", "claude", None, None, None, None).await)
                 .contains("already on claude with that model and effort")
         );
+        // An empty summary is not a summary: the CLI refuses it, and so
+        // does the daemon, for a request that did not come through it.
+        assert!(
+            msg(e
+                .handover("o/r#5", "pi", None, None, Some("  \n"), None)
+                .await)
+            .contains("the summary is empty")
+        );
         // A summary that would read as the new harness's sign-in screen.
         let err = msg(e
             .handover(
