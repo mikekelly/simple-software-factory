@@ -477,12 +477,15 @@ configured on.
 daemon has not carried out yet: nothing about the item changes, and the
 session that is there is told in one `[ssf] The handover to <harness> was
 cancelled: this session keeps the item. Carry on.` message, since it was
-told to stop working when the handover was recorded. It takes no other
-flag, and is refused when nothing is pending. This is the way back out
-while the pass cannot run -- the driver is down, or the collaborators
-cannot be fetched -- because until then everything else on the item is
-refused. Nothing is posted on the item: the handover was never announced
-there.
+told to stop working when the handover was recorded. Name the item as
+usual (the number, `owner/repo#N`, or nothing inside the session; `--as`
+from a shell, `--json` for the machine-readable answer); the flags that
+describe a handover -- `--harness`, `--model`, `--effort` and the summary
+flags -- are refused with it, as is a cancel with nothing pending. This
+is the way back out while the pass cannot run -- the driver is down, or
+the collaborators cannot be fetched -- because until then everything else
+on the item is refused. Nothing is posted on the item: the handover was
+never announced there.
 
 While a handover is pending, `ssf release` on the item and `ssf tell` to
 it are refused with that as the reason, and the startup pass leaves the

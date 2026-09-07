@@ -1237,8 +1237,15 @@ to this session; its activity comes here from now on.\n\
 - `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
 - `[ssf] ... has been closed`, `... no longer assigned`, `... assigned ... again`: your item's \
 lifecycle; each says what to do.\n\
+- `[ssf] Release of this workspace refused ...`: the daemon's own check found work that is not \
+on origin (see Wrapping up below).\n\
 - `[ssf] The factory restarted ...`: the machine, the multiplexer or ssf restarted and this session was \
-started again.\n\n\
+started again.\n\
+- `[ssf] Your ... sign-in lapsed ... and is back`, `[ssf] Your ... terminal could not be \
+started ... and has been started again`: this terminal was started again after a hold; nothing \
+reached you while it was down.\n\
+- `[ssf] Handover to ... refused`, `[ssf] The handover to ... was cancelled`: a handover you \
+asked for could not be carried out, or was called off; either way the item stays with you.\n\n\
 ## Other sessions\n\n\
 `ssf peers` lists the agent sessions on this repository: item, GitHub state, agent state, \
 branch, last message (`--json` for detail, `--all` to include retired ones).\n\n\
@@ -2602,6 +2609,13 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
 - The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live."
                 .into(),
         };
+        let back = LoginBack {
+            harness: "Claude Code",
+            since: "2026-09-04T17:29:10Z",
+            number: 18,
+            title: &issue18.title,
+            url: &issue18.html_url,
+        };
         let render = |v: Value| render_event(&v, false, &d, bot).unwrap();
         let ev = |kind: &str, actor: &str, at: &str, extra: Value| {
             let mut v =
@@ -2809,6 +2823,18 @@ bump is not done.",
             (
                 "handover_refused_prompt (the daemon could not carry it out)",
                 handover_refused_prompt("Pi", "the item is no longer active"),
+            ),
+            (
+                "handover_cancelled_prompt (`ssf handover --cancel`)",
+                handover_cancelled_prompt("Pi"),
+            ),
+            (
+                "login_back_prompt (the harness was signed in again)",
+                login_back_prompt(&back),
+            ),
+            (
+                "start_again_prompt (the harness would not start, and now has)",
+                start_again_prompt(&back),
             ),
             (
                 "tell_prompt (from a human shell, no session)",

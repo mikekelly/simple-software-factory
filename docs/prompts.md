@@ -85,9 +85,16 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
   [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)).
 - `The factory restarted ...`: the machine, the multiplexer or ssf
   restarted and the session was started again.
+- `Your <harness> sign-in lapsed ... and is back`, `Your <harness>
+  terminal could not be started ... and has been started again`: the
+  terminal was started again after a [block](sessions.md#a-harness-that-is-not-signed-in);
+  nothing reached the session while it was down.
 - `Handover to <harness> refused: <reason>. Carry on.`: the session asked
   for a [handover](sessions.md#handover) and the daemon could not carry it
   out, so the item stays with it.
+- `The handover to <harness> was cancelled: this session keeps the item.
+  Carry on.`: the handover the session asked for was called off with `ssf
+  handover --cancel`.
 
 ## Project boards
 
