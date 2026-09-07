@@ -69,7 +69,7 @@ Two PKGBUILDs share one `package()`:
 `packaging/release/` is laid out the way Omarchy's package repository
 ([omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs)) wants a
 package directory: `PKGBUILD`, `ssf.install` (a symlink to
-`../ssf.install`; copy with `cp -rL`) and `.omarchy/package.json`, which
+`../ssf.install`; the copy in step 3 below dereferences it) and `.omarchy/package.json`, which
 tells its `sync-upstream` to follow this repository's `vX.Y.Z` tags and
 puts ssf on the fast release ring, so a new tag reaches the stable channel
 without waiting for an Omarchy release. Everything Omarchy's builder needs
@@ -102,7 +102,7 @@ Cutting a release:
 The first submission to omarchy-pkgs is a PR adding `pkgbuilds/ssf/` from
 `packaging/release/` (issue #123 has the prepared branch and the command).
 When it lands, `README.md` "Install" and `docs/setup.md` steps 2 and 11
-switch from "download the package from the latest release" to
+and the checklist's first item switch from "download the package from the latest release" to
 `sudo pacman -S ssf`, and this document's development-build note stays as
 it is. Until then the release carries the package file
 (`ssf-X.Y.Z-1-x86_64.pkg.tar.zst`, built with `makepkg -fd` in

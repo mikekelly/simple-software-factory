@@ -14,7 +14,7 @@
 pkgname=ssf
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in herdr or Orca"
+pkgdesc="GitHub issues assigned to a bot become coding-agent sessions in herdr or Orca"
 arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
@@ -32,7 +32,8 @@ optdepends=(
   'curl: downloads Firecracker, gvproxy and the guest kernel'
 )
 install=ssf.install
-# !debug: no ssf-debug split package; !lto: cargo's own release profile decides.
+# !debug: no ssf-debug split package. !lto: makepkg's -flto would reach
+# ring's C objects through the cc crate; cargo's release profile decides.
 options=('!debug' '!lto')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('9a70c43cd9f1e349d11d90c8ddfb00b4b24a7df49fbe249432f77ed1af738ff6')
