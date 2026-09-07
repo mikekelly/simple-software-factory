@@ -61,9 +61,10 @@ Two PKGBUILDs share one `package()`:
   `source` is the GitHub tag tarball
   (`.../archive/refs/tags/vX.Y.Z.tar.gz`) with its sha256, and
   `cargo build --frozen --release` from that tarball. The development
-  PKGBUILD sources it and overrides only the version, the source and the
-  functions that get the tree, so `depends`, `optdepends`, `options` and
-  `package()` live in the release file alone.
+  PKGBUILD sources it and overrides the version, the source and the
+  `prepare()`/`build()`/`check()` that work on the copied tree, so
+  `depends`, `optdepends`, `options` and `package()` live in the release
+  file alone.
 
 `packaging/release/` is laid out the way Omarchy's package repository
 ([omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs)) wants a
@@ -80,12 +81,23 @@ Cutting a release:
 1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
    commit, tag `vX.Y.Z` and push the tag; make the GitHub release from it.
 2. In `packaging/release/`: `pkgver=X.Y.Z`, `pkgrel=1`, `updpkgsums`
-   (downloads the tag tarball and writes its sha256), `makepkg -fd` to
-   check it builds from the tarball, commit.
+   (downloads the tag tarball and writes its sha256; it needs the
+   repository to be public, or the tarball fetched with a token into
+   that directory first), `makepkg -fd` to check it builds from the
+   tarball, commit. Attach the `ssf-X.Y.Z-1-x86_64.pkg.tar.zst` it made
+   to the GitHub release: a development build (`0.1.0.r271.g06491ae`)
+   sorts *above* the release version (`0.1.0`) for pacman, so a machine
+   installed from one would not be upgraded by the package from Omarchy's
+   repository until the next tag.
 3. Once ssf is in Omarchy's repository, Omarchy's `sync-upstream` does step
    2 on its side and opens the PR there; a change to `depends`,
    `package()` or `ssf.install` still needs a PR to omarchy-pkgs with the
-   `packaging/release/` files (`cp -rL packaging/release/. <omarchy-pkgs>/pkgbuilds/ssf/`).
+   `packaging/release/` files:
+
+   ```sh
+   cp -L packaging/release/PKGBUILD packaging/release/ssf.install <omarchy-pkgs>/pkgbuilds/ssf/
+   cp -r packaging/release/.omarchy <omarchy-pkgs>/pkgbuilds/ssf/
+   ```
 
 The first submission to omarchy-pkgs is a PR adding `pkgbuilds/ssf/` from
 `packaging/release/` (issue #123 has the prepared branch and the command).
@@ -93,7 +105,7 @@ When it lands, `README.md` "Install" and `docs/setup.md` steps 2 and 11
 switch from "download the package from the latest release" to
 `sudo pacman -S ssf`, and this document's development-build note stays as
 it is. Until then the release carries the package file
-(`ssf-<pkgver>-1-x86_64.pkg.tar.zst`, built with `makepkg -f` in
+(`ssf-X.Y.Z-1-x86_64.pkg.tar.zst`, built with `makepkg -fd` in
 `packaging/release/`) and [Setup](setup.md) says "from the latest release".
 
 ## Layout

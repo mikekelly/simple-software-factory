@@ -20,6 +20,7 @@ url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
 depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr')
 makedepends=('cargo')
+checkdepends=('git')
 optdepends=(
   'orca-ide-bin: Orca desktop app and CLI, the alternative driver (driver = "orca"; not in the Omarchy repo, install it by hand)'
   'omarchy: bar widget, menu entries and floating-terminal flows'
