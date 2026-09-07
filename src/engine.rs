@@ -4109,7 +4109,7 @@ deliveries resume"
             // `sessions::capture`).
             retire(e, retired.clone());
             e.terminal_handle = None;
-            e.blocked = None;
+            // The hold, if there was one, was closed just above.
             e.launched_at = None;
             e.handed_over_at = Some(now_iso());
             e.overrides = Some(h.overrides());
