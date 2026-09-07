@@ -54,6 +54,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.startup_driver_wait_secs` | `120` | How long to wait for the driver (herdr or Orca) at daemon start before the first poll; the old name `startup_orca_wait_secs` still loads |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
+| `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
 | `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
 | `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
 | `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
@@ -75,6 +76,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.prompt_file` | `SSF.md` | The per-project prompt file (below), relative to the worktree unless absolute or `~/` |
 | `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
+| `repo.event_comments` | `daemon.event_comments` | Whether the daemon posts its events on this repository's items (`ssf repo set <owner/name> --event-comments false`) |
 | `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |
 
 The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with

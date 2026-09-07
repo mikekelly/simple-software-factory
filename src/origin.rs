@@ -17,9 +17,13 @@
 //! untagged posts reach the agents as a person's.
 //!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
-//! add fields without a new syntax. One field is defined: `mode=delegate`
+//! add fields without a new syntax. Two fields are defined: `mode=delegate`
 //! (the post opened an item that is handed off to a new session rather than
-//! kept by the one that opened it). The byline does not encode the mode.
+//! kept by the one that opened it), and `event=<name>` (the post is the
+//! daemon's own, one of the events in `crate::events`, about the item it
+//! is on: not a session's, not a person's, and never delivered to an
+//! agent). The byline does not encode the mode; an event post's byline is
+//! `🤖 ssf`, since the daemon is not a session.
 //! Posts made before #115 by the reviewer sessions of the time carry
 //! `role=reviewer` and a `🤖#N (reviewer) says:` byline; both are read as
 //! the item's session's.
@@ -106,12 +110,24 @@ impl Origin {
     pub fn delegate_tag(&self) -> String {
         format!("{OPEN} {MARK} origin={self} {MODE}={DELEGATE} {CLOSE}")
     }
+
+    /// The first line of one of the daemon's own posts on this item (see
+    /// `crate::events`): the `🤖 ssf` byline, then a tag naming the item
+    /// and the event.
+    pub fn event_line(&self, event: &str) -> String {
+        format!("{ROBOT} {DAEMON} {OPEN} {MARK} origin={self} {EVENT}={event} {CLOSE}")
+    }
 }
 
 /// Field naming how the origin session relates to the item it opened.
 pub const MODE: &str = "mode";
 /// `mode` value for a hand-off: the item gets its own session.
 pub const DELEGATE: &str = "delegate";
+/// Field naming the daemon event a post reports (`attached`, `blocked`,
+/// ...); the post is the daemon's, about the item in `origin`.
+pub const EVENT: &str = "event";
+/// The byline word of a daemon post: `🤖 ssf`.
+const DAEMON: &str = "ssf";
 /// The byline word the reviewer sessions of before #115 carried between
 /// the item and `says:`; still recognised when their posts are read.
 const OLD_REVIEWER: &str = "reviewer";
@@ -128,6 +144,38 @@ impl Tag {
     pub fn is_delegate(&self) -> bool {
         self.fields.get(MODE).map(String::as_str) == Some(DELEGATE)
     }
+
+    /// The daemon event the post reports, when it is one of the daemon's
+    /// own posts rather than a session's.
+    pub fn event(&self) -> Option<&str> {
+        self.fields.get(EVENT).map(String::as_str)
+    }
+}
+
+/// Is `body` one of the daemon's own event posts: its first non-blank
+/// line is the `🤖 ssf` byline and then a tag carrying `event=`, as
+/// `Origin::event_line` writes it? Such a post is about the item, not
+/// from a session or a person, and is never shown to an agent. The byline
+/// is required, not just the tag: a session's post that starts with a
+/// pasted tag is the session's (and the shim puts its own line first,
+/// see `stamp_with`).
+pub fn is_event_post(body: &str) -> bool {
+    let Some(first) = body.lines().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    if is_code(first) {
+        return false;
+    }
+    let Some(at) = first.find(OPEN) else {
+        return false;
+    };
+    if first[..at].trim() != format!("{ROBOT} {DAEMON}") {
+        return false;
+    }
+    tags(first)
+        .into_iter()
+        .next()
+        .is_some_and(|t| t.event().is_some())
 }
 
 /// Every ssf tag in `body`, in order of appearance. Tags inside quoted
@@ -202,9 +250,13 @@ fn is_code(line: &str) -> bool {
 /// enough for a hand-off: the delegate line goes before it, and the first
 /// tag wins when read. A tag of ours that is not on the first line does
 /// not count, even at the end where `parse` still accepts the old form, so
-/// the body gets the byline at the top anyway.
+/// the body gets the byline at the top anyway. Nor does a pasted event
+/// tag (`event=`): that is the daemon's form, and a session's post must
+/// not pass for one of the daemon's, so the session line goes on top.
 pub fn stamp_with(body: &str, origin: &Origin, on_repo: Option<&str>, delegate: bool) -> String {
-    if parse_first(body).is_some_and(|t| &t.origin == origin && (!delegate || t.is_delegate())) {
+    if parse_first(body).is_some_and(|t| {
+        &t.origin == origin && t.event().is_none() && (!delegate || t.is_delegate())
+    }) {
         return body.to_string();
     }
     let line = origin.first_line(on_repo, delegate);
@@ -274,11 +326,14 @@ pub fn strip(body: &str) -> String {
 /// Is `s` (the text before a tag on its line) a byline and nothing else:
 /// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)` (posts by the
 /// reviewer sessions of before #115), either with ` says:` (posts made
-/// before #42 have no `says:`)?
+/// before #42 have no `says:`), or the daemon's `🤖 ssf`?
 fn is_byline(s: &str) -> bool {
     let Some(after) = s.trim_start().strip_prefix(ROBOT) else {
         return false;
     };
+    if after.trim() == DAEMON {
+        return true;
+    }
     let item_len = after.find(char::is_whitespace).unwrap_or(after.len());
     if item_len == 0 {
         return false;
@@ -327,11 +382,17 @@ pub struct Scan {
     /// Posts by the bot that carry no tag (the shim was not in effect where
     /// they were made): event key -> URL. The item body is keyed `body`.
     pub untagged: BTreeMap<String, String>,
+    /// The daemon's own event posts (`event=` in the tag): event key ->
+    /// event name. The bucket exists to keep them out of `origins` and
+    /// `untagged`, where they would count as a session's or a person's;
+    /// nothing reads it back and nothing persists it.
+    pub events: BTreeMap<String, String>,
 }
 
 /// Parse the tags out of the item body and every comment-like event on its
-/// timeline, noting the bot's posts that have none. Only the bot's own posts
-/// are read: a tag in a human's text is something they quoted or pasted.
+/// timeline, noting the bot's posts that have none and setting the
+/// daemon's own event posts apart. Only the bot's own posts are read: a
+/// tag in a human's text is something they quoted or pasted.
 pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
     let mut s = Scan::default();
     let mut body_tag = None;
@@ -339,7 +400,11 @@ pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
         if !author.eq_ignore_ascii_case(bot) {
             return;
         }
-        match parse(body.unwrap_or("")) {
+        let body = body.unwrap_or("");
+        match parse(body) {
+            Some(t) if is_event_post(body) => {
+                s.events.insert(key, t.event().unwrap_or("").to_string());
+            }
             Some(t) => {
                 if key == "body" {
                     body_tag = Some(t.clone());
@@ -443,6 +508,68 @@ mod tests {
         );
         // The whole line parses back to the tag.
         assert_eq!(parse(&line()).unwrap().origin, o());
+    }
+
+    #[test]
+    fn event_line_marks_a_daemon_post() {
+        let first = o().event_line("attached");
+        assert_eq!(
+            first,
+            "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=attached -->"
+        );
+        let t = parse(&first).unwrap();
+        assert_eq!(t.origin, o());
+        assert_eq!(t.event(), Some("attached"));
+        assert!(!t.is_delegate());
+        assert!(is_event_post(&first));
+        let post =
+            format!("{first}\n\n```ssf\nssf attaching agent to issue:\nharness: Claude Code\n```");
+        assert!(is_event_post(&post));
+        assert_eq!(parse(&post).unwrap().event(), Some("attached"));
+        // A session's post, with or without other fields, is not one.
+        assert!(!is_event_post(&line()));
+        assert!(!is_event_post(&o().delegate_tag()));
+        assert!(parse(&o().tag()).unwrap().event().is_none());
+        assert!(!is_event_post("plain"));
+        // Quoted or fenced, it is content like any other tag.
+        assert!(!is_event_post(&format!("> {first}\n\nreply")));
+        assert!(!is_event_post(&format!("see:\n```\n{first}\n```\n")));
+        // The daemon byline goes with its tag when a body is stripped.
+        assert_eq!(
+            strip(&post),
+            "```ssf\nssf attaching agent to issue:\nharness: Claude Code\n```"
+        );
+        assert_eq!(strip(&first), "");
+        // A session's post that starts with a pasted event line, or the
+        // bare tag, is the session's: the shim puts its own line on top
+        // and the result is not an event post.
+        let pasted = format!("{post}\n\nI saw this on the item");
+        assert!(is_event_post(&pasted), "the raw paste looks like one");
+        let stamped = stamp(&pasted, &o());
+        assert!(
+            stamped.starts_with(&format!("{}\n\n{first}", line())),
+            "{stamped}"
+        );
+        assert!(!is_event_post(&stamped));
+        let t = parse(&stamped).unwrap();
+        assert_eq!(t.origin, o());
+        assert!(t.event().is_none());
+        let bare = format!(
+            "{}\n\nlook at this tag",
+            o().tag().replace(" -->", " event=blocked -->")
+        );
+        assert!(!is_event_post(&bare), "no byline, no event post");
+        assert!(stamp(&bare, &o()).starts_with(&line()));
+        assert!(!is_event_post(&stamp(&bare, &o())));
+        // The daemon's own line gets the session line too when the shim
+        // sees it (not that it ever does: the daemon posts through the API).
+        assert_eq!(stamp(&post, &o()), format!("{}\n\n{post}", line()));
+        // A tag with `event=` but another word before it is not the byline.
+        assert!(!is_event_post(&format!("🤖 said {first}")));
+        assert!(
+            !is_event_post(&format!("  🤖 ssf {}", o().tag())),
+            "no event field"
+        );
     }
 
     #[test]
@@ -733,10 +860,28 @@ mod tests {
             json!({"event":"reviewed","id":5,"user":{"login":"bot"},"body":"🤖#5 (reviewer) <!-- ssf: origin=a/b#5 role=reviewer -->\n\nlgtm","html_url":"u5"}),
             json!({"event":"commented","id":10,"user":{"login":"bot"},"body":"old style\n\n<!-- ssf: origin=a/b#1 -->","html_url":"u10"}),
             json!({"event":"line-commented","comments":[{"id":8,"user":{"login":"bot"},"body":"inline","html_url":"u8"}]}),
+            json!({"event":"commented","id":11,"user":{"login":"bot"},"body":"🤖 ssf <!-- ssf: origin=a/b#5 event=blocked -->\n\n```ssf\nssf holding deliveries to agent on issue:\nharness: Codex\n```","html_url":"u11"}),
+            json!({"event":"commented","id":12,"user":{"login":"alice"},"body":"🤖 ssf <!-- ssf: origin=a/b#5 event=blocked -->\n\npasted by a person","html_url":"u12"}),
+            json!({"event":"commented","id":13,"user":{"login":"bot"},"body":"<!-- ssf: origin=a/b#5 event=blocked -->\n\npasted tag, no byline","html_url":"u13"}),
         ];
         let s = scan(&issue, &timeline, "Bot");
         assert_eq!(s.origin.as_deref(), Some("a/b#1"));
         assert!(!s.origin_tag.as_ref().unwrap().is_delegate());
+        // The daemon's own post is an event: in neither map, and a
+        // person's copy of one is nothing at all.
+        assert_eq!(
+            s.events.get("commented:11").map(String::as_str),
+            Some("blocked")
+        );
+        assert!(!s.origins.contains_key("commented:11"));
+        assert!(!s.untagged.contains_key("commented:11"));
+        assert!(!s.events.contains_key("commented:12"));
+        assert_eq!(s.events.len(), 1);
+        assert_eq!(
+            s.origins.get("commented:13").map(String::as_str),
+            Some("a/b#5"),
+            "a bot post with a pasted event tag and no byline is a session's"
+        );
         assert_eq!(
             s.origins.get("commented:1").map(String::as_str),
             Some("a/b#1")

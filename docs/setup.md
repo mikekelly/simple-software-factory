@@ -433,6 +433,7 @@ Decisions, per repository:
 | `instructions` | | House rules for every repository this daemon watches; per-repository ones go in `SSF.md` |
 | `resume_on_start` | `true` | Bring interrupted sessions back after a reboot; `startup_driver_wait_secs` (`120`) is how long to wait for the driver first |
 | `allowed_users` | the collaborators with Write | Step 5 |
+| `event_comments` | `true` | The daemon posts a short `ssf` block on an issue when it attaches a session to it, brings one back, holds it for a sign-in, gives up on it or releases its workspace; `false` (or `ssf repo set <owner/name> --event-comments false`) if the timeline should hold only what agents and people write |
 
 Every key, with its default: [Configuration](configuration.md);
 `/usr/share/ssf/config.example.toml` has each with a comment. Changes are
@@ -551,7 +552,8 @@ GitHub (@mentioning it, or a review request, works too).
   5).
 - **A session shows as blocked** when its harness login expired or was
   revoked under it. `ssf status` prints a `BLOCKED:` line naming the
-  harness and the fix, the item gets one comment, and nothing is lost:
+  harness and the fix, the item gets one `blocked` post from the daemon
+  (`🤖 ssf`, with the fix), and nothing is lost:
   sign in again (`ssf vm login <harness>`, or the harness's own login on
   the host) and ssf resumes the session and delivers what it held. See
   [A harness that is not signed

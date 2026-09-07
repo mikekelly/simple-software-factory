@@ -11,6 +11,7 @@ use crate::allow::{self, AllowList, Source};
 use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
 use crate::driver::{Driver, Drivers, Relaunch};
+use crate::events::{self, Attach, Conversation, Event};
 use crate::github::{Conditional, GitHub, Issue, PrInfo};
 use crate::ipc::{Request, Response};
 use crate::login::{self, LoginState, Probe};
@@ -47,9 +48,6 @@ fn retry_wait(retries: u32) -> Duration {
         .saturating_mul(2u32.saturating_pow(retries.min(8)))
         .min(LOGIN_RETRY_MAX)
 }
-
-/// A block shorter than this gets no "resumed" comment on the item.
-const LOGIN_QUIET: Duration = Duration::from_secs(300);
 
 /// The delivery was refused because the session is blocked (its harness
 /// is not signed in): the prompt is not lost, the item's bookkeeping is
@@ -113,6 +111,13 @@ pub struct Engine {
     /// Repositories whose next pass fetches every listing in full (a
     /// session came back mid-pass and its held activity is owed).
     refetch: BTreeSet<String>,
+    /// The startup pass (`resume_interrupted`) is under way: a harness
+    /// started again now is `resumed` after a restart, not a lost terminal.
+    startup_pass: bool,
+    /// The item (repository name, number) whose onboarding onto a kept
+    /// workspace is delivering right now: a relaunch for it is told of in
+    /// that onboarding's `attached`, not as a `resumed` of its own.
+    onboarding: Option<(String, u64)>,
 }
 
 /// The cached collaborator list of one repository.
@@ -231,6 +236,8 @@ impl Engine {
             probe: std::sync::Arc::new(login::probe),
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
+            startup_pass: false,
+            onboarding: None,
         })
     }
 
@@ -790,6 +797,7 @@ are resumed on the first pass that finds it: {err:#}"
     /// workspace is left to rehydration on the next event rather than
     /// re-created on boot.
     async fn resume_interrupted(&mut self, kinds: &[DriverKind]) {
+        self.startup_pass = true;
         for repo in self.cfg.repos.clone() {
             if self.driver_down(&repo) || !kinds.contains(&self.cfg.driver_for(&repo)) {
                 continue;
@@ -859,6 +867,7 @@ are resumed on the first pass that finds it: {err:#}"
                 }
             }
         }
+        self.startup_pass = false;
     }
 
     /// Sessions the startup pass looks at: the session that acts on every
@@ -1038,7 +1047,7 @@ are resumed on the first pass that finds it: {err:#}"
                     Ok(i) => i,
                     Err(e) => {
                         all_ok = false;
-                        self.note_failure(repo, number, &e);
+                        self.note_failure(repo, number, &e).await;
                         continue;
                     }
                 },
@@ -1057,7 +1066,7 @@ are resumed on the first pass that finds it: {err:#}"
                 }
                 Err(e) => {
                     all_ok = false;
-                    self.note_failure(repo, issue.number, &e);
+                    self.note_failure(repo, issue.number, &e).await;
                 }
             }
         }
@@ -1506,51 +1515,79 @@ are resumed on the first pass that finds it: {err:#}"
         b
     }
 
-    /// One comment on the session's item, as the session, saying the
-    /// harness is not signed in and how to fix it. Best effort: a comment
-    /// that cannot be posted is logged and not retried.
+    /// The `blocked` event on the session's item, once per block: the
+    /// harness is not signed in, and how to fix it. The record says it has
+    /// been posted whether or not the post went through (`post_event` is
+    /// best effort), so a failed post is not tried again every pass.
     async fn report_blocked(&mut self, repo: &RepoConfig, number: u64) {
         let st = self.entry(repo, number).clone();
         let Some(b) = st.blocked.clone().filter(|b| !b.reported) else {
             return;
         };
-        let body = format!(
-            "{}\n\n{}",
-            self.session_byline(repo, number),
-            prompt::blocked_comment(
-                &login::display_name(&b.harness),
-                &login::how_to_sign_in(&b.harness)
-            )
-        );
         self.entry(repo, number).blocked.as_mut().unwrap().reported = true;
-        match self.post_comment(repo, number, &body).await {
-            Ok(url) => info!(
-                repo = repo.name,
-                session = session_id(&repo.name, number),
-                url,
-                "told the item the session is blocked"
-            ),
-            Err(e) => warn!(
-                repo = repo.name,
-                session = session_id(&repo.name, number),
-                "could not tell the item the session is blocked: {e:#}"
-            ),
-        }
-    }
-
-    /// The first line of a post the daemon makes on behalf of a session:
-    /// the session's byline and origin tag, so the post reads as the
-    /// session's and is filtered as its own echo.
-    fn session_byline(&self, repo: &RepoConfig, number: u64) -> String {
-        match Origin::new(&repo.name, number) {
-            Some(o) => o.first_line(Some(&repo.name), false),
-            None => String::new(),
-        }
+        self.post_event(
+            repo,
+            number,
+            Event::Blocked {
+                harness: login::display_name(&b.harness),
+                fix: login::how_to_sign_in(&b.harness),
+            },
+        )
+        .await;
     }
 
     async fn post_comment(&self, repo: &RepoConfig, number: u64, body: &str) -> Result<String> {
         let (owner, name) = repo.split()?;
         self.gh.comment(owner, name, number, body).await
+    }
+
+    /// One of the daemon's own posts on an item (see `events`), as the bot
+    /// with the `🤖 ssf` byline and an `event=` tag, so nothing takes it
+    /// for a session's or a person's. Best effort: a post that cannot be
+    /// made is logged, never retried and never an error to the caller;
+    /// nothing at all is posted where event comments are off.
+    async fn post_event(&mut self, repo: &RepoConfig, number: u64, event: Event) {
+        if !self.cfg.event_comments(repo) {
+            return;
+        }
+        let Some(origin) = Origin::new(&repo.name, number) else {
+            return;
+        };
+        let kind = match self.peek(repo, number).and_then(|s| s.kind.as_deref()) {
+            Some("pull_request") => "pull request",
+            _ => "issue",
+        };
+        let body = events::comment(&origin, kind, &event);
+        let session = session_id(&repo.name, number);
+        match self.post_comment(repo, number, &body).await {
+            Ok(url) => info!(
+                repo = repo.name,
+                session,
+                event = event.name(),
+                url,
+                "posted the event on the item"
+            ),
+            Err(e) => warn!(
+                repo = repo.name,
+                session,
+                event = event.name(),
+                "could not post the event on the item: {e:#}"
+            ),
+        }
+    }
+
+    /// What the harness of `number`'s workspace runs with, for an
+    /// `attached` post: the repository's harness, model and effort as
+    /// configured, the driver, and the workspace's branch when known.
+    fn launch_of(&self, repo: &RepoConfig, number: u64) -> events::Launch {
+        events::Launch {
+            harness: login::display_name(&repo.harness),
+            model: repo.model.clone(),
+            effort: repo.effort.clone(),
+            command: repo.command.clone(),
+            driver: self.cfg.driver_for(repo).id().to_string(),
+            branch: self.peek(repo, number).and_then(|s| s.branch.clone()),
+        }
     }
 
     /// A blocked session, once per pass: told the item if that is still
@@ -1591,7 +1628,7 @@ are resumed on the first pass that finds it: {err:#}"
                     session,
                     "the harness is past its sign-in prompt; deliveries resume"
                 );
-                self.unblock(repo, number, &b, false).await;
+                self.unblock(repo, number, &b, None).await;
                 return;
             }
         }
@@ -1648,28 +1685,33 @@ are resumed on the first pass that finds it: {err:#}"
     }
 
     /// The session is back: forget the block, fetch every listing in full
-    /// on this pass so what was held is delivered, and, unless it was
-    /// quick, say so on the item.
-    async fn unblock(&mut self, repo: &RepoConfig, number: u64, b: &Blocked, relaunched: bool) {
+    /// on this pass so what was held is delivered, and, when the item was
+    /// told of the block, tell it the hold is over (`unblocked`, with how
+    /// long it lasted and what became of the conversation: `relaunched`
+    /// is the restart's `resumed` flag, `None` when the harness carried on
+    /// because a person signed in at its terminal).
+    async fn unblock(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        b: &Blocked,
+        relaunched: Option<bool>,
+    ) {
         self.entry(repo, number).blocked = None;
         self.forget_etags(repo);
-        let down = age(&b.since);
-        if down < LOGIN_QUIET {
+        if !b.reported {
             return;
         }
-        let mins = down.as_secs() / 60;
-        let body = format!(
-            "{}\n\n{}",
-            self.session_byline(repo, number),
-            prompt::resumed_comment(&login::display_name(&b.harness), relaunched, mins)
-        );
-        if let Err(e) = self.post_comment(repo, number, &body).await {
-            warn!(
-                repo = repo.name,
-                session = session_id(&repo.name, number),
-                "could not tell the item the session resumed: {e:#}"
-            );
-        }
+        self.post_event(
+            repo,
+            number,
+            Event::Unblocked {
+                harness: login::display_name(&b.harness),
+                held: age(&b.since),
+                conversation: relaunched.map_or(Conversation::Kept, Conversation::of),
+            },
+        )
+        .await;
     }
 
     /// Make the next listings full ones, so every item involving the bot
@@ -1685,26 +1727,46 @@ are resumed on the first pass that finds it: {err:#}"
         self.refetch.insert(repo.name.clone());
     }
 
-    fn note_failure(&mut self, repo: &RepoConfig, number: u64, err: &anyhow::Error) {
+    /// Count a failure against an item; at `MAX_DELIVERY_FAILURES` in a
+    /// row the binding is given up (the item is onboarded afresh on its
+    /// next look) and, when there was a binding to give up (the item was
+    /// seeded), the item is told so (`gave-up`). An item that never got a
+    /// session (nothing to clone, a workspace the driver cannot make)
+    /// fails every look and drops nothing: it is not told each time.
+    async fn note_failure(&mut self, repo: &RepoConfig, number: u64, err: &anyhow::Error) {
         let key = (repo.name.clone(), number);
-        let count = self.failures.entry(key).or_insert(0);
+        let count = self.failures.entry(key.clone()).or_insert(0);
         *count += 1;
+        let count = *count;
         warn!(
             repo = repo.name,
             issue = number,
-            attempt = *count,
+            attempt = count,
             "handling issue failed: {err:#}"
         );
-        if *count >= MAX_DELIVERY_FAILURES {
+        if count >= MAX_DELIVERY_FAILURES {
             error!(
                 repo = repo.name,
                 issue = number,
                 "giving up on the current workspace binding; the issue will be re-onboarded"
             );
-            *count = 0;
+            self.failures.insert(key, 0);
+            let mut had_binding = false;
             if let Some(st) = self.state.repo_mut(&repo.name).issues.get_mut(&number) {
+                had_binding = st.seeded;
                 st.seeded = false;
                 st.terminal_handle = None;
+            }
+            if had_binding {
+                self.post_event(
+                    repo,
+                    number,
+                    Event::GaveUp {
+                        failures: count,
+                        last_error: safe_error(&events::one_line(&format!("{err:#}"))),
+                    },
+                )
+                .await;
             }
         }
     }
@@ -1908,12 +1970,21 @@ are resumed on the first pass that finds it: {err:#}"
             // be news to another, so it is sorted out per recipient
             // (`for_recipient`) instead; one without a tag was typed by a
             // person using the bot account (every session stamps its
-            // posts), so it is delivered like any human's.
+            // posts), so it is delivered like any human's. The daemon's
+            // own event posts (`event=` in the tag) are for people: no
+            // agent, owner or subscriber, ever sees one.
             let actor = actor_of(ev);
             let own = actor.eq_ignore_ascii_case(&self.login);
             let echo = matches!(kind, "cross-referenced" | "referenced" | "committed");
             if own && echo && !self.cfg.daemon.include_own_events {
                 debug!(key, "skipping bot's own event");
+                continue;
+            }
+            if own
+                && kind == "commented"
+                && origin::is_event_post(crate::github::value_str(ev, &["body"]).unwrap_or(""))
+            {
+                debug!(key, "skipping the daemon's own event post");
                 continue;
             }
             match kind {
@@ -2211,7 +2282,28 @@ are resumed on the first pass that finds it: {err:#}"
                 self.remember_worktree(repo, issue.number, &wt);
                 let _ = self.driver(repo).set_comment(&wt.id, &comment).await;
                 let text = self.initial_text(repo, issue, &mine);
-                let d = self.deliver_to(repo, issue.number, &text, None).await?;
+                // The item is attached again, to what it had: `deliver_to`
+                // leaves a relaunch for this onboarding to be told here.
+                self.onboarding = Some((repo.name.clone(), issue.number));
+                let delivered = self.deliver_to(repo, issue.number, &text, None).await;
+                self.onboarding = None;
+                let d = delivered?;
+                let launch = self.launch_of(repo, issue.number);
+                let handed_off_from = self.entry(repo, issue.number).delegated_by.clone();
+                self.post_event(
+                    repo,
+                    issue.number,
+                    Event::Attached(Attach::Kept {
+                        launch,
+                        handed_off_from,
+                        conversation: if d.relaunched {
+                            Conversation::of(d.resumed)
+                        } else {
+                            Conversation::Kept
+                        },
+                    }),
+                )
+                .await;
                 d.handle
             }
             None => {
@@ -2257,6 +2349,17 @@ are resumed on the first pass that finds it: {err:#}"
                     repo.harness,
                     if is_pr { "pull request" } else { "issue" }
                 );
+                let launch = self.launch_of(repo, issue.number);
+                let handed_off_from = self.entry(repo, issue.number).delegated_by.clone();
+                self.post_event(
+                    repo,
+                    issue.number,
+                    Event::Attached(Attach::Started {
+                        launch,
+                        handed_off_from,
+                    }),
+                )
+                .await;
                 handle
             }
         };
@@ -2324,6 +2427,17 @@ are resumed on the first pass that finds it: {err:#}"
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
+        // The bound item hears which session took it (the owner's own item
+        // heard about that session when it started).
+        self.post_event(
+            repo,
+            issue.number,
+            Event::Attached(Attach::Bound {
+                session: session_id(&repo.name, owner),
+                shares: owner,
+            }),
+        )
+        .await;
         if let Some(since) = since_prior {
             self.fan_out(repo, issue, &since, Fyi::Tracked, false, &[])
                 .await;
@@ -2891,9 +3005,11 @@ are resumed on the first pass that finds it: {err:#}"
             }
             None => None,
         };
-        if !alive {
-            self.rehydrate(repo, target).await?;
-        }
+        let re_created = if alive {
+            None
+        } else {
+            self.rehydrate(repo, target).await?
+        };
         let st = self.entry(repo, target).clone();
         let worktree_id = st
             .worktree_id
@@ -2951,6 +3067,20 @@ are resumed on the first pass that finds it: {err:#}"
                 resumed = d.resumed,
                 "harness relaunched"
             );
+            // A re-created workspace is news whatever the harness shows.
+            if let Some(reason) = re_created {
+                let launch = self.launch_of(repo, target);
+                self.post_event(
+                    repo,
+                    target,
+                    Event::Attached(Attach::ReCreated {
+                        launch,
+                        reason,
+                        conversation: Conversation::of(d.resumed),
+                    }),
+                )
+                .await;
+            }
         }
         self.entry(repo, target).terminal_handle = Some(d.handle.clone());
         // A harness started again on a machine that is not signed in shows
@@ -2967,8 +3097,33 @@ are resumed on the first pass that finds it: {err:#}"
             }
             .into());
         }
+        // A harness started again in its existing workspace is `resumed`;
+        // one started to lift a login block is told of in `unblocked`, and
+        // one started by the target's own onboarding onto a kept workspace
+        // in that onboarding's `attached`.
+        let onboarding = self
+            .onboarding
+            .as_ref()
+            .is_some_and(|(r, n)| r.eq_ignore_ascii_case(&repo.name) && *n == target);
+        if d.relaunched && re_created.is_none() && held.is_none() && !onboarding {
+            self.post_event(
+                repo,
+                target,
+                Event::Resumed {
+                    harness: login::display_name(&repo.harness),
+                    conversation: Conversation::of(d.resumed),
+                    after: if self.startup_pass {
+                        "restart"
+                    } else {
+                        "lost terminal"
+                    },
+                },
+            )
+            .await;
+        }
         if let Some(b) = held {
-            self.unblock(repo, target, &b, d.relaunched).await;
+            self.unblock(repo, target, &b, d.relaunched.then_some(d.resumed))
+                .await;
         }
         if target != number {
             self.mirror_owner(repo, number, target);
@@ -2985,21 +3140,22 @@ are resumed on the first pass that finds it: {err:#}"
     /// workspace name and branch stay, so the branch is picked up as the
     /// base as for any re-created workspace. A record from before the
     /// driver was written down is judged by the shape of its repo id.
-    fn drop_foreign_binding(&mut self, repo: &RepoConfig, number: u64) {
+    /// Says whether a binding was dropped.
+    fn drop_foreign_binding(&mut self, repo: &RepoConfig, number: u64) -> bool {
         let current = self.cfg.driver_for(repo);
         let st = self.entry(repo, number).clone();
         let Some(repo_id) = st.repo_id.as_deref() else {
-            return;
+            return false;
         };
         let made_by = match st.driver.as_deref() {
             Some(d) => d.to_string(),
-            None if self.driver(repo).owns_repo_id(repo_id) => return,
+            None if self.driver(repo).owns_repo_id(repo_id) => return false,
             None => DriverKind::of_repo_id(repo_id)
                 .map(|k| k.id().to_string())
                 .unwrap_or_else(|| "another driver".into()),
         };
         if made_by == current.id() {
-            return;
+            return false;
         }
         info!(
             repo = repo.name,
@@ -3013,6 +3169,7 @@ are resumed on the first pass that finds it: {err:#}"
         e.worktree_id = None;
         e.worktree_path = None;
         e.terminal_handle = None;
+        true
     }
 
     /// The current driver's id for the repository, from the record when
@@ -3042,9 +3199,13 @@ are resumed on the first pass that finds it: {err:#}"
     }
 
     /// Re-create the workspace for an issue whose worktree is gone,
-    /// starting from its old branch when that still exists.
-    async fn rehydrate(&mut self, repo: &RepoConfig, number: u64) -> Result<()> {
-        self.drop_foreign_binding(repo, number);
+    /// starting from its old branch when that still exists. Says why it
+    /// was re-created (`workspace gone`, or `driver switch` when a binding
+    /// made by another driver was dropped first), or `None` when the
+    /// driver already had a workspace linked to the issue and nothing was
+    /// made.
+    async fn rehydrate(&mut self, repo: &RepoConfig, number: u64) -> Result<Option<&'static str>> {
+        let switched = self.drop_foreign_binding(repo, number);
         let repo_id = self.repo_id_for(repo, number).await?;
         let st = self.entry(repo, number).clone();
         if let Some(existing) = self
@@ -3061,7 +3222,7 @@ are resumed on the first pass that finds it: {err:#}"
             self.remember_worktree(repo, number, &existing);
             let e = self.entry(repo, number);
             e.terminal_handle = None;
-            return Ok(());
+            return Ok(None);
         }
         let name = st
             .worktree_name
@@ -3139,7 +3300,11 @@ are resumed on the first pass that finds it: {err:#}"
         let e = self.entry(repo, number);
         e.terminal_handle = None;
         e.worktree_name = Some(name);
-        Ok(())
+        Ok(Some(if switched {
+            "driver switch"
+        } else {
+            "workspace gone"
+        }))
     }
 
     /// Record harness session ids for workspaces that do not have one yet.
@@ -3253,6 +3418,16 @@ are resumed on the first pass that finds it: {err:#}"
             Ok(()) => {
                 info!(session, worktree = id, "released the workspace");
                 self.mark_released(repo, st.number);
+                self.post_event(
+                    repo,
+                    st.number,
+                    Event::Released {
+                        by: "ssf release",
+                        forced: st.release_forced,
+                        branch: st.branch.clone(),
+                    },
+                )
+                .await;
             }
             Err(e) => {
                 warn!(session, "removing the workspace failed: {e:#}");
@@ -3519,6 +3694,16 @@ are resumed on the first pass that finds it: {err:#}"
                                 "purged the workspace"
                             );
                             self.mark_released(&repo, st.number);
+                            self.post_event(
+                                &repo,
+                                st.number,
+                                Event::Released {
+                                    by: "ssf purge",
+                                    forced: force,
+                                    branch: st.branch.clone(),
+                                },
+                            )
+                            .await;
                             row["removed"] = true.into();
                         }
                         Err(e) => {
@@ -3571,12 +3756,17 @@ fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
 }
 
 /// The last comment the bot left on an item, as its session's final word.
+/// The daemon's own event posts (a `released` after the agent signed off,
+/// say) are not the agent's words and do not count.
 fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
     timeline
         .iter()
         .rev()
         .filter(|ev| ev.get("event").and_then(Value::as_str) == Some("commented"))
-        .find(|ev| actor_of(ev).eq_ignore_ascii_case(bot))
+        .find(|ev| {
+            actor_of(ev).eq_ignore_ascii_case(bot)
+                && !origin::is_event_post(crate::github::value_str(ev, &["body"]).unwrap_or(""))
+        })
         .map(|ev| {
             let body = crate::github::value_str(ev, &["body"]).unwrap_or("");
             FinalComment {
@@ -3588,6 +3778,23 @@ fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
                 body: origin::strip(body),
             }
         })
+}
+
+/// An error message fit to write on an item: a harness's sign-in phrases
+/// in it (its own words, passed up through a delivery error) are
+/// replaced by `[…]`, and the whole message withheld if it still passes
+/// for a login prompt after that, so the post can never pass for one
+/// when echoed on a screen; the log has it in full. `text` must be the
+/// line as it will be posted (`events::one_line`): the prompt check reads
+/// a screen's last lines, and a phrase high up in a long message would
+/// slip past it only to be collapsed onto the one line that is posted.
+fn safe_error(text: &str) -> String {
+    let redacted = crate::driver::redact_login_phrases(text);
+    if crate::driver::quotes_login_prompt(&redacted) {
+        "(withheld: the message quotes a sign-in prompt; see the daemon log)".into()
+    } else {
+        redacted
+    }
 }
 
 /// How long ago an RFC 3339 time was (zero when it cannot be read).
@@ -3688,6 +3895,8 @@ mod tests {
             }),
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
+            startup_pass: false,
+            onboarding: None,
         }
     }
 
@@ -3895,6 +4104,11 @@ mod tests {
                 "<!-- ssf: origin=o/r#7 -->\n\nfrom the PR's session",
             ),
             comment(6, "bot", "<!-- ssf: origin=x/y#2 -->\n\nfrom elsewhere"),
+            comment(
+                8,
+                "bot",
+                "🤖 ssf <!-- ssf: origin=o/r#3 event=attached -->\n\n```ssf\nssf attaching agent to issue:\nharness: Claude Code\n```",
+            ),
         ];
         let d = e.diff(&r, &BTreeMap::new(), &timeline);
         let keys: Vec<&str> = d.rendered.iter().map(|r| r.key.as_str()).collect();
@@ -3908,9 +4122,10 @@ mod tests {
                 "commented:5",
                 "commented:6"
             ],
-            "the untagged bot comment is a person's; tagged ones stay"
+            "the untagged bot comment is a person's; tagged ones stay; the daemon's event post is nobody's"
         );
-        assert_eq!(d.seen.len(), 6, "everything is recorded as seen");
+        assert_eq!(d.seen.len(), 7, "everything is recorded as seen");
+        assert!(d.seen.contains_key("commented:8"));
         assert!(
             d.rendered[1]
                 .text
@@ -4158,6 +4373,8 @@ mod tests {
             json!({"event":"commented","id":2,"user":{"login":"bot"},"body":"<!-- ssf: origin=o/r#5 -->\n\ndone","html_url":"u2"}),
             json!({"event":"commented","id":3,"user":{"login":"alice"},"body":"thanks","html_url":"u3"}),
             json!({"event":"closed","id":4,"actor":{"login":"alice"}}),
+            // The daemon's own post after the agent's last word is not it.
+            json!({"event":"commented","id":5,"user":{"login":"bot"},"body":"🤖 ssf <!-- ssf: origin=o/r#5 event=released -->\n\n```ssf\nssf releasing workspace of issue:\nby: ssf release\n```","html_url":"u5"}),
         ];
         let c = last_bot_comment(&timeline, "Bot").unwrap();
         assert_eq!(c.body, "done");
@@ -4257,8 +4474,9 @@ mod tests {
         /// list is served with an ETag that changes when it is set.
         collaborators: std::sync::Arc<std::sync::Mutex<Option<Vec<Value>>>>,
         collab_version: std::sync::Arc<std::sync::atomic::AtomicU32>,
-        /// Comments posted (`/repos/o/r/issues/N/comments`), in order.
-        posts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        /// Comments posted (`/repos/o/r/issues/N/comments`), in order:
+        /// the path and the comment body.
+        posts: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     }
 
     impl GitHubStub {
@@ -4276,7 +4494,7 @@ mod tests {
             let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
             let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
             let collab_version = Arc::new(AtomicU32::new(1));
-            let posts: Arc<Mutex<Vec<String>>> = Arc::default();
+            let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
             let p = posts.clone();
             let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
             let (a, t, k, kv) = (
@@ -4291,19 +4509,38 @@ mod tests {
                     let Ok((mut sock, _)) = listener.accept().await else {
                         return;
                     };
+                    // The head, then as much body as `Content-Length` says.
                     let mut buf = Vec::new();
                     let mut chunk = [0u8; 1024];
+                    let mut head_len = None;
                     loop {
+                        if head_len.is_none() {
+                            head_len = buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+                        }
+                        if let Some(hl) = head_len {
+                            let head = String::from_utf8_lossy(&buf[..hl]);
+                            let len = head
+                                .lines()
+                                .find_map(|l| {
+                                    let (k, v) = l.split_once(':')?;
+                                    k.eq_ignore_ascii_case("content-length")
+                                        .then(|| v.trim().parse::<usize>().ok())
+                                        .flatten()
+                                })
+                                .unwrap_or(0);
+                            if buf.len() >= hl + len {
+                                break;
+                            }
+                        }
                         let n = sock.read(&mut chunk).await.unwrap_or(0);
                         if n == 0 {
                             break;
                         }
                         buf.extend_from_slice(&chunk[..n]);
-                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
                     }
-                    let head = String::from_utf8_lossy(&buf).to_string();
+                    let hl = head_len.unwrap_or(buf.len());
+                    let head = String::from_utf8_lossy(&buf[..hl]).to_string();
+                    let sent = String::from_utf8_lossy(&buf[hl..]).to_string();
                     let mut lines = head.lines();
                     let first = lines.next().unwrap_or("").to_string();
                     let method = first.split(' ').next().unwrap_or("").to_string();
@@ -4316,7 +4553,11 @@ mod tests {
                     h.lock().unwrap().push(target.clone());
                     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
                     let (status, etag, body) = if method == "POST" && path.ends_with("/comments") {
-                        p.lock().unwrap().push(path.to_string());
+                        let comment = serde_json::from_str::<Value>(&sent)
+                            .ok()
+                            .and_then(|v| v["body"].as_str().map(str::to_string))
+                            .unwrap_or(sent.clone());
+                        p.lock().unwrap().push((path.to_string(), comment));
                         (
                             "201 Created",
                             "\"p\"".to_string(),
@@ -4393,6 +4634,11 @@ mod tests {
 
         /// The comment endpoints posted to since the last call.
         fn posts(&self) -> Vec<String> {
+            self.post_bodies().into_iter().map(|(p, _)| p).collect()
+        }
+
+        /// The comments posted since the last call: endpoint and body.
+        fn post_bodies(&self) -> Vec<(String, String)> {
             std::mem::take(&mut *self.posts.lock().unwrap())
         }
 
@@ -4852,13 +5098,31 @@ mod tests {
             log[1].starts_with("deliver:stub::/stub.worktrees/issue-5-fix-the-widget:"),
             "{log:?}"
         );
+        // The item is told the agent was attached again, and why.
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue again:\n\
+             harness: Claude Code\n\
+             model: the harness's default\n\
+             effort: the harness's default\n\
+             driver: herdr\n\
+             branch: bot/issue-5-fix-the-widget\n\
+             re-created: driver switch\n\
+             conversation: fresh\n\
+             ```"
+        );
         // The record now says herdr: the next delivery finds the workspace
-        // as it is and nothing is re-created.
+        // as it is and nothing is re-created, so nothing is posted.
         e.deliver_to(&repo(), 5, "again", None).await.unwrap();
         assert_eq!(
             d.log(),
             vec!["deliver:stub::/stub.worktrees/issue-5-fix-the-widget:again"]
         );
+        assert!(stub.posts().is_empty());
         assert_eq!(
             e.entry(&repo(), 5).worktree_id.as_deref(),
             Some("stub::/stub.worktrees/issue-5-fix-the-widget")
@@ -4890,6 +5154,14 @@ mod tests {
         assert_eq!(
             d.log()[0],
             "relaunch:stub::/stub.worktrees/issue-5-fix-the-widget:false"
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0].1.contains("driver: orca\n")
+                && posts[0].1.contains("re-created: driver switch\n"),
+            "{}",
+            posts[0].1
         );
     }
 
@@ -4981,8 +5253,24 @@ mod tests {
         assert_eq!(b.detail, "Login expired · Please run /login");
         assert!(b.reported);
         assert_eq!(b.credential.as_deref(), Some("cred-old"));
-        // The item was told once, as the session.
-        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        // The item was told once, by the daemon (not as the session).
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/5/comments");
+        assert_eq!(
+            posts[0].1,
+            format!(
+                "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+                 ```ssf\n\
+                 ssf holding deliveries to agent on issue:\n\
+                 harness: Claude Code\n\
+                 reason: not signed in\n\
+                 fix: {}\n\
+                 ```",
+                login::how_to_sign_in("claude").replace('`', "")
+            )
+        );
+        assert!(posts[0].1.contains("fix: claude auth login on the host"));
         // Nothing was pasted, and the activity is still owed: `updated_at`
         // did not move, the comment is not marked seen, no failure counted.
         assert!(d.log().is_empty(), "no delivery into a blocked session");
@@ -5059,7 +5347,20 @@ mod tests {
         );
         assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
         assert_eq!(st.prompts_sent, 1);
-        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        // One `unblocked` post carries the conversation line; the restart
+        // that lifted the block is not a `resumed` event of its own.
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```ssf\n\
+             ssf resuming deliveries to agent on issue:\n\
+             harness: Claude Code\n\
+             held for: 12 min\n\
+             conversation: resumed\n\
+             ```"
+        );
         // ETags were dropped by the recovery, then set again by the pass.
         assert!(e.state.repos["o/r"].issues_etag.is_some());
     }
@@ -5139,8 +5440,20 @@ mod tests {
             "{log:?}"
         );
         assert_eq!(st.updated_at.as_deref(), Some("u2"));
-        // Quick, so no "resumed" comment.
-        assert!(stub.posts().is_empty());
+        // The item had been told of the block, so it hears the hold is
+        // over, however quick, and that nothing was started again.
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```ssf\n\
+             ssf resuming deliveries to agent on issue:\n\
+             harness: Claude Code\n\
+             held for: less than a minute\n\
+             conversation: kept\n\
+             ```"
+        );
     }
 
     #[tokio::test]
@@ -5250,7 +5563,16 @@ mod tests {
                 .any(|l| l.starts_with("deliver:w5:[ssf] New activity")),
             "{log:?}"
         );
-        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0].1.contains("event=unblocked -->")
+                && posts[0]
+                    .1
+                    .contains("held for: 30 min\nconversation: resumed\n"),
+            "{}",
+            posts[0].1
+        );
         assert_eq!(st.updated_at.as_deref(), Some("u2"));
         // Gone again while still blocked, activity arrives through the
         // normal path and the restart is fine: lifted the same way, once.
@@ -5266,7 +5588,702 @@ mod tests {
         assert!(e.entry(&repo(), 5).blocked.is_none());
         let log = d.log();
         assert_eq!(log[0], "relaunch:w5:true", "{log:?}");
-        assert_eq!(stub.posts(), vec!["/repos/o/r/issues/5/comments"]);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(posts[0].1.contains("event=unblocked -->"), "{}", posts[0].1);
+    }
+
+    /// The `attached` post on onboarding: one per start, with the launch
+    /// as configured, and never again for a pass or a daemon restart that
+    /// finds the item as it was.
+    #[tokio::test]
+    async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let mut r = repo();
+        r.model = Some("fable-5.1".into());
+        r.effort = Some("high".into());
+        e.cfg.repos = vec![r.clone()];
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        e.tick_repo(&r).await.unwrap();
+        let st = e.entry(&r, 5).clone();
+        assert!(st.seeded && st.active, "{st:?}");
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        let log = d.log();
+        assert!(
+            log[0].starts_with("start:stub::/stub.worktrees/issue-5-t:"),
+            "{log:?}"
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/5/comments");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue:\n\
+             harness: Claude Code\n\
+             model: fable-5.1\n\
+             effort: high\n\
+             driver: orca\n\
+             branch: bot/issue-5-t\n\
+             ```"
+        );
+        // The post is on the item's timeline now; the next pass neither
+        // delivers it to the agent nor posts again.
+        let event_post = comment(2, "bot", &posts[0].1);
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice"), event_post.clone()]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(d.log().is_empty(), "nothing to deliver");
+        assert!(stub.posts().is_empty());
+        let st = e.entry(&r, 5).clone();
+        assert_eq!(st.updated_at.as_deref(), Some("u2"));
+        assert!(st.seen.contains_key("commented:2"), "{:?}", st.seen.keys());
+        assert!(
+            st.untagged.is_empty(),
+            "not a person's post: {:?}",
+            st.untagged
+        );
+        assert!(
+            st.origins.is_empty(),
+            "not a session's post: {:?}",
+            st.origins
+        );
+        assert_eq!(
+            crate::status::sessions(&e.cfg, &e.state, None)[0].untagged_posts,
+            0
+        );
+        // A daemon restart: the state file survives, memory does not, and
+        // an unchanged item is not attached again.
+        let dir = std::env::temp_dir().join(format!("ssf-engine-events-{}", std::process::id()));
+        let path = dir.join("state.json");
+        e.state.save_to(&path).unwrap();
+        let mut e = engine_at(&stub.base);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        e.state = State::load_from(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        e.tick_repo(&r).await.unwrap();
+        assert!(d.log().is_empty(), "{:?}", d.log());
+        assert!(stub.posts().is_empty());
+    }
+
+    /// An item bound to another item's session hears which one took it.
+    #[tokio::test]
+    async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        // Session 1 is live on w1; item 7 was opened by it.
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        {
+            let st = e.entry(&r, 1);
+            st.worktree_id = Some("w1".into());
+            st.worktree_path = Some("/w/1".into());
+            st.terminal_handle = Some("t1".into());
+            st.repo_id = Some("stub".into());
+            st.driver = Some("orca".into());
+        }
+        d.seed("w1", "t1", READY_SCREEN);
+        let opened = json!({
+            "number": 7, "title": "child", "body": "🤖#1 says: <!-- ssf: origin=o/r#1 -->\n\nfollow-up",
+            "html_url": "https://gh/7", "state": "open", "user": {"login": "bot"},
+            "assignees": [{"login": "bot"}], "created_at": "x", "updated_at": "u1"
+        });
+        stub.set_assigned(vec![opened]);
+        stub.set_timeline(7, vec![assigned_by(1, "bot")]);
+        e.tick_repo(&r).await.unwrap();
+        let st = e.entry(&r, 7).clone();
+        assert_eq!(st.shares_workspace_of, Some(1), "{st:?}");
+        let log = d.log();
+        assert!(
+            log[0].starts_with("deliver:w1:[ssf] Now tracking issue #7"),
+            "{log:?}"
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/7/comments");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#7 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue:\n\
+             session: o/r#1\n\
+             shares: workspace of #1\n\
+             ```"
+        );
+    }
+
+    /// A daemon event post on a timeline reaches no agent: not the item's
+    /// own session, not a subscriber.
+    #[tokio::test]
+    async fn event_posts_are_not_delivered_or_fanned_out() {
+        let mut e = engine();
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        seeded(&mut e, 3, Some("bot/issue-3"), true);
+        for n in [1, 3] {
+            let st = e.entry(&r, n);
+            st.worktree_id = Some(format!("w{n}"));
+            st.terminal_handle = Some(format!("t{n}"));
+            d.seed(&format!("w{n}"), &format!("t{n}"), READY_SCREEN);
+        }
+        // Session 1 follows item 3, whose only news is the daemon saying
+        // it resumed session 3's harness.
+        e.entry(&r, 3).subscribers = vec!["o/r#1".into()];
+        let o = Origin::new("o/r", 3).unwrap();
+        let post = events::comment(
+            &o,
+            "issue",
+            &Event::Resumed {
+                harness: "Claude Code".into(),
+                conversation: Conversation::Fresh,
+                after: "restart",
+            },
+        );
+        let timeline = vec![comment(9, "bot", &post)];
+        let diff = e.diff(&r, &BTreeMap::new(), &timeline);
+        assert!(diff.rendered.is_empty(), "{:?}", diff.rendered);
+        assert!(diff.seen.contains_key("commented:9"));
+        assert!(
+            e.for_recipient(&diff.rendered, "o/r#1").is_empty()
+                && e.for_recipient(&diff.rendered, "o/r#3").is_empty()
+        );
+        e.fan_out(
+            &r,
+            &issue(3, "alice", None),
+            &diff.rendered,
+            Fyi::Activity,
+            false,
+            &[],
+        )
+        .await;
+        assert!(d.log().is_empty(), "{:?}", d.log());
+    }
+
+    /// `event_comments` off, for the instance or the repository, posts
+    /// nothing and changes nothing else.
+    #[tokio::test]
+    async fn event_comments_can_be_switched_off() {
+        // The instance says no: onboarding posts nothing, but happens.
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        e.cfg.daemon.event_comments = false;
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.entry(&r, 5).seeded);
+        assert!(d.log()[0].starts_with("start:"));
+        assert!(stub.posts().is_empty());
+
+        // The repository says yes over an instance that says no: a
+        // blocked session is reported.
+        let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+        e.cfg.daemon.event_comments = false;
+        e.cfg.repos[0].event_comments = Some(true);
+        probe_returning(&mut e, LoginState::SignedOut, None);
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice"), comment(2, "alice", "go")]);
+        e.tick_repo(&e.cfg.repos[0].clone()).await.unwrap();
+        assert!(e.entry(&repo(), 5).blocked.as_ref().unwrap().reported);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(posts[0].1.contains("event=blocked -->"));
+        assert!(d.log().is_empty(), "held");
+
+        // The repository says no over an instance that says yes: still
+        // blocked and held, nothing posted, and the record still says
+        // reported so the pass does not try again.
+        let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+        e.cfg.repos[0].event_comments = Some(false);
+        probe_returning(&mut e, LoginState::SignedOut, None);
+        e.tick_repo(&e.cfg.repos[0].clone()).await.unwrap();
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.as_ref().unwrap().reported);
+        assert!(stub.posts().is_empty());
+        assert!(d.log().is_empty(), "held");
+        assert_eq!(st.updated_at.as_deref(), Some("u1"));
+        let err = e.deliver_to(&repo(), 5, "hello", None).await.unwrap_err();
+        assert!(is_blocked(&err), "{err:#}");
+    }
+
+    /// A workspace removed by `ssf release` or `ssf purge` is told of on
+    /// the owning item, once, with who did it; one already gone is not.
+    #[tokio::test]
+    async fn releasing_or_purging_a_workspace_posts_released() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        let closed = |e: &mut Engine, n: u64| {
+            seeded(e, n, Some(&format!("bot/issue-{n}")), false);
+            let st = e.entry(&repo(), n);
+            st.worktree_id = Some(format!("w{n}"));
+            // No such directory: the checks cannot pass, so only a
+            // forced removal goes ahead.
+            st.worktree_path = Some(format!("/nonexistent/ssf-w{n}"));
+            st.github_state = Some("closed".into());
+            st.kind = Some("pull_request".into());
+            st.retired_at = Some(now_iso());
+            d.with(|s| {
+                s.worktrees.insert(format!("w{n}"));
+            });
+        };
+        closed(&mut e, 1);
+        closed(&mut e, 2);
+        // Item 3 shares session 1's workspace: nothing is posted on it.
+        seeded(&mut e, 3, None, false);
+        e.entry(&r, 3).shares_workspace_of = Some(1);
+        e.entry(&r, 3).worktree_id = Some("w1".into());
+        e.entry(&r, 3).github_state = Some("closed".into());
+        {
+            let st = e.entry(&r, 1);
+            st.release_pending = true;
+            st.release_forced = true;
+        }
+        let st = e.entry(&r, 1).clone();
+        e.finish_release(&r, st).await;
+        assert!(e.entry(&r, 1).worktree_id.is_none());
+        assert!(e.entry(&r, 3).worktree_id.is_none());
+        assert_eq!(d.log(), vec!["remove:w1"]);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/1/comments");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#1 event=released -->\n\n\
+             ```ssf\n\
+             ssf releasing workspace of pull request:\n\
+             by: ssf release\n\
+             forced: yes\n\
+             branch: bot/issue-1\n\
+             ```"
+        );
+        // Already gone: marked released, nothing said.
+        {
+            let st = e.entry(&r, 1);
+            st.worktree_id = Some("w1".into());
+            st.release_pending = true;
+        }
+        let st = e.entry(&r, 1).clone();
+        e.finish_release(&r, st).await;
+        assert!(e.entry(&r, 1).released_at.is_some());
+        assert!(stub.posts().is_empty());
+        // Purge, forced since the checks cannot run.
+        let out = e.purge(false, None, true).await.unwrap();
+        assert_eq!(out["workspaces"][0]["removed"], true, "{out}");
+        assert_eq!(d.log(), vec!["remove:w2"]);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/2/comments");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#2 event=released -->\n\n\
+             ```ssf\n\
+             ssf releasing workspace of pull request:\n\
+             by: ssf purge\n\
+             forced: yes\n\
+             branch: bot/issue-2\n\
+             ```"
+        );
+        // A dry run removes nothing and says nothing.
+        closed(&mut e, 4);
+        e.purge(true, None, true).await.unwrap();
+        assert!(d.log().is_empty());
+        assert!(stub.posts().is_empty());
+    }
+
+    /// The fifth failure in a row drops the binding and says so once,
+    /// with the error on one line.
+    #[tokio::test]
+    async fn giving_up_on_a_binding_posts_gave_up_once() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        e.entry(&r, 5).terminal_handle = Some("t5".into());
+        let err =
+            anyhow::anyhow!("no such terminal\n  (it was closed)").context("delivering to orca");
+        for n in 1..MAX_DELIVERY_FAILURES {
+            e.note_failure(&r, 5, &err).await;
+            assert_eq!(e.failures[&("o/r".to_string(), 5)], n);
+            assert!(e.entry(&r, 5).seeded);
+        }
+        assert!(stub.posts().is_empty());
+        e.note_failure(&r, 5, &err).await;
+        let st = e.entry(&r, 5).clone();
+        assert!(!st.seeded && st.terminal_handle.is_none(), "{st:?}");
+        assert_eq!(e.failures[&("o/r".to_string(), 5)], 0);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=gave-up -->\n\n\
+             ```ssf\n\
+             ssf giving up on agent binding for issue:\n\
+             failures: 5\n\
+             last error: delivering to orca: no such terminal (it was closed)\n\
+             next: re-onboarding the item\n\
+             ```"
+        );
+        // Five more without an onboarding in between: the count resets
+        // again, but there is no binding to drop and nothing to say.
+        for _ in 0..MAX_DELIVERY_FAILURES {
+            e.note_failure(&r, 5, &err).await;
+        }
+        assert_eq!(e.failures[&("o/r".to_string(), 5)], 0);
+        assert!(!e.entry(&r, 5).seeded);
+        assert!(stub.posts().is_empty(), "no binding, no post");
+        // An item that never got a session (its onboarding fails every
+        // look) is counted and reset the same way, and never told.
+        e.entry(&r, 9).title = "never onboarded".into();
+        for n in 1..=MAX_DELIVERY_FAILURES {
+            e.note_failure(&r, 9, &err).await;
+            assert_eq!(
+                e.failures[&("o/r".to_string(), 9)],
+                n % MAX_DELIVERY_FAILURES
+            );
+        }
+        assert!(stub.posts().is_empty());
+        // A sign-in phrase in an error is cut out; the rest is kept.
+        assert_eq!(
+            safe_error("orca: the screen said: Login expired · Please run /login"),
+            "orca: the screen said: […] · Please […]"
+        );
+        assert_eq!(
+            safe_error("gh: You are not logged into any GitHub hosts. Run gh auth login."),
+            "gh: You are […]to any GitHub hosts. Run gh auth login."
+        );
+        assert_eq!(safe_error("plain failure"), "plain failure");
+        assert!(!crate::driver::quotes_login_prompt(&safe_error(
+            "NOT LOGGED IN\nInvalid API key\nSign in with ChatGPT"
+        )));
+        // The check reads the form that is posted: a phrase on the second
+        // line of a long screen dump is above what a screen check reads,
+        // but on the one posted line it is right there.
+        let mut dump = String::from(
+            "delivery failed; the screen showed:\nLogin expired · Please run /login\n",
+        );
+        for i in 0..25 {
+            dump.push_str(&format!("│ line {i} of the transcript\n"));
+        }
+        assert!(
+            !crate::driver::quotes_login_prompt(&dump),
+            "out of the tail"
+        );
+        let posted = safe_error(&events::one_line(&dump));
+        assert!(
+            posted.starts_with("delivery failed; the screen showed: […] · Please […] │ line 0"),
+            "{posted}"
+        );
+        assert!(!crate::driver::quotes_login_prompt(&posted));
+        assert!(!posted.contains("run /login"));
+    }
+
+    /// A relaunch that is not the target's own onboarding (a bound item's
+    /// delivery bringing back an owner whose binding was given up) is a
+    /// `resumed` on the owner like any other.
+    #[tokio::test]
+    async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.seeded = false;
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.repo_id = Some("stub".into());
+            st.driver = Some("orca".into());
+        }
+        seeded(&mut e, 8, None, true);
+        {
+            let st = e.entry(&r, 8);
+            st.kind = Some("pull_request".into());
+            st.shares_workspace_of = Some(5);
+        }
+        d.with(|s| {
+            s.worktrees.insert("w5".into());
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        e.deliver_to(&r, 8, "[ssf] a comment on the PR", None)
+            .await
+            .unwrap();
+        assert_eq!(d.log()[0], "relaunch:w5:false");
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/5/comments");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```ssf\n\
+             ssf resuming agent on issue:\n\
+             harness: Claude Code\n\
+             conversation: fresh\n\
+             after: lost terminal\n\
+             ```"
+        );
+        assert!(e.onboarding.is_none());
+    }
+
+    /// An item onboarded onto a workspace it already had (its binding was
+    /// dropped, or the state file was lost) is told it was attached again
+    /// to a kept workspace, once: the relaunch inside is not a `resumed`.
+    #[tokio::test]
+    async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        // As `note_failure` leaves an item after giving up: workspace
+        // remembered, binding dropped; the agent in it is gone too.
+        seeded(&mut e, 5, Some("bot/issue-5-t"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.seeded = false;
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.worktree_name = Some("issue-5-t".into());
+            st.repo_id = Some("stub".into());
+            st.driver = Some("orca".into());
+        }
+        d.with(|s| {
+            s.worktrees.insert("w5".into());
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        e.tick_repo(&r).await.unwrap();
+        let st = e.entry(&r, 5).clone();
+        assert!(st.seeded && st.active, "{st:?}");
+        assert_eq!(st.worktree_id.as_deref(), Some("w5"), "kept");
+        let log = d.log();
+        assert_eq!(log[0], "relaunch:w5:false", "{log:?}");
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue again:\n\
+             harness: Claude Code\n\
+             model: the harness's default\n\
+             effort: the harness's default\n\
+             driver: orca\n\
+             branch: bot/issue-5-t\n\
+             workspace: kept\n\
+             conversation: fresh\n\
+             ```"
+        );
+        // With the agent still there: attached again, conversation kept.
+        e.entry(&r, 5).seeded = false;
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(d.log()[0].starts_with("deliver:w5:"));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0]
+                .1
+                .ends_with("workspace: kept\nconversation: kept\n```"),
+            "{}",
+            posts[0].1
+        );
+    }
+
+    /// A workspace that is gone at delivery time is re-created and the
+    /// item told, with `workspace gone` as the reason.
+    #[tokio::test]
+    async fn a_gone_workspace_is_re_created_and_the_item_told() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![repo()];
+        seeded(&mut e, 5, Some("bot/issue-5-fix-the-widget"), true);
+        {
+            let st = e.entry(&repo(), 5);
+            st.title = "Fix the widget".into();
+            st.html_url = "https://gh/5".into();
+            st.worktree_name = Some("issue-5-fix-the-widget".into());
+            st.repo_id = Some("stub".into());
+            st.driver = Some("orca".into());
+            st.worktree_id = Some("stub::/stub.worktrees/issue-5-fix-the-widget".into());
+            st.worktree_path = Some("/stub.worktrees/issue-5-fix-the-widget".into());
+            st.agent_session_id = Some("sess-5".into());
+        }
+        // The stub driver has no such workspace: it is re-created.
+        let delivered = e.deliver_to(&repo(), 5, "hello", None).await.unwrap();
+        assert!(delivered.relaunched);
+        assert_eq!(
+            d.log()[0],
+            "relaunch:stub::/stub.worktrees/issue-5-fix-the-widget:true"
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue again:\n\
+             harness: Claude Code\n\
+             model: the harness's default\n\
+             effort: the harness's default\n\
+             driver: orca\n\
+             branch: bot/issue-5-fix-the-widget\n\
+             re-created: workspace gone\n\
+             conversation: resumed\n\
+             ```"
+        );
+    }
+
+    /// A pull request bound to a session's workspace says so as one.
+    #[tokio::test]
+    async fn a_bound_pull_request_is_attached_as_one() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        {
+            let st = e.entry(&r, 1);
+            st.worktree_id = Some("w1".into());
+            st.terminal_handle = Some("t1".into());
+        }
+        d.seed("w1", "t1", READY_SCREEN);
+        // As `onboard` has it before binding: kind and PR details known.
+        {
+            let st = e.entry(&r, 8);
+            st.kind = Some("pull_request".into());
+            st.pr = Some(pr("bot/issue-1"));
+        }
+        let mut item = issue(8, "bot", Some("fixes #1"));
+        item.pull_request = Some(json!({}));
+        let diff = e.diff(&r, &BTreeMap::new(), &[]);
+        e.bind_to(&r, &item, 1, diff, vec!["created".into()], None)
+            .await
+            .unwrap();
+        assert_eq!(e.entry(&r, 8).shares_workspace_of, Some(1));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#8 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to pull request:\n\
+             session: o/r#1\n\
+             shares: workspace of #1\n\
+             ```"
+        );
+    }
+
+    /// An item a session handed off gets a session of its own, and its
+    /// `attached` names the parent.
+    #[tokio::test]
+    async fn a_delegated_item_is_attached_with_its_parent_named() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        let opened = json!({
+            "number": 7, "title": "child", "body": "🤖#1 says: <!-- ssf: origin=o/r#1 mode=delegate -->\n\nover to you",
+            "html_url": "https://gh/7", "state": "open", "user": {"login": "bot"},
+            "assignees": [{"login": "bot"}], "created_at": "x", "updated_at": "u1"
+        });
+        stub.set_assigned(vec![opened]);
+        stub.set_timeline(7, vec![assigned_by(1, "bot")]);
+        e.tick_repo(&r).await.unwrap();
+        let st = e.entry(&r, 7).clone();
+        assert_eq!(st.delegated_by.as_deref(), Some("o/r#1"), "{st:?}");
+        assert!(st.shares_workspace_of.is_none(), "a session of its own");
+        assert!(d.log()[0].starts_with("start:stub::/stub.worktrees/issue-7-child:"));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/7/comments");
+        assert!(
+            posts[0]
+                .1
+                .ends_with("driver: orca\nbranch: bot/issue-7-child\nhanded off from: o/r#1\n```"),
+            "{}",
+            posts[0].1
+        );
+    }
+
+    /// The startup pass says `after: restart`; a relaunch at delivery
+    /// time says `after: lost terminal`.
+    #[tokio::test]
+    async fn a_relaunch_posts_resumed_with_why() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+        // The terminal is gone; a delivery starts the harness again.
+        d.with(|s| {
+            s.live.clear();
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
+        assert_eq!(d.log()[0], "relaunch:w5:true");
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```ssf\n\
+             ssf resuming agent on issue:\n\
+             harness: Claude Code\n\
+             conversation: resumed\n\
+             after: lost terminal\n\
+             ```"
+        );
+        // A live agent: a delivery, no relaunch, no post.
+        e.deliver_to(&repo(), 5, "[ssf] again", None).await.unwrap();
+        assert_eq!(d.log(), vec!["deliver:w5:[ssf] again"]);
+        assert!(stub.posts().is_empty());
+        // Gone again over a restart: the startup pass brings it back,
+        // fresh this time (no session id captured).
+        d.with(|s| s.live.clear());
+        e.entry(&repo(), 5).agent_session_id = None;
+        stub.set_collaborators(Some(vec![]));
+        e.resume_interrupted(&[DriverKind::Orca]).await;
+        assert!(!e.startup_pass);
+        let log = d.log();
+        assert_eq!(log[0], "relaunch:w5:false", "{log:?}");
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0].1.ends_with(
+                "ssf resuming agent on issue:\nharness: Claude Code\nconversation: fresh\nafter: restart\n```"
+            ),
+            "{}",
+            posts[0].1
+        );
     }
 
     /// Every text ssf puts on a screen or that agents read must stay free
@@ -5291,6 +6308,7 @@ mod tests {
                 retried_at: None,
                 retries: 0,
             };
+            let o = Origin::new("o/r", 5).unwrap();
             let texts = [
                 prompt::login_back_prompt(&prompt::LoginBack {
                     harness: &name,
@@ -5299,9 +6317,63 @@ mod tests {
                     title: "Fix it",
                     url: "https://gh/5",
                 }),
-                prompt::blocked_comment(&name, &fix),
-                prompt::resumed_comment(&name, true, 12),
-                prompt::resumed_comment(&name, false, 1),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::Blocked {
+                        harness: name.clone(),
+                        fix: fix.clone(),
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::Unblocked {
+                        harness: name.clone(),
+                        held: Duration::from_secs(12 * 60),
+                        conversation: Conversation::Resumed,
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "pull request",
+                    &Event::Unblocked {
+                        harness: name.clone(),
+                        held: Duration::from_secs(30),
+                        conversation: Conversation::Kept,
+                    },
+                ),
+                // A delivery error as the daemon would write it down: a
+                // harness's own sign-in words in it are withheld, and
+                // backticks (which would end the fence) stripped.
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::GaveUp {
+                        failures: 5,
+                        last_error: safe_error(&events::one_line(
+                            "orca said:\n```\nLogin expired · Please run /login\n```\nnot logged in",
+                        )),
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::GaveUp {
+                        failures: 5,
+                        last_error: safe_error("`orca worktree deliver` failed: no such terminal"),
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::GaveUp {
+                        failures: 5,
+                        last_error: safe_error(
+                            "gh: You are not logged into any GitHub hosts. Run gh auth login.",
+                        ),
+                    },
+                ),
                 crate::status::BlockedView::from_blocked(&b).describe(),
                 SessionBlocked {
                     session: "o/r#5".into(),
