@@ -92,7 +92,15 @@ pub const HARNESSES: &[&str] = &[
 /// that came from elsewhere (an error message, say) and might be quoted
 /// on a screen later.
 pub fn quotes_login_prompt(text: &str) -> bool {
-    HARNESSES.iter().any(|h| login_dialog_in(h, text).is_some())
+    login_prompt_line(text).is_some()
+}
+
+/// The line of `text` that would pass for a harness's sign-in prompt, as
+/// it is written there, for a message that has to name what is wrong
+/// (redact it with `redact_login_phrases` before showing it anywhere a
+/// harness screen is read).
+pub fn login_prompt_line(text: &str) -> Option<String> {
+    HARNESSES.iter().find_map(|h| login_dialog_in(h, text))
 }
 
 /// What every harness says one way or another when it is not signed in.

@@ -2668,6 +2668,22 @@ command again."
     )
 }
 
+/// Why a summary that quotes a harness's sign-in screen is refused. The
+/// summary is pasted into the new session's terminal, where ssf reads
+/// the bottom of the screen for exactly those phrases, so such a summary
+/// would hold the new session's deliveries for the whole backoff. `line`
+/// is the offending line with the phrases already redacted
+/// (`driver::redact_login_phrases`), so this text is safe on a screen
+/// itself.
+pub fn summary_quotes_a_sign_in_screen_text(line: &str) -> String {
+    format!(
+        "the summary would read as a harness's own sign-in screen where it says \"{line}\" (the \
+phrase is left out here): pasted into the new session's terminal it would hold that session's \
+deliveries. Reword that line -- name the command in prose rather than quoting the screen -- and \
+hand over again."
+    )
+}
+
 /// The summary a handover carries: `--summary`, the contents of
 /// `--summary-file`, or nothing for `--no-summary`. Checked here, where
 /// the person or agent that wrote it can fix it, rather than in the daemon.
@@ -2688,6 +2704,12 @@ fn handover_summary(summary: Option<String>, file: Option<&Path>) -> Result<Opti
 the rest on the item",
             thousands(n),
             thousands(ipc::MAX_SUMMARY_CHARS)
+        );
+    }
+    if let Some(line) = driver::login_prompt_line(&text) {
+        bail!(
+            "{}",
+            summary_quotes_a_sign_in_screen_text(&driver::redact_login_phrases(&line))
         );
     }
     Ok(Some(text))
@@ -3450,6 +3472,24 @@ harness's default effort), without a summary."
                 .unwrap_err()
                 .to_string()
                 .contains("reading the summary from")
+        );
+        // A summary that quotes a sign-in screen would block the session
+        // it starts: refused here, where the author can reword it, and
+        // the refusal itself does not repeat the phrase.
+        let e = handover_summary(
+            Some("Blocked all afternoon: the pane kept saying Please run /login".into()),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("would read as a harness's own sign-in screen"),
+            "{e}"
+        );
+        assert!(!driver::quotes_login_prompt(&e), "{e}");
+        assert!(
+            e.contains("[\u{2026}]"),
+            "the phrase is redacted, not dropped: {e}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

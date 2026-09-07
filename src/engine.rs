@@ -3783,6 +3783,18 @@ are resumed on the first pass that finds it: {err:#}"
                 crate::ipc::MAX_SUMMARY_CHARS
             );
         }
+        // The summary is pasted into the new session's terminal, where the
+        // login check reads the screen: one that quotes a sign-in prompt
+        // would block the session it starts. The CLI refuses it too, where
+        // the author can fix it; this is the daemon's own guard.
+        if let Some(line) = summary.and_then(crate::driver::login_prompt_line) {
+            anyhow::bail!(
+                "{}",
+                crate::summary_quotes_a_sign_in_screen_text(&crate::driver::redact_login_phrases(
+                    &line
+                ))
+            );
+        }
         let pending = PendingHandover {
             harness: overrides.harness.clone(),
             model: overrides.model.clone(),
@@ -7083,6 +7095,9 @@ mod tests {
                     10,
                 ),
                 crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, 10),
+                crate::summary_quotes_a_sign_in_screen_text(&crate::driver::redact_login_phrases(
+                    "the pane said Login expired · Please run /login, so I stopped",
+                )),
                 crate::status::BlockedView::from_blocked(&b).describe(),
                 SessionBlocked {
                     session: "o/r#5".into(),
@@ -7408,6 +7423,22 @@ mod tests {
             msg(e.handover("o/r#5", "claude", None, None, None, None).await)
                 .contains("already on claude with that model and effort")
         );
+        // A summary that would read as the new harness's sign-in screen.
+        let err = msg(e
+            .handover(
+                "o/r#5",
+                "pi",
+                None,
+                None,
+                Some("I got stuck: the pane kept saying Please run /login"),
+                None,
+            )
+            .await);
+        assert!(
+            err.contains("would read as a harness's own sign-in screen"),
+            "{err}"
+        );
+        assert!(!crate::driver::quotes_login_prompt(&err), "{err}");
         // A summary longer than the cap.
         let long = "x".repeat(crate::ipc::MAX_SUMMARY_CHARS + 1);
         assert!(

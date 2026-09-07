@@ -99,14 +99,23 @@ pub fn fingerprint(harness: &str) -> Option<String> {
     Some(format!("{}:{mtime}", meta.len()))
 }
 
+/// What a harness's status command said: whether it succeeded, its
+/// standard output and its standard error. Some of them (Codex) say
+/// where they stand on stderr and exit non-zero, so both are kept.
+struct Status {
+    ok: bool,
+    out: String,
+    err: String,
+}
+
 /// Run a harness's status command with a timeout; `None` when it could
 /// not be run at all (not installed, hung).
-fn run(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
+fn run(program: &str, args: &[&str], timeout: Duration) -> Option<Status> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     // A harness started from inside a Claude Code session refuses to nest;
     // the status command does not need the marker.
     cmd.env_remove("CLAUDECODE");
@@ -115,12 +124,20 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
+                use std::io::Read;
                 let mut out = String::new();
                 if let Some(mut so) = child.stdout.take() {
-                    use std::io::Read;
                     let _ = so.read_to_string(&mut out);
                 }
-                return Some((status.success(), out));
+                let mut err = String::new();
+                if let Some(mut se) = child.stderr.take() {
+                    let _ = se.read_to_string(&mut err);
+                }
+                return Some(Status {
+                    ok: status.success(),
+                    out,
+                    err,
+                });
             }
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(100));
@@ -141,7 +158,7 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 fn probe_claude() -> Probe {
     let detail = "claude auth status".to_string();
     match run("claude", &["auth", "status", "--json"], STATUS_TIMEOUT) {
-        Some((_, out)) => match serde_json::from_str::<serde_json::Value>(&out) {
+        Some(Status { out, .. }) => match serde_json::from_str::<serde_json::Value>(&out) {
             Ok(v) => match v.get("loggedIn").and_then(|b| b.as_bool()) {
                 Some(true) => Probe {
                     state: LoginState::SignedIn,
@@ -179,24 +196,41 @@ fn probe_claude() -> Probe {
     }
 }
 
+/// What `codex login status` said. It prints `Logged in using ...` on
+/// stdout and exits 0 when it is signed in, and `Not logged in` on
+/// **stderr** with exit 1 when it is not, so both streams are read and
+/// the "not" is looked for first: `not logged in` contains `logged in`.
+fn codex_state(ok: bool, text: &str) -> LoginState {
+    let lower = text.to_lowercase();
+    if lower.contains("not logged in") {
+        LoginState::SignedOut
+    } else if ok || lower.contains("logged in") {
+        LoginState::SignedIn
+    } else {
+        LoginState::Unknown
+    }
+}
+
+/// The last line with anything on it, for the `detail` a person reads.
+fn last_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .next_back()
+        .unwrap_or("no output")
+}
+
 /// Codex: `codex login status` prints `Logged in using ...` (exit 0) or
-/// `Not logged in` (exit 1).
+/// `Not logged in` on stderr (exit 1).
 fn probe_codex() -> Probe {
     let detail = "codex login status".to_string();
     match run("codex", &["login", "status"], STATUS_TIMEOUT) {
-        Some((ok, out)) => {
-            let text = out.trim();
-            let lower = text.to_lowercase();
-            let state = if lower.contains("not logged in") {
-                LoginState::SignedOut
-            } else if ok || lower.contains("logged in") {
-                LoginState::SignedIn
-            } else {
-                LoginState::Unknown
-            };
+        Some(Status { ok, out, err }) => {
+            let text = format!("{}\n{}", out.trim(), err.trim());
+            let text = text.trim();
             Probe {
-                state,
-                detail: format!("{detail}: {}", text.lines().last().unwrap_or("no output")),
+                state: codex_state(ok, text),
+                detail: format!("{detail}: {}", last_line(text)),
                 fingerprint: fingerprint("codex"),
             }
         }
@@ -353,6 +387,28 @@ mod tests {
                 .ends_with(".copilot/config.json")
         );
         assert!(credential_path("nope").is_none());
+    }
+
+    /// Codex says it is signed out on stderr and exits 1, so a probe
+    /// that reads stdout alone can never refuse a signed-out Codex.
+    #[test]
+    fn codex_status_is_read_from_both_streams() {
+        assert_eq!(codex_state(false, "Not logged in"), LoginState::SignedOut);
+        // As it comes out of `run`, with an empty stdout ahead of it.
+        assert_eq!(codex_state(false, "\nNot logged in"), LoginState::SignedOut);
+        assert_eq!(
+            codex_state(true, "Logged in using ChatGPT"),
+            LoginState::SignedIn
+        );
+        // The order matters: "not logged in" contains "logged in".
+        assert_eq!(
+            codex_state(true, "Not logged in with any account"),
+            LoginState::SignedOut
+        );
+        assert_eq!(codex_state(true, ""), LoginState::SignedIn);
+        assert_eq!(codex_state(false, "something else"), LoginState::Unknown);
+        assert_eq!(last_line("out\n\nNot logged in\n"), "Not logged in");
+        assert_eq!(last_line("  \n"), "no output");
     }
 
     #[test]

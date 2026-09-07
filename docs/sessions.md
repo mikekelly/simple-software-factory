@@ -330,8 +330,12 @@ ssf handover 12 --harness claude --model opus --summary-file /tmp/handover.md # 
   to another session's workspace counts as that session.
 - **Which harness.** `--harness` is required; the same harness with a
   different model or effort is a valid handover. `--model` and `--effort`
-  are optional and are checked the way `ssf repo set` checks them
-  (`ssf models <harness>` lists the ids). Left out, the new session runs
+  are optional and are checked exactly the way `ssf repo set` checks
+  them: the effort level against the levels that harness offers, the
+  model id for its shape only, since new model ids appear before any
+  catalogue does (`ssf models <harness>` lists the ids ssf knows of). A
+  model id the harness itself rejects is not caught here: it shows up as
+  the harness failing to start, below. Left out, the new session runs
   on that harness's own defaults; see [Per-item
   overrides](configuration.md#per-item-overrides) for how they combine
   with the repository's settings.
@@ -361,14 +365,20 @@ done, and anything it starts now is thrown away with its pane.
 
 - the item has no running session (nothing to hand over: assign the bot
   to it instead);
-- the harness id is not one ssf knows, or the model or effort is not one
-  that harness accepts;
+- the harness id is not one ssf knows, the effort level is not one that
+  harness offers, or the model id is not shaped like one;
 - the harness is not installed where the daemon runs, or its login probe
   says it is signed out (with the factory in a VM this is the guest's
   login, see [A harness that is not signed in](#a-harness-that-is-not-signed-in));
 - a handover on the item is already pending, or a release is;
 - the item is already on that harness with that model and effort;
-- the summary is longer than 8,000 characters.
+- the summary is longer than 8,000 characters;
+- the summary would read as a harness's own sign-in screen (it quotes
+  `Please run /login`, say). The summary is pasted into the new
+  session's terminal, where ssf reads the bottom of the screen for
+  exactly those phrases, so such a summary would hold the new session's
+  deliveries; the refusal names the line with the phrase left out and
+  asks for it to be reworded.
 
 A session that is itself **blocked** on its harness's sign-in prompt may
 hand over: that is one way out of the block, so the check is on the
