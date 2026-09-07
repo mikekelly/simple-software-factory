@@ -29,7 +29,7 @@ MSG
     echo "      systemctl --user daemon-reload && systemctl --user start ssf.service"
   fi
   cat <<'MSG'
-    Next: sign in the bot account from the bar widget, the Omarchy menu (Factory), or `ssf-ui login`;
+    Next: sign in the bot account (`ssf auth login`; the bar widget only shows the factory's state);
     build the microVM (`ssf vm build && ssf config set vm.enabled true`) or run on this machine;
     then watch a repository (`ssf repo add owner/name --harness claude`). The ssf-setup skill
     walks a coding agent through it; docs: /usr/share/doc/ssf/README.md

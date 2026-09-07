@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "Software Factory",
-    "description": "Sign the bot in, pick which repositories to watch and which agent works each one, and follow the agent sessions: state, last message, activity, with click-through to GitHub or the Orca workspace.",
+    "description": "A dashboard of the factory: whether the service runs, which bot is signed in, the watched repositories and the agent working each, and the agent sessions (state, last message, activity) with click-through to GitHub or the workspace. Setup is done from the CLI.",
     "category": "AI",
     "aliases": ["ssf", "factory"],
     "allowMultiple": false,

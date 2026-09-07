@@ -228,7 +228,7 @@ The package installs:
 | Path | What |
 |------|------|
 | `/usr/bin/ssf` | the daemon and management CLI |
-| `/usr/bin/ssf-ui` | Omarchy menu flows (sign in, add repo, ...) |
+| `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
 | `/usr/lib/systemd/user/ssf.service` | background service, enabled for every user via `graphical-session.target.wants` |
 | `/usr/share/ssf/omarchy-plugin/` | the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
@@ -241,7 +241,11 @@ hook also starts it in any session that is running at install time, so there
 is nothing to enable. (If it was installed with nobody logged in, the first
 login starts it, or `systemctl --user start ssf.service` does.) On its first
 run it installs the **Software Factory** bar widget (next to Omarchy's Agents
-widget) and a **Factory** submenu in the Omarchy menu.
+widget) and a **Factory** submenu in the Omarchy menu. Both show the state
+of the factory (whether the service runs, which bot is signed in, the
+watched repositories, the agent sessions and what each is doing, sessions
+whose harness needs a sign-in, the log); the service toggle is their one
+control. Setup is done from the CLI, below.
 
 The service is the intended way to run the factory: it comes back with the
 next login after a reboot (unless it was switched off with the toggle),
@@ -251,10 +255,11 @@ restarts it for you (see [Development](docs/development.md)).
 
 ## Set up
 
-Click the factory icon in the bar, or open the Omarchy menu and pick
-**Factory**. From there:
+Setup is done from a terminal with `ssf auth` and `ssf repo` (a coding
+agent can do it for you by following the ssf-setup skill); the factory icon
+in the bar then shows what state the factory is in. What is needed:
 
-- **Sign in bot account**: the bot is a GitHub account of its own, created
+- **Sign in the bot account** (`ssf auth login`): the bot is a GitHub account of its own, created
   for the factory rather than yours (every agent post is made as it, and a
   post by the bot *without* a byline reads as a person's), with Write
   access on each repository it works and to its project boards. The
@@ -273,15 +278,15 @@ Click the factory icon in the bar, or open the Omarchy menu and pick
   itself stays. If the commits should carry your own name rather than the
   bot's, a `[git]` table in the config says so while `gh` stays the bot
   (see [Committing as a person](docs/identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)).
-- **Watch a repository**: type `owner/name` and pick the agent that works it.
-  The agent list comes from Omarchy's agent catalogue and only shows agents
-  that are installed. (The configuration calls the agent program the
+- **Watch a repository** (`ssf repo add owner/name --harness <agent>`):
+  `ssf agents` lists the agents Omarchy's catalogue knows and which are
+  installed. (The configuration calls the agent program the
   *harness*: `claude`, `codex`, `gemini`, ...) Sign each agent in once, by
   hand, on this machine; ssf starts them with the flags that let them run
   unattended (see [Permissions](docs/configuration.md#permissions)).
-- **Manage repositories**: change the agent, model or effort level for a
-  repository, or stop watching it.
-- The toggle in the panel header enables or disables the service.
+- `ssf repo set` changes the agent, model or effort level for a repository;
+  `ssf repo remove` stops watching it.
+- The toggle in the widget's header enables or disables the service.
 
 Then assign an issue or pull request to the bot on GitHub, @mention it, or
 put the `review` label on a pull request the bot opened. Within a poll
@@ -304,10 +309,9 @@ label on the pull request for a second agent's review, answer or merge as
 you would for a colleague, and close the issue when it is done; the agent
 then pushes what is left, comments once more and gives its workspace back.
 
-The same can be done from a terminal:
+The commands:
 
 ```sh
-ssf-ui login                      # menu-driven; or in a terminal:
 ssf auth login                    # pick an account gh knows, or sign in another in the browser
 ssf auth login --web              # straight to the browser flow; prints the URL and code,
                                   # so it also works over ssh (set BROWSER=true to stop gh opening one)
