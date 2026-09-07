@@ -348,6 +348,10 @@ pub struct PromptContext<'a> {
     pub owner: Option<u64>,
     /// Session (`owner/repo#N`) that opened the item as a hand-off.
     pub delegated_by: Option<&'a str>,
+    /// The item was handed over (`ssf handover`) by the session that had
+    /// it: the display name of the harness that session ran. Set only on
+    /// the first message the new session gets.
+    pub handed_over_from: Option<&'a str>,
     /// Open project boards the item is on.
     pub projects: &'a [ProjectCard],
     /// The repository's own prompt file, when the worktree has one.
@@ -468,7 +472,12 @@ impl PromptContext<'_> {
     /// assigned to @bot and mentioned @bot" (the header above it has the
     /// title and URL).
     fn spawned_because(&self, number: u64) -> String {
-        self.because_for(&format!("#{number}"))
+        match self.handed_over_from {
+            Some(h) => {
+                format!("the agent session on {h} working on it handed #{number} over to you")
+            }
+            None => self.because_for(&format!("#{number}")),
+        }
     }
 
     /// One trigger table for both phrasings: `subject` followed by what
@@ -1098,6 +1107,64 @@ comments) and carry on.",
     )
 }
 
+/// The one message a session gets after its harness could not be started
+/// at all (a handover to a harness that exits as it is launched, say) and
+/// has now been started again. A fresh harness gets the item's story
+/// ahead of this. Worded, like every text ssf puts on a screen, without
+/// the phrases `driver::login_dialog` looks for.
+pub fn start_again_prompt(it: &LoginBack) -> String {
+    let item = format!("#{} \"{}\" ({})", it.number, it.title, it.url);
+    format!(
+        "[ssf] Your {} terminal could not be started at {} and has been started again. This is \
+the session for {item}.\n\nNothing reached you while it was down; what happened on the item \
+meanwhile follows as further `[ssf]` messages. Work out where the work got to (`git status`, \
+`git log`, the comments on the item) and carry on.",
+        it.harness, it.since
+    )
+}
+
+/// What a session started by a handover (`ssf handover`) is told ahead of
+/// the item's own story: what happened, and the outgoing agent's summary
+/// when it left one. `from` is the display name of the harness the
+/// outgoing session ran, `kind` the item's word (`issue`, `pull
+/// request`). The summary is the outgoing agent's own text and is passed
+/// through unchanged. Kept apart from the story because the item holds on
+/// to it until a session has read it: a start that fails is tried again
+/// later, and the words the outgoing agent left go with that attempt.
+pub fn handover_note(from: &str, kind: &str, summary: Option<&str>) -> String {
+    match summary {
+        Some(text) => format!(
+            "You took over this {kind} from a session on {from} that handed it over; its summary \
+follows, then the {kind} as ssf tells it to a new session.\n\n\
+## Summary from the outgoing session\n\n{}",
+            text.trim()
+        ),
+        None => format!(
+            "You took over this {kind} from a session on {from} that handed it over. It left no \
+summary; read the {kind} below."
+        ),
+    }
+}
+
+/// The first message of a session started by a handover: the note above,
+/// then the item's story exactly as a new session gets it.
+pub fn handover_prompt(from: &str, kind: &str, summary: Option<&str>, story: &str) -> String {
+    format!("{}\n\n{story}", handover_note(from, kind, summary))
+}
+
+/// The one message the outgoing agent gets when a handover it asked for
+/// cannot be carried out: it is still the session on the item.
+pub fn handover_refused_prompt(harness: &str, reason: &str) -> String {
+    format!("[ssf] Handover to {harness} refused: {reason}. Carry on.")
+}
+
+/// The one message the agent gets when a handover on its item is called
+/// off (`ssf handover --cancel`): it was told to stop working, and this
+/// is what takes that back.
+pub fn handover_cancelled_prompt(harness: &str) -> String {
+    format!("[ssf] The handover to {harness} was cancelled: this session keeps the item. Carry on.")
+}
+
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let item = short_ref(issue, ctx);
@@ -1170,8 +1237,20 @@ to this session; its activity comes here from now on.\n\
 - `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
 - `[ssf] ... has been closed`, `... no longer assigned`, `... assigned ... again`: your item's \
 lifecycle; each says what to do.\n\
+- `[ssf] The review request for ... has been fulfilled or withdrawn`: the review you were asked \
+for is no longer wanted; the message says whether the item was yours for anything else.\n\
+- `[ssf] ..., the issue this session handed off, has been merged` (or `closed`): an item you \
+opened for another session (`--assignee`, see \"Items you open, and hand-offs\" below) has \
+finished, with the last thing its agent said on it.\n\
+- `[ssf] Release of this workspace refused ...`: the daemon's own check found work that is not \
+on origin (see Wrapping up below).\n\
 - `[ssf] The factory restarted ...`: the machine, the multiplexer or ssf restarted and this session was \
-started again.\n\n\
+started again.\n\
+- `[ssf] Your ... sign-in lapsed ... and is back`, `[ssf] Your ... terminal could not be \
+started ... and has been started again`: this terminal was started again after a hold; nothing \
+reached you while it was down.\n\
+- `[ssf] Handover to ... refused`, `[ssf] The handover to ... was cancelled`: a handover you \
+asked for could not be carried out, or was called off; either way the item stays with you.\n\n\
 ## Other sessions\n\n\
 `ssf peers` lists the agent sessions on this repository: item, GitHub state, agent state, \
 branch, last message (`--json` for detail, `--all` to include retired ones).\n\n\
@@ -1205,6 +1284,20 @@ comment (the last comment the bot left on it). Assigning @{bot} to an existing i
 not open gives it a fresh session too. A session that was handed an item this way is told so, \
 and its final comment on the item is all the delegating session gets, so it should sum up the \
 outcome.\n\n\
+## Handing over\n\n\
+When a person asks on the item for another harness, model or effort, or another stack plainly \
+fits the work better, hand the item over: `ssf handover --harness <id> [--model <id>] [--effort \
+<id>] --summary \"<text>\"` (`--summary-file <path>` for a long one, `--no-summary` when the item \
+says everything). `ssf agents` lists the harness ids and `ssf models <harness>` the model and \
+effort ids. Write the summary for an agent that has never seen the item: what it is about, what \
+is done, what is left, and where things are (branch, pull request, files, what is unverified); \
+at most 8,000 characters. The daemon ends this session on its next pass and starts the new one \
+in the same workspace, on the same branch, so commit and push first, say on the item what you \
+are handing over, and stop working the moment the command comes back. The handover and the new \
+session are posted on the item as `handed-over` and `attached`. The new harness, model and \
+effort stay with the item for every later start until the workspace is released. Between the \
+command and the pass nothing else reaches the item, so `ssf handover --cancel` is the way back \
+if the handover turns out to be wrong.\n\n\
 ## Second opinions\n\n\
 ssf runs one session per item and starts no reviewer for your work: a second pair of eyes is \
 yours to arrange, and the repository's notes say when one is required. Give a fresh agent that \
@@ -1305,6 +1398,7 @@ mod tests {
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1318,6 +1412,75 @@ mod tests {
 
     fn cfg() -> DaemonConfig {
         DaemonConfig::default()
+    }
+
+    #[test]
+    fn a_handed_over_session_is_told_where_it_came_from() {
+        let story = "# The item\n\n## How to work on this\n";
+        let p = handover_prompt("Claude Code", "issue", Some("  Branch pushed.  "), story);
+        assert_eq!(
+            p,
+            "You took over this issue from a session on Claude Code that handed it over; its \
+summary follows, then the issue as ssf tells it to a new session.\n\n\
+## Summary from the outgoing session\n\n\
+Branch pushed.\n\n\
+# The item\n\n## How to work on this\n"
+        );
+        let p = handover_prompt("Pi", "pull request", None, story);
+        assert!(
+            p.starts_with(
+                "You took over this pull request from a session on Pi that handed it over. It \
+left no summary; read the pull request below.\n\n"
+            ),
+            "{p}"
+        );
+        assert!(p.ends_with(story), "{p}");
+        assert_eq!(
+            handover_refused_prompt("Pi", "the item is no longer active"),
+            "[ssf] Handover to Pi refused: the item is no longer active. Carry on."
+        );
+    }
+
+    /// The first message of a handed-over session says why it exists, in
+    /// place of the trigger list an ordinary session gets.
+    #[test]
+    fn the_first_message_of_a_handed_over_session_says_who_handed_it_over() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({
+            "number": 18, "title": "T", "html_url": "https://x/18", "body": "b", "state": "open",
+            "user": {"login": "h"}, "labels": [], "assignees": [],
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "pi".into(),
+            ..Default::default()
+        };
+        let daemon = DaemonConfig::default();
+        let triggers = vec!["assigned".to_string()];
+        let ctx = PromptContext {
+            repo: &repo,
+            daemon: &daemon,
+            bot_login: "bot",
+            driver: DriverKind::Herdr,
+            pr: None,
+            triggers: &triggers,
+            owner: None,
+            delegated_by: None,
+            handed_over_from: Some("Claude Code"),
+            projects: &[],
+            project_prompt: None,
+            vm_guest: false,
+            pushes_as: None,
+        };
+        let p = initial_prompt(&issue, &[], &ctx);
+        assert!(
+            p.contains(
+                "because the agent session on Claude Code working on it handed #18 over to you."
+            ),
+            "{p}"
+        );
+        assert!(!p.contains("was assigned to @bot"), "{p}");
     }
 
     #[test]
@@ -1432,6 +1595,7 @@ mod tests {
             triggers: &[],
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1526,6 +1690,7 @@ machine.\n"
         let child = PromptContext {
             triggers: &triggers,
             delegated_by: Some("o/r#1"),
+            handed_over_from: None,
             ..ctx
         };
         let p = initial_prompt(&issue, &[], &child);
@@ -1568,6 +1733,7 @@ machine.\n"
             triggers: &triggers,
             owner: Some(81),
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1682,6 +1848,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &boards,
             project_prompt: None,
             vm_guest: false,
@@ -1732,6 +1899,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1796,6 +1964,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1882,6 +2051,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1967,6 +2137,7 @@ For information only; you will not hear about it again unless it comes back."
             triggers: &triggers,
             owner: Some(3),
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -2112,6 +2283,7 @@ For information only; you will not hear about it again unless it comes back."
             triggers: &[],
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &boards,
             project_prompt: None,
             vm_guest: false,
@@ -2293,6 +2465,7 @@ accurate; which column fits is your call.\n\n## Description"
             triggers: &[],
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -2441,6 +2614,13 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
 - The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live."
                 .into(),
         };
+        let back = LoginBack {
+            harness: "Claude Code",
+            since: "2026-09-04T17:29:10Z",
+            number: 18,
+            title: &issue18.title,
+            url: &issue18.html_url,
+        };
         let render = |v: Value| render_event(&v, false, &d, bot).unwrap();
         let ev = |kind: &str, actor: &str, at: &str, extra: Value| {
             let mut v =
@@ -2514,6 +2694,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             triggers: &assigned_t,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &boards,
             project_prompt: Some(notes.clone()),
             vm_guest: false,
@@ -2532,6 +2713,11 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
         let child = PromptContext {
             triggers: &delegated_t,
             delegated_by: Some("mikekelly/simple-software-factory#16"),
+            handed_over_from: None,
+            ..own.clone()
+        };
+        let handed_over = PromptContext {
+            handed_over_from: Some("Claude Code"),
             ..own.clone()
         };
         let sub = PromptContext {
@@ -2615,6 +2801,45 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
                     "master moved after you branched (#14 and #13 merged); please rebase onto origin/master before pushing again.",
                     d.max_body_chars,
                 ),
+            ),
+            (
+                "handover_prompt (a session handed the item over, with a summary)",
+                handover_prompt(
+                    "Claude Code",
+                    "issue",
+                    Some(
+                        "Branch `bot/issue-18-resume-sessions` is pushed and PR #22 is open \
+against it. The startup pass and its tests are done; what is left is the \
+`startup_orca_wait_secs` option and the README section. `cargo test` is green; the packaging \
+bump is not done.",
+                    ),
+                    &initial_prompt(&issue18, &[added.clone(), assigned.clone()], &handed_over),
+                ),
+            ),
+            (
+                "handover_prompt (handed over with no summary)",
+                handover_prompt(
+                    "Claude Code",
+                    "issue",
+                    None,
+                    &initial_prompt(&issue18, &[added.clone(), assigned.clone()], &handed_over),
+                ),
+            ),
+            (
+                "handover_refused_prompt (the daemon could not carry it out)",
+                handover_refused_prompt("Pi", "the item is no longer active"),
+            ),
+            (
+                "handover_cancelled_prompt (`ssf handover --cancel`)",
+                handover_cancelled_prompt("Pi"),
+            ),
+            (
+                "login_back_prompt (the harness was signed in again)",
+                login_back_prompt(&back),
+            ),
+            (
+                "start_again_prompt (the harness would not start, and now has)",
+                start_again_prompt(&back),
             ),
             (
                 "tell_prompt (from a human shell, no session)",

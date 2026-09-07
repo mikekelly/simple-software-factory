@@ -32,6 +32,18 @@ answer; a handed-off item adds one saying which session follows it; a
 factory inside a [microVM](vm.md) adds one saying the agent has root there
 through `sudo`. The board rule sits with the boards (below).
 
+An item that was [handed over](sessions.md#handover) starts its new
+session with the same story, prefaced by what the outgoing session left.
+With a summary the first message opens "You took over this issue from a
+session on Claude Code that handed it over; its summary follows, then the
+issue as ssf tells it to a new session.", then the summary verbatim under
+a `## Summary from the outgoing session` heading, then the story; with
+`--no-summary` the preface is "You took over this issue from a session on
+Claude Code that handed it over. It left no summary; read the issue
+below." and the story follows straight away. The story is the usual one,
+and its reason reads "because the agent session on Claude Code working on
+it handed #N over to you".
+
 `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf tell`,
 items a session opens and hand-offs, second opinions through herdr,
 wrapping up, the byline, the `Closes #N` suggestion) from the same binary, so it cannot
@@ -68,11 +80,28 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
 - `Message from ...`: a message pasted in with `ssf tell`.
 - `... has been closed`, `... no longer assigned`, `... assigned ...
   again`: the item's lifecycle; each says what to do.
+- `The review request for @<bot> on <item> has been fulfilled or
+  withdrawn.`: the review the bot was asked for is no longer wanted; the
+  message says whether the item was the session's for anything else.
+- `<item>, the <issue|pull request> this session handed off, has been
+  merged` (or `closed (<reason>)`): an item the session opened for
+  another session ([a hand-off](sessions.md#ownership-one-session-per-item))
+  has finished, with the last comment the bot left on it.
 - `Release of this workspace refused ...`: the daemon's re-check found
   work that is not on origin (see
   [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)).
 - `The factory restarted ...`: the machine, the multiplexer or ssf
   restarted and the session was started again.
+- `Your <harness> sign-in lapsed ... and is back`, `Your <harness>
+  terminal could not be started ... and has been started again`: the
+  terminal was started again after a [block](sessions.md#a-harness-that-is-not-signed-in);
+  nothing reached the session while it was down.
+- `Handover to <harness> refused: <reason>. Carry on.`: the session asked
+  for a [handover](sessions.md#handover) and the daemon could not carry it
+  out, so the item stays with it.
+- `The handover to <harness> was cancelled: this session keeps the item.
+  Carry on.`: the handover the session asked for was called off with `ssf
+  handover --cancel`.
 
 ## Project boards
 

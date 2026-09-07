@@ -289,6 +289,9 @@ ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --
 ssf unsub 12
 ssf subs                          # what this session follows, who follows its items
 ssf tell 12 "stop, I'm changing the spec"   # steer that session from your shell: pastes into its terminal
+ssf handover --harness codex --model gpt-5.5 --summary "..."   # inside a session: hand the item to a new session on another harness, model or effort
+ssf handover 12 --harness pi --no-summary          # or from your shell, like tell (owner/name#12, or --as)
+ssf handover 12 --cancel                           # drop a handover the daemon has not carried out yet
 ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspace once its work is on origin
 ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest
 ssf guide                         # the reference for agents (the initial prompt points at it)

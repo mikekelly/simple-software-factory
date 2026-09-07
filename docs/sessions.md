@@ -141,11 +141,11 @@ another session counts as that session):
   (decisions, questions that change scope, status) goes on the item.
 - Delegating parents are subscribed to their children automatically.
 
-`sub`, `unsub`, `tell`, `release` and `purge` talk to the running daemon
-over a Unix socket in the state directory (`ssf.sock`), because the daemon
-owns the state and the delivery path; `ssf doctor` reports whether it
-answers. `subs`, `peers` and `status` read the state file and work without
-it.
+`sub`, `unsub`, `tell`, `handover`, `release` and `purge` talk to the
+running daemon over a Unix socket in the state directory (`ssf.sock`),
+because the daemon owns the state and the delivery path; `ssf doctor`
+reports whether it answers. `subs`, `peers` and `status` read the state
+file and work without it.
 
 **Cross-session comments.** Comments the bot posts carry the origin tag of
 the session that made them (see [Identity and bylines](identity-and-bylines.md)),
@@ -188,15 +188,36 @@ The events, and nothing else:
 
 | Event | When | Lines |
 |-------|------|-------|
-| `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
+| `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` when the session was started by a handover (below); on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
 | `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
-| `blocked` | deliveries are held because the harness is at its sign-in prompt (below) | `harness`, `reason: not signed in`, `fix:` the command that signs it in |
-| `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again) or `kept` (a person signed in at the terminal) |
+| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched); a harness that would not start and is not signed in where the daemon runs is recorded as the sign-in block it really is, since that is the thing to fix | `harness`; `reason: not signed in` with `fix:` the command that signs it in, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
+| `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
+| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
 
-Handover (`ssf handover`) gets an event of its own when it lands.
+The `handed-over` post is what a reader sees when an item changes stack
+(see [Handover](#handover)):
+
+> **OverlayBot** commented
+>
+> 🤖 ssf
+>
+> ```ssf
+> ssf handing over issue:
+> from: Claude Code
+> from model: fable-5.1
+> from effort: high
+> to: Pi
+> to model: the harness's default
+> to effort: the harness's default
+> summary: yes
+> by: mikekelly/simple-software-factory#119
+> ```
+
+The new session's `attached` post follows it, with its own launch lines
+and one `handed over from: Claude Code`.
 
 The first line carries the origin tag with an `event` field
 (`🤖 ssf <!-- ssf: origin=owner/repo#N event=attached -->`, see
@@ -280,12 +301,219 @@ restarted screen is clean.
   `unblocked` post, saying how long the hold lasted and whether the
   harness was started again.
 
-`ssf doctor` prints one line per harness the configured repositories use
-(`Claude Code signed in on the host (claude auth status: signed in)`, or
-`FAIL ... not signed in ...` with the command to run; `note ... cannot
-tell` for a harness ssf has no check for, such as Copilot's keyring), and
-with the factory in a VM it is forwarded into the guest, so the check
-happens where the agents are.
+`ssf doctor` prints one line per harness in use: `Claude Code signed in
+on the host (claude auth status: signed in)`, or `FAIL ... not signed in
+...` with the command to run, or `note ... cannot tell` for a harness ssf
+has no check for, such as Copilot's keyring. The harnesses in use are the
+ones the configured repositories name and any a [handover](#handover) put
+on an item, and the line for one of those says which item put it there
+(`Pi signed in on the host (~/.pi/agent/auth.json present; used by
+acme/widgets#12 after a handover)`); such a harness is checked for being
+installed too, which nothing else here would look for. With the factory
+in a VM the command is forwarded into the guest, so the check happens
+where the agents are.
+
+## Handover
+
+An item can change stack without changing workspace. `ssf handover` asks
+the daemon to end the session working on the item and start a new one on
+another harness, model or effort level, in the same worktree, on the same
+branch, with a summary the outgoing session writes. A person asks for it
+on the issue ("hand this over to Codex on gpt-5.5 at medium") and the
+agent runs one command; an operator does the same from a shell.
+
+```sh
+ssf handover --harness codex --model gpt-5.5 --effort medium --summary "..."  # inside a session
+ssf handover acme/widgets#12 --harness pi --no-summary                        # from a shell
+ssf handover 12 --harness claude --model opus --summary-file /tmp/handover.md # with SSF_REPO set, or --as
+ssf handover 12 --cancel                                                      # call it off before the pass
+```
+
+- **Which item.** Inside a session the command takes no item: it is the
+  session's own (`SSF_REPO`/`SSF_ISSUE`). From a shell the item comes
+  first, as `owner/name#N` or as a bare `N` with `SSF_REPO` set or `--as
+  owner/repo#N`, exactly like `ssf release` and `ssf tell`. An item bound
+  to another session's workspace counts as that session.
+- **Which harness.** `--harness` is required; the same harness with a
+  different model or effort is a valid handover. `--model` and `--effort`
+  are optional and are checked exactly the way `ssf repo set` checks
+  them: the effort level against the levels that harness offers, the
+  model id for its shape only, since new model ids appear before any
+  catalogue does (`ssf models <harness>` lists the ids ssf knows of). A
+  model id the harness itself rejects is not caught here: it shows up as
+  the harness failing to start, below. Left out, the new session runs
+  on that harness's own defaults; see [Per-item
+  overrides](configuration.md#per-item-overrides) for how they combine
+  with the repository's settings.
+- **The summary.** Exactly one of `--summary "<text>"`, `--summary-file
+  <path>` and `--no-summary` is required, so nobody hands an item over
+  without deciding. The summary is the first thing the new session reads,
+  before the item itself, and it is written for an agent that has never
+  seen the work: what the item is about, what is done, what is left,
+  where things are (branch, pull request, files, what is unverified). It
+  is at most 8,000 characters, and an over-long or empty one is refused
+  with the cap and the count. `--summary-file` is read where the command
+  runs, so with the factory in a [microVM](vm.md) the path is a path in
+  the guest, which is where the sessions are anyway.
+
+The command answers as soon as the daemon has recorded the handover
+(`--json` gives the same as data):
+
+```
+Handover of acme/widgets#12 ("Rework the parser") recorded: to Codex (model gpt-5.5, effort medium), with a summary of 1,234 chars.
+The daemon ends this session on its next pass (within 10s) and starts the new one in the same workspace. Stop working now: do not start anything else, and do not run this command again.
+```
+
+The second line is for the outgoing agent: the handover is pending, not
+done, and anything it starts now is thrown away with its pane.
+
+**Refused straight away**, with the reason, and nothing recorded:
+
+- the item has no running session (nothing to hand over: assign the bot
+  to it instead);
+- the harness id is not one ssf knows, the effort level is not one that
+  harness offers, or the model id is not shaped like one;
+- the harness is not installed where the daemon runs, or its login probe
+  says it is signed out (with the factory in a VM this is the guest's
+  login, see [A harness that is not signed in](#a-harness-that-is-not-signed-in));
+- a handover on the item is already pending, or a release is;
+- the item is already on that harness with that model and effort;
+- the summary is longer than 8,000 characters;
+- the summary would read as a harness's own sign-in screen (it quotes
+  `Please run /login`, say). The summary is pasted into the new
+  session's terminal, where ssf reads the bottom of the screen for
+  exactly those phrases, so such a summary would hold the new session's
+  deliveries; the refusal names the line with the phrase left out and
+  asks for it to be reworded.
+
+A session that is itself **blocked** on its harness's sign-in prompt may
+hand over: that is one way out of the block, so the check is on the
+target harness, not on the one being left. The hold ends with the
+session it was held for: when the item was told of it, the pass posts
+`unblocked` with `conversation: handed over` before the handover itself.
+
+**On the next pass** (within `daemon.poll_interval_secs`, and before the
+repository's items are polled) the daemon:
+
+1. checks the item is still active and its workspace still known;
+2. ends the outgoing agent's pane, leaving the worktree and its branch
+   exactly as they are;
+3. retires the outgoing session on the record (its conversation id, its
+   terminal and any block go; the worktree, branch, driver and
+   subscribers stay) and stores the target as the item's per-item
+   overrides, so every later launch, resume and re-creation uses the new
+   harness, model and effort. The retired conversation is remembered as
+   one never to resume: its transcript is the newest one in the
+   workspace when the new harness starts there, and without that the new
+   session would be given the outgoing agent's conversation. The last
+   conversation the outgoing harness wrote in that workspace is
+   remembered too, whether or not ssf ever recorded its id, since that
+   transcript is the one lying there for the next harness to adopt;
+4. starts the new session in the same worktree, with what the item's
+   overrides make of the repository's launch settings (see [Per-item
+   overrides](configuration.md#per-item-overrides): a handover to another
+   harness runs that harness's own permission-free command, one to the
+   same harness keeps the repository's `command`) and the [handed-over
+   first prompt](prompts.md): the summary, if there is one, then the
+   item's story as ssf tells it to any new session. What that story
+   showed counts as seen, comments that arrived since the last poll
+   included, so the pass does not deliver them to the new session a
+   second time;
+5. posts `handed-over` and then the new session's `attached` on the item
+   (see [What ssf says on the item](#what-ssf-says-on-the-item)).
+
+If the item has closed or the bot was dropped from it meanwhile, or the
+workspace is gone and cannot be brought back, or the item cannot be read
+for the new session (GitHub is down, so there would be no story to tell
+it), or the outgoing agent cannot be stopped, the handover is **refused
+at that point**: one
+`handed-over` post carrying `refused: <reason>`, and, if the old agent is
+still there, one `[ssf] Handover to <harness> refused: <reason>. Carry
+on.` message to it. The old session keeps the item.
+
+If the new harness comes up on its own sign-in screen (a login that
+expired between the check and the launch, a harness the guest does not
+have), the `handed-over` post is made (the handover did happen) and the
+item is **blocked** the usual way, with the `blocked` post and
+the recovery in [A harness that is not signed
+in](#a-harness-that-is-not-signed-in). The old session is not brought
+back: the item is on the new harness from here on, and signing that
+harness in is what starts it.
+
+If the new harness cannot be started **at all** (it exits the moment it
+is launched, because the model id is one it refuses, say: ssf checks a
+model id for its shape, not against a list, so an id the harness itself
+rejects shows up here), the item is blocked in the same way, with
+`reason: could not be started: <error>` on the `blocked` post and `fix:
+start <harness> by hand in the workspace, or fix the model or effort and
+hand over again`. There is no `attached` post, because no session
+attached. The recovery is the same restart with the same backoff: ssf
+starts the harness in the workspace again, ten minutes later, then
+twenty, forty, then hourly, and the block lifts as soon as one of those
+takes the prompt (a person who starts the harness in the workspace by
+hand lifts it on the next pass). Handing the item over again, to a
+harness and model that work, is the other way out. A harness that would
+not start and is not signed in where the daemon runs is recorded as the
+login block it really is, since that is the thing to fix.
+
+Under both blocks the summary waits with the item: the outgoing agent is
+gone, so what it wrote is kept on the record until a session has actually
+read it, and the harness started again ten minutes later is given the
+summary and then the story, not the story alone. A message that went into
+a sign-in screen was never read, so it does not count: the summary is put
+back and goes with the next start. While it is still waiting, a live pane
+is never enough to lift the block on its own -- a harness that turns out
+to be running after all (the start gave up on a pane that came up but
+never settled), and one a person has just signed in at, are both given
+that first message where they stand, and the block lifts on the message
+landing rather than on the screen looking idle. That attempt follows the
+same curve as a restart -- the first at once, then twenty minutes, forty,
+then hourly -- so
+an item whose story cannot be read is not re-read on every pass; it is
+counted apart from the restarts, so a person who signs in at a pane a
+failed restart has just left behind is answered on the next pass rather
+than at the end of the restart's wait. If the message finds the pane
+gone and the harness started in its place comes up at a sign-in screen,
+that screen is what the block says from then on, but the hold is the same
+hold: it runs from when it began, the item is not told of it twice, and
+neither wait starts over.
+
+Handing the item over again is the way out of either block. The new
+session is still told it took over from the session that did the work:
+a harness that never came up wrote nothing, so its name is not the one
+carried forward, though the `handed-over` post says what the item was
+configured on. A summary still waiting is carried forward too: with
+`--no-summary` (or from an operator who was not there for the first
+handover) the new session is given the one nobody has read, and the
+`handed-over` post says `summary: yes`, because that is what the session
+gets. A second handover that does write a summary replaces it, as the
+newer account of where the item stands -- so where both matter, write
+the new summary with what the old one said in it. `ssf status` and `ssf
+peers` show a summary nobody has read yet on the item's line (`handover
+note waiting: from Claude Code, summary 1234 chars`; `handover_note`
+with `from` and `summary_chars` in `--json`).
+
+**Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the
+daemon has not carried out yet: nothing about the item changes, and the
+session that is there is told in one `[ssf] The handover to <harness> was
+cancelled: this session keeps the item. Carry on.` message, since it was
+told to stop working when the handover was recorded. Name the item as
+usual (the number, `owner/repo#N`, or nothing inside the session; `--as`
+from a shell, `--json` for the machine-readable answer); the flags that
+describe a handover -- `--harness`, `--model`, `--effort` and the summary
+flags -- are refused with it, as is a cancel with nothing pending. This
+is the way back out while the pass cannot run -- the driver is down, or
+the collaborators cannot be fetched -- because until then everything else
+on the item is refused. Nothing is posted on the item: the handover was
+never announced there.
+
+While a handover is pending, `ssf release` on the item and `ssf tell` to
+it are refused with that as the reason, and the startup pass leaves the
+item alone rather than resuming the old harness only to stop it. The
+overrides last until the workspace is released or the item is purged,
+which clears them; the item then comes back on the repository's own
+harness, model and effort. `ssf status` and `ssf peers` show both the
+overrides and a pending handover.
 
 ## Workspaces after close: release and purge
 

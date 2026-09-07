@@ -23,8 +23,15 @@ use crate::prompt::{
 };
 use crate::release::{self, git};
 use crate::sessions;
-use crate::state::{Blocked, Ignored, IssueState, State, now_iso};
+use crate::state::{
+    Blocked, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State, now_iso,
+    owner_in,
+};
 use crate::status::session_id;
+
+/// How many retired conversation ids an item keeps (see
+/// `IssueState::retired_session_ids`).
+const RETIRED_KEPT: usize = 8;
 
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
 const MAX_DELIVERY_FAILURES: u32 = 5;
@@ -61,13 +68,18 @@ pub struct SessionBlocked {
 
 impl std::fmt::Display for SessionBlocked {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = login::display_name(&self.blocked.harness);
+        let what = if self.blocked.reason == Blocked::START {
+            "could not be started".to_string()
+        } else {
+            "has been at its sign-in prompt".to_string()
+        };
         write!(
             f,
-            "the session on {} is blocked: {} has been at its sign-in prompt since {}; sign in with {}",
+            "the session on {} is blocked: {name} {what} since {}; {}",
             self.session,
-            login::display_name(&self.blocked.harness),
             self.blocked.since,
-            login::how_to_sign_in(&self.blocked.harness)
+            crate::status::fix_clause(&self.blocked)
         )
     }
 }
@@ -105,6 +117,9 @@ pub struct Engine {
     /// Whether a harness is signed in where this daemon runs
     /// (`login::probe`; the tests supply their own).
     probe: std::sync::Arc<dyn Fn(&str) -> Probe + Send + Sync>,
+    /// Whether a harness is installed where this daemon runs
+    /// (`agents::installed`; the tests supply their own).
+    installed: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
     /// The probes run this pass, by harness: one per harness per pass
     /// however many sessions are blocked.
     probes: BTreeMap<String, Probe>,
@@ -151,6 +166,16 @@ impl Ignored {
     }
 }
 
+/// An item's whole story as a new session is told it, and what telling
+/// it counts as: everything in the timeline is now seen, so the pass that
+/// follows does not deliver the same events again (`Engine::onboard`
+/// records the same two things for the session it starts).
+struct Story {
+    text: String,
+    seen: BTreeMap<String, String>,
+    updated_at: String,
+}
+
 /// New events for an issue relative to what has been delivered already.
 struct Diff {
     rendered: Vec<Rendered>,
@@ -173,6 +198,24 @@ impl Engine {
         if self.drivers.kinds() != self.cfg.drivers_in_use() {
             self.drivers = Drivers::from_config(&self.cfg);
         }
+    }
+
+    /// What one item's session runs with: the repository's config with
+    /// the item's own launch overrides applied (`ssf handover`). Every
+    /// launch, resume, relaunch, login check and event of that item goes
+    /// through this rather than through `repo` itself, or a handed-over
+    /// session would be started with the old harness's flags or probed as
+    /// the wrong harness.
+    fn effective(&self, repo: &RepoConfig, number: u64) -> RepoConfig {
+        repo.with_overrides(self.overrides_of(repo, number).as_ref())
+    }
+
+    /// The overrides that govern an item: its own, or, for an item bound
+    /// to another item's session, that session's (they share the
+    /// workspace, so they share the harness in it).
+    fn overrides_of(&self, repo: &RepoConfig, number: u64) -> Option<Overrides> {
+        let owner = self.owner_of(repo, number);
+        self.peek(repo, owner).and_then(|s| s.overrides.clone())
     }
 
     fn driver_down(&self, repo: &RepoConfig) -> bool {
@@ -234,6 +277,7 @@ impl Engine {
             collaborators: BTreeMap::new(),
             dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
             probe: std::sync::Arc::new(login::probe),
+            installed: std::sync::Arc::new(crate::agents::installed),
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,
@@ -481,6 +525,31 @@ are resumed on the first pass that finds it: {err:#}"
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Request::Handover {
+                session,
+                harness,
+                model,
+                effort,
+                summary,
+                by,
+            } => match self
+                .handover(
+                    &session,
+                    &harness,
+                    model.as_deref(),
+                    effort.as_deref(),
+                    summary.as_deref(),
+                    by.as_deref(),
+                )
+                .await
+            {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Request::CancelHandover { session } => match self.cancel_handover(&session).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
             Request::Purge {
                 dry_run,
                 older_than_days,
@@ -686,6 +755,14 @@ are resumed on the first pass that finds it: {err:#}"
                 session_id(&repo.name, acting)
             );
         }
+        if let Some(h) = ost.handover.as_ref() {
+            anyhow::bail!(
+                "a handover to {} is pending on {} ({}); the session is about to be replaced",
+                h.harness,
+                target,
+                session_id(&repo.name, acting)
+            );
+        }
         let (sender, sender_title) = match from {
             Some(f) => {
                 let (frepo, fnumber, fid) = self.known_session(f)?;
@@ -772,6 +849,9 @@ are resumed on the first pass that finds it: {err:#}"
             if self.driver_down(&repo) {
                 continue;
             }
+            // Before anything is delivered or resumed: a session that has
+            // been handed over is replaced first.
+            self.run_handovers(&repo).await;
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
@@ -879,8 +959,15 @@ are resumed on the first pass that finds it: {err:#}"
         let Some(rs) = self.state.repos.get(&repo.name) else {
             return Vec::new();
         };
-        let has_workspace =
-            |s: &IssueState| !s.cleanup_pending && !s.release_pending && s.worktree_id.is_some();
+        // A session with a handover pending is left alone: the pass ends
+        // it and starts the new one, and bringing the old harness back
+        // only to stop it would waste a launch (and a login check).
+        let has_workspace = |s: &IssueState| {
+            !s.cleanup_pending
+                && !s.release_pending
+                && s.handover.is_none()
+                && s.worktree_id.is_some()
+        };
         let owners: BTreeSet<u64> = rs
             .issues
             .values()
@@ -1436,7 +1523,8 @@ are resumed on the first pass that finds it: {err:#}"
             let Ok(screen) = self.driver(repo).screen(&handle).await else {
                 continue;
             };
-            if let Some(detail) = crate::driver::login_dialog(&repo.harness, &screen.join("\n")) {
+            let harness = self.effective(repo, number).harness;
+            if let Some(detail) = crate::driver::login_dialog(&harness, &screen.join("\n")) {
                 self.entry(repo, number).terminal_handle = Some(handle);
                 self.set_blocked(repo, number, detail).await;
                 self.report_blocked(repo, number).await;
@@ -1474,10 +1562,34 @@ are resumed on the first pass that finds it: {err:#}"
     /// to the prompt) only the attempt is noted, so the item is not told
     /// twice and the next attempt waits longer.
     async fn set_blocked(&mut self, repo: &RepoConfig, number: u64, detail: String) -> Blocked {
+        self.set_blocked_for(repo, number, Blocked::LOGIN, detail)
+            .await
+    }
+
+    /// [`set_blocked`](Self::set_blocked) for a harness that could not be
+    /// started at all (`Blocked::START`): the item is held the same way,
+    /// and `recover` starts it again with the same backoff. A harness
+    /// that would not start and is not signed in where the daemon runs is
+    /// recorded as the login block it really is, so the item is told the
+    /// thing worth fixing.
+    async fn set_blocked_for(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        reason: &str,
+        detail: String,
+    ) -> Blocked {
         let session = session_id(&repo.name, number);
-        let probe = self.probe_harness(&repo.harness).await;
+        let harness = self.effective(repo, number).harness;
+        let probe = self.probe_harness(&harness).await;
+        let reason = if reason == Blocked::START && probe.state == LoginState::SignedOut {
+            Blocked::LOGIN
+        } else {
+            reason
+        };
         let e = self.entry(repo, number);
         if let Some(cur) = e.blocked.as_mut() {
+            cur.reason = reason.to_string();
             cur.detail = detail;
             cur.credential = probe.fingerprint;
             cur.retried_at = Some(now_iso());
@@ -1487,50 +1599,69 @@ are resumed on the first pass that finds it: {err:#}"
                 repo = repo.name,
                 session,
                 retries = b.retries,
-                "started again and still at its sign-in prompt; next attempt in {}s",
+                "started again and is blocked still; next attempt in {}s",
                 retry_wait(b.retries).as_secs()
             );
             return b;
         }
-        warn!(
-            repo = repo.name,
-            session,
-            harness = repo.harness,
-            detail,
-            "session is blocked: {} is at its sign-in prompt; sign in with {}",
-            login::display_name(&repo.harness),
-            login::how_to_sign_in(&repo.harness)
-        );
         let b = Blocked {
-            reason: Blocked::LOGIN.into(),
-            harness: repo.harness.clone(),
+            reason: reason.to_string(),
+            harness: harness.clone(),
             detail,
             since: now_iso(),
             reported: false,
             credential: probe.fingerprint,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         };
+        warn!(
+            repo = repo.name,
+            session,
+            harness,
+            detail = b.detail,
+            "session is blocked: {} {}; {}",
+            login::display_name(&harness),
+            if reason == Blocked::START {
+                "could not be started"
+            } else {
+                "is at its sign-in prompt"
+            },
+            crate::status::fix_clause(&b)
+        );
         e.blocked = Some(b.clone());
         b
     }
 
-    /// The `blocked` event on the session's item, once per block: the
-    /// harness is not signed in, and how to fix it. The record says it has
-    /// been posted whether or not the post went through (`post_event` is
-    /// best effort), so a failed post is not tried again every pass.
+    /// The `blocked` event on the session's item, once per block: why
+    /// deliveries are held (the harness is not signed in, or it could not
+    /// be started at all) and how to fix it. The record says it has been
+    /// posted whether or not the post went through (`post_event` is best
+    /// effort), so a failed post is not tried again every pass.
     async fn report_blocked(&mut self, repo: &RepoConfig, number: u64) {
         let st = self.entry(repo, number).clone();
         let Some(b) = st.blocked.clone().filter(|b| !b.reported) else {
             return;
         };
         self.entry(repo, number).blocked.as_mut().unwrap().reported = true;
+        // The start error is the driver's or the harness's own words, and
+        // the post is read by something that looks for sign-in prompts.
+        let reason = if b.reason == Blocked::START {
+            format!(
+                "could not be started: {}",
+                safe_error(&events::one_line(&b.detail))
+            )
+        } else {
+            "not signed in".to_string()
+        };
         self.post_event(
             repo,
             number,
             Event::Blocked {
                 harness: login::display_name(&b.harness),
-                fix: login::how_to_sign_in(&b.harness),
+                reason,
+                fix: crate::status::fix_for(&b),
             },
         )
         .await;
@@ -1580,11 +1711,23 @@ are resumed on the first pass that finds it: {err:#}"
     /// `attached` post: the repository's harness, model and effort as
     /// configured, the driver, and the workspace's branch when known.
     fn launch_of(&self, repo: &RepoConfig, number: u64) -> events::Launch {
+        self.launch_with(repo, number, self.overrides_of(repo, number).as_ref())
+    }
+
+    /// [`launch_of`](Self::launch_of) for overrides the item does not have
+    /// (yet): what a handover's target would be started with.
+    fn launch_with(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+        overrides: Option<&Overrides>,
+    ) -> events::Launch {
+        let eff = repo.with_overrides(overrides);
         events::Launch {
-            harness: login::display_name(&repo.harness),
-            model: repo.model.clone(),
-            effort: repo.effort.clone(),
-            command: repo.command.clone(),
+            harness: login::display_name(&eff.harness),
+            model: eff.model.clone(),
+            effort: eff.effort.clone(),
+            command: eff.command.clone(),
             driver: self.cfg.driver_for(repo).id().to_string(),
             branch: self.peek(repo, number).and_then(|s| s.branch.clone()),
         }
@@ -1602,6 +1745,7 @@ are resumed on the first pass that finds it: {err:#}"
     /// the attempt.
     async fn recover(&mut self, repo: &RepoConfig, number: u64, st: &IssueState, b: Blocked) {
         let session = session_id(&repo.name, number);
+        let harness = self.effective(repo, number).harness;
         if !b.reported {
             self.report_blocked(repo, number).await;
         }
@@ -1619,20 +1763,53 @@ are resumed on the first pass that finds it: {err:#}"
                 return;
             }
         };
+        // What the item is still owed: a handover's summary sits here
+        // until a session has actually read it, so a note that is still
+        // there says no session has had its first message yet, whatever
+        // the block was recorded as.
+        let owed = self
+            .peek(repo, number)
+            .is_some_and(|s| s.handover_note.is_some());
+        // Telling a harness that is running costs a listing read, so it
+        // is not tried every pass: once when the block is first looked
+        // at, then on the same curve as a restart -- but counted apart
+        // from the restarts, so a person who signs in at a terminal a
+        // failed restart just left behind is answered on the next pass
+        // rather than at the end of the restart's wait.
+        let tell_due = match b.told_at.as_deref() {
+            None => true,
+            Some(t) => age(t) >= retry_wait(b.tell_failures),
+        };
         if let Some(h) = &handle {
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };
-            if crate::driver::login_dialog(&repo.harness, &screen.join("\n")).is_none() {
-                info!(
-                    session,
-                    "the harness is past its sign-in prompt; deliveries resume"
-                );
-                self.unblock(repo, number, &b, None).await;
+            if crate::driver::login_dialog(&harness, &screen.join("\n")).is_none() {
+                if b.reason == Blocked::LOGIN && !owed {
+                    info!(
+                        session,
+                        "the harness is past its sign-in prompt; deliveries resume"
+                    );
+                    self.unblock(repo, number, &b, Conversation::Kept).await;
+                    return;
+                }
+                // The other cases: a harness that would not start, running
+                // all the same (`start` gave up on a pane that came up but
+                // never settled), and a harness that came up at its
+                // sign-in prompt with the handover's first message going
+                // into that screen, now signed in by a person. Either way
+                // the session is there and has never been told what it is
+                // for, so the screen showing no sign-in prompt is not
+                // enough to lift the block; what it is owed goes first.
+                if !tell_due {
+                    debug!(session, "the running harness was told already; waiting");
+                    return;
+                }
+                self.tell_a_started_harness(repo, number, &b).await;
                 return;
             }
         }
-        let probe = self.probe_harness(&repo.harness).await;
+        let probe = self.probe_harness(&harness).await;
         let changed = probe.fingerprint.is_some() && probe.fingerprint != b.credential;
         let last = b.retried_at.as_deref().unwrap_or(&b.since);
         let due = changed || age(last) >= retry_wait(b.retries);
@@ -1645,7 +1822,8 @@ are resumed on the first pass that finds it: {err:#}"
             state = ?probe.state,
             changed,
             gone = handle.is_none(),
-            "the login looks back ({}); starting the harness again",
+            reason = b.reason,
+            "starting the harness again ({})",
             probe.detail
         );
         if let Some(h) = &handle
@@ -1658,13 +1836,23 @@ are resumed on the first pass that finds it: {err:#}"
             }
             return;
         }
-        let text = prompt::login_back_prompt(&prompt::LoginBack {
-            harness: &login::display_name(&repo.harness),
-            since: &b.since,
-            number: st.number,
-            title: &st.title,
-            url: &st.html_url,
-        });
+        let text = if b.reason == Blocked::START {
+            prompt::start_again_prompt(&prompt::LoginBack {
+                harness: &login::display_name(&harness),
+                since: &b.since,
+                number: st.number,
+                title: &st.title,
+                url: &st.html_url,
+            })
+        } else {
+            prompt::login_back_prompt(&prompt::LoginBack {
+                harness: &login::display_name(&harness),
+                since: &b.since,
+                number: st.number,
+                title: &st.title,
+                url: &st.html_url,
+            })
+        };
         match self.deliver_to(repo, number, &text, None).await {
             Ok(_) => {
                 let e = self.entry(repo, number);
@@ -1684,6 +1872,87 @@ are resumed on the first pass that finds it: {err:#}"
         }
     }
 
+    /// The session of a `start` block whose harness turns out to be
+    /// running after all: it was never given its first message, so
+    /// nothing has told it what the item is, or what the agent that
+    /// handed the item over left for it. That message goes now, and the
+    /// block is lifted only once it has landed.
+    async fn tell_a_started_harness(&mut self, repo: &RepoConfig, number: u64, b: &Blocked) {
+        let session = session_id(&repo.name, number);
+        // The attempt is noted before it is made, so a message that
+        // cannot be assembled or does not land waits for the backoff
+        // instead of costing a listing read on every pass. The restart
+        // backoff is left alone: this is not a restart.
+        let attempted = Blocked {
+            told_at: Some(now_iso()),
+            tell_failures: b.tell_failures + 1,
+            ..b.clone()
+        };
+        if let Some(cur) = self.entry(repo, number).blocked.as_mut() {
+            cur.told_at = attempted.told_at.clone();
+            cur.tell_failures = attempted.tell_failures;
+        }
+        let story = match self.first_message(repo, number).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(
+                    session,
+                    "the harness is running but cannot be told what it took on: {e:#}"
+                );
+                return;
+            }
+        };
+        // Everything is held for a session whose record says it is
+        // blocked, this message included, so the record is cleared for
+        // it -- and put back, with the note, if it does not land.
+        let e = self.entry(repo, number);
+        let note = e.handover_note.take();
+        e.blocked = None;
+        match self.deliver_to(repo, number, &story.text, None).await {
+            Ok(d) => {
+                let e = self.entry(repo, number);
+                e.terminal_handle = Some(d.handle);
+                e.last_prompt_at = Some(now_iso());
+                e.prompts_sent += 1;
+                // The story told it everything on the item, so the pass
+                // that follows has nothing to deliver again.
+                e.seen = story.seen;
+                e.updated_at = Some(story.updated_at);
+                info!(
+                    session,
+                    "the harness that would not start is running and has its first message; \
+deliveries resume"
+                );
+                // The conversation was never restarted: this is the one
+                // the handover started, told at last.
+                self.unblock(repo, number, b, Conversation::Kept).await;
+            }
+            Err(e) => {
+                warn!(session, "could not tell the running harness: {e:#}");
+                let cur = self.entry(repo, number);
+                cur.handover_note = note;
+                // The delivery may have recorded a block of its own (the
+                // pane died as the message went out, and the harness
+                // started in its place came up at a sign-in screen): what
+                // it saw is the fresher answer and says the thing worth
+                // fixing, so it stands -- but the hold is the same hold,
+                // so how long it has run, that the item was told of it,
+                // and both backoffs come from the record it replaces.
+                match cur.blocked.as_mut() {
+                    Some(fresh) => {
+                        fresh.since = attempted.since.clone();
+                        fresh.reported = attempted.reported;
+                        fresh.retried_at = attempted.retried_at.clone();
+                        fresh.retries = attempted.retries;
+                        fresh.told_at = attempted.told_at.clone();
+                        fresh.tell_failures = attempted.tell_failures;
+                    }
+                    None => cur.blocked = Some(attempted),
+                }
+            }
+        }
+    }
+
     /// The session is back: forget the block, fetch every listing in full
     /// on this pass so what was held is delivered, and, when the item was
     /// told of the block, tell it the hold is over (`unblocked`, with how
@@ -1695,7 +1964,7 @@ are resumed on the first pass that finds it: {err:#}"
         repo: &RepoConfig,
         number: u64,
         b: &Blocked,
-        relaunched: Option<bool>,
+        conversation: Conversation,
     ) {
         self.entry(repo, number).blocked = None;
         self.forget_etags(repo);
@@ -1708,7 +1977,7 @@ are resumed on the first pass that finds it: {err:#}"
             Event::Unblocked {
                 harness: login::display_name(&b.harness),
                 held: age(&b.since),
-                conversation: relaunched.map_or(Conversation::Kept, Conversation::of),
+                conversation,
             },
         )
         .await;
@@ -1787,6 +2056,7 @@ are resumed on the first pass that finds it: {err:#}"
             triggers: &st.triggers,
             owner: st.shares_workspace_of,
             delegated_by: st.delegated_by.as_deref(),
+            handed_over_from: None,
             projects: &st.projects,
             project_prompt,
             vm_guest: crate::vm::in_guest(),
@@ -2329,24 +2599,25 @@ are resumed on the first pass that finds it: {err:#}"
                     e.launched_at = Some(now_iso());
                     e.agent_session_id = None;
                 }
-                let title = format!("{} · #{}", repo.harness, issue.number);
+                let eff = self.effective(repo, issue.number);
+                let title = format!("{} · #{}", eff.harness, issue.number);
                 let cmd = self.launch_command(
                     repo,
                     issue.number,
                     &issue.html_url,
-                    &repo.harness_command(),
+                    &eff.harness_command(),
                 );
                 let text = self.initial_text(repo, issue, &mine);
                 let handle = self
                     .driver(repo)
-                    .start(&created.id, &cmd, &title, &repo.harness, &text)
+                    .start(&created.id, &cmd, &title, &eff.harness, &text)
                     .await?;
                 info!(
                     repo = repo.name,
                     issue = issue.number,
                     handle,
                     "launched {} and sent the {}",
-                    repo.harness,
+                    eff.harness,
                     if is_pr { "pull request" } else { "issue" }
                 );
                 let launch = self.launch_of(repo, issue.number);
@@ -2445,19 +2716,60 @@ are resumed on the first pass that finds it: {err:#}"
         Ok(())
     }
 
+    /// The item's word in a prompt or a post: `issue` or `pull request`.
+    fn item_kind(&self, repo: &RepoConfig, number: u64) -> &'static str {
+        match self.peek(repo, number).and_then(|s| s.kind.as_deref()) {
+            Some("pull_request") => "pull request",
+            _ => "issue",
+        }
+    }
+
+    /// What a session that has been told nothing yet is owed: whatever a
+    /// handover left for it (the outgoing agent's summary, or the fact
+    /// that it left none) ahead of the item's whole story. The note stays
+    /// on the record until a session has actually been given it -- a
+    /// start that fails is tried again later, and the words the outgoing
+    /// agent left go with that attempt rather than being lost with the
+    /// pane that never came up.
+    async fn first_message(&mut self, repo: &RepoConfig, number: u64) -> Result<Story> {
+        let note = self
+            .peek(repo, number)
+            .and_then(|s| s.handover_note.clone());
+        let kind = self.item_kind(repo, number);
+        let mut story = self
+            .story(repo, number, note.as_ref().map(|n| n.from.as_str()))
+            .await?;
+        if let Some(n) = note {
+            story.text = prompt::handover_prompt(&n.from, kind, n.summary.as_deref(), &story.text);
+        }
+        Ok(story)
+    }
+
     /// The whole story of an item as its initial prompt would tell it, for
     /// a harness that starts from scratch and needs context for whatever is
-    /// about to be delivered.
-    async fn story(&mut self, repo: &RepoConfig, number: u64) -> Result<String> {
+    /// about to be delivered, with what telling it counts as seen.
+    async fn story(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        handed_over_from: Option<&str>,
+    ) -> Result<Story> {
         let (owner, name) = repo.split()?;
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
-        let all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
+        let diff = self.diff(repo, &BTreeMap::new(), &timeline);
         let me = self.acting_on(repo, number);
-        let all = self.for_recipient(&all, &me);
+        let all = self.for_recipient(&diff.rendered, &me);
         let st = self.entry(repo, number).clone();
-        let ctx = self.ctx(repo, &st);
-        Ok(prompt::initial_prompt(&issue, &all, &ctx))
+        let ctx = PromptContext {
+            handed_over_from,
+            ..self.ctx(repo, &st)
+        };
+        Ok(Story {
+            text: prompt::initial_prompt(&issue, &all, &ctx),
+            seen: diff.seen,
+            updated_at: issue.updated_at,
+        })
     }
 
     /// Tell the session that handed an item off that it has closed, with the
@@ -3022,9 +3334,18 @@ are resumed on the first pass that finds it: {err:#}"
                 .await
                 .unwrap_or(false);
         let mut story = None;
+        // A handover whose new session never came up left its summary on
+        // the item: the harness started here is the one that takes it on.
+        let mut note_given = false;
         if !live && (target != number || relaunch_text.is_none()) {
-            match self.story(repo, target).await {
-                Ok(s) => story = Some(format!("{s}\n\n{text}")),
+            let owed = self
+                .peek(repo, target)
+                .is_some_and(|s| s.handover_note.is_some());
+            match self.first_message(repo, target).await {
+                Ok(s) => {
+                    story = Some(format!("{}\n\n{text}", s.text));
+                    note_given = owed;
+                }
                 Err(e) => warn!(
                     repo = repo.name,
                     session = session_id(&repo.name, target),
@@ -3033,13 +3354,18 @@ are resumed on the first pass that finds it: {err:#}"
             }
         }
         let relaunch_text = story.as_deref().or(relaunch_text);
-        let title = format!("{} · #{target}", repo.harness);
+        // The note is taken off the record when the message carrying it
+        // goes out, and put back if that message turns out to have gone
+        // into a sign-in screen (below).
+        let mut spent_note = None;
+        let eff = self.effective(repo, target);
+        let title = format!("{} · #{target}", eff.harness);
         let resume = st
             .agent_session_id
             .as_deref()
-            .and_then(|id| sessions::resume_command(&repo.harness, &repo.harness_command(), id))
+            .and_then(|id| sessions::resume_command(&eff.harness, &eff.harness_command(), id))
             .map(|c| self.launch_command(repo, st.number, &st.html_url, &c));
-        let relaunch = self.launch_command(repo, st.number, &st.html_url, &repo.harness_command());
+        let relaunch = self.launch_command(repo, st.number, &st.html_url, &eff.harness_command());
         let d = self
             .driver(repo)
             .deliver(
@@ -3048,7 +3374,7 @@ are resumed on the first pass that finds it: {err:#}"
                 Relaunch {
                     command: &relaunch,
                     resume_command: resume.as_deref(),
-                    harness: &repo.harness,
+                    harness: &eff.harness,
                     title: &title,
                     text: relaunch_text,
                 },
@@ -3060,6 +3386,11 @@ are resumed on the first pass that finds it: {err:#}"
             e.launched_at = Some(now_iso());
             if !d.resumed {
                 e.agent_session_id = None;
+                // A resumed conversation is not shown the relaunch text,
+                // so the note is spent only on a fresh one.
+                if note_given {
+                    spent_note = e.handover_note.take();
+                }
             }
             info!(
                 repo = repo.name,
@@ -3088,8 +3419,14 @@ are resumed on the first pass that finds it: {err:#}"
         // blocked from here, and the prompt is held for later.
         if d.relaunched
             && let Ok(screen) = self.driver(repo).screen(&d.handle).await
-            && let Some(detail) = crate::driver::login_dialog(&repo.harness, &screen.join("\n"))
+            && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
         {
+            // The message that carried the note went into a sign-in
+            // screen, so no session has read it: it waits on the item for
+            // the start that gets through.
+            if let Some(note) = spent_note {
+                self.entry(repo, target).handover_note = Some(note);
+            }
             let b = self.set_blocked(repo, target, detail).await;
             return Err(SessionBlocked {
                 session: session_id(&repo.name, target),
@@ -3110,7 +3447,7 @@ are resumed on the first pass that finds it: {err:#}"
                 repo,
                 target,
                 Event::Resumed {
-                    harness: login::display_name(&repo.harness),
+                    harness: login::display_name(&eff.harness),
                     conversation: Conversation::of(d.resumed),
                     after: if self.startup_pass {
                         "restart"
@@ -3122,8 +3459,11 @@ are resumed on the first pass that finds it: {err:#}"
             .await;
         }
         if let Some(b) = held {
-            self.unblock(repo, target, &b, d.relaunched.then_some(d.resumed))
-                .await;
+            let conversation = d
+                .relaunched
+                .then_some(d.resumed)
+                .map_or(Conversation::Kept, Conversation::of);
+            self.unblock(repo, target, &b, conversation).await;
         }
         if target != number {
             self.mirror_owner(repo, number, target);
@@ -3309,29 +3649,40 @@ are resumed on the first pass that finds it: {err:#}"
 
     /// Record harness session ids for workspaces that do not have one yet.
     fn capture_sessions(&mut self, repo: &RepoConfig) {
-        if !sessions::supports_resume(&repo.harness) {
-            return;
-        }
+        // Per item, since a handed-over item runs a harness of its own:
+        // the records worth looking at, each with the harness it runs.
+        let candidates: Vec<u64> = match self.state.repos.get(&repo.name) {
+            Some(rs) => rs
+                .issues
+                .values()
+                .filter(|s| s.agent_session_id.is_none() && s.worktree_id.is_some())
+                .map(|s| s.number)
+                .collect(),
+            None => Vec::new(),
+        };
+        let harnesses: Vec<(u64, String)> = candidates
+            .into_iter()
+            .map(|n| (n, self.effective(repo, n).harness))
+            .filter(|(_, h)| sessions::supports_resume(h))
+            .collect();
         let rs = self.state.repo_mut(&repo.name);
-        for st in rs.issues.values_mut() {
-            if st.agent_session_id.is_some() || st.worktree_id.is_none() {
+        for (number, harness) in harnesses {
+            let Some(st) = rs.issues.get_mut(&number) else {
                 continue;
-            }
+            };
             let (Some(path), Some(launched)) =
                 (st.worktree_path.as_deref(), st.launched_at.as_deref())
             else {
                 continue;
             };
-            let since = chrono::DateTime::parse_from_rfc3339(launched)
-                .map(|t| SystemTime::from(t) - Duration::from_secs(5))
-                .unwrap_or(SystemTime::UNIX_EPOCH);
-            if let Some(id) = sessions::capture(&repo.harness, path, since) {
+            let retired = st.retired_session_ids.clone();
+            let since = capture_since(launched, st.handed_over_at.as_deref());
+            if let Some(id) = sessions::capture(&harness, path, since, &retired) {
                 info!(
                     repo = repo.name,
                     issue = st.number,
                     session = id,
-                    "captured {} session",
-                    repo.harness
+                    "captured {harness} session"
                 );
                 st.agent_session_id = Some(id);
             }
@@ -3508,6 +3859,11 @@ are resumed on the first pass that finds it: {err:#}"
         e.worktree_path = None;
         e.terminal_handle = None;
         e.released_at = Some(now.clone());
+        // The item comes back on the repository's own harness.
+        e.overrides = None;
+        e.handover = None;
+        e.handover_note = None;
+        e.handed_over_at = None;
         // Items bound to this session mirror its workspace.
         let bound: Vec<u64> = self
             .state
@@ -3526,6 +3882,516 @@ are resumed on the first pass that finds it: {err:#}"
         }
     }
 
+    // ---- handovers ------------------------------------------------------
+
+    /// `ssf handover`: record that the item's session is to be replaced by
+    /// one on another harness, model or effort in the same workspace. The
+    /// refusals are synchronous, so the agent that asked hears the reason
+    /// straight away; the work itself happens on the daemon's next pass
+    /// (`run_handovers`), because ending the caller's own terminal while
+    /// it waits for this answer would lose the answer.
+    async fn handover(
+        &mut self,
+        session: &str,
+        harness: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        summary: Option<&str>,
+        by: Option<&str>,
+    ) -> Result<Value> {
+        let (repo, number, id) = self.known_session(session)?;
+        let st = self.entry(&repo, number).clone();
+        if !st.active || st.worktree_id.is_none() {
+            anyhow::bail!(
+                "{id}: the item has no running session; nothing to hand over (assign the bot to it instead)"
+            );
+        }
+        let harness = harness.trim();
+        if !crate::agents::is_known(harness) {
+            anyhow::bail!("{harness} is not a harness ssf knows (see `ssf agents`)");
+        }
+        crate::models::validate(harness, model, effort)?;
+        let name = login::display_name(harness);
+        if !(self.installed)(harness) {
+            anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");
+        }
+        // Asked afresh rather than off the pass's memo: an operator who
+        // signs the harness in and runs the command again must get the
+        // new answer, not the one from up to a poll interval ago.
+        self.probes.remove(harness);
+        let probe = self.probe_harness(harness).await;
+        if probe.state == LoginState::SignedOut {
+            anyhow::bail!(
+                "{name} is not signed in here; {}",
+                login::how_to_sign_in(harness)
+            );
+        }
+        if let Some(h) = st.handover.as_ref() {
+            anyhow::bail!("a handover to {} is already pending", h.harness);
+        }
+        if st.release_pending {
+            anyhow::bail!("a release is pending on this item");
+        }
+        // Trimmed as `models::validate` reads them, or a stray space
+        // would be shell-quoted into the launch command and the harness
+        // would refuse the model it was given.
+        let overrides = Overrides {
+            harness: harness.to_string(),
+            model: model.map(|m| m.trim().to_string()),
+            effort: effort.map(|e| e.trim().to_string()),
+        };
+        let from = self.effective(&repo, number);
+        let to = repo.with_overrides(Some(&overrides));
+        if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
+            anyhow::bail!("the item is already on {harness} with that model and effort");
+        }
+        if summary.is_some_and(|s| s.trim().is_empty()) {
+            anyhow::bail!("the summary is empty: write a summary or hand over with no summary");
+        }
+        let chars = summary.map(|s| s.chars().count());
+        if let Some(n) = chars.filter(|n| *n > crate::ipc::MAX_SUMMARY_CHARS) {
+            anyhow::bail!(
+                "the summary is {n} characters; the most a handover carries is {}",
+                crate::ipc::MAX_SUMMARY_CHARS
+            );
+        }
+        // The summary is pasted into the new session's terminal, where the
+        // login check reads the screen: one that quotes a sign-in prompt
+        // would block the session it starts. The CLI refuses it too, where
+        // the author can fix it; this is the daemon's own guard.
+        if let Some(line) = summary.and_then(crate::driver::login_prompt_line) {
+            anyhow::bail!(
+                "{}",
+                crate::summary_quotes_a_sign_in_screen_text(&crate::driver::redact_login_phrases(
+                    &line
+                ))
+            );
+        }
+        let pending = PendingHandover {
+            harness: overrides.harness.clone(),
+            model: overrides.model.clone(),
+            effort: overrides.effort.clone(),
+            summary: summary.map(str::to_string),
+            by: by.map(str::to_string),
+            requested_at: now_iso(),
+        };
+        self.entry(&repo, number).handover = Some(pending);
+        info!(
+            session = id,
+            harness,
+            model,
+            effort,
+            summary_chars = chars,
+            by,
+            "handover recorded"
+        );
+        // The command is on both sides because it is what decides an
+        // unset model or effort, and the `handed-over` post says so; the
+        // command itself is on the item in every `attached` post anyway.
+        let launch = |c: &RepoConfig| {
+            serde_json::json!({
+                "harness": c.harness,
+                "model": c.model,
+                "effort": c.effort,
+                "command": c.command,
+            })
+        };
+        Ok(serde_json::json!({
+            "session": id,
+            "title": st.title,
+            "from": launch(&from),
+            "to": launch(&to),
+            "summary_chars": chars,
+            "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
+        }))
+    }
+
+    /// Carry out the handovers `ssf handover` accepted, before anything
+    /// else this repository does on this pass: the old session is not worth
+    /// resuming or delivering to.
+    async fn run_handovers(&mut self, repo: &RepoConfig) {
+        let pending: Vec<(u64, PendingHandover)> = match self.state.repos.get(&repo.name) {
+            Some(rs) => rs
+                .issues
+                .values()
+                .filter_map(|s| s.handover.clone().map(|h| (s.number, h)))
+                .collect(),
+            None => Vec::new(),
+        };
+        if pending.is_empty() {
+            return;
+        }
+        // The new session is given the item's story, which the allow-list
+        // filters: the collaborators have to be known first, or every
+        // human post would be left out of it. A handover the daemon
+        // cannot read the repository for waits for the next pass.
+        let refreshed = match repo.split() {
+            Ok((owner, name)) => self.refresh_collaborators(repo, owner, name).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = refreshed {
+            warn!(
+                repo = repo.name,
+                "handovers wait for the next pass on this repository: {e:#}"
+            );
+            return;
+        }
+        for (number, h) in pending {
+            self.finish_handover(repo, number, h).await;
+            if let Err(e) = self.state.save() {
+                error!("saving state: {e:#}");
+            }
+        }
+    }
+
+    /// Second half of `ssf handover`: end the session that is there, keep
+    /// its workspace and branch, write the item's launch overrides, and
+    /// start the new session in the same workspace with the outgoing
+    /// agent's summary ahead of the item's story.
+    async fn finish_handover(&mut self, repo: &RepoConfig, number: u64, h: PendingHandover) {
+        let session = session_id(&repo.name, number);
+        let st = self.entry(repo, number).clone();
+        if !st.active {
+            self.refuse_handover(repo, number, &h, "the item is no longer active".into())
+                .await;
+            return;
+        }
+        // The workspace normally stays; one that went missing between the
+        // request and now is re-created rather than the handover lost.
+        let alive = match st.worktree_id.as_deref() {
+            Some(id) => self.driver(repo).worktree_exists(id).await.unwrap_or(false),
+            None => false,
+        };
+        if !alive && let Err(e) = self.rehydrate(repo, number).await {
+            self.refuse_handover(
+                repo,
+                number,
+                &h,
+                format!("the workspace is gone and could not be re-created: {e:#}"),
+            )
+            .await;
+            return;
+        }
+        let st = self.entry(repo, number).clone();
+        let Some(wt) = st.worktree_id.clone() else {
+            self.refuse_handover(repo, number, &h, "the item has no workspace".into())
+                .await;
+            return;
+        };
+        // The new session's first message is built before anything is
+        // stopped: a story that cannot be assembled is a refusal, not a
+        // session ended with nothing to put in its place.
+        let from_launch = self.launch_of(repo, number);
+        let from_harness = self.effective(repo, number).harness;
+        let from_name = login::display_name(&from_harness);
+        // Who the new session really takes over from. Normally the
+        // harness the item is on; but a handover whose harness never came
+        // up left a note of its own, and the session that wrote it is
+        // still the last one that worked the item, so its name is the one
+        // carried forward. The `handed-over` post keeps saying what the
+        // item was configured on.
+        let pending_note = self
+            .peek(repo, number)
+            .and_then(|s| s.handover_note.clone());
+        let note_from = pending_note
+            .as_ref()
+            .map(|n| n.from.clone())
+            .unwrap_or_else(|| from_name.clone());
+        // A summary nobody has read yet is not thrown away by a handover
+        // that carries none of its own: the session that wrote it is long
+        // gone, and the one starting now is the first that can act on it.
+        // A handover that does bring a summary replaces it, since that is
+        // the newer account of where the item stands.
+        let summary = h
+            .summary
+            .clone()
+            .or_else(|| pending_note.and_then(|n| n.summary));
+        let story = match self.story(repo, number, Some(&note_from)).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.refuse_handover(
+                    repo,
+                    number,
+                    &h,
+                    format!("the item could not be read for the new session: {e:#}"),
+                )
+                .await;
+                return;
+            }
+        };
+        let kind = self.item_kind(repo, number);
+        let text = prompt::handover_prompt(&note_from, kind, summary.as_deref(), &story.text);
+        // End the caller's pane. The workspace stays, so the new session
+        // opens on the same checkout and branch.
+        match self
+            .driver(repo)
+            .live_handle(&wt, st.terminal_handle.as_deref())
+            .await
+        {
+            Ok(Some(handle)) => {
+                if let Err(e) = self.driver(repo).stop_agent(&wt, &handle).await {
+                    self.refuse_handover(
+                        repo,
+                        number,
+                        &h,
+                        format!("could not stop the running agent: {e:#}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+            Ok(None) => debug!(session, "no agent to stop; starting the new session"),
+            Err(e) => {
+                self.refuse_handover(
+                    repo,
+                    number,
+                    &h,
+                    format!("could not stop the running agent: {e:#}"),
+                )
+                .await;
+                return;
+            }
+        }
+        // A hold on the item ends here: the session it was held for is
+        // gone. The item was told the hold was on, so it is told it is
+        // over, before the handover itself is posted.
+        if let Some(b) = st.blocked.clone() {
+            self.unblock(repo, number, &b, Conversation::HandedOver)
+                .await;
+        }
+        // Items bound to this session mirror its conversation id, so the
+        // one being retired goes from them too (`capture_sessions` writes
+        // the owner's new id to them once there is one).
+        let bound: Vec<u64> = self
+            .state
+            .repo_mut(&repo.name)
+            .issues
+            .values()
+            .filter(|s| s.shares_workspace_of == Some(number))
+            .map(|s| s.number)
+            .collect();
+        // The conversations the outgoing agent leaves behind: the id on
+        // the record, and whatever its harness last wrote in this
+        // workspace, which is what a session ssf never captured an id for
+        // leaves behind (see `retired_conversations`). The transcript
+        // directories live under the real home, so no engine test covers
+        // this call; `retired_conversations` is what the tests pin.
+        let newest = st
+            .worktree_path
+            .as_deref()
+            .and_then(|p| sessions::capture(&from_harness, p, SystemTime::UNIX_EPOCH, &[]));
+        // The old session is retired on the record; everything about the
+        // item and its workspace stays.
+        let retired =
+            retired_conversations(self.entry(repo, number).agent_session_id.take(), newest);
+        {
+            let e = self.entry(repo, number);
+            // The conversations being dropped are remembered, so the
+            // harness starting in this workspace is never given the
+            // outgoing agent's transcript as its own (`capture_sessions`,
+            // `sessions::capture`).
+            retire(e, &retired);
+            e.terminal_handle = None;
+            // The hold, if there was one, was closed just above.
+            e.launched_at = None;
+            e.handed_over_at = Some(now_iso());
+            e.overrides = Some(h.overrides());
+            e.handover = None;
+            // What the outgoing agent left is kept on the item until a
+            // session has read it: the start below can fail, or come up
+            // at a sign-in screen, and the harness started again minutes
+            // later is the one that takes the work on.
+            e.handover_note = Some(HandoverNote {
+                from: note_from.clone(),
+                summary: summary.clone(),
+            });
+        }
+        for n in bound {
+            let e = self.entry(repo, n);
+            e.agent_session_id = None;
+            retire(e, &retired);
+        }
+        let eff = self.effective(repo, number);
+        let to_launch = self.launch_of(repo, number);
+        let title = format!("{} · #{number}", eff.harness);
+        let cmd = self.launch_command(repo, number, &st.html_url, &eff.harness_command());
+        self.entry(repo, number).launched_at = Some(now_iso());
+        let handle = match self
+            .driver(repo)
+            .start(&wt, &cmd, &title, &eff.harness, &text)
+            .await
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                // The handover stands (the item keeps the overrides), but
+                // nothing is running: the item is blocked as it is for a
+                // harness that comes up at its sign-in prompt, with the
+                // same restart-with-backoff recovery, and the old session
+                // is not brought back.
+                warn!(
+                    session,
+                    harness = eff.harness,
+                    "handed over, but the new harness could not be started: {e:#}"
+                );
+                self.post_event(
+                    repo,
+                    number,
+                    handed_over(&from_launch, &to_launch, &h, summary.is_some(), None),
+                )
+                .await;
+                let why = safe_error(&events::one_line(&format!("{e:#}")));
+                self.set_blocked_for(repo, number, Blocked::START, why)
+                    .await;
+                self.report_blocked(repo, number).await;
+                return;
+            }
+        };
+        info!(
+            session,
+            harness = eff.harness,
+            handle,
+            from = from_name,
+            summary = summary.is_some(),
+            "handed the item over to a new session"
+        );
+        {
+            let e = self.entry(repo, number);
+            e.terminal_handle = Some(handle.clone());
+            e.last_prompt_at = Some(now_iso());
+            e.prompts_sent += 1;
+            // The story told the new session everything on the item, so
+            // the pass that follows has nothing to deliver again (an
+            // onboarding records the same two things for its session).
+            e.seen = story.seen;
+            e.updated_at = Some(story.updated_at);
+        }
+        // Nothing is owed to the session that is gone.
+        self.failures.remove(&(repo.name.clone(), number));
+        self.post_event(
+            repo,
+            number,
+            handed_over(&from_launch, &to_launch, &h, summary.is_some(), None),
+        )
+        .await;
+        // A harness started on a machine it is not signed in on shows its
+        // sign-in prompt instead of taking the message: the new session is
+        // blocked from here, and the old one is not brought back.
+        if let Ok(screen) = self.driver(repo).screen(&handle).await
+            && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
+        {
+            self.set_blocked(repo, number, detail).await;
+            self.report_blocked(repo, number).await;
+            return;
+        }
+        // The message went to a harness that took it, not to a sign-in
+        // screen: what the outgoing agent left has been read.
+        self.entry(repo, number).handover_note = None;
+        self.post_event(
+            repo,
+            number,
+            Event::Attached(Attach::HandedOver {
+                launch: to_launch,
+                from: from_name,
+            }),
+        )
+        .await;
+    }
+
+    /// `ssf handover --cancel`: drop a handover the daemon has recorded
+    /// and not carried out yet. The session that is there keeps the item,
+    /// and hears so if it is still running -- it was told to stop working
+    /// when the handover was recorded, and nothing else can reach it
+    /// while one is pending. Nothing is posted on the item: the handover
+    /// was never announced there.
+    async fn cancel_handover(&mut self, session: &str) -> Result<Value> {
+        let (repo, number, id) = self.known_session(session)?;
+        let st = self.entry(&repo, number).clone();
+        let Some(h) = st.handover.clone() else {
+            anyhow::bail!("{id}: no handover is pending on this item");
+        };
+        self.entry(&repo, number).handover = None;
+        let name = login::display_name(&h.harness);
+        info!(session = id, harness = h.harness, "handover cancelled");
+        let live = match st.worktree_id.as_deref() {
+            Some(w) => self.driver(&repo).has_live_agent(w).await.unwrap_or(false),
+            None => false,
+        };
+        let mut told = false;
+        if live {
+            let text = prompt::handover_cancelled_prompt(&name);
+            match self.deliver_to(&repo, number, &text, None).await {
+                Ok(d) => {
+                    told = true;
+                    let e = self.entry(&repo, number);
+                    e.terminal_handle = Some(d.handle);
+                    e.last_prompt_at = Some(now_iso());
+                    e.prompts_sent += 1;
+                }
+                Err(e) => warn!(
+                    session = id,
+                    "could not tell the agent the handover was cancelled: {e:#}"
+                ),
+            }
+        }
+        Ok(serde_json::json!({
+            "session": id,
+            "title": st.title,
+            "harness": h.harness,
+            "harness_name": name,
+            "requested_at": h.requested_at,
+            "told": told,
+        }))
+    }
+
+    /// A handover that was accepted and cannot be carried out: nothing
+    /// changes, the item says so, and the agent that asked (if it is still
+    /// there) hears it in one message.
+    async fn refuse_handover(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        h: &PendingHandover,
+        why: String,
+    ) {
+        let session = session_id(&repo.name, number);
+        warn!(session, harness = h.harness, "handover refused: {why}");
+        self.entry(repo, number).handover = None;
+        // The reason can carry a driver's or a harness's own words, and
+        // both places it goes (the item, and the agent's screen) are
+        // read by something that looks for sign-in prompts.
+        let why = safe_error(&events::one_line(&why));
+        let from = self.launch_of(repo, number);
+        let to = self.launch_with(repo, number, Some(&h.overrides()));
+        self.post_event(
+            repo,
+            number,
+            handed_over(&from, &to, h, h.summary.is_some(), Some(why.clone())),
+        )
+        .await;
+        let st = self.entry(repo, number).clone();
+        let live = match st.worktree_id.as_deref() {
+            Some(id) => self.driver(repo).has_live_agent(id).await.unwrap_or(false),
+            None => false,
+        };
+        if !live {
+            debug!(session, "no live agent to tell about the refused handover");
+            return;
+        }
+        let text = prompt::handover_refused_prompt(&login::display_name(&h.harness), &why);
+        match self.deliver_to(repo, number, &text, None).await {
+            Ok(d) => {
+                let e = self.entry(repo, number);
+                e.terminal_handle = Some(d.handle);
+                e.last_prompt_at = Some(now_iso());
+                e.prompts_sent += 1;
+            }
+            Err(e) => warn!(
+                session,
+                "could not tell the agent about the refused handover: {e:#}"
+            ),
+        }
+    }
+
     /// `ssf release`: the session's workspace goes on the next pass if the
     /// checks pass now (and again then); `force` skips them, for a person
     /// who has looked. Refused while the session still owns open items.
@@ -3536,6 +4402,9 @@ are resumed on the first pass that finds it: {err:#}"
             anyhow::bail!(
                 "{id} is still open and assigned; its workspace is in use. Close or unassign the item first"
             );
+        }
+        if let Some(h) = st.handover.as_ref() {
+            anyhow::bail!("{id}: a handover to {} is pending", h.harness);
         }
         let deps = self.active_dependents(&repo, number);
         if !deps.is_empty() {
@@ -3719,6 +4588,83 @@ are resumed on the first pass that finds it: {err:#}"
     }
 }
 
+/// Remember conversations as ones never to resume or capture again, on
+/// one record. Only the last few are kept: a workspace is not handed over
+/// dozens of times, and every capture scans the list.
+fn retire(e: &mut IssueState, ids: &[String]) {
+    for id in ids {
+        if !e.retired_session_ids.contains(id) {
+            e.retired_session_ids.push(id.clone());
+        }
+    }
+    let extra = e.retired_session_ids.len().saturating_sub(RETIRED_KEPT);
+    e.retired_session_ids.drain(..extra);
+}
+
+/// The conversations a handover leaves behind in one workspace: the id
+/// ssf captured for the outgoing session, and the newest transcript its
+/// harness wrote in that workspace, whatever its age.
+///
+/// The second is what keeps a same-harness handover honest. `now_iso`
+/// stamps `handed_over_at` to the whole second, so a transcript the
+/// outgoing agent flushed as it exited can carry an mtime inside the
+/// capture window; and a session whose id was never captured (the pass
+/// that would have done it never ran) leaves nothing on the record to
+/// exclude. Either way the newest transcript in the workspace is the one
+/// the harness starting next would adopt as its own.
+fn retired_conversations(captured: Option<String>, newest: Option<String>) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for id in [captured, newest].into_iter().flatten() {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
+}
+
+/// How far back `capture_sessions` looks for a workspace's transcript.
+/// The launch time is taken a moment early, since the harness writes its
+/// transcript around it -- but never back past a handover: the seconds
+/// before the launch that followed one hold the outgoing agent's own
+/// transcript, and adopting that would resume the session that handed the
+/// item away. The slack is kept for the relaunches that come later, whose
+/// launch time is long after the handover.
+fn capture_since(launched_at: &str, handed_over_at: Option<&str>) -> SystemTime {
+    let iso = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(SystemTime::from)
+    };
+    let Some(launched) = iso(launched_at) else {
+        return SystemTime::UNIX_EPOCH;
+    };
+    let since = launched - Duration::from_secs(5);
+    match handed_over_at.and_then(iso) {
+        Some(h) if h > since => h,
+        _ => since,
+    }
+}
+
+/// The `handed-over` post of one handover, refused or not. `summary`
+/// says whether the new session is given one, which a handover that
+/// carries none of its own still does when an earlier one's summary is
+/// waiting on the item unread.
+fn handed_over(
+    from: &events::Launch,
+    to: &events::Launch,
+    h: &PendingHandover,
+    summary: bool,
+    refused: Option<String>,
+) -> Event {
+    Event::HandedOver {
+        from: from.clone(),
+        to: to.clone(),
+        summary,
+        by: h.by.clone(),
+        refused,
+    }
+}
+
 /// Listen for the CLI on the daemon's socket, replacing a stale one.
 fn bind_socket() -> Result<tokio::net::UnixListener> {
     let path = crate::ipc::socket_path();
@@ -3740,19 +4686,6 @@ fn bind_socket() -> Result<tokio::net::UnixListener> {
         .with_context(|| format!("listening on {}", path.display()))?;
     let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     Ok(listener)
-}
-
-/// Follow `shares_workspace_of` to the session that acts on `number`.
-fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
-    let mut cur = number;
-    let mut seen = BTreeSet::new();
-    while let Some(next) = issues.get(&cur).and_then(|s| s.shares_workspace_of) {
-        if next == cur || !seen.insert(cur) {
-            break;
-        }
-        cur = next;
-    }
-    cur
 }
 
 /// The last comment the bot left on an item, as its session's final word.
@@ -3784,10 +4717,10 @@ fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
 /// in it (its own words, passed up through a delivery error) are
 /// replaced by `[…]`, and the whole message withheld if it still passes
 /// for a login prompt after that, so the post can never pass for one
-/// when echoed on a screen; the log has it in full. `text` must be the
-/// line as it will be posted (`events::one_line`): the prompt check reads
-/// a screen's last lines, and a phrase high up in a long message would
-/// slip past it only to be collapsed onto the one line that is posted.
+/// when echoed on a screen; the log has it in full. Give it the line as
+/// it will be posted (`events::one_line`): the check reads every line of
+/// what it is given, but the redaction should be done on the text that
+/// goes out, not on a form of it that is collapsed afterwards.
 fn safe_error(text: &str) -> String {
     let redacted = crate::driver::redact_login_phrases(text);
     if crate::driver::quotes_login_prompt(&redacted) {
@@ -3893,6 +4826,7 @@ mod tests {
                 detail: "test".into(),
                 fingerprint: None,
             }),
+            installed: std::sync::Arc::new(|_| true),
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,
@@ -4470,6 +5404,9 @@ mod tests {
         assigned: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
         /// Timelines by item number (`[]` for an unknown item).
         timelines: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Vec<Value>>>>,
+        /// Items served by number (`/repos/o/r/issues/N`), for the paths
+        /// that read one item rather than a listing (a session's story).
+        issues: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Value>>>,
         /// The collaborators endpoint: `None` answers 403 (no access), a
         /// list is served with an ETag that changes when it is set.
         collaborators: std::sync::Arc<std::sync::Mutex<Option<Vec<Value>>>>,
@@ -4492,6 +5429,7 @@ mod tests {
             let created_etag = Arc::new(AtomicU32::new(1));
             let assigned: Arc<Mutex<Vec<Value>>> = Arc::default();
             let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
+            let issues: Arc<Mutex<BTreeMap<u64, Value>>> = Arc::default();
             let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
             let collab_version = Arc::new(AtomicU32::new(1));
             let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
@@ -4503,6 +5441,7 @@ mod tests {
                 collaborators.clone(),
                 collab_version.clone(),
             );
+            let i = issues.clone();
             tokio::spawn(async move {
                 let other_etags = AtomicU32::new(1);
                 loop {
@@ -4592,6 +5531,12 @@ mod tests {
                                 }
                                 Some(list) => ("200 OK", etag, Value::Array(list).to_string()),
                             }
+                    } else if let Some(item) = path
+                        .strip_prefix("/repos/o/r/issues/")
+                        .and_then(|n| n.parse::<u64>().ok())
+                        .and_then(|n| i.lock().unwrap().get(&n).cloned())
+                    {
+                        ("200 OK", "\"i\"".to_string(), item.to_string())
                     } else if let Some(n) = path
                         .strip_prefix("/repos/o/r/issues/")
                         .and_then(|rest| rest.strip_suffix("/timeline"))
@@ -4626,6 +5571,7 @@ mod tests {
                 created_etag,
                 assigned,
                 timelines,
+                issues,
                 collaborators,
                 collab_version,
                 posts,
@@ -4646,6 +5592,11 @@ mod tests {
             *self.collaborators.lock().unwrap() = list;
             self.collab_version
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        /// Serve one item by number, for the paths that read it directly.
+        fn set_issue(&self, number: u64, item: Value) {
+            self.issues.lock().unwrap().insert(number, item);
         }
 
         fn set_timeline(&self, number: u64, events: Vec<Value>) {
@@ -5201,6 +6152,8 @@ mod tests {
         "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
     ];
     const READY_SCREEN: &[&str] = &["⏺ Done.", "", "❯ ", "  ⏵⏵ bypass permissions on"];
+    /// Pi's sign-in prompt, which reads nothing like Claude Code's.
+    const PI_LOGIN_SCREEN: &[&str] = &["  Use /login to log into a provider", "❯ "];
 
     /// An engine on the stub driver with item 5 seeded on workspace `w5`,
     /// its agent live in terminal `t5` showing `screen`.
@@ -5312,6 +6265,8 @@ mod tests {
             credential: Some("cred-old".into()),
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         e.state.repo_mut("o/r").issues_etag = Some("etag".into());
         stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
@@ -5380,6 +6335,8 @@ mod tests {
             credential: Some("cred-old".into()),
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
         stub.set_timeline(5, vec![assigned_by(1, "alice")]);
@@ -5421,6 +6378,8 @@ mod tests {
             credential: None,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         e.state.repo_mut("o/r").issues_etag = Some("etag".into());
         stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
@@ -5510,6 +6469,8 @@ mod tests {
             credential: Some("cred-old".into()),
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         };
         e.entry(&repo(), 5).blocked = Some(record.clone());
         // The terminal vanished (a reboot, a closed terminal).
@@ -5975,9 +6936,10 @@ mod tests {
         assert!(!crate::driver::quotes_login_prompt(&safe_error(
             "NOT LOGGED IN\nInvalid API key\nSign in with ChatGPT"
         )));
-        // The check reads the form that is posted: a phrase on the second
-        // line of a long screen dump is above what a screen check reads,
-        // but on the one posted line it is right there.
+        // Every line of what ssf is about to write down counts, however
+        // long the text is: a phrase on the second line of a screen dump
+        // is out of what a screen check reads, but the same dump collapsed
+        // onto the one line that is posted puts it right there.
         let mut dump = String::from(
             "delivery failed; the screen showed:\nLogin expired · Please run /login\n",
         );
@@ -5985,8 +6947,13 @@ mod tests {
             dump.push_str(&format!("│ line {i} of the transcript\n"));
         }
         assert!(
-            !crate::driver::quotes_login_prompt(&dump),
-            "out of the tail"
+            crate::driver::quotes_login_prompt(&dump),
+            "found wherever it stands"
+        );
+        assert_eq!(
+            crate::driver::login_dialog("claude", &dump),
+            None,
+            "a screen is judged by its bottom"
         );
         let posted = safe_error(&events::one_line(&dump));
         assert!(
@@ -6289,6 +7256,19 @@ mod tests {
     /// Every text ssf puts on a screen or that agents read must stay free
     /// of the phrases `driver::login_dialog` looks for, or a healthy
     /// session would be blocked again by its own echo.
+    /// A launch for the texts checked below; the harness is what is
+    /// under test.
+    fn handover_launch(harness: &str) -> events::Launch {
+        events::Launch {
+            harness: harness.to_string(),
+            model: None,
+            effort: None,
+            command: None,
+            driver: "herdr".into(),
+            branch: Some("refs/heads/bot/issue-5".into()),
+        }
+    }
+
     #[test]
     fn ssf_texts_never_look_like_a_login_prompt() {
         use crate::driver::login_dialog;
@@ -6307,6 +7287,8 @@ mod tests {
                 credential: None,
                 retried_at: None,
                 retries: 0,
+                told_at: None,
+                tell_failures: 0,
             };
             let o = Origin::new("o/r", 5).unwrap();
             let texts = [
@@ -6322,9 +7304,51 @@ mod tests {
                     "issue",
                     &Event::Blocked {
                         harness: name.clone(),
+                        reason: "not signed in".into(),
                         fix: fix.clone(),
                     },
                 ),
+                // The other block: a harness that would not start at all,
+                // whose reason line carries the driver's own words.
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::Blocked {
+                        harness: name.clone(),
+                        reason: format!(
+                            "could not be started: {}",
+                            safe_error(&events::one_line(
+                                "herdr said: the pane exited at once\nLogin expired · Please run /login"
+                            ))
+                        ),
+                        fix: crate::status::fix_for(&Blocked {
+                            reason: Blocked::START.into(),
+                            harness: h.into(),
+                            ..b.clone()
+                        }),
+                    },
+                ),
+                prompt::start_again_prompt(&prompt::LoginBack {
+                    harness: &name,
+                    since: &b.since,
+                    number: 5,
+                    title: "Fix it",
+                    url: "https://gh/5",
+                }),
+                crate::status::BlockedView::from_blocked(&Blocked {
+                    reason: Blocked::START.into(),
+                    detail: "the pane exited at once".into(),
+                    ..b.clone()
+                })
+                .describe(),
+                SessionBlocked {
+                    session: "o/r#5".into(),
+                    blocked: Blocked {
+                        reason: Blocked::START.into(),
+                        ..b.clone()
+                    },
+                }
+                .to_string(),
                 events::comment(
                     &o,
                     "issue",
@@ -6374,6 +7398,77 @@ mod tests {
                         ),
                     },
                 ),
+                prompt::handover_prompt(
+                    &name,
+                    "issue",
+                    Some("Branch pushed; the parser is left."),
+                    "the item's story",
+                ),
+                prompt::handover_prompt(&name, "pull request", None, "the item's story"),
+                prompt::handover_refused_prompt(&name, "the item is no longer active"),
+                prompt::handover_cancelled_prompt(&name),
+                crate::handover_cancelled_text("o/r#5", "Fix it", &name, true),
+                crate::handover_cancelled_text("o/r#5", "Fix it", &name, false),
+                prompt::handover_refused_prompt(
+                    &name,
+                    &events::one_line("could not stop the running agent: no such terminal"),
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::HandedOver {
+                        from: handover_launch(&name),
+                        to: handover_launch("Pi"),
+                        summary: true,
+                        by: Some("o/r#5".into()),
+                        refused: None,
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::HandedOver {
+                        from: handover_launch("Pi"),
+                        to: handover_launch(&name),
+                        summary: false,
+                        by: None,
+                        refused: Some(safe_error(&events::one_line(
+                            "could not stop the running agent: Login expired · Please run /login",
+                        ))),
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::Attached(Attach::HandedOver {
+                        launch: handover_launch(&name),
+                        from: "Pi".into(),
+                    }),
+                ),
+                crate::handover_recorded_text(
+                    "o/r#5",
+                    "Fix it",
+                    &name,
+                    Some("fable-5.1"),
+                    Some("high"),
+                    None,
+                    Some(1_234),
+                    10,
+                ),
+                crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, None, 10),
+                crate::handover_recorded_text(
+                    "o/r#5",
+                    "Fix it",
+                    &name,
+                    None,
+                    None,
+                    Some("claude --dangerously-skip-permissions"),
+                    None,
+                    10,
+                ),
+                crate::summary_quotes_a_sign_in_screen_text(&crate::driver::redact_login_phrases(
+                    "the pane said Login expired · Please run /login, so I stopped",
+                )),
                 crate::status::BlockedView::from_blocked(&b).describe(),
                 SessionBlocked {
                     session: "o/r#5".into(),
@@ -6397,6 +7492,1261 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- handovers ------------------------------------------------------
+
+    /// An item ready to be handed over: item 5 on `w5` with a live agent,
+    /// and enough on the GitHub stub for the new session's story.
+    fn handover_setup(stub: &GitHubStub) -> (Engine, crate::driver::StubDriver) {
+        let (e, d) = blocked_setup(stub, READY_SCREEN);
+        stub.set_issue(5, assigned_item(5, "alice", "u1"));
+        stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+        (e, d)
+    }
+
+    /// The whole path of `ssf handover` with a summary: recorded
+    /// synchronously, carried out on the next pass in the same workspace,
+    /// with the two posts and the overrides left on the item.
+    #[tokio::test]
+    async fn a_handover_replaces_the_session_in_the_same_workspace() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let v = e
+            .handover(
+                "o/r#5",
+                "pi",
+                Some("openai/gpt-6"),
+                Some("high"),
+                Some("Branch pushed; the parser is left."),
+                Some("o/r#5"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v["session"], "o/r#5");
+        assert_eq!(v["title"], "Fix the widget");
+        assert_eq!(v["from"]["harness"], "claude");
+        assert_eq!(v["from"]["model"], Value::Null);
+        assert_eq!(v["to"]["harness"], "pi");
+        assert_eq!(v["to"]["model"], "openai/gpt-6");
+        assert_eq!(v["to"]["effort"], "high");
+        assert_eq!(v["summary_chars"], 34);
+        // Recorded and nothing else: the agent that asked is still there.
+        assert!(e.entry(&repo(), 5).handover.is_some());
+        assert!(d.log().is_empty(), "{:?}", d.log());
+        assert!(stub.posts().is_empty());
+        // While it is pending, nothing else touches the session.
+        let err = e
+            .handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("a handover to pi is already pending"),
+            "{err:#}"
+        );
+        let err = e.tell(None, "o/r#5", "hello").await.unwrap_err();
+        assert!(
+            err.to_string().contains("a handover to pi is pending"),
+            "{err:#}"
+        );
+        assert!(!e.resume_candidates(&repo()).contains(&5));
+        // Delivery failures counted against the session that is going.
+        e.failures.insert(("o/r".into(), 5), 2);
+
+        e.run_handovers(&repo()).await;
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+        assert!(
+            log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+            "{log:?}"
+        );
+        assert_eq!(log.len(), 2, "{log:?}");
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(
+            launched[0].starts_with("pi:") && launched[0].contains("openai/gpt-6"),
+            "{launched:?}"
+        );
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover.is_none(), "carried out");
+        assert_eq!(
+            st.overrides,
+            Some(Overrides {
+                harness: "pi".into(),
+                model: Some("openai/gpt-6".into()),
+                effort: Some("high".into()),
+            })
+        );
+        // The old session is retired on the record; the workspace is not,
+        // and nothing counted against it follows the new one.
+        assert!(st.agent_session_id.is_none());
+        assert!(e.failures.is_empty());
+        // Its conversation is remembered as retired, so the transcript it
+        // wrote moments ago is not captured as the new session's.
+        assert_eq!(st.retired_session_ids, vec!["sess-5".to_string()]);
+        assert!(st.blocked.is_none());
+        assert_eq!(st.worktree_id.as_deref(), Some("w5"));
+        assert_eq!(st.branch.as_deref(), Some("refs/heads/bot/issue-5"));
+        assert!(st.seeded && st.active);
+        assert!(st.terminal_handle.is_some());
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the harness's default\n\
+             from effort: the harness's default\n\
+             to: Pi\n\
+             to model: openai/gpt-6\n\
+             to effort: high\n\
+             summary: yes\n\
+             by: o/r#5\n\
+             ```"
+        );
+        assert_eq!(
+            posts[1].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=attached -->\n\n\
+             ```ssf\n\
+             ssf attaching agent to issue:\n\
+             harness: Pi\n\
+             model: openai/gpt-6\n\
+             effort: high\n\
+             driver: orca\n\
+             branch: bot/issue-5\n\
+             handed over from: Claude Code\n\
+             ```"
+        );
+    }
+
+    /// Without a summary, and asked for by a person at a shell: the post
+    /// says both, and the new session is told to read the item.
+    #[tokio::test]
+    async fn a_handover_without_a_summary_says_so() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let log = d.log();
+        assert!(
+            log[1].starts_with("start:w5:You took over this issue from a session on Claude"),
+            "{log:?}"
+        );
+        assert_eq!(
+            e.entry(&repo(), 5).overrides,
+            Some(Overrides {
+                harness: "codex".into(),
+                model: None,
+                effort: None,
+            })
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the harness's default\n\
+             from effort: the harness's default\n\
+             to: Codex\n\
+             to model: the harness's default\n\
+             to effort: the harness's default\n\
+             summary: no\n\
+             by: a person at the terminal\n\
+             ```"
+        );
+    }
+
+    /// The new session is told the item's whole story, so what happened
+    /// between the request and the pass is in that first message and is
+    /// not delivered to it a second time by the pass that follows.
+    #[tokio::test]
+    async fn the_story_the_new_session_is_told_counts_as_delivered() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        // A comment lands after the handover was recorded: the pass runs
+        // the handovers before it looks at the item.
+        stub.set_issue(5, assigned_item(5, "alice", "u2"));
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(
+            5,
+            vec![
+                assigned_by(1, "alice"),
+                comment(2, "alice", "one more thing: keep the flag"),
+            ],
+        );
+        e.run_handovers(&repo()).await;
+        let prompts = d.prompts();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert!(
+            prompts[0].contains("one more thing: keep the flag"),
+            "the story carries the new comment: {}",
+            prompts[0]
+        );
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.updated_at.as_deref(), Some("u2"));
+        assert!(st.seen.contains_key("commented:2"), "{:?}", st.seen);
+        // The rest of the pass has nothing left to tell the new session.
+        let _ = (d.log(), stub.post_bodies());
+        e.tick_repo(&repo()).await.unwrap();
+        let log = d.log();
+        assert!(log.is_empty(), "delivered twice: {log:?}");
+    }
+
+    /// Every launch of the item after a handover uses its overrides: the
+    /// re-created workspace, and the startup pass.
+    #[tokio::test]
+    async fn the_overrides_outlive_the_handover_pass() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let _ = (d.log(), d.launches(), stub.post_bodies());
+        // The terminal is gone: the startup pass brings the session back,
+        // on the harness the handover put on the item.
+        d.with(|s| {
+            s.live.remove("w5");
+        });
+        e.entry(&repo(), 5).agent_session_id = Some("sess-5".into());
+        e.resume_interrupted(&[DriverKind::Orca]).await;
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(
+            launched[0].starts_with("codex:") && launched[0].contains("resume sess-5"),
+            "{launched:?}"
+        );
+        // And so does a workspace that has to be re-created.
+        let _ = (d.log(), stub.post_bodies());
+        d.with(|s| {
+            s.worktrees.remove("w5");
+            s.live.remove("w5");
+        });
+        e.entry(&repo(), 5).repo_id = Some("stub".into());
+        e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
+        let launched = d.launches();
+        assert!(
+            launched.iter().all(|l| l.starts_with("codex:")),
+            "{launched:?}"
+        );
+    }
+
+    /// The same harness with another model: the repository's own command
+    /// still starts the agent, the effort the repository set carries over,
+    /// and the post names the command both ends run under (without it,
+    /// `the command's` in the model line refers to nothing).
+    #[tokio::test]
+    async fn a_model_only_handover_keeps_the_repository_command() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let r = RepoConfig {
+            command: Some("claude --dangerously-skip-permissions".into()),
+            effort: Some("high".into()),
+            ..repo()
+        };
+        e.cfg.repos = vec![r.clone()];
+        let v = e
+            .handover(
+                "o/r#5",
+                "claude",
+                Some("opus"),
+                None,
+                Some("what is left"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(v["from"]["harness"], "claude");
+        assert_eq!(v["from"]["model"], Value::Null);
+        assert_eq!(v["from"]["effort"], "high");
+        assert_eq!(v["to"]["model"], "opus");
+        assert_eq!(v["to"]["effort"], "high", "the repository's effort stays");
+        e.run_handovers(&r).await;
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(
+            launched[0].starts_with("claude:")
+                && launched[0].contains("--dangerously-skip-permissions"),
+            "{launched:?}"
+        );
+        assert!(launched[0].contains("opus"), "{launched:?}");
+        // A handover on the same harness is where a transcript is most
+        // easily mixed up, so the item says one happened whether or not
+        // an id was ever captured for the session that left.
+        assert!(e.entry(&r, 5).handed_over_at.is_some());
+        assert_eq!(
+            e.entry(&r, 5).overrides,
+            Some(Overrides {
+                harness: "claude".into(),
+                model: Some("opus".into()),
+                effort: None,
+            })
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the command's\n\
+             from effort: high\n\
+             from command: claude --dangerously-skip-permissions\n\
+             to: Claude Code\n\
+             to model: opus\n\
+             to effort: high\n\
+             to command: claude --dangerously-skip-permissions\n\
+             summary: yes\n\
+             by: a person at the terminal\n\
+             ```"
+        );
+    }
+
+    /// A handover asked for on an item bound to another session's
+    /// workspace is the owning session's: one workspace, one harness in
+    /// it, and the bound item shows what its owner runs.
+    #[tokio::test]
+    async fn a_handover_on_a_bound_item_is_the_owning_session_s() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        seeded(&mut e, 6, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&repo(), 6);
+            st.shares_workspace_of = Some(5);
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.title = "Follow-up".into();
+            st.html_url = "https://gh/6".into();
+            // The bound item mirrors the owner's conversation.
+            st.agent_session_id = Some("sess-5".into());
+        }
+        let v = e
+            .handover(
+                "o/r#6",
+                "pi",
+                None,
+                None,
+                Some("what is left"),
+                Some("o/r#6"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v["session"], "o/r#5", "the owning session's");
+        assert_eq!(v["title"], "Fix the widget");
+        assert!(e.entry(&repo(), 5).handover.is_some());
+        assert!(e.entry(&repo(), 6).handover.is_none());
+        e.run_handovers(&repo()).await;
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+        assert!(log[1].starts_with("start:w5:"), "{log:?}");
+        assert!(e.entry(&repo(), 5).overrides.is_some());
+        assert!(
+            e.entry(&repo(), 6).overrides.is_none(),
+            "the override lives on the owner"
+        );
+        // The retired conversation is gone from the bound item too, and
+        // is not offered back to the new session through the mirror.
+        let bound_state = e.entry(&repo(), 6).clone();
+        assert!(bound_state.agent_session_id.is_none());
+        assert_eq!(bound_state.retired_session_ids, vec!["sess-5".to_string()]);
+        // Both items run the new harness, and say so.
+        assert_eq!(e.effective(&repo(), 6).harness, "pi");
+        let sessions = crate::status::sessions(&e.cfg, &e.state, Some(&[]));
+        let bound = sessions.iter().find(|s| s.number == 6).unwrap();
+        assert_eq!(bound.harness, "pi");
+        assert_eq!(
+            sessions.iter().find(|s| s.number == 5).unwrap().harness,
+            "pi"
+        );
+    }
+
+    /// Each synchronous refusal, with its reason.
+    #[tokio::test]
+    async fn handovers_are_refused_with_the_reason() {
+        let stub = GitHubStub::start().await;
+        let (mut e, _d) = handover_setup(&stub);
+        let msg = |r: Result<Value>| r.unwrap_err().to_string();
+        // Not a session ssf knows.
+        assert!(
+            msg(e.handover("o/r#9", "pi", None, None, None, None).await)
+                .contains("is not an agent session ssf knows")
+        );
+        // A harness nothing knows, and a model or effort the harness
+        // cannot take.
+        assert!(
+            msg(e.handover("o/r#5", "zzz", None, None, None, None).await)
+                .contains("zzz is not a harness ssf knows")
+        );
+        assert!(
+            msg(e
+                .handover("o/r#5", "pi", None, Some("turbo"), None, None)
+                .await)
+            .contains("is not a level pi accepts")
+        );
+        // Not installed here, then not signed in here.
+        e.installed = std::sync::Arc::new(|_| false);
+        assert!(
+            msg(e.handover("o/r#5", "pi", None, None, None, None).await)
+                .contains("Pi is not installed where the daemon runs")
+        );
+        e.installed = std::sync::Arc::new(|_| true);
+        probe_returning(&mut e, LoginState::SignedOut, None);
+        let err = msg(e.handover("o/r#5", "pi", None, None, None, None).await);
+        assert!(err.contains("Pi is not signed in here"), "{err}");
+        assert!(err.contains(&login::how_to_sign_in("pi")), "{err}");
+        // The signed-out answer is not remembered: an operator who signs
+        // the harness in and runs the command again is not told the same
+        // thing until the next pass, because the command drops the memo
+        // for that harness before it asks.
+        e.probe = std::sync::Arc::new(|_| Probe {
+            state: LoginState::SignedIn,
+            detail: "test".into(),
+            fingerprint: None,
+        });
+        e.handover("o/r#5", "pi", None, None, None, None)
+            .await
+            .expect("the fresh login is seen straight away");
+        e.entry(&repo(), 5).handover = None;
+        probe_returning(&mut e, LoginState::Unknown, None);
+        // The target is what the item already runs.
+        assert!(
+            msg(e.handover("o/r#5", "claude", None, None, None, None).await)
+                .contains("already on claude with that model and effort")
+        );
+        // An empty summary is not a summary: the CLI refuses it, and so
+        // does the daemon, for a request that did not come through it.
+        assert!(
+            msg(e
+                .handover("o/r#5", "pi", None, None, Some("  \n"), None)
+                .await)
+            .contains("the summary is empty")
+        );
+        // A summary that would read as the new harness's sign-in screen.
+        let err = msg(e
+            .handover(
+                "o/r#5",
+                "pi",
+                None,
+                None,
+                Some("I got stuck: the pane kept saying Please run /login"),
+                None,
+            )
+            .await);
+        assert!(
+            err.contains("would read as a harness's own sign-in screen"),
+            "{err}"
+        );
+        assert!(!crate::driver::quotes_login_prompt(&err), "{err}");
+        // A summary longer than the cap.
+        let long = "x".repeat(crate::ipc::MAX_SUMMARY_CHARS + 1);
+        assert!(
+            msg(e
+                .handover("o/r#5", "pi", None, None, Some(&long), None)
+                .await)
+            .contains("the most a handover carries is 8000")
+        );
+        // A release is pending on it.
+        e.entry(&repo(), 5).release_pending = true;
+        assert!(
+            msg(e.handover("o/r#5", "pi", None, None, None, None).await)
+                .contains("a release is pending on this item")
+        );
+        e.entry(&repo(), 5).release_pending = false;
+        // And a release is refused while a handover is pending.
+        e.handover("o/r#5", "pi", None, None, None, None)
+            .await
+            .unwrap();
+        e.entry(&repo(), 5).active = false;
+        assert!(
+            msg(e.release("o/r#5", false).await).contains("a handover to pi is pending"),
+            "a release must not race the handover"
+        );
+        // The item has no running session at all.
+        e.entry(&repo(), 5).handover = None;
+        assert!(
+            msg(e.handover("o/r#5", "pi", None, None, None, None).await)
+                .contains("the item has no running session")
+        );
+    }
+
+    /// A handover the pass cannot carry out: nothing changes, the item
+    /// says so, and the agent that asked is told to carry on.
+    #[tokio::test]
+    async fn a_handover_the_pass_cannot_carry_out_is_refused_on_the_item() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover(
+            "o/r#5",
+            "pi",
+            None,
+            None,
+            Some("what is left"),
+            Some("o/r#5"),
+        )
+        .await
+        .unwrap();
+        // The item is dropped between the request and the pass.
+        e.entry(&repo(), 5).active = false;
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover.is_none(), "the pending handover is off");
+        assert!(st.overrides.is_none(), "nothing was changed");
+        assert_eq!(st.agent_session_id.as_deref(), Some("sess-5"));
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(
+            log[0],
+            "deliver:w5:[ssf] Handover to Pi refused: the item is no longer active. "
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf not handing over issue:\n\
+             to: Pi\n\
+             to model: the harness's default\n\
+             to effort: the harness's default\n\
+             by: o/r#5\n\
+             refused: the item is no longer active\n\
+             ```"
+        );
+    }
+
+    /// The daemon restarting between the request and the pass changes
+    /// nothing: the pending handover is in the state file.
+    #[tokio::test]
+    async fn a_pending_handover_survives_a_restart() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        // As a restart leaves it: the state as written, read back.
+        let written = serde_json::to_string(&e.state).unwrap();
+        let mut e = engine_at(&stub.base);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![repo()];
+        e.state = serde_json::from_str(&written).unwrap();
+        let h = e.entry(&repo(), 5).handover.clone().unwrap();
+        assert_eq!(h.harness, "pi");
+        assert_eq!(h.summary.as_deref(), Some("half done"));
+        e.run_handovers(&repo()).await;
+        assert!(e.entry(&repo(), 5).handover.is_none());
+        assert_eq!(
+            e.entry(&repo(), 5)
+                .overrides
+                .as_ref()
+                .map(|o| o.harness.clone()),
+            Some("pi".into())
+        );
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+        assert!(log[1].starts_with("start:w5:You took over"), "{log:?}");
+    }
+
+    /// The new harness comes up at its own sign-in prompt: the session is
+    /// blocked as any other, and the old one is not brought back.
+    #[tokio::test]
+    async fn a_new_harness_at_its_sign_in_prompt_blocks_the_new_session() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| {
+            s.relaunch_screen = vec!["  Use /login to log into a provider".into(), "❯ ".into()];
+        });
+        e.handover("o/r#5", "pi", None, None, None, Some("o/r#5"))
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.overrides.is_some(), "the handover stands");
+        let b = st.blocked.clone().expect("blocked");
+        assert_eq!(b.harness, "pi");
+        assert!(b.reported);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert!(posts[0].1.contains("ssf handing over issue:"), "{posts:?}");
+        assert_eq!(
+            posts[1].1,
+            format!(
+                "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+                 ```ssf\n\
+                 ssf holding deliveries to agent on issue:\n\
+                 harness: Pi\n\
+                 reason: not signed in\n\
+                 fix: {}\n\
+                 ```",
+                login::how_to_sign_in("pi").replace('`', "")
+            )
+        );
+    }
+
+    /// The new harness cannot be started at all (a model id it refuses,
+    /// a binary that exits at once): the handover stands, the item is
+    /// blocked with the usual post and the usual recovery, and no
+    /// `attached` claims a session that is not there.
+    #[tokio::test]
+    async fn a_new_harness_that_will_not_start_blocks_the_item() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| {
+            s.start_error = Some("pi exited at once: ambiguous model gpt-5.5".into());
+        });
+        e.handover(
+            "o/r#5",
+            "pi",
+            Some("openai/gpt-6"),
+            None,
+            None,
+            Some("o/r#5"),
+        )
+        .await
+        .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover.is_none(), "carried out, not left pending");
+        assert!(st.overrides.is_some(), "the handover stands");
+        assert!(st.terminal_handle.is_none(), "nothing is running");
+        let b = st.blocked.clone().expect("blocked");
+        // The login check cannot tell (the default in these tests), so
+        // the block stands as what was seen: the harness would not start.
+        assert_eq!(b.reason, Blocked::START);
+        assert_eq!(b.harness, "pi");
+        assert!(b.reported);
+        assert!(b.detail.contains("ambiguous model"), "{}", b.detail);
+        // The item says both, in order, and nothing says a session attached.
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert!(posts[0].1.contains("ssf handing over issue:"), "{posts:?}");
+        assert_eq!(
+            posts[1].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=blocked -->\n\n\
+             ```ssf\n\
+             ssf holding deliveries to agent on issue:\n\
+             harness: Pi\n\
+             reason: could not be started: pi exited at once: ambiguous model gpt-5.5\n\
+             fix: start Pi by hand in the workspace, or fix the model or effort and hand over again\n\
+             ```"
+        );
+        // A person sees it in the status commands.
+        let view = crate::status::BlockedView::from_blocked(&b);
+        assert!(
+            view.describe().starts_with("Pi could not be started since"),
+            "{}",
+            view.describe()
+        );
+        // And the recovery is the usual one: after the wait the harness is
+        // started again in the same workspace, on the item's overrides.
+        let _ = (d.log(), d.launches());
+        if let Some(cur) = e.entry(&repo(), 5).blocked.as_mut() {
+            cur.since = "2020-01-01T00:00:00Z".into();
+        }
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        assert!(e.entry(&repo(), 5).blocked.is_none(), "the block is lifted");
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(launched[0].starts_with("pi:"), "{launched:?}");
+        let log = d.log();
+        assert!(log.iter().any(|l| l.starts_with("relaunch:w5:")), "{log:?}");
+    }
+
+    /// `ssf handover --cancel`: the way back out of a pending handover,
+    /// which otherwise refuses every other command on the item.
+    #[tokio::test]
+    async fn a_pending_handover_can_be_cancelled() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let nothing = e
+            .handle_request(crate::ipc::Request::CancelHandover {
+                session: "o/r#5".into(),
+            })
+            .await;
+        assert!(!nothing.ok);
+        assert!(
+            nothing.error.unwrap().contains("no handover is pending"),
+            "refused with the reason"
+        );
+        e.handover("o/r#5", "pi", None, None, Some("half done"), Some("o/r#5"))
+            .await
+            .unwrap();
+        let r = e
+            .handle_request(crate::ipc::Request::CancelHandover {
+                session: "o/r#5".into(),
+            })
+            .await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data["session"], "o/r#5");
+        assert_eq!(r.data["harness_name"], "Pi");
+        assert_eq!(r.data["told"], true);
+        // The agent that was told to stop hears that it carries on, and
+        // nothing is posted on the item: the handover was never announced.
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(
+            log[0],
+            "deliver:w5:[ssf] The handover to Pi was cancelled: this session keeps t"
+        );
+        assert!(stub.posts().is_empty());
+        // Nothing pending: the pass leaves the session alone and the
+        // ordinary commands work again.
+        assert!(e.entry(&repo(), 5).handover.is_none());
+        e.run_handovers(&repo()).await;
+        assert!(d.log().is_empty(), "the session stays");
+        assert!(e.entry(&repo(), 5).overrides.is_none());
+        assert!(e.resume_candidates(&repo()).contains(&5));
+        e.tell(None, "o/r#5", "hello").await.unwrap();
+    }
+
+    /// A session blocked on its harness's sign-in prompt may hand over --
+    /// that is a way out of the block -- and the hold on the item is
+    /// closed when it does, rather than standing over a session that is
+    /// no longer there.
+    #[tokio::test]
+    async fn a_handover_closes_an_outstanding_hold_on_the_item() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.entry(&repo(), 5).blocked = Some(Blocked {
+            reason: Blocked::LOGIN.into(),
+            harness: "claude".into(),
+            detail: "Login expired · Please run /login".into(),
+            since: (chrono::Utc::now() - chrono::Duration::minutes(20))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            reported: true,
+            credential: None,
+            retried_at: None,
+            retries: 0,
+            told_at: None,
+            tell_failures: 0,
+        });
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "{:?}", st.blocked);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 3, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```ssf\n\
+             ssf resuming deliveries to agent on issue:\n\
+             harness: Claude Code\n\
+             held for: 20 min\n\
+             conversation: handed over\n\
+             ```"
+        );
+        assert!(posts[1].1.contains("ssf handing over issue:"), "{posts:?}");
+        assert!(
+            posts[2].1.contains("ssf attaching agent to issue:"),
+            "{posts:?}"
+        );
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+    }
+
+    /// A harness that would not start and is not signed in where the
+    /// daemon runs is recorded as the sign-in block it really is: that is
+    /// the thing to fix, and the recovery from #85 is the one that fits.
+    #[tokio::test]
+    async fn a_harness_that_will_not_start_and_is_signed_out_is_a_login_block() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        // Accepted while the check cannot tell; signed out by the time
+        // the pass runs (a login that lapsed in between).
+        e.handover("o/r#5", "pi", None, None, None, None)
+            .await
+            .unwrap();
+        probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
+        e.run_handovers(&repo()).await;
+        let b = e.entry(&repo(), 5).blocked.clone().expect("blocked");
+        assert_eq!(b.reason, Blocked::LOGIN);
+        assert_eq!(b.harness, "pi");
+        assert_eq!(b.credential.as_deref(), Some("cred-old"));
+        assert!(
+            b.detail.contains("exited at once"),
+            "what was seen is kept: {}",
+            b.detail
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 2, "{posts:?}");
+        assert!(posts[1].1.contains("reason: not signed in"), "{posts:?}");
+        assert!(
+            posts[1].1.contains(&format!(
+                "fix: {}",
+                login::how_to_sign_in("pi").replace('`', "")
+            )),
+            "{posts:?}"
+        );
+        // And it recovers as a sign-in block does: nothing while the
+        // check still says signed out, whatever the backoff says.
+        let _ = d.log();
+        e.entry(&repo(), 5).blocked.as_mut().unwrap().since = "2020-01-01T00:00:00Z".into();
+        let st = e.entry(&repo(), 5).clone();
+        e.recover(&repo(), 5, &st, b).await;
+        assert!(d.log().is_empty(), "still signed out");
+        assert!(e.entry(&repo(), 5).blocked.is_some());
+    }
+
+    /// The summary is the point of a handover, so it outlives a new
+    /// harness that will not come up: it waits on the item until a
+    /// session has read it, and the restart carries it.
+    #[tokio::test]
+    async fn the_summary_outlives_a_harness_that_would_not_start() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        e.handover(
+            "o/r#5",
+            "pi",
+            None,
+            None,
+            Some("The parser is half migrated; the flag is unverified."),
+            Some("o/r#5"),
+        )
+        .await
+        .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(
+            st.blocked.as_ref().map(|b| b.reason.as_str()),
+            Some("start")
+        );
+        let note = st.handover_note.clone().expect("the summary is kept");
+        assert_eq!(note.from, "Claude Code");
+        assert!(note.summary.unwrap().contains("half migrated"));
+        // A restart that comes up at a sign-in prompt read the message as
+        // a screen, not as a session: the block becomes the sign-in one
+        // and the summary is still owed.
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        d.with(|s| s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect());
+        e.entry(&repo(), 5).blocked.as_mut().unwrap().since = "2020-01-01T00:00:00Z".into();
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(
+            st.blocked.as_ref().map(|b| b.reason.as_str()),
+            Some("login"),
+            "{:?}",
+            st.blocked
+        );
+        assert!(
+            st.handover_note.is_some(),
+            "the message went into the sign-in screen, so the summary waits"
+        );
+        // The restart after the backoff tells the new harness what the
+        // outgoing agent left, then the item's story.
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        d.with(|s| s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect());
+        {
+            let b = e.entry(&repo(), 5).blocked.as_mut().unwrap();
+            b.since = "2020-01-01T00:00:00Z".into();
+            b.retried_at = None;
+        }
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        let prompts = d.prompts();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert!(
+            prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+            "{}",
+            prompts[0]
+        );
+        assert!(
+            prompts[0].contains("The parser is half migrated; the flag is unverified."),
+            "the summary is delivered: {}",
+            prompts[0]
+        );
+        // Read once: the next start is not given it again.
+        assert!(e.entry(&repo(), 5).handover_note.is_none());
+    }
+
+    /// A `start` that failed on a harness that is running all the same
+    /// (the pane came up but never settled): the block is not lifted on
+    /// the screen alone, the session is given what it was never told.
+    #[tokio::test]
+    async fn a_started_harness_behind_a_start_block_is_told_before_the_block_lifts() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        assert!(e.entry(&repo(), 5).blocked.is_some());
+        // The pane is there after all, and idle.
+        d.seed("w5", "t9", READY_SCREEN);
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        // Delivered into the pane that is there, not restarted.
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(
+            log[0].starts_with("deliver:w5:You took over this issue"),
+            "{log:?}"
+        );
+        let prompts = d.prompts();
+        assert!(prompts[0].contains("half done"), "{}", prompts[0]);
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "the block is lifted");
+        assert!(st.handover_note.is_none(), "read once");
+        assert_eq!(st.terminal_handle.as_deref(), Some("t9"));
+        // What the story showed counts as seen, so the pass that follows
+        // does not deliver it again.
+        assert_eq!(st.updated_at.as_deref(), Some("u1"));
+        assert!(st.seen.contains_key("assigned:1"), "{:?}", st.seen);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0]
+                .1
+                .contains("ssf resuming deliveries to agent on issue:"),
+            "{posts:?}"
+        );
+    }
+
+    /// A handover whose harness comes up at its sign-in prompt: the first
+    /// message went into that screen, so nothing has read the summary.
+    /// A person signing in at the terminal is not enough to lift the
+    /// block on its own -- the session still has to be told.
+    #[tokio::test]
+    async fn a_handover_blocked_at_the_sign_in_prompt_is_told_when_a_person_signs_in() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect());
+        e.handover("o/r#5", "pi", None, None, Some("half migrated"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(
+            st.blocked.as_ref().map(|b| b.reason.as_str()),
+            Some("login")
+        );
+        assert!(st.handover_note.is_some(), "nothing has read the summary");
+        // A person runs the sign-in in the terminal: the pane that is
+        // there is past its prompt, but was never told what it is for.
+        let handle = st.terminal_handle.clone().expect("the pane came up");
+        d.with(|s| {
+            s.screens.insert(
+                handle.clone(),
+                READY_SCREEN.iter().map(|l| l.to_string()).collect(),
+            )
+        });
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        // Told where it stands, not restarted.
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(
+            log[0].starts_with("deliver:w5:You took over this issue"),
+            "{log:?}"
+        );
+        let prompts = d.prompts();
+        assert!(prompts[0].contains("half migrated"), "{}", prompts[0]);
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "the block is lifted");
+        assert!(st.handover_note.is_none(), "read once");
+        assert_eq!(st.terminal_handle.as_deref(), Some(handle.as_str()));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0]
+                .1
+                .contains("ssf resuming deliveries to agent on issue:"),
+            "{posts:?}"
+        );
+    }
+
+    /// Telling a harness that is running costs a read of the item, so it
+    /// is not tried on every pass while it fails: the attempt is noted
+    /// and the next one waits for the backoff.
+    #[tokio::test]
+    async fn a_started_harness_is_told_once_per_backoff() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        // The pane is there after all, and the item cannot be read: the
+        // message it is owed cannot be assembled.
+        d.seed("w5", "t9", READY_SCREEN);
+        stub.issues.lock().unwrap().remove(&5);
+        let _ = (d.log(), d.prompts(), stub.post_bodies(), stub.hits());
+        for _ in 0..2 {
+            let st = e.entry(&repo(), 5).clone();
+            let b = st.blocked.clone().expect("still blocked");
+            e.recover(&repo(), 5, &st, b).await;
+        }
+        let reads = stub
+            .hits()
+            .into_iter()
+            .filter(|h| h.starts_with("/repos/o/r/issues/5"))
+            .count();
+        assert_eq!(reads, 1, "one attempt, not one per pass");
+        assert!(d.prompts().is_empty(), "nothing landed");
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.expect("still blocked");
+        assert_eq!(b.tell_failures, 1, "the next attempt waits");
+        assert!(b.told_at.is_some());
+        // The restart backoff is untouched: telling is not a restart.
+        assert_eq!(b.retries, 0);
+        assert!(b.retried_at.is_none());
+        assert!(st.handover_note.is_some(), "the summary is still owed");
+    }
+
+    /// The telling waits on its own backoff, not the restart's: a
+    /// restart that came back to the prompt a moment ago says nothing
+    /// about a person who has just signed in at the pane it left, and
+    /// that person is answered on the next pass.
+    #[tokio::test]
+    async fn a_failed_restart_does_not_hold_up_telling_a_running_harness() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        // A restart was tried a moment ago and got nowhere.
+        {
+            let b = e.entry(&repo(), 5).blocked.as_mut().unwrap();
+            b.retries = 1;
+            b.retried_at = Some(now_iso());
+        }
+        // The pane is there after all, and past any prompt.
+        d.seed("w5", "t9", READY_SCREEN);
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        let prompts = d.prompts();
+        assert_eq!(prompts.len(), 1, "told at once: {prompts:?}");
+        assert!(prompts[0].contains("half done"), "{}", prompts[0]);
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "the block is lifted");
+        assert!(st.handover_note.is_none(), "read once");
+    }
+
+    /// The pane dies as the message goes out and the harness started in
+    /// its place comes up at a sign-in screen: what that screen said is
+    /// the block from now on, but it is the same hold -- reported once,
+    /// held from when it began, with both backoffs where they were.
+    #[tokio::test]
+    async fn a_message_that_lands_in_a_sign_in_screen_keeps_the_hold_it_had() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let before = e.entry(&repo(), 5).blocked.clone().expect("blocked");
+        assert!(before.reported, "the item was told of the hold");
+        // Nothing is live in the workspace by the time the message goes
+        // out, and the harness started in its place shows Pi's sign-in
+        // prompt.
+        d.with(|s| {
+            s.live.remove("w5");
+            s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        e.tell_a_started_harness(&repo(), 5, &before).await;
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().expect("still blocked");
+        assert_eq!(b.reason, Blocked::LOGIN, "the fresher answer stands");
+        assert!(b.detail.contains("/login"), "{}", b.detail);
+        assert_eq!(b.since, before.since, "the same hold, from when it began");
+        assert!(b.reported, "and the item is not told of it twice");
+        assert_eq!(b.tell_failures, 1, "the message did not land");
+        assert!(st.handover_note.is_some(), "the summary is still owed");
+        // The pass that follows finds it reported: no second `blocked`.
+        e.recover(&repo(), 5, &st, b).await;
+        let posts = stub.post_bodies();
+        let blocked = posts
+            .iter()
+            .filter(|(_, body)| body.contains("event=blocked"))
+            .count();
+        assert_eq!(blocked, 1, "one hold, one post: {posts:?}");
+    }
+
+    /// A second handover that brings no summary of its own does not
+    /// destroy the one still waiting: the session that wrote it is long
+    /// gone, and the harness starting now is the first that can act on
+    /// it. One that does bring a summary replaces it (the newer account
+    /// of where the item stands), which is what the test above shows.
+    #[tokio::test]
+    async fn a_second_handover_without_a_summary_keeps_the_one_still_owed() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half migrated"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        assert!(
+            e.entry(&repo(), 5).handover_note.is_some(),
+            "nobody read it"
+        );
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        // Handed on again with nothing to add: Codex still has to be
+        // told what the session that did the work left.
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let prompts = d.prompts();
+        assert!(
+            prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+            "{}",
+            prompts[0]
+        );
+        assert!(prompts[0].contains("half migrated"), "{}", prompts[0]);
+        assert!(
+            e.entry(&repo(), 5).handover_note.is_none(),
+            "read at last, so nothing is owed"
+        );
+        // The post says what the new session was given, not what the
+        // command carried.
+        let posts = stub.post_bodies();
+        let handed = posts
+            .iter()
+            .find(|(_, b)| b.contains("event=handed-over"))
+            .expect("the handover is posted");
+        assert!(handed.1.contains("\nsummary: yes\n"), "{}", handed.1);
+    }
+
+    /// A second handover on an item whose first one never ran: the words
+    /// the new session is given still name the session that did the work,
+    /// not the harness that failed to come up.
+    #[tokio::test]
+    async fn a_second_handover_names_the_session_that_did_the_work() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half migrated"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        assert_eq!(
+            e.entry(&repo(), 5)
+                .handover_note
+                .as_ref()
+                .map(|n| n.from.as_str()),
+            Some("Claude Code")
+        );
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        e.handover(
+            "o/r#5",
+            "codex",
+            None,
+            None,
+            Some("still half migrated"),
+            None,
+        )
+        .await
+        .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover_note.is_none(), "Codex took it on");
+        let prompts = d.prompts();
+        assert!(
+            prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+            "{}",
+            prompts[0]
+        );
+        assert!(prompts[0].contains("still half migrated"), "{}", prompts[0]);
+        // The post says what the item was configured on all the same.
+        let posts = stub.post_bodies();
+        let handed = posts
+            .iter()
+            .find(|(_, b)| b.contains("event=handed-over"))
+            .expect("the handover is posted");
+        assert!(handed.1.contains("\nfrom: Pi\n"), "{posts:?}");
+        assert!(handed.1.contains("\nto: Codex\n"), "{posts:?}");
+    }
+
+    /// What a handover retires: the conversation on the record and the
+    /// last one its harness wrote in the workspace. The second covers the
+    /// session ssf never captured an id for, and the transcript flushed
+    /// on the way out inside the second `handed_over_at` is stamped to.
+    #[test]
+    fn a_handover_retires_the_workspace_s_last_conversation_too() {
+        let id = |s: &str| Some(s.to_string());
+        // Both known and different: both go.
+        assert_eq!(
+            retired_conversations(id("sess-5"), id("sess-6")),
+            vec!["sess-5".to_string(), "sess-6".to_string()]
+        );
+        // The usual case: the record's id is the newest transcript.
+        assert_eq!(
+            retired_conversations(id("sess-5"), id("sess-5")),
+            vec!["sess-5".to_string()]
+        );
+        // Never captured: the transcript alone is what there is to skip.
+        assert_eq!(
+            retired_conversations(None, id("sess-6")),
+            vec!["sess-6".to_string()]
+        );
+        // A harness that keeps no transcripts (or an empty workspace):
+        // nothing but the record's id.
+        assert_eq!(
+            retired_conversations(id("sess-5"), None),
+            vec!["sess-5".to_string()]
+        );
+        assert!(retired_conversations(None, None).is_empty());
+        // On the record, both are remembered and neither twice.
+        let mut st = IssueState::default();
+        retire(&mut st, &retired_conversations(id("sess-5"), id("sess-6")));
+        retire(&mut st, &retired_conversations(id("sess-6"), None));
+        assert_eq!(st.retired_session_ids, vec!["sess-5", "sess-6"]);
+    }
+
+    /// Where `capture_sessions` starts looking for a transcript: a moment
+    /// before the launch, but never back past a handover, whose outgoing
+    /// agent wrote its own transcript in those same seconds.
+    #[test]
+    fn the_capture_window_never_reaches_back_past_a_handover() {
+        let at = |s: &str| SystemTime::from(chrono::DateTime::parse_from_rfc3339(s).unwrap());
+        let launched = "2026-09-07T12:00:30Z";
+        // No handover: the slack stands.
+        assert_eq!(
+            capture_since(launched, None),
+            at("2026-09-07T12:00:25Z"),
+            "five seconds of slack"
+        );
+        // The handover is inside the slack: the window starts there.
+        assert_eq!(
+            capture_since(launched, Some("2026-09-07T12:00:28Z")),
+            at("2026-09-07T12:00:28Z")
+        );
+        // A later relaunch is long past it: the slack stands again.
+        assert_eq!(
+            capture_since("2026-09-07T13:00:30Z", Some("2026-09-07T12:00:28Z")),
+            at("2026-09-07T13:00:25Z")
+        );
+        // Nothing readable: everything is too new to adopt.
+        assert_eq!(capture_since("not a time", None), SystemTime::UNIX_EPOCH);
     }
 
     fn assigned_item(number: u64, author: &str, updated_at: &str) -> Value {

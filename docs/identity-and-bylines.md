@@ -190,6 +190,14 @@ installed and that the wrapper links to the running ssf. When posts are shown
 to an agent, the byline and tag are stripped and replaced by "(from the
 agent on owner/repo#N)".
 
+**A session that took an item over.** A
+[handover](sessions.md#handover) replaces the agent, not the item: the
+new session has the same identity, so its posts carry the same
+`🤖#N says:` byline and the same origin tag as the ones before it, and
+everything counted per session on the item keeps adding up. The change of
+harness is visible only in the daemon's own `handed-over` and `attached`
+posts.
+
 **A person posting as the bot.** Since every session stamps its posts, a
 comment, review or item by the bot login *without* a tag was typed by a
 person using the bot account (someone who enrolled their own GitHub account

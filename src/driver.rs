@@ -92,7 +92,35 @@ pub const HARNESSES: &[&str] = &[
 /// that came from elsewhere (an error message, say) and might be quoted
 /// on a screen later.
 pub fn quotes_login_prompt(text: &str) -> bool {
-    HARNESSES.iter().any(|h| login_dialog_in(h, text).is_some())
+    login_prompt_line(text).is_some()
+}
+
+/// The line of `text` that carries any harness's sign-in phrase, as it is
+/// written there, for a message that has to name what is wrong (redact it
+/// with `redact_login_phrases` before showing it anywhere a harness
+/// screen is read).
+///
+/// The whole text is read, line by line, unlike [`login_dialog`], which
+/// judges a screen: there only the bottom counts and an echoed `[ssf]`
+/// block is skipped, because an agent quoting the words on its own screen
+/// is not a sign-in prompt. Text ssf is about to write down or paste
+/// somewhere gets no such benefit of the doubt: a phrase forty lines into
+/// a handover summary is still a phrase that can end up at the bottom of
+/// a screen, and `[ssf]` in it proves nothing about who wrote it.
+pub fn login_prompt_line(text: &str) -> Option<String> {
+    let phrases = COMMON_LOGIN_PHRASES
+        .iter()
+        .chain(HARNESSES.iter().flat_map(|h| login_phrases(h).iter()));
+    text.lines().map(str::trim).find_map(|line| {
+        let lower = line.to_lowercase();
+        phrases.clone().find(|p| lower.contains(**p))?;
+        Some(
+            line.trim_matches(|c: char| c == '\u{2502}' || c == '\u{2503}' || c.is_whitespace())
+                .chars()
+                .take(120)
+                .collect(),
+        )
+    })
 }
 
 /// What every harness says one way or another when it is not signed in.
@@ -424,7 +452,7 @@ impl Driver {
                 Ok(handle)
             }
             #[cfg(test)]
-            Driver::Stub(d) => d.start(worktree_id, text),
+            Driver::Stub(d) => d.start(worktree_id, command, harness, text),
         }
     }
 
@@ -630,6 +658,15 @@ pub struct StubState {
     pub relaunch_screen: Vec<String>,
     /// `stop:<handle>`, `deliver:<worktree>:<first line>`, `relaunch:<worktree>:<resumed>`.
     pub log: Vec<String>,
+    /// Every harness started, as `<harness>:<command>`: what a start or a
+    /// relaunch would run, for the tests about per-item overrides.
+    pub launches: Vec<String>,
+    /// The whole text of every start and every delivery (the `log` keeps
+    /// only its first line), for the tests about what a session is told.
+    pub prompts: Vec<String>,
+    /// When set, the next `start` fails with this message: a harness that
+    /// cannot be started at all.
+    pub start_error: Option<String>,
     handles: u32,
 }
 
@@ -662,6 +699,16 @@ impl StubDriver {
         self.with(|s| std::mem::take(&mut s.log))
     }
 
+    /// The harnesses started since the last call, as `<harness>:<command>`.
+    pub fn launches(&self) -> Vec<String> {
+        self.with(|s| std::mem::take(&mut s.launches))
+    }
+
+    /// The first messages of the starts since the last call, whole.
+    pub fn prompts(&self) -> Vec<String> {
+        self.with(|s| std::mem::take(&mut s.prompts))
+    }
+
     fn ensure_project(&self) -> Result<ProjectSetup> {
         Ok(ProjectSetup {
             repo_id: "stub".into(),
@@ -688,9 +735,14 @@ impl StubDriver {
         h
     }
 
-    fn start(&self, worktree_id: &str, text: &str) -> Result<String> {
+    fn start(&self, worktree_id: &str, command: &str, harness: &str, text: &str) -> Result<String> {
         self.with(|s| {
+            if let Some(why) = s.start_error.take() {
+                bail!("{why}");
+            }
             let h = Self::new_handle(s, worktree_id);
+            s.prompts.push(text.to_string());
+            s.launches.push(format!("{harness}:{command}"));
             s.log
                 .push(format!("start:{worktree_id}:{}", first_line(text)));
             Ok(h)
@@ -758,6 +810,7 @@ impl StubDriver {
                 bail!("{worktree_id}: no such workspace");
             }
             if let Some(h) = s.live.get(worktree_id).cloned() {
+                s.prompts.push(text.to_string());
                 s.log
                     .push(format!("deliver:{worktree_id}:{}", first_line(text)));
                 return Ok(Delivery {
@@ -767,12 +820,18 @@ impl StubDriver {
                 });
             }
             let resumed = relaunch.resume_command.is_some();
+            s.launches.push(format!(
+                "{}:{}",
+                relaunch.harness,
+                relaunch.resume_command.unwrap_or(relaunch.command)
+            ));
             let h = Self::new_handle(s, worktree_id);
             s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
             let body = match relaunch.text {
                 Some(full) if !resumed => full,
                 _ => text,
             };
+            s.prompts.push(body.to_string());
             s.log
                 .push(format!("deliver:{worktree_id}:{}", first_line(body)));
             Ok(Delivery {
@@ -1261,6 +1320,35 @@ contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2.
         assert!(login_dialog("claude", expired).is_some());
         let after_echo = "❯ [ssf] New activity on #5:\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
         assert!(login_dialog("claude", after_echo).is_some());
+    }
+
+    /// Text ssf is about to write down or paste somewhere is read whole:
+    /// neither the screen check's tail window nor its `[ssf]` echo rule
+    /// applies, because nothing vouches for who wrote it.
+    #[test]
+    fn text_of_ssf_s_own_is_read_line_by_line() {
+        let mut summary = String::from(
+            "Handing over the parser work.\n\nThe pane kept saying \"Please run /login\", which is \
+why I gave up on it.\n",
+        );
+        for i in 0..40 {
+            summary.push_str(&format!("- step {i}: done\n"));
+        }
+        assert_eq!(
+            login_prompt_line(&summary).as_deref(),
+            Some("The pane kept saying \"Please run /login\", which is why I gave up on it."),
+            "a phrase in line three of a long text still counts"
+        );
+        assert_eq!(
+            login_dialog("claude", &summary),
+            None,
+            "the same text as a screen is judged by its bottom alone"
+        );
+        // An `[ssf]` marker in it vouches for nothing: anyone can write one.
+        let echoed = "[ssf] the note said:\n- not logged in, it said\n";
+        assert!(quotes_login_prompt(echoed));
+        assert_eq!(login_dialog("claude", echoed), None);
+        assert_eq!(login_prompt_line("all good, branch pushed"), None);
     }
 
     #[test]

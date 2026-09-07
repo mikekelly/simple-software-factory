@@ -52,6 +52,10 @@ pub enum Attach {
         handed_off_from: Option<String>,
         conversation: Conversation,
     },
+    /// A handover (`ssf handover`) ended the session that was on the item
+    /// and started this one in the same workspace; `from` is the display
+    /// name of the harness it was handed over from.
+    HandedOver { launch: Launch, from: String },
     /// The workspace had to be re-created and the harness started in it
     /// again; `reason` is the word for why (`workspace gone`, `driver
     /// switch`).
@@ -71,6 +75,10 @@ pub enum Conversation {
     Fresh,
     /// The harness was not started again at all: it carried on.
     Kept,
+    /// The hold ended because the item was handed over: the session it
+    /// was held for is gone, and the one on the item now is another
+    /// harness's (`ssf handover`).
+    HandedOver,
 }
 
 impl Conversation {
@@ -84,6 +92,7 @@ impl Conversation {
             Self::Resumed => "resumed",
             Self::Fresh => "fresh",
             Self::Kept => "kept",
+            Self::HandedOver => "handed over",
         }
     }
 }
@@ -101,9 +110,14 @@ pub enum Event {
         conversation: Conversation,
         after: &'static str,
     },
-    /// Deliveries are held: the harness is not signed in; `fix` is what a
-    /// person runs (`login::how_to_sign_in`).
-    Blocked { harness: String, fix: String },
+    /// Deliveries are held: the harness is not signed in, or could not
+    /// be started at all. `reason` says which (`not signed in`, `could
+    /// not be started: <error>`), `fix` what a person does about it.
+    Blocked {
+        harness: String,
+        reason: String,
+        fix: String,
+    },
     /// The hold is over; `held` is how long it lasted.
     Unblocked {
         harness: String,
@@ -113,6 +127,18 @@ pub enum Event {
     /// The binding was dropped after `failures` consecutive failures and
     /// the item is re-onboarded.
     GaveUp { failures: u32, last_error: String },
+    /// A session handed its item to a new session on another harness,
+    /// model or effort (`ssf handover`): `from` is what it ran with,
+    /// `to` what the new one runs with. `by` is the session that asked
+    /// (`None` for a person at a terminal). A `refused` handover was
+    /// recorded and then could not be carried out; nothing changed.
+    HandedOver {
+        from: Launch,
+        to: Launch,
+        summary: bool,
+        by: Option<String>,
+        refused: Option<String>,
+    },
     /// The workspace was removed, `by` `ssf release` or `ssf purge`.
     Released {
         by: &'static str,
@@ -138,6 +164,7 @@ impl Event {
             Self::Blocked { .. } => "blocked",
             Self::Unblocked { .. } => "unblocked",
             Self::GaveUp { .. } => "gave-up",
+            Self::HandedOver { .. } => "handed-over",
             Self::Released { .. } => "released",
         }
     }
@@ -173,6 +200,11 @@ impl Event {
                     ("shares", format!("workspace of #{shares}")),
                 ],
             ),
+            Self::Attached(Attach::HandedOver { launch, from }) => {
+                let mut lines = launch.lines();
+                lines.push(("handed over from", from.clone()));
+                (format!("attaching agent to {item_kind}"), lines)
+            }
             Self::Attached(Attach::ReCreated {
                 launch,
                 reason,
@@ -208,11 +240,15 @@ impl Event {
                     ("after", after.to_string()),
                 ],
             ),
-            Self::Blocked { harness, fix } => (
+            Self::Blocked {
+                harness,
+                reason,
+                fix,
+            } => (
                 format!("holding deliveries to agent on {item_kind}"),
                 vec![
                     ("harness", harness.clone()),
-                    ("reason", "not signed in".into()),
+                    ("reason", reason.clone()),
                     ("fix", fix.clone()),
                 ],
             ),
@@ -239,6 +275,47 @@ impl Event {
                     ("next", "re-onboarding the item".into()),
                 ],
             ),
+            Self::HandedOver {
+                from,
+                to,
+                summary,
+                by,
+                refused,
+            } => {
+                let who = match by {
+                    Some(session) => session.clone(),
+                    None => "a person at the terminal".to_string(),
+                };
+                let mut lines = Vec::new();
+                if refused.is_none() {
+                    lines.push(("from", from.harness.clone()));
+                    lines.push(("from model", from.model_value()));
+                    lines.push(("from effort", from.effort_value()));
+                    // The model and effort lines say `the command's` when
+                    // a command is configured, so the command is named
+                    // here as it is in the `attached` block.
+                    if let Some(c) = set(&from.command) {
+                        lines.push(("from command", c));
+                    }
+                }
+                lines.push(("to", to.harness.clone()));
+                lines.push(("to model", to.model_value()));
+                lines.push(("to effort", to.effort_value()));
+                if let Some(c) = set(&to.command) {
+                    lines.push(("to command", c));
+                }
+                if refused.is_none() {
+                    lines.push(("summary", if *summary { "yes" } else { "no" }.into()));
+                }
+                lines.push(("by", who));
+                match refused {
+                    None => (format!("handing over {item_kind}"), lines),
+                    Some(why) => {
+                        lines.push(("refused", one_line(why)));
+                        (format!("not handing over {item_kind}"), lines)
+                    }
+                }
+            }
             Self::Released { by, forced, branch } => {
                 let mut lines = vec![("by", by.to_string())];
                 if *forced {
@@ -253,25 +330,41 @@ impl Event {
     }
 }
 
+/// A setting as it was given, or nothing when it is blank.
+fn set(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 impl Launch {
-    fn lines(&self) -> Vec<(&'static str, String)> {
-        let set = |v: &Option<String>| {
-            v.as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let command = set(&self.command);
-        let fallback = if command.is_some() {
+    /// What decides an unset model or effort: the configured command when
+    /// there is one, else the harness itself.
+    fn fallback(&self) -> &'static str {
+        if set(&self.command).is_some() {
             COMMAND_DEFAULT
         } else {
             HARNESS_DEFAULT
-        };
-        let or_default = |v: &Option<String>| set(v).unwrap_or_else(|| fallback.into());
+        }
+    }
+
+    /// The model line's value: as configured, or what decides it.
+    pub fn model_value(&self) -> String {
+        set(&self.model).unwrap_or_else(|| self.fallback().into())
+    }
+
+    /// The effort line's value: as configured, or what decides it.
+    pub fn effort_value(&self) -> String {
+        set(&self.effort).unwrap_or_else(|| self.fallback().into())
+    }
+
+    fn lines(&self) -> Vec<(&'static str, String)> {
+        let command = set(&self.command);
         let mut lines = vec![
             ("harness", self.harness.clone()),
-            ("model", or_default(&self.model)),
-            ("effort", or_default(&self.effort)),
+            ("model", self.model_value()),
+            ("effort", self.effort_value()),
         ];
         if let Some(c) = command {
             lines.push(("command", c));
@@ -540,6 +633,185 @@ mod tests {
     }
 
     #[test]
+    fn handed_over_names_both_ends() {
+        let ev = Event::HandedOver {
+            from: launch(Some("bot/issue-12-fix")),
+            to: Launch {
+                harness: "Pi".into(),
+                model: None,
+                effort: None,
+                ..launch(None)
+            },
+            summary: true,
+            by: Some("acme/widgets#12".into()),
+            refused: None,
+        };
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "handed-over");
+        assert_eq!(
+            text,
+            "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: fable-5.1\n\
+             from effort: high\n\
+             to: Pi\n\
+             to model: the harness's default\n\
+             to effort: the harness's default\n\
+             summary: yes\n\
+             by: acme/widgets#12\n\
+             ```"
+        );
+        // No summary, and nobody's session behind it.
+        let ev = Event::HandedOver {
+            from: launch(Some("bot/issue-12-fix")),
+            to: Launch {
+                harness: "Pi".into(),
+                model: None,
+                effort: None,
+                ..launch(None)
+            },
+            summary: false,
+            by: None,
+            refused: None,
+        };
+        assert!(
+            ev.block("pull request")
+                .starts_with("```ssf\nssf handing over pull request:\n"),
+            "{}",
+            ev.block("pull request")
+        );
+        assert!(
+            ev.block("issue")
+                .ends_with("summary: no\nby: a person at the terminal\n```"),
+            "{}",
+            ev.block("issue")
+        );
+    }
+
+    /// A configured command decides an unset model or effort, so the
+    /// block names it on the side that has one, as the `attached` block
+    /// does: without it `the command's` refers to nothing.
+    #[test]
+    fn a_handover_names_a_configured_command_on_each_side() {
+        let ev = Event::HandedOver {
+            from: Launch {
+                model: None,
+                effort: None,
+                command: Some("claude --model opus".into()),
+                ..launch(Some("bot/issue-12-fix"))
+            },
+            to: Launch {
+                harness: "Codex".into(),
+                model: None,
+                effort: Some("medium".into()),
+                command: Some("codex --search".into()),
+                ..launch(None)
+            },
+            summary: true,
+            by: None,
+            refused: None,
+        };
+        check_shape(&comment(&o(), "issue", &ev), "handed-over");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the command's\n\
+             from effort: the command's\n\
+             from command: claude --model opus\n\
+             to: Codex\n\
+             to model: the command's\n\
+             to effort: medium\n\
+             to command: codex --search\n\
+             summary: yes\n\
+             by: a person at the terminal\n\
+             ```"
+        );
+        // A refusal says nothing about the side that stays.
+        let Event::HandedOver { from, to, .. } = ev else {
+            unreachable!()
+        };
+        let refused = Event::HandedOver {
+            from,
+            to,
+            summary: true,
+            by: None,
+            refused: Some("the item is no longer active".into()),
+        };
+        assert_eq!(
+            refused.block("issue"),
+            "```ssf\n\
+             ssf not handing over issue:\n\
+             to: Codex\n\
+             to model: the command's\n\
+             to effort: medium\n\
+             to command: codex --search\n\
+             by: a person at the terminal\n\
+             refused: the item is no longer active\n\
+             ```"
+        );
+    }
+
+    #[test]
+    fn a_refused_handover_says_only_what_it_would_have_been() {
+        let ev = Event::HandedOver {
+            from: launch(Some("bot/issue-12-fix")),
+            to: Launch {
+                harness: "Codex".into(),
+                model: Some("gpt-6".into()),
+                effort: None,
+                ..launch(None)
+            },
+            summary: true,
+            by: Some("acme/widgets#12".into()),
+            refused: Some("could not stop the running agent:\nno such terminal".into()),
+        };
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "handed-over");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf not handing over issue:\n\
+             to: Codex\n\
+             to model: gpt-6\n\
+             to effort: the harness's default\n\
+             by: acme/widgets#12\n\
+             refused: could not stop the running agent: no such terminal\n\
+             ```"
+        );
+    }
+
+    #[test]
+    fn attached_after_a_handover_names_the_harness_it_came_from() {
+        let ev = Event::Attached(Attach::HandedOver {
+            launch: Launch {
+                harness: "Pi".into(),
+                model: Some("openai/gpt-6".into()),
+                effort: None,
+                ..launch(Some("bot/issue-12-fix"))
+            },
+            from: "Claude Code".into(),
+        });
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "attached");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf attaching agent to issue:\n\
+             harness: Pi\n\
+             model: openai/gpt-6\n\
+             effort: the harness's default\n\
+             driver: herdr\n\
+             branch: bot/issue-12-fix\n\
+             handed over from: Claude Code\n\
+             ```"
+        );
+    }
+
+    #[test]
     fn resumed_says_after_what() {
         let ev = Event::Resumed {
             harness: "Codex".into(),
@@ -564,6 +836,7 @@ mod tests {
     fn blocked_and_unblocked() {
         let ev = Event::Blocked {
             harness: "Claude Code".into(),
+            reason: "not signed in".into(),
             fix: "`claude auth login` on the host".into(),
         };
         let text = comment(&o(), "issue", &ev);
@@ -577,6 +850,27 @@ mod tests {
              harness: Claude Code\n\
              reason: not signed in\n\
              fix: claude auth login on the host\n\
+             ```"
+        );
+        // The other reason: the harness never came up (see
+        // `Engine::finish_handover`).
+        let ev = Event::Blocked {
+            harness: "Pi".into(),
+            reason: "could not be started: pi exited at once".into(),
+            fix:
+                "start Pi by hand in the workspace, or fix the model or effort and hand over again"
+                    .into(),
+        };
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "blocked");
+        assert_eq!(
+            text,
+            "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
+             ```ssf\n\
+             ssf holding deliveries to agent on issue:\n\
+             harness: Pi\n\
+             reason: could not be started: pi exited at once\n\
+             fix: start Pi by hand in the workspace, or fix the model or effort and hand over again\n\
              ```"
         );
         let ev = Event::Unblocked {
@@ -605,6 +899,19 @@ mod tests {
             quick
                 .block("pull request")
                 .contains("held for: less than a minute\nconversation: kept\n")
+        );
+        // A hold closed by a handover: the conversation is neither kept
+        // nor resumed, it belongs to the session that has gone.
+        let over = Event::Unblocked {
+            harness: "Claude Code".into(),
+            held: Duration::from_secs(3 * 60 * 60),
+            conversation: Conversation::HandedOver,
+        };
+        assert!(
+            over.block("issue")
+                .contains("held for: 180 min\nconversation: handed over\n"),
+            "{}",
+            over.block("issue")
         );
     }
 
@@ -712,6 +1019,7 @@ mod tests {
             },
             Event::Blocked {
                 harness: "x".into(),
+                reason: "not signed in".into(),
                 fix: "y".into(),
             },
             Event::Unblocked {
@@ -722,6 +1030,13 @@ mod tests {
             Event::GaveUp {
                 failures: 1,
                 last_error: "e".into(),
+            },
+            Event::HandedOver {
+                from: launch(None),
+                to: launch(None),
+                summary: false,
+                by: None,
+                refused: None,
             },
             Event::Released {
                 by: "ssf release",
@@ -740,6 +1055,7 @@ mod tests {
                 "blocked",
                 "unblocked",
                 "gave-up",
+                "handed-over",
                 "released"
             ]
         );

@@ -89,6 +89,16 @@ pub fn list() -> Vec<Agent> {
         .collect()
 }
 
+/// Whether the harness's executable is on this machine: the check
+/// `ssf agents` and `ssf doctor` report. An id nothing knows is not
+/// installed.
+pub fn installed(id: &str) -> bool {
+    match KNOWN.iter().find(|(k, ..)| *k == id) {
+        Some((_, _, pkg, cmd)) => on_path(cmd) || mise_has(pkg),
+        None => false,
+    }
+}
+
 pub fn is_known(id: &str) -> bool {
     KNOWN.iter().any(|(k, ..)| *k == id)
 }

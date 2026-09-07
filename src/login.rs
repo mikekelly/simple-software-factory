@@ -99,39 +99,116 @@ pub fn fingerprint(harness: &str) -> Option<String> {
     Some(format!("{}:{mtime}", meta.len()))
 }
 
+/// What a harness's status command said: whether it succeeded, its
+/// standard output and its standard error. Some of them (Codex) say
+/// where they stand on stderr and exit non-zero, so both are kept.
+struct Status {
+    ok: bool,
+    out: String,
+    err: String,
+}
+
+/// Read one of a child's pipes to the end on a thread of its own, and
+/// hand what it read back over a channel: the caller waits for it with a
+/// deadline rather than joining, since a reader whose pipe some other
+/// process still holds open never finishes (see [`run`]).
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> Drained {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let so_far = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let buf = so_far.clone();
+    std::thread::spawn(move || {
+        if let Some(mut p) = pipe {
+            // Read in pieces so what has arrived is there to be taken
+            // when the deadline passes with the pipe still open.
+            let mut chunk = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut p, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut s) = buf.lock() {
+                            s.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        }
+                    }
+                }
+            }
+        }
+        let _ = tx.send(());
+    });
+    Drained { done: rx, so_far }
+}
+
+/// A pipe being read on its own thread: `done` fires at end of file, and
+/// `so_far` holds what has arrived either way.
+struct Drained {
+    done: std::sync::mpsc::Receiver<()>,
+    so_far: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Drained {
+    /// What was read, waiting up to `for_` for the end of the pipe; a pipe
+    /// still open after that yields what had arrived by then.
+    fn take(self, for_: Duration) -> String {
+        let _ = self.done.recv_timeout(for_);
+        self.so_far.lock().map(|s| s.clone()).unwrap_or_default()
+    }
+}
+
 /// Run a harness's status command with a timeout; `None` when it could
 /// not be run at all (not installed, hung).
-fn run(program: &str, args: &[&str], timeout: Duration) -> Option<(bool, String)> {
+///
+/// Both pipes are drained by threads of their own while the wait goes on:
+/// a program that fills one of them while nothing reads it blocks on the
+/// write, and the wait below would then run to its timeout on a command
+/// that had nothing left to say.
+fn run(program: &str, args: &[&str], timeout: Duration) -> Option<Status> {
     let mut cmd = Command::new(program);
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
     // A harness started from inside a Claude Code session refuses to nest;
     // the status command does not need the marker.
     cmd.env_remove("CLAUDECODE");
     let mut child = cmd.spawn().ok()?;
+    let out = drain(child.stdout.take());
+    let err = drain(child.stderr.take());
     let deadline = std::time::Instant::now() + timeout;
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut out = String::new();
-                if let Some(mut so) = child.stdout.take() {
-                    use std::io::Read;
-                    let _ = so.read_to_string(&mut out);
-                }
-                return Some((status.success(), out));
-            }
+            Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
+                // Nothing is waited for here: a grandchild that inherited
+                // the pipes holds them open after the child is killed, and
+                // waiting for the readers would hang the probe for as
+                // long as it lives. The threads end when the pipes close.
                 return None;
             }
         }
-    }
+    };
+    // The pipes normally close with the process that exited, so the
+    // readers end at once -- but a status command that forks a daemon of
+    // its own leaves that daemon holding them, and then the readers never
+    // end at all. What is left of the timeout is all they get (a floor,
+    // for a child that exited on the deadline itself: reading an exited
+    // child's pipe is instant); a reader still holding on is left to end
+    // whenever its pipe does.
+    let left = || {
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .max(Duration::from_millis(200))
+    };
+    let out = out.take(left());
+    let err = err.take(left());
+    Some(Status {
+        ok: status.success(),
+        out,
+        err,
+    })
 }
 
 const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -141,7 +218,7 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
 fn probe_claude() -> Probe {
     let detail = "claude auth status".to_string();
     match run("claude", &["auth", "status", "--json"], STATUS_TIMEOUT) {
-        Some((_, out)) => match serde_json::from_str::<serde_json::Value>(&out) {
+        Some(Status { out, .. }) => match serde_json::from_str::<serde_json::Value>(&out) {
             Ok(v) => match v.get("loggedIn").and_then(|b| b.as_bool()) {
                 Some(true) => Probe {
                     state: LoginState::SignedIn,
@@ -179,24 +256,46 @@ fn probe_claude() -> Probe {
     }
 }
 
+/// What `codex login status` said. It prints `Logged in using ...` on
+/// stdout and exits 0 when it is signed in, and `Not logged in` on
+/// **stderr** with exit 1 when it is not, so both streams are read and
+/// the "not" is looked for first: `not logged in` contains `logged in`.
+fn codex_state(ok: bool, text: &str) -> LoginState {
+    let lower = text.to_lowercase();
+    if lower.contains("not logged in") {
+        LoginState::SignedOut
+    } else if ok || lower.contains("logged in") {
+        LoginState::SignedIn
+    } else {
+        LoginState::Unknown
+    }
+}
+
+/// The last line with anything on it, for the `detail` a person reads.
+fn last_line(text: &str) -> &str {
+    text.lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .unwrap_or("no output")
+}
+
 /// Codex: `codex login status` prints `Logged in using ...` (exit 0) or
-/// `Not logged in` (exit 1).
+/// `Not logged in` on stderr (exit 1).
 fn probe_codex() -> Probe {
+    codex_probe(run("codex", &["login", "status"], STATUS_TIMEOUT))
+}
+
+/// What `codex login status` said, made a probe: both streams are joined
+/// before they are read, since the answer can be on either.
+fn codex_probe(status: Option<Status>) -> Probe {
     let detail = "codex login status".to_string();
-    match run("codex", &["login", "status"], STATUS_TIMEOUT) {
-        Some((ok, out)) => {
-            let text = out.trim();
-            let lower = text.to_lowercase();
-            let state = if lower.contains("not logged in") {
-                LoginState::SignedOut
-            } else if ok || lower.contains("logged in") {
-                LoginState::SignedIn
-            } else {
-                LoginState::Unknown
-            };
+    match status {
+        Some(Status { ok, out, err }) => {
+            let text = format!("{}\n{}", out.trim(), err.trim());
+            let text = text.trim();
             Probe {
-                state,
-                detail: format!("{detail}: {}", text.lines().last().unwrap_or("no output")),
+                state: codex_state(ok, text),
+                detail: format!("{detail}: {}", last_line(text)),
                 fingerprint: fingerprint("codex"),
             }
         }
@@ -353,6 +452,44 @@ mod tests {
                 .ends_with(".copilot/config.json")
         );
         assert!(credential_path("nope").is_none());
+    }
+
+    /// Codex says it is signed out on stderr and exits 1, so a probe
+    /// that reads stdout alone can never refuse a signed-out Codex.
+    #[test]
+    fn codex_status_is_read_from_both_streams() {
+        assert_eq!(codex_state(false, "Not logged in"), LoginState::SignedOut);
+        // As it comes out of `run`, with an empty stdout ahead of it.
+        assert_eq!(codex_state(false, "\nNot logged in"), LoginState::SignedOut);
+        assert_eq!(
+            codex_state(true, "Logged in using ChatGPT"),
+            LoginState::SignedIn
+        );
+        // The order matters: "not logged in" contains "logged in".
+        assert_eq!(
+            codex_state(true, "Not logged in with any account"),
+            LoginState::SignedOut
+        );
+        assert_eq!(codex_state(true, ""), LoginState::SignedIn);
+        assert_eq!(codex_state(false, "something else"), LoginState::Unknown);
+        assert_eq!(last_line("out\n\nNot logged in\n"), "Not logged in");
+        assert_eq!(last_line("  \n"), "no output");
+        // And the streams reach `codex_state` joined: the whole answer
+        // arrives on stderr with a failing exit code.
+        let out = codex_probe(Some(Status {
+            ok: false,
+            out: String::new(),
+            err: "Not logged in".into(),
+        }));
+        assert_eq!(out.state, LoginState::SignedOut);
+        assert!(out.detail.ends_with("Not logged in"), "{}", out.detail);
+        let in_ = codex_probe(Some(Status {
+            ok: true,
+            out: "Logged in using ChatGPT".into(),
+            err: String::new(),
+        }));
+        assert_eq!(in_.state, LoginState::SignedIn);
+        assert_eq!(codex_probe(None).state, LoginState::Unknown);
     }
 
     #[test]

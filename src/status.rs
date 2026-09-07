@@ -14,7 +14,7 @@ use crate::driver::Drivers;
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
 use crate::orca::WorkspaceInfo;
-use crate::state::{Blocked, IssueState, State};
+use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
 /// the bar widget polls this, so it must never hang.
@@ -42,7 +42,27 @@ pub struct Session {
     /// Why the bot got involved: `assigned`, `mentioned`, `review_requested`,
     /// `created` (the bot's own item).
     pub triggers: Vec<String>,
+    /// The harness this item's session runs, the per-item overrides of a
+    /// handover applied (`overrides` says whether they are in play).
     pub harness: String,
+    /// Model and effort the session runs with, overrides applied; `None`
+    /// is the harness's own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Set when a handover moved this session off the repository's
+    /// configured harness, model or effort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<Overrides>,
+    /// A handover the daemon has accepted and not carried out yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handover: Option<HandoverView>,
+    /// What an earlier handover left for a session that has not read it
+    /// yet: the harness that was handed over, and how long its summary
+    /// is. It goes to whichever session takes the first message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handover_note: Option<HandoverNoteView>,
     /// Session that acts on this item: its own, or the session it is bound
     /// to. Empty for an item tracked only for its subscribers.
     pub owner: String,
@@ -118,6 +138,89 @@ pub struct Session {
     pub blocked: Option<BlockedView>,
 }
 
+/// A handover waiting for the daemon's next pass, for `ssf status --json`
+/// and `ssf peers`: what it is to, who asked, and how long the summary is
+/// (the summary itself is the new session's first message, not status).
+#[derive(Debug, Clone, Serialize)]
+pub struct HandoverView {
+    pub harness: String,
+    /// The harness for people (`Pi`).
+    pub harness_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_chars: Option<usize>,
+    /// The session that asked; `None` for a person at a shell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    pub requested_at: String,
+}
+
+/// A handover's parting words, waiting on the item for the session that
+/// reads them (see [`crate::state::HandoverNote`]): who wrote them and
+/// how long they are. The words themselves are the new session's first
+/// message, not status.
+#[derive(Debug, Clone, Serialize)]
+pub struct HandoverNoteView {
+    /// Display name of the harness the item was handed over from.
+    pub from: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_chars: Option<usize>,
+}
+
+impl HandoverNoteView {
+    pub fn of(n: &HandoverNote) -> Self {
+        Self {
+            from: n.from.clone(),
+            summary_chars: n.summary.as_deref().map(|s| s.chars().count()),
+        }
+    }
+
+    /// One line for a person: `from Claude Code, summary 1234 chars`.
+    pub fn describe(&self) -> String {
+        match self.summary_chars {
+            Some(n) => format!("from {}, summary {n} chars", self.from),
+            None => format!("from {}, no summary", self.from),
+        }
+    }
+}
+
+impl HandoverView {
+    pub fn of(h: &PendingHandover) -> Self {
+        Self {
+            harness: h.harness.clone(),
+            harness_name: crate::login::display_name(&h.harness),
+            model: h.model.clone(),
+            effort: h.effort.clone(),
+            summary_chars: h.summary.as_deref().map(|s| s.chars().count()),
+            by: h.by.clone(),
+            requested_at: h.requested_at.clone(),
+        }
+    }
+
+    /// One line for a person: `pi (model openai/gpt-6), asked by o/r#5`.
+    pub fn describe(&self) -> String {
+        let mut s = self.harness.clone();
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(m) = &self.model {
+            extra.push(format!("model {m}"));
+        }
+        if let Some(e) = &self.effort {
+            extra.push(format!("effort {e}"));
+        }
+        if !extra.is_empty() {
+            s.push_str(&format!(" ({})", extra.join(", ")));
+        }
+        s.push_str(&match &self.by {
+            Some(by) => format!(", asked by {by}"),
+            None => ", asked by a person at a terminal".to_string(),
+        });
+        s
+    }
+}
+
 /// A session's block, for `ssf status --json` and the widget.
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockedView {
@@ -141,19 +244,60 @@ impl BlockedView {
             harness_name: crate::login::display_name(&b.harness),
             detail: b.detail.clone(),
             since: b.since.clone(),
-            fix: crate::login::how_to_sign_in(&b.harness),
+            fix: fix_for(b),
         }
     }
 
+    /// Did the harness never come up, rather than sit at its sign-in
+    /// prompt?
+    fn never_started(&self) -> bool {
+        self.reason == Blocked::START
+    }
+
     /// One line for a person: `Claude Code at its sign-in prompt since
-    /// 3m; run `claude auth login` on the host`.
+    /// 3m; run `claude auth login` on the host`, or, for a harness that
+    /// never came up, what to do about that.
     pub fn describe(&self) -> String {
+        if self.never_started() {
+            return format!(
+                "{} could not be started since {}; {}",
+                self.harness_name,
+                ago(Some(&self.since)),
+                self.fix
+            );
+        }
         format!(
             "{} at its sign-in prompt since {}; run {}",
             self.harness_name,
             ago(Some(&self.since)),
             self.fix
         )
+    }
+}
+
+/// What a person does about a block: sign the harness in, or, for one
+/// that could not be started at all (a handover to a harness that exits
+/// as it is launched, a model id the harness itself refuses), start it
+/// by hand or hand the item over again with settings that work. Used by
+/// the status commands and by the `blocked` post, so both say the same.
+pub fn fix_for(b: &Blocked) -> String {
+    if b.reason == Blocked::START {
+        return format!(
+            "start {} by hand in the workspace, or fix the model or effort and hand over again",
+            crate::login::display_name(&b.harness)
+        );
+    }
+    crate::login::how_to_sign_in(&b.harness)
+}
+
+/// [`fix_for`] as the tail of a sentence that has not already said what
+/// kind of fix it is: a login block's is a command to sign in with, a
+/// start block's is an instruction of its own.
+pub fn fix_clause(b: &Blocked) -> String {
+    if b.reason == Blocked::START {
+        fix_for(b)
+    } else {
+        format!("sign in with {}", fix_for(b))
     }
 }
 
@@ -303,7 +447,17 @@ pub fn sessions_with(
         };
         for item in rs.issues.values() {
             let ws = workspaces.and_then(|list| find_workspace(list, item));
-            out.push(join(repo, item, ws, workspaces.is_some()));
+            // An item bound to another session shares its workspace, and
+            // so the harness a handover put in it. The binding is followed
+            // to its end, as the daemon follows it: an item bound to a
+            // bound item is the first one's session's too.
+            let owner = crate::state::owner_in(&rs.issues, item.number);
+            let overrides = rs
+                .issues
+                .get(&owner)
+                .or(Some(item))
+                .and_then(|o| o.overrides.as_ref());
+            out.push(join(repo, item, owner, overrides, ws, workspaces.is_some()));
         }
     }
     out
@@ -366,12 +520,17 @@ fn workspace_state(
     )
 }
 
+/// `owner` is the item whose session acts on this one (itself, unless it
+/// is bound), and `overrides` the ones that govern it: the owner's.
 fn join(
     repo: &RepoConfig,
     item: &IssueState,
+    owner: u64,
+    overrides: Option<&Overrides>,
     ws: Option<&WorkspaceInfo>,
     orca_available: bool,
 ) -> Session {
+    let eff = repo.with_overrides(overrides);
     let agent = ws.and_then(WorkspaceInfo::primary_agent);
     let agent_state = match (ws, agent) {
         (Some(_), Some(a)) => a.state.clone(),
@@ -408,11 +567,16 @@ fn join(
             .unwrap_or_else(|| if item.active { "open" } else { "unknown" }.into()),
         active: item.active,
         triggers: item.triggers.clone(),
-        harness: repo.harness.clone(),
+        harness: eff.harness.clone(),
+        model: eff.model.clone(),
+        effort: eff.effort.clone(),
+        overrides: overrides.cloned(),
+        handover: item.handover.as_ref().map(HandoverView::of),
+        handover_note: item.handover_note.as_ref().map(HandoverNoteView::of),
         owner: if item.subscriber_only {
             String::new()
         } else {
-            session_id(&repo.name, item.shares_workspace_of.unwrap_or(item.number))
+            session_id(&repo.name, owner)
         },
         subscribers: item.subscribers.clone(),
         subscriber_only: item.subscriber_only,
@@ -523,6 +687,15 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         if let Some(p) = &s.delegated_by {
             facts.push(format!("handed off by {p}"));
         }
+        if let Some(o) = &s.overrides {
+            facts.push(format!("handed over to {}", o.harness));
+            if let Some(m) = &o.model {
+                facts.push(format!("model {m}"));
+            }
+            if let Some(e) = &o.effort {
+                facts.push(format!("effort {e}"));
+            }
+        }
         if !s.subscribers.is_empty() {
             facts.push(format!("subscribers {}", s.subscribers.join(", ")));
         }
@@ -540,6 +713,15 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             });
         }
         out.push_str(&format!("         {}\n", facts.join("  ·  ")));
+        if let Some(h) = &s.handover {
+            out.push_str(&format!("         handover pending: {}\n", h.describe()));
+        }
+        if let Some(n) = &s.handover_note {
+            out.push_str(&format!(
+                "         handover note waiting: {}\n",
+                n.describe()
+            ));
+        }
         if let Some(b) = &s.blocked {
             out.push_str(&format!("         BLOCKED: {}\n", b.describe()));
         }
@@ -650,6 +832,25 @@ pub fn render_status(snap: &Snapshot) -> String {
                 out.push_str(&format!(
                     "          workspace released {}\n",
                     ago(s.released_at.as_deref())
+                ));
+            }
+            if let Some(o) = &s.overrides {
+                let mut what = format!("harness={}", o.harness);
+                if let Some(m) = &o.model {
+                    what.push_str(&format!(" model={m}"));
+                }
+                if let Some(e) = &o.effort {
+                    what.push_str(&format!(" effort={e}"));
+                }
+                out.push_str(&format!("          handed over: {what}\n"));
+            }
+            if let Some(h) = &s.handover {
+                out.push_str(&format!("          handover pending: {}\n", h.describe()));
+            }
+            if let Some(n) = &s.handover_note {
+                out.push_str(&format!(
+                    "          handover note waiting: {}\n",
+                    n.describe()
                 ));
             }
             if let Some(b) = &s.blocked {
@@ -903,6 +1104,8 @@ mod tests {
             credential: None,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         let st = state_with(vec![it, item(2, None)]);
         let s = sessions(&cfg(), &st, Some(&[]));
@@ -938,6 +1141,117 @@ mod tests {
             text.contains("BLOCKED: acme/widgets#1: Claude Code at its sign-in prompt"),
             "{text}"
         );
+        // The other reason: the harness never came up (a handover to a
+        // harness that exits as it is launched).
+        let mut it = item(1, Some("r1::/w/one"));
+        it.blocked = Some(Blocked {
+            reason: Blocked::START.into(),
+            harness: "pi".into(),
+            detail: "pi exited at once: ambiguous model".into(),
+            since: "2026-09-06T14:30:00Z".into(),
+            reported: true,
+            ..Default::default()
+        });
+        let s = sessions(&cfg(), &state_with(vec![it]), Some(&[]));
+        let b = s[0].blocked.as_ref().unwrap();
+        assert!(b.fix.contains("start Pi by hand"), "{}", b.fix);
+        assert!(
+            b.describe().starts_with("Pi could not be started since"),
+            "{}",
+            b.describe()
+        );
+        assert!(
+            render_peers(&s, None).contains("BLOCKED: Pi could not be started since"),
+            "{}",
+            render_peers(&s, None)
+        );
+    }
+
+    #[test]
+    fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
+        // #1 has been handed over to Pi; #2 shares its workspace, so it
+        // runs the same harness; #3 has a handover waiting for the pass.
+        let mut one = item(1, Some("r1::/w/one"));
+        one.overrides = Some(Overrides {
+            harness: "pi".into(),
+            model: Some("openai/gpt-6".into()),
+            effort: Some("high".into()),
+        });
+        // The harness it went to never read what the outgoing session
+        // left: the note waits on the item for the one that does.
+        one.handover_note = Some(HandoverNote {
+            from: "Claude Code".into(),
+            summary: Some("half migrated".into()),
+        });
+        let mut two = item(2, Some("r1::/w/one"));
+        two.shares_workspace_of = Some(1);
+        // Bound to the bound item: the chain leads to #1 all the same.
+        let mut four = item(4, Some("r1::/w/one"));
+        four.shares_workspace_of = Some(2);
+        let mut three = item(3, Some("r1::/w/three"));
+        three.handover = Some(PendingHandover {
+            harness: "codex".into(),
+            model: None,
+            effort: None,
+            summary: Some("half done".into()),
+            by: Some("acme/widgets#3".into()),
+            requested_at: "2026-09-07T10:00:00Z".into(),
+        });
+        let st = state_with(vec![one, two, three, four]);
+        let s = sessions(&cfg(), &st, Some(&[]));
+        assert_eq!(s[0].harness, "pi");
+        assert_eq!(s[0].model.as_deref(), Some("openai/gpt-6"));
+        assert_eq!(s[0].effort.as_deref(), Some("high"));
+        assert_eq!(s[1].harness, "pi", "the bound item shares the workspace");
+        assert_eq!(s[2].harness, "claude", "not handed over yet");
+        assert!(s[2].overrides.is_none());
+        assert_eq!(s[3].harness, "pi", "two hops to the session that acts");
+        assert_eq!(s[3].owner, "acme/widgets#1");
+        let h = s[2].handover.as_ref().unwrap();
+        assert_eq!(h.harness_name, "Codex");
+        assert_eq!(h.summary_chars, Some(9));
+        assert_eq!(
+            h.describe(),
+            "codex, asked by acme/widgets#3",
+            "{}",
+            h.describe()
+        );
+        let table = render_peers(&s, None);
+        assert!(table.contains("handed over to pi"), "{table}");
+        assert!(table.contains("model openai/gpt-6"), "{table}");
+        assert!(
+            table.contains("handover pending: codex, asked by acme/widgets#3"),
+            "{table}"
+        );
+        assert!(
+            table.contains("handover note waiting: from Claude Code, summary 13 chars"),
+            "{table}"
+        );
+        let snap = Snapshot {
+            cfg: cfg(),
+            state: st,
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        let v = snap.to_json();
+        assert_eq!(v["sessions"][0]["overrides"]["harness"], "pi");
+        assert!(v["sessions"][1]["overrides"]["harness"] == "pi");
+        assert_eq!(v["sessions"][2]["handover"]["harness"], "codex");
+        assert!(v["sessions"][2]["overrides"].is_null());
+        let text = render_status(&snap);
+        assert!(
+            text.contains("handed over: harness=pi model=openai/gpt-6 effort=high"),
+            "{text}"
+        );
+        assert!(text.contains("handover pending: codex"), "{text}");
+        assert!(
+            text.contains("handover note waiting: from Claude Code, summary 13 chars"),
+            "{text}"
+        );
+        assert_eq!(v["sessions"][0]["handover_note"]["from"], "Claude Code");
+        assert_eq!(v["sessions"][0]["handover_note"]["summary_chars"], 13);
+        assert!(v["sessions"][2]["handover_note"].is_null());
     }
 
     #[test]

@@ -167,6 +167,50 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Hand this session's item to a new session on another harness,
+    /// model or effort, in the same workspace: the daemon ends this
+    /// session on its next pass and starts the new one there, with the
+    /// summary written here ahead of the item's story. The harness,
+    /// model and effort stay with the item until its workspace is
+    /// released. Inside a session it is this session's item; from a shell
+    /// name the item.
+    #[command(group(
+        clap::ArgGroup::new("summary_form").args(["summary", "summary_file", "no_summary"])
+    ))]
+    Handover {
+        /// Item number on this session's repository, or owner/repo#N.
+        item: Option<String>,
+        /// Drop a handover the daemon has not carried out yet; the
+        /// session that is there keeps the item and is told to carry on.
+        #[arg(long, conflicts_with_all = ["harness", "model", "effort", "summary_form"])]
+        cancel: bool,
+        /// Harness the new session runs (`ssf agents` lists the ids).
+        #[arg(long, value_name = "ID", required_unless_present = "cancel")]
+        harness: Option<String>,
+        /// Model for the new session (`ssf models <harness>` lists them);
+        /// the harness's own default when not given.
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        /// Effort level for the new session; the harness's own default
+        /// when not given.
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
+        /// What the new session is told before the item's story: what the
+        /// item is about, what is done, what is left, where things are.
+        #[arg(long, value_name = "TEXT")]
+        summary: Option<String>,
+        /// Read the summary from a file instead.
+        #[arg(long, value_name = "PATH")]
+        summary_file: Option<PathBuf>,
+        /// Hand over with no summary: the new session reads the item itself.
+        #[arg(long)]
+        no_summary: bool,
+        /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove the workspaces of closed items whose agent is gone: each is
     /// listed with its state, the clean-and-pushed ones are removed, the
     /// rest are left in place. Workspaces of open items, of sessions that
@@ -658,6 +702,32 @@ async fn main() -> Result<()> {
             force,
             json,
         } => release(item.as_deref(), r#as.as_deref(), force, json).await,
+        Command::Handover {
+            item,
+            cancel,
+            harness,
+            model,
+            effort,
+            summary,
+            summary_file,
+            no_summary,
+            r#as,
+            json,
+        } => {
+            handover(
+                item.as_deref(),
+                cancel,
+                harness.as_deref(),
+                model.as_deref(),
+                effort.as_deref(),
+                summary,
+                summary_file.as_deref(),
+                no_summary,
+                r#as.as_deref(),
+                json,
+            )
+            .await
+        }
         Command::Purge {
             dry_run,
             older_than,
@@ -1960,6 +2030,7 @@ fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Subs { .. } => "subs",
         Command::Tell { .. } => "tell",
         Command::Release { .. } => "release",
+        Command::Handover { .. } => "handover",
         Command::Purge { .. } => "purge",
         Command::Doctor => "doctor",
         Command::Run { once: true } => "run",
@@ -2556,6 +2627,224 @@ async fn release(item: Option<&str>, as_: Option<&str>, force: bool, json: bool)
     Ok(())
 }
 
+/// `1,234`: a count as the messages write it.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What `ssf handover` prints once the daemon has recorded it. The second
+/// paragraph is what the outgoing agent acts on, so it says plainly that
+/// this session is over. Worded, like every text ssf puts on a screen,
+/// without the phrases `driver::login_dialog` looks for.
+#[allow(clippy::too_many_arguments)]
+pub fn handover_recorded_text(
+    session: &str,
+    title: &str,
+    harness_name: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    command: Option<&str>,
+    summary_chars: Option<usize>,
+    secs: u64,
+) -> String {
+    // What decides an unset model or effort, in the words the
+    // `handed-over` post uses for it (`events::Launch`).
+    let default = match command {
+        Some(_) => "the command's",
+        None => "the harness's default",
+    };
+    let model = match model {
+        Some(m) => format!("model {m}"),
+        None => format!("{default} model"),
+    };
+    let effort = match effort {
+        Some(e) => format!("effort {e}"),
+        None => format!("{default} effort"),
+    };
+    let summary = match summary_chars {
+        Some(n) => format!("with a summary of {} chars", thousands(n)),
+        None => "without a summary".to_string(),
+    };
+    format!(
+        "Handover of {session} (\"{title}\") recorded: to {harness_name} ({model}, {effort}), \
+{summary}.\nThe daemon ends this session on its next pass (within {secs}s) and starts the new \
+one in the same workspace. Stop working now: do not start anything else, and do not run this \
+command again."
+    )
+}
+
+/// Why a summary that quotes a harness's sign-in screen is refused. The
+/// summary is pasted into the new session's terminal, where ssf reads
+/// the bottom of the screen for exactly those phrases, so such a summary
+/// would hold the new session's deliveries for the whole backoff. `line`
+/// is the offending line with the phrases already redacted
+/// (`driver::redact_login_phrases`), so this text is safe on a screen
+/// itself.
+pub fn summary_quotes_a_sign_in_screen_text(line: &str) -> String {
+    format!(
+        "the summary would read as a harness's own sign-in screen where it says \"{line}\" (the \
+phrase is left out here): pasted into the new session's terminal it would hold that session's \
+deliveries. Reword that line -- name the command in prose rather than quoting the screen -- and \
+hand over again."
+    )
+}
+
+/// The summary a handover carries: `--summary`, the contents of
+/// `--summary-file`, or nothing for `--no-summary`. Checked here, where
+/// the person or agent that wrote it can fix it, rather than in the daemon.
+fn handover_summary(
+    summary: Option<String>,
+    file: Option<&Path>,
+    no_summary: bool,
+) -> Result<Option<String>> {
+    let text = match (summary, file) {
+        (Some(t), _) => t,
+        (None, Some(p)) => std::fs::read_to_string(p)
+            .with_context(|| format!("reading the summary from {}", p.display()))?,
+        (None, None) if no_summary => return Ok(None),
+        (None, None) => bail!(
+            "say what the new session is told: --summary \"<text>\", --summary-file <path>, or \
+--no-summary"
+        ),
+    };
+    if text.trim().is_empty() {
+        bail!("the summary is empty: write a summary or pass --no-summary");
+    }
+    let n = text.chars().count();
+    if n > ipc::MAX_SUMMARY_CHARS {
+        bail!(
+            "the summary is {} characters; the most a handover carries is {}. Shorten it, or say \
+the rest on the item",
+            thousands(n),
+            thousands(ipc::MAX_SUMMARY_CHARS)
+        );
+    }
+    if let Some(line) = driver::login_prompt_line(&text) {
+        bail!(
+            "{}",
+            summary_quotes_a_sign_in_screen_text(&driver::redact_login_phrases(&line))
+        );
+    }
+    Ok(Some(text))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handover(
+    item: Option<&str>,
+    cancel: bool,
+    harness: Option<&str>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    summary: Option<String>,
+    summary_file: Option<&Path>,
+    no_summary: bool,
+    as_: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let me = identity(as_)?;
+    let session = match item {
+        Some(i) => item_ref(i, me.as_ref())?,
+        None => me
+            .as_ref()
+            .map(|o| o.to_string())
+            .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
+    };
+    if cancel {
+        return cancel_handover(&session, json).await;
+    }
+    let harness = harness.context("--harness is required")?.trim();
+    if !agents::is_known(harness) {
+        bail!(
+            "{harness} is not a harness ssf knows; `ssf agents` lists the ids ({})",
+            agents::list()
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    models::validate(harness, model, effort)?;
+    let summary = handover_summary(summary, summary_file, no_summary)?;
+    let v = ipc::call(&ipc::Request::Handover {
+        session,
+        harness: harness.to_string(),
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+        summary,
+        by: me.map(|o| o.to_string()),
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).map(str::to_string);
+    println!(
+        "{}",
+        handover_recorded_text(
+            v.get("session").and_then(|x| x.as_str()).unwrap_or("?"),
+            v.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+            &login::display_name(s("/to/harness").as_deref().unwrap_or(harness)),
+            s("/to/model").as_deref(),
+            s("/to/effort").as_deref(),
+            s("/to/command").as_deref(),
+            v.get("summary_chars")
+                .and_then(|x| x.as_u64())
+                .map(|n| n as usize),
+            v.get("poll_interval_secs")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(10),
+        )
+    );
+    Ok(())
+}
+
+/// `ssf handover --cancel`: the pending handover is dropped and the
+/// session that is there keeps the item.
+async fn cancel_handover(session: &str, json: bool) -> Result<()> {
+    let v = ipc::call(&ipc::Request::CancelHandover {
+        session: session.to_string(),
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    println!(
+        "{}",
+        handover_cancelled_text(
+            &s("session"),
+            &s("title"),
+            &s("harness_name"),
+            v.get("told").and_then(|x| x.as_bool()).unwrap_or(false),
+        )
+    );
+    Ok(())
+}
+
+/// What `ssf handover --cancel` prints. Worded, like every text ssf puts
+/// on a screen, without the phrases `driver::login_dialog` looks for.
+pub fn handover_cancelled_text(session: &str, title: &str, harness: &str, told: bool) -> String {
+    let told = if told {
+        " The session on it has been told to carry on."
+    } else {
+        ""
+    };
+    format!(
+        "Handover of {session} (\"{title}\") to {harness} cancelled; nothing about the item \
+changed.{told}"
+    )
+}
+
 async fn purge(dry_run: bool, older_than: Option<u64>, force: bool, json: bool) -> Result<()> {
     let v = ipc::call(&ipc::Request::Purge {
         dry_run,
@@ -2771,10 +3060,35 @@ async fn doctor() -> Result<()> {
             if retired.len() == 1 { "does" } else { "do" }
         );
     }
+    let state = state::State::load().unwrap_or_default();
+    // Harnesses no repository is configured with, because an item was
+    // handed over to one (`ssf handover`): its session runs that harness
+    // where the daemon runs, so it is checked like the configured ones,
+    // and the line says which item put it there.
+    let mut handed_over: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (name, rs) in &state.repos {
+        for it in rs.issues.values().filter(|i| i.active) {
+            let Some(o) = it.overrides.as_ref() else {
+                continue;
+            };
+            if cfg.repos.iter().any(|r| r.harness == o.harness) {
+                continue;
+            }
+            handed_over
+                .entry(o.harness.clone())
+                .or_default()
+                .push(format!("{name}#{}", it.number));
+        }
+    }
+    let used_by = |h: &str| match handed_over.get(h) {
+        Some(items) => format!("; used by {} after a handover", items.join(", ")),
+        None => String::new(),
+    };
     // Each harness a repository uses, signed in where this runs (the host,
     // or the guest: with the factory in a VM `ssf doctor` is forwarded
     // there, so the check happens where the agents are).
     let mut harnesses: Vec<String> = cfg.repos.iter().map(|r| r.harness.clone()).collect();
+    harnesses.extend(handed_over.keys().cloned());
     harnesses.sort();
     harnesses.dedup();
     let place = if vm::in_guest() {
@@ -2786,21 +3100,24 @@ async fn doctor() -> Result<()> {
         let probe = login::probe(h);
         let name = login::display_name(h);
         match probe.state {
-            login::LoginState::SignedIn => {
-                check(true, format!("{name} signed in {place} ({})", probe.detail))
-            }
+            login::LoginState::SignedIn => check(
+                true,
+                format!("{name} signed in {place} ({}{})", probe.detail, used_by(h)),
+            ),
             login::LoginState::SignedOut => check(
                 false,
                 format!(
-                    "{name} not signed in {place} ({}); sign in with {}, or sessions on it stall at its login prompt",
+                    "{name} not signed in {place} ({}{}); sign in with {}, or sessions on it stall at its login prompt",
                     probe.detail,
+                    used_by(h),
                     login::how_to_sign_in(h)
                 ),
             ),
             login::LoginState::Unknown => {
                 println!(
-                    "note {name}: cannot tell whether it is signed in {place} ({})",
-                    probe.detail
+                    "note {name}: cannot tell whether it is signed in {place} ({}{})",
+                    probe.detail,
+                    used_by(h)
                 )
             }
         }
@@ -2869,6 +3186,20 @@ async fn doctor() -> Result<()> {
         .ok()
         .and_then(|t| github::GitHub::new(&cfg.github.api_url, &t).ok());
     let bot = cfg.github.login.clone().unwrap_or_else(|| "the bot".into());
+    // The harnesses handovers put on items, installed where the daemon
+    // runs: no repository names them, so nothing else here would look.
+    for (h, items) in &handed_over {
+        let bin = models::default_command(h);
+        let bin = bin.split_whitespace().next().unwrap_or("");
+        let ok = which(bin).is_some() || installed.iter().any(|a| a.id == *h && a.installed);
+        check(
+            ok,
+            format!(
+                "harness `{h}` installed (used by {} after a handover)",
+                items.join(", ")
+            ),
+        );
+    }
     for r in &cfg.repos {
         // Who may drive it: the configured list, or the collaborators with
         // push access fetched the way the daemon does.
@@ -3095,7 +3426,7 @@ async fn doctor() -> Result<()> {
             }
         },
     );
-    let st = state::State::load().unwrap_or_default();
+    let st = &state;
     let untagged: Vec<String> = st
         .repos
         .values()
@@ -3182,6 +3513,149 @@ mod tests {
         assert!(item_ref("x/y#7:reviewer", None).is_err());
         assert!(item_ref("nonsense", Some(&me)).is_err());
     }
+    #[test]
+    fn the_handover_message_names_the_new_stack_and_ends_the_session() {
+        assert_eq!(
+            handover_recorded_text(
+                "o/r#5",
+                "Fix the widget",
+                "Pi",
+                Some("openai/gpt-6"),
+                Some("high"),
+                None,
+                Some(1234),
+                10,
+            ),
+            "Handover of o/r#5 (\"Fix the widget\") recorded: to Pi (model openai/gpt-6, effort \
+high), with a summary of 1,234 chars.\nThe daemon ends this session on its next pass (within \
+10s) and starts the new one in the same workspace. Stop working now: do not start anything \
+else, and do not run this command again."
+        );
+        let plain = handover_recorded_text("o/r#5", "T", "Codex", None, None, None, None, 30);
+        assert!(
+            plain.starts_with(
+                "Handover of o/r#5 (\"T\") recorded: to Codex (the harness's default model, the \
+harness's default effort), without a summary."
+            ),
+            "{plain}"
+        );
+        assert!(plain.contains("within 30s"), "{plain}");
+        // With a repository command configured it is the command that
+        // decides an unset model or effort, as the `handed-over` post
+        // says of the same handover.
+        let by_command = handover_recorded_text(
+            "o/r#5",
+            "T",
+            "Claude Code",
+            None,
+            None,
+            Some("claude --dangerously-skip-permissions"),
+            None,
+            10,
+        );
+        assert!(
+            by_command.starts_with(
+                "Handover of o/r#5 (\"T\") recorded: to Claude Code (the command's model, the \
+command's effort), without a summary."
+            ),
+            "{by_command}"
+        );
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000_000), "1,000,000");
+    }
+
+    #[test]
+    fn a_handover_summary_comes_from_the_flag_or_the_file() {
+        let dir = std::env::temp_dir().join(format!("ssf-summary-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("summary.md");
+        std::fs::write(&path, "what is left").unwrap();
+        assert_eq!(
+            handover_summary(None, Some(&path), false)
+                .unwrap()
+                .as_deref(),
+            Some("what is left")
+        );
+        assert_eq!(
+            handover_summary(Some("inline".into()), None, false)
+                .unwrap()
+                .as_deref(),
+            Some("inline")
+        );
+        assert!(handover_summary(None, None, true).unwrap().is_none());
+        // No summary form at all: the clap group cannot require one, since
+        // `--cancel` takes none either, so the check is here.
+        let e = handover_summary(None, None, false).unwrap_err().to_string();
+        assert!(e.contains("say what the new session is told"), "{e}");
+        // Empty, and over the cap, are the writer's to fix.
+        std::fs::write(&path, "   \n").unwrap();
+        let e = handover_summary(None, Some(&path), false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("write a summary or pass --no-summary"), "{e}");
+        assert!(
+            handover_summary(Some(String::new()), None, false)
+                .unwrap_err()
+                .to_string()
+                .contains("the summary is empty")
+        );
+        let long = "x".repeat(ipc::MAX_SUMMARY_CHARS + 1);
+        let e = handover_summary(Some(long), None, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("8,001 characters") && e.contains("8,000"), "{e}");
+        assert!(
+            handover_summary(None, Some(&dir.join("nope.md")), false)
+                .unwrap_err()
+                .to_string()
+                .contains("reading the summary from")
+        );
+        // A summary that quotes a sign-in screen would block the session
+        // it starts: refused here, where the author can reword it, and
+        // the refusal itself does not repeat the phrase.
+        let e = handover_summary(
+            Some("Blocked all afternoon: the pane kept saying Please run /login".into()),
+            None,
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            e.contains("would read as a harness's own sign-in screen"),
+            "{e}"
+        );
+        assert!(!driver::quotes_login_prompt(&e), "{e}");
+        assert!(
+            e.contains("[\u{2026}]"),
+            "the phrase is redacted, not dropped: {e}"
+        );
+        // Wherever the phrase stands in it: a long summary that quotes one
+        // in its third line, and one that has an `[ssf]` marker of its own.
+        let mut long =
+            String::from("Handing over.\n\nThe pane kept saying \"Please run /login\" at me.\n");
+        for i in 0..40 {
+            long.push_str(&format!("- step {i}: done\n"));
+        }
+        assert!(
+            handover_summary(Some(long), None, false)
+                .unwrap_err()
+                .to_string()
+                .contains("would read as a harness's own sign-in screen")
+        );
+        assert!(
+            handover_summary(
+                Some("[ssf] the note said:\n- not logged in, it said".into()),
+                None,
+                false
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("would read as a harness's own sign-in screen")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn allowed_users_flags_parse_logins_and_the_wildcard() {
         assert_eq!(

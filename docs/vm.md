@@ -201,11 +201,12 @@ puts it back.
 
 gvproxy publishes the guest's sshd on `127.0.0.1:<vm.ssh_port>`, keyed by
 a key made per VM. With `vm.enabled` the commands that talk to the daemon
-(`status`, `peers`, `sub`, `unsub`, `subs`, `tell`, `release`, `purge`,
-`doctor`, `run --once`) run inside the guest over that connection, so the bar widget,
-`ssf status --json` and `ssf tell` work as before; `ssf vm run -- <args>`
-does it explicitly and `ssf vm ssh [-- cmd]` gives a shell. `ssf vm
-attach` attaches to herdr's session in the guest in your terminal;
+(`status`, `peers`, `sub`, `unsub`, `subs`, `tell`, `handover`, `release`,
+`purge`, `doctor`, `run --once`) run inside the guest over that
+connection, so the bar widget, `ssf status --json` and `ssf tell` work as
+before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
+[-- cmd]` gives a shell. `ssf vm attach` attaches to herdr's session in
+the guest in your terminal;
 `ssf vm ssh-config` prints an `~/.ssh/config` entry so `herdr --remote
 ssf-default` (herdr's thin client) and plain `ssh ssf-default` work too.
 Clicking a session in the bar widget opens a terminal attached to the

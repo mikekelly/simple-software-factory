@@ -113,6 +113,23 @@ pub struct IssueState {
     /// Harness conversation id (Claude Code / Codex) for `--resume`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
+    /// Conversations of this item that must never be resumed or captured
+    /// again: what a handover retired (`Engine::finish_handover`). The
+    /// old harness's transcript is the newest one in the workspace when
+    /// the new harness starts there, so without this the new session
+    /// would be given the outgoing agent's conversation id and every
+    /// later relaunch would resume the agent that handed the item away.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retired_session_ids: Vec<String>,
+    /// When a handover last retired a conversation on this item. What it
+    /// says is that the workspace holds a transcript that is not this
+    /// session's: the newest one there was written by the agent that
+    /// handed the item away, so the moments before a launch are no longer
+    /// a safe place to look for the new session's own (see
+    /// `Engine::capture_sessions`). Cleared when the workspace is
+    /// released or the item purged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handed_over_at: Option<String>,
     /// When the harness was last launched, to find its session file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_at: Option<String>,
@@ -206,6 +223,25 @@ pub struct IssueState {
     /// but no workspace, no owner and no session of its own.
     #[serde(default)]
     pub subscriber_only: bool,
+    /// Per-item launch overrides: the harness, model and effort this
+    /// item's session runs with, whatever the repository is configured
+    /// with. Written by a handover (`ssf handover`), used by every later
+    /// launch, resume and re-creation, cleared when the workspace is
+    /// released or the item purged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<Overrides>,
+    /// A handover the daemon has accepted and not carried out yet: the
+    /// next pass ends this session and starts the new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<PendingHandover>,
+    /// What a handover left for the session that takes the item on, kept
+    /// until a session has actually been given it. The start that
+    /// follows a handover can fail, or come up at a sign-in screen, and
+    /// the outgoing agent is gone by then: without this the summary it
+    /// wrote would be lost and the harness started again would be given
+    /// the item's story alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover_note: Option<HandoverNote>,
     /// The session's harness cannot act: its screen shows a login prompt
     /// (see [`Blocked`]). Nothing is delivered while this is set; the
     /// daemon checks every pass whether the login is back and resumes the
@@ -214,20 +250,78 @@ pub struct IssueState {
     pub blocked: Option<Blocked>,
 }
 
+/// What an item's session runs with instead of the repository's own
+/// settings (`ssf handover`). `model` and `effort` unset mean the
+/// harness's own defaults, not the repository's, when the harness
+/// differs; see `Engine::effective`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Overrides {
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// A handover `ssf handover` recorded on an item: what the new session
+/// runs with, what the outgoing agent wrote for it, and who asked. The
+/// daemon carries it out on its next pass and clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PendingHandover {
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// What the outgoing agent left for the new one; `None` for
+    /// `--no-summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The session that asked (`owner/repo#N`); `None` for a person at a
+    /// shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    pub requested_at: String,
+}
+
+impl PendingHandover {
+    /// The overrides the item keeps once the handover has been carried out.
+    pub fn overrides(&self) -> Overrides {
+        Overrides {
+            harness: self.harness.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+}
+
+/// The parting words of a handover, kept on the item until a session has
+/// read them (see [`IssueState::handover_note`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HandoverNote {
+    /// Display name of the harness the item was handed over from.
+    pub from: String,
+    /// What the outgoing agent wrote; `None` for `--no-summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
 /// Why a session cannot take prompts, and what has been done about it.
-/// Only one reason exists so far: the harness is not signed in (its login
-/// expired, was revoked, or was never there). The record keeps what the
-/// screen said, when it was seen, whether the item has been told, the
-/// credential file's identity at the time (a new login rewrites it) and
-/// when the harness was last started again to check.
+/// Two reasons: the harness is not signed in (its login expired, was
+/// revoked, or was never there), or the harness could not be started at
+/// all (a handover to a harness that exits the moment it is launched).
+/// The record keeps what the screen or the driver said, when it was
+/// seen, whether the item has been told, the credential file's identity
+/// at the time (a new login rewrites it) and when the harness was last
+/// started again to check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Blocked {
-    /// `login` for now.
+    /// `login` or `start`.
     pub reason: String,
-    /// The harness that showed the prompt.
+    /// The harness that showed the prompt, or would not start.
     #[serde(default)]
     pub harness: String,
-    /// The screen line that gave it away.
+    /// The screen line that gave it away, or the start error.
     #[serde(default)]
     pub detail: String,
     pub since: String,
@@ -245,10 +339,38 @@ pub struct Blocked {
     /// the next doubles each time (from ten minutes, capped at an hour).
     #[serde(default)]
     pub retries: u32,
+    /// When a harness that is running behind the block was last told
+    /// what it took on (`Engine::tell_a_started_harness`), and how many
+    /// of those messages did not land. The telling has a backoff of its
+    /// own, on the same curve: a person who signs in at a terminal that
+    /// has never been told is not left waiting for the restart's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_at: Option<String>,
+    #[serde(default)]
+    pub tell_failures: u32,
 }
 
 impl Blocked {
     pub const LOGIN: &'static str = "login";
+    /// The harness could not be started in the workspace at all.
+    pub const START: &'static str = "start";
+}
+
+/// Follow `shares_workspace_of` to the session that acts on `number`:
+/// the whole chain, since an item bound to a bound item is the first
+/// one's session's too. Used by the daemon for everything that belongs to
+/// a session (its harness, its overrides) and by the status commands for
+/// what they say about it, so both name the same session.
+pub fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
+    let mut cur = number;
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(next) = issues.get(&cur).and_then(|s| s.shares_workspace_of) {
+        if next == cur || !seen.insert(cur) {
+            break;
+        }
+        cur = next;
+    }
+    cur
 }
 
 pub fn state_path() -> PathBuf {
@@ -394,6 +516,66 @@ mod tests {
         let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         assert!(back.repos["a/b"].issues[&1].subscriber_only);
         assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+    }
+
+    #[test]
+    fn handover_fields_are_optional_and_round_trip() {
+        let dir = std::env::temp_dir().join(format!("ssf-handover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.json");
+        // A file from before handovers loads unchanged.
+        std::fs::write(
+            &path,
+            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,"active":true}}}}}"#,
+        )
+        .unwrap();
+        let mut st = State::load_from(&path).unwrap();
+        let one = st.repos.get_mut("a/b").unwrap().issues.get_mut(&1).unwrap();
+        assert!(one.overrides.is_none() && one.handover.is_none());
+        one.overrides = Some(Overrides {
+            harness: "pi".into(),
+            model: Some("openai/gpt-6".into()),
+            effort: None,
+        });
+        one.handover = Some(PendingHandover {
+            harness: "codex".into(),
+            model: None,
+            effort: Some("high".into()),
+            summary: Some("what is left".into()),
+            by: Some("a/b#1".into()),
+            requested_at: "2026-09-07T10:00:00Z".into(),
+        });
+        st.save_to(&path).unwrap();
+        let back = State::load_from(&path).unwrap();
+        let one = &back.repos["a/b"].issues[&1];
+        assert_eq!(one.overrides.as_ref().unwrap().harness, "pi");
+        assert!(one.overrides.as_ref().unwrap().effort.is_none());
+        let h = one.handover.as_ref().unwrap();
+        assert_eq!(h.harness, "codex");
+        assert_eq!(h.summary.as_deref(), Some("what is left"));
+        assert_eq!(h.overrides().effort.as_deref(), Some("high"));
+        // Nothing set writes neither key.
+        st.repos
+            .get_mut("a/b")
+            .unwrap()
+            .issues
+            .get_mut(&1)
+            .unwrap()
+            .overrides = None;
+        st.repos
+            .get_mut("a/b")
+            .unwrap()
+            .issues
+            .get_mut(&1)
+            .unwrap()
+            .handover = None;
+        st.save_to(&path).unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !written.contains("overrides") && !written.contains("handover"),
+            "{written}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
