@@ -50,13 +50,51 @@ service does, but nothing restarts it for you.
 
 ## Releasing
 
-The package a newcomer installs comes from a GitHub release: `cd
-packaging && makepkg -f` builds `ssf-<pkgver>-1-x86_64.pkg.tar.zst` from
-the working tree, and that file is what the release carries (the `pkgver`
-is `<Cargo version>.r<commits>.g<short sha>`, so it sorts after any
-earlier build). Landing the package in Omarchy's repository is a later
-step and needs a tagged release with the PKGBUILD's `source` pointing at
-it; until then [Setup](setup.md) says "from the latest release".
+Two PKGBUILDs share one `package()`:
+
+- `packaging/PKGBUILD` is the development build: it tars the working tree,
+  local changes included, and its `pkgver` is
+  `<Cargo version>.r<commits>.g<short sha>`, so every build sorts after
+  the one before. `cd packaging && makepkg -fd` is the local workflow, and
+  the `pkgver` bump makepkg writes is committed with the change.
+- `packaging/release/PKGBUILD` is the release build: `pkgver=X.Y.Z`,
+  `source` is the GitHub tag tarball
+  (`.../archive/refs/tags/vX.Y.Z.tar.gz`) with its sha256, and
+  `cargo build --frozen --release` from that tarball. The development
+  PKGBUILD sources it and overrides only the version, the source and the
+  functions that get the tree, so `depends`, `optdepends`, `options` and
+  `package()` live in the release file alone.
+
+`packaging/release/` is laid out the way Omarchy's package repository
+([omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs)) wants a
+package directory: `PKGBUILD`, `ssf.install` (a symlink to
+`../ssf.install`; copy with `cp -rL`) and `.omarchy/package.json`, which
+tells its `sync-upstream` to follow this repository's `vX.Y.Z` tags and
+puts ssf on the fast release ring, so a new tag reaches the stable channel
+without waiting for an Omarchy release. Everything Omarchy's builder needs
+is in that directory plus the tag tarball, which it downloads
+unauthenticated: the repository has to be public for the build to work.
+
+Cutting a release:
+
+1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
+   commit, tag `vX.Y.Z` and push the tag; make the GitHub release from it.
+2. In `packaging/release/`: `pkgver=X.Y.Z`, `pkgrel=1`, `updpkgsums`
+   (downloads the tag tarball and writes its sha256), `makepkg -fd` to
+   check it builds from the tarball, commit.
+3. Once ssf is in Omarchy's repository, Omarchy's `sync-upstream` does step
+   2 on its side and opens the PR there; a change to `depends`,
+   `package()` or `ssf.install` still needs a PR to omarchy-pkgs with the
+   `packaging/release/` files (`cp -rL packaging/release/. <omarchy-pkgs>/pkgbuilds/ssf/`).
+
+The first submission to omarchy-pkgs is a PR adding `pkgbuilds/ssf/` from
+`packaging/release/` (issue #123 has the prepared branch and the command).
+When it lands, `README.md` "Install" and `docs/setup.md` steps 2 and 11
+switch from "download the package from the latest release" to
+`sudo pacman -S ssf`, and this document's development-build note stays as
+it is. Until then the release carries the package file
+(`ssf-<pkgver>-1-x86_64.pkg.tar.zst`, built with `makepkg -f` in
+`packaging/release/`) and [Setup](setup.md) says "from the latest release".
 
 ## Layout
 
@@ -78,7 +116,7 @@ it; until then [Setup](setup.md) says "from the latest release".
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
 | `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
-| `packaging/` | PKGBUILD, systemd unit, pacman install script, `dev-install.sh` (the service on a dev build) |
+| `packaging/` | the development PKGBUILD, systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 
