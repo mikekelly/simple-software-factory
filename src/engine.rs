@@ -3609,15 +3609,16 @@ deliveries resume"
                 continue;
             };
             // The launch time is taken a moment early, since the harness
-            // writes its transcript around it -- but not in a workspace
-            // whose last conversation was retired by a handover: the
-            // seconds before that launch hold the outgoing agent's own
-            // transcript, which `retired` keeps out anyway.
+            // writes its transcript around it -- but not in a workspace a
+            // handover has been through: the seconds before that launch
+            // hold the outgoing agent's own transcript. Whether its id was
+            // ever captured is beside the point, so the handover itself is
+            // what says so, not the list of ids it retired.
             let retired = st.retired_session_ids.clone();
-            let slack = if retired.is_empty() {
-                Duration::from_secs(5)
-            } else {
+            let slack = if st.handed_over_at.is_some() {
                 Duration::ZERO
+            } else {
+                Duration::from_secs(5)
             };
             let since = chrono::DateTime::parse_from_rfc3339(launched)
                 .map(|t| SystemTime::from(t) - slack)
@@ -3808,6 +3809,7 @@ deliveries resume"
         e.overrides = None;
         e.handover = None;
         e.handover_note = None;
+        e.handed_over_at = None;
         // Items bound to this session mirror its workspace.
         let bound: Vec<u64> = self
             .state
@@ -4060,26 +4062,31 @@ deliveries resume"
                 return;
             }
         }
+        // Items bound to this session mirror its conversation id, so the
+        // one being retired goes from them too (`capture_sessions` writes
+        // the owner's new id to them once there is one).
+        let bound: Vec<u64> = self
+            .state
+            .repo_mut(&repo.name)
+            .issues
+            .values()
+            .filter(|s| s.shares_workspace_of == Some(number))
+            .map(|s| s.number)
+            .collect();
         // The old session is retired on the record; everything about the
         // item and its workspace stays.
+        let retired = self.entry(repo, number).agent_session_id.take();
         {
             let e = self.entry(repo, number);
             // The conversation being dropped is remembered, so the harness
             // starting in its workspace is never given the outgoing
             // agent's transcript as its own (`capture_sessions`,
             // `sessions::capture`).
-            if let Some(old) = e.agent_session_id.take()
-                && !e.retired_session_ids.contains(&old)
-            {
-                e.retired_session_ids.push(old);
-                // Only the last few matter: a workspace is not handed
-                // over dozens of times, and the check is a scan.
-                let extra = e.retired_session_ids.len().saturating_sub(RETIRED_KEPT);
-                e.retired_session_ids.drain(..extra);
-            }
+            retire(e, retired.clone());
             e.terminal_handle = None;
             e.blocked = None;
             e.launched_at = None;
+            e.handed_over_at = Some(now_iso());
             e.overrides = Some(h.overrides());
             e.handover = None;
             // What the outgoing agent left is kept on the item until a
@@ -4090,6 +4097,11 @@ deliveries resume"
                 from: from_name.clone(),
                 summary: h.summary.clone(),
             });
+        }
+        for n in bound {
+            let e = self.entry(repo, n);
+            e.agent_session_id = None;
+            retire(e, retired.clone());
         }
         let eff = self.effective(repo, number);
         let to_launch = self.launch_of(repo, number);
@@ -4419,6 +4431,18 @@ deliveries resume"
 }
 
 /// Listen for the CLI on the daemon's socket, replacing a stale one.
+/// Remember a conversation as one never to resume or capture again, on
+/// one record. Only the last few are kept: a workspace is not handed over
+/// dozens of times, and every capture scans the list.
+fn retire(e: &mut IssueState, id: Option<String>) {
+    let Some(id) = id.filter(|id| !e.retired_session_ids.contains(id)) else {
+        return;
+    };
+    e.retired_session_ids.push(id);
+    let extra = e.retired_session_ids.len().saturating_sub(RETIRED_KEPT);
+    e.retired_session_ids.drain(..extra);
+}
+
 /// The `handed-over` post of one handover, refused or not.
 fn handed_over(
     from: &events::Launch,
@@ -7536,6 +7560,10 @@ mod tests {
             "{launched:?}"
         );
         assert!(launched[0].contains("opus"), "{launched:?}");
+        // A handover on the same harness is where a transcript is most
+        // easily mixed up, so the item says one happened whether or not
+        // an id was ever captured for the session that left.
+        assert!(e.entry(&r, 5).handed_over_at.is_some());
         assert_eq!(
             e.entry(&r, 5).overrides,
             Some(Overrides {
@@ -7579,6 +7607,8 @@ mod tests {
             st.worktree_path = Some("/w/5".into());
             st.title = "Follow-up".into();
             st.html_url = "https://gh/6".into();
+            // The bound item mirrors the owner's conversation.
+            st.agent_session_id = Some("sess-5".into());
         }
         let v = e
             .handover(
@@ -7604,6 +7634,11 @@ mod tests {
             e.entry(&repo(), 6).overrides.is_none(),
             "the override lives on the owner"
         );
+        // The retired conversation is gone from the bound item too, and
+        // is not offered back to the new session through the mirror.
+        let bound_state = e.entry(&repo(), 6).clone();
+        assert!(bound_state.agent_session_id.is_none());
+        assert_eq!(bound_state.retired_session_ids, vec!["sess-5".to_string()]);
         // Both items run the new harness, and say so.
         assert_eq!(e.effective(&repo(), 6).harness, "pi");
         let sessions = crate::status::sessions(&e.cfg, &e.state, Some(&[]));

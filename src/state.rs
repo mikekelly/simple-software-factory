@@ -121,6 +121,15 @@ pub struct IssueState {
     /// later relaunch would resume the agent that handed the item away.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retired_session_ids: Vec<String>,
+    /// When a handover last retired a conversation on this item. What it
+    /// says is that the workspace holds a transcript that is not this
+    /// session's: the newest one there was written by the agent that
+    /// handed the item away, so the moments before a launch are no longer
+    /// a safe place to look for the new session's own (see
+    /// `Engine::capture_sessions`). Cleared when the workspace is
+    /// released or the item purged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handed_over_at: Option<String>,
     /// When the harness was last launched, to find its session file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launched_at: Option<String>,
