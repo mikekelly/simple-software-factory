@@ -627,6 +627,13 @@ pub struct DaemonConfig {
         alias = "startup_orca_wait_secs"
     )]
     pub startup_driver_wait_secs: u64,
+    /// Post the daemon's essential events on the item as short `ssf`
+    /// blocks by the bot (a session attached, resumed, held for a login,
+    /// given up on, its workspace released; see `events`), for every
+    /// repository that does not decide for itself. Off: nothing is posted
+    /// and nothing else changes.
+    #[serde(default = "default_true")]
+    pub event_comments: bool,
     /// GitHub logins whose assignments, mentions, review requests, labels
     /// and posts ssf acts on, for every repository that has no list of its
     /// own (case-insensitive; the bot itself is always accepted). Unset:
@@ -671,6 +678,7 @@ impl Default for DaemonConfig {
             review_label: None,
             resume_on_start: true,
             startup_driver_wait_secs: default_startup_driver_wait(),
+            event_comments: true,
             allowed_users: None,
             accepted_anyone_risk: false,
         }
@@ -753,6 +761,11 @@ pub struct RepoConfig {
     /// See `DaemonConfig::accepted_anyone_risk`; needed for `"*"` here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub accepted_anyone_risk: bool,
+    /// Whether the daemon posts its events on this repository's items
+    /// (see `DaemonConfig::event_comments`); `daemon.event_comments` when
+    /// not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_comments: Option<bool>,
     /// Git identity for this repository's agents, key by key over `[git]`.
     #[serde(default, skip_serializing_if = "GitConfig::is_empty")]
     pub git: GitConfig,
@@ -936,6 +949,12 @@ impl Config {
             .allowed_users
             .as_deref()
             .map(|l| (l, crate::allow::Source::Instance))
+    }
+
+    /// Whether the daemon posts its events on a repository's items: the
+    /// repository's own say, else the instance's.
+    pub fn event_comments(&self, repo: &RepoConfig) -> bool {
+        repo.event_comments.unwrap_or(self.daemon.event_comments)
     }
 
     /// Whether the wildcard is in effect for a repository.
@@ -1481,6 +1500,53 @@ effort = "low"
         assert!(out.contains("model = \"sonnet\""), "{out}");
         assert!(out.contains("effort = \"low\""), "{out}");
     }
+    #[test]
+    fn event_comments_default_on_and_the_repository_has_the_last_word() {
+        let cfg = parse(
+            r#"
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+
+[[repo]]
+name = "acme/quiet"
+harness = "claude"
+event_comments = false
+"#,
+        )
+        .unwrap();
+        assert!(cfg.daemon.event_comments, "on unless switched off");
+        assert!(cfg.event_comments(&cfg.repos[0]));
+        assert!(!cfg.event_comments(&cfg.repos[1]));
+        // Unset per repository is not written; set is.
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert_eq!(text.matches("event_comments").count(), 2, "{text}");
+        assert!(
+            text.contains("[daemon]\nevent_comments = true")
+                || text.contains("event_comments = true\n"),
+            "{text}"
+        );
+        // The instance switched off, a repository back on.
+        let cfg = parse(
+            r#"
+[daemon]
+event_comments = false
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+
+[[repo]]
+name = "acme/loud"
+harness = "claude"
+event_comments = true
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.event_comments(&cfg.repos[0]));
+        assert!(cfg.event_comments(&cfg.repos[1]));
+    }
+
     #[test]
     fn a_wildcard_allow_list_needs_its_marker() {
         let err = parse(

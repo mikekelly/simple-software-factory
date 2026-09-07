@@ -9,6 +9,7 @@ mod allow;
 mod config;
 mod driver;
 mod engine;
+mod events;
 mod ghcli;
 mod github;
 mod herdr;
@@ -404,6 +405,10 @@ enum RepoCommand {
         /// Accept that `--allowed-users '*'` lets ANYONE on GitHub drive this repository.
         #[arg(long)]
         accept_anyone_risk: bool,
+        /// Post the daemon's events (session attached, resumed, held, given up, released) on this
+        /// repository's items as short `ssf` blocks, overriding daemon.event_comments (default: on).
+        #[arg(long, value_name = "true|false")]
+        event_comments: Option<bool>,
     },
     /// Change some settings of a watched repository, keeping the rest.
     Set {
@@ -441,6 +446,10 @@ enum RepoCommand {
         /// Accept that `--allowed-users '*'` lets ANYONE on GitHub drive this repository.
         #[arg(long)]
         accept_anyone_risk: bool,
+        /// Post the daemon's events (session attached, resumed, held, given up, released) on this
+        /// repository's items as short `ssf` blocks, overriding daemon.event_comments.
+        #[arg(long, value_name = "true|false")]
+        event_comments: Option<bool>,
         /// Commit author and committer name for this repository's agents (with --git-email); default: the [git] table, else the bot.
         #[arg(long, value_name = "NAME")]
         git_name: Option<String>,
@@ -454,7 +463,7 @@ enum RepoCommand {
         #[arg(long, value_name = "WHO")]
         git_credential: Option<String>,
         /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file, allowed_users,
-        /// git (the whole [repo.git] table) or git.name, git.email, git.signing_key, git.credential.
+        /// event_comments, git (the whole [repo.git] table) or git.name, git.email, git.signing_key, git.credential.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },
@@ -1449,6 +1458,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             prompt_file,
             allowed_users,
             accept_anyone_risk,
+            event_comments,
         } => {
             let (owner, r) = split_repo_name(&name)?;
             let name = format!("{owner}/{r}");
@@ -1469,6 +1479,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                 prompt_file,
                 allowed_users: None,
                 accepted_anyone_risk: false,
+                event_comments,
                 git: config::GitConfig::default(),
             };
             entry.validate_launch_prefs()?;
@@ -1509,6 +1520,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             prompt_file,
             allowed_users,
             accept_anyone_risk,
+            event_comments,
             git_name,
             git_email,
             git_signing_key,
@@ -1572,6 +1584,9 @@ fn repo(command: RepoCommand) -> Result<()> {
             if let Some(list) = allowed_users {
                 set_repo_allowed_users(entry, &list, accept_anyone_risk)?;
             }
+            if event_comments.is_some() {
+                entry.event_comments = event_comments;
+            }
             if let Some(n) = git_name {
                 entry.git.name = Some(n.trim().to_string());
             }
@@ -1604,6 +1619,7 @@ fn repo(command: RepoCommand) -> Result<()> {
                         entry.allowed_users = None;
                         entry.accepted_anyone_risk = false;
                     }
+                    "event_comments" => entry.event_comments = None,
                     other => bail!("cannot clear unknown field {other}"),
                 }
             }
@@ -3233,6 +3249,31 @@ mod tests {
                 .startup_driver_wait_secs,
             45
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn config_set_switches_event_comments_through_the_generic_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-config-set-events-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "").unwrap();
+        assert!(Config::load_from(&path).unwrap().daemon.event_comments);
+        config_set_at(&path, "daemon.event_comments", "false", false).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("event_comments = false"), "{text}");
+        assert!(!Config::load_from(&path).unwrap().daemon.event_comments);
+        config_set_at(&path, "daemon.event_comments", "true", false).unwrap();
+        assert!(Config::load_from(&path).unwrap().daemon.event_comments);
+        // Per-repository values go through `ssf repo set`, not here.
+        assert!(config_set_at(&path, "repo.event_comments", "false", false).is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
 

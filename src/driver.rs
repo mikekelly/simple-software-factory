@@ -75,9 +75,9 @@ const LOGIN_TAIL_LINES: usize = 15;
 /// well have quoted the phrase) is skipped: from a line carrying `[ssf]`
 /// through the bullet and quote lines (`- `, `> `) that follow it. Every
 /// string ssf itself writes into a terminal or that agents read stays
-/// free of these phrases (`prompt::login_back_prompt`, the blocked and
-/// resumed comments, `BlockedView::describe`, `SessionBlocked`), which
-/// `engine::tests::ssf_texts_never_look_like_a_login_prompt` pins.
+/// free of these phrases (`prompt::login_back_prompt`, the `blocked` and
+/// `unblocked` event posts, `BlockedView::describe`, `SessionBlocked`),
+/// which `engine::tests::ssf_texts_never_look_like_a_login_prompt` pins.
 pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
     let tail: Vec<&str> = screen
         .lines()

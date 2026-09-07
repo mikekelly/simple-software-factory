@@ -1098,35 +1098,6 @@ comments) and carry on.",
     )
 }
 
-/// The comment ssf leaves on a session's item when the harness is at its
-/// sign-in prompt: `harness` is the display name, `fix` the command a
-/// person runs (`login::how_to_sign_in`). What the screen showed goes to
-/// the log and `status --json`, not here: quoting it would put the very
-/// phrase the recogniser looks for on every screen the comment reaches.
-pub fn blocked_comment(harness: &str, fix: &str) -> String {
-    format!(
-        "[ssf] This session's {harness} is at its sign-in prompt (its session expired, was \
-revoked, or was never set up here), so nothing reaches the agent. Sign in with {fix}; ssf \
-checks every pass and resumes the session on its own once that is done. Activity on this \
-item is held until then."
-    )
-}
-
-/// The comment once the session is back, when the wait was long enough
-/// to be worth a line.
-pub fn resumed_comment(harness: &str, relaunched: bool, mins: u64) -> String {
-    format!(
-        "[ssf] {harness} is signed in again; the session {} after {mins} minute{}, and what \
-happened here meanwhile is being delivered to it.",
-        if relaunched {
-            "was started again with its conversation resumed"
-        } else {
-            "carried on"
-        },
-        if mins == 1 { "" } else { "s" }
-    )
-}
-
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let item = short_ref(issue, ctx);
@@ -1448,6 +1419,7 @@ mod tests {
             prompt_file: None,
             allowed_users: None,
             accepted_anyone_risk: false,
+            event_comments: None,
             git: Default::default(),
         };
         let d = cfg();
