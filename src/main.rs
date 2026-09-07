@@ -167,6 +167,48 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Hand this session's item to a new session on another harness,
+    /// model or effort, in the same workspace: the daemon ends this
+    /// session on its next pass and starts the new one there, with the
+    /// summary written here ahead of the item's story. The harness,
+    /// model and effort stay with the item until its workspace is
+    /// released. Inside a session it is this session's item; from a shell
+    /// name the item.
+    #[command(group(
+        clap::ArgGroup::new("summary_form")
+            .required(true)
+            .args(["summary", "summary_file", "no_summary"])
+    ))]
+    Handover {
+        /// Item number on this session's repository, or owner/repo#N.
+        item: Option<String>,
+        /// Harness the new session runs (`ssf agents` lists the ids).
+        #[arg(long, value_name = "ID")]
+        harness: String,
+        /// Model for the new session (`ssf models <harness>` lists them);
+        /// the harness's own default when not given.
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        /// Effort level for the new session; the harness's own default
+        /// when not given.
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
+        /// What the new session is told before the item's story: what the
+        /// item is about, what is done, what is left, where things are.
+        #[arg(long, value_name = "TEXT")]
+        summary: Option<String>,
+        /// Read the summary from a file instead.
+        #[arg(long, value_name = "PATH")]
+        summary_file: Option<PathBuf>,
+        /// Hand over with no summary: the new session reads the item itself.
+        #[arg(long)]
+        no_summary: bool,
+        /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove the workspaces of closed items whose agent is gone: each is
     /// listed with its state, the clean-and-pushed ones are removed, the
     /// rest are left in place. Workspaces of open items, of sessions that
@@ -658,6 +700,29 @@ async fn main() -> Result<()> {
             force,
             json,
         } => release(item.as_deref(), r#as.as_deref(), force, json).await,
+        Command::Handover {
+            item,
+            harness,
+            model,
+            effort,
+            summary,
+            summary_file,
+            no_summary: _,
+            r#as,
+            json,
+        } => {
+            handover(
+                item.as_deref(),
+                &harness,
+                model.as_deref(),
+                effort.as_deref(),
+                summary,
+                summary_file.as_deref(),
+                r#as.as_deref(),
+                json,
+            )
+            .await
+        }
         Command::Purge {
             dry_run,
             older_than,
@@ -1960,6 +2025,7 @@ fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Subs { .. } => "subs",
         Command::Tell { .. } => "tell",
         Command::Release { .. } => "release",
+        Command::Handover { .. } => "handover",
         Command::Purge { .. } => "purge",
         Command::Doctor => "doctor",
         Command::Run { once: true } => "run",
@@ -2552,6 +2618,142 @@ async fn release(item: Option<&str>, as_: Option<&str>, force: bool, json: bool)
     }
     println!(
         "The workspace ({path}) is removed on the daemon's next pass (within {secs}s), with its terminal. Stop here."
+    );
+    Ok(())
+}
+
+/// `1,234`: a count as the messages write it.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What `ssf handover` prints once the daemon has recorded it. The second
+/// paragraph is what the outgoing agent acts on, so it says plainly that
+/// this session is over. Worded, like every text ssf puts on a screen,
+/// without the phrases `driver::login_dialog` looks for.
+pub fn handover_recorded_text(
+    session: &str,
+    title: &str,
+    harness_name: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    summary_chars: Option<usize>,
+    secs: u64,
+) -> String {
+    let model = match model {
+        Some(m) => format!("model {m}"),
+        None => "the harness's default model".to_string(),
+    };
+    let effort = match effort {
+        Some(e) => format!("effort {e}"),
+        None => "the harness's default effort".to_string(),
+    };
+    let summary = match summary_chars {
+        Some(n) => format!("with a summary of {} chars", thousands(n)),
+        None => "without a summary".to_string(),
+    };
+    format!(
+        "Handover of {session} (\"{title}\") recorded: to {harness_name} ({model}, {effort}), \
+{summary}.\nThe daemon ends this session on its next pass (within {secs}s) and starts the new \
+one in the same workspace. Stop working now: do not start anything else, and do not run this \
+command again."
+    )
+}
+
+/// The summary a handover carries: `--summary`, the contents of
+/// `--summary-file`, or nothing for `--no-summary`. Checked here, where
+/// the person or agent that wrote it can fix it, rather than in the daemon.
+fn handover_summary(summary: Option<String>, file: Option<&Path>) -> Result<Option<String>> {
+    let text = match (summary, file) {
+        (Some(t), _) => t,
+        (None, Some(p)) => std::fs::read_to_string(p)
+            .with_context(|| format!("reading the summary from {}", p.display()))?,
+        (None, None) => return Ok(None),
+    };
+    if text.trim().is_empty() {
+        bail!("the summary is empty: write a summary or pass --no-summary");
+    }
+    let n = text.chars().count();
+    if n > ipc::MAX_SUMMARY_CHARS {
+        bail!(
+            "the summary is {} characters; the most a handover carries is {}. Shorten it, or say \
+the rest on the item",
+            thousands(n),
+            thousands(ipc::MAX_SUMMARY_CHARS)
+        );
+    }
+    Ok(Some(text))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handover(
+    item: Option<&str>,
+    harness: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    summary: Option<String>,
+    summary_file: Option<&Path>,
+    as_: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let me = identity(as_)?;
+    let session = match item {
+        Some(i) => item_ref(i, me.as_ref())?,
+        None => me
+            .as_ref()
+            .map(|o| o.to_string())
+            .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
+    };
+    let harness = harness.trim();
+    if !agents::is_known(harness) {
+        bail!(
+            "{harness} is not a harness ssf knows; `ssf agents` lists the ids ({})",
+            agents::list()
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    models::validate(harness, model, effort)?;
+    let summary = handover_summary(summary, summary_file)?;
+    let v = ipc::call(&ipc::Request::Handover {
+        session,
+        harness: harness.to_string(),
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+        summary,
+        by: me.map(|o| o.to_string()),
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).map(str::to_string);
+    println!(
+        "{}",
+        handover_recorded_text(
+            v.get("session").and_then(|x| x.as_str()).unwrap_or("?"),
+            v.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+            &login::display_name(s("/to/harness").as_deref().unwrap_or(harness)),
+            s("/to/model").as_deref(),
+            s("/to/effort").as_deref(),
+            v.get("summary_chars")
+                .and_then(|x| x.as_u64())
+                .map(|n| n as usize),
+            v.get("poll_interval_secs")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(10),
+        )
     );
     Ok(())
 }

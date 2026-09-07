@@ -57,8 +57,9 @@ const NET_PORT: u32 = 1024;
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
 /// VM from the host).
-pub const FORWARDED: [&str; 10] = [
-    "status", "peers", "sub", "unsub", "subs", "tell", "release", "purge", "doctor", "run",
+pub const FORWARDED: [&str; 11] = [
+    "status", "peers", "sub", "unsub", "subs", "tell", "release", "handover", "purge", "doctor",
+    "run",
 ];
 
 /// How a harness signs in inside the guest: the flow that works from a
