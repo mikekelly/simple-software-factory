@@ -32,6 +32,18 @@ answer; a handed-off item adds one saying which session follows it; a
 factory inside a [microVM](vm.md) adds one saying the agent has root there
 through `sudo`. The board rule sits with the boards (below).
 
+An item that was [handed over](sessions.md#handover) starts its new
+session with the same story, prefaced by what the outgoing session left.
+With a summary the first message opens "You took over this issue from a
+session on Claude Code that handed it over; its summary follows, then the
+issue as ssf tells it to a new session.", then the summary verbatim under
+a `## Summary from the outgoing session` heading, then the story; with
+`--no-summary` the preface is "You took over this issue from a session on
+Claude Code that handed it over. It left no summary; read the issue
+below." and the story follows straight away. The story is the usual one,
+and its reason reads "because the agent session on Claude Code working on
+it handed #N over to you".
+
 `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf tell`,
 items a session opens and hand-offs, second opinions through herdr,
 wrapping up, the byline, the `Closes #N` suggestion) from the same binary, so it cannot
@@ -73,6 +85,9 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
   [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)).
 - `The factory restarted ...`: the machine, the multiplexer or ssf
   restarted and the session was started again.
+- `Handover to <harness> refused: <reason>. Carry on.`: the session asked
+  for a [handover](sessions.md#handover) and the daemon could not carry it
+  out, so the item stays with it.
 
 ## Project boards
 

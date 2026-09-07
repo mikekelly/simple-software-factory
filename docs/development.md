@@ -73,7 +73,7 @@ it; until then [Setup](setup.md) says "from the latest release".
 | `src/origin.rs`, `src/shim.rs` | bylines and origin tags; the `gh` wrapper |
 | `src/allow.rs` | the allow-list of GitHub users |
 | `src/release.rs` | the release and purge checks |
-| `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `release` and `purge` |
+| `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `handover`, `release` and `purge` |
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |

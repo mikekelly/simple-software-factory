@@ -54,7 +54,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.startup_driver_wait_secs` | `120` | How long to wait for the driver (herdr or Orca) at daemon start before the first poll; the old name `startup_orca_wait_secs` still loads |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
-| `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
+| `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
 | `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
 | `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
 | `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
@@ -161,6 +161,34 @@ is refused when the config loads). Changing the agent of a repository
 resets both, since the ids belong to the agent. Keep `--model`/`--effort`
 out of `repo.command` when you set them here, or the agent sees the flag
 twice.
+
+### Per-item overrides
+
+`ssf handover` (see [Handover](sessions.md#handover)) moves one item to
+another harness, model or effort level without touching `config.toml`.
+What it sets is a per-item override, kept on the item in `state.json`
+next to the rest of its record, and it wins over the `[[repo]]` the item
+belongs to:
+
+- **The same harness the repository uses**: the repository's `command`
+  still starts the agent, and the override's model and effort replace the
+  repository's; either one left out keeps the repository's.
+- **Another harness**: the item runs on that harness with the
+  permission-free command from [Permissions](#permissions) (the
+  repository's `command` belongs to its own harness and is not reused),
+  and with the override's model and effort, or that harness's own
+  defaults where the handover named none.
+
+The override applies to every later launch of the item: a delivery that
+has to start the agent again, a resumed conversation, a workspace
+re-created from the branch, the startup pass after a reboot. It is in the
+state file, so it survives daemon and machine restarts, and an item bound
+to another session's workspace follows that session's override. `ssf
+status` and `ssf peers` show the overridden harness, model and effort on
+the item's line (and `overrides` in `--json`), together with a handover
+that has not been carried out yet. Releasing the workspace or purging the
+item clears the override, and the item comes back on the repository's own
+settings.
 
 ## Permissions
 
