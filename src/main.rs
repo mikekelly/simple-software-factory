@@ -175,16 +175,18 @@ enum Command {
     /// released. Inside a session it is this session's item; from a shell
     /// name the item.
     #[command(group(
-        clap::ArgGroup::new("summary_form")
-            .required(true)
-            .args(["summary", "summary_file", "no_summary"])
+        clap::ArgGroup::new("summary_form").args(["summary", "summary_file", "no_summary"])
     ))]
     Handover {
         /// Item number on this session's repository, or owner/repo#N.
         item: Option<String>,
+        /// Drop a handover the daemon has not carried out yet; the
+        /// session that is there keeps the item and is told to carry on.
+        #[arg(long, conflicts_with_all = ["harness", "model", "effort", "summary_form"])]
+        cancel: bool,
         /// Harness the new session runs (`ssf agents` lists the ids).
-        #[arg(long, value_name = "ID")]
-        harness: String,
+        #[arg(long, value_name = "ID", required_unless_present = "cancel")]
+        harness: Option<String>,
         /// Model for the new session (`ssf models <harness>` lists them);
         /// the harness's own default when not given.
         #[arg(long, value_name = "ID")]
@@ -702,22 +704,25 @@ async fn main() -> Result<()> {
         } => release(item.as_deref(), r#as.as_deref(), force, json).await,
         Command::Handover {
             item,
+            cancel,
             harness,
             model,
             effort,
             summary,
             summary_file,
-            no_summary: _,
+            no_summary,
             r#as,
             json,
         } => {
             handover(
                 item.as_deref(),
-                &harness,
+                cancel,
+                harness.as_deref(),
                 model.as_deref(),
                 effort.as_deref(),
                 summary,
                 summary_file.as_deref(),
+                no_summary,
                 r#as.as_deref(),
                 json,
             )
@@ -2687,12 +2692,20 @@ hand over again."
 /// The summary a handover carries: `--summary`, the contents of
 /// `--summary-file`, or nothing for `--no-summary`. Checked here, where
 /// the person or agent that wrote it can fix it, rather than in the daemon.
-fn handover_summary(summary: Option<String>, file: Option<&Path>) -> Result<Option<String>> {
+fn handover_summary(
+    summary: Option<String>,
+    file: Option<&Path>,
+    no_summary: bool,
+) -> Result<Option<String>> {
     let text = match (summary, file) {
         (Some(t), _) => t,
         (None, Some(p)) => std::fs::read_to_string(p)
             .with_context(|| format!("reading the summary from {}", p.display()))?,
-        (None, None) => return Ok(None),
+        (None, None) if no_summary => return Ok(None),
+        (None, None) => bail!(
+            "say what the new session is told: --summary \"<text>\", --summary-file <path>, or \
+--no-summary"
+        ),
     };
     if text.trim().is_empty() {
         bail!("the summary is empty: write a summary or pass --no-summary");
@@ -2718,11 +2731,13 @@ the rest on the item",
 #[allow(clippy::too_many_arguments)]
 async fn handover(
     item: Option<&str>,
-    harness: &str,
+    cancel: bool,
+    harness: Option<&str>,
     model: Option<&str>,
     effort: Option<&str>,
     summary: Option<String>,
     summary_file: Option<&Path>,
+    no_summary: bool,
     as_: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -2734,7 +2749,10 @@ async fn handover(
             .map(|o| o.to_string())
             .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
     };
-    let harness = harness.trim();
+    if cancel {
+        return cancel_handover(&session, json).await;
+    }
+    let harness = harness.context("--harness is required")?.trim();
     if !agents::is_known(harness) {
         bail!(
             "{harness} is not a harness ssf knows; `ssf agents` lists the ids ({})",
@@ -2746,7 +2764,7 @@ async fn handover(
         );
     }
     models::validate(harness, model, effort)?;
-    let summary = handover_summary(summary, summary_file)?;
+    let summary = handover_summary(summary, summary_file, no_summary)?;
     let v = ipc::call(&ipc::Request::Handover {
         session,
         harness: harness.to_string(),
@@ -2778,6 +2796,44 @@ async fn handover(
         )
     );
     Ok(())
+}
+
+/// `ssf handover --cancel`: the pending handover is dropped and the
+/// session that is there keeps the item.
+async fn cancel_handover(session: &str, json: bool) -> Result<()> {
+    let v = ipc::call(&ipc::Request::CancelHandover {
+        session: session.to_string(),
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string();
+    println!(
+        "{}",
+        handover_cancelled_text(
+            &s("session"),
+            &s("title"),
+            &s("harness_name"),
+            v.get("told").and_then(|x| x.as_bool()).unwrap_or(false),
+        )
+    );
+    Ok(())
+}
+
+/// What `ssf handover --cancel` prints. Worded, like every text ssf puts
+/// on a screen, without the phrases `driver::login_dialog` looks for.
+pub fn handover_cancelled_text(session: &str, title: &str, harness: &str, told: bool) -> String {
+    let told = if told {
+        " The session on it has been told to carry on."
+    } else {
+        ""
+    };
+    format!(
+        "Handover of {session} (\"{title}\") to {harness} cancelled; nothing about the item \
+changed.{told}"
+    )
 }
 
 async fn purge(dry_run: bool, older_than: Option<u64>, force: bool, json: bool) -> Result<()> {
@@ -3486,31 +3542,41 @@ harness's default effort), without a summary."
         let path = dir.join("summary.md");
         std::fs::write(&path, "what is left").unwrap();
         assert_eq!(
-            handover_summary(None, Some(&path)).unwrap().as_deref(),
+            handover_summary(None, Some(&path), false)
+                .unwrap()
+                .as_deref(),
             Some("what is left")
         );
         assert_eq!(
-            handover_summary(Some("inline".into()), None)
+            handover_summary(Some("inline".into()), None, false)
                 .unwrap()
                 .as_deref(),
             Some("inline")
         );
-        assert!(handover_summary(None, None).unwrap().is_none());
+        assert!(handover_summary(None, None, true).unwrap().is_none());
+        // No summary form at all: the clap group cannot require one, since
+        // `--cancel` takes none either, so the check is here.
+        let e = handover_summary(None, None, false).unwrap_err().to_string();
+        assert!(e.contains("say what the new session is told"), "{e}");
         // Empty, and over the cap, are the writer's to fix.
         std::fs::write(&path, "   \n").unwrap();
-        let e = handover_summary(None, Some(&path)).unwrap_err().to_string();
+        let e = handover_summary(None, Some(&path), false)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("write a summary or pass --no-summary"), "{e}");
         assert!(
-            handover_summary(Some(String::new()), None)
+            handover_summary(Some(String::new()), None, false)
                 .unwrap_err()
                 .to_string()
                 .contains("the summary is empty")
         );
         let long = "x".repeat(ipc::MAX_SUMMARY_CHARS + 1);
-        let e = handover_summary(Some(long), None).unwrap_err().to_string();
+        let e = handover_summary(Some(long), None, false)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("8,001 characters") && e.contains("8,000"), "{e}");
         assert!(
-            handover_summary(None, Some(&dir.join("nope.md")))
+            handover_summary(None, Some(&dir.join("nope.md")), false)
                 .unwrap_err()
                 .to_string()
                 .contains("reading the summary from")
@@ -3521,6 +3587,7 @@ harness's default effort), without a summary."
         let e = handover_summary(
             Some("Blocked all afternoon: the pane kept saying Please run /login".into()),
             None,
+            false,
         )
         .unwrap_err()
         .to_string();
@@ -3541,7 +3608,7 @@ harness's default effort), without a summary."
             long.push_str(&format!("- step {i}: done\n"));
         }
         assert!(
-            handover_summary(Some(long), None)
+            handover_summary(Some(long), None, false)
                 .unwrap_err()
                 .to_string()
                 .contains("would read as a harness's own sign-in screen")
@@ -3549,7 +3616,8 @@ harness's default effort), without a summary."
         assert!(
             handover_summary(
                 Some("[ssf] the note said:\n- not logged in, it said".into()),
-                None
+                None,
+                false
             )
             .unwrap_err()
             .to_string()

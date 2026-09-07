@@ -326,6 +326,7 @@ agent runs one command; an operator does the same from a shell.
 ssf handover --harness codex --model gpt-5.5 --effort medium --summary "..."  # inside a session
 ssf handover acme/widgets#12 --harness pi --no-summary                        # from a shell
 ssf handover 12 --harness claude --model opus --summary-file /tmp/handover.md # with SSF_REPO set, or --as
+ssf handover 12 --cancel                                                      # call it off before the pass
 ```
 
 - **Which item.** Inside a session the command takes no item: it is the
@@ -454,6 +455,17 @@ to be running after all (the start gave up on a pane that came up but
 never settled), it is given that first message where it stands, and the
 block lifts on the message landing rather than on the screen looking
 idle.
+
+**Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the
+daemon has not carried out yet: nothing about the item changes, and the
+session that is there is told in one `[ssf] The handover to <harness> was
+cancelled: this session keeps the item. Carry on.` message, since it was
+told to stop working when the handover was recorded. It takes no other
+flag, and is refused when nothing is pending. This is the way back out
+while the pass cannot run -- the driver is down, or the collaborators
+cannot be fetched -- because until then everything else on the item is
+refused. Nothing is posted on the item: the handover was never announced
+there.
 
 While a handover is pending, `ssf release` on the item and `ssf tell` to
 it are refused with that as the reason, and the startup pass leaves the

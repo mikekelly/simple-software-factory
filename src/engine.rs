@@ -545,6 +545,10 @@ are resumed on the first pass that finds it: {err:#}"
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Request::CancelHandover { session } => match self.cancel_handover(&session).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
             Request::Purge {
                 dry_run,
                 older_than_days,
@@ -4196,6 +4200,52 @@ deliveries resume"
         .await;
     }
 
+    /// `ssf handover --cancel`: drop a handover the daemon has recorded
+    /// and not carried out yet. The session that is there keeps the item,
+    /// and hears so if it is still running -- it was told to stop working
+    /// when the handover was recorded, and nothing else can reach it
+    /// while one is pending. Nothing is posted on the item: the handover
+    /// was never announced there.
+    async fn cancel_handover(&mut self, session: &str) -> Result<Value> {
+        let (repo, number, id) = self.known_session(session)?;
+        let st = self.entry(&repo, number).clone();
+        let Some(h) = st.handover.clone() else {
+            anyhow::bail!("{id}: no handover is pending on this item");
+        };
+        self.entry(&repo, number).handover = None;
+        let name = login::display_name(&h.harness);
+        info!(session = id, harness = h.harness, "handover cancelled");
+        let live = match st.worktree_id.as_deref() {
+            Some(w) => self.driver(&repo).has_live_agent(w).await.unwrap_or(false),
+            None => false,
+        };
+        let mut told = false;
+        if live {
+            let text = prompt::handover_cancelled_prompt(&name);
+            match self.deliver_to(&repo, number, &text, None).await {
+                Ok(d) => {
+                    told = true;
+                    let e = self.entry(&repo, number);
+                    e.terminal_handle = Some(d.handle);
+                    e.last_prompt_at = Some(now_iso());
+                    e.prompts_sent += 1;
+                }
+                Err(e) => warn!(
+                    session = id,
+                    "could not tell the agent the handover was cancelled: {e:#}"
+                ),
+            }
+        }
+        Ok(serde_json::json!({
+            "session": id,
+            "title": st.title,
+            "harness": h.harness,
+            "harness_name": name,
+            "requested_at": h.requested_at,
+            "told": told,
+        }))
+    }
+
     /// A handover that was accepted and cannot be carried out: nothing
     /// changes, the item says so, and the agent that asked (if it is still
     /// there) hears it in one message.
@@ -7207,6 +7257,9 @@ mod tests {
                 ),
                 prompt::handover_prompt(&name, "pull request", None, "the item's story"),
                 prompt::handover_refused_prompt(&name, "the item is no longer active"),
+                prompt::handover_cancelled_prompt(&name),
+                crate::handover_cancelled_text("o/r#5", "Fix it", &name, true),
+                crate::handover_cancelled_text("o/r#5", "Fix it", &name, false),
                 prompt::handover_refused_prompt(
                     &name,
                     &events::one_line("could not stop the running agent: no such terminal"),
@@ -7938,6 +7991,53 @@ mod tests {
         assert!(launched[0].starts_with("pi:"), "{launched:?}");
         let log = d.log();
         assert!(log.iter().any(|l| l.starts_with("relaunch:w5:")), "{log:?}");
+    }
+
+    /// `ssf handover --cancel`: the way back out of a pending handover,
+    /// which otherwise refuses every other command on the item.
+    #[tokio::test]
+    async fn a_pending_handover_can_be_cancelled() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let nothing = e
+            .handle_request(crate::ipc::Request::CancelHandover {
+                session: "o/r#5".into(),
+            })
+            .await;
+        assert!(!nothing.ok);
+        assert!(
+            nothing.error.unwrap().contains("no handover is pending"),
+            "refused with the reason"
+        );
+        e.handover("o/r#5", "pi", None, None, Some("half done"), Some("o/r#5"))
+            .await
+            .unwrap();
+        let r = e
+            .handle_request(crate::ipc::Request::CancelHandover {
+                session: "o/r#5".into(),
+            })
+            .await;
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data["session"], "o/r#5");
+        assert_eq!(r.data["harness_name"], "Pi");
+        assert_eq!(r.data["told"], true);
+        // The agent that was told to stop hears that it carries on, and
+        // nothing is posted on the item: the handover was never announced.
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert_eq!(
+            log[0],
+            "deliver:w5:[ssf] The handover to Pi was cancelled: this session keeps t"
+        );
+        assert!(stub.posts().is_empty());
+        // Nothing pending: the pass leaves the session alone and the
+        // ordinary commands work again.
+        assert!(e.entry(&repo(), 5).handover.is_none());
+        e.run_handovers(&repo()).await;
+        assert!(d.log().is_empty(), "the session stays");
+        assert!(e.entry(&repo(), 5).overrides.is_none());
+        assert!(e.resume_candidates(&repo()).contains(&5));
+        e.tell(None, "o/r#5", "hello").await.unwrap();
     }
 
     /// A session blocked on its harness's sign-in prompt may hand over --

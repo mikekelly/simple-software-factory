@@ -1158,6 +1158,13 @@ pub fn handover_refused_prompt(harness: &str, reason: &str) -> String {
     format!("[ssf] Handover to {harness} refused: {reason}. Carry on.")
 }
 
+/// The one message the agent gets when a handover on its item is called
+/// off (`ssf handover --cancel`): it was told to stop working, and this
+/// is what takes that back.
+pub fn handover_cancelled_prompt(harness: &str) -> String {
+    format!("[ssf] The handover to {harness} was cancelled: this session keeps the item. Carry on.")
+}
+
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let item = short_ref(issue, ctx);
@@ -1276,7 +1283,9 @@ at most 8,000 characters. The daemon ends this session on its next pass and star
 in the same workspace, on the same branch, so commit and push first, say on the item what you \
 are handing over, and stop working the moment the command comes back. The handover and the new \
 session are posted on the item as `handed-over` and `attached`. The new harness, model and \
-effort stay with the item for every later start until the workspace is released.\n\n\
+effort stay with the item for every later start until the workspace is released. Between the \
+command and the pass nothing else reaches the item, so `ssf handover --cancel` is the way back \
+if the handover turns out to be wrong.\n\n\
 ## Second opinions\n\n\
 ssf runs one session per item and starts no reviewer for your work: a second pair of eyes is \
 yours to arrange, and the repository's notes say when one is required. Give a fresh agent that \

@@ -86,6 +86,11 @@ pub enum Request {
         summary: Option<String>,
         by: Option<String>,
     },
+    /// Drop the handover recorded on `session`'s item before the daemon
+    /// has carried it out; the session that is there keeps the item.
+    CancelHandover {
+        session: String,
+    },
     /// List, and unless `dry_run` remove, the workspaces of closed items
     /// whose agent is gone: the clean-and-pushed ones, or all of them with
     /// `force`. `older_than_days` keeps recently retired ones out of it.
@@ -226,6 +231,12 @@ mod tests {
         let j = serde_json::to_string(&h).unwrap();
         assert!(j.contains("\"op\":\"handover\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), h);
+        let c = Request::CancelHandover {
+            session: "o/r#1".into(),
+        };
+        let j = serde_json::to_string(&c).unwrap();
+        assert!(j.contains("\"op\":\"cancel_handover\""));
+        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), c);
         let e = serde_json::to_string(&Response::err("nope")).unwrap();
         let back: Response = serde_json::from_str(&e).unwrap();
         assert!(!back.ok);
