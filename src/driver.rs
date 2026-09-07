@@ -95,33 +95,12 @@ pub fn quotes_login_prompt(text: &str) -> bool {
     HARNESSES.iter().any(|h| login_dialog_in(h, text).is_some())
 }
 
-fn login_dialog_in(harness: &str, screen: &str) -> Option<String> {
-    let tail: Vec<&str> = screen
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let start = tail.len().saturating_sub(LOGIN_TAIL_LINES);
-    let mut in_echo = false;
-    let candidates: Vec<&str> = tail[start..]
-        .iter()
-        .copied()
-        .filter(|l| {
-            if l.contains("[ssf]") {
-                in_echo = true;
-                return false;
-            }
-            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
-                return false;
-            }
-            in_echo = false;
-            true
-        })
-        .collect();
-    let text = candidates.join("\n").to_lowercase();
-    // What every harness says one way or another.
-    let common: &[&str] = &["not logged in"];
-    let own: &[&str] = match harness {
+/// What every harness says one way or another when it is not signed in.
+const COMMON_LOGIN_PHRASES: &[&str] = &["not logged in"];
+
+/// The phrases (lowercase) `harness` shows at its sign-in prompt.
+fn login_phrases(harness: &str) -> &'static [&'static str] {
+    match harness {
         "claude" => &[
             "login expired",
             "run /login",
@@ -156,7 +135,64 @@ fn login_dialog_in(harness: &str, screen: &str) -> Option<String> {
         "opencode" => &["run /connect to add an ai provider"],
         "crush" => &["let's choose a provider and model"],
         _ => &[],
-    };
+    }
+}
+
+/// `text` with every sign-in phrase of every harness (and the common
+/// one) replaced by `[…]`, matched without regard to case, so an error
+/// message can be written down without the words that would make it
+/// pass for a login prompt, and without losing the rest of it. Check the
+/// result with `quotes_login_prompt`: a phrase can survive in another
+/// spelling.
+pub fn redact_login_phrases(text: &str) -> String {
+    let mut out = text.to_string();
+    for phrase in COMMON_LOGIN_PHRASES
+        .iter()
+        .chain(HARNESSES.iter().flat_map(|h| login_phrases(h).iter()))
+    {
+        // The phrases are ASCII, so the ASCII-lowered copy keeps every
+        // byte offset of the original.
+        let lowered = out.to_ascii_lowercase();
+        let mut rebuilt = String::with_capacity(out.len());
+        let mut from = 0;
+        while let Some(rel) = lowered[from..].find(phrase) {
+            let at = from + rel;
+            rebuilt.push_str(&out[from..at]);
+            rebuilt.push_str("[\u{2026}]");
+            from = at + phrase.len();
+        }
+        rebuilt.push_str(&out[from..]);
+        out = rebuilt;
+    }
+    out
+}
+
+fn login_dialog_in(harness: &str, screen: &str) -> Option<String> {
+    let tail: Vec<&str> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = tail.len().saturating_sub(LOGIN_TAIL_LINES);
+    let mut in_echo = false;
+    let candidates: Vec<&str> = tail[start..]
+        .iter()
+        .copied()
+        .filter(|l| {
+            if l.contains("[ssf]") {
+                in_echo = true;
+                return false;
+            }
+            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
+                return false;
+            }
+            in_echo = false;
+            true
+        })
+        .collect();
+    let text = candidates.join("\n").to_lowercase();
+    let common = COMMON_LOGIN_PHRASES;
+    let own = login_phrases(harness);
     let hit = common
         .iter()
         .chain(own.iter())

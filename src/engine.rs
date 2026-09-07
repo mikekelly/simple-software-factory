@@ -114,6 +114,10 @@ pub struct Engine {
     /// The startup pass (`resume_interrupted`) is under way: a harness
     /// started again now is `resumed` after a restart, not a lost terminal.
     startup_pass: bool,
+    /// The item (repository name, number) whose onboarding onto a kept
+    /// workspace is delivering right now: a relaunch for it is told of in
+    /// that onboarding's `attached`, not as a `resumed` of its own.
+    onboarding: Option<(String, u64)>,
 }
 
 /// The cached collaborator list of one repository.
@@ -233,6 +237,7 @@ impl Engine {
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,
+            onboarding: None,
         })
     }
 
@@ -1579,6 +1584,7 @@ are resumed on the first pass that finds it: {err:#}"
             harness: login::display_name(&repo.harness),
             model: repo.model.clone(),
             effort: repo.effort.clone(),
+            command: repo.command.clone(),
             driver: self.cfg.driver_for(repo).id().to_string(),
             branch: self.peek(repo, number).and_then(|s| s.branch.clone()),
         }
@@ -2276,9 +2282,12 @@ are resumed on the first pass that finds it: {err:#}"
                 self.remember_worktree(repo, issue.number, &wt);
                 let _ = self.driver(repo).set_comment(&wt.id, &comment).await;
                 let text = self.initial_text(repo, issue, &mine);
-                let d = self.deliver_to(repo, issue.number, &text, None).await?;
                 // The item is attached again, to what it had: `deliver_to`
-                // leaves the relaunch of an unseeded item to be told here.
+                // leaves a relaunch for this onboarding to be told here.
+                self.onboarding = Some((repo.name.clone(), issue.number));
+                let delivered = self.deliver_to(repo, issue.number, &text, None).await;
+                self.onboarding = None;
+                let d = delivered?;
                 let launch = self.launch_of(repo, issue.number);
                 let handed_off_from = self.entry(repo, issue.number).delegated_by.clone();
                 self.post_event(
@@ -3090,10 +3099,13 @@ are resumed on the first pass that finds it: {err:#}"
         }
         // A harness started again in its existing workspace is `resumed`;
         // one started to lift a login block is told of in `unblocked`, and
-        // one started for an item still being onboarded (a kept workspace
-        // after a dropped binding) in that onboarding's `attached`.
-        let seeded = self.peek(repo, target).is_some_and(|s| s.seeded);
-        if d.relaunched && re_created.is_none() && held.is_none() && seeded {
+        // one started by the target's own onboarding onto a kept workspace
+        // in that onboarding's `attached`.
+        let onboarding = self
+            .onboarding
+            .as_ref()
+            .is_some_and(|(r, n)| r.eq_ignore_ascii_case(&repo.name) && *n == target);
+        if d.relaunched && re_created.is_none() && held.is_none() && !onboarding {
             self.post_event(
                 repo,
                 target,
@@ -3768,15 +3780,17 @@ fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
         })
 }
 
-/// An error message fit to write on an item: one that quotes a harness's
-/// sign-in prompt (a harness's own words, passed up through a delivery
-/// error) is withheld, so the post can never pass for one when echoed on
-/// a screen; the log has it in full.
+/// An error message fit to write on an item: a harness's sign-in phrases
+/// in it (its own words, passed up through a delivery error) are
+/// replaced by `[…]`, and the whole message withheld if it still passes
+/// for a login prompt after that, so the post can never pass for one
+/// when echoed on a screen; the log has it in full.
 fn safe_error(text: &str) -> String {
-    if crate::driver::quotes_login_prompt(text) {
+    let redacted = crate::driver::redact_login_phrases(text);
+    if crate::driver::quotes_login_prompt(&redacted) {
         "(withheld: the message quotes a sign-in prompt; see the daemon log)".into()
     } else {
-        text.to_string()
+        redacted
     }
 }
 
@@ -3879,6 +3893,7 @@ mod tests {
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,
+            onboarding: None,
         }
     }
 
@@ -5944,12 +5959,69 @@ mod tests {
             );
         }
         assert!(stub.posts().is_empty());
-        // An error that quotes a sign-in prompt is not written down.
+        // A sign-in phrase in an error is cut out; the rest is kept.
         assert_eq!(
             safe_error("orca: the screen said: Login expired · Please run /login"),
-            "(withheld: the message quotes a sign-in prompt; see the daemon log)"
+            "orca: the screen said: […] · Please […]"
+        );
+        assert_eq!(
+            safe_error("gh: You are not logged into any GitHub hosts. Run gh auth login."),
+            "gh: You are […]to any GitHub hosts. Run gh auth login."
         );
         assert_eq!(safe_error("plain failure"), "plain failure");
+        assert!(!crate::driver::quotes_login_prompt(&safe_error(
+            "NOT LOGGED IN\nInvalid API key\nSign in with ChatGPT"
+        )));
+    }
+
+    /// A relaunch that is not the target's own onboarding (a bound item's
+    /// delivery bringing back an owner whose binding was given up) is a
+    /// `resumed` on the owner like any other.
+    #[tokio::test]
+    async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.seeded = false;
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.repo_id = Some("stub".into());
+            st.driver = Some("orca".into());
+        }
+        seeded(&mut e, 8, None, true);
+        {
+            let st = e.entry(&r, 8);
+            st.kind = Some("pull_request".into());
+            st.shares_workspace_of = Some(5);
+        }
+        d.with(|s| {
+            s.worktrees.insert("w5".into());
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        e.deliver_to(&r, 8, "[ssf] a comment on the PR", None)
+            .await
+            .unwrap();
+        assert_eq!(d.log()[0], "relaunch:w5:false");
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].0, "/repos/o/r/issues/5/comments");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```ssf\n\
+             ssf resuming agent on issue:\n\
+             harness: Claude Code\n\
+             conversation: fresh\n\
+             after: lost terminal\n\
+             ```"
+        );
+        assert!(e.onboarding.is_none());
     }
 
     /// An item onboarded onto a workspace it already had (its binding was
@@ -6267,6 +6339,16 @@ mod tests {
                     &Event::GaveUp {
                         failures: 5,
                         last_error: safe_error("`orca worktree deliver` failed: no such terminal"),
+                    },
+                ),
+                events::comment(
+                    &o,
+                    "issue",
+                    &Event::GaveUp {
+                        failures: 5,
+                        last_error: safe_error(
+                            "gh: You are not logged into any GitHub hosts. Run gh auth login.",
+                        ),
                     },
                 ),
                 crate::status::BlockedView::from_blocked(&b).describe(),

@@ -24,6 +24,9 @@ pub struct Launch {
     pub model: Option<String>,
     /// The configured effort level; `None` reads as the harness's default.
     pub effort: Option<String>,
+    /// The configured command that starts the harness, when there is one:
+    /// then an unset model or effort is whatever that command says.
+    pub command: Option<String>,
     /// The driver id the workspace was made under (`orca`, `herdr`).
     pub driver: String,
     /// The workspace's branch, when known.
@@ -120,6 +123,8 @@ pub enum Event {
 
 /// What a model or effort line says when nothing is configured.
 const HARNESS_DEFAULT: &str = "the harness's default";
+/// The same when a command is configured: it decides.
+const COMMAND_DEFAULT: &str = "the command's";
 /// Values longer than this are cut (with an ellipsis), so a pasted error
 /// cannot turn the block into a wall.
 const MAX_VALUE_CHARS: usize = 200;
@@ -250,19 +255,28 @@ impl Event {
 
 impl Launch {
     fn lines(&self) -> Vec<(&'static str, String)> {
-        let or_default = |v: &Option<String>| {
+        let set = |v: &Option<String>| {
             v.as_deref()
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string)
-                .unwrap_or_else(|| HARNESS_DEFAULT.into())
         };
+        let command = set(&self.command);
+        let fallback = if command.is_some() {
+            COMMAND_DEFAULT
+        } else {
+            HARNESS_DEFAULT
+        };
+        let or_default = |v: &Option<String>| set(v).unwrap_or_else(|| fallback.into());
         let mut lines = vec![
             ("harness", self.harness.clone()),
             ("model", or_default(&self.model)),
             ("effort", or_default(&self.effort)),
-            ("driver", self.driver.clone()),
         ];
+        if let Some(c) = command {
+            lines.push(("command", c));
+        }
+        lines.push(("driver", self.driver.clone()));
         if let Some(b) = &self.branch {
             lines.push(("branch", short_branch(b)));
         }
@@ -327,6 +341,7 @@ mod tests {
             harness: "Claude Code".into(),
             model: Some("fable-5.1".into()),
             effort: Some("high".into()),
+            command: None,
             driver: "herdr".into(),
             branch: branch.map(str::to_string),
         }
@@ -406,6 +421,42 @@ mod tests {
              driver: herdr\n\
              handed off from: acme/widgets#4\n\
              ```"
+        );
+    }
+
+    #[test]
+    fn a_configured_command_is_named_and_decides_the_defaults() {
+        let ev = Event::Attached(Attach::Started {
+            launch: Launch {
+                model: None,
+                effort: None,
+                command: Some("claude --dangerously-skip-permissions --model opus".into()),
+                ..launch(None)
+            },
+            handed_off_from: None,
+        });
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf attaching agent to issue:\n\
+             harness: Claude Code\n\
+             model: the command's\n\
+             effort: the command's\n\
+             command: claude --dangerously-skip-permissions --model opus\n\
+             driver: herdr\n\
+             ```"
+        );
+        // Set alongside a command, model and effort are named as given.
+        let ev = Event::Attached(Attach::Started {
+            launch: Launch {
+                command: Some("  claude  ".into()),
+                ..launch(Some("bot/x"))
+            },
+            handed_off_from: None,
+        });
+        assert!(
+            ev.block("issue")
+                .contains("model: fable-5.1\neffort: high\ncommand: claude\ndriver: herdr\n")
         );
     }
 

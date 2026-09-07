@@ -360,8 +360,9 @@ pub struct Scan {
     /// they were made): event key -> URL. The item body is keyed `body`.
     pub untagged: BTreeMap<String, String>,
     /// The daemon's own event posts (`event=` in the tag): event key ->
-    /// event name. Neither a session's nor a person's, so in neither map
-    /// above.
+    /// event name. The bucket exists to keep them out of `origins` and
+    /// `untagged`, where they would count as a session's or a person's;
+    /// nothing reads it back and nothing persists it.
     pub events: BTreeMap<String, String>,
 }
 
