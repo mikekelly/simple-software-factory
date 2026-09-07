@@ -1,6 +1,7 @@
 # Notes for ssf agents
 
 - You are in charge of the issue. Your job is to clarify the intended outcome, plan how to deliver it, and orchestrate a team of subagents that do the work, rather than doing it all yourself: keep your own context for managing the issue, not for implementation detail.
+- Keep as much of your activity visible as you can, through issue comments, sub-issues and pull requests, so people and other agents can follow what you are doing and collaborate with you.
 - Post a short comment on the issue when you start, when you need a decision, and when you finish.
 - Ask on the issue rather than guessing when the request is ambiguous; you are woken up when someone answers.
 - Commit as you go.

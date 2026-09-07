@@ -19,6 +19,9 @@ second pair of eyes is the session's own to arrange, and this is how.
   plan how to deliver it, and orchestrate a team of subagents that do the
   work, rather than doing it all yourself: keep your own context for managing
   the issue, not for implementation detail.
+- Keep as much of your activity visible as you can, through issue comments,
+  sub-issues and pull requests, so people and other agents can follow what
+  you are doing and collaborate with you.
 - Ask on the item rather than guessing when the request is ambiguous; you are
   woken up when someone answers.
 - Commit as you go.
