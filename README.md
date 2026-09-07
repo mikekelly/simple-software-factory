@@ -25,8 +25,9 @@ timestamps are UTC.
 
 **20:24 — the issue is assigned to the bot** (for the second time; the
 first assignment at 20:21 was undone and redone). Within a minute a workspace
-named after the issue appears in Orca and an agent starts in it. Two
-minutes after the assignment it posts:
+named after the issue appears in the driver (Orca on that day; herdr by
+default now) and an agent starts in it. Two minutes after the assignment
+it posts:
 
 > **OverlayBot** commented at 20:26
 >
@@ -195,32 +196,15 @@ you set (see
 
 ## Install
 
-Run the install script on Omarchy. It builds and installs the package,
-starts the service, and installs the `ssf-setup` skill for your coding
-agent, which then walks you through the rest (`/ssf-setup` in Claude
-Code, or just ask it to set up ssf):
+ssf is an Arch package for Omarchy. Until it is in Omarchy's package
+repository, the package comes from the latest release: download
+`ssf-<version>-1-x86_64.pkg.tar.zst` from the Releases page and install
+it, then follow [Setup](docs/setup.md), yourself or with your coding
+agent (the `ssf-setup` skill in this repository points an agent at that
+document).
 
 ```sh
-bash <(curl -fsSL https://raw.githubusercontent.com/mikekelly/simple-software-factory/master/install.sh) --deps
-```
-
-[`install.sh`](install.sh) refuses on anything that is not Arch-based,
-clones the repository under `~/.local/src` (or builds the checkout it is
-run from), runs `makepkg -si` (the one step that asks for your sudo
-password), and with `--deps` also installs what the default setup needs:
-[herdr](https://herdr.dev/), `github-cli` and the tools that build the
-microVM image. `--dry-run` shows the plan, `--dev` runs the service from a
-dev build, and re-running it upgrades. The skill,
-[`skills/ssf-setup`](skills/ssf-setup/SKILL.md), is the runbook an agent
-follows: the package, the bot account, the microVM with herdr inside
-(the default; or the agents on this machine, in herdr or in
-[Orca](https://onorca.dev/)), the harness sign-in, a repository and its
-`SSF.md`. Without the script, `npx skills add
-mikekelly/simple-software-factory` installs the skill, and this does the
-build from a checkout:
-
-```sh
-cd packaging && makepkg -si
+sudo pacman -U ssf-*.pkg.tar.zst
 ```
 
 The package installs:
@@ -230,75 +214,55 @@ The package installs:
 | `/usr/bin/ssf` | the daemon and management CLI |
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
 | `/usr/lib/systemd/user/ssf.service` | background service, enabled for every user via `graphical-session.target.wants` |
-| `/usr/share/ssf/omarchy-plugin/` | the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start |
+| `/usr/share/ssf/omarchy-plugin/` | the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start; it and the **Factory** menu show the state of the factory, and the service toggle is their one control |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
 | `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
 | `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
-| `/usr/share/doc/ssf/` | this file and `docs/` |
+| `/usr/share/doc/ssf/` | this file and `docs/`, [Setup](docs/setup.md) among them |
 
-The service starts with the graphical session, and the package's install
-hook also starts it in any session that is running at install time, so there
-is nothing to enable. (If it was installed with nobody logged in, the first
-login starts it, or `systemctl --user start ssf.service` does.) On its first
-run it installs the **Software Factory** bar widget (next to Omarchy's Agents
-widget) and a **Factory** submenu in the Omarchy menu. Both show the state
-of the factory (whether the service runs, which bot is signed in, the
-watched repositories, the agent sessions and what each is doing, sessions
-whose harness needs a sign-in, the log); the service toggle is their one
-control. Setup is done from the CLI, below.
-
-The service is the intended way to run the factory: it comes back with the
-next login after a reboot (unless it was switched off with the toggle),
-waits for the driver, and resumes the agent sessions the reboot cut off. A dev
-build started by hand (`ssf run`) does the same on start, but nothing
-restarts it for you (see [Development](docs/development.md)).
+`github-cli` and `herdr` are dependencies and come with it. The service
+starts with the graphical session, and the package's install hook also
+starts it in any session that is running at install time, so there is
+nothing to enable; it stays in a restart loop until the bot is signed
+in. It comes back with the next login after a reboot (unless it was
+switched off with the toggle), waits for the driver, and resumes the
+agent sessions the reboot cut off. Building from a checkout, and running
+the service from a dev build, is in [Development](docs/development.md).
 
 ## Set up
 
-Setup is done from a terminal with `ssf auth` and `ssf repo` (a coding
-agent can do it for you by following the ssf-setup skill); the factory icon
-in the bar then shows what state the factory is in. What is needed:
+[Setup](docs/setup.md) is the document, top to bottom: prerequisites,
+the bot account, the sign-in, who may drive the factory, where the
+agents run, the harness login, the first repository, the first issue,
+upgrading, stopping and uninstalling. The short form of the default path:
 
-- **Sign in the bot account** (`ssf auth login`): the bot is a GitHub account of its own, created
-  for the factory rather than yours (every agent post is made as it, and a
-  post by the bot *without* a byline reads as a person's), with Write
-  access on each repository it works and to its project boards. The
-  skill's Step 2 walks through creating one. Sign it in with the GitHub
-  CLI: the flow lists the accounts `gh` already holds and offers "sign in
-  another account in the browser", which runs gh's device flow (use a private
-  window so GitHub does not reuse your own session); whoever signs in becomes
-  the bot. ssf never stores the token: it reads it from gh's keyring when it
-  needs it, and switches gh back to your own account afterwards. It then
-  records the bot's commit identity (`login <id+login@users.noreply.github.com>`),
-  generates a dedicated ed25519 key under `~/.config/ssf/keys/` and enrolls it
-  on the bot account as both an SSH key and a commit signing key. If the gh
-  token lacks the scopes for that (`repo`, `project`,
-  `admin:public_key`, `admin:ssh_signing_key`), ssf asks gh to add them.
-  `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
-  itself stays. If the commits should carry your own name rather than the
-  bot's, a `[git]` table in the config says so while `gh` stays the bot
-  (see [Committing as a person](docs/identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)).
-- **Watch a repository** (`ssf repo add owner/name --harness <agent>`):
-  `ssf agents` lists the agents Omarchy's catalogue knows and which are
-  installed. (The configuration calls the agent program the
-  *harness*: `claude`, `codex`, `gemini`, ...) Sign each agent in once, by
-  hand, on this machine; ssf starts them with the flags that let them run
-  unattended (see [Permissions](docs/configuration.md#permissions)).
-- `ssf repo set` changes the agent, model or effort level for a repository;
-  `ssf repo remove` stops watching it.
-- The toggle in the widget's header enables or disables the service.
+1. **The bot account.** The bot is a GitHub account of its own, created
+   for the factory rather than yours (every agent post is made as it,
+   and a post by the bot *without* a byline reads as a person's), with
+   Write access on each repository it works and to its project boards.
+   `ssf auth login --web` signs it in through gh's device flow; ssf never
+   stores the token, enrolls a dedicated key on the bot account for
+   pushes and commit signing, and switches gh back to your own account
+   afterwards.
+2. **The microVM** (the default; the agents never see your home
+   directory): `ssf vm build`, `ssf config set vm.enabled true`,
+   `systemctl --user restart ssf.service`, then `ssf vm login <harness>`
+   to sign your coding agent in inside the guest. The alternative is the
+   agents on this machine, in herdr (the default driver) or in Orca
+   (`ssf config set driver orca`), with the harness signed in here.
+3. **A repository**: `ssf repo add owner/name --harness claude` (the
+   *harness* is the agent program: `claude`, `codex`, `gemini`, ...;
+   `ssf agents` lists them), and an `SSF.md` at its root telling agents
+   how you want work done, starting from [`SSF.example.md`](SSF.example.md).
 
-Then assign an issue or pull request to the bot on GitHub, @mention it, or
-put the `review` label on a pull request the bot opened. Within a poll
-interval (10 s by default) a workspace shows up in herdr (or in Orca, with
-`driver = "orca"`), and in the widget
-under "Sessions": one row per agent session with the issue or PR (click the
-title for GitHub), its GitHub state (open, closed, merged, draft), the
-agent's state (working, waiting, idle, done), what it last said or the tool
-it is running, the branch and when it was last active. Clicking a row opens
-the workspace in the driver. The bar icon turns urgent while an agent is
-waiting
-for input.
+`ssf doctor` after each step says what is still missing; the document
+shows what a healthy one looks like. Then assign an issue or pull request
+to the bot on GitHub, @mention it, or put the `review` label on a pull
+request the bot opened. Within a poll interval (10 s by default) a
+workspace shows up in the driver and in `ssf status`, and the bar widget
+shows the state of the factory: one row per agent session with the issue
+or PR, its GitHub state, the agent's state, what it last said, the
+branch and when it was last active.
 
 A good first issue is small and self-contained, says what "done" looks
 like (a test that passes, a file that changes, a command that works), and
@@ -309,29 +273,32 @@ label on the pull request for a second agent's review, answer or merge as
 you would for a colleague, and close the issue when it is done; the agent
 then pushes what is left, comments once more and gives its workspace back.
 
-The commands:
+The same commands, with their variants:
 
 ```sh
 ssf auth login                    # pick an account gh knows, or sign in another in the browser
 ssf auth login --web              # straight to the browser flow; prints the URL and code,
                                   # so it also works over ssh (set BROWSER=true to stop gh opening one)
-ssf auth login --user overlay-bot # an account gh already knows, no questions
+ssf auth login --user acme-bot    # an account gh already knows, no questions
 printf '%s' "$TOKEN" | ssf auth login --token   # a pasted token instead of gh
 ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
 ssf repo add acme/widgets --harness claude
-ssf config set driver orca        # sessions in Orca instead of herdr (the default)
+ssf vm build && ssf config set vm.enabled true   # the factory in the microVM
+ssf vm login claude               # sign the harness in inside the guest
+ssf config set driver orca        # on the host: sessions in Orca instead of herdr (the default)
 ssf status
 ssf peers                         # the agent sessions and what each is doing
 ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket
 ```
 
-Put an `SSF.md` at the root of the repository to tell agents how you want
-them to work: when to comment, what to run before a PR, what the board
-columns mean, who reviews. [`SSF.example.md`](SSF.example.md) is a starting
-point, and this repository's own [`SSF.md`](SSF.md) is what produced the
-comments quoted above (see
-[The per-project prompt file](docs/configuration.md#the-per-project-prompt-file)).
+If the commits should carry your own name rather than the bot's, a
+`[git]` table in the config says so while `gh` stays the bot (see
+[Committing as a person](docs/identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)).
+The per-project notes are described in [The per-project prompt
+file](docs/configuration.md#the-per-project-prompt-file); this
+repository's own [`SSF.md`](SSF.md) is what produced the comments quoted
+above.
 
 ## Everyday commands
 
@@ -386,18 +353,10 @@ reaches them while the daemon is down, and it delivers what they missed
 when it comes back. With the factory in a microVM, stopping the service
 shuts the guest down cleanly.
 
-**Uninstalling.** While the daemon is still running, `ssf purge
---dry-run` lists the workspaces of closed items and whether each is clean
-and pushed, and `ssf status` shows the open ones; deal with anything
-unpushed first. Then, in this order: `ssf ui service disable` (stops the
-service, and the guest with it), `ssf ui uninstall` (the bar widget and
-menu entries), `ssf auth logout` (revokes the bot's keys on GitHub and
-forgets it), `ssf vm destroy --yes` (the microVM and its disks), then
-`sudo pacman -R ssf`. Left for you to remove by hand: `~/.config/ssf`
-(config and the bot's key), `~/.local/state/ssf` (state, and the marker
-that keeps a disabled service off, so a reinstall stays stopped until
-`ssf ui service enable`), and the clones and worktrees under
-`~/ssf/projects` (or Orca's projects), which may hold unpushed work.
+**Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
+the package upgrade restarts the service (and, in the VM, the guest, whose
+sessions are resumed), and uninstalling is a short ordered list ending in
+`sudo pacman -R ssf`.
 
 ## The rest of the story
 
@@ -406,6 +365,7 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
 
 | Read | When you want to know |
 |------|-----------------------|
+| [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository, upgrading, uninstalling |
 | [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` prompt file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
 | [Drivers](docs/drivers.md) | Orca versus herdr, and what each one does with workspaces and terminals |
 | [Inside a microVM](docs/vm.md) | running the whole factory in a Firecracker VM: the image, what gets in, reaching it, what persists |
@@ -417,3 +377,7 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
 
 Agents get their own reference from `ssf guide`, printed by the running
 binary so it cannot drift from the daemon.
+
+## License
+
+MIT; see [LICENSE](LICENSE).

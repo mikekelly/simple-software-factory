@@ -53,7 +53,7 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Manage the bot account credentials (for people, from a terminal; agents never run it).
+    /// Manage the bot account credentials (for people, from a terminal, or the agent setting ssf up for them; factory sessions never run it).
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
@@ -80,7 +80,7 @@ enum Command {
         #[arg(long)]
         installed: bool,
     },
-    /// Read or change daemon settings (dotted keys, e.g. daemon.poll_interval_secs).
+    /// Read or change settings (dotted keys, e.g. daemon.poll_interval_secs, daemon.startup_driver_wait_secs, vm.enabled, driver).
     Config {
         #[command(subcommand)]
         command: Option<ConfigCommand>,
@@ -358,10 +358,11 @@ enum RepoCommand {
         /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
-        /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5); see `ssf agents --json`.
+        /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
+        /// and grok; provider/model for pi, omp, opencode and copilot. `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
-        /// Effort level for the model, as an Orca effort level (e.g. low, medium, high, xhigh, max).
+        /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
         #[arg(long)]
         effort: Option<String>,
         /// Extra instructions appended to the initial prompt for this repo.
@@ -395,10 +396,11 @@ enum RepoCommand {
         /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
-        /// Model the harness runs with, as an Orca model id (e.g. opus, sonnet, gpt-5.5).
+        /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
+        /// and grok; provider/model for pi, omp, opencode and copilot. `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
-        /// Effort level for the model, as an Orca effort level (e.g. low, medium, high, xhigh, max).
+        /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
         #[arg(long)]
         effort: Option<String>,
         #[arg(long)]
@@ -1831,6 +1833,15 @@ fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool) -> Result<
         bail!("invalid key {key}");
     }
     let parsed = parse_toml_scalar(value);
+    // The startup wait was renamed; the file may hold either spelling, and
+    // serde reads them as one field, so write the new name and drop the old.
+    let parts: Vec<&str> = if key == "daemon.startup_orca_wait_secs" {
+        vec!["daemon", "startup_driver_wait_secs"]
+    } else {
+        parts
+    };
+    let key = parts.join(".");
+    let key = key.as_str();
     let mut cur: &mut toml::Table = &mut table;
     for part in &parts[..parts.len() - 1] {
         let next = cur
@@ -1870,6 +1881,9 @@ fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool) -> Result<
             toml::Value::Array(logins.into_iter().map(toml::Value::String).collect()),
         );
     } else {
+        if key == "daemon.startup_driver_wait_secs" {
+            cur.remove("startup_orca_wait_secs");
+        }
         cur.insert(parts[parts.len() - 1].to_string(), parsed);
     }
     let text = toml::to_string_pretty(&table)?;
@@ -2919,10 +2933,16 @@ async fn doctor() -> Result<()> {
             }
         ),
     );
-    check(
-        ui::widget_enabled().unwrap_or(false),
-        "bar widget enabled in ~/.config/omarchy/shell.json".into(),
-    );
+    // The widget lives on the host; inside the guest there is no Omarchy
+    // shell to check.
+    if vm::in_guest() {
+        println!("note bar widget: checked on the host, not inside the VM");
+    } else {
+        check(
+            ui::widget_enabled().unwrap_or(false),
+            "bar widget enabled in ~/.config/omarchy/shell.json".into(),
+        );
+    }
     check(
         true,
         format!(
@@ -2998,6 +3018,45 @@ mod tests {
         assert!(err.to_string().contains("ANYONE"), "{err}");
         assert!(anyone_risk_decision(false, true, "x", || Ok(false)).is_err());
         assert!(anyone_risk_decision(false, true, "x", || Ok(true)).is_ok());
+    }
+
+    #[test]
+    fn config_set_replaces_the_old_startup_wait_key_with_the_new_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-config-set-rename-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[daemon]\nstartup_orca_wait_secs = 60\n").unwrap();
+        // The new name over a file holding the old one.
+        config_set_at(&path, "daemon.startup_driver_wait_secs", "30", false).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("startup_orca_wait_secs"), "{text}");
+        assert_eq!(
+            Config::load_from(&path)
+                .unwrap()
+                .daemon
+                .startup_driver_wait_secs,
+            30
+        );
+        // The old name is still accepted and lands under the new one.
+        config_set_at(&path, "daemon.startup_orca_wait_secs", "45", false).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("startup_driver_wait_secs = 45"), "{text}");
+        assert!(!text.contains("startup_orca_wait_secs"), "{text}");
+        assert_eq!(
+            Config::load_from(&path)
+                .unwrap()
+                .daemon
+                .startup_driver_wait_secs,
+            45
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

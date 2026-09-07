@@ -22,13 +22,15 @@ than by expecting to see it live.
 
 ## A dev build as the service
 
-`./install.sh --dev` does this: it installs the package once if it is
-not (for the unit and the widget), builds `target/release/ssf`, writes
-the drop-in below pointing the unit at the build, then `systemctl --user
-daemon-reload && systemctl --user restart ssf.service`. Keep the build
-outside any worktree an agent might release, and remove the drop-in when
-the package is reinstalled from master (a plain `./install.sh` says when
-one is there):
+`packaging/dev-install.sh` builds `target/release/ssf`, writes the
+drop-in below pointing the unit at the build, then `systemctl --user
+daemon-reload && systemctl --user restart ssf.service`, and runs the
+build's `doctor`. The package has to be installed once for the unit and
+the widget (`cd packaging && makepkg -si`); the script stops and says so
+otherwise. Keep the build outside any worktree an agent might release.
+The drop-in survives package upgrades, so the service keeps running the
+dev build until `packaging/dev-install.sh --undo` removes it and restarts
+the service on the package:
 
 ```ini
 # ~/.config/systemd/user/ssf.service.d/dev-build.conf
@@ -45,6 +47,16 @@ the dev build's own `doctor` shows the two differ (agents run the daemon's
 binary either way, through the links `ssf launch` makes). A dev build
 started by hand (`ssf run`) resumes interrupted sessions on start like the
 service does, but nothing restarts it for you.
+
+## Releasing
+
+The package a newcomer installs comes from a GitHub release: `cd
+packaging && makepkg -f` builds `ssf-<pkgver>-1-x86_64.pkg.tar.zst` from
+the working tree, and that file is what the release carries (the `pkgver`
+is `<Cargo version>.r<commits>.g<short sha>`, so it sorts after any
+earlier build). Landing the package in Omarchy's repository is a later
+step and needs a tagged release with the PKGBUILD's `source` pointing at
+it; until then [Setup](setup.md) says "from the latest release".
 
 ## Layout
 
@@ -66,10 +78,9 @@ service does, but nothing restarts it for you.
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
 | `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
-| `install.sh` | the install script: clone or update, `makepkg -si` (or `--dev`), the service, the skill, `ssf doctor` |
-| `packaging/` | PKGBUILD, systemd unit, pacman install script |
-| `skills/ssf-setup/` | the `ssf-setup` agent skill, installed with `npx skills add` |
-| `docs/` | the reference behind the README, installed under `/usr/share/doc/ssf/` |
+| `packaging/` | PKGBUILD, systemd unit, pacman install script, `dev-install.sh` (the service on a dev build) |
+| `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
+| `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 
 This repository is built by ssf itself: [`SSF.md`](../SSF.md) is what its
 agents are told.

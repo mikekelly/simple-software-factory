@@ -56,7 +56,7 @@ The details behind the README's [How it works](../README.md#how-it-works).
   running are not touched, workspaces that are gone are brought back on
   their next event, and sessions whose workspace was released or is about
   to be are skipped. At start the daemon waits for the driver
-  (`daemon.startup_orca_wait_secs`, checking every ten seconds) before its
+  (`daemon.startup_driver_wait_secs`, checking every ten seconds) before its
   first poll; if it is still not up by then, polling starts anyway and
   the pass runs on the first poll that finds it. The pass runs per driver.
   `daemon.resume_on_start = false` turns it off. `ssf run --once` runs it

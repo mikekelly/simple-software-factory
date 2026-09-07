@@ -6,20 +6,18 @@
 # the local-copy prepare() below.
 
 pkgname=ssf
-pkgver=0.1.0.r200.g90d6738
+pkgver=0.1.0.r205.g2cb0fd9
 pkgrel=1
 pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in herdr or Orca"
 arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
-depends=('gcc-libs' 'glibc' 'jq' 'systemd')
+depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr')
 makedepends=('cargo')
 optdepends=(
-  'herdr: terminal workspace manager, the default driver (also what runs inside the microVM)'
   'orca-ide-bin: Orca desktop app and CLI, the alternative driver (driver = "orca"; not in the Omarchy repo, install it by hand)'
   'omarchy: bar widget, menu entries and floating-terminal flows'
   'gum: nicer prompts in ssf-ui'
-  'github-cli: lets agents comment on issues as the bot'
   'fakeroot: builds the microVM image (ssf vm build)'
   'libarchive: bsdtar, unpacks the Arch bootstrap tarball for the microVM image'
   'e2fsprogs: mkfs.ext4, makes the microVM disks'

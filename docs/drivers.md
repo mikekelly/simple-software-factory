@@ -53,7 +53,7 @@ projects (repositories it has no project for are cloned under
 `orca.projects_dir`), worktrees are linked to the issue number, terminals
 belong to the workspace, and the bar widget's "open workspace" goes there.
 Orca has to be installed (`orca-ide-bin`), signed in and running; the
-daemon waits for it at start (`daemon.startup_orca_wait_secs`).
+daemon waits for it at start (`daemon.startup_driver_wait_secs`).
 `orca.command` must be the CLI entry point,
 `/usr/lib/orca-ide/bin/orca-ide` (`/usr/bin/orca-ide` launches the app).
 Pick Orca to watch agents work in a GUI and take over a terminal.
