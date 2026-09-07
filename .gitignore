@@ -3,3 +3,8 @@
 /packaging/pkg
 /packaging/*.pkg.tar.*
 /packaging/*.log
+/packaging/release/src
+/packaging/release/pkg
+/packaging/release/*.pkg.tar.*
+/packaging/release/*.tar.gz
+/packaging/release/*.log
