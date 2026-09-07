@@ -74,14 +74,14 @@
 # cleanup_grace_secs = 900                     # how long a reviewer session gets to finish before its read-only workspace is removed anyway
 # review_label = "review"                      # label that asks for a review of a session's own PR (GitHub refuses review requests from the author); "" disables
 # resume_on_start = true                       # after a reboot, start again the sessions whose terminals are gone (running ones are left alone)
-# startup_orca_wait_secs = 120                 # wait this long for the driver (herdr or Orca) at daemon start (every 10 s) before the first poll
+# startup_driver_wait_secs = 120               # wait this long for the driver (herdr or Orca) at daemon start (every 10 s) before the first poll; the old name startup_orca_wait_secs still loads
 # Who may drive the factory: only these GitHub logins' assignments, mentions,
 # review requests, labels and comments count (case-insensitive; the bot
 # itself always does). Unset: each repository's collaborators with push
 # access, fetched by the daemon. ["*"] means anyone on GitHub and is refused
 # unless accepted_anyone_risk = true stands next to it (written by
 # `ssf config set daemon.allowed_users '["*"]' --accept-anyone-risk`).
-# allowed_users = ["mikekelly", "github-actions[bot]"]
+# allowed_users = ["alice", "bob", "github-actions[bot]"]
 # accepted_anyone_risk = false
 
 # One [[repo]] per watched repository.
@@ -90,14 +90,14 @@ name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
 # driver = "herdr"                             # orca | herdr (default: the top-level `driver`)
 # command = "claude --permission-mode acceptEdits"    # how the agent is started; default: its permission-free command (`ssf agents --json`), run via `ssf launch`
-# model = "opus"                               # Orca model id, or provider/model for pi/omp/opencode (see `ssf models <agent>`)
+# model = "opus"                               # Orca model id for claude/codex/gemini/grok; provider/model for pi/omp/opencode/copilot (see `ssf models <agent>`)
 # effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
 # path = "~/code/name"                         # use an existing checkout instead of cloning
 # base_branch = "origin/main"
 # instructions = "Run `make test` before opening a PR."
 # prompt_file = "SSF.md"                       # file appended to the initial prompt (see SSF.example.md); relative to the worktree unless absolute
-# allowed_users = ["mikekelly"]                # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
+# allowed_users = ["alice"]                    # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
 # [repo.git]                                   # this repository's commit identity, each key over the [git] table above
 # name = "Ann Person"
 # email = "ann@example.com"

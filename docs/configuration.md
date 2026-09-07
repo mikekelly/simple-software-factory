@@ -51,7 +51,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_grace_secs` | `900` | How long a reviewer session gets to finish before its read-only workspace is removed anyway; item workspaces are not affected |
 | `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](sessions.md#reviewer-sessions)); `""` turns the label trigger off |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
-| `daemon.startup_orca_wait_secs` | `120` | How long to wait for the driver (herdr or Orca; the key predates herdr) at daemon start before the first poll |
+| `daemon.startup_driver_wait_secs` | `120` | How long to wait for the driver (herdr or Orca) at daemon start before the first poll; the old name `startup_orca_wait_secs` still loads |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
@@ -65,7 +65,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
 | `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
-| `repo.model` | the agent's default | Model: an Orca model id, or the agent's own `provider/model` (`ssf models <agent>` lists them; other ids pass through) |
+| `repo.model` | the agent's default | Model: an Orca model id for `claude`, `codex`, `gemini` and `grok`, the agent's own `provider/model` for `pi`, `omp`, `opencode` and `copilot` (`ssf models <agent>` lists them; other ids pass through) |
 | `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.path` | | Register an existing checkout instead of cloning |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories (the bot's enrolled key is used) |
@@ -198,16 +198,16 @@ terminal. `allowed_users` says whose word counts:
 
 ```toml
 [daemon]
-allowed_users = ["mikekelly", "alice"]      # for every repository below
+allowed_users = ["alice", "bob"]            # for every repository below
 
 [[repo]]
 name = "acme/widgets"
 harness = "claude"
-allowed_users = ["mikekelly"]               # replaces the instance list here
+allowed_users = ["alice"]                   # replaces the instance list here
 ```
 
 ```sh
-ssf config set daemon.allowed_users '["mikekelly", "alice"]'
+ssf config set daemon.allowed_users '["alice", "bob"]'
 ssf repo set acme/widgets --allowed-users alice,bob    # for one repository, replacing the instance list
 ssf repo set acme/widgets --clear allowed_users
 ```

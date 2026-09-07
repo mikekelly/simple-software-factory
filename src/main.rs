@@ -2921,10 +2921,16 @@ async fn doctor() -> Result<()> {
             }
         ),
     );
-    check(
-        ui::widget_enabled().unwrap_or(false),
-        "bar widget enabled in ~/.config/omarchy/shell.json".into(),
-    );
+    // The widget lives on the host; inside the guest there is no Omarchy
+    // shell to check.
+    if vm::in_guest() {
+        println!("note bar widget: checked on the host, not inside the VM");
+    } else {
+        check(
+            ui::widget_enabled().unwrap_or(false),
+            "bar widget enabled in ~/.config/omarchy/shell.json".into(),
+        );
+    }
     check(
         true,
         format!(
