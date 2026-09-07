@@ -225,6 +225,14 @@ pub struct IssueState {
     /// next pass ends this session and starts the new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handover: Option<PendingHandover>,
+    /// What a handover left for the session that takes the item on, kept
+    /// until a session has actually been given it. The start that
+    /// follows a handover can fail, or come up at a sign-in screen, and
+    /// the outgoing agent is gone by then: without this the summary it
+    /// wrote would be lost and the harness started again would be given
+    /// the item's story alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover_note: Option<HandoverNote>,
     /// The session's harness cannot act: its screen shows a login prompt
     /// (see [`Blocked`]). Nothing is delivered while this is set; the
     /// daemon checks every pass whether the login is back and resumes the
@@ -276,6 +284,17 @@ impl PendingHandover {
             effort: self.effort.clone(),
         }
     }
+}
+
+/// The parting words of a handover, kept on the item until a session has
+/// read them (see [`IssueState::handover_note`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HandoverNote {
+    /// Display name of the harness the item was handed over from.
+    pub from: String,
+    /// What the outgoing agent wrote; `None` for `--no-summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// Why a session cannot take prompts, and what has been done about it.

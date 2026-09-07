@@ -444,6 +444,15 @@ harness and model that work, is the other way out. A harness that would
 not start and is not signed in where the daemon runs is recorded as the
 login block it really is, since that is the thing to fix.
 
+Under both blocks the summary waits with the item: the outgoing agent is
+gone, so what it wrote is kept on the record until a session has actually
+read it, and the harness started again ten minutes later is given the
+summary and then the story, not the story alone. If the harness turns out
+to be running after all (the start gave up on a pane that came up but
+never settled), it is given that first message where it stands, and the
+block lifts on the message landing rather than on the screen looking
+idle.
+
 While a handover is pending, `ssf release` on the item and `ssf tell` to
 it are refused with that as the reason, and the startup pass leaves the
 item alone rather than resuming the old harness only to stop it. The

@@ -641,8 +641,8 @@ pub struct StubState {
     /// Every harness started, as `<harness>:<command>`: what a start or a
     /// relaunch would run, for the tests about per-item overrides.
     pub launches: Vec<String>,
-    /// The whole first message of every start (the `log` keeps only its
-    /// first line), for the tests about what a new session is told.
+    /// The whole text of every start and every delivery (the `log` keeps
+    /// only its first line), for the tests about what a session is told.
     pub prompts: Vec<String>,
     /// When set, the next `start` fails with this message: a harness that
     /// cannot be started at all.
@@ -790,6 +790,7 @@ impl StubDriver {
                 bail!("{worktree_id}: no such workspace");
             }
             if let Some(h) = s.live.get(worktree_id).cloned() {
+                s.prompts.push(text.to_string());
                 s.log
                     .push(format!("deliver:{worktree_id}:{}", first_line(text)));
                 return Ok(Delivery {
@@ -810,6 +811,7 @@ impl StubDriver {
                 Some(full) if !resumed => full,
                 _ => text,
             };
+            s.prompts.push(body.to_string());
             s.log
                 .push(format!("deliver:{worktree_id}:{}", first_line(body)));
             Ok(Delivery {

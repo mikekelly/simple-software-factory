@@ -1123,25 +1123,33 @@ meanwhile follows as further `[ssf]` messages. Work out where the work got to (`
     )
 }
 
-/// The first message of a session started by a handover (`ssf handover`):
-/// what happened, the outgoing agent's summary when it left one, then the
-/// item's story exactly as a new session gets it. `from` is the display
-/// name of the harness the outgoing session ran, `kind` the item's word
-/// (`issue`, `pull request`). The summary is the outgoing agent's own
-/// text and is passed through unchanged.
-pub fn handover_prompt(from: &str, kind: &str, summary: Option<&str>, story: &str) -> String {
+/// What a session started by a handover (`ssf handover`) is told ahead of
+/// the item's own story: what happened, and the outgoing agent's summary
+/// when it left one. `from` is the display name of the harness the
+/// outgoing session ran, `kind` the item's word (`issue`, `pull
+/// request`). The summary is the outgoing agent's own text and is passed
+/// through unchanged. Kept apart from the story because the item holds on
+/// to it until a session has read it: a start that fails is tried again
+/// later, and the words the outgoing agent left go with that attempt.
+pub fn handover_note(from: &str, kind: &str, summary: Option<&str>) -> String {
     match summary {
         Some(text) => format!(
             "You took over this {kind} from a session on {from} that handed it over; its summary \
 follows, then the {kind} as ssf tells it to a new session.\n\n\
-## Summary from the outgoing session\n\n{}\n\n{story}",
+## Summary from the outgoing session\n\n{}",
             text.trim()
         ),
         None => format!(
             "You took over this {kind} from a session on {from} that handed it over. It left no \
-summary; read the {kind} below.\n\n{story}"
+summary; read the {kind} below."
         ),
     }
+}
+
+/// The first message of a session started by a handover: the note above,
+/// then the item's story exactly as a new session gets it.
+pub fn handover_prompt(from: &str, kind: &str, summary: Option<&str>, story: &str) -> String {
+    format!("{}\n\n{story}", handover_note(from, kind, summary))
 }
 
 /// The one message the outgoing agent gets when a handover it asked for
