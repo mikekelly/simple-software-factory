@@ -191,7 +191,7 @@ The events, and nothing else:
 | `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` when the session was started by a handover (below); on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
 | `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
-| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched) | `harness`; `reason: not signed in` with `fix:` the command that signs it in, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
+| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched); a harness that would not start and is not signed in where the daemon runs is recorded as the sign-in block it really is, since that is the thing to fix | `harness`; `reason: not signed in` with `fix:` the command that signs it in, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
@@ -406,18 +406,24 @@ repository's items are polled) the daemon:
    one never to resume: its transcript is the newest one in the
    workspace when the new harness starts there, and without that the new
    session would be given the outgoing agent's conversation;
-4. starts the new session in the same worktree, with the new harness's
-   permission-free command and the [handed-over first
-   prompt](prompts.md): the summary, if there is one, then the item's
-   story as ssf tells it to any new session. What that story showed
-   counts as seen, comments that arrived since the last poll included,
-   so the pass does not deliver them to the new session a second time;
+4. starts the new session in the same worktree, with what the item's
+   overrides make of the repository's launch settings (see [Per-item
+   overrides](configuration.md#per-item-overrides): a handover to another
+   harness runs that harness's own permission-free command, one to the
+   same harness keeps the repository's `command`) and the [handed-over
+   first prompt](prompts.md): the summary, if there is one, then the
+   item's story as ssf tells it to any new session. What that story
+   showed counts as seen, comments that arrived since the last poll
+   included, so the pass does not deliver them to the new session a
+   second time;
 5. posts `handed-over` and then the new session's `attached` on the item
    (see [What ssf says on the item](#what-ssf-says-on-the-item)).
 
 If the item has closed or the bot was dropped from it meanwhile, or the
-workspace is gone and cannot be brought back, or the outgoing agent
-cannot be stopped, the handover is **refused at that point**: one
+workspace is gone and cannot be brought back, or the item cannot be read
+for the new session (GitHub is down, so there would be no story to tell
+it), or the outgoing agent cannot be stopped, the handover is **refused
+at that point**: one
 `handed-over` post carrying `refused: <reason>`, and, if the old agent is
 still there, one `[ssf] Handover to <harness> refused: <reason>. Carry
 on.` message to it. The old session keeps the item.
