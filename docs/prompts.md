@@ -80,6 +80,13 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
 - `Message from ...`: a message pasted in with `ssf tell`.
 - `... has been closed`, `... no longer assigned`, `... assigned ...
   again`: the item's lifecycle; each says what to do.
+- `The review request for @<bot> on <item> has been fulfilled or
+  withdrawn.`: the review the bot was asked for is no longer wanted; the
+  message says whether the item was the session's for anything else.
+- `<item>, the <issue|pull request> this session handed off, has been
+  merged` (or `closed (<reason>)`): an item the session opened for
+  another session ([a hand-off](sessions.md#ownership-one-session-per-item))
+  has finished, with the last comment the bot left on it.
 - `Release of this workspace refused ...`: the daemon's re-check found
   work that is not on origin (see
   [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)).

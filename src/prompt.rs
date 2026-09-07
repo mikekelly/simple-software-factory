@@ -1237,6 +1237,11 @@ to this session; its activity comes here from now on.\n\
 - `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
 - `[ssf] ... has been closed`, `... no longer assigned`, `... assigned ... again`: your item's \
 lifecycle; each says what to do.\n\
+- `[ssf] The review request for ... has been fulfilled or withdrawn`: the review you were asked \
+for is no longer wanted; the message says whether the item was yours for anything else.\n\
+- `[ssf] ..., the issue this session handed off, has been merged` (or `closed`): an item you \
+opened for another session (`--assignee`, see \"Items you open, and hand-offs\" below) has \
+finished, with the last thing its agent said on it.\n\
 - `[ssf] Release of this workspace refused ...`: the daemon's own check found work that is not \
 on origin (see Wrapping up below).\n\
 - `[ssf] The factory restarted ...`: the machine, the multiplexer or ssf restarted and this session was \
