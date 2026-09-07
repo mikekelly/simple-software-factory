@@ -112,16 +112,45 @@ struct Status {
 /// hand what it read back over a channel: the caller waits for it with a
 /// deadline rather than joining, since a reader whose pipe some other
 /// process still holds open never finishes (see [`run`]).
-fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> std::sync::mpsc::Receiver<String> {
+fn drain<R: std::io::Read + Send + 'static>(pipe: Option<R>) -> Drained {
     let (tx, rx) = std::sync::mpsc::channel();
+    let so_far = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let buf = so_far.clone();
     std::thread::spawn(move || {
-        let mut s = String::new();
         if let Some(mut p) = pipe {
-            let _ = std::io::Read::read_to_string(&mut p, &mut s);
+            // Read in pieces so what has arrived is there to be taken
+            // when the deadline passes with the pipe still open.
+            let mut chunk = [0u8; 4096];
+            loop {
+                match std::io::Read::read(&mut p, &mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut s) = buf.lock() {
+                            s.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                        }
+                    }
+                }
+            }
         }
-        let _ = tx.send(s);
+        let _ = tx.send(());
     });
-    rx
+    Drained { done: rx, so_far }
+}
+
+/// A pipe being read on its own thread: `done` fires at end of file, and
+/// `so_far` holds what has arrived either way.
+struct Drained {
+    done: std::sync::mpsc::Receiver<()>,
+    so_far: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Drained {
+    /// What was read, waiting up to `for_` for the end of the pipe; a pipe
+    /// still open after that yields what had arrived by then.
+    fn take(self, for_: Duration) -> String {
+        let _ = self.done.recv_timeout(for_);
+        self.so_far.lock().map(|s| s.clone()).unwrap_or_default()
+    }
 }
 
 /// Run a harness's status command with a timeout; `None` when it could
@@ -173,8 +202,8 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Option<Status> {
             .saturating_duration_since(std::time::Instant::now())
             .max(Duration::from_millis(200))
     };
-    let out = out.recv_timeout(left()).unwrap_or_default();
-    let err = err.recv_timeout(left()).unwrap_or_default();
+    let out = out.take(left());
+    let err = err.take(left());
     Some(Status {
         ok: status.success(),
         out,

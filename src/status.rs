@@ -178,7 +178,7 @@ impl HandoverNoteView {
         }
     }
 
-    /// One line for a person: `from Claude Code, summary 1,234 chars`.
+    /// One line for a person: `from Claude Code, summary 1234 chars`.
     pub fn describe(&self) -> String {
         match self.summary_chars {
             Some(n) => format!("from {}, summary {n} chars", self.from),

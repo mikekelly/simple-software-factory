@@ -467,7 +467,8 @@ to be running after all (the start gave up on a pane that came up but
 never settled), and one a person has just signed in at, are both given
 that first message where they stand, and the block lifts on the message
 landing rather than on the screen looking idle. That attempt follows the
-same curve as a restart -- ten minutes, twenty, forty, then hourly -- so
+same curve as a restart -- the first at once, then twenty minutes, forty,
+then hourly -- so
 an item whose story cannot be read is not re-read on every pass; it is
 counted apart from the restarts, so a person who signs in at a pane a
 failed restart has just left behind is answered on the next pass rather

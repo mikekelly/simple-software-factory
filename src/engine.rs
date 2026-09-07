@@ -4173,7 +4173,9 @@ deliveries resume"
         // The conversations the outgoing agent leaves behind: the id on
         // the record, and whatever its harness last wrote in this
         // workspace, which is what a session ssf never captured an id for
-        // leaves behind (see `retired_conversations`).
+        // leaves behind (see `retired_conversations`). The transcript
+        // directories live under the real home, so no engine test covers
+        // this call; `retired_conversations` is what the tests pin.
         let newest = st
             .worktree_path
             .as_deref()
@@ -4249,7 +4251,7 @@ deliveries resume"
             harness = eff.harness,
             handle,
             from = from_name,
-            summary = h.summary.is_some(),
+            summary = summary.is_some(),
             "handed the item over to a new session"
         );
         {
