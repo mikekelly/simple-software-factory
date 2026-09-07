@@ -245,13 +245,13 @@ enum VmCommand {
         #[arg(long)]
         force: bool,
         /// The guest's vCPUs, written to config.toml instead of the rule.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         vcpus: Option<u32>,
         /// The guest's memory in MiB, written to config.toml instead of the rule.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         mem_mib: Option<u32>,
         /// The data disk's size in GiB, written to config.toml instead of the rule.
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         data_gib: Option<u32>,
     },
     /// Enlarge an existing VM's data disk, keeping what is on it (the VM
@@ -263,7 +263,7 @@ enum VmCommand {
     /// smaller disk means a new VM.
     Grow {
         /// The new size in GiB (at least the current size).
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
         data_gib: Option<u32>,
     },
     /// Boot the VM (making its disks on first use) and wait for its daemon.
@@ -2157,7 +2157,7 @@ fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()>
     if chosen.changed {
         cfg.save()?;
         println!(
-            "written to {} under [vm] (vcpus, mem_mib, data_gib); edit them there, and `ssf vm grow` enlarges the data disk later",
+            "written to {} under [vm] (vcpus, mem_mib, data_gib); edit them there. The data disk itself is made by `ssf vm start` and only enlarged by `ssf vm grow`",
             config::config_path().display()
         );
     }

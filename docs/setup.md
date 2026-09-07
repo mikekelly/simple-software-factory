@@ -283,7 +283,7 @@ sparse, so this reserves nothing). It prints what it chose:
 ```
 this machine: 8 CPUs, 32768 MiB RAM, 500 GiB free on /home (where [vm] dir is)
 VM size: 7 vCPUs (from this machine), 16384 MiB RAM (from this machine), 250 GiB data disk (from this machine; sparse, so it takes host space only as the guest writes)
-written to /home/you/.config/ssf/config.toml under [vm] (vcpus, mem_mib, data_gib); edit them there, and `ssf vm grow` enlarges the data disk later
+written to /home/you/.config/ssf/config.toml under [vm] (vcpus, mem_mib, data_gib); edit them there. The data disk itself is made by `ssf vm start` and only enlarged by `ssf vm grow`
 ```
 
 A value already in `[vm]` is kept, and `--vcpus`, `--mem-mib` and
