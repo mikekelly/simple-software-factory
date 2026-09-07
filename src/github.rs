@@ -79,14 +79,6 @@ impl Issue {
             .any(|a| a.login.eq_ignore_ascii_case(login))
     }
 
-    /// Whether the item carries a label of that name (GitHub label names are
-    /// case-insensitive).
-    pub fn has_label(&self, name: &str) -> bool {
-        self.labels
-            .iter()
-            .any(|l| l.name.eq_ignore_ascii_case(name))
-    }
-
     pub fn author(&self) -> &str {
         self.user
             .as_ref()
@@ -587,38 +579,37 @@ impl GitHub {
         resp.json().await.context("decoding issue")
     }
 
-    /// Take a label off an issue or pull request. A label that is not on
-    /// the item (someone beat us to it) is not an error.
-    pub async fn remove_label(
+    /// Whether `path` exists in the repository, on `branch` or the default
+    /// branch, through the contents API: one request, no clone (`ssf
+    /// doctor` looks for the project notes this way). A 404 is `false`.
+    pub async fn has_file(
         &self,
         owner: &str,
         repo: &str,
-        number: u64,
-        label: &str,
-    ) -> Result<()> {
-        let mut url =
-            reqwest::Url::parse(&self.url(&format!("repos/{owner}/{repo}/issues/{number}/labels")))
-                .context("building the label URL")?;
+        path: &str,
+        branch: Option<&str>,
+    ) -> Result<bool> {
+        let mut url = reqwest::Url::parse(&self.url(&format!("repos/{owner}/{repo}/contents/")))
+            .context("building the contents URL")?;
         url.path_segments_mut()
-            .map_err(|_| anyhow::anyhow!("cannot build the label URL"))?
-            .push(label);
+            .map_err(|_| anyhow::anyhow!("cannot build the contents URL"))?
+            .pop_if_empty()
+            .extend(path.trim_matches('/').split('/'));
+        if let Some(b) = branch {
+            url.query_pairs_mut().append_pair("ref", b);
+        }
         let resp = self
-            .delete(url.as_str())
+            .get(url.as_str())
             .send()
             .await
-            .with_context(|| format!("DELETE {url}"))?;
+            .with_context(|| format!("GET {url}"))?;
         if resp.status() == StatusCode::NOT_FOUND {
-            return Ok(());
+            return Ok(false);
         }
-        Self::check(
-            resp,
-            &format!("removing the \"{label}\" label from {owner}/{repo}#{number}"),
-        )
-        .await?;
-        Ok(())
+        Self::check(resp, &format!("looking for {path} in {owner}/{repo}")).await?;
+        Ok(true)
     }
 
-    /// Leave a comment on an issue or pull request; returns its URL.
     pub async fn comment(
         &self,
         owner: &str,

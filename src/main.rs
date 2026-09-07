@@ -184,7 +184,7 @@ enum Command {
         json: bool,
     },
     /// Print the reference for agents: how sessions, other sessions,
-    /// following items, hand-offs and reviewer sessions work. The initial
+    /// following items, hand-offs and second opinions work. The initial
     /// prompt points here.
     Guide,
     /// Check that GitHub, the drivers in use and the configured harnesses are usable.
@@ -211,10 +211,6 @@ enum Command {
         issue: Option<u64>,
         #[arg(long)]
         issue_url: Option<String>,
-        /// `reviewer` for the reviewer session of a pull request: exported as
-        /// SSF_ROLE, and the gh shim tags posts with `role=reviewer`.
-        #[arg(long)]
-        role: Option<String>,
         /// Command line to run (through `sh -c`).
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -665,11 +661,7 @@ async fn main() -> Result<()> {
                 .filter(|b| !b.is_empty())
                 .or_else(|| state::State::load().ok().and_then(|s| s.bot_login))
                 .unwrap_or_else(|| "<bot>".into());
-            let daemon = Config::load().map(|c| c.daemon).unwrap_or_default();
-            print!(
-                "{}",
-                prompt::guide(&bot, daemon.review_label(), vm::in_guest())
-            );
+            print!("{}", prompt::guide(&bot, vm::in_guest()));
             Ok(())
         }
         Command::Doctor => doctor().await,
@@ -680,8 +672,7 @@ async fn main() -> Result<()> {
             issue,
             issue_url,
             command,
-            role,
-        } => launch(repo, issue, issue_url, role, command),
+        } => launch(repo, issue, issue_url, command),
         Command::GitCredential { op } => git_credential(&op),
     }
 }
@@ -690,7 +681,6 @@ fn launch(
     repo: Option<String>,
     issue: Option<u64>,
     issue_url: Option<String>,
-    role: Option<String>,
     command: Vec<String>,
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
@@ -750,15 +740,9 @@ fn launch(
     if let Some(u) = issue_url {
         cmd.env("SSF_ISSUE_URL", u);
     }
-    match role.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-        Some(r) if r == origin::REVIEWER => {
-            cmd.env("SSF_ROLE", r);
-        }
-        Some(r) => bail!("--role {r}: the only role is `{}`", origin::REVIEWER),
-        None => {
-            cmd.env_remove("SSF_ROLE");
-        }
-    }
+    // `SSF_ROLE` marked the reviewer sessions of before #115; an old one
+    // in the environment must not reach the agent.
+    cmd.env_remove("SSF_ROLE");
     // A `gh` shim first on PATH stamps everything the agent posts with the
     // origin tag for this issue (see src/shim.rs).
     match std::env::current_exe().and_then(std::fs::canonicalize) {
@@ -2213,7 +2197,7 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
             bail!("{r} is not a watched repository (see `ssf repo list`)");
         }
     }
-    let me = identity(None)?.map(|(o, reviewer)| o.session(reviewer));
+    let me = identity(None)?.map(|o| o.to_string());
     let sessions: Vec<status::Session> = snap
         .sessions()
         .into_iter()
@@ -2247,46 +2231,41 @@ async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {
     Ok(())
 }
 
-/// This session's identity: `--as owner/repo#N` (or `owner/repo#N:reviewer`),
-/// else the environment `ssf launch` set up (`SSF_ROLE=reviewer` makes it
-/// the reviewer session of the item).
-fn identity(as_: Option<&str>) -> Result<Option<(origin::Origin, bool)>> {
+/// This session's identity: `--as owner/repo#N`, else the environment
+/// `ssf launch` set up.
+fn identity(as_: Option<&str>) -> Result<Option<origin::Origin>> {
     match as_ {
-        Some(a) => origin::parse_session(a)
+        Some(a) => origin::Origin::parse(a)
             .map(Some)
             .with_context(|| format!("--as {a}: expected owner/repo#N")),
-        None => Ok(origin::Origin::from_env().map(|o| (o, origin::Origin::reviewer_from_env()))),
+        None => Ok(origin::Origin::from_env()),
     }
 }
 
 /// An item or session argument: `owner/repo#N`, or a bare number on `me`'s
-/// repository; either with a `:reviewer` suffix for a reviewer session.
+/// repository.
 fn item_ref(item: &str, me: Option<&origin::Origin>) -> Result<String> {
     let item = item.trim().trim_start_matches('#');
-    let (bare, suffix) = match item.strip_suffix(&format!(":{}", origin::REVIEWER)) {
-        Some(b) => (b, format!(":{}", origin::REVIEWER)),
-        None => (item, String::new()),
-    };
-    if let Ok(n) = bare.parse::<u64>() {
+    if let Ok(n) = item.parse::<u64>() {
         return match me {
-            Some(o) => Ok(format!("{}#{n}{suffix}", o.repo)),
+            Some(o) => Ok(format!("{}#{n}", o.repo)),
             None => {
                 bail!("{item}: pass owner/repo#{item}, or --as owner/repo#N to name the repository")
             }
         };
     }
-    match origin::Origin::parse(bare) {
-        Some(o) => Ok(format!("{o}{suffix}")),
+    match origin::Origin::parse(item) {
+        Some(o) => Ok(o.to_string()),
         None => bail!("{item}: expected an item number or owner/repo#N"),
     }
 }
 
 async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bool) -> Result<()> {
-    let (me, reviewer) = identity(as_)?.context(
+    let me = identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
     let target = item_ref(item, Some(&me))?;
-    let me = me.session(reviewer);
+    let me = me.to_string();
     let req = if subscribe {
         ipc::Request::Sub {
             from: me.clone(),
@@ -2344,29 +2323,26 @@ async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bool) -> Resu
 fn subs(as_: Option<&str>, json: bool) -> Result<()> {
     let cfg = Config::load()?;
     let st = state::State::load()?;
-    let (me, reviewer) = identity(as_)?.context(
+    let me = identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
-    // The subscriber is always the owning session (a reviewer is its own).
-    let me_id = if reviewer {
-        me.session(true)
-    } else {
-        st.repos
-            .get(&me.repo)
-            .map(|rs| {
-                let mut cur = me.number;
-                let mut hops = 0;
-                while let Some(next) = rs.issues.get(&cur).and_then(|s| s.shares_workspace_of) {
-                    if next == cur || hops > 16 {
-                        break;
-                    }
-                    cur = next;
-                    hops += 1;
+    // The subscriber is always the owning session.
+    let me_id = st
+        .repos
+        .get(&me.repo)
+        .map(|rs| {
+            let mut cur = me.number;
+            let mut hops = 0;
+            while let Some(next) = rs.issues.get(&cur).and_then(|s| s.shares_workspace_of) {
+                if next == cur || hops > 16 {
+                    break;
                 }
-                status::session_id(&me.repo, cur)
-            })
-            .unwrap_or_else(|| me.to_string())
-    };
+                cur = next;
+                hops += 1;
+            }
+            status::session_id(&me.repo, cur)
+        })
+        .unwrap_or_else(|| me.to_string());
     let mut following = Vec::new();
     let mut followers = Vec::new();
     for repo in &cfg.repos {
@@ -2457,7 +2433,7 @@ fn subs(as_: Option<&str>, json: bool) -> Result<()> {
 
 async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool) -> Result<()> {
     let me = identity(as_)?;
-    let target = item_ref(item, me.as_ref().map(|(o, _)| o))?;
+    let target = item_ref(item, me.as_ref())?;
     let text = match message {
         Some(m) => m,
         None => {
@@ -2470,7 +2446,7 @@ async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool
         bail!("nothing to say (pass the message, or pipe it in)");
     }
     let v = ipc::call(&ipc::Request::Tell {
-        from: me.map(|(o, reviewer)| o.session(reviewer)),
+        from: me.map(|o| o.to_string()),
         target: target.clone(),
         text,
     })
@@ -2497,10 +2473,10 @@ async fn tell(item: &str, message: Option<String>, as_: Option<&str>, json: bool
 async fn release(item: Option<&str>, as_: Option<&str>, force: bool, json: bool) -> Result<()> {
     let me = identity(as_)?;
     let session = match item {
-        Some(i) => item_ref(i, me.as_ref().map(|(o, _)| o))?,
+        Some(i) => item_ref(i, me.as_ref())?,
         None => me
             .as_ref()
-            .map(|(o, reviewer)| o.session(*reviewer))
+            .map(|o| o.to_string())
             .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
     };
     // Inside a session `--force` is not the agent's to use: the checks are
@@ -2766,6 +2742,14 @@ async fn doctor() -> Result<()> {
     if let Some(note) = cfg.driver_note() {
         println!("note {note}");
     }
+    let retired = cfg.daemon.retired_keys();
+    if !retired.is_empty() {
+        println!(
+            "note {} in config.toml no longer {} anything: the `review` label and reviewer sessions went with one session per item; remove the line",
+            retired.join(" and "),
+            if retired.len() == 1 { "does" } else { "do" }
+        );
+    }
     // Each harness a repository uses, signed in where this runs (the host,
     // or the guest: with the factory in a VM `ssf doctor` is forwarded
     // there, so the check happens where the agents are).
@@ -2909,6 +2893,60 @@ async fn doctor() -> Result<()> {
         let bin = cmd.split_whitespace().next().unwrap_or("");
         let ok = which(bin).is_some() || installed.iter().any(|a| a.id == r.harness && a.installed);
         check(ok, format!("{}: harness `{}` installed", r.name, r.harness));
+        // The project notes (`SSF.md`, or `repo.prompt_file`): looked for
+        // on GitHub, on the branch the agents start from (`repo.base_branch`,
+        // else the default branch), so no clone is needed; a machine path
+        // is looked for here.
+        let notes = r.prompt_file();
+        let notes_path = config::expand_tilde(notes);
+        if notes_path.is_absolute() {
+            let present = notes_path.exists();
+            check(
+                present,
+                format!(
+                    "{}: project notes at {} {}",
+                    r.name,
+                    notes_path.display(),
+                    if present {
+                        "present"
+                    } else {
+                        "missing; start from /usr/share/ssf/SSF.example.md"
+                    }
+                ),
+            );
+        } else {
+            match (&gh, r.split()) {
+                (Some(gh), Ok((owner, name))) => {
+                    match gh
+                        .has_file(owner, name, notes, r.base_branch.as_deref())
+                        .await
+                    {
+                        Ok(true) => check(true, format!("{}: project notes ({notes})", r.name)),
+                        Ok(false) => check(
+                            false,
+                            format!(
+                                "no {notes} in {}; start from /usr/share/ssf/SSF.example.md",
+                                r.name
+                            ),
+                        ),
+                        Err(e) => check(
+                            false,
+                            format!(
+                                "{}: project notes ({notes}) could not be checked: {e:#}",
+                                r.name
+                            ),
+                        ),
+                    }
+                }
+                _ => check(
+                    false,
+                    format!(
+                        "{}: project notes ({notes}) cannot be checked without a token",
+                        r.name
+                    ),
+                ),
+            }
+        }
         if let Some(p) = &r.path {
             check(
                 std::path::Path::new(p).join(".git").exists(),
@@ -3108,15 +3146,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn item_refs_accept_numbers_sessions_and_reviewers() {
+    fn item_refs_accept_numbers_and_sessions() {
         let me = origin::Origin::new("o/r", 3).unwrap();
         assert_eq!(item_ref("7", Some(&me)).unwrap(), "o/r#7");
         assert_eq!(item_ref("#7", Some(&me)).unwrap(), "o/r#7");
-        assert_eq!(item_ref("7:reviewer", Some(&me)).unwrap(), "o/r#7:reviewer");
         assert_eq!(item_ref("x/y#7", None).unwrap(), "x/y#7");
-        assert_eq!(item_ref("x/y#7:reviewer", None).unwrap(), "x/y#7:reviewer");
         assert!(item_ref("7", None).is_err());
-        assert!(item_ref("7:author", Some(&me)).is_err());
+        // The reviewer sessions of before #115 had a suffix of their own.
+        assert!(item_ref("7:reviewer", Some(&me)).is_err());
+        assert!(item_ref("x/y#7:reviewer", None).is_err());
         assert!(item_ref("nonsense", Some(&me)).is_err());
     }
     #[test]

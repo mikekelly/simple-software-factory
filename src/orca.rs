@@ -579,15 +579,6 @@ impl Orca {
         Ok(parse_ps(&v))
     }
 
-    /// Is the agent in this workspace still busy?
-    pub async fn agent_busy(&self, worktree_id: &str) -> Result<bool> {
-        Ok(self
-            .ps()
-            .await?
-            .iter()
-            .any(|w| w.worktree_id == worktree_id && w.is_working()))
-    }
-
     /// Stop the workspace's terminals and remove it from Orca and git.
     pub async fn remove_worktree(&self, worktree_id: &str) -> Result<()> {
         let sel = format!("id:{worktree_id}");
