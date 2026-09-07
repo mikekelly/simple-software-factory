@@ -244,8 +244,9 @@ restarted screen is clean.
 
 - **Told once.** One `blocked` post lands on the session's item (see
   [What ssf says on the item](#what-ssf-says-on-the-item): the harness,
-  `reason: not signed in`, and `fix: claude auth login`, or inside the VM
-  `fix: ssf vm login claude`), the log gets a warning (with the
+  `reason: not signed in`, and `fix:` with the command to run, `claude
+  auth login` on the host or `ssf vm login claude` with the factory in a
+  VM), the log gets a warning (with the
   screen line), and the session shows as blocked in `ssf status` (a
   `BLOCKED:` line naming the harness, since when and the command to run;
   `--json` carries it as `blocked` on the session, with `harness_name`,
