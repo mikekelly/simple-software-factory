@@ -199,10 +199,30 @@ hears that person. It still counts as untagged for `ssf status` and
 `ssf doctor`, since nothing distinguishes it from a session whose wrapper was
 not in effect, and an untagged item body binds the item to no session.
 
-The tag can carry more fields. One is defined: `mode=delegate`, which
+**The daemon speaking.** The third kind of bot post is the daemon's own:
+the short `ssf` blocks it leaves on an item when it attaches a session,
+brings one back, holds its deliveries, gives up on a binding or releases
+a workspace (the list is in
+[What ssf says on the item](sessions.md#what-ssf-says-on-the-item)). Its
+first line is the byline `🤖 ssf`, with no item because the daemon is not
+a session, and a tag naming the item posted on with an `event` field:
+
+```
+🤖 ssf <!-- ssf: origin=owner/repo#N event=attached -->
+```
+
+The `event` field is what tells it apart: such a post is neither a
+person's (it is not delivered as human input) nor a session's (it is not
+delivered to the item's session or to subscribers, is not counted in
+`posts_by_session` or `untagged_posts`, and is never taken for an agent's
+final comment). `daemon.event_comments = false` stops the daemon posting
+them.
+
+The tag can carry more fields. Two are defined: `mode=delegate`, which
 the wrapper adds when an `issue create` or `pr create` assigns the bot
 itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
-session's own (see [Ownership](sessions.md#ownership-one-session-per-item)).
+session's own (see [Ownership](sessions.md#ownership-one-session-per-item));
+and `event=<name>`, which only the daemon writes (above).
 Posts made before #115 by a reviewer session carry `role=reviewer`; the
 field is read and ignored, so such a post counts as the item's session's.
 The byline does not encode the mode.

@@ -104,9 +104,15 @@ linked to it. A post from the agent on issue #31 looks like this on GitHub:
 The posts quoted above from #18 predate the byline (it arrived with #32 on 2026-09-05, and the
 `says:` with #42) and carried the same mark out of sight at the end of the
 body; every post since carries it on the first line. A post by the bot
-account *without* a byline was typed by a person. How the byline works,
+account *without* a byline was typed by a person. A post whose byline is
+`🤖 ssf`, followed by a fenced `ssf` block (`ssf attaching agent to
+issue:` and a few `key: value` lines), is the daemon itself, saying that
+it attached a session to the issue, brought it back, held it for a
+sign-in, gave up on it or released its workspace, so the issue's timeline
+shows what ssf did as well as what the agent did. How the byline works,
 and how the daemon reads it, is in
-[Identity and bylines](docs/identity-and-bylines.md).
+[Identity and bylines](docs/identity-and-bylines.md); the daemon's events
+are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
 
 ## The key ideas
 

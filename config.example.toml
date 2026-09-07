@@ -84,6 +84,7 @@
 # `ssf config set daemon.allowed_users '["*"]' --accept-anyone-risk`).
 # allowed_users = ["alice", "bob", "github-actions[bot]"]
 # accepted_anyone_risk = false
+# event_comments = true                        # post the daemon's events (session attached, resumed, blocked/unblocked, gave up, workspace released) on the item as fenced ssf blocks; false posts nothing
 
 # One [[repo]] per watched repository.
 [[repo]]
@@ -99,6 +100,7 @@ harness = "claude"                             # agent id: see `ssf agents`
 # instructions = "Run `make test` before opening a PR."
 # prompt_file = "SSF.md"                       # file appended to the initial prompt (see SSF.example.md); relative to the worktree unless absolute
 # allowed_users = ["alice"]                    # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
+# event_comments = false                       # this repository's items get no ssf event posts (default: daemon.event_comments)
 # [repo.git]                                   # this repository's commit identity, each key over the [git] table above
 # name = "Ann Person"
 # email = "ann@example.com"

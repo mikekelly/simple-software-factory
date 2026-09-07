@@ -161,6 +161,61 @@ even when A is subscribed to B's issue. This is the default channel between
 agents: `ssf guide` says so, and a `tell` message repeats in one line that
 the answer goes on the item.
 
+## What ssf says on the item
+
+Most of what the daemon does is only in its journal. The moments a
+person reading an issue needs to know about are posted on the item
+itself, as the bot, so the timeline tells the whole story: that a session
+was attached to it, brought back, held, given up on, or that its
+workspace was released. Each is one short comment: the byline `🤖 ssf`
+(the daemon, not a session, so no number) and one fenced `ssf` block of
+`key: value` lines, nothing else. On GitHub:
+
+> **OverlayBot** commented
+>
+> 🤖 ssf
+>
+> ```ssf
+> ssf attaching agent to issue:
+> harness: Claude Code
+> model: fable-5.1
+> effort: high
+> driver: herdr
+> branch: bot/issue-117-the-daemon-posts-its-essential-events-on
+> ```
+
+The events, and nothing else:
+
+| Event | When | Lines |
+|-------|------|-------|
+| `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created (`ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default`; `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh` |
+| `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
+| `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
+| `blocked` | deliveries are held because the harness is at its sign-in prompt (below) | `harness`, `reason: not signed in`, `fix:` the command that signs it in |
+| `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again) or `kept` (a person signed in at the terminal) |
+| `gave-up` | five deliveries in a row failed and the binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
+| `released` | the workspace was removed by `ssf release` or `ssf purge` | `by: ssf release` or `by: ssf purge`, `forced: yes` when a person forced it, `branch` |
+
+Handover (`ssf handover`) gets an event of its own when it lands.
+
+The first line carries the origin tag with an `event` field
+(`🤖 ssf <!-- ssf: origin=owner/repo#N event=attached -->`, see
+[Identity and bylines](identity-and-bylines.md#bylines-and-origin-tags-which-session-posted-what)),
+and the daemon reads it back: an event post is not a person typing as the
+bot (an untagged bot post is), and it is not activity. It is delivered to
+no session, not the item's own and not a subscriber's; `ssf status` does
+not count it among the untagged posts or any session's; and it is never
+taken for an agent's final comment when a hand-off closes. Every event is
+posted at the moment it happens, from the records the daemon already
+keeps (the session's start, the block's "told" flag, the removal), so a
+daemon restart reposts nothing.
+
+`daemon.event_comments = false` turns the posts off for every repository,
+`event_comments = false` on one `[[repo]]` (`ssf repo set <owner/name>
+--event-comments false`) for that one; nothing else changes, the hold on
+a blocked session included. Every event is also in the journal, as
+before.
+
 ## A harness that is not signed in
 
 A harness login can go away under a running session: the token expires,
@@ -183,14 +238,14 @@ that agents read (the comments below, the message after a restart, the
 `BLOCKED:` lines, the refusal `ssf tell` prints) is worded without those
 phrases, and a test pins that. What remains is an agent quoting the exact
 phrase in its own answer, or a quoted comment line the terminal wrapped
-past the quote marker; that costs one blocked comment and one restart
-after the retry wait, with the "signed in again" comment if it took long,
-and nothing more: the restarted screen is clean.
+past the quote marker; that costs one `blocked` post and one restart
+after the retry wait, with its `unblocked` post, and nothing more: the
+restarted screen is clean.
 
-- **Told once.** One comment lands on the session's item, as the session
-  (`🤖#N says:` ... `[ssf] This session's Claude Code is at its sign-in
-  prompt ... Sign in with `claude auth login` on the host`; inside the VM
-  the fix is `ssf vm login claude`), the log gets a warning (with the
+- **Told once.** One `blocked` post lands on the session's item (see
+  [What ssf says on the item](#what-ssf-says-on-the-item): the harness,
+  `reason: not signed in`, and `fix: claude auth login`, or inside the VM
+  `fix: ssf vm login claude`), the log gets a warning (with the
   screen line), and the session shows as blocked in `ssf status` (a
   `BLOCKED:` line naming the harness, since when and the command to run;
   `--json` carries it as `blocked` on the session, with `harness_name`,
@@ -220,8 +275,9 @@ and nothing more: the restarted screen is clean.
   whose terminal is gone (a reboot, a closed terminal) is judged by its
   restart the same way: the block is lifted only once it has taken a
   prompt. A person who runs `/login` in the terminal instead lifts the
-  block on the next pass with no restart. If the block lasted more than
-  five minutes the item gets one more comment saying the session resumed.
+  block on the next pass with no restart. Either way the item gets the
+  `unblocked` post, saying how long the hold lasted and whether the
+  harness was started again.
 
 `ssf doctor` prints one line per harness the configured repositories use
 (`Claude Code signed in on the host (claude auth status: signed in)`, or
