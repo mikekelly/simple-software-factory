@@ -229,13 +229,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum VmCommand {
-    /// Download Firecracker, gvproxy and a guest kernel, make the root
-    /// image from the Arch bootstrap tarball and provision it (git, gh,
-    /// herdr, the harness CLIs). No root needed. Also sizes the VM from
-    /// this machine: every `[vm]` size key left unset (`vcpus`: the CPUs
-    /// minus one, at least 2; `mem_mib`: half the RAM, at least 4096;
-    /// `data_gib`: half the free space where the VM lives, at least 20,
-    /// sparse) is chosen, printed and written to config.toml.
+    /// Size the VM from this machine, then download Firecracker, gvproxy
+    /// and a guest kernel, make the root image from the Arch bootstrap
+    /// tarball and provision it (git, gh, herdr, the harness CLIs). No
+    /// root needed.
+    ///
+    /// Every `[vm]` size key left unset is chosen from the host, printed
+    /// and written to config.toml: `vcpus` is the CPUs minus one (at least
+    /// 2), `mem_mib` half the RAM (at least 4096), `data_gib` half the
+    /// free space of the filesystem holding `vm.dir` (at least 20; the
+    /// disk is sparse, so this reserves nothing). A key already in `[vm]`
+    /// is kept; a flag below writes a value of your own.
     Build {
         /// Make a new image even if one exists.
         #[arg(long)]
@@ -251,8 +255,12 @@ enum VmCommand {
         data_gib: Option<u32>,
     },
     /// Enlarge an existing VM's data disk, keeping what is on it (the VM
-    /// stopped): to the size given, or to the rule for today's free space.
-    /// Never shrinks. Updates `[vm] data_gib`.
+    /// must be stopped).
+    ///
+    /// Grows to the size given, or to the rule for today's free space
+    /// (half of it, at least 20 GiB): `e2fsck -f`, a longer file,
+    /// `resize2fs`, then `[vm] data_gib` is updated. Never shrinks; a
+    /// smaller disk means a new VM.
     Grow {
         /// The new size in GiB (at least the current size).
         #[arg(long)]
