@@ -21,6 +21,16 @@ use crate::herdr::Herdr;
 use crate::orca::{Delivery, Orca, ProjectSetup, WorkspaceInfo, Worktree};
 use crate::release::git;
 
+/// How many lines at the bottom of the screen a trust dialog is looked
+/// for in. Twelve covers the tallest of them (Claude Code's question, its
+/// two options and the *Enter to confirm* line, with the box drawing
+/// around them) and stops the wording matching where it is merely text
+/// on the screen.
+/// Two dozen rather than a dozen: Claude Code's bypass-permissions
+/// acceptance needs two phrases that straddle its box, and a wrapped
+/// paragraph inside it pushes the first one up the screen.
+const TRUST_TAIL_LINES: usize = 24;
+
 /// Keys that accept a harness's first-run trust question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustAnswer {
@@ -38,8 +48,20 @@ pub enum TrustAnswer {
 /// *Yes, continue*; Gemini and Pi preselect *Trust*. Claude Code's one-time
 /// acceptance of its bypass-permissions mode (shown on a machine that never
 /// ran it that way, such as a fresh VM) is answered the same way.
+///
+/// Only the bottom [`TRUST_TAIL_LINES`] non-empty lines are looked at,
+/// the way `login_dialog_in` bounds its own search: a dialog's options and
+/// its *Press enter* line sit at the bottom of the screen, while the same
+/// words in something the agent is showing -- a prompt of ssf's own in the
+/// composer, a file it is reading -- scroll past above (#121).
 pub fn trust_dialog(screen: &str) -> Option<TrustAnswer> {
-    let text = screen.to_lowercase();
+    let lines: Vec<&str> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(TRUST_TAIL_LINES);
+    let text = lines[start..].join("\n").to_lowercase();
     if text.contains("trust this folder")
         || (text.contains("bypass permissions mode") && text.contains("yes, i accept"))
     {
@@ -448,7 +470,7 @@ impl Driver {
             }
             Driver::Herdr(d) => {
                 let handle = d.launch(worktree_id, command, title, harness).await?;
-                d.send_prompt(&handle, text).await?;
+                d.send_first_prompt(&handle, text).await?;
                 Ok(handle)
             }
             #[cfg(test)]
@@ -1223,6 +1245,13 @@ contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2.
             trust_dialog("Folder /tmp/wt has been added to trusted folders."),
             None
         );
+        // The wording scrolled up the screen is text, not a dialog: only
+        // the bottom of the screen is a dialog's place (#121).
+        let scrolled = format!(
+            "{codex}\n{}",
+            "the agent's answer\n".repeat(TRUST_TAIL_LINES)
+        );
+        assert_eq!(trust_dialog(&scrolled), None);
     }
 
     #[test]
