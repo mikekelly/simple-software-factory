@@ -70,6 +70,14 @@ herdr recognises the agent in the pane and reports its state (`idle`,
 `working`, `blocked`, `done`); messages go in with `herdr agent prompt`,
 which pastes and submits them.
 
+A first-run dialog is answered from the pane's screen whatever state herdr
+reports for the agent, because the state does not say whether one is up:
+herdr 0.8.2 calls Codex sitting on its directory-trust question `idle`
+where it calls Claude Code's `blocked`. The first prompt after a launch is
+then sent confirmed -- herdr waits until the harness is working on it --
+so a paste that went nowhere is an error the session's start reports
+rather than an agent left at an empty composer with no instructions.
+
 herdr keeps no link between a workspace and an issue, so ssf finds a
 workspace it lost track of by the worktree's name (`issue-N-...`), and
 remembers a workspace as herdr's id plus the checkout it was opened on

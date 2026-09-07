@@ -28,6 +28,11 @@ use crate::orca::{AgentInfo, Delivery, WorkspaceInfo, Worktree};
 const PASTE_START: &str = "\x1b[200~";
 const PASTE_END: &str = "\x1b[201~";
 
+/// How long to give a freshly launched harness to start working on its
+/// first prompt. herdr gives up on its own after five seconds when the
+/// text went nowhere; a healthy harness takes well under a second.
+const FIRST_PROMPT_TIMEOUT_MS: &str = "15000";
+
 #[derive(Clone)]
 pub struct Herdr {
     cfg: HerdrConfig,
@@ -206,6 +211,58 @@ pub fn join_ps(workspaces: &Value, panes: &[Pane], agents: &[Agent]) -> Vec<Work
             })
         })
         .collect()
+}
+
+/// What to do once `herdr agent wait` has returned and the pane's screen
+/// has been read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settle {
+    /// A first-run trust dialog is up: answer it with these keys and wait
+    /// again.
+    Answer(driver::TrustAnswer),
+    /// The harness is ready for its prompt.
+    Ready,
+    /// Blocked on a question ssf does not know: the prompt goes in anyway.
+    AskAnyway,
+}
+
+/// The decision [`Herdr::settle_harness`] makes from the state herdr
+/// reported and what is on the screen. The screen decides first, whatever
+/// the state: herdr 0.8.2 reports Codex sitting on its directory-trust
+/// dialog as `idle` and Claude Code's as `blocked`, so a state of `idle`
+/// is no promise that a prompt would reach the composer (#121).
+pub fn settle_step(state: &str, screen: &str) -> Settle {
+    if let Some(answer) = driver::trust_dialog(screen) {
+        Settle::Answer(answer)
+    } else if state == "blocked" {
+        Settle::AskAnyway
+    } else {
+        Settle::Ready
+    }
+}
+
+/// Why `herdr agent prompt` refused or gave up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptFailure {
+    /// herdr thinks the agent is at a question, so it sent nothing.
+    Blocked,
+    /// The text went in but the harness never started working on it
+    /// (`--until working`), which is what a paste swallowed by a dialog
+    /// looks like.
+    Stalled,
+    /// Anything else: no pane, no server, a herdr of the wrong version.
+    Other,
+}
+
+/// Read `herdr agent prompt`'s failure out of the message it printed.
+pub fn prompt_failure(message: &str) -> PromptFailure {
+    if message.contains("agent_blocked") {
+        PromptFailure::Blocked
+    } else if message.contains("agent_prompt_stalled") {
+        PromptFailure::Stalled
+    } else {
+        PromptFailure::Other
+    }
 }
 
 impl Herdr {
@@ -539,6 +596,14 @@ impl Herdr {
     /// Wait until herdr sees an agent in the pane and it is ready for input,
     /// answering the folder-trust dialog Claude Code and Codex show on a new
     /// worktree.
+    ///
+    /// The screen is read after every wait whatever state herdr reports,
+    /// because the reported state does not say whether a dialog is up:
+    /// herdr 0.8.2 calls Codex 0.152.0 sitting on its directory-trust
+    /// dialog `idle`, where it calls Claude Code's equivalent `blocked`
+    /// (#121). A prompt pasted into that dialog is swallowed by it -- the
+    /// Enter answers the question and the text is gone -- so the dialog is
+    /// answered and the harness waited for again.
     pub async fn settle_harness(&self, pane_id: &str, harness: &str) -> Result<()> {
         let deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
         let mut detected = false;
@@ -565,24 +630,35 @@ impl Herdr {
                 .get("agent_status")
                 .or_else(|| v.pointer("/agent/agent_status"))
                 .and_then(Value::as_str)
-                .unwrap_or("");
-            if state != "blocked" {
-                return Ok(());
-            }
+                .unwrap_or("")
+                .to_string();
             let text = self.screen(pane_id).await?.join("\n");
-            if let Some(answer) = crate::driver::trust_dialog(&text) {
-                info!(pane_id, "accepting the folder trust dialog");
-                if answer == crate::driver::TrustAnswer::DownEnter {
-                    self.run(&["agent", "send-keys", pane_id, "down"]).await?;
-                    tokio::time::sleep(Duration::from_millis(300)).await;
+            match settle_step(&state, &text) {
+                Settle::Answer(answer) => {
+                    info!(pane_id, state, "accepting the folder trust dialog");
+                    self.answer_trust(pane_id, answer).await?;
+                    continue;
                 }
-                self.run(&["agent", "send-keys", pane_id, "enter"]).await?;
-                tokio::time::sleep(Duration::from_millis(1500)).await;
-                continue;
+                Settle::AskAnyway => {
+                    // Some other question: the prompt goes in anyway, as
+                    // with Orca.
+                    warn!(pane_id, "{harness} is at a question ssf does not know");
+                    return Ok(());
+                }
+                Settle::Ready => return Ok(()),
             }
-            // Some other question: the prompt goes in anyway, as with Orca.
-            return Ok(());
         }
+        Ok(())
+    }
+
+    /// Answer a trust dialog in the pane with the keys it takes.
+    async fn answer_trust(&self, pane_id: &str, answer: driver::TrustAnswer) -> Result<()> {
+        if answer == driver::TrustAnswer::DownEnter {
+            self.run(&["agent", "send-keys", pane_id, "down"]).await?;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        self.run(&["agent", "send-keys", pane_id, "enter"]).await?;
+        tokio::time::sleep(Duration::from_millis(1500)).await;
         Ok(())
     }
 
@@ -651,19 +727,82 @@ impl Herdr {
             .await
         {
             Ok(_) => Ok(()),
-            Err(e) if e.to_string().contains("agent_blocked") => {
-                warn!(
-                    pane_id,
-                    "agent is blocked on a question; pasting the prompt raw"
-                );
-                let pasted = format!("{PASTE_START}{}{PASTE_END}", text.trim_end());
-                self.run(&["pane", "send-text", pane_id, &pasted]).await?;
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                self.run(&["pane", "send-keys", pane_id, "enter"]).await?;
-                Ok(())
+            Err(e) if prompt_failure(&e.to_string()) == PromptFailure::Blocked => {
+                self.paste_raw(pane_id, text).await
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// Paste a prompt into the pane ourselves and submit it, as Orca does,
+    /// for when herdr will not.
+    async fn paste_raw(&self, pane_id: &str, text: &str) -> Result<()> {
+        warn!(
+            pane_id,
+            "agent is blocked on a question; pasting the prompt raw"
+        );
+        let pasted = format!("{PASTE_START}{}{PASTE_END}", text.trim_end());
+        self.run(&["pane", "send-text", pane_id, &pasted]).await?;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        self.run(&["pane", "send-keys", pane_id, "enter"]).await?;
+        Ok(())
+    }
+
+    /// Give a harness that has just been launched its first prompt, and
+    /// confirm it landed: herdr waits until the agent is *working* on it
+    /// (not until the turn is done, which is a first prompt's whole answer)
+    /// and reports `agent_prompt_stalled` when nothing happened. That is
+    /// the difference between a session that has its instructions and one
+    /// sitting at an empty composer, which is otherwise invisible -- a
+    /// plain `agent prompt` returns success for a paste a first-run dialog
+    /// swallowed (#121). A stall with a trust dialog on the screen is that
+    /// dialog: it is answered and the prompt sent once more.
+    pub async fn send_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
+        let e = match self.prompt_until_working(pane_id, text).await {
+            Ok(()) => return Ok(()),
+            Err(e) => e,
+        };
+        match prompt_failure(&e.to_string()) {
+            // Sent nothing: the harness is at a question, so paste it in
+            // the way Orca does and let the harness queue it.
+            PromptFailure::Blocked => self.paste_raw(pane_id, text).await,
+            PromptFailure::Stalled => {
+                let screen = self.screen(pane_id).await.unwrap_or_default().join("\n");
+                if let Some(answer) = driver::trust_dialog(&screen) {
+                    info!(pane_id, "the first prompt met a trust dialog; answering it");
+                    self.answer_trust(pane_id, answer).await?;
+                    return self.prompt_until_working(pane_id, text).await.map_err(|e| {
+                        anyhow!(
+                            "{} did not take the first prompt after its trust dialog: {}",
+                            pane_id,
+                            driver::redact_login_phrases(&e.to_string())
+                        )
+                    });
+                }
+                Err(anyhow!(
+                    "the harness in {pane_id} did not take the first prompt: {}",
+                    driver::redact_login_phrases(&e.to_string())
+                ))
+            }
+            PromptFailure::Other => Err(e),
+        }
+    }
+
+    /// `agent prompt`, waiting only until the harness starts working on it.
+    async fn prompt_until_working(&self, pane_id: &str, text: &str) -> Result<()> {
+        self.run(&[
+            "agent",
+            "prompt",
+            pane_id,
+            text.trim_end(),
+            "--wait",
+            "--until",
+            "working",
+            "--timeout",
+            FIRST_PROMPT_TIMEOUT_MS,
+        ])
+        .await
+        .map(|_| ())
     }
 
     pub async fn deliver(
@@ -742,7 +881,9 @@ impl Herdr {
             Some(full) if !resumed => full,
             _ => text,
         };
-        self.send_prompt(&handle, body).await?;
+        // The harness was launched just above, so this is its first
+        // prompt: confirm it landed rather than paste and hope.
+        self.send_first_prompt(&handle, body).await?;
         Ok(Delivery {
             handle,
             relaunched: true,
@@ -822,7 +963,10 @@ mod tests {
             .unwrap();
         eprintln!("launched in {handle}");
         assert!(h.has_live_agent(&wt.id).await.unwrap());
-        h.send_prompt(&handle, "Reply with the single word pong and nothing else.")
+        // The first prompt after a launch is the confirmed one (#121): if
+        // the harness came up on a dialog and the paste went nowhere, this
+        // is an error rather than a silent loss.
+        h.send_first_prompt(&handle, "Reply with the single word pong and nothing else.")
             .await
             .unwrap();
         // The prompt must have been submitted, not just pasted.
@@ -883,6 +1027,159 @@ mod tests {
             let _ = h.run(&["workspace", "close", src]).await;
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Against a running herdr server: opens a workspace on a scratch repo
+    /// the harness has never seen, launches the harness and gives it its
+    /// first prompt, which is the case #121 was about -- Codex comes up on
+    /// its directory-trust dialog and herdr calls that `idle`. The harness
+    /// is `SSF_LIVE_HARNESS` with `SSF_LIVE_COMMAND` (Codex by default).
+    /// `cargo test herdr_live_first_prompt -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn herdr_live_first_prompt() {
+        let harness = std::env::var("SSF_LIVE_HARNESS").unwrap_or_else(|_| "codex".into());
+        let command = std::env::var("SSF_LIVE_COMMAND")
+            .unwrap_or_else(|_| crate::models::default_command(&harness));
+        let root = std::env::temp_dir()
+            .join(format!(
+                "ssf-first-prompt-{}-{}",
+                harness,
+                std::process::id()
+            ))
+            .to_string_lossy()
+            .to_string();
+        std::fs::create_dir_all(&root).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "master"],
+            vec![
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(&root)
+                    .args(&args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let h = Herdr::new(HerdrConfig::default());
+        h.status().await.unwrap();
+        let wt = h
+            .create_worktree(&root, "issue-121-x", "ssf: test", None)
+            .await
+            .unwrap();
+        eprintln!("workspace {} at {}", wt.id, wt.path);
+        let started = Instant::now();
+        let handle = h
+            .launch(&wt.id, &command, "first prompt · #121", &harness)
+            .await
+            .unwrap();
+        eprintln!("launched {harness} in {handle} in {:?}", started.elapsed());
+        eprintln!(
+            "screen after settling:\n{}",
+            h.screen(&handle).await.unwrap().join("\n")
+        );
+        let sent = Instant::now();
+        h.send_first_prompt(&handle, "Reply with the single word pong and nothing else.")
+            .await
+            .unwrap();
+        eprintln!("first prompt taken in {:?}", sent.elapsed());
+        h.run(&["agent", "wait", &handle, "--timeout", "60000"])
+            .await
+            .unwrap();
+        let screen = h.screen(&handle).await.unwrap().join("\n");
+        eprintln!("screen:\n{screen}");
+        assert!(
+            screen.to_lowercase().contains("pong"),
+            "the first prompt was not answered"
+        );
+        h.remove_worktree(&wt.id).await.unwrap();
+        if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
+            && let Some(src) = v
+                .pointer("/source/source_workspace_id")
+                .and_then(Value::as_str)
+        {
+            let _ = h.run(&["workspace", "close", src]).await;
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Codex 0.152.0 on its directory-trust dialog, which herdr 0.8.2
+    /// reports as `idle` (#121).
+    const CODEX_TRUST: &str = "\
+  You are running Codex in /tmp/w.worktrees/issue-3-x
+
+  Do you trust the contents of this directory? Working with untrusted
+  contents comes with higher risk of prompt injection.
+
+› 1. Yes, continue
+  2. No, quit";
+
+    #[test]
+    fn the_screen_decides_what_to_do_after_a_wait() {
+        // The state herdr reports does not say whether a dialog is up:
+        // Codex's is `idle`, Claude Code's is `blocked`, and both have to
+        // be answered before the first prompt goes in.
+        assert_eq!(
+            settle_step("idle", CODEX_TRUST),
+            Settle::Answer(driver::TrustAnswer::Enter)
+        );
+        let claude = "Quick safety check: Is this a project you created or one you trust?\n\
+❯ No, exit\n  Yes, I trust this folder\nEnter to confirm · Esc to cancel";
+        assert_eq!(
+            settle_step("blocked", claude),
+            Settle::Answer(driver::TrustAnswer::DownEnter)
+        );
+        // Codex with the dialog answered and an empty composer: ready.
+        let ready = "\
+>_ You are using OpenAI Codex in /tmp/w.worktrees/issue-3-x
+
+  To get started, describe a task or try one of these commands:
+
+  /init - create an AGENTS.md file
+▌ Ask Codex to do anything";
+        assert_eq!(settle_step("idle", ready), Settle::Ready);
+        // A question that is not about trust: ssf has no answer for it, so
+        // the prompt goes in anyway and the harness queues it.
+        let question = "Do you want to create an AGENTS.md file?\n❯ Yes\n  No";
+        assert_eq!(settle_step("blocked", question), Settle::AskAnyway);
+        assert_eq!(settle_step("working", ready), Settle::Ready);
+    }
+
+    #[test]
+    fn agent_prompt_failures_are_told_apart() {
+        // herdr sent nothing: the agent is at a question.
+        assert_eq!(
+            prompt_failure(
+                "herdr agent prompt w7:p1 <text> failed: [agent_blocked] agent is blocked"
+            ),
+            PromptFailure::Blocked
+        );
+        // The text went in but nothing happened with it, which is what a
+        // paste a dialog swallowed looks like.
+        assert_eq!(
+            prompt_failure(
+                "herdr agent prompt w7:p1 <text> failed: [agent_prompt_stalled] agent did not \
+start working within 5000ms"
+            ),
+            PromptFailure::Stalled
+        );
+        assert_eq!(
+            prompt_failure("herdr agent prompt w7:p1 <text> failed: [not_found] no such pane"),
+            PromptFailure::Other
+        );
     }
 
     #[test]
