@@ -26,7 +26,10 @@ use crate::release::git;
 /// two options and the *Enter to confirm* line, with the box drawing
 /// around them) and stops the wording matching where it is merely text
 /// on the screen.
-const TRUST_TAIL_LINES: usize = 12;
+/// Two dozen rather than a dozen: Claude Code's bypass-permissions
+/// acceptance needs two phrases that straddle its box, and a wrapped
+/// paragraph inside it pushes the first one up the screen.
+const TRUST_TAIL_LINES: usize = 24;
 
 /// Keys that accept a harness's first-run trust question.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

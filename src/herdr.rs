@@ -258,9 +258,11 @@ pub fn settle_step(state: &str, screen: &str) -> Settle {
 pub enum PromptFailure {
     /// herdr thinks the agent is at a question, so it sent nothing.
     Blocked,
-    /// The text went in but the harness never started working on it
-    /// (`--until working`), which is what a paste swallowed by a dialog
-    /// looks like.
+    /// The text went in but herdr never saw the harness working on it:
+    /// no state change at all (`agent_prompt_stalled`, what a paste
+    /// swallowed by a dialog looks like), or a change that never reached
+    /// `working` before the timeout (a harness that went straight to a
+    /// question, or one herdr's sampler missed). The screen decides.
     Stalled,
     /// Anything else: no pane, no server, a herdr of the wrong version.
     Other,
@@ -270,7 +272,10 @@ pub enum PromptFailure {
 pub fn prompt_failure(message: &str) -> PromptFailure {
     if message.contains("agent_blocked") {
         PromptFailure::Blocked
-    } else if message.contains("agent_prompt_stalled") {
+    } else if message.contains("agent_prompt_stalled")
+        || message.contains("[timeout]")
+        || message.contains("\"timeout\"")
+    {
         PromptFailure::Stalled
     } else {
         PromptFailure::Other
@@ -1277,6 +1282,15 @@ Do you trust the contents of this directory? is what Codex asks.";
             prompt_failure(
                 "herdr agent prompt w7:p1 <text> failed: [agent_prompt_stalled] agent did not \
 start working within 5000ms"
+            ),
+            PromptFailure::Stalled
+        );
+        // A state change that never reached `working` in time: the text
+        // went in too, so the screen decides, not the error.
+        assert_eq!(
+            prompt_failure(
+                "herdr agent prompt w7:p1 <text> failed: [timeout] no matching state within \
+15000ms"
             ),
             PromptFailure::Stalled
         );
