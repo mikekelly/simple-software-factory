@@ -194,7 +194,7 @@ The events, and nothing else:
 | `blocked` | deliveries are held because the harness is at its sign-in prompt (below) | `harness`, `reason: not signed in`, `fix:` the command that signs it in |
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again) or `kept` (a person signed in at the terminal) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
-| `released` | the workspace was removed by `ssf release` or `ssf purge` | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
+| `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
 
 Handover (`ssf handover`) gets an event of its own when it lands.
 
