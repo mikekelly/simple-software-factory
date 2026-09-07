@@ -1225,6 +1225,69 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The three rules of a per-item override (`ssf handover`): nothing
+    /// overridden, the repository's own harness, another harness.
+    #[test]
+    fn per_item_overrides_follow_the_three_rules() {
+        let repo = RepoConfig {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            command: Some("claude --dangerously-skip-permissions".into()),
+            model: Some("fable-5.1".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        // Nothing overridden: the config as it stands.
+        let same = repo.with_overrides(None);
+        assert_eq!(same.harness, "claude");
+        assert_eq!(same.command, repo.command);
+        assert_eq!(same.model.as_deref(), Some("fable-5.1"));
+        assert_eq!(same.effort.as_deref(), Some("high"));
+        // The repository's own harness: the command stays, and each of
+        // model and effort is the override's or, unset, the repository's.
+        let o = crate::state::Overrides {
+            harness: "claude".into(),
+            model: Some("opus".into()),
+            effort: None,
+        };
+        let eff = repo.with_overrides(Some(&o));
+        assert_eq!(eff.harness, "claude");
+        assert_eq!(eff.command, repo.command, "the command belongs to claude");
+        assert_eq!(eff.model.as_deref(), Some("opus"));
+        assert_eq!(eff.effort.as_deref(), Some("high"), "the repository's");
+        assert!(
+            eff.harness_command()
+                .starts_with("claude --dangerously-skip-permissions"),
+            "{}",
+            eff.harness_command()
+        );
+        assert!(
+            eff.harness_command().contains("opus"),
+            "{}",
+            eff.harness_command()
+        );
+        // Another harness: the command goes with the harness it belonged
+        // to, and nothing falls back to the repository's settings.
+        let o = crate::state::Overrides {
+            harness: "pi".into(),
+            model: None,
+            effort: Some("medium".into()),
+        };
+        let eff = repo.with_overrides(Some(&o));
+        assert_eq!(eff.harness, "pi");
+        assert_eq!(eff.command, None);
+        assert_eq!(eff.model, None, "not the repository's claude model");
+        assert_eq!(eff.effort.as_deref(), Some("medium"));
+        assert!(
+            eff.harness_command()
+                .starts_with(&crate::models::default_command("pi")),
+            "{}",
+            eff.harness_command()
+        );
+        // Everything else about the repository is untouched.
+        assert_eq!(eff.name, "o/r");
+    }
+
     #[test]
     fn vm_sizes_stay_unset_until_written_and_old_files_pin_them() {
         // Unset: not in the file, so a later `ssf vm build` chooses them.

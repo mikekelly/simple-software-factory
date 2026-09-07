@@ -215,8 +215,7 @@ fn codex_state(ok: bool, text: &str) -> LoginState {
 fn last_line(text: &str) -> &str {
     text.lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .next_back()
+        .rfind(|l| !l.is_empty())
         .unwrap_or("no output")
 }
 

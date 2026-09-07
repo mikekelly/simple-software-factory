@@ -7370,6 +7370,124 @@ mod tests {
         );
     }
 
+    /// The same harness with another model: the repository's own command
+    /// still starts the agent, the effort the repository set carries over,
+    /// and the post names the command both ends run under (without it,
+    /// `the command's` in the model line refers to nothing).
+    #[tokio::test]
+    async fn a_model_only_handover_keeps_the_repository_command() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let r = RepoConfig {
+            command: Some("claude --dangerously-skip-permissions".into()),
+            effort: Some("high".into()),
+            ..repo()
+        };
+        e.cfg.repos = vec![r.clone()];
+        let v = e
+            .handover(
+                "o/r#5",
+                "claude",
+                Some("opus"),
+                None,
+                Some("what is left"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(v["from"]["harness"], "claude");
+        assert_eq!(v["from"]["model"], Value::Null);
+        assert_eq!(v["from"]["effort"], "high");
+        assert_eq!(v["to"]["model"], "opus");
+        assert_eq!(v["to"]["effort"], "high", "the repository's effort stays");
+        e.run_handovers(&r).await;
+        let launched = d.launches();
+        assert_eq!(launched.len(), 1, "{launched:?}");
+        assert!(
+            launched[0].starts_with("claude:")
+                && launched[0].contains("--dangerously-skip-permissions"),
+            "{launched:?}"
+        );
+        assert!(launched[0].contains("opus"), "{launched:?}");
+        assert_eq!(
+            e.entry(&r, 5).overrides,
+            Some(Overrides {
+                harness: "claude".into(),
+                model: Some("opus".into()),
+                effort: None,
+            })
+        );
+        let posts = stub.post_bodies();
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=handed-over -->\n\n\
+             ```ssf\n\
+             ssf handing over issue:\n\
+             from: Claude Code\n\
+             from model: the command's\n\
+             from effort: high\n\
+             from command: claude --dangerously-skip-permissions\n\
+             to: Claude Code\n\
+             to model: opus\n\
+             to effort: high\n\
+             to command: claude --dangerously-skip-permissions\n\
+             summary: yes\n\
+             by: a person at the terminal\n\
+             ```"
+        );
+    }
+
+    /// A handover asked for on an item bound to another session's
+    /// workspace is the owning session's: one workspace, one harness in
+    /// it, and the bound item shows what its owner runs.
+    #[tokio::test]
+    async fn a_handover_on_a_bound_item_is_the_owning_session_s() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        seeded(&mut e, 6, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&repo(), 6);
+            st.shares_workspace_of = Some(5);
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.title = "Follow-up".into();
+            st.html_url = "https://gh/6".into();
+        }
+        let v = e
+            .handover(
+                "o/r#6",
+                "pi",
+                None,
+                None,
+                Some("what is left"),
+                Some("o/r#6"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(v["session"], "o/r#5", "the owning session's");
+        assert_eq!(v["title"], "Fix the widget");
+        assert!(e.entry(&repo(), 5).handover.is_some());
+        assert!(e.entry(&repo(), 6).handover.is_none());
+        e.run_handovers(&repo()).await;
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
+        assert!(log[1].starts_with("start:w5:"), "{log:?}");
+        assert!(e.entry(&repo(), 5).overrides.is_some());
+        assert!(
+            e.entry(&repo(), 6).overrides.is_none(),
+            "the override lives on the owner"
+        );
+        // Both items run the new harness, and say so.
+        assert_eq!(e.effective(&repo(), 6).harness, "pi");
+        let sessions = crate::status::sessions(&e.cfg, &e.state, Some(&[]));
+        let bound = sessions.iter().find(|s| s.number == 6).unwrap();
+        assert_eq!(bound.harness, "pi");
+        assert_eq!(
+            sessions.iter().find(|s| s.number == 5).unwrap().harness,
+            "pi"
+        );
+    }
+
     /// Each synchronous refusal, with its reason.
     #[tokio::test]
     async fn handovers_are_refused_with_the_reason() {
