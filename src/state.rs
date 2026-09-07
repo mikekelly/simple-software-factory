@@ -339,6 +339,15 @@ pub struct Blocked {
     /// the next doubles each time (from ten minutes, capped at an hour).
     #[serde(default)]
     pub retries: u32,
+    /// When a harness that is running behind the block was last told
+    /// what it took on (`Engine::tell_a_started_harness`), and how many
+    /// of those messages did not land. The telling has a backoff of its
+    /// own, on the same curve: a person who signs in at a terminal that
+    /// has never been told is not left waiting for the restart's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub told_at: Option<String>,
+    #[serde(default)]
+    pub tell_failures: u32,
 }
 
 impl Blocked {

@@ -467,8 +467,15 @@ to be running after all (the start gave up on a pane that came up but
 never settled), and one a person has just signed in at, are both given
 that first message where they stand, and the block lifts on the message
 landing rather than on the screen looking idle. That attempt follows the
-same backoff as a restart, so an item whose story cannot be read is not
-re-read on every pass.
+same curve as a restart -- ten minutes, twenty, forty, then hourly -- so
+an item whose story cannot be read is not re-read on every pass; it is
+counted apart from the restarts, so a person who signs in at a pane a
+failed restart has just left behind is answered on the next pass rather
+than at the end of the restart's wait. If the message finds the pane
+gone and the harness started in its place comes up at a sign-in screen,
+that screen is what the block says from then on, but the hold is the same
+hold: it runs from when it began, the item is not told of it twice, and
+neither wait starts over.
 
 Handing the item over again is the way out of either block. The new
 session is still told it took over from the session that did the work:

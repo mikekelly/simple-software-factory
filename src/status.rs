@@ -1057,6 +1057,8 @@ mod tests {
             credential: None,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         let st = state_with(vec![it, item(2, None)]);
         let s = sessions(&cfg(), &st, Some(&[]));

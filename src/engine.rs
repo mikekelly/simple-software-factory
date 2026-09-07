@@ -1613,6 +1613,8 @@ are resumed on the first pass that finds it: {err:#}"
             credential: probe.fingerprint,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         };
         warn!(
             repo = repo.name,
@@ -1770,10 +1772,13 @@ are resumed on the first pass that finds it: {err:#}"
             .is_some_and(|s| s.handover_note.is_some());
         // Telling a harness that is running costs a listing read, so it
         // is not tried every pass: once when the block is first looked
-        // at, then on the same backoff as a restart.
-        let tell_due = match b.retried_at.as_deref() {
+        // at, then on the same curve as a restart -- but counted apart
+        // from the restarts, so a person who signs in at a terminal a
+        // failed restart just left behind is answered on the next pass
+        // rather than at the end of the restart's wait.
+        let tell_due = match b.told_at.as_deref() {
             None => true,
-            Some(t) => age(t) >= retry_wait(b.retries),
+            Some(t) => age(t) >= retry_wait(b.tell_failures),
         };
         if let Some(h) = &handle {
             let Ok(screen) = self.driver(repo).screen(h).await else {
@@ -1876,15 +1881,16 @@ are resumed on the first pass that finds it: {err:#}"
         let session = session_id(&repo.name, number);
         // The attempt is noted before it is made, so a message that
         // cannot be assembled or does not land waits for the backoff
-        // instead of costing a listing read on every pass.
+        // instead of costing a listing read on every pass. The restart
+        // backoff is left alone: this is not a restart.
         let attempted = Blocked {
-            retried_at: Some(now_iso()),
-            retries: b.retries + 1,
+            told_at: Some(now_iso()),
+            tell_failures: b.tell_failures + 1,
             ..b.clone()
         };
         if let Some(cur) = self.entry(repo, number).blocked.as_mut() {
-            cur.retried_at = attempted.retried_at.clone();
-            cur.retries = attempted.retries;
+            cur.told_at = attempted.told_at.clone();
+            cur.tell_failures = attempted.tell_failures;
         }
         let story = match self.first_message(repo, number).await {
             Ok(s) => s,
@@ -1925,12 +1931,23 @@ deliveries resume"
                 warn!(session, "could not tell the running harness: {e:#}");
                 let cur = self.entry(repo, number);
                 cur.handover_note = note;
-                // The delivery may have recorded a block of its own (a
-                // harness started again onto a sign-in screen, with what
-                // it saw): that record is the fresher one, and says the
-                // thing worth fixing.
-                if cur.blocked.is_none() {
-                    cur.blocked = Some(attempted);
+                // The delivery may have recorded a block of its own (the
+                // pane died as the message went out, and the harness
+                // started in its place came up at a sign-in screen): what
+                // it saw is the fresher answer and says the thing worth
+                // fixing, so it stands -- but the hold is the same hold,
+                // so how long it has run, that the item was told of it,
+                // and both backoffs come from the record it replaces.
+                match cur.blocked.as_mut() {
+                    Some(fresh) => {
+                        fresh.since = attempted.since.clone();
+                        fresh.reported = attempted.reported;
+                        fresh.retried_at = attempted.retried_at.clone();
+                        fresh.retries = attempted.retries;
+                        fresh.told_at = attempted.told_at.clone();
+                        fresh.tell_failures = attempted.tell_failures;
+                    }
+                    None => cur.blocked = Some(attempted),
                 }
             }
         }
@@ -6226,6 +6243,8 @@ mod tests {
             credential: Some("cred-old".into()),
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         e.state.repo_mut("o/r").issues_etag = Some("etag".into());
         stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
@@ -6294,6 +6313,8 @@ mod tests {
             credential: Some("cred-old".into()),
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
         stub.set_timeline(5, vec![assigned_by(1, "alice")]);
@@ -6335,6 +6356,8 @@ mod tests {
             credential: None,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         e.state.repo_mut("o/r").issues_etag = Some("etag".into());
         stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
@@ -6424,6 +6447,8 @@ mod tests {
             credential: Some("cred-old".into()),
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         };
         e.entry(&repo(), 5).blocked = Some(record.clone());
         // The terminal vanished (a reboot, a closed terminal).
@@ -7240,6 +7265,8 @@ mod tests {
                 credential: None,
                 retried_at: None,
                 retries: 0,
+                told_at: None,
+                tell_failures: 0,
             };
             let o = Origin::new("o/r", 5).unwrap();
             let texts = [
@@ -8179,6 +8206,8 @@ mod tests {
             credential: None,
             retried_at: None,
             retries: 0,
+            told_at: None,
+            tell_failures: 0,
         });
         e.handover("o/r#5", "pi", None, None, Some("half done"), None)
             .await
@@ -8457,9 +8486,86 @@ mod tests {
         assert!(d.prompts().is_empty(), "nothing landed");
         let st = e.entry(&repo(), 5).clone();
         let b = st.blocked.expect("still blocked");
-        assert_eq!(b.retries, 1, "the next attempt waits");
-        assert!(b.retried_at.is_some());
+        assert_eq!(b.tell_failures, 1, "the next attempt waits");
+        assert!(b.told_at.is_some());
+        // The restart backoff is untouched: telling is not a restart.
+        assert_eq!(b.retries, 0);
+        assert!(b.retried_at.is_none());
         assert!(st.handover_note.is_some(), "the summary is still owed");
+    }
+
+    /// The telling waits on its own backoff, not the restart's: a
+    /// restart that came back to the prompt a moment ago says nothing
+    /// about a person who has just signed in at the pane it left, and
+    /// that person is answered on the next pass.
+    #[tokio::test]
+    async fn a_failed_restart_does_not_hold_up_telling_a_running_harness() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        // A restart was tried a moment ago and got nowhere.
+        {
+            let b = e.entry(&repo(), 5).blocked.as_mut().unwrap();
+            b.retries = 1;
+            b.retried_at = Some(now_iso());
+        }
+        // The pane is there after all, and past any prompt.
+        d.seed("w5", "t9", READY_SCREEN);
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        let prompts = d.prompts();
+        assert_eq!(prompts.len(), 1, "told at once: {prompts:?}");
+        assert!(prompts[0].contains("half done"), "{}", prompts[0]);
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "the block is lifted");
+        assert!(st.handover_note.is_none(), "read once");
+    }
+
+    /// The pane dies as the message goes out and the harness started in
+    /// its place comes up at a sign-in screen: what that screen said is
+    /// the block from now on, but it is the same hold -- reported once,
+    /// held from when it began, with both backoffs where they were.
+    #[tokio::test]
+    async fn a_message_that_lands_in_a_sign_in_screen_keeps_the_hold_it_had() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let before = e.entry(&repo(), 5).blocked.clone().expect("blocked");
+        assert!(before.reported, "the item was told of the hold");
+        // Nothing is live in the workspace by the time the message goes
+        // out, and the harness started in its place shows Pi's sign-in
+        // prompt.
+        d.with(|s| {
+            s.live.remove("w5");
+            s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        e.tell_a_started_harness(&repo(), 5, &before).await;
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().expect("still blocked");
+        assert_eq!(b.reason, Blocked::LOGIN, "the fresher answer stands");
+        assert!(b.detail.contains("/login"), "{}", b.detail);
+        assert_eq!(b.since, before.since, "the same hold, from when it began");
+        assert!(b.reported, "and the item is not told of it twice");
+        assert_eq!(b.tell_failures, 1, "the message did not land");
+        assert!(st.handover_note.is_some(), "the summary is still owed");
+        // The pass that follows finds it reported: no second `blocked`.
+        e.recover(&repo(), 5, &st, b).await;
+        let posts = stub.post_bodies();
+        let blocked = posts
+            .iter()
+            .filter(|(_, body)| body.contains("event=blocked"))
+            .count();
+        assert_eq!(blocked, 1, "one hold, one post: {posts:?}");
     }
 
     /// A second handover on an item whose first one never ran: the words
