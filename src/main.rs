@@ -2644,6 +2644,7 @@ fn thousands(n: usize) -> String {
 /// paragraph is what the outgoing agent acts on, so it says plainly that
 /// this session is over. Worded, like every text ssf puts on a screen,
 /// without the phrases `driver::login_dialog` looks for.
+#[allow(clippy::too_many_arguments)]
 pub fn handover_recorded_text(
     session: &str,
     title: &str,
