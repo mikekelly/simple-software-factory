@@ -3732,6 +3732,24 @@ are resumed on the first pass that finds it: {err:#}"
                 .collect(),
             None => Vec::new(),
         };
+        if pending.is_empty() {
+            return;
+        }
+        // The new session is given the item's story, which the allow-list
+        // filters: the collaborators have to be known first, or every
+        // human post would be left out of it. A handover the daemon
+        // cannot read the repository for waits for the next pass.
+        let refreshed = match repo.split() {
+            Ok((owner, name)) => self.refresh_collaborators(repo, owner, name).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = refreshed {
+            warn!(
+                repo = repo.name,
+                "handovers wait for the next pass on this repository: {e:#}"
+            );
+            return;
+        }
         for (number, h) in pending {
             self.finish_handover(repo, number, h).await;
             if let Err(e) = self.state.save() {
@@ -3922,6 +3940,10 @@ are resumed on the first pass that finds it: {err:#}"
         let session = session_id(&repo.name, number);
         warn!(session, harness = h.harness, "handover refused: {why}");
         self.entry(repo, number).handover = None;
+        // The reason can carry a driver's or a harness's own words, and
+        // both places it goes (the item, and the agent's screen) are
+        // read by something that looks for sign-in prompts.
+        let why = safe_error(&events::one_line(&why));
         let from = self.launch_of(repo, number);
         let to = self.launch_with(repo, number, Some(&h.overrides()));
         self.post_event(repo, number, handed_over(&from, &to, h, Some(why.clone())))
