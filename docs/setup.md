@@ -499,8 +499,21 @@ matters is left, then says on the item what was found. A subagent of its
 own harness is the default; for complex, risky or important work it uses
 herdr for a different agent and model, with the invocation from `ssf
 guide`. Keep the rule, or write your own; nobody re-reviews after the
-agent, so a person reads the PR and merges. Details: [Second
+agent. Details: [Second
 opinions](sessions.md#second-opinions-the-gauntlet).
+
+**Autonomy.** How far the agents go on their own is a line in `SSF.md`,
+and the choice is yours: at one end, everything is approved by a person
+(open the pull request, say the gauntlet passed, and stop; a person
+reviews and merges); at the other, no approval is needed (use your
+judgment and gauntlet loops to address the issue and close it out); in
+between, approval for merges only, say. The boilerplate ships the
+cautious end, with the other end in a comment next to it, so flipping it
+is an edit of that one line. The boilerplate also says whose issue it is:
+the agent is in charge of it, and its job is to clarify the intended
+outcome, plan the delivery and orchestrate subagents that do the work,
+keeping its own context for managing the issue rather than for
+implementation detail.
 
 **Boards.** No setup: if the item is on a GitHub project (v2) board, the
 agent's prompt lists the board, the card's Status and the command that

@@ -15,14 +15,23 @@ there because ssf runs one session per item and starts no reviewer: the
 second pair of eyes is the session's own to arrange, and this is how.
 -->
 
+- You are in charge of the issue. Your job is to clarify the intended outcome,
+  plan how to deliver it, and orchestrate a team of subagents that do the
+  work, rather than doing it all yourself: keep your own context for managing
+  the issue, not for implementation detail.
 - Ask on the item rather than guessing when the request is ambiguous; you are
   woken up when someone answers.
 - Commit as you go.
 - Work on the item's branch. When the work is done, push it and open a pull
   request that references the issue (`Closes #N`), then comment on the issue
-  with the link. Do not close the issue or merge the pull request yourself:
-  once the gauntlet has passed, say so on the issue and leave the merge to a
-  person.
+  with the link.
+- Autonomy: a person approves everything. Once the gauntlet has passed, say
+  so on the issue and stop: do not merge the pull request or close the issue
+  yourself; a person reviews and merges.
+  <!-- That is the cautious end of the spectrum. The other end reads: "No
+  approval is needed: use your judgment and gauntlet loops to address the
+  issue and close it out." Anything between the two (approval for merges
+  only, say) is one line here as well. -->
 - Before you call work done, put it through a gauntlet: hand the diff, the
   issue and your claim of what the change does to a fresh agent that has not
   seen your reasoning, and ask it to break it (correctness first, then whether

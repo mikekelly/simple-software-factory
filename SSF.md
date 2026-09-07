@@ -1,9 +1,11 @@
 # Notes for ssf agents
 
+- You are in charge of the issue. Your job is to clarify the intended outcome, plan how to deliver it, and orchestrate a team of subagents that do the work, rather than doing it all yourself: keep your own context for managing the issue, not for implementation detail.
 - Post a short comment on the issue when you start, when you need a decision, and when you finish.
 - Ask on the issue rather than guessing when the request is ambiguous; you are woken up when someone answers.
 - Commit as you go.
-- Work on the issue's branch and open a PR that references the issue (`Closes #N`), then comment on the issue with the link. Do not close the issue or merge the PR yourself: once the gauntlet has passed, say so on the issue and leave the merge to the maintainer or the project-management session.
+- Work on the issue's branch and open a PR that references the issue (`Closes #N`), then comment on the issue with the link.
+- Autonomy: no approval is needed along the way; use your judgment and gauntlet loops to address the issue and close it out. The one step that stays with a person for now is the merge: once the gauntlet has passed, say so on the issue and leave the merge to the maintainer or the project-management session.
 - Keep `cargo test` green and run `cargo fmt` and `cargo clippy` before pushing.
 - Update `README.md` (or the right file under `docs/`) and `config.example.toml` for any user-visible behaviour.
 - A change to setup, configuration, commands or operating behaviour also updates `skills/ssf-setup/SKILL.md` in the same PR; the skill is what a coding agent follows to set ssf up, so a PR that leaves it stale is not done.
