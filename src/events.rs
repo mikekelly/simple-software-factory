@@ -75,6 +75,10 @@ pub enum Conversation {
     Fresh,
     /// The harness was not started again at all: it carried on.
     Kept,
+    /// The hold ended because the item was handed over: the session it
+    /// was held for is gone, and the one on the item now is another
+    /// harness's (`ssf handover`).
+    HandedOver,
 }
 
 impl Conversation {
@@ -88,6 +92,7 @@ impl Conversation {
             Self::Resumed => "resumed",
             Self::Fresh => "fresh",
             Self::Kept => "kept",
+            Self::HandedOver => "handed over",
         }
     }
 }
@@ -894,6 +899,19 @@ mod tests {
             quick
                 .block("pull request")
                 .contains("held for: less than a minute\nconversation: kept\n")
+        );
+        // A hold closed by a handover: the conversation is neither kept
+        // nor resumed, it belongs to the session that has gone.
+        let over = Event::Unblocked {
+            harness: "Claude Code".into(),
+            held: Duration::from_secs(3 * 60 * 60),
+            conversation: Conversation::HandedOver,
+        };
+        assert!(
+            over.block("issue")
+                .contains("held for: 180 min\nconversation: handed over\n"),
+            "{}",
+            over.block("issue")
         );
     }
 

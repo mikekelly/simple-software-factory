@@ -4062,6 +4062,13 @@ deliveries resume"
                 return;
             }
         }
+        // A hold on the item ends here: the session it was held for is
+        // gone. The item was told the hold was on, so it is told it is
+        // over, before the handover itself is posted.
+        if let Some(b) = st.blocked.clone() {
+            self.unblock(repo, number, &b, Conversation::HandedOver)
+                .await;
+        }
         // Items bound to this session mirror its conversation id, so the
         // one being retired goes from them too (`capture_sessions` writes
         // the owner's new id to them once there is one).
@@ -7931,6 +7938,52 @@ mod tests {
         assert!(launched[0].starts_with("pi:"), "{launched:?}");
         let log = d.log();
         assert!(log.iter().any(|l| l.starts_with("relaunch:w5:")), "{log:?}");
+    }
+
+    /// A session blocked on its harness's sign-in prompt may hand over --
+    /// that is a way out of the block -- and the hold on the item is
+    /// closed when it does, rather than standing over a session that is
+    /// no longer there.
+    #[tokio::test]
+    async fn a_handover_closes_an_outstanding_hold_on_the_item() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        e.entry(&repo(), 5).blocked = Some(Blocked {
+            reason: Blocked::LOGIN.into(),
+            harness: "claude".into(),
+            detail: "Login expired · Please run /login".into(),
+            since: (chrono::Utc::now() - chrono::Duration::minutes(20))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            reported: true,
+            credential: None,
+            retried_at: None,
+            retries: 0,
+        });
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "{:?}", st.blocked);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 3, "{posts:?}");
+        assert_eq!(
+            posts[0].1,
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=unblocked -->\n\n\
+             ```ssf\n\
+             ssf resuming deliveries to agent on issue:\n\
+             harness: Claude Code\n\
+             held for: 20 min\n\
+             conversation: handed over\n\
+             ```"
+        );
+        assert!(posts[1].1.contains("ssf handing over issue:"), "{posts:?}");
+        assert!(
+            posts[2].1.contains("ssf attaching agent to issue:"),
+            "{posts:?}"
+        );
+        let log = d.log();
+        assert_eq!(log[0], "stop:t5", "{log:?}");
     }
 
     /// The summary is the point of a handover, so it outlives a new

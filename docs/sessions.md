@@ -192,7 +192,7 @@ The events, and nothing else:
 | `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
 | `blocked` | deliveries are held because the harness is at its sign-in prompt (below), or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched) | `harness`; `reason: not signed in` with `fix:` the command that signs it in, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
-| `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again) or `kept` (a person signed in at the terminal) |
+| `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
 | `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no`; `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
@@ -387,7 +387,9 @@ done, and anything it starts now is thrown away with its pane.
 
 A session that is itself **blocked** on its harness's sign-in prompt may
 hand over: that is one way out of the block, so the check is on the
-target harness, not on the one being left.
+target harness, not on the one being left. The hold ends with the
+session it was held for: when the item was told of it, the pass posts
+`unblocked` with `conversation: handed over` before the handover itself.
 
 **On the next pass** (within `daemon.poll_interval_secs`, and before the
 repository's items are polled) the daemon:
