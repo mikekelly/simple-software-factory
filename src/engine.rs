@@ -4499,10 +4499,10 @@ fn last_bot_comment(timeline: &[Value], bot: &str) -> Option<FinalComment> {
 /// in it (its own words, passed up through a delivery error) are
 /// replaced by `[…]`, and the whole message withheld if it still passes
 /// for a login prompt after that, so the post can never pass for one
-/// when echoed on a screen; the log has it in full. `text` must be the
-/// line as it will be posted (`events::one_line`): the prompt check reads
-/// a screen's last lines, and a phrase high up in a long message would
-/// slip past it only to be collapsed onto the one line that is posted.
+/// when echoed on a screen; the log has it in full. Give it the line as
+/// it will be posted (`events::one_line`): the check reads every line of
+/// what it is given, but the redaction should be done on the text that
+/// goes out, not on a form of it that is collapsed afterwards.
 fn safe_error(text: &str) -> String {
     let redacted = crate::driver::redact_login_phrases(text);
     if crate::driver::quotes_login_prompt(&redacted) {
@@ -6708,9 +6708,10 @@ mod tests {
         assert!(!crate::driver::quotes_login_prompt(&safe_error(
             "NOT LOGGED IN\nInvalid API key\nSign in with ChatGPT"
         )));
-        // The check reads the form that is posted: a phrase on the second
-        // line of a long screen dump is above what a screen check reads,
-        // but on the one posted line it is right there.
+        // Every line of what ssf is about to write down counts, however
+        // long the text is: a phrase on the second line of a screen dump
+        // is out of what a screen check reads, but the same dump collapsed
+        // onto the one line that is posted puts it right there.
         let mut dump = String::from(
             "delivery failed; the screen showed:\nLogin expired · Please run /login\n",
         );
@@ -6718,8 +6719,13 @@ mod tests {
             dump.push_str(&format!("│ line {i} of the transcript\n"));
         }
         assert!(
-            !crate::driver::quotes_login_prompt(&dump),
-            "out of the tail"
+            crate::driver::quotes_login_prompt(&dump),
+            "found wherever it stands"
+        );
+        assert_eq!(
+            crate::driver::login_dialog("claude", &dump),
+            None,
+            "a screen is judged by its bottom"
         );
         let posted = safe_error(&events::one_line(&dump));
         assert!(

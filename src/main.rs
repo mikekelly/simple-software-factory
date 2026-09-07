@@ -3533,6 +3533,28 @@ harness's default effort), without a summary."
             e.contains("[\u{2026}]"),
             "the phrase is redacted, not dropped: {e}"
         );
+        // Wherever the phrase stands in it: a long summary that quotes one
+        // in its third line, and one that has an `[ssf]` marker of its own.
+        let mut long =
+            String::from("Handing over.\n\nThe pane kept saying \"Please run /login\" at me.\n");
+        for i in 0..40 {
+            long.push_str(&format!("- step {i}: done\n"));
+        }
+        assert!(
+            handover_summary(Some(long), None)
+                .unwrap_err()
+                .to_string()
+                .contains("would read as a harness's own sign-in screen")
+        );
+        assert!(
+            handover_summary(
+                Some("[ssf] the note said:\n- not logged in, it said".into()),
+                None
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("would read as a harness's own sign-in screen")
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

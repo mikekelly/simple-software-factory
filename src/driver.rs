@@ -95,12 +95,32 @@ pub fn quotes_login_prompt(text: &str) -> bool {
     login_prompt_line(text).is_some()
 }
 
-/// The line of `text` that would pass for a harness's sign-in prompt, as
-/// it is written there, for a message that has to name what is wrong
-/// (redact it with `redact_login_phrases` before showing it anywhere a
-/// harness screen is read).
+/// The line of `text` that carries any harness's sign-in phrase, as it is
+/// written there, for a message that has to name what is wrong (redact it
+/// with `redact_login_phrases` before showing it anywhere a harness
+/// screen is read).
+///
+/// The whole text is read, line by line, unlike [`login_dialog`], which
+/// judges a screen: there only the bottom counts and an echoed `[ssf]`
+/// block is skipped, because an agent quoting the words on its own screen
+/// is not a sign-in prompt. Text ssf is about to write down or paste
+/// somewhere gets no such benefit of the doubt: a phrase forty lines into
+/// a handover summary is still a phrase that can end up at the bottom of
+/// a screen, and `[ssf]` in it proves nothing about who wrote it.
 pub fn login_prompt_line(text: &str) -> Option<String> {
-    HARNESSES.iter().find_map(|h| login_dialog_in(h, text))
+    let phrases = COMMON_LOGIN_PHRASES
+        .iter()
+        .chain(HARNESSES.iter().flat_map(|h| login_phrases(h).iter()));
+    text.lines().map(str::trim).find_map(|line| {
+        let lower = line.to_lowercase();
+        phrases.clone().find(|p| lower.contains(**p))?;
+        Some(
+            line.trim_matches(|c: char| c == '\u{2502}' || c == '\u{2503}' || c.is_whitespace())
+                .chars()
+                .take(120)
+                .collect(),
+        )
+    })
 }
 
 /// What every harness says one way or another when it is not signed in.
@@ -1300,6 +1320,35 @@ contents comes with higher risk of prompt injection.\n› 1. Yes, continue\n  2.
         assert!(login_dialog("claude", expired).is_some());
         let after_echo = "❯ [ssf] New activity on #5:\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
         assert!(login_dialog("claude", after_echo).is_some());
+    }
+
+    /// Text ssf is about to write down or paste somewhere is read whole:
+    /// neither the screen check's tail window nor its `[ssf]` echo rule
+    /// applies, because nothing vouches for who wrote it.
+    #[test]
+    fn text_of_ssf_s_own_is_read_line_by_line() {
+        let mut summary = String::from(
+            "Handing over the parser work.\n\nThe pane kept saying \"Please run /login\", which is \
+why I gave up on it.\n",
+        );
+        for i in 0..40 {
+            summary.push_str(&format!("- step {i}: done\n"));
+        }
+        assert_eq!(
+            login_prompt_line(&summary).as_deref(),
+            Some("The pane kept saying \"Please run /login\", which is why I gave up on it."),
+            "a phrase in line three of a long text still counts"
+        );
+        assert_eq!(
+            login_dialog("claude", &summary),
+            None,
+            "the same text as a screen is judged by its bottom alone"
+        );
+        // An `[ssf]` marker in it vouches for nothing: anyone can write one.
+        let echoed = "[ssf] the note said:\n- not logged in, it said\n";
+        assert!(quotes_login_prompt(echoed));
+        assert_eq!(login_dialog("claude", echoed), None);
+        assert_eq!(login_prompt_line("all good, branch pushed"), None);
     }
 
     #[test]
