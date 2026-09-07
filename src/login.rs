@@ -141,22 +141,26 @@ fn run(program: &str, args: &[&str], timeout: Duration) -> Option<Status> {
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Some(status),
+            Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break None;
+                // Nothing is joined here: a grandchild that inherited the
+                // pipes holds them open after the child is killed, and
+                // waiting for the readers would hang the probe for as
+                // long as it lives. The threads end when the pipes close.
+                return None;
             }
         }
     };
-    // The pipes close with the process, killed or not, so the readers end.
+    // The pipes close with the process that exited, so the readers end.
     let out = out.join().unwrap_or_default();
     let err = err.join().unwrap_or_default();
     Some(Status {
-        ok: status?.success(),
+        ok: status.success(),
         out,
         err,
     })

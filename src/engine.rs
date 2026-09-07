@@ -1761,12 +1761,26 @@ are resumed on the first pass that finds it: {err:#}"
                 return;
             }
         };
+        // What the item is still owed: a handover's summary sits here
+        // until a session has actually read it, so a note that is still
+        // there says no session has had its first message yet, whatever
+        // the block was recorded as.
+        let owed = self
+            .peek(repo, number)
+            .is_some_and(|s| s.handover_note.is_some());
+        // Telling a harness that is running costs a listing read, so it
+        // is not tried every pass: once when the block is first looked
+        // at, then on the same backoff as a restart.
+        let tell_due = match b.retried_at.as_deref() {
+            None => true,
+            Some(t) => age(t) >= retry_wait(b.retries),
+        };
         if let Some(h) = &handle {
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };
             if crate::driver::login_dialog(&harness, &screen.join("\n")).is_none() {
-                if b.reason == Blocked::LOGIN {
+                if b.reason == Blocked::LOGIN && !owed {
                     info!(
                         session,
                         "the harness is past its sign-in prompt; deliveries resume"
@@ -1774,12 +1788,18 @@ are resumed on the first pass that finds it: {err:#}"
                     self.unblock(repo, number, &b, Conversation::Kept).await;
                     return;
                 }
-                // The other block: a harness that would not start, running
+                // The other cases: a harness that would not start, running
                 // all the same (`start` gave up on a pane that came up but
-                // never settled). The session is there and has never been
-                // told what it is for, so the screen showing no sign-in
-                // prompt is not enough to lift the block; what it is owed
-                // is delivered first.
+                // never settled), and a harness that came up at its
+                // sign-in prompt with the handover's first message going
+                // into that screen, now signed in by a person. Either way
+                // the session is there and has never been told what it is
+                // for, so the screen showing no sign-in prompt is not
+                // enough to lift the block; what it is owed goes first.
+                if !tell_due {
+                    debug!(session, "the running harness was told already; waiting");
+                    return;
+                }
                 self.tell_a_started_harness(repo, number, &b).await;
                 return;
             }
@@ -1854,6 +1874,18 @@ are resumed on the first pass that finds it: {err:#}"
     /// block is lifted only once it has landed.
     async fn tell_a_started_harness(&mut self, repo: &RepoConfig, number: u64, b: &Blocked) {
         let session = session_id(&repo.name, number);
+        // The attempt is noted before it is made, so a message that
+        // cannot be assembled or does not land waits for the backoff
+        // instead of costing a listing read on every pass.
+        let attempted = Blocked {
+            retried_at: Some(now_iso()),
+            retries: b.retries + 1,
+            ..b.clone()
+        };
+        if let Some(cur) = self.entry(repo, number).blocked.as_mut() {
+            cur.retried_at = attempted.retried_at.clone();
+            cur.retries = attempted.retries;
+        }
         let story = match self.first_message(repo, number).await {
             Ok(s) => s,
             Err(e) => {
@@ -1893,10 +1925,13 @@ deliveries resume"
                 warn!(session, "could not tell the running harness: {e:#}");
                 let cur = self.entry(repo, number);
                 cur.handover_note = note;
-                cur.blocked = Some(Blocked {
-                    retried_at: Some(now_iso()),
-                    ..b.clone()
-                });
+                // The delivery may have recorded a block of its own (a
+                // harness started again onto a sign-in screen, with what
+                // it saw): that record is the fresher one, and says the
+                // thing worth fixing.
+                if cur.blocked.is_none() {
+                    cur.blocked = Some(attempted);
+                }
             }
         }
     }
@@ -3302,6 +3337,10 @@ deliveries resume"
             }
         }
         let relaunch_text = story.as_deref().or(relaunch_text);
+        // The note is taken off the record when the message carrying it
+        // goes out, and put back if that message turns out to have gone
+        // into a sign-in screen (below).
+        let mut spent_note = None;
         let eff = self.effective(repo, target);
         let title = format!("{} · #{target}", eff.harness);
         let resume = st
@@ -3333,7 +3372,7 @@ deliveries resume"
                 // A resumed conversation is not shown the relaunch text,
                 // so the note is spent only on a fresh one.
                 if note_given {
-                    e.handover_note = None;
+                    spent_note = e.handover_note.take();
                 }
             }
             info!(
@@ -3365,6 +3404,12 @@ deliveries resume"
             && let Ok(screen) = self.driver(repo).screen(&d.handle).await
             && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
         {
+            // The message that carried the note went into a sign-in
+            // screen, so no session has read it: it waits on the item for
+            // the start that gets through.
+            if let Some(note) = spent_note {
+                self.entry(repo, target).handover_note = Some(note);
+            }
             let b = self.set_blocked(repo, target, detail).await;
             return Err(SessionBlocked {
                 session: session_id(&repo.name, target),
@@ -3613,21 +3658,8 @@ deliveries resume"
             else {
                 continue;
             };
-            // The launch time is taken a moment early, since the harness
-            // writes its transcript around it -- but not in a workspace a
-            // handover has been through: the seconds before that launch
-            // hold the outgoing agent's own transcript. Whether its id was
-            // ever captured is beside the point, so the handover itself is
-            // what says so, not the list of ids it retired.
             let retired = st.retired_session_ids.clone();
-            let slack = if st.handed_over_at.is_some() {
-                Duration::ZERO
-            } else {
-                Duration::from_secs(5)
-            };
-            let since = chrono::DateTime::parse_from_rfc3339(launched)
-                .map(|t| SystemTime::from(t) - slack)
-                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let since = capture_since(launched, st.handed_over_at.as_deref());
             if let Some(id) = sessions::capture(&harness, path, since, &retired) {
                 info!(
                     repo = repo.name,
@@ -4034,7 +4066,17 @@ deliveries resume"
         // session ended with nothing to put in its place.
         let from_launch = self.launch_of(repo, number);
         let from_name = login::display_name(&self.effective(repo, number).harness);
-        let story = match self.story(repo, number, Some(&from_name)).await {
+        // Who the new session really takes over from. Normally the
+        // harness the item is on; but a handover whose harness never came
+        // up left a note of its own, and the session that wrote it is
+        // still the last one that worked the item, so its name is the one
+        // carried forward. The `handed-over` post keeps saying what the
+        // item was configured on.
+        let note_from = self
+            .peek(repo, number)
+            .and_then(|s| s.handover_note.as_ref().map(|n| n.from.clone()))
+            .unwrap_or_else(|| from_name.clone());
+        let story = match self.story(repo, number, Some(&note_from)).await {
             Ok(s) => s,
             Err(e) => {
                 self.refuse_handover(
@@ -4048,7 +4090,7 @@ deliveries resume"
             }
         };
         let kind = self.item_kind(repo, number);
-        let text = prompt::handover_prompt(&from_name, kind, h.summary.as_deref(), &story.text);
+        let text = prompt::handover_prompt(&note_from, kind, h.summary.as_deref(), &story.text);
         // End the caller's pane. The workspace stays, so the new session
         // opens on the same checkout and branch.
         match self
@@ -4119,7 +4161,7 @@ deliveries resume"
             // at a sign-in screen, and the harness started again minutes
             // later is the one that takes the work on.
             e.handover_note = Some(HandoverNote {
-                from: from_name.clone(),
+                from: note_from.clone(),
                 summary: h.summary.clone(),
             });
         }
@@ -4511,6 +4553,29 @@ fn retire(e: &mut IssueState, id: Option<String>) {
     e.retired_session_ids.push(id);
     let extra = e.retired_session_ids.len().saturating_sub(RETIRED_KEPT);
     e.retired_session_ids.drain(..extra);
+}
+
+/// How far back `capture_sessions` looks for a workspace's transcript.
+/// The launch time is taken a moment early, since the harness writes its
+/// transcript around it -- but never back past a handover: the seconds
+/// before the launch that followed one hold the outgoing agent's own
+/// transcript, and adopting that would resume the session that handed the
+/// item away. The slack is kept for the relaunches that come later, whose
+/// launch time is long after the handover.
+fn capture_since(launched_at: &str, handed_over_at: Option<&str>) -> SystemTime {
+    let iso = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(SystemTime::from)
+    };
+    let Some(launched) = iso(launched_at) else {
+        return SystemTime::UNIX_EPOCH;
+    };
+    let since = launched - Duration::from_secs(5);
+    match handed_over_at.and_then(iso) {
+        Some(h) if h > since => h,
+        _ => since,
+    }
 }
 
 /// The `handed-over` post of one handover, refused or not.
@@ -6016,6 +6081,8 @@ mod tests {
         "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
     ];
     const READY_SCREEN: &[&str] = &["⏺ Done.", "", "❯ ", "  ⏵⏵ bypass permissions on"];
+    /// Pi's sign-in prompt, which reads nothing like Claude Code's.
+    const PI_LOGIN_SCREEN: &[&str] = &["  Use /login to log into a provider", "❯ "];
 
     /// An engine on the stub driver with item 5 seeded on workspace `w5`,
     /// its agent live in terminal `t5` showing `screen`.
@@ -8179,10 +8246,35 @@ mod tests {
         let note = st.handover_note.clone().expect("the summary is kept");
         assert_eq!(note.from, "Claude Code");
         assert!(note.summary.unwrap().contains("half migrated"));
+        // A restart that comes up at a sign-in prompt read the message as
+        // a screen, not as a session: the block becomes the sign-in one
+        // and the summary is still owed.
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        d.with(|s| s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect());
+        e.entry(&repo(), 5).blocked.as_mut().unwrap().since = "2020-01-01T00:00:00Z".into();
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(
+            st.blocked.as_ref().map(|b| b.reason.as_str()),
+            Some("login"),
+            "{:?}",
+            st.blocked
+        );
+        assert!(
+            st.handover_note.is_some(),
+            "the message went into the sign-in screen, so the summary waits"
+        );
         // The restart after the backoff tells the new harness what the
         // outgoing agent left, then the item's story.
-        let _ = (d.log(), d.prompts());
-        e.entry(&repo(), 5).blocked.as_mut().unwrap().since = "2020-01-01T00:00:00Z".into();
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        d.with(|s| s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect());
+        {
+            let b = e.entry(&repo(), 5).blocked.as_mut().unwrap();
+            b.since = "2020-01-01T00:00:00Z".into();
+            b.retried_at = None;
+        }
         let st = e.entry(&repo(), 5).clone();
         let b = st.blocked.clone().unwrap();
         e.recover(&repo(), 5, &st, b).await;
@@ -8246,6 +8338,173 @@ mod tests {
                 .contains("ssf resuming deliveries to agent on issue:"),
             "{posts:?}"
         );
+    }
+
+    /// A handover whose harness comes up at its sign-in prompt: the first
+    /// message went into that screen, so nothing has read the summary.
+    /// A person signing in at the terminal is not enough to lift the
+    /// block on its own -- the session still has to be told.
+    #[tokio::test]
+    async fn a_handover_blocked_at_the_sign_in_prompt_is_told_when_a_person_signs_in() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect());
+        e.handover("o/r#5", "pi", None, None, Some("half migrated"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(
+            st.blocked.as_ref().map(|b| b.reason.as_str()),
+            Some("login")
+        );
+        assert!(st.handover_note.is_some(), "nothing has read the summary");
+        // A person runs the sign-in in the terminal: the pane that is
+        // there is past its prompt, but was never told what it is for.
+        let handle = st.terminal_handle.clone().expect("the pane came up");
+        d.with(|s| {
+            s.screens.insert(
+                handle.clone(),
+                READY_SCREEN.iter().map(|l| l.to_string()).collect(),
+            )
+        });
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        let b = st.blocked.clone().unwrap();
+        e.recover(&repo(), 5, &st, b).await;
+        // Told where it stands, not restarted.
+        let log = d.log();
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(
+            log[0].starts_with("deliver:w5:You took over this issue"),
+            "{log:?}"
+        );
+        let prompts = d.prompts();
+        assert!(prompts[0].contains("half migrated"), "{}", prompts[0]);
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.blocked.is_none(), "the block is lifted");
+        assert!(st.handover_note.is_none(), "read once");
+        assert_eq!(st.terminal_handle.as_deref(), Some(handle.as_str()));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert!(
+            posts[0]
+                .1
+                .contains("ssf resuming deliveries to agent on issue:"),
+            "{posts:?}"
+        );
+    }
+
+    /// Telling a harness that is running costs a read of the item, so it
+    /// is not tried on every pass while it fails: the attempt is noted
+    /// and the next one waits for the backoff.
+    #[tokio::test]
+    async fn a_started_harness_is_told_once_per_backoff() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        // The pane is there after all, and the item cannot be read: the
+        // message it is owed cannot be assembled.
+        d.seed("w5", "t9", READY_SCREEN);
+        stub.issues.lock().unwrap().remove(&5);
+        let _ = (d.log(), d.prompts(), stub.post_bodies(), stub.hits());
+        for _ in 0..2 {
+            let st = e.entry(&repo(), 5).clone();
+            let b = st.blocked.clone().expect("still blocked");
+            e.recover(&repo(), 5, &st, b).await;
+        }
+        let reads = stub
+            .hits()
+            .into_iter()
+            .filter(|h| h.starts_with("/repos/o/r/issues/5"))
+            .count();
+        assert_eq!(reads, 1, "one attempt, not one per pass");
+        assert!(d.prompts().is_empty(), "nothing landed");
+        let st = e.entry(&repo(), 5).clone();
+        let b = st.blocked.expect("still blocked");
+        assert_eq!(b.retries, 1, "the next attempt waits");
+        assert!(b.retried_at.is_some());
+        assert!(st.handover_note.is_some(), "the summary is still owed");
+    }
+
+    /// A second handover on an item whose first one never ran: the words
+    /// the new session is given still name the session that did the work,
+    /// not the harness that failed to come up.
+    #[tokio::test]
+    async fn a_second_handover_names_the_session_that_did_the_work() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half migrated"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        assert_eq!(
+            e.entry(&repo(), 5)
+                .handover_note
+                .as_ref()
+                .map(|n| n.from.as_str()),
+            Some("Claude Code")
+        );
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        e.handover(
+            "o/r#5",
+            "codex",
+            None,
+            None,
+            Some("still half migrated"),
+            None,
+        )
+        .await
+        .unwrap();
+        e.run_handovers(&repo()).await;
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.handover_note.is_none(), "Codex took it on");
+        let prompts = d.prompts();
+        assert!(
+            prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+            "{}",
+            prompts[0]
+        );
+        assert!(prompts[0].contains("still half migrated"), "{}", prompts[0]);
+        // The post says what the item was configured on all the same.
+        let posts = stub.post_bodies();
+        let handed = posts
+            .iter()
+            .find(|(_, b)| b.contains("event=handed-over"))
+            .expect("the handover is posted");
+        assert!(handed.1.contains("\nfrom: Pi\n"), "{posts:?}");
+        assert!(handed.1.contains("\nto: Codex\n"), "{posts:?}");
+    }
+
+    /// Where `capture_sessions` starts looking for a transcript: a moment
+    /// before the launch, but never back past a handover, whose outgoing
+    /// agent wrote its own transcript in those same seconds.
+    #[test]
+    fn the_capture_window_never_reaches_back_past_a_handover() {
+        let at = |s: &str| SystemTime::from(chrono::DateTime::parse_from_rfc3339(s).unwrap());
+        let launched = "2026-09-07T12:00:30Z";
+        // No handover: the slack stands.
+        assert_eq!(
+            capture_since(launched, None),
+            at("2026-09-07T12:00:25Z"),
+            "five seconds of slack"
+        );
+        // The handover is inside the slack: the window starts there.
+        assert_eq!(
+            capture_since(launched, Some("2026-09-07T12:00:28Z")),
+            at("2026-09-07T12:00:28Z")
+        );
+        // A later relaunch is long past it: the slack stands again.
+        assert_eq!(
+            capture_since("2026-09-07T13:00:30Z", Some("2026-09-07T12:00:28Z")),
+            at("2026-09-07T13:00:25Z")
+        );
+        // Nothing readable: everything is too new to adopt.
+        assert_eq!(capture_since("not a time", None), SystemTime::UNIX_EPOCH);
     }
 
     fn assigned_item(number: u64, author: &str, updated_at: &str) -> Value {

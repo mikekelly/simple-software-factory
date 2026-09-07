@@ -456,11 +456,22 @@ login block it really is, since that is the thing to fix.
 Under both blocks the summary waits with the item: the outgoing agent is
 gone, so what it wrote is kept on the record until a session has actually
 read it, and the harness started again ten minutes later is given the
-summary and then the story, not the story alone. If the harness turns out
+summary and then the story, not the story alone. A message that went into
+a sign-in screen was never read, so it does not count: the summary is put
+back and goes with the next start. While it is still waiting, a live pane
+is never enough to lift the block on its own -- a harness that turns out
 to be running after all (the start gave up on a pane that came up but
-never settled), it is given that first message where it stands, and the
-block lifts on the message landing rather than on the screen looking
-idle.
+never settled), and one a person has just signed in at, are both given
+that first message where they stand, and the block lifts on the message
+landing rather than on the screen looking idle. That attempt follows the
+same backoff as a restart, so an item whose story cannot be read is not
+re-read on every pass.
+
+Handing the item over again is the way out of either block. The new
+session is still told it took over from the session that did the work:
+a harness that never came up wrote nothing, so its name is not the one
+carried forward, though the `handed-over` post says what the item was
+configured on.
 
 **Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the
 daemon has not carried out yet: nothing about the item changes, and the
