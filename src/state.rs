@@ -301,6 +301,17 @@ impl State {
                     keep
                 });
             }
+            // An item tracked only for a subscriber that is gone is not
+            // tracked at all (what `unsubscribe` does when the last one
+            // leaves): dropped when it never had a session, otherwise
+            // back to an ordinary retired record.
+            rs.issues
+                .retain(|_, st| !(st.subscriber_only && st.subscribers.is_empty() && !st.seeded));
+            for st in rs.issues.values_mut() {
+                if st.subscriber_only && st.subscribers.is_empty() {
+                    st.subscriber_only = false;
+                }
+            }
         }
         if !ghosts.is_empty() {
             ghosts.sort();
@@ -393,7 +404,10 @@ mod tests {
         std::fs::write(
             &path,
             r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,
-                "subscribers":["a/b#7:reviewer","x/y#2"]}},
+                "subscribers":["a/b#7:reviewer","x/y#2"]},
+                "3":{"number":3,"subscriber_only":true,"subscribers":["a/b#7:reviewer"]},
+                "4":{"number":4,"seeded":true,"subscriber_only":true,"subscribers":["a/b#7:reviewer"]},
+                "5":{"number":5,"subscriber_only":true,"subscribers":["a/b#1"]}},
                 "reviewers":{"7":{"number":7,"seeded":true,"kind":"reviewer"}}}}}"#,
         )
         .unwrap();
@@ -405,9 +419,27 @@ mod tests {
             vec!["x/y#2"],
             "the reviewer's own subscriptions go with it"
         );
+        assert!(
+            !st.repos["a/b"].issues.contains_key(&3),
+            "tracked only for the reviewer: not tracked any more"
+        );
+        let four = &st.repos["a/b"].issues[&4];
+        assert!(!four.subscriber_only && four.subscribers.is_empty() && four.seeded);
+        assert_eq!(st.repos["a/b"].issues[&5].subscribers, vec!["a/b#1"]);
+        assert!(st.repos["a/b"].issues[&5].subscriber_only);
         st.save_to(&path).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         assert!(!written.contains("reviewers"), "{written}");
+        // A file whose reviewer records were already dropped by an earlier
+        // load can still carry their subscriptions.
+        std::fs::write(
+            &path,
+            r#"{"repos":{"a/b":{"issues":{"1":{"number":1,"seeded":true,
+                "subscribers":["a/b#7:reviewer"]}}}}}"#,
+        )
+        .unwrap();
+        let st = State::load_from(&path).unwrap();
+        assert!(st.repos["a/b"].issues[&1].subscribers.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

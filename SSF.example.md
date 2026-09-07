@@ -9,9 +9,10 @@ ssf's own prompts carry only the facts it owns (which bot the agent is, that
 the terminal is unmanned and GitHub is where people read, to say on the item
 what it is about to do before starting, that `gh` acts as the bot and who
 `git push` acts as, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
-branches and pull requests, is yours to say, here. The first lines below say
-how you want the agent to run an item; the rest are the ones ssf used to say
-itself. Keep the ones you want. The gauntlet line is there because ssf runs
+branches and pull requests, is yours to say, here. Three lines say how you
+want the agent to run an item (in charge, visible, and how much a person
+approves); the rest are the ones ssf used to say itself. Keep the ones you
+want. The gauntlet line is there because ssf runs
 one session per item and starts no reviewer: the second pair of eyes is the
 session's own to arrange, and this is how. Comments like this one are
 stripped before the file reaches an agent.

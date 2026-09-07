@@ -385,7 +385,15 @@ impl ProjectPrompt {
                 return None;
             }
         };
-        let text = without_html_comments(&text);
+        let (text, unclosed) = without_html_comments(&text);
+        if let Some(line) = unclosed {
+            warn!(
+                repo = repo.name,
+                path = %path.display(),
+                line,
+                "the project notes open an HTML comment that never closes; everything after it is left out of the prompt"
+            );
+        }
         if text.is_empty() {
             return None;
         }
@@ -400,19 +408,24 @@ impl ProjectPrompt {
 /// blank runs a removed comment leaves behind collapsed: the comments in
 /// a notes file are for the person editing it (`SSF.example.md` explains
 /// itself in one, and names the other end of its autonomy line in
-/// another), and read as instructions if they reach the agent.
-fn without_html_comments(text: &str) -> String {
+/// another), and read as instructions if they reach the agent. A comment
+/// that never closes runs to the end, as in HTML; the line it opens on
+/// comes back with the text so the caller can say so.
+fn without_html_comments(text: &str) -> (String, Option<usize>) {
     // Each comment becomes one marker, so a line that held nothing but a
     // comment can be told from a blank line the author wrote.
     const MARK: char = '\u{0}';
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
+    let mut unclosed = None;
     while let Some(start) = rest.find("<!--") {
         out.push_str(&rest[..start]);
         out.push(MARK);
         match rest[start + 4..].find("-->") {
             Some(end) => rest = &rest[start + 4 + end + 3..],
             None => {
+                let consumed = text.len() - rest.len() + start;
+                unclosed = Some(text[..consumed].lines().count().max(1));
                 rest = "";
                 break;
             }
@@ -433,7 +446,7 @@ fn without_html_comments(text: &str) -> String {
             lines.push(line.to_string());
         }
     }
-    lines.join("\n").trim().to_string()
+    (lines.join("\n").trim().to_string(), unclosed)
 }
 
 impl PromptContext<'_> {
@@ -2327,11 +2340,32 @@ accurate; which column fits is your call.\n\n## Description"
 approves everything.\n  <!-- the other end reads: no approval is needed -->\n- Commit as you go.\n";
         assert_eq!(
             without_html_comments(notes),
-            "# Notes\n\n- Autonomy: a person approves everything.\n- Commit as you go."
+            (
+                "# Notes\n\n- Autonomy: a person approves everything.\n- Commit as you go.".into(),
+                None
+            )
         );
-        assert_eq!(without_html_comments("  \n<!-- only a comment -->\n"), "");
-        assert_eq!(without_html_comments("a <!-- unterminated"), "a");
-        assert_eq!(without_html_comments("plain\n\ntext\n"), "plain\n\ntext");
+        assert_eq!(
+            without_html_comments("  \n<!-- only a comment -->\n"),
+            (String::new(), None)
+        );
+        // An unclosed comment swallows the rest, and says which line opened it.
+        assert_eq!(
+            without_html_comments("a\nb <!-- unterminated\nc"),
+            ("a\nb".into(), Some(2))
+        );
+        assert_eq!(
+            without_html_comments("plain\n\ntext\n"),
+            ("plain\n\ntext".into(), None)
+        );
+        // The shipped boilerplate keeps every bullet and loses both comments.
+        let (example, unclosed) = without_html_comments(include_str!("../SSF.example.md"));
+        assert!(unclosed.is_none());
+        assert!(example.starts_with("# Notes for ssf agents\n\n- You are in charge"));
+        assert!(!example.contains("<!--") && !example.contains("-->"));
+        assert!(!example.contains("cautious end"), "{example}");
+        assert!(example.contains("- Autonomy: a person approves everything."));
+        assert_eq!(example.matches("\n- ").count(), 7, "{example}");
     }
 
     #[test]
