@@ -211,7 +211,7 @@ a session, and a tag naming the item posted on with an `event` field:
 🤖 ssf <!-- ssf: origin=owner/repo#N event=attached -->
 ```
 
-The `event` field is what tells it apart: such a post is neither a
+The `🤖 ssf` byline directly before a tag with the `event` field is what tells it apart (a bot post with an `event=` tag but a session's byline, a pasted example say, is the session's): such a post is neither a
 person's (it is not delivered as human input) nor a session's (it is not
 delivered to the item's session or to subscribers, is not counted in
 `posts_by_session` or `untagged_posts`, and is never taken for an agent's
