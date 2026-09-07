@@ -2650,16 +2650,23 @@ pub fn handover_recorded_text(
     harness_name: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    command: Option<&str>,
     summary_chars: Option<usize>,
     secs: u64,
 ) -> String {
+    // What decides an unset model or effort, in the words the
+    // `handed-over` post uses for it (`events::Launch`).
+    let default = match command {
+        Some(_) => "the command's",
+        None => "the harness's default",
+    };
     let model = match model {
         Some(m) => format!("model {m}"),
-        None => "the harness's default model".to_string(),
+        None => format!("{default} model"),
     };
     let effort = match effort {
         Some(e) => format!("effort {e}"),
-        None => "the harness's default effort".to_string(),
+        None => format!("{default} effort"),
     };
     let summary = match summary_chars {
         Some(n) => format!("with a summary of {} chars", thousands(n)),
@@ -2787,6 +2794,7 @@ async fn handover(
             &login::display_name(s("/to/harness").as_deref().unwrap_or(harness)),
             s("/to/model").as_deref(),
             s("/to/effort").as_deref(),
+            s("/to/command").as_deref(),
             v.get("summary_chars")
                 .and_then(|x| x.as_u64())
                 .map(|n| n as usize),
@@ -3513,6 +3521,7 @@ mod tests {
                 "Pi",
                 Some("openai/gpt-6"),
                 Some("high"),
+                None,
                 Some(1234),
                 10,
             ),
@@ -3521,7 +3530,7 @@ high), with a summary of 1,234 chars.\nThe daemon ends this session on its next 
 10s) and starts the new one in the same workspace. Stop working now: do not start anything \
 else, and do not run this command again."
         );
-        let plain = handover_recorded_text("o/r#5", "T", "Codex", None, None, None, 30);
+        let plain = handover_recorded_text("o/r#5", "T", "Codex", None, None, None, None, 30);
         assert!(
             plain.starts_with(
                 "Handover of o/r#5 (\"T\") recorded: to Codex (the harness's default model, the \
@@ -3530,6 +3539,26 @@ harness's default effort), without a summary."
             "{plain}"
         );
         assert!(plain.contains("within 30s"), "{plain}");
+        // With a repository command configured it is the command that
+        // decides an unset model or effort, as the `handed-over` post
+        // says of the same handover.
+        let by_command = handover_recorded_text(
+            "o/r#5",
+            "T",
+            "Claude Code",
+            None,
+            None,
+            Some("claude --dangerously-skip-permissions"),
+            None,
+            10,
+        );
+        assert!(
+            by_command.starts_with(
+                "Handover of o/r#5 (\"T\") recorded: to Claude Code (the command's model, the \
+command's effort), without a summary."
+            ),
+            "{by_command}"
+        );
         assert_eq!(thousands(0), "0");
         assert_eq!(thousands(999), "999");
         assert_eq!(thousands(1_000_000), "1,000,000");

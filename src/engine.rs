@@ -25,6 +25,7 @@ use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
     Blocked, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State, now_iso,
+    owner_in,
 };
 use crate::status::session_id;
 
@@ -78,7 +79,7 @@ impl std::fmt::Display for SessionBlocked {
             "the session on {} is blocked: {name} {what} since {}; {}",
             self.session,
             self.blocked.since,
-            crate::status::fix_for(&self.blocked)
+            crate::status::fix_clause(&self.blocked)
         )
     }
 }
@@ -1625,7 +1626,7 @@ are resumed on the first pass that finds it: {err:#}"
             } else {
                 "is at its sign-in prompt"
             },
-            crate::status::fix_for(&b)
+            crate::status::fix_clause(&b)
         );
         e.blocked = Some(b.clone());
         b
@@ -3868,9 +3869,6 @@ deliveries resume"
         // Asked afresh rather than off the pass's memo: an operator who
         // signs the harness in and runs the command again must get the
         // new answer, not the one from up to a poll interval ago.
-        // Asked afresh rather than off the pass's memo: an operator who
-        // signs the harness in and runs the command again must get the
-        // new answer, not the one from up to a poll interval ago.
         self.probes.remove(harness);
         let probe = self.probe_harness(harness).await;
         if probe.state == LoginState::SignedOut {
@@ -3885,15 +3883,21 @@ deliveries resume"
         if st.release_pending {
             anyhow::bail!("a release is pending on this item");
         }
+        // Trimmed as `models::validate` reads them, or a stray space
+        // would be shell-quoted into the launch command and the harness
+        // would refuse the model it was given.
         let overrides = Overrides {
             harness: harness.to_string(),
-            model: model.map(str::to_string),
-            effort: effort.map(str::to_string),
+            model: model.map(|m| m.trim().to_string()),
+            effort: effort.map(|e| e.trim().to_string()),
         };
         let from = self.effective(&repo, number);
         let to = repo.with_overrides(Some(&overrides));
         if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
             anyhow::bail!("the item is already on {harness} with that model and effort");
+        }
+        if summary.is_some_and(|s| s.trim().is_empty()) {
+            anyhow::bail!("the summary is empty: write a summary or hand over with no summary");
         }
         let chars = summary.map(|s| s.chars().count());
         if let Some(n) = chars.filter(|n| *n > crate::ipc::MAX_SUMMARY_CHARS) {
@@ -3932,7 +3936,17 @@ deliveries resume"
             by,
             "handover recorded"
         );
-        let launch = |c: &RepoConfig| serde_json::json!({"harness": c.harness, "model": c.model, "effort": c.effort});
+        // The command is on both sides because it is what decides an
+        // unset model or effort, and the `handed-over` post says so; the
+        // command itself is on the item in every `attached` post anyway.
+        let launch = |c: &RepoConfig| {
+            serde_json::json!({
+                "harness": c.harness,
+                "model": c.model,
+                "effort": c.effort,
+                "command": c.command,
+            })
+        };
         Ok(serde_json::json!({
             "session": id,
             "title": st.title,
@@ -4487,7 +4501,6 @@ deliveries resume"
     }
 }
 
-/// Listen for the CLI on the daemon's socket, replacing a stale one.
 /// Remember a conversation as one never to resume or capture again, on
 /// one record. Only the last few are kept: a workspace is not handed over
 /// dozens of times, and every capture scans the list.
@@ -4516,6 +4529,7 @@ fn handed_over(
     }
 }
 
+/// Listen for the CLI on the daemon's socket, replacing a stale one.
 fn bind_socket() -> Result<tokio::net::UnixListener> {
     let path = crate::ipc::socket_path();
     if let Some(parent) = path.parent() {
@@ -4536,19 +4550,6 @@ fn bind_socket() -> Result<tokio::net::UnixListener> {
         .with_context(|| format!("listening on {}", path.display()))?;
     let _ = std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600));
     Ok(listener)
-}
-
-/// Follow `shares_workspace_of` to the session that acts on `number`.
-fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
-    let mut cur = number;
-    let mut seen = BTreeSet::new();
-    while let Some(next) = issues.get(&cur).and_then(|s| s.shares_workspace_of) {
-        if next == cur || !seen.insert(cur) {
-            break;
-        }
-        cur = next;
-    }
-    cur
 }
 
 /// The last comment the bot left on an item, as its session's final word.
@@ -7302,10 +7303,21 @@ mod tests {
                     &name,
                     Some("fable-5.1"),
                     Some("high"),
+                    None,
                     Some(1_234),
                     10,
                 ),
-                crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, 10),
+                crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, None, 10),
+                crate::handover_recorded_text(
+                    "o/r#5",
+                    "Fix it",
+                    &name,
+                    None,
+                    None,
+                    Some("claude --dangerously-skip-permissions"),
+                    None,
+                    10,
+                ),
                 crate::summary_quotes_a_sign_in_screen_text(&crate::driver::redact_login_phrases(
                     "the pane said Login expired · Please run /login, so I stopped",
                 )),
@@ -7746,8 +7758,8 @@ mod tests {
         assert!(err.contains(&login::how_to_sign_in("pi")), "{err}");
         // The signed-out answer is not remembered: an operator who signs
         // the harness in and runs the command again is not told the same
-        // thing until the next pass. The memo is left as the refusal set
-        // it; only the check itself now answers differently.
+        // thing until the next pass, because the command drops the memo
+        // for that harness before it asks.
         e.probe = std::sync::Arc::new(|_| Probe {
             state: LoginState::SignedIn,
             detail: "test".into(),

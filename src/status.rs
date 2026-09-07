@@ -256,6 +256,17 @@ pub fn fix_for(b: &Blocked) -> String {
     crate::login::how_to_sign_in(&b.harness)
 }
 
+/// [`fix_for`] as the tail of a sentence that has not already said what
+/// kind of fix it is: a login block's is a command to sign in with, a
+/// start block's is an instruction of its own.
+pub fn fix_clause(b: &Blocked) -> String {
+    if b.reason == Blocked::START {
+        fix_for(b)
+    } else {
+        format!("sign in with {}", fix_for(b))
+    }
+}
+
 impl Session {
     pub fn is_pull_request(&self) -> bool {
         self.kind == "pull_request"
@@ -403,14 +414,16 @@ pub fn sessions_with(
         for item in rs.issues.values() {
             let ws = workspaces.and_then(|list| find_workspace(list, item));
             // An item bound to another session shares its workspace, and
-            // so the harness a handover put in it.
-            let owner = item.shares_workspace_of.unwrap_or(item.number);
+            // so the harness a handover put in it. The binding is followed
+            // to its end, as the daemon follows it: an item bound to a
+            // bound item is the first one's session's too.
+            let owner = crate::state::owner_in(&rs.issues, item.number);
             let overrides = rs
                 .issues
                 .get(&owner)
                 .or(Some(item))
                 .and_then(|o| o.overrides.as_ref());
-            out.push(join(repo, item, overrides, ws, workspaces.is_some()));
+            out.push(join(repo, item, owner, overrides, ws, workspaces.is_some()));
         }
     }
     out
@@ -473,11 +486,12 @@ fn workspace_state(
     )
 }
 
-/// `overrides` are the ones that govern the item (its own, or, for an
-/// item bound to another session, that session's).
+/// `owner` is the item whose session acts on this one (itself, unless it
+/// is bound), and `overrides` the ones that govern it: the owner's.
 fn join(
     repo: &RepoConfig,
     item: &IssueState,
+    owner: u64,
     overrides: Option<&Overrides>,
     ws: Option<&WorkspaceInfo>,
     orca_available: bool,
@@ -527,7 +541,7 @@ fn join(
         owner: if item.subscriber_only {
             String::new()
         } else {
-            session_id(&repo.name, item.shares_workspace_of.unwrap_or(item.number))
+            session_id(&repo.name, owner)
         },
         subscribers: item.subscribers.clone(),
         subscriber_only: item.subscriber_only,
@@ -1116,6 +1130,9 @@ mod tests {
         });
         let mut two = item(2, Some("r1::/w/one"));
         two.shares_workspace_of = Some(1);
+        // Bound to the bound item: the chain leads to #1 all the same.
+        let mut four = item(4, Some("r1::/w/one"));
+        four.shares_workspace_of = Some(2);
         let mut three = item(3, Some("r1::/w/three"));
         three.handover = Some(PendingHandover {
             harness: "codex".into(),
@@ -1125,7 +1142,7 @@ mod tests {
             by: Some("acme/widgets#3".into()),
             requested_at: "2026-09-07T10:00:00Z".into(),
         });
-        let st = state_with(vec![one, two, three]);
+        let st = state_with(vec![one, two, three, four]);
         let s = sessions(&cfg(), &st, Some(&[]));
         assert_eq!(s[0].harness, "pi");
         assert_eq!(s[0].model.as_deref(), Some("openai/gpt-6"));
@@ -1133,6 +1150,8 @@ mod tests {
         assert_eq!(s[1].harness, "pi", "the bound item shares the workspace");
         assert_eq!(s[2].harness, "claude", "not handed over yet");
         assert!(s[2].overrides.is_none());
+        assert_eq!(s[3].harness, "pi", "two hops to the session that acts");
+        assert_eq!(s[3].owner, "acme/widgets#1");
         let h = s[2].handover.as_ref().unwrap();
         assert_eq!(h.harness_name, "Codex");
         assert_eq!(h.summary_chars, Some(9));

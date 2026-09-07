@@ -347,6 +347,23 @@ impl Blocked {
     pub const START: &'static str = "start";
 }
 
+/// Follow `shares_workspace_of` to the session that acts on `number`:
+/// the whole chain, since an item bound to a bound item is the first
+/// one's session's too. Used by the daemon for everything that belongs to
+/// a session (its harness, its overrides) and by the status commands for
+/// what they say about it, so both name the same session.
+pub fn owner_in(issues: &BTreeMap<u64, IssueState>, number: u64) -> u64 {
+    let mut cur = number;
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(next) = issues.get(&cur).and_then(|s| s.shares_workspace_of) {
+        if next == cur || !seen.insert(cur) {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
 pub fn state_path() -> PathBuf {
     state_dir().join("state.json")
 }
