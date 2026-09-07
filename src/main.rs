@@ -53,7 +53,7 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
-    /// Manage the bot account credentials (for people, from a terminal; agents never run it).
+    /// Manage the bot account credentials (for people, from a terminal, or the agent setting ssf up for them; factory sessions never run it).
     Auth {
         #[command(subcommand)]
         command: AuthCommand,
