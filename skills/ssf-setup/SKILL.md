@@ -194,8 +194,8 @@ way), or a pasted token.**
   <bot> -y` takes an account gh already knows without questions, which is
   the form an agent can run. ssf reads the token from gh's keyring when
   needed and switches gh back to the person's own account afterwards. The
-  bar widget's **Sign in bot account** and `ssf-ui login` are the same
-  flow with menus.
+  bar widget does not sign the bot in: it only shows the state of the
+  factory (bot login, watched repositories, sessions); setup is the CLI.
 - **A pasted token:** **Person:** logged in as the bot, at
   <https://github.com/settings/tokens> create a *classic* personal access
   token with the scopes below (a fine-grained token shows up as missing

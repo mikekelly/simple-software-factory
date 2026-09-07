@@ -1,5 +1,7 @@
-//! Desktop integration for Omarchy: the bar widget plugin, menu entries and
-//! the background service toggle.
+//! Desktop integration for Omarchy: the bar widget plugin (a dashboard of the
+//! factory's state), the menu entries (status, the service toggle, restart,
+//! logs) and the background service toggle. Setup is not done from here:
+//! `ssf auth` and `ssf repo` are the CLI for that.
 
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
@@ -161,6 +163,8 @@ pub fn uninstall_plugin() -> Result<()> {
     Ok(())
 }
 
+/// The Factory submenu: what shows state and the one control. Nothing here
+/// signs the bot in or edits the watched repositories.
 fn menu_block() -> String {
     let rows = [
         (
@@ -170,18 +174,6 @@ fn menu_block() -> String {
         (
             "factory.status",
             r#"{"icon":"󰋼","label":"Status","action":"omarchy-launch-floating-terminal-with-presentation ssf-ui status"}"#,
-        ),
-        (
-            "factory.login",
-            r#"{"icon":"","label":"Sign in bot account","action":"omarchy-launch-floating-terminal-with-presentation ssf-ui login"}"#,
-        ),
-        (
-            "factory.add",
-            r#"{"icon":"","label":"Watch a repository","action":"ssf-ui add-repo"}"#,
-        ),
-        (
-            "factory.repos",
-            r#"{"icon":"","label":"Manage repositories","action":"ssf-ui manage-repos"}"#,
         ),
         (
             "factory.toggle",
@@ -320,9 +312,17 @@ pub fn uninstall_menu() -> Result<()> {
     let Ok(existing) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
-    let (Some(b), Some(e)) = (existing.find(MENU_BEGIN), existing.find(MENU_END)) else {
+    let Some(updated) = remove_menu_text(&existing) else {
         return Ok(());
     };
+    crate::config::write_atomic(&path, updated.as_bytes(), 0o644)?;
+    Ok(())
+}
+
+/// The menu extension text without the managed block, or `None` when there
+/// is no block to remove.
+pub fn remove_menu_text(existing: &str) -> Option<String> {
+    let (b, e) = (existing.find(MENU_BEGIN)?, existing.find(MENU_END)?);
     let mut end = e + MENU_END.len();
     if existing[end..].starts_with('\n') {
         end += 1;
@@ -341,8 +341,7 @@ pub fn uninstall_menu() -> Result<()> {
             s = rebuilt;
         }
     }
-    crate::config::write_atomic(&path, s.as_bytes(), 0o644)?;
-    Ok(())
+    Some(s)
 }
 
 pub fn service_enabled() -> bool {
@@ -427,6 +426,113 @@ mod tests {
         let existing = "{\n  \"personal\": {\"label\":\"Personal\"}\n}\n";
         let out = merge_menu_text(existing, "  // ssf:begin (managed by `ssf ui install`; edits inside are overwritten)\n  \"factory\": {}\n  // ssf:end").unwrap();
         assert!(out.contains("{\"label\":\"Personal\"},\n"), "{out}");
+    }
+
+    #[test]
+    fn install_then_uninstall_round_trips() {
+        let existing = "{\n  \"personal\": {\"label\":\"Personal\"}\n}\n";
+        let installed = merge_menu_text(existing, &menu_block()).unwrap();
+        assert!(installed.contains("\"factory.toggle\""));
+        assert_eq!(remove_menu_text(&installed).as_deref(), Some(existing));
+        assert_eq!(remove_menu_text(existing), None);
+    }
+
+    /// The menu is a dashboard: status, the service toggle, restart and
+    /// logs. Signing the bot in and watching repositories are the CLI's.
+    #[test]
+    fn menu_has_state_entries_and_no_setup_flows() {
+        let block = menu_block();
+        for id in [
+            "\"factory\"",
+            "\"factory.status\"",
+            "\"factory.toggle\"",
+            "\"factory.restart\"",
+            "\"factory.logs\"",
+        ] {
+            assert!(block.contains(id), "menu lacks {id}: {block}");
+        }
+        assert!(block.contains("\"checked\":\"ssf-ui service is-enabled\""));
+        assert!(block.contains("\"action\":\"ssf-ui service toggle\""));
+        for gone in [
+            "login",
+            "add-repo",
+            "manage-repos",
+            "edit-repo",
+            "Sign in",
+            "Watch a",
+        ] {
+            assert!(!block.contains(gone), "menu still has {gone}: {block}");
+        }
+        // Every row is one JSON object, and the block parses once wrapped.
+        let body: String = block
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&format!("{{\n{body}\n}}")).expect("menu rows are JSON");
+        assert_eq!(parsed.as_object().map(|o| o.len()), Some(5));
+    }
+
+    /// The shipped widget and its helper script only show and reach state.
+    /// The setup flows (sign in, add or edit a repository) are gone; what
+    /// remains reads `ssf status --json`, toggles the service, opens the log,
+    /// the status-and-doctor terminal and a session's workspace.
+    #[test]
+    fn widget_and_helper_have_no_setup_flows() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let panel = std::fs::read_to_string(root.join("omarchy-plugin/Panel.qml")).unwrap();
+        let helper = std::fs::read_to_string(root.join("bin/ssf-ui")).unwrap();
+        for gone in [
+            "ssf-ui login",
+            "ssf-ui add-repo",
+            "ssf-ui edit-repo",
+            "ssf-ui manage-repos",
+            "omarchy-menu-input",
+            "omarchy-menu-select",
+        ] {
+            assert!(!panel.contains(gone), "Panel.qml still has {gone:?}");
+            assert!(!helper.contains(gone), "ssf-ui still has {gone:?}");
+        }
+        // Naming the commands in advice text is fine; running them is not.
+        for gone in [
+            "\"ssf auth",
+            "\"ssf repo",
+            "run(\"ssf auth",
+            "run(\"ssf repo",
+        ] {
+            assert!(!panel.contains(gone), "Panel.qml still runs {gone:?}");
+        }
+        for gone in [
+            "ssf auth login --",
+            "ssf repo add \"",
+            "ssf repo set \"",
+            "ssf repo remove \"",
+            "ssf repo list --json",
+            "ssf agents",
+            "ssf models",
+        ] {
+            assert!(!helper.contains(gone), "ssf-ui still runs {gone:?}");
+        }
+        for kept in [
+            "[\"ssf\", \"status\", \"--json\"]",
+            "ssf ui service toggle",
+            "ssf-ui logs",
+            "ssf-ui service restart",
+            "ssf-ui status",
+            "ssf-ui peers",
+            "ssf-ui open-workspace",
+            "blocked_sessions",
+            "anyone_allowed",
+        ] {
+            assert!(panel.contains(kept), "Panel.qml lost {kept:?}");
+        }
+        for cmd in ["service)", "logs)", "status)", "peers)", "open-workspace)"] {
+            assert!(helper.contains(cmd), "ssf-ui lost the {cmd} command");
+        }
+        for gone in ["login)", "add-repo)", "edit-repo)", "manage-repos)"] {
+            assert!(!helper.contains(gone), "ssf-ui still dispatches {gone}");
+        }
     }
 
     #[test]

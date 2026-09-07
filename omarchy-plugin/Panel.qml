@@ -4,14 +4,16 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Simple Software Factory in the bar: who the bot is, whether the service is
-// running, which repositories are watched (and by which agent), and the agent
-// sessions currently working. Everything comes from `ssf status --json`, which
-// already joins ssf's view of each issue or PR with what Orca reports about
-// the workspace (agent state, last message, activity); the widget never talks
-// to Orca itself. Everything that needs typing goes through the Omarchy menu
-// (`ssf-ui ...`) so it looks and behaves like the rest of the desktop; this
-// panel is the read-out and the launch pad.
+// Simple Software Factory in the bar: a dashboard of the factory's state. Who
+// the bot is, whether the service is running, which repositories are watched
+// (and by which agent), the agent sessions currently working and what each
+// is doing, sessions whose harness needs a sign-in, and a way to the log and
+// the doctor report. Everything comes from `ssf status --json`, which already
+// joins ssf's view of each issue or PR with what the driver reports about the
+// workspace (agent state, last message, activity); the widget never talks to
+// the driver itself. Setup (signing the bot in, watching repositories) is not
+// done here: that is `ssf auth` and `ssf repo` from a terminal, following
+// docs/setup.md. The service toggle in the header is the one control.
 Panel {
   id: root
   moduleName: "ssf.factory"
@@ -52,8 +54,8 @@ Panel {
   readonly property color barIconColor: waitingCount > 0 || anyoneAllowed || blockedCount > 0 ? urgent
     : serviceActive && signedIn ? barForeground : Qt.darker(barForeground, 1.55)
 
-  // Cursor rows: repos first, then sessions, then the action strip.
-  readonly property int rowCount: repos.length + sessions.length + 1
+  // Cursor rows: repos first (open on GitHub), then sessions (open the workspace).
+  readonly property int rowCount: repos.length + sessions.length
 
   // Sessions worth a row: still active on GitHub, or retired but with the
   // workspace still around (the agent wrapping up after a close).
@@ -242,8 +244,9 @@ Panel {
     root.close()
   }
 
-  function editRepo(name) {
-    run("ssf-ui edit-repo " + shellQuote(name))
+  function openRepo(name) {
+    if (!name) return
+    run("omarchy-launch-browser " + shellQuote("https://github.com/" + name))
     root.close()
   }
 
@@ -278,11 +281,9 @@ Panel {
 
   function activateCursor() {
     if (!cursorActive) return
-    if (cursor < repos.length) { editRepo(String(repos[cursor].name || "")); return }
+    if (cursor < repos.length) { openRepo(String(repos[cursor].name || "")); return }
     var idx = cursor - repos.length
-    if (idx < sessions.length) { openWorkspace(sessions[idx]); return }
-    run("ssf-ui add-repo")
-    root.close()
+    if (idx < sessions.length) openWorkspace(sessions[idx])
   }
 
   onOpenedChanged: {
@@ -331,8 +332,7 @@ Panel {
       }
     }
     onPressed: function(b) {
-      if (b === Qt.RightButton) root.run("ssf-ui add-repo")
-      else if (b === Qt.MiddleButton) root.refresh()
+      if (b === Qt.MiddleButton) root.refresh()
       else root.toggle()
     }
   }
@@ -356,7 +356,6 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r") root.refresh()
-        else if (t === "a") { root.run("ssf-ui add-repo"); root.close() }
         else if (t === "l") { root.run("ssf-ui logs"); root.close() }
         else if (t === "s") root.toggleService()
         else if (t === "g") { var s = root.cursorSession(); if (s) root.openGithub(s) }
@@ -429,17 +428,15 @@ Panel {
         font.pixelSize: Style.font.bodySmall
       }
 
-      // ---- Sign-in nudge -------------------------------------------------
-      Button {
+      // ---- Not set up yet -----------------------------------------------
+      Text {
         visible: root.loaded && !root.signedIn
         width: parent.width
-        leftAlign: true
-        bordered: true
-        iconText: ""
-        text: "Sign in the bot account"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
-        onClicked: { root.run("omarchy-launch-floating-terminal-with-presentation ssf-ui login"); root.close() }
+        text: "The bot account is not signed in. Setup is done from a terminal: `ssf auth login`, then `ssf repo add` (see docs/setup.md)."
+        color: root.dim
+        wrapMode: Text.Wrap
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
       }
 
       PanelSeparator { foreground: root.foreground }
@@ -458,7 +455,7 @@ Panel {
         Text {
           visible: root.loaded && root.repos.length === 0
           width: parent.width
-          text: "Nothing watched yet. Add a repository and pick the agent that works it."
+          text: "Nothing watched. `ssf repo add owner/name --harness <agent>` from a terminal starts watching one."
           color: root.dim
           wrapMode: Text.Wrap
           font.family: root.fontFamily
@@ -477,8 +474,8 @@ Panel {
             foreground: root.foreground
             fontFamily: root.fontFamily
             hasCursor: root.cursorActive && root.cursor === index
-            tooltipText: "Change agent, model or effort, or stop watching"
-            onClicked: root.editRepo(String(modelData.name || ""))
+            tooltipText: "Open on GitHub (agent, model and effort are set with `ssf repo set`)"
+            onClicked: root.openRepo(String(modelData.name || ""))
             onHovered: function(h) { if (h) { root.cursorActive = true; root.cursor = index } }
 
             Text {
@@ -491,18 +488,6 @@ Panel {
               font.pixelSize: Style.font.bodySmall
             }
           }
-        }
-
-        Button {
-          width: parent.width
-          leftAlign: true
-          iconText: ""
-          text: "Watch a repository"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          hasCursor: root.cursorActive && root.cursor === root.repos.length + root.sessions.length
-          onClicked: { root.run("ssf-ui add-repo"); root.close() }
-          onHovered: function(h) { if (h) { root.cursorActive = true; root.cursor = root.repos.length + root.sessions.length } }
         }
       }
 
@@ -524,7 +509,7 @@ Panel {
           width: parent.width
           text: root.signedIn
             ? "Assign an issue or PR to @" + root.botLogin + ", mention it, or request its review, and the agent session shows up here."
-            : "Sign in first; the bot's agent sessions show up here."
+            : "Once the bot is signed in and a repository is watched, its agent sessions show up here."
           color: root.dim
           wrapMode: Text.Wrap
           font.family: root.fontFamily
@@ -561,13 +546,6 @@ Panel {
         width: parent.width
         spacing: Style.space(6)
 
-        PanelActionButton {
-          iconText: ""
-          tooltipText: root.signedIn ? "Signed in as @" + root.botLogin + " — sign in again" : "Sign in the bot account"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          onClicked: { root.run("omarchy-launch-floating-terminal-with-presentation ssf-ui login"); root.close() }
-        }
         PanelActionButton {
           iconText: ""
           tooltipText: "Logs"

@@ -65,7 +65,7 @@ service does, but nothing restarts it for you.
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
-| `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget and the menu flows |
+| `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
 | `install.sh` | the install script: clone or update, `makepkg -si` (or `--dev`), the service, the skill, `ssf doctor` |
 | `packaging/` | PKGBUILD, systemd unit, pacman install script |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill, installed with `npx skills add` |

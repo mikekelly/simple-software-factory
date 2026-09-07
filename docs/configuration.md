@@ -2,8 +2,8 @@
 
 Every key in `~/.config/ssf/config.toml`, the per-project prompt file, model and effort settings, the permission-free commands each agent is started with, and who may drive the factory. For whoever sets up or tunes a factory; agents need none of it.
 
-`~/.config/ssf/config.toml` is mostly written for you by `ssf repo add`,
-`ssf config set` and the bar widget;
+`~/.config/ssf/config.toml` is mostly written for you by `ssf repo add` and
+`ssf config set` (the bar widget only shows the state of the factory);
 [`config.example.toml`](../config.example.toml) (installed as
 `/usr/share/ssf/config.example.toml`) shows every key with a comment. The
 token is never in this file: a pasted one (`ssf auth login --token`) lives

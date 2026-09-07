@@ -1,7 +1,7 @@
 # Simple Software Factory configuration (~/.config/ssf/config.toml); every key
 # is explained in docs/configuration.md.
-# Most of this is written for you by `ssf repo add`, the bar widget, or
-# `ssf config set`; the token is read from gh's keyring, or from
+# Most of this is written for you by `ssf repo add` or `ssf config set`
+# (the bar widget only shows state); the token is read from gh's keyring, or from
 # ~/.config/ssf/token (0600) after `ssf auth login --token`, never from here.
 
 [github]
