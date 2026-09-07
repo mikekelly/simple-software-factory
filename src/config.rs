@@ -990,13 +990,16 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = config_path();
+        self.save_to(&config_path())
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
         let body = toml::to_string_pretty(self).context("serialising config")?;
-        write_atomic(&path, body.as_bytes(), 0o600)
+        write_atomic(path, body.as_bytes(), 0o600)
     }
 
     /// Resolve the bot token: env var, then config, then a pasted token file,

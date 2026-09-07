@@ -41,6 +41,14 @@ pub enum Attach {
     },
     /// The item was bound to another item's session (nothing was started).
     Bound { session: String, shares: u64 },
+    /// The item was onboarded onto a workspace it already had (after a
+    /// dropped binding, or a lost state file): the harness in it was
+    /// started again, or was still there (`Conversation::Kept`).
+    Kept {
+        launch: Launch,
+        handed_off_from: Option<String>,
+        conversation: Conversation,
+    },
     /// The workspace had to be re-created and the harness started in it
     /// again; `reason` is the word for why (`workspace gone`, `driver
     /// switch`).
@@ -170,6 +178,19 @@ impl Event {
                 lines.push(("conversation", conversation.as_str().into()));
                 (format!("attaching agent to {item_kind} again"), lines)
             }
+            Self::Attached(Attach::Kept {
+                launch,
+                handed_off_from,
+                conversation,
+            }) => {
+                let mut lines = launch.lines();
+                if let Some(parent) = handed_off_from {
+                    lines.push(("handed off from", parent.clone()));
+                }
+                lines.push(("workspace", "kept".into()));
+                lines.push(("conversation", conversation.as_str().into()));
+                (format!("attaching agent to {item_kind} again"), lines)
+            }
             Self::Resumed {
                 harness,
                 conversation,
@@ -266,9 +287,15 @@ fn short_branch(branch: &str) -> String {
 }
 
 /// `v` fit for one `key: value` line: whitespace (newlines included)
-/// collapsed to single spaces, cut at `MAX_VALUE_CHARS`.
+/// collapsed to single spaces, backticks dropped (three in a row would
+/// close the fence, and markdown ones render literally inside it), cut
+/// at `MAX_VALUE_CHARS`.
 fn value(v: &str) -> String {
-    let mut out: String = v.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut out: String = v
+        .replace('`', "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     if out.chars().count() > MAX_VALUE_CHARS {
         out = out.chars().take(MAX_VALUE_CHARS).collect();
         out.push('\u{2026}');
@@ -425,6 +452,31 @@ mod tests {
     }
 
     #[test]
+    fn kept_says_the_workspace_was_there_already() {
+        let ev = Event::Attached(Attach::Kept {
+            launch: launch(Some("bot/issue-12-fix")),
+            handed_off_from: Some("acme/widgets#4".into()),
+            conversation: Conversation::Kept,
+        });
+        let text = comment(&o(), "issue", &ev);
+        check_shape(&text, "attached");
+        assert_eq!(
+            ev.block("issue"),
+            "```ssf\n\
+             ssf attaching agent to issue again:\n\
+             harness: Claude Code\n\
+             model: fable-5.1\n\
+             effort: high\n\
+             driver: herdr\n\
+             branch: bot/issue-12-fix\n\
+             handed off from: acme/widgets#4\n\
+             workspace: kept\n\
+             conversation: kept\n\
+             ```"
+        );
+    }
+
+    #[test]
     fn resumed_says_after_what() {
         let ev = Event::Resumed {
             harness: "Codex".into(),
@@ -453,6 +505,7 @@ mod tests {
         };
         let text = comment(&o(), "issue", &ev);
         check_shape(&text, "blocked");
+        // Markdown backticks would render literally inside the fence.
         assert_eq!(
             text,
             "🤖 ssf <!-- ssf: origin=acme/widgets#12 event=blocked -->\n\n\
@@ -460,7 +513,7 @@ mod tests {
              ssf holding deliveries to agent on issue:\n\
              harness: Claude Code\n\
              reason: not signed in\n\
-             fix: `claude auth login` on the host\n\
+             fix: claude auth login on the host\n\
              ```"
         );
         let ev = Event::Unblocked {
@@ -510,6 +563,17 @@ mod tests {
              next: re-onboarding the item\n\
              ```"
         );
+        // Backticks go: three in a row would end the block early.
+        let hostile = Event::GaveUp {
+            failures: 5,
+            last_error: "said:\n```\nboom\n```\nand `more`".into(),
+        };
+        let block = hostile.block("issue");
+        assert!(
+            block.contains("\nlast error: said: boom and more\n"),
+            "{block}"
+        );
+        assert_eq!(block.matches("```").count(), 2, "{block}");
         let long = Event::GaveUp {
             failures: 5,
             last_error: "x".repeat(500),

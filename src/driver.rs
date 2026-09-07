@@ -79,6 +79,23 @@ const LOGIN_TAIL_LINES: usize = 15;
 /// `unblocked` event posts, `BlockedView::describe`, `SessionBlocked`),
 /// which `engine::tests::ssf_texts_never_look_like_a_login_prompt` pins.
 pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
+    login_dialog_in(harness, screen)
+}
+
+/// The harnesses `login_dialog` knows the sign-in prompts of.
+pub const HARNESSES: &[&str] = &[
+    "claude", "codex", "gemini", "copilot", "grok", "pi", "omp", "opencode", "crush",
+];
+
+/// Would `text`, shown at the bottom of any harness's screen, pass for
+/// that harness's sign-in prompt? For text ssf is about to write down
+/// that came from elsewhere (an error message, say) and might be quoted
+/// on a screen later.
+pub fn quotes_login_prompt(text: &str) -> bool {
+    HARNESSES.iter().any(|h| login_dialog_in(h, text).is_some())
+}
+
+fn login_dialog_in(harness: &str, screen: &str) -> Option<String> {
     let tail: Vec<&str> = screen
         .lines()
         .map(str::trim)

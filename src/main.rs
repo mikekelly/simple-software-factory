@@ -1442,7 +1442,12 @@ fn check_harness(harness: &str) {
 }
 
 fn repo(command: RepoCommand) -> Result<()> {
-    let mut cfg = Config::load()?;
+    repo_at(&config::config_path(), command)
+}
+
+/// `ssf repo ...` against the config file at `path`.
+fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
+    let mut cfg = Config::load_from(config_file)?;
     match command {
         RepoCommand::Add {
             name,
@@ -1502,8 +1507,8 @@ fn repo(command: RepoCommand) -> Result<()> {
                 cfg.repos.push(entry);
                 "Added"
             };
-            cfg.save()?;
-            println!("{action} {name} in {}", config::config_path().display());
+            cfg.save_to(config_file)?;
+            println!("{action} {name} in {}", config_file.display());
             Ok(())
         }
         RepoCommand::Set {
@@ -1627,7 +1632,7 @@ fn repo(command: RepoCommand) -> Result<()> {
             let updated = entry.name.clone();
             cfg.validate()?;
             let identity = cfg.git_identity(cfg.repos.get(pos));
-            cfg.save()?;
+            cfg.save_to(config_file)?;
             println!("Updated {updated}");
             if !identity.is_bot() || identity.credential != config::Credential::Bot {
                 println!(
@@ -3274,6 +3279,85 @@ mod tests {
         assert!(Config::load_from(&path).unwrap().daemon.event_comments);
         // Per-repository values go through `ssf repo set`, not here.
         assert!(config_set_at(&path, "repo.event_comments", "false", false).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn repo_add_and_set_switch_event_comments_and_clear_puts_it_back() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-repo-events-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let add = |event_comments: Option<bool>| RepoCommand::Add {
+            name: "o/r".into(),
+            harness: "claude".into(),
+            driver: None,
+            path: None,
+            clone_url: None,
+            base_branch: None,
+            command: None,
+            model: None,
+            effort: None,
+            instructions: None,
+            prompt_file: None,
+            allowed_users: None,
+            accept_anyone_risk: false,
+            event_comments,
+        };
+        let set = |event_comments: Option<bool>, clear: Vec<String>| RepoCommand::Set {
+            name: "o/r".into(),
+            harness: None,
+            driver: None,
+            path: None,
+            clone_url: None,
+            base_branch: None,
+            command: None,
+            model: None,
+            effort: None,
+            instructions: None,
+            prompt_file: None,
+            allowed_users: None,
+            accept_anyone_risk: false,
+            event_comments,
+            git_name: None,
+            git_email: None,
+            git_signing_key: None,
+            git_credential: None,
+            clear,
+        };
+        let loaded = || Config::load_from(&path).unwrap();
+        // Unset by default: the instance decides, and nothing is written.
+        repo_at(&path, add(None)).unwrap();
+        assert_eq!(loaded().repos[0].event_comments, None);
+        assert!(loaded().event_comments(&loaded().repos[0]));
+        let text = std::fs::read_to_string(&path).unwrap();
+        let repo_table = text.split("[[repo]]").nth(1).unwrap();
+        assert!(!repo_table.contains("event_comments"), "{text}");
+        // Set off, then on, then cleared.
+        repo_at(&path, set(Some(false), vec![])).unwrap();
+        let cfg = loaded();
+        assert_eq!(cfg.repos[0].event_comments, Some(false));
+        assert!(!cfg.event_comments(&cfg.repos[0]));
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("event_comments = false")
+        );
+        repo_at(&path, set(Some(true), vec![])).unwrap();
+        assert_eq!(loaded().repos[0].event_comments, Some(true));
+        repo_at(&path, set(None, vec![])).unwrap();
+        assert_eq!(loaded().repos[0].event_comments, Some(true), "left alone");
+        repo_at(&path, set(None, vec!["event_comments".into()])).unwrap();
+        assert_eq!(loaded().repos[0].event_comments, None);
+        // `repo add` over an existing entry takes the flag too.
+        repo_at(&path, add(Some(false))).unwrap();
+        assert_eq!(loaded().repos[0].event_comments, Some(false));
         std::fs::remove_dir_all(&dir).ok();
     }
 
