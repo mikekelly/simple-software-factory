@@ -10,7 +10,7 @@
 _repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$_repo/packaging/release/PKGBUILD"
 
-pkgver=0.1.0.r271.g06491ae
+pkgver=0.1.0.r272.ga39131e
 pkgrel=1
 source=()
 sha256sums=()
@@ -35,6 +35,10 @@ prepare() {
       --exclude='./packaging/release/*.pkg.tar.*' --exclude='./packaging/release/*.tar.gz' \
       --exclude=./.git -cf - . | tar -C "$srcdir/$_srcname" -xf -
   cd "$srcdir/$_srcname"
+  # Build artifacts outlive the copy (a rebuild is incremental), and the
+  # release package() finds them at target/ inside the tree.
+  mkdir -p "$srcdir/target"
+  ln -s "$srcdir/target" target
   export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
@@ -42,13 +46,11 @@ prepare() {
 build() {
   cd "$srcdir/$_srcname"
   export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-  export CARGO_TARGET_DIR="$srcdir/target"
   cargo build --frozen --release
 }
 
 check() {
   cd "$srcdir/$_srcname"
   export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
-  export CARGO_TARGET_DIR="$srcdir/target"
   cargo test --frozen --release
 }
