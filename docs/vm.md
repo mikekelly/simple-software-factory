@@ -19,8 +19,8 @@ firewall rule on the host), and the images are made with `fakeroot` and
 plus Firecracker's seccomp filter.
 
 The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
-(libarchive), `mkfs.ext4` (e2fsprogs), `curl`, `openssh`, and its own
-`herdr` binary, which is copied into the image.
+(libarchive), `mkfs.ext4`, `e2fsck` and `resize2fs` (e2fsprogs), `curl`,
+`openssh`, and its own `herdr` binary, which is copied into the image.
 
 ```sh
 ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)
@@ -36,6 +36,62 @@ The `[vm]` keys (`name`, `dir`, `vcpus`, `mem_mib`, `data_gib`,
 `root_gib`, `ssh_port`, `files`, and the binaries and images to use
 instead of the downloaded ones) are in the
 [configuration table](configuration.md#every-key).
+
+## Size
+
+A factory running several coding sessions at once needs most of the
+machine, so the VM is sized from the machine rather than from constants.
+`ssf vm build` reads the host and fills in every size key left unset in
+`[vm]`, prints what it chose and where each value came from, and writes
+the values to `config.toml`, where they stay visible and editable:
+
+| key | rule | floor |
+|---|---|---|
+| `vcpus` | the host's logical CPUs minus one | 2 |
+| `mem_mib` | half the host's RAM, rounded down to 256 MiB | 4096 |
+| `data_gib` | half the free space of the filesystem holding `vm.dir`, at build time | 20 |
+
+`root_gib` stays 8: the root image only holds the system. A value set in
+`[vm]` by hand always wins, and `ssf vm build --vcpus N --mem-mib N
+--data-gib N` writes the given value instead of the rule. A build over an
+existing image (without `--force`) still does the sizing, so an
+installation from before the rule gets its sizes recorded by running
+`ssf vm build` once. With the keys unset and no build run, `ssf vm start`
+applies the rule at each start without writing it.
+
+A rule of thumb per parallel session: about one vCPU and 2 GiB of RAM
+per active session, plus, on the data disk, the size of one clone per
+repository and a build tree per worktree. Change `vcpus` or `mem_mib` in
+`config.toml` and `ssf vm restart` to apply them.
+
+The data disk is a sparse file: its size is a cap, not a reservation, and
+it takes host space only as the guest writes. Firecracker gives the guest
+block devices, not a shared directory, and ext4 needs its size when it is
+made, so "no cap" means a cap that follows the host and grows later. A
+cap above the host's free space is a bad idea: a host that fills up shows
+in the guest as I/O errors, not as "disk full", which is why the rule
+takes half the free space and `grow` warns past it.
+
+`ssf vm grow [--data-gib N]` enlarges an existing VM's data disk without
+losing what is on it: with the VM stopped it checks the filesystem
+(`e2fsck -f`), lengthens the file and resizes the filesystem to fill it
+(`resize2fs`), then writes the new `data_gib`. Without `N` it grows to the
+rule for today's free space; it never shrinks (a smaller disk means a new
+VM). When the service owns the VM, stop the service first, since it
+restarts a VM that goes away under it:
+
+```sh
+systemctl --user stop ssf.service    # or `ssf vm stop` for a VM started by hand
+ssf vm grow                          # or: ssf vm grow --data-gib 200
+systemctl --user start ssf.service   # or `ssf vm start`
+```
+
+`ssf vm status` shows the sizes and, with the guest reachable, the data
+disk's use against its cap (`size:` line; `vcpus`, `mem_mib`, `data_gib`
+and `data` in `--json`). `ssf doctor`, which runs inside the guest, fails
+its data-disk line at 85 % used and its memory line when the guest has
+under a tenth of its memory available (or anything swapped out, should
+swap be added), each naming what to run.
 
 ## The image
 
@@ -160,7 +216,7 @@ console` shows the serial console.
 
 Each VM has, under `<vm.dir>/<name>/`, a `root.ext4` (a copy-on-write
 copy of the image: instant on btrfs, a full copy elsewhere) with the
-packages, and a `data.ext4` (`vm.data_gib`, sparse) mounted at
+packages, and a `data.ext4` (`vm.data_gib`, sparse; see [Size](#size)) mounted at
 `/var/lib/ssf` with everything that matters: ssf's state, the clones and
 the worktrees, and the guest user's home (herdr's session state, the
 harness transcripts, caches), which is bind-mounted from there. `ssf vm

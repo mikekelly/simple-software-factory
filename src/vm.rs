@@ -254,6 +254,330 @@ pub struct VmStatus {
     pub daemon: Option<String>,
     /// Per-harness login state in the guest (empty when not reachable).
     pub logins: Vec<LoginState>,
+    /// The guest's vCPUs and memory (`[vm]`, or the rule for this machine).
+    pub vcpus: u32,
+    pub mem_mib: u32,
+    /// The data disk's cap: the file's size once it exists, else what a
+    /// start would make.
+    pub data_gib: u32,
+    /// The data disk as the guest sees it (`df`), when reachable.
+    pub data: Option<DiskUse>,
+}
+
+/// Where the data disk is mounted in the guest.
+pub const GUEST_DATA_DIR: &str = "/var/lib/ssf";
+
+/// What the sizing rule reads off this machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostFacts {
+    /// Logical CPUs.
+    pub cpus: u32,
+    /// RAM in MiB.
+    pub mem_mib: u64,
+    /// Free space, in bytes, on the filesystem that holds `[vm] dir`.
+    pub free_bytes: u64,
+    /// That filesystem's mount point, for the message.
+    pub mount: String,
+}
+
+impl HostFacts {
+    /// Read this machine: the CPUs this process may use, `/proc/meminfo`,
+    /// and the free space where `dir` is (or would be: its nearest
+    /// existing ancestor).
+    // The statvfs field types differ between libc targets.
+    #[allow(clippy::useless_conversion)]
+    pub fn probe(dir: &Path) -> Result<Self> {
+        let cpus = std::thread::available_parallelism()
+            .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
+            .unwrap_or(1);
+        let meminfo = std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
+        let mem = parse_meminfo(&meminfo).context("no MemTotal in /proc/meminfo")?;
+        let here = existing_ancestor(dir);
+        let st = statvfs(&here)?;
+        Ok(Self {
+            cpus,
+            mem_mib: mem.total_kib / 1024,
+            free_bytes: u64::from(st.f_bavail) * u64::from(st.f_frsize),
+            mount: mount_point_of(&here),
+        })
+    }
+}
+
+/// The guest's sizes: what `[vm]` says, or what the rule chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Sizes {
+    pub vcpus: u32,
+    pub mem_mib: u32,
+    pub data_gib: u32,
+}
+
+impl Sizes {
+    /// The floor under every rule, and what a machine that cannot be read
+    /// gets.
+    pub const MIN: Sizes = Sizes {
+        vcpus: 2,
+        mem_mib: 4096,
+        data_gib: 20,
+    };
+}
+
+/// The sizing rule: the host's CPUs minus one, half its RAM (rounded down
+/// to 256 MiB), half the free space where the VM lives; never under
+/// `Sizes::MIN`. The data disk is sparse, so its size reserves nothing.
+pub fn sizes_for(facts: &HostFacts) -> Sizes {
+    let mem = u32::try_from(facts.mem_mib / 2 / 256 * 256).unwrap_or(u32::MAX);
+    let data = u32::try_from((facts.free_bytes / 2) >> 30).unwrap_or(u32::MAX);
+    Sizes {
+        vcpus: facts.cpus.saturating_sub(1).max(Sizes::MIN.vcpus),
+        mem_mib: mem.max(Sizes::MIN.mem_mib),
+        data_gib: data.max(Sizes::MIN.data_gib),
+    }
+}
+
+/// What `ssf vm build` settled on, and whether the file changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chosen {
+    pub sizes: Sizes,
+    /// Where each of vcpus, mem_mib, data_gib came from.
+    pub sources: [&'static str; 3],
+    pub changed: bool,
+}
+
+/// Settle the `[vm]` sizes for a build: a flag (`--vcpus`, `--mem-mib`,
+/// `--data-gib`, in that order) is written; a key set in the file stays;
+/// a key set nowhere gets `rule` and is written.
+pub fn choose_sizes(cfg: &mut VmConfig, flags: [Option<u32>; 3], rule: Sizes) -> Chosen {
+    let mut changed = false;
+    let mut pick = |slot: &mut Option<u32>, flag: Option<u32>, rule: u32| -> (u32, &'static str) {
+        match (flag, *slot) {
+            (Some(f), was) => {
+                changed |= was != Some(f);
+                *slot = Some(f);
+                (f, "from the flag")
+            }
+            (None, Some(v)) => (v, "set in config.toml"),
+            (None, None) => {
+                *slot = Some(rule);
+                changed = true;
+                (rule, "from this machine")
+            }
+        }
+    };
+    let (vcpus, vs) = pick(&mut cfg.vcpus, flags[0], rule.vcpus);
+    let (mem_mib, ms) = pick(&mut cfg.mem_mib, flags[1], rule.mem_mib);
+    let (data_gib, ds) = pick(&mut cfg.data_gib, flags[2], rule.data_gib);
+    Chosen {
+        sizes: Sizes {
+            vcpus,
+            mem_mib,
+            data_gib,
+        },
+        sources: [vs, ms, ds],
+        changed,
+    }
+}
+
+/// What `ssf vm grow` does with a disk of `current` GiB: `want`, or the
+/// rule for today. Smaller than today is refused; the same size is
+/// nothing to do.
+pub fn plan_grow(current: u32, want: Option<u32>, rule: u32) -> Result<Option<u32>> {
+    let target = want.unwrap_or(rule);
+    match target.cmp(&current) {
+        std::cmp::Ordering::Less if want.is_some() => bail!(
+            "the data disk is {current} GiB and {target} GiB would shrink it, which `ssf vm grow` does not do (a smaller disk means a new VM: `ssf vm destroy`)"
+        ),
+        std::cmp::Ordering::Less | std::cmp::Ordering::Equal => Ok(None),
+        std::cmp::Ordering::Greater => Ok(Some(target)),
+    }
+}
+
+/// The data disk is called full from here on (`ssf doctor`).
+pub const DATA_FULL_PCT: u8 = 85;
+
+/// A filesystem's use, as `df` counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct DiskUse {
+    pub used_bytes: u64,
+    pub avail_bytes: u64,
+    pub size_bytes: u64,
+}
+
+impl DiskUse {
+    /// `df`'s Use%: used against what is used or still available (the
+    /// reserved blocks count for neither).
+    pub fn pct(&self) -> u8 {
+        let total = self.used_bytes + self.avail_bytes;
+        if total == 0 {
+            return 0;
+        }
+        u8::try_from(self.used_bytes * 100 / total).unwrap_or(100)
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.pct() >= DATA_FULL_PCT
+    }
+
+    pub fn describe(&self) -> String {
+        format!(
+            "{:.1} of {:.0} GiB used ({}%)",
+            gib(self.used_bytes),
+            gib(self.size_bytes),
+            self.pct()
+        )
+    }
+}
+
+fn gib(bytes: u64) -> f64 {
+    bytes as f64 / f64::from(1u32 << 30)
+}
+
+/// The last line of `df -B1 --output=used,avail,size <path>`.
+pub fn parse_df(text: &str) -> Option<DiskUse> {
+    let line = text.lines().rev().find(|l| !l.trim().is_empty())?;
+    let mut f = line.split_whitespace().map(|n| n.parse::<u64>().ok());
+    Some(DiskUse {
+        used_bytes: f.next()??,
+        avail_bytes: f.next()??,
+        size_bytes: f.next()??,
+    })
+}
+
+/// The use of the filesystem holding `path`, here.
+// The statvfs field types differ between libc targets.
+#[allow(clippy::useless_conversion)]
+pub fn disk_use(path: &Path) -> Result<DiskUse> {
+    let st = statvfs(path)?;
+    let frsize = u64::from(st.f_frsize);
+    let blocks = u64::from(st.f_blocks);
+    let bfree = u64::from(st.f_bfree);
+    Ok(DiskUse {
+        used_bytes: blocks.saturating_sub(bfree) * frsize,
+        avail_bytes: u64::from(st.f_bavail) * frsize,
+        size_bytes: blocks * frsize,
+    })
+}
+
+/// What `/proc/meminfo` says, in KiB.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MemInfo {
+    pub total_kib: u64,
+    pub available_kib: u64,
+    pub swap_total_kib: u64,
+    pub swap_free_kib: u64,
+}
+
+impl MemInfo {
+    pub fn swapped_kib(&self) -> u64 {
+        self.swap_total_kib.saturating_sub(self.swap_free_kib)
+    }
+
+    /// Short of memory: under a tenth available, or anything swapped out.
+    pub fn is_short(&self) -> bool {
+        self.total_kib > 0 && (self.available_kib * 10 < self.total_kib || self.swapped_kib() > 0)
+    }
+
+    pub fn describe(&self) -> String {
+        let mut s = format!(
+            "{} of {} MiB available",
+            self.available_kib / 1024,
+            self.total_kib / 1024
+        );
+        if self.swapped_kib() > 0 {
+            s.push_str(&format!(", {} MiB swapped out", self.swapped_kib() / 1024));
+        }
+        s
+    }
+}
+
+pub fn parse_meminfo(text: &str) -> Option<MemInfo> {
+    let mut m = MemInfo::default();
+    let mut total = false;
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once(':') else {
+            continue;
+        };
+        let Ok(n) = v.trim().trim_end_matches("kB").trim().parse::<u64>() else {
+            continue;
+        };
+        match k {
+            "MemTotal" => {
+                m.total_kib = n;
+                total = true;
+            }
+            "MemAvailable" => m.available_kib = n,
+            "SwapTotal" => m.swap_total_kib = n,
+            "SwapFree" => m.swap_free_kib = n,
+            _ => {}
+        }
+    }
+    total.then_some(m)
+}
+
+fn statvfs(path: &Path) -> Result<libc::statvfs> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: a valid C string and a zeroed struct statvfs fills in.
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statvfs(c.as_ptr(), &mut st) };
+    if rc != 0 {
+        return Err(std::io::Error::last_os_error())
+            .with_context(|| format!("statvfs {}", path.display()));
+    }
+    Ok(st)
+}
+
+/// `p`, or the nearest ancestor that exists.
+fn existing_ancestor(p: &Path) -> PathBuf {
+    let mut q = p;
+    while !q.exists() {
+        q = q.parent().unwrap_or(Path::new("/"));
+    }
+    q.to_path_buf()
+}
+
+/// The mount point of the filesystem holding `p` (the longest one in
+/// `/proc/self/mounts` that is a prefix of it), or `p` itself.
+fn mount_point_of(p: &Path) -> String {
+    let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    std::fs::read_to_string("/proc/self/mounts")
+        .ok()
+        .and_then(|m| {
+            m.lines()
+                .filter_map(|l| l.split_whitespace().nth(1))
+                .map(|mp| mp.replace("\\040", " "))
+                .filter(|mp| p.starts_with(mp))
+                .max_by_key(|mp| mp.len())
+        })
+        .unwrap_or_else(|| p.to_string_lossy().to_string())
+}
+
+/// Make the ext4 image at `disk` `bytes` long: check it, lengthen the
+/// file, resize the filesystem to fill it.
+pub fn grow_image(disk: &Path, bytes: u64) -> Result<()> {
+    let out = Command::new("e2fsck")
+        .args(["-f", "-p"])
+        .arg(disk)
+        .output()
+        .context("running e2fsck (is e2fsprogs installed?)")?;
+    // 0 clean, 1 fixed something, 2 fixed and would want a reboot (an
+    // offline image: nothing to us).
+    if !matches!(out.status.code(), Some(0..=2)) {
+        bail!(
+            "e2fsck {} failed ({}): {}{}; run `e2fsck -f {}` by hand",
+            disk.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim(),
+            disk.display()
+        );
+    }
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .open(disk)
+        .with_context(|| format!("opening {}", disk.display()))?;
+    f.set_len(bytes)?;
+    drop(f);
+    run_ok(Command::new("resize2fs").arg(disk), "resize2fs")
 }
 
 impl Vm {
@@ -323,6 +647,90 @@ impl Vm {
     }
     fn known_hosts(&self) -> PathBuf {
         self.dir.join("known_hosts")
+    }
+
+    // ---- sizes ----
+
+    /// The sizes this VM runs at: `[vm]` where set, the rule for this
+    /// machine where not (the minimums when the machine cannot be read).
+    pub fn sizes(&self) -> Sizes {
+        let c = &self.cfg;
+        let rule = if c.vcpus.is_none() || c.mem_mib.is_none() || c.data_gib.is_none() {
+            HostFacts::probe(&self.base)
+                .map(|f| sizes_for(&f))
+                .unwrap_or(Sizes::MIN)
+        } else {
+            Sizes::MIN
+        };
+        Sizes {
+            vcpus: c.vcpus.unwrap_or(rule.vcpus),
+            mem_mib: c.mem_mib.unwrap_or(rule.mem_mib),
+            data_gib: c.data_gib.unwrap_or(rule.data_gib),
+        }
+    }
+
+    /// The data disk's cap in GiB: the file's size once it exists, else
+    /// what a start would make.
+    pub fn data_cap_gib(&self) -> u32 {
+        match std::fs::metadata(self.data_disk()) {
+            Ok(m) => u32::try_from(m.len().div_ceil(1 << 30)).unwrap_or(u32::MAX),
+            Err(_) => self.sizes().data_gib,
+        }
+    }
+
+    /// Enlarge the data disk to `want` GiB, or to the rule for today's
+    /// free space, keeping what is on it: the VM stopped, the filesystem
+    /// checked, the file lengthened, the filesystem resized to fill it.
+    /// Never shrinks. Returns the new size, or `None` when there was
+    /// nothing to do.
+    pub fn grow(&self, want: Option<u32>) -> Result<Option<u32>> {
+        if self.running() {
+            bail!(
+                "VM {} is running; stop it first (`systemctl --user stop ssf.service` when the service owns it, else `ssf vm stop`), grow, then start it again",
+                self.cfg.name
+            );
+        }
+        let disk = self.data_disk();
+        let meta = std::fs::metadata(&disk).with_context(|| {
+            format!(
+                "{} does not exist yet; `ssf vm start` makes the data disk at [vm] data_gib",
+                disk.display()
+            )
+        })?;
+        let current = u32::try_from(meta.len().div_ceil(1 << 30)).unwrap_or(u32::MAX);
+        let facts = HostFacts::probe(&self.base)?;
+        let rule = sizes_for(&facts).data_gib;
+        let Some(target) = plan_grow(current, want, rule)? else {
+            println!(
+                "{} stays at {current} GiB{}",
+                disk.display(),
+                if want.is_none() {
+                    format!(" (the rule for today's free space gives {rule} GiB)")
+                } else {
+                    String::new()
+                }
+            );
+            return Ok(None);
+        };
+        // What the guest could still write, against what the host has.
+        let allocated = std::os::unix::fs::MetadataExt::blocks(&meta) * 512;
+        if (u64::from(target) << 30).saturating_sub(allocated) > facts.free_bytes {
+            warn!(
+                "{target} GiB is more than the host has free ({} GiB on {}); a guest that fills the disk would see I/O errors before \"disk full\"",
+                facts.free_bytes >> 30,
+                facts.mount
+            );
+        }
+        info!("checking and resizing {}", disk.display());
+        grow_image(&disk, u64::from(target) << 30)?;
+        println!("{} grown from {current} to {target} GiB", disk.display());
+        Ok(Some(target))
+    }
+
+    /// `df` of the data disk inside the guest.
+    pub fn guest_disk_use(&self) -> Result<DiskUse> {
+        let out = self.ssh_output(&["df", "-B1", "--output=used,avail,size", GUEST_DATA_DIR])?;
+        parse_df(&out).context("unexpected df output")
     }
 
     // ---- processes ----
@@ -531,6 +939,7 @@ impl Vm {
         if let Some(i) = init {
             args.push_str(&format!(" init={i}"));
         }
+        let sizes = self.sizes();
         let drives: Vec<Value> = drives
             .iter()
             .enumerate()
@@ -550,8 +959,8 @@ impl Vm {
             },
             "drives": drives,
             "machine-config": {
-                "vcpu_count": self.cfg.vcpus,
-                "mem_size_mib": self.cfg.mem_mib,
+                "vcpu_count": sizes.vcpus,
+                "mem_size_mib": sizes.mem_mib,
             },
             "vsock": {
                 "guest_cid": GUEST_CID,
@@ -618,13 +1027,10 @@ impl Vm {
             }
         }
         if !self.data_disk().exists() {
-            info!(
-                "making {} ({} GiB, sparse)",
-                self.data_disk().display(),
-                self.cfg.data_gib
-            );
+            let gib = self.sizes().data_gib;
+            info!("making {} ({gib} GiB, sparse)", self.data_disk().display());
             let f = std::fs::File::create(self.data_disk())?;
-            f.set_len(u64::from(self.cfg.data_gib) << 30)?;
+            f.set_len(u64::from(gib) << 30)?;
             drop(f);
             run_ok(
                 Command::new("mkfs.ext4")
@@ -1085,7 +1491,16 @@ impl Vm {
     pub async fn status(&self) -> VmStatus {
         let running = self.running();
         let ssh = running && self.ssh_ok();
+        let sizes = self.sizes();
         VmStatus {
+            vcpus: sizes.vcpus,
+            mem_mib: sizes.mem_mib,
+            data_gib: self.data_cap_gib(),
+            data: if ssh {
+                self.guest_disk_use().ok()
+            } else {
+                None
+            },
             enabled: self.cfg.enabled,
             name: self.cfg.name.clone(),
             dir: self.dir.to_string_lossy().to_string(),
@@ -1723,6 +2138,9 @@ mod tests {
         let mut cfg = Config::default();
         cfg.vm.dir = "/v".into();
         cfg.vm.name = "one".into();
+        cfg.vm.vcpus = Some(2);
+        cfg.vm.mem_mib = Some(4096);
+        cfg.vm.data_gib = Some(20);
         Vm::new(&cfg)
     }
 
@@ -1951,6 +2369,232 @@ mod tests {
         );
     }
 
+    fn facts(cpus: u32, mem_mib: u64, free_gib: u64) -> HostFacts {
+        HostFacts {
+            cpus,
+            mem_mib,
+            free_bytes: free_gib << 30,
+            mount: "/home".into(),
+        }
+    }
+
+    #[test]
+    fn sizing_rule_follows_the_machine_down_to_the_floors() {
+        // A desktop: 8 CPUs, 32 GiB, 500 GiB free.
+        assert_eq!(
+            sizes_for(&facts(8, 32768, 500)),
+            Sizes {
+                vcpus: 7,
+                mem_mib: 16384,
+                data_gib: 250
+            }
+        );
+        // Half the RAM lands on a 256 MiB boundary.
+        assert_eq!(sizes_for(&facts(4, 31922, 160)).mem_mib, 15872);
+        assert_eq!(sizes_for(&facts(4, 31922, 160)).data_gib, 80);
+        // A small machine never goes under the old fixed sizes.
+        assert_eq!(sizes_for(&facts(2, 4096, 30)), Sizes::MIN);
+        assert_eq!(sizes_for(&facts(1, 1024, 0)), Sizes::MIN);
+        assert_eq!(sizes_for(&facts(3, 8192, 41)).vcpus, 2);
+        assert_eq!(sizes_for(&facts(3, 8192, 41)).data_gib, 20);
+        assert_eq!(sizes_for(&facts(3, 8192, 42)).data_gib, 21);
+    }
+
+    #[test]
+    fn build_writes_unset_sizes_and_keeps_hand_set_ones() {
+        let rule = Sizes {
+            vcpus: 7,
+            mem_mib: 16384,
+            data_gib: 250,
+        };
+        // Nothing set: everything from the machine, and the file changes.
+        let mut cfg = VmConfig::default();
+        let c = choose_sizes(&mut cfg, [None, None, None], rule);
+        assert_eq!(c.sizes, rule);
+        assert!(c.changed);
+        assert_eq!(c.sources, ["from this machine"; 3]);
+        assert_eq!(cfg.data_gib, Some(250));
+        // Set by hand: kept, nothing to write.
+        let mut cfg = VmConfig {
+            vcpus: Some(2),
+            mem_mib: Some(4096),
+            data_gib: Some(20),
+            ..VmConfig::default()
+        };
+        let c = choose_sizes(&mut cfg, [None, None, None], rule);
+        assert_eq!(c.sizes, Sizes::MIN);
+        assert!(!c.changed);
+        assert_eq!(c.sources, ["set in config.toml"; 3]);
+        // A flag beats the file and the machine, and is written.
+        let c = choose_sizes(&mut cfg, [None, Some(8192), None], rule);
+        assert_eq!(c.sizes.mem_mib, 8192);
+        assert_eq!(c.sources[1], "from the flag");
+        assert!(c.changed);
+        assert_eq!(cfg.mem_mib, Some(8192));
+        // The same flag again changes nothing.
+        assert!(!choose_sizes(&mut cfg, [None, Some(8192), None], rule).changed);
+        // The effective sizes follow the file where set.
+        let mut whole = Config {
+            vm: cfg.clone(),
+            ..Config::default()
+        };
+        assert_eq!(Vm::new(&whole).sizes().mem_mib, 8192);
+        whole.vm.vcpus = None;
+        assert!(Vm::new(&whole).sizes().vcpus >= Sizes::MIN.vcpus);
+    }
+
+    #[test]
+    fn grow_plans_refuse_to_shrink_and_skip_the_same_size() {
+        assert_eq!(plan_grow(20, Some(40), 80).unwrap(), Some(40));
+        assert_eq!(plan_grow(20, None, 80).unwrap(), Some(80));
+        assert_eq!(plan_grow(20, Some(20), 80).unwrap(), None);
+        // The rule is below today: nothing to do, not an error.
+        assert_eq!(plan_grow(100, None, 80).unwrap(), None);
+        let e = plan_grow(20, Some(10), 80).unwrap_err().to_string();
+        assert!(e.contains("shrink"), "{e}");
+        assert!(plan_grow(20, Some(0), 80).is_err());
+    }
+
+    #[test]
+    fn df_and_meminfo_parse() {
+        let d = parse_df(
+            "    Used    Avail    1B-blocks
+17000000000 3000000000 21000000000
+",
+        )
+        .unwrap();
+        assert_eq!(d.used_bytes, 17_000_000_000);
+        assert_eq!(d.pct(), 85);
+        assert!(d.is_full());
+        assert!(d.describe().starts_with("15.8 of 20 GiB used (85%)"));
+        let d = parse_df("1 9 10").unwrap();
+        assert_eq!(d.pct(), 10);
+        assert!(!d.is_full());
+        assert!(parse_df("garbage").is_none());
+        assert!(parse_df("").is_none());
+        let m = parse_meminfo(
+            "MemTotal:       16384000 kB\nMemFree:  100 kB\nMemAvailable:    8192000 kB\nSwapTotal:  0 kB\nSwapFree:   0 kB\n",
+        )
+        .unwrap();
+        assert_eq!(m.total_kib, 16_384_000);
+        assert!(!m.is_short());
+        assert_eq!(m.describe(), "8000 of 16000 MiB available");
+        let m = parse_meminfo("MemTotal: 1000 kB\nMemAvailable: 99 kB\n").unwrap();
+        assert!(m.is_short());
+        let m = parse_meminfo(
+            "MemTotal: 1000 kB\nMemAvailable: 900 kB\nSwapTotal: 2048 kB\nSwapFree: 1024 kB\n",
+        )
+        .unwrap();
+        assert!(m.is_short());
+        assert!(m.describe().ends_with(", 1 MiB swapped out"));
+        assert!(parse_meminfo("MemFree: 1 kB\n").is_none());
+        // This machine reads.
+        let f = HostFacts::probe(Path::new("/nonexistent/deeper/still")).unwrap();
+        assert!(f.cpus >= 1 && f.mem_mib > 0);
+        assert_eq!(f.mount, "/");
+        let here = disk_use(Path::new("/")).unwrap();
+        assert!(here.size_bytes > 0);
+    }
+
+    /// A tiny ext4 image grows, a VM's disk grows with the config's
+    /// arithmetic, and a running VM is refused. Needs e2fsprogs.
+    #[test]
+    fn grow_resizes_the_image_and_refuses_a_running_vm() {
+        if which("mkfs.ext4").is_none() || which("resize2fs").is_none() {
+            eprintln!("skipped: e2fsprogs not installed");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-grow-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(dir.join("one")).unwrap();
+        let block_count = |img: &Path| -> u64 {
+            let out = Command::new("dumpe2fs")
+                .arg("-h")
+                .arg(img)
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&out.stdout);
+            let field = |k: &str| -> u64 {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(k))
+                    .unwrap()
+                    .trim()
+                    .parse()
+                    .unwrap()
+            };
+            field("Block count:") * field("Block size:")
+        };
+        // MiB scale, straight through the image helper.
+        let img = dir.join("small.ext4");
+        let f = std::fs::File::create(&img).unwrap();
+        f.set_len(16 << 20).unwrap();
+        drop(f);
+        run_ok(
+            Command::new("mkfs.ext4").args(["-q", "-F"]).arg(&img),
+            "mkfs",
+        )
+        .unwrap();
+        assert_eq!(block_count(&img), 16 << 20);
+        grow_image(&img, 48 << 20).unwrap();
+        assert_eq!(block_count(&img), 48 << 20);
+        assert_eq!(std::fs::metadata(&img).unwrap().len(), 48 << 20);
+        // Through the VM: a 1 GiB sparse data disk to 2 GiB.
+        let mut cfg = Config::default();
+        cfg.vm.dir = dir.to_string_lossy().to_string();
+        cfg.vm.name = "one".into();
+        cfg.vm.data_gib = Some(1);
+        let vm = Vm::new(&cfg);
+        let e = vm.grow(Some(2)).unwrap_err().to_string();
+        assert!(e.contains("does not exist yet"), "{e}");
+        let f = std::fs::File::create(vm.data_disk()).unwrap();
+        f.set_len(1 << 30).unwrap();
+        drop(f);
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-F", "-L", "ssf-data"])
+                .arg(vm.data_disk()),
+            "mkfs",
+        )
+        .unwrap();
+        assert_eq!(vm.data_cap_gib(), 1);
+        assert!(vm.grow(Some(0)).is_err(), "shrinking is refused");
+        assert_eq!(vm.grow(Some(1)).unwrap(), None, "same size: nothing to do");
+        assert_eq!(vm.grow(Some(2)).unwrap(), Some(2));
+        assert_eq!(vm.data_cap_gib(), 2);
+        assert_eq!(block_count(&vm.data_disk()), 2 << 30);
+        // Sparse: the file takes a little space, not 2 GiB.
+        let blocks =
+            std::os::unix::fs::MetadataExt::blocks(&std::fs::metadata(vm.data_disk()).unwrap());
+        assert!(blocks * 512 < 1 << 30, "{blocks} blocks");
+        // Running (a process whose name says firecracker): refused.
+        let fake = dir.join("firecracker");
+        std::fs::copy("/bin/sleep", &fake).unwrap();
+        let mut child = Command::new(&fake).arg("60").spawn().unwrap();
+        std::fs::write(vm.fc_pid(), child.id().to_string()).unwrap();
+        // spawn may return before the child has exec'd its new name.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !vm.running() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            vm.running(),
+            "{:?}",
+            std::fs::read(format!("/proc/{}/cmdline", child.id()))
+        );
+        let e = vm.grow(Some(4)).unwrap_err().to_string();
+        assert!(e.contains("is running"), "{e}");
+        assert_eq!(vm.data_cap_gib(), 2, "untouched");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn pid_files_name_the_program() {
         assert!(pid_runs(std::process::id(), "ssf") || pid_runs(std::process::id(), "vm"));
@@ -1967,7 +2611,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.vm.name = "live-test".into();
         cfg.vm.ssh_port = 2299;
-        cfg.vm.data_gib = 2;
+        cfg.vm.data_gib = Some(2);
         cfg.github.login = Some("test-bot".into());
         let mut vm = Vm::new(&cfg);
         // Under `cargo test` this process is the test harness, not ssf.

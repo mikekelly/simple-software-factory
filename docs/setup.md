@@ -274,6 +274,25 @@ ssf config set vm.enabled true
 systemctl --user restart ssf.service   # the service starts the VM and owns it from now on
 ```
 
+`ssf vm build` starts by sizing the VM from this machine and writing the
+sizes to `config.toml` under `[vm]`: `vcpus` (the CPUs minus one, at
+least 2), `mem_mib` (half the RAM, at least 4096) and `data_gib` (half
+the free space of the filesystem under `vm.dir`, at least 20; the disk is
+sparse, so this reserves nothing). It prints what it chose:
+
+```
+this machine: 8 CPUs, 32768 MiB RAM, 500 GiB free on /home (where [vm] dir is)
+VM size: 7 vCPUs (from this machine), 16384 MiB RAM (from this machine), 250 GiB data disk (from this machine; sparse, so it takes host space only as the guest writes)
+written to /home/you/.config/ssf/config.toml under [vm] (vcpus, mem_mib, data_gib); edit them there. The data disk itself is made by `ssf vm start` and only enlarged by `ssf vm grow`
+```
+
+A value already in `[vm]` is kept, and `--vcpus`, `--mem-mib` and
+`--data-gib` write a value of your own. Rule of thumb per parallel
+session: about one vCPU and 2 GiB of RAM per active session, plus one
+clone per repository and a build tree per worktree on the data disk;
+`ssf vm grow` enlarges the data disk later without losing anything (see
+[Size](vm.md#size)).
+
 `ssf vm build` prints, at the end, one line per harness it could install
 in the guest (whatever npm or a release tarball provide; best effort)
 with its version or the failure; make sure yours is on it. Check:
@@ -285,6 +304,7 @@ image:    built
 state:    running (firecracker pid 12345)
 ssh:      127.0.0.1:2222 answers
 daemon:   active
+size:     7 vCPUs, 16384 MiB; data disk 250 GiB, 0.4 of 250 GiB used (0%)
 logins:   claude not logged in
 $ ssf doctor
 ok   config readable at /home/ssf/.config/ssf/config.toml
@@ -300,11 +320,10 @@ FAIL 0 repositories configured
 `ssf doctor`, `status`, `peers`, `tell`, `sub`, `release` and `purge` now
 run inside the guest (the paths in their output are the guest's), and
 the herdr line is `ok`: the guest runs its own herdr session. The one
-failure left is the repository (step 8). Sizes and ports (`vm.vcpus`,
-`vm.mem_mib`, `vm.data_gib`, `vm.root_gib`, `vm.ssh_port`), what gets
-into the guest and what persists, reaching it (`ssf vm attach`, `ssf vm
-ssh`, `ssf vm logs`), and changing the image are in [Inside a
-microVM](vm.md).
+failure left is the repository (step 8). The sizes and `ssf vm grow`,
+the port (`vm.ssh_port`), what gets into the guest and what persists,
+reaching it (`ssf vm attach`, `ssf vm ssh`, `ssf vm logs`), and changing
+the image are in [Inside a microVM](vm.md).
 
 ### Alternative: on the host, in herdr or in Orca
 
