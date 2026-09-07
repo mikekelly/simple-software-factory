@@ -73,10 +73,18 @@ which pastes and submits them.
 A first-run dialog is answered from the pane's screen whatever state herdr
 reports for the agent, because the state does not say whether one is up:
 herdr 0.8.2 calls Codex sitting on its directory-trust question `idle`
-where it calls Claude Code's `blocked`. The first prompt after a launch is
-then sent confirmed -- herdr waits until the harness is working on it --
-so a paste that went nowhere is an error the session's start reports
-rather than an agent left at an empty composer with no instructions.
+where it calls Claude Code's `blocked`. The dialog is looked for at the
+bottom of the screen, where its options are, so the same wording in text
+the agent is showing is not mistaken for one.
+
+The first prompt after a launch is sent confirmed where herdr can tell:
+it waits until the harness is working on the text, and reports a stall
+when nothing happened with it. A stall with a dialog on the screen is
+that dialog -- it is answered and the prompt sent again -- and any other
+stall is taken as delivered, with a line in the log, because herdr cannot
+narrate every harness it recognises: one it has no state manifest for
+(Oh My Pi, say) is reported `idle` whatever it is doing, so waiting for
+`working` there would never come true.
 
 herdr keeps no link between a workspace and an issue, so ssf finds a
 workspace it lost track of by the worktree's name (`issue-N-...`), and
