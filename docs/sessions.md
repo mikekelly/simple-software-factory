@@ -195,7 +195,7 @@ The events, and nothing else:
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
-| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no`; `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
+| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
 
 The `handed-over` post is what a reader sees when an item changes stack
 (see [Handover](#handover)):
@@ -481,7 +481,16 @@ Handing the item over again is the way out of either block. The new
 session is still told it took over from the session that did the work:
 a harness that never came up wrote nothing, so its name is not the one
 carried forward, though the `handed-over` post says what the item was
-configured on.
+configured on. A summary still waiting is carried forward too: with
+`--no-summary` (or from an operator who was not there for the first
+handover) the new session is given the one nobody has read, and the
+`handed-over` post says `summary: yes`, because that is what the session
+gets. A second handover that does write a summary replaces it, as the
+newer account of where the item stands -- so where both matter, write
+the new summary with what the old one said in it. `ssf status` and `ssf
+peers` show a summary nobody has read yet on the item's line (`handover
+note waiting: from Claude Code, summary 1234 chars`; `handover_note`
+with `from` and `summary_chars` in `--json`).
 
 **Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the
 daemon has not carried out yet: nothing about the item changes, and the

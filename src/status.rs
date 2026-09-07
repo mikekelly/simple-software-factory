@@ -14,7 +14,7 @@ use crate::driver::Drivers;
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
 use crate::orca::WorkspaceInfo;
-use crate::state::{Blocked, IssueState, Overrides, PendingHandover, State};
+use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
 /// the bar widget polls this, so it must never hang.
@@ -58,6 +58,11 @@ pub struct Session {
     /// A handover the daemon has accepted and not carried out yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handover: Option<HandoverView>,
+    /// What an earlier handover left for a session that has not read it
+    /// yet: the harness that was handed over, and how long its summary
+    /// is. It goes to whichever session takes the first message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handover_note: Option<HandoverNoteView>,
     /// Session that acts on this item: its own, or the session it is bound
     /// to. Empty for an item tracked only for its subscribers.
     pub owner: String,
@@ -151,6 +156,35 @@ pub struct HandoverView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
     pub requested_at: String,
+}
+
+/// A handover's parting words, waiting on the item for the session that
+/// reads them (see [`crate::state::HandoverNote`]): who wrote them and
+/// how long they are. The words themselves are the new session's first
+/// message, not status.
+#[derive(Debug, Clone, Serialize)]
+pub struct HandoverNoteView {
+    /// Display name of the harness the item was handed over from.
+    pub from: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_chars: Option<usize>,
+}
+
+impl HandoverNoteView {
+    pub fn of(n: &HandoverNote) -> Self {
+        Self {
+            from: n.from.clone(),
+            summary_chars: n.summary.as_deref().map(|s| s.chars().count()),
+        }
+    }
+
+    /// One line for a person: `from Claude Code, summary 1,234 chars`.
+    pub fn describe(&self) -> String {
+        match self.summary_chars {
+            Some(n) => format!("from {}, summary {n} chars", self.from),
+            None => format!("from {}, no summary", self.from),
+        }
+    }
 }
 
 impl HandoverView {
@@ -538,6 +572,7 @@ fn join(
         effort: eff.effort.clone(),
         overrides: overrides.cloned(),
         handover: item.handover.as_ref().map(HandoverView::of),
+        handover_note: item.handover_note.as_ref().map(HandoverNoteView::of),
         owner: if item.subscriber_only {
             String::new()
         } else {
@@ -681,6 +716,12 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         if let Some(h) = &s.handover {
             out.push_str(&format!("         handover pending: {}\n", h.describe()));
         }
+        if let Some(n) = &s.handover_note {
+            out.push_str(&format!(
+                "         handover note waiting: {}\n",
+                n.describe()
+            ));
+        }
         if let Some(b) = &s.blocked {
             out.push_str(&format!("         BLOCKED: {}\n", b.describe()));
         }
@@ -805,6 +846,12 @@ pub fn render_status(snap: &Snapshot) -> String {
             }
             if let Some(h) = &s.handover {
                 out.push_str(&format!("          handover pending: {}\n", h.describe()));
+            }
+            if let Some(n) = &s.handover_note {
+                out.push_str(&format!(
+                    "          handover note waiting: {}\n",
+                    n.describe()
+                ));
             }
             if let Some(b) = &s.blocked {
                 out.push_str(&format!("          BLOCKED: {}\n", b.describe()));
@@ -1130,6 +1177,12 @@ mod tests {
             model: Some("openai/gpt-6".into()),
             effort: Some("high".into()),
         });
+        // The harness it went to never read what the outgoing session
+        // left: the note waits on the item for the one that does.
+        one.handover_note = Some(HandoverNote {
+            from: "Claude Code".into(),
+            summary: Some("half migrated".into()),
+        });
         let mut two = item(2, Some("r1::/w/one"));
         two.shares_workspace_of = Some(1);
         // Bound to the bound item: the chain leads to #1 all the same.
@@ -1170,6 +1223,10 @@ mod tests {
             table.contains("handover pending: codex, asked by acme/widgets#3"),
             "{table}"
         );
+        assert!(
+            table.contains("handover note waiting: from Claude Code, summary 13 chars"),
+            "{table}"
+        );
         let snap = Snapshot {
             cfg: cfg(),
             state: st,
@@ -1188,6 +1245,13 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("handover pending: codex"), "{text}");
+        assert!(
+            text.contains("handover note waiting: from Claude Code, summary 13 chars"),
+            "{text}"
+        );
+        assert_eq!(v["sessions"][0]["handover_note"]["from"], "Claude Code");
+        assert_eq!(v["sessions"][0]["handover_note"]["summary_chars"], 13);
+        assert!(v["sessions"][2]["handover_note"].is_null());
     }
 
     #[test]

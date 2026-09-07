@@ -4090,10 +4090,22 @@ deliveries resume"
         // still the last one that worked the item, so its name is the one
         // carried forward. The `handed-over` post keeps saying what the
         // item was configured on.
-        let note_from = self
+        let pending_note = self
             .peek(repo, number)
-            .and_then(|s| s.handover_note.as_ref().map(|n| n.from.clone()))
+            .and_then(|s| s.handover_note.clone());
+        let note_from = pending_note
+            .as_ref()
+            .map(|n| n.from.clone())
             .unwrap_or_else(|| from_name.clone());
+        // A summary nobody has read yet is not thrown away by a handover
+        // that carries none of its own: the session that wrote it is long
+        // gone, and the one starting now is the first that can act on it.
+        // A handover that does bring a summary replaces it, since that is
+        // the newer account of where the item stands.
+        let summary = h
+            .summary
+            .clone()
+            .or_else(|| pending_note.and_then(|n| n.summary));
         let story = match self.story(repo, number, Some(&note_from)).await {
             Ok(s) => s,
             Err(e) => {
@@ -4108,7 +4120,7 @@ deliveries resume"
             }
         };
         let kind = self.item_kind(repo, number);
-        let text = prompt::handover_prompt(&note_from, kind, h.summary.as_deref(), &story.text);
+        let text = prompt::handover_prompt(&note_from, kind, summary.as_deref(), &story.text);
         // End the caller's pane. The workspace stays, so the new session
         // opens on the same checkout and branch.
         match self
@@ -4189,7 +4201,7 @@ deliveries resume"
             // later is the one that takes the work on.
             e.handover_note = Some(HandoverNote {
                 from: note_from.clone(),
-                summary: h.summary.clone(),
+                summary: summary.clone(),
             });
         }
         for n in bound {
@@ -4222,7 +4234,7 @@ deliveries resume"
                 self.post_event(
                     repo,
                     number,
-                    handed_over(&from_launch, &to_launch, &h, None),
+                    handed_over(&from_launch, &to_launch, &h, summary.is_some(), None),
                 )
                 .await;
                 let why = safe_error(&events::one_line(&format!("{e:#}")));
@@ -4256,7 +4268,7 @@ deliveries resume"
         self.post_event(
             repo,
             number,
-            handed_over(&from_launch, &to_launch, &h, None),
+            handed_over(&from_launch, &to_launch, &h, summary.is_some(), None),
         )
         .await;
         // A harness started on a machine it is not signed in on shows its
@@ -4348,8 +4360,12 @@ deliveries resume"
         let why = safe_error(&events::one_line(&why));
         let from = self.launch_of(repo, number);
         let to = self.launch_with(repo, number, Some(&h.overrides()));
-        self.post_event(repo, number, handed_over(&from, &to, h, Some(why.clone())))
-            .await;
+        self.post_event(
+            repo,
+            number,
+            handed_over(&from, &to, h, h.summary.is_some(), Some(why.clone())),
+        )
+        .await;
         let st = self.entry(repo, number).clone();
         let live = match st.worktree_id.as_deref() {
             Some(id) => self.driver(repo).has_live_agent(id).await.unwrap_or(false),
@@ -4627,17 +4643,21 @@ fn capture_since(launched_at: &str, handed_over_at: Option<&str>) -> SystemTime 
     }
 }
 
-/// The `handed-over` post of one handover, refused or not.
+/// The `handed-over` post of one handover, refused or not. `summary`
+/// says whether the new session is given one, which a handover that
+/// carries none of its own still does when an earlier one's summary is
+/// waiting on the item unread.
 fn handed_over(
     from: &events::Launch,
     to: &events::Launch,
     h: &PendingHandover,
+    summary: bool,
     refused: Option<String>,
 ) -> Event {
     Event::HandedOver {
         from: from.clone(),
         to: to.clone(),
-        summary: h.summary.is_some(),
+        summary,
         by: h.by.clone(),
         refused,
     }
@@ -8566,6 +8586,52 @@ mod tests {
             .filter(|(_, body)| body.contains("event=blocked"))
             .count();
         assert_eq!(blocked, 1, "one hold, one post: {posts:?}");
+    }
+
+    /// A second handover that brings no summary of its own does not
+    /// destroy the one still waiting: the session that wrote it is long
+    /// gone, and the harness starting now is the first that can act on
+    /// it. One that does bring a summary replaces it (the newer account
+    /// of where the item stands), which is what the test above shows.
+    #[tokio::test]
+    async fn a_second_handover_without_a_summary_keeps_the_one_still_owed() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        d.with(|s| s.start_error = Some("pi exited at once".into()));
+        e.handover("o/r#5", "pi", None, None, Some("half migrated"), None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        assert!(
+            e.entry(&repo(), 5).handover_note.is_some(),
+            "nobody read it"
+        );
+        let _ = (d.log(), d.prompts(), stub.post_bodies());
+        // Handed on again with nothing to add: Codex still has to be
+        // told what the session that did the work left.
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&repo()).await;
+        let prompts = d.prompts();
+        assert!(
+            prompts[0].starts_with("You took over this issue from a session on Claude Code"),
+            "{}",
+            prompts[0]
+        );
+        assert!(prompts[0].contains("half migrated"), "{}", prompts[0]);
+        assert!(
+            e.entry(&repo(), 5).handover_note.is_none(),
+            "read at last, so nothing is owed"
+        );
+        // The post says what the new session was given, not what the
+        // command carried.
+        let posts = stub.post_bodies();
+        let handed = posts
+            .iter()
+            .find(|(_, b)| b.contains("event=handed-over"))
+            .expect("the handover is posted");
+        assert!(handed.1.contains("\nsummary: yes\n"), "{}", handed.1);
     }
 
     /// A second handover on an item whose first one never ran: the words
