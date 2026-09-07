@@ -6,7 +6,7 @@
 # the local-copy prepare() below.
 
 pkgname=ssf
-pkgver=0.1.0.r220.g28bcb62
+pkgver=0.1.0.r232.gc446a62
 pkgrel=1
 pkgdesc="Simple Software Factory: GitHub issues assigned to a bot become agent workspaces in herdr or Orca"
 arch=('x86_64' 'aarch64')
