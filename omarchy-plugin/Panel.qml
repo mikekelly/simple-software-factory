@@ -77,12 +77,10 @@ Panel {
   }
 
   function isPullRequest(s) { return String(s.kind || "") === "pull_request" }
-  function isReviewer(s) { return String(s.kind || "") === "reviewer" }
 
-  // Octicons: issue open/closed, pull request, merged, eye (reviewer session).
+  // Octicons: issue open/closed, pull request, merged.
   function kindGlyph(s) {
     var state = String(s.github_state || "")
-    if (isReviewer(s)) return "\uf441"
     if (isPullRequest(s)) return state === "merged" ? "\uf419" : "\uf407"
     return state === "closed" ? "\uf41d" : "\uf41b"
   }

@@ -1188,10 +1188,11 @@ has not seen your reasoning the diff, the item and your claim of what the change
 ask it to break it. A subagent of your own harness is the default. For a different agent and \
 model, start one through herdr in this worktree and take it down after: \
 `herdr workspace create --cwd \"$PWD\" --label second-opinion --no-focus` (prints the workspace \
-id), `herdr pane list --workspace <id>` (its pane), `herdr agent start second-opinion --kind \
-<kind> --pane <pane>` (`herdr agent start --help` lists the kinds; agent flags such as a model \
-go after `--`), `herdr agent prompt <pane> \"<brief>\" --wait`, `herdr pane read <pane> \
---source visible --format text` (its answer), `herdr workspace close <id>`. Tell it to change \
+id and its pane id), `herdr agent start second-opinion --kind <kind> --pane <pane>` (`herdr \
+agent start --help` lists the kinds; agent flags such as a model go after `--`; a trust or \
+safety dialog, which `herdr pane read <pane>` shows, is answered with `herdr agent send-keys \
+<pane> down` and `... enter`), `herdr agent prompt <pane> \"<brief>\" --wait`, `herdr pane read \
+<pane> --lines 200 --format text` (its answer), `herdr workspace close <id>`. Tell it to change \
 nothing; it shares your checkout.\n\n\
 ## Wrapping up\n\n\
 When your item closes, or you are no longer assigned, ssf says so and leaves the workspace \
@@ -1813,7 +1814,9 @@ nobody else is spawned for it.",
             g.contains("`herdr workspace create --cwd \"$PWD\" --label second-opinion --no-focus`")
         );
         assert!(g.contains("`herdr agent start second-opinion --kind <kind> --pane <pane>`"));
+        assert!(g.contains("`herdr agent send-keys <pane> down`"));
         assert!(g.contains("`herdr agent prompt <pane> \"<brief>\" --wait`"));
+        assert!(g.contains("`herdr pane read <pane> --lines 200 --format text`"));
         assert!(g.contains("`herdr workspace close <id>`"));
         for gone in [
             "reviewer session",

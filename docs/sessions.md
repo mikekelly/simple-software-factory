@@ -1,6 +1,6 @@
-# Sessions: ownership, reviewers, subscriptions, release and purge
+# Sessions: ownership, second opinions, subscriptions, release and purge
 
-The rules that decide which session acts on an item, how a bot pull request gets reviewed, how sessions follow and message each other, and what happens to a workspace when its item closes. For whoever operates a factory or wants to know why an item went where it did; agents get the same rules from `ssf guide`.
+The rules that decide which session acts on an item, how a bot pull request gets a second pair of eyes, how sessions follow and message each other, and what happens to a workspace when its item closes. For whoever operates a factory or wants to know why an item went where it did; agents get the same rules from `ssf guide`.
 
 ## Ownership: one session per item
 
@@ -32,9 +32,9 @@ binding wins):
   brought back the way any lost session is (workspace re-created from its
   branch, conversation resumed), rather than replaced. A retired owner's
   workspace cannot be released or purged while items bound to it are still
-  open. The one exception is a review asked on an owned pull request (a
-  review request, or the `review` label), which gets a reviewer session
-  (below): the author is told that, and not to review its own work.
+  open. A review asked on an owned pull request goes the same way: to the
+  owner, as activity (see below for how its work gets a second pair of
+  eyes).
 - **Hand-offs.** An item a session creates *and assigns the bot to* in the
   same `gh ... create` command is a delegation: the tag carries
   `mode=delegate`, the item gets a fresh session of its own, and the creating
@@ -64,77 +64,42 @@ binding wins):
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
 and "handed off by ...".
 
-## Reviewer sessions
+## Second opinions: the gauntlet
 
-A session must not review its own pull request, so a review asked of the
-bot on a PR that one of its sessions owns (opened from it, or on its branch)
-does not go to that session. ssf starts a **reviewer session** instead. A
-review is asked for in one of two ways:
+ssf runs one session per item and starts no second session on a pull
+request a session wrote. Until #115 a `review` label (or a review
+request) on such a PR started a *reviewer session*, a second workspace
+with its own agent; that went, together with `daemon.review_label`,
+`SSF_ROLE=reviewer`, the `role=reviewer` tag field, the `(reviewer)`
+byline and the `owner/repo#N:reviewer` session id. Old posts that carry
+the tag or the byline are read as the item's session's; old
+`review-<n>-...` worktrees belong to no item (`ssf purge` does not know
+them, remove them by hand); reviewer records in an old `state.json` are
+dropped on load with one log line; the old config keys still load and
+`ssf doctor` says they do nothing.
 
-- **The `review` label** (`daemon.review_label`; set it to `""` to turn the
-  trigger off). This is the way for a PR the bot opened: GitHub refuses a
-  review request from a pull request's own author (`gh pr edit --add-reviewer
-  <bot>` silently adds nothing on such a PR), so a human, or the author's
-  agent, adds the label instead (`gh pr edit N --add-label review`). The
-  label is the request: once the reviewer has posted a review newer than the
-  label, ssf removes the label and stands the reviewer down, and adding it
-  again asks for another look. The label must exist in the repository, and
-  the bot needs write (triage) access to take it off; if removing it fails,
-  the failure is logged against the reviewer session and retried on the
-  next poll.
-- **A review request** from the bot, on a PR the bot did not open but which a
-  session owns (a PR opened by hand from an agent's branch). GitHub drops the
-  request once the review is posted, or when it is withdrawn.
+The second pair of eyes is the session's own to arrange, and the
+repository's notes say when it is required: the boilerplate
+[`SSF.example.md`](../SSF.example.md) carries a **gauntlet** rule, for
+the agent that did the work. Before calling it done, hand the diff, the
+item and your claim of what the change does to a fresh agent that has not
+seen your reasoning, ask it to break the work (correctness first, then
+whether it does what the issue asked, then tests, docs and conventions),
+fix what it finds and run the gauntlet again until it finds nothing that
+matters; then say on the item what it found and what changed. A subagent
+of the session's own harness is the default; for complex, risky or
+important work, a different agent and model through herdr, with the
+invocation `ssf guide` prints (a workspace on the session's own worktree,
+an agent started in its pane, one prompt, the answer read from the pane,
+the workspace closed). Nobody re-reviews after the gauntlet; a person (or
+a project-management session) reads the PR and merges. `ssf doctor`
+reports a repository with no project notes at all, since without them no
+rule asks for a gauntlet.
 
-The reviewer session is:
-
-- a second workspace, `review-<n>-<title>`, checked out at the PR's head
-  (`origin/<branch>`) on a local branch of its own, so nothing the reviewer
-  does can move the PR; the reviewer is told it is a read-only checkout and
-  how to refresh it after the author pushes;
-- its own agent, launched with `SSF_ROLE=reviewer` (so the gh wrapper tags its
-  posts `role=reviewer`), and a review-specific prompt: the PR, its
-  description and history, then how to review (`git fetch origin && git
-  diff origin/<base>...origin/<head>`, or `gh pr diff`; `gh pr review <n>
-  --comment`, since GitHub refuses approve and request-changes from the
-  account that opened the PR, so the verdict goes in the body), never
-  commit, push, merge or touch the board, and that the author is another
-  session of the same bot;
-- the session id `owner/repo#N:reviewer`. It is listed by `ssf peers` as
-  kind `rev` ("reviewer session for owner/repo#N"), can be reached with
-  `ssf tell N:reviewer "..."` (or `owner/repo#N:reviewer`), and can `ssf sub`
-  other items as itself; it owns nothing and cannot be subscribed to (follow
-  the PR instead).
-
-The author session keeps the PR: the label (or review request) is delivered
-to it as activity with a note that a reviewer session has it, and the review
-itself arrives as activity marked "from the reviewer session on
-owner/repo#N". The author answers on the PR and pushes fixes as it would for
-a human reviewer; its replies reach the reviewer marked "from the agent on
-owner/repo#A". To get another look it adds the `review` label again (`ssf guide`
-says so).
-
-The reviewer lives as long as the request: while the label is on the PR (or
-the bot is a requested reviewer), new activity on the PR (pushes, replies) is
-delivered to it as `[ssf] New activity on #N`. Posting the review fulfils
-the request (ssf removes the label, or GitHub drops the review request), and
-the reviewer is stood down (told to stop, its record kept). Only a review
-counts, not a comment: a review by the bot with the reviewer's origin tag,
-or without any tag; one tagged with another session's origin is that
-session's doing. A repeated request brings the same session back, with what
-happened in between, resuming its conversation (and re-creating its
-workspace at the PR's current head if that was removed). When the PR is
-closed or merged the reviewer is told, its workspace is marked completed
-and, being a read-only checkout that never holds work of its own, removed
-on its own once the agent is idle (or after `daemon.cleanup_grace_secs`).
-Reviewer state lives next to the items in `state.json` under `reviewers`,
-keyed by PR number; its `triggers` say what asked for the review
-(`review_label`, `review_requested`).
-
-Only same-repository PRs owned by a session get a reviewer. A PR the bot did
-not write (a human's PR the bot is asked to review, or one assigned to it
-without a session of its own on the branch) is handled as before: a session
-of its own, on the PR's branch, which reviews when asked.
+A PR the bot did not write (a human's PR the bot is asked to review, or
+one assigned to it without a session of its own on the branch) is
+unchanged: a session of its own, on the PR's branch, which reviews when
+asked.
 
 ## Subscriptions and cross-session comments
 
@@ -149,10 +114,9 @@ state file, so they survive relaunches and a session being brought back; a
 session that retires (its item closed, or the bot dropped from it) is
 unsubscribed everywhere.
 
-The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` (plus
-`SSF_ROLE` for a reviewer) inside a session, or `--as owner/repo#N` (or
-`owner/repo#N:reviewer`) from a human shell (an item bound to another
-session counts as that session):
+The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a
+session, or `--as owner/repo#N` from a human shell (an item bound to
+another session counts as that session):
 
 - `ssf sub <n|owner/repo#n>` / `ssf unsub ...` follow or drop an item.
   Subscribing to an item nothing tracks yet makes it tracked as
@@ -163,8 +127,7 @@ session counts as that session):
 - `ssf subs` lists what this session follows and who follows its items
   (`--json` for detail); `ssf peers` shows subscribers per session.
 - `ssf tell <n> "message"` pastes a message into the terminal of the session
-  acting on that item (`<n>:reviewer` for a PR's reviewer session), through
-  the daemon's own delivery path (so the agent is relaunched or resumed first
+  acting on that item, through the daemon's own delivery path (so the agent is relaunched or resumed first
   if its terminal is gone). It arrives as an
   `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
   or "from a human at the terminal" without `--as`. For an operator it is the
@@ -297,8 +260,7 @@ comment, and then, only if everything is on origin, run `ssf release`.
   A release is also refused while the item is still open and assigned, or
   while the session still owns open items (a pull request bound to it,
   say), and one already accepted is dropped if the item comes back to life
-  before the pass. Reviewer sessions look after themselves and are not
-  released by hand.
+  before the pass.
 - **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
   for what agents left behind: every workspace whose item is closed and
   whose session has no running agent, listed with its state (`clean and

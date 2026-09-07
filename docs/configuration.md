@@ -48,8 +48,8 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.max_body_chars` | `8000` | Longest comment body quoted in a prompt, in characters |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
 | `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)); still accepted so old files load |
-| `daemon.cleanup_grace_secs` | `900` | How long a reviewer session gets to finish before its read-only workspace is removed anyway; item workspaces are not affected |
-| `daemon.review_label` | `review` | Label that asks for a review of a session's own pull request (see [Reviewer sessions](sessions.md#reviewer-sessions)); `""` turns the label trigger off |
+| `daemon.cleanup_grace_secs` | | No longer used: it timed the reviewer sessions out, which went with #115 (see [Second opinions](sessions.md#second-opinions-the-gauntlet)); still accepted so old files load, and `ssf doctor` says so while it stays |
+| `daemon.review_label` | | No longer used: the label started a reviewer session until #115; ssf reacts to no label now. Still accepted so old files load; `ssf doctor` says so while it stays |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
 | `daemon.startup_driver_wait_secs` | `120` | How long to wait for the driver (herdr or Orca) at daemon start before the first poll; the old name `startup_orca_wait_secs` still loads |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
@@ -104,19 +104,27 @@ the repository. When an agent is started for an item, ssf reads the file from
 the item's own checkout (so a PR branch that changes it is seen with its own
 version) and appends it to the initial prompt under a "Project notes" heading,
 after `daemon.instructions` and `repo.instructions`. The same text is included
-when an agent is started again from scratch, and a reviewer session gets it
-too. No file, or an empty one, adds nothing. `repo.prompt_file` names another
+when an agent is started again from scratch. No file, or an empty one, adds
+nothing, and `ssf doctor` reports a repository whose notes are missing
+(`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`),
+looking for the file through the GitHub contents API on `repo.base_branch`
+(else the default branch), so no clone is needed; an absolute or `~/`
+`prompt_file` is looked for on the machine instead. `repo.prompt_file` names another
 file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
 path for notes you would rather not commit.
 
 This is also where working style goes. ssf's prompts carry rules, not
 advice (see [What the agent is told](prompts.md)), so a repository that
 wants its agents told to comment when they start and finish, to ask rather
-than guess, to commit as they go, or how to review, says so here.
+than guess, or to commit as they go, says so here.
 [`SSF.example.md`](../SSF.example.md) (installed as
 `/usr/share/ssf/SSF.example.md`) is a starting point with exactly those
-lines; this repository's own [`SSF.md`](../SSF.md) is what produced the
-comments quoted in the README's walkthrough.
+lines plus the **gauntlet** rule: ssf runs one session per item and starts
+no reviewer, so the boilerplate tells the agent that did the work to have
+a fresh agent break it, fix what it finds and repeat before calling it
+done (see [Second opinions](sessions.md#second-opinions-the-gauntlet)).
+This repository's own [`SSF.md`](../SSF.md) is what produced the comments
+quoted in the README's walkthrough.
 
 ## Models and effort levels
 
@@ -233,12 +241,12 @@ ssf repo set acme/widgets --clear allowed_users
 What the list does: an item only gets a session when an allowed login
 asked for it, read from the item's timeline: who assigned the bot (latest
 assignment), who mentioned it (body, comment or review), who requested the
-review or added the `review` label. One that nobody allowed asked for is
+review. One that nobody allowed asked for is
 logged once at info level with the login and trigger, and not read again
 until it changes; an allowed user assigning or mentioning the bot later
 brings it in. On a running session, events by anyone else are dropped
 before delivery, so a non-listed user's comment on an owned item reaches
-neither the owner nor its subscribers or reviewer. Commits are the one
+neither the owner nor its subscribers. Commits are the one
 event without a login and pass (pushing needs write access to the branch);
 unassigning or closing still retires a session, since stopping work is
 safe. One limit to know: the timeline says who posted a body or comment,

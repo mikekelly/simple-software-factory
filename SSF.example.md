@@ -10,7 +10,9 @@ the terminal is unmanned and GitHub is where people read, to say on the item
 what it is about to do before starting, that `gh` acts as the bot and who
 `git push` acts as, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
 branches and pull requests, is yours to say, here. The lines below are the
-ones ssf used to say itself; keep the ones you want.
+ones ssf used to say itself; keep the ones you want. The gauntlet line is
+there because ssf runs one session per item and starts no reviewer: the
+second pair of eyes is the session's own to arrange, and this is how.
 -->
 
 - Ask on the item rather than guessing when the request is ambiguous; you are
@@ -18,9 +20,15 @@ ones ssf used to say itself; keep the ones you want.
 - Commit as you go.
 - Work on the item's branch. When the work is done, push it and open a pull
   request that references the issue (`Closes #N`), then comment on the issue
-  with the link. Do not close the issue or merge the pull request yourself; a
-  human reviews and merges.
-- When reviewing, do it the way a careful colleague would: correctness first,
-  then whether the change does what the issue asked, then tests, docs and the
-  project's conventions. Be specific, point at files and lines, and say what
-  would make it mergeable.
+  with the link. Do not close the issue or merge the pull request yourself:
+  once the gauntlet has passed, say so on the issue and leave the merge to a
+  person.
+- Before you call work done, put it through a gauntlet: hand the diff, the
+  issue and your claim of what the change does to a fresh agent that has not
+  seen your reasoning, and ask it to break it (correctness first, then whether
+  it does what the issue asked, then tests, docs and the project's
+  conventions). Fix what it finds and run the gauntlet again until it finds
+  nothing that matters. A subagent of your own harness is the default; for
+  work that is complex, risky or important, use herdr to have a different
+  agent and model look (`ssf guide` has the invocation). Say on the item what
+  the gauntlet found and what you changed; nobody re-reviews after you.

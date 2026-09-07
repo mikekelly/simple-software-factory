@@ -124,8 +124,8 @@ what it needs. Note the login; the next steps use it.
 
 **3b. Give it access** (**you**). On each repository the factory should
 watch, **Settings → Collaborators** (or the organisation's teams), add
-the bot with **Write**: it pushes branches, opens pull requests and
-removes the `review` label (triage is part of Write). Give it access to
+the bot with **Write**: it pushes branches and opens pull requests. Give
+it access to
 any project board it should keep up to date (step 9). Accept the
 invitation as the bot, in the private window, at
 `https://github.com/notifications` or from the invitation email. Check,
@@ -431,7 +431,6 @@ Decisions, per repository:
 |-----|---------|--------|
 | `poll_interval_secs` | `10` | Unchanged listings cost nothing against the rate limit, so the default is fine; raise it on a busy token |
 | `instructions` | | House rules for every repository this daemon watches; per-repository ones go in `SSF.md` |
-| `review_label` | `review` | The label that asks for a review of a bot-opened PR (step 9); `""` turns the label trigger off |
 | `resume_on_start` | `true` | Bring interrupted sessions back after a reboot; `startup_driver_wait_secs` (`120`) is how long to wait for the driver first |
 | `allowed_users` | the collaborators with Write | Step 5 |
 
@@ -473,7 +472,7 @@ The links line clears itself when the first agent starts. Everything
 else `ok` means the chain is complete: token, key, driver, harness signed
 in where the agents run, the repository and who commits on it.
 
-## 9. Project notes, boards and the `review` label
+## 9. Project notes and boards
 
 **`SSF.md`.** ssf's own prompts carry only what ssf owns (which bot the
 agent is, that the terminal is unmanned, that `gh` acts as the bot, `ssf
@@ -481,27 +480,33 @@ guide`). How the repository wants work done goes in an `SSF.md` at its
 root, appended to every initial prompt: comment when starting, when a
 decision is needed and when done; ask on the item rather than guess (the
 agent is woken when someone answers); branch and PR conventions (work on
-the item's branch, `Closes #N`, do not merge or close, who reviews);
-what to run before a PR; what the board columns mean; how to review.
+the item's branch, `Closes #N`, do not merge or close, who merges);
+what to run before a PR; what the board columns mean; the gauntlet.
 Start from `/usr/share/ssf/SSF.example.md`. `CLAUDE.md` and `AGENTS.md`
 stay for what every user of the repository wants; `SSF.md` is for what
-only ssf agents need. Details: [The per-project prompt
-file](configuration.md#the-per-project-prompt-file).
+only ssf agents need. `ssf doctor` reports a repository without the file
+(`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`),
+read through the GitHub API, so the check needs no clone. Details: [The
+per-project prompt file](configuration.md#the-per-project-prompt-file).
+
+**The gauntlet.** ssf runs one session per item and starts no reviewer
+for an agent's own pull request (it used to, on a `review` label; that
+went with #115). The boilerplate's gauntlet rule is what stands in: the
+agent that did the work hands the diff, the issue and its claim of what
+the change does to a fresh agent that has not seen its reasoning, asks it
+to break the work, fixes what it finds and repeats until nothing that
+matters is left, then says on the item what was found. A subagent of its
+own harness is the default; for complex, risky or important work it uses
+herdr for a different agent and model, with the invocation from `ssf
+guide`. Keep the rule, or write your own; nobody re-reviews after the
+agent, so a person reads the PR and merges. Details: [Second
+opinions](sessions.md#second-opinions-the-gauntlet).
 
 **Boards.** No setup: if the item is on a GitHub project (v2) board, the
 agent's prompt lists the board, the card's Status and the command that
 changes it, and the agent is told to keep it accurate. ssf never moves
 cards; put the conventions in `SSF.md`. The bot needs access to the board
 (step 3b).
-
-**The `review` label.** A session must not review its own PR, and GitHub
-refuses a review request from a PR's own author, so the label is the
-request: create it once per repository (`gh label create review --repo
-acme/widgets`), and a person, or the author's agent, adds it. ssf starts
-a separate reviewer session on a read-only checkout, the review arrives
-on the PR (as a comment review, since the bot cannot approve its own PR),
-ssf removes the label, and adding it again asks for another look.
-Details: [Reviewer sessions](sessions.md#reviewer-sessions).
 
 ## 10. The first issue, and what to expect
 
@@ -519,9 +524,9 @@ GitHub (@mentioning it, or a review request, works too).
   the check that the whole chain works. `ssf peers` shows the session and
   what it is doing.
 - **Then a pull request**, from the issue's branch, `Closes #N` in its
-  description, and a comment on the issue with the link. Put the `review`
-  label on it for a second agent's review, answer or merge as you would
-  for a colleague, and close the issue when it is done; the agent pushes
+  description, and a comment on the issue with the link and what the
+  gauntlet found. Read it, answer or merge as you would for a colleague,
+  and close the issue when it is done; the agent pushes
   what is left, comments once more and gives its workspace back with
   `ssf release`.
 - **If nothing happens**: `ssf doctor` first (it names most causes:
@@ -599,7 +604,7 @@ unpushed work. The bot GitHub account itself is not touched.
 1. `sudo pacman -U ssf-*.pkg.tar.zst` (**you**); `ssf doctor` fails only
    on the bot, herdr, the repository and the links.
 2. Bot account created (**you**), with Write on each repository and
-   access to the boards; a `review` label exists.
+   access to the boards.
 3. `ssf auth login --web` as the bot (**you**, in a private window);
    `ssf auth status` names it.
 4. Commits as the bot (default) or as you (`[git]` table).

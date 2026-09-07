@@ -24,19 +24,17 @@ repository's) names someone other than the bot, the fourth line reads
 through those; ..." (a `file:` token or a helper string is described
 rather than named); see [Committing as a
 person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot). The reason is whatever brought the item to
-ssf (assigned, mentioned, a review request or the review label, opened by
-the bot or handed off by another session). A pull request adds one line
+ssf (assigned, mentioned, a review request, opened by the bot or handed
+off by another session). A pull request adds one line
 saying how the worktree relates to it (on its branch, or unable to push to
 a fork's) and that `gh pr comment` and `gh pr review` are the way to
 answer; a handed-off item adds one saying which session follows it; a
 factory inside a [microVM](vm.md) adds one saying the agent has root there
-through `sudo`. The board rule sits with the boards (below). A reviewer
-session gets "How to review this" instead (see
-[Reviewer sessions](sessions.md#reviewer-sessions)).
+through `sudo`. The board rule sits with the boards (below).
 
 `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf tell`,
-items a session opens and hand-offs, reviewer sessions, wrapping up, the
-byline, the `Closes #N` suggestion) from the same binary, so it cannot
+items a session opens and hand-offs, second opinions through herdr,
+wrapping up, the byline, the `Closes #N` suggestion) from the same binary, so it cannot
 drift from the daemon. Follow-up messages carry the activity and at most
 one line after it.
 
@@ -54,7 +52,7 @@ still routes to the session that opened it, and `ssf release`/`ssf purge`
 only ever remove the session's own worktree. Anything about *how* the agent
 should work (comment when it starts and finishes, ask rather than guess,
 commit as it goes, open a PR that references the issue, do not close or
-merge, how to review) is the repository's to say, in its
+merge, the gauntlet before calling work done) is the repository's to say, in its
 [prompt file](configuration.md#the-per-project-prompt-file); ssf does not
 repeat it on every message.
 
