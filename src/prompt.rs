@@ -348,6 +348,10 @@ pub struct PromptContext<'a> {
     pub owner: Option<u64>,
     /// Session (`owner/repo#N`) that opened the item as a hand-off.
     pub delegated_by: Option<&'a str>,
+    /// The item was handed over (`ssf handover`) by the session that had
+    /// it: the display name of the harness that session ran. Set only on
+    /// the first message the new session gets.
+    pub handed_over_from: Option<&'a str>,
     /// Open project boards the item is on.
     pub projects: &'a [ProjectCard],
     /// The repository's own prompt file, when the worktree has one.
@@ -468,7 +472,12 @@ impl PromptContext<'_> {
     /// assigned to @bot and mentioned @bot" (the header above it has the
     /// title and URL).
     fn spawned_because(&self, number: u64) -> String {
-        self.because_for(&format!("#{number}"))
+        match self.handed_over_from {
+            Some(h) => {
+                format!("the agent session on {h} working on it handed #{number} over to you")
+            }
+            None => self.because_for(&format!("#{number}")),
+        }
     }
 
     /// One trigger table for both phrasings: `subject` followed by what
@@ -1098,6 +1107,33 @@ comments) and carry on.",
     )
 }
 
+/// The first message of a session started by a handover (`ssf handover`):
+/// what happened, the outgoing agent's summary when it left one, then the
+/// item's story exactly as a new session gets it. `from` is the display
+/// name of the harness the outgoing session ran, `kind` the item's word
+/// (`issue`, `pull request`). The summary is the outgoing agent's own
+/// text and is passed through unchanged.
+pub fn handover_prompt(from: &str, kind: &str, summary: Option<&str>, story: &str) -> String {
+    match summary {
+        Some(text) => format!(
+            "You took over this {kind} from a session on {from} that handed it over; its summary \
+follows, then the {kind} as ssf tells it to a new session.\n\n\
+## Summary from the outgoing session\n\n{}\n\n{story}",
+            text.trim()
+        ),
+        None => format!(
+            "You took over this {kind} from a session on {from} that handed it over. It left no \
+summary; read the {kind} below.\n\n{story}"
+        ),
+    }
+}
+
+/// The one message the outgoing agent gets when a handover it asked for
+/// cannot be carried out: it is still the session on the item.
+pub fn handover_refused_prompt(harness: &str, reason: &str) -> String {
+    format!("[ssf] Handover to {harness} refused: {reason}. Carry on.")
+}
+
 pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let item = short_ref(issue, ctx);
@@ -1205,6 +1241,18 @@ comment (the last comment the bot left on it). Assigning @{bot} to an existing i
 not open gives it a fresh session too. A session that was handed an item this way is told so, \
 and its final comment on the item is all the delegating session gets, so it should sum up the \
 outcome.\n\n\
+## Handing over\n\n\
+When a person asks on the item for another harness, model or effort, or another stack plainly \
+fits the work better, hand the item over: `ssf handover --harness <id> [--model <id>] [--effort \
+<id>] --summary \"<text>\"` (`--summary-file <path>` for a long one, `--no-summary` when the item \
+says everything). `ssf agents` lists the harness ids and `ssf models <harness>` the model and \
+effort ids. Write the summary for an agent that has never seen the item: what it is about, what \
+is done, what is left, and where things are (branch, pull request, files, what is unverified); \
+at most 8,000 characters. The daemon ends this session on its next pass and starts the new one \
+in the same workspace, on the same branch, so commit and push first, say on the item what you \
+are handing over, and stop working the moment the command comes back. The handover and the new \
+session are posted on the item as `handed-over` and `attached`. The new harness, model and \
+effort stay with the item for every later start until the workspace is released.\n\n\
 ## Second opinions\n\n\
 ssf runs one session per item and starts no reviewer for your work: a second pair of eyes is \
 yours to arrange, and the repository's notes say when one is required. Give a fresh agent that \
@@ -1305,6 +1353,7 @@ mod tests {
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1432,6 +1481,7 @@ mod tests {
             triggers: &[],
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1526,6 +1576,7 @@ machine.\n"
         let child = PromptContext {
             triggers: &triggers,
             delegated_by: Some("o/r#1"),
+            handed_over_from: None,
             ..ctx
         };
         let p = initial_prompt(&issue, &[], &child);
@@ -1568,6 +1619,7 @@ machine.\n"
             triggers: &triggers,
             owner: Some(81),
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1682,6 +1734,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &boards,
             project_prompt: None,
             vm_guest: false,
@@ -1732,6 +1785,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1796,6 +1850,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1882,6 +1937,7 @@ nobody else is spawned for it.",
             triggers: &triggers,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -1967,6 +2023,7 @@ For information only; you will not hear about it again unless it comes back."
             triggers: &triggers,
             owner: Some(3),
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -2112,6 +2169,7 @@ For information only; you will not hear about it again unless it comes back."
             triggers: &[],
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &boards,
             project_prompt: None,
             vm_guest: false,
@@ -2293,6 +2351,7 @@ accurate; which column fits is your call.\n\n## Description"
             triggers: &[],
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &[],
             project_prompt: None,
             vm_guest: false,
@@ -2514,6 +2573,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             triggers: &assigned_t,
             owner: None,
             delegated_by: None,
+            handed_over_from: None,
             projects: &boards,
             project_prompt: Some(notes.clone()),
             vm_guest: false,
@@ -2532,6 +2592,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
         let child = PromptContext {
             triggers: &delegated_t,
             delegated_by: Some("mikekelly/simple-software-factory#16"),
+            handed_over_from: None,
             ..own.clone()
         };
         let sub = PromptContext {

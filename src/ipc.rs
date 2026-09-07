@@ -24,6 +24,10 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(180);
 pub const SERVER_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_LINE: usize = 1 << 20;
 
+/// Longest summary `ssf handover` carries to the new session: enough for
+/// a handover note, short of a prompt nothing can read.
+pub const MAX_SUMMARY_CHARS: usize = 8_000;
+
 /// Longest socket path the kernel takes (`sun_path`), with room for the NUL.
 const MAX_SOCKET_PATH: usize = 107;
 
@@ -69,6 +73,18 @@ pub enum Request {
     Release {
         session: String,
         force: bool,
+    },
+    /// Hand `session`'s item to a new session on `harness` (with `model`
+    /// and `effort` when given) in the same workspace, with `summary` as
+    /// the new agent's first message. `by` is the session that asked, or
+    /// `None` for a person at a shell.
+    Handover {
+        session: String,
+        harness: String,
+        model: Option<String>,
+        effort: Option<String>,
+        summary: Option<String>,
+        by: Option<String>,
     },
     /// List, and unless `dry_run` remove, the workspaces of closed items
     /// whose agent is gone: the clean-and-pushed ones, or all of them with
@@ -199,6 +215,17 @@ mod tests {
         let j = serde_json::to_string(&p).unwrap();
         assert!(j.contains("\"op\":\"purge\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), p);
+        let h = Request::Handover {
+            session: "o/r#1".into(),
+            harness: "pi".into(),
+            model: Some("openai/gpt-6".into()),
+            effort: None,
+            summary: Some("what is done, what is left".into()),
+            by: Some("o/r#1".into()),
+        };
+        let j = serde_json::to_string(&h).unwrap();
+        assert!(j.contains("\"op\":\"handover\""));
+        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), h);
         let e = serde_json::to_string(&Response::err("nope")).unwrap();
         let back: Response = serde_json::from_str(&e).unwrap();
         assert!(!back.ok);

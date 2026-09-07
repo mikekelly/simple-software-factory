@@ -14,7 +14,7 @@ use crate::driver::Drivers;
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
 use crate::orca::WorkspaceInfo;
-use crate::state::{Blocked, IssueState, State};
+use crate::state::{Blocked, IssueState, Overrides, PendingHandover, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
 /// the bar widget polls this, so it must never hang.
@@ -42,7 +42,22 @@ pub struct Session {
     /// Why the bot got involved: `assigned`, `mentioned`, `review_requested`,
     /// `created` (the bot's own item).
     pub triggers: Vec<String>,
+    /// The harness this item's session runs, the per-item overrides of a
+    /// handover applied (`overrides` says whether they are in play).
     pub harness: String,
+    /// Model and effort the session runs with, overrides applied; `None`
+    /// is the harness's own default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// Set when a handover moved this session off the repository's
+    /// configured harness, model or effort.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<Overrides>,
+    /// A handover the daemon has accepted and not carried out yet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handover: Option<HandoverView>,
     /// Session that acts on this item: its own, or the session it is bound
     /// to. Empty for an item tracked only for its subscribers.
     pub owner: String,
@@ -116,6 +131,60 @@ pub struct Session {
     /// login is back; a person has to sign the harness in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<BlockedView>,
+}
+
+/// A handover waiting for the daemon's next pass, for `ssf status --json`
+/// and `ssf peers`: what it is to, who asked, and how long the summary is
+/// (the summary itself is the new session's first message, not status).
+#[derive(Debug, Clone, Serialize)]
+pub struct HandoverView {
+    pub harness: String,
+    /// The harness for people (`Pi`).
+    pub harness_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_chars: Option<usize>,
+    /// The session that asked; `None` for a person at a shell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    pub requested_at: String,
+}
+
+impl HandoverView {
+    pub fn of(h: &PendingHandover) -> Self {
+        Self {
+            harness: h.harness.clone(),
+            harness_name: crate::login::display_name(&h.harness),
+            model: h.model.clone(),
+            effort: h.effort.clone(),
+            summary_chars: h.summary.as_deref().map(|s| s.chars().count()),
+            by: h.by.clone(),
+            requested_at: h.requested_at.clone(),
+        }
+    }
+
+    /// One line for a person: `pi (model openai/gpt-6), asked by o/r#5`.
+    pub fn describe(&self) -> String {
+        let mut s = self.harness.clone();
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(m) = &self.model {
+            extra.push(format!("model {m}"));
+        }
+        if let Some(e) = &self.effort {
+            extra.push(format!("effort {e}"));
+        }
+        if !extra.is_empty() {
+            s.push_str(&format!(" ({})", extra.join(", ")));
+        }
+        s.push_str(&match &self.by {
+            Some(by) => format!(", asked by {by}"),
+            None => ", asked by a person at a terminal".to_string(),
+        });
+        s
+    }
 }
 
 /// A session's block, for `ssf status --json` and the widget.
@@ -303,7 +372,15 @@ pub fn sessions_with(
         };
         for item in rs.issues.values() {
             let ws = workspaces.and_then(|list| find_workspace(list, item));
-            out.push(join(repo, item, ws, workspaces.is_some()));
+            // An item bound to another session shares its workspace, and
+            // so the harness a handover put in it.
+            let owner = item.shares_workspace_of.unwrap_or(item.number);
+            let overrides = rs
+                .issues
+                .get(&owner)
+                .or(Some(item))
+                .and_then(|o| o.overrides.as_ref());
+            out.push(join(repo, item, overrides, ws, workspaces.is_some()));
         }
     }
     out
@@ -366,12 +443,16 @@ fn workspace_state(
     )
 }
 
+/// `overrides` are the ones that govern the item (its own, or, for an
+/// item bound to another session, that session's).
 fn join(
     repo: &RepoConfig,
     item: &IssueState,
+    overrides: Option<&Overrides>,
     ws: Option<&WorkspaceInfo>,
     orca_available: bool,
 ) -> Session {
+    let eff = repo.with_overrides(overrides);
     let agent = ws.and_then(WorkspaceInfo::primary_agent);
     let agent_state = match (ws, agent) {
         (Some(_), Some(a)) => a.state.clone(),
@@ -408,7 +489,11 @@ fn join(
             .unwrap_or_else(|| if item.active { "open" } else { "unknown" }.into()),
         active: item.active,
         triggers: item.triggers.clone(),
-        harness: repo.harness.clone(),
+        harness: eff.harness.clone(),
+        model: eff.model.clone(),
+        effort: eff.effort.clone(),
+        overrides: overrides.cloned(),
+        handover: item.handover.as_ref().map(HandoverView::of),
         owner: if item.subscriber_only {
             String::new()
         } else {
@@ -523,6 +608,15 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         if let Some(p) = &s.delegated_by {
             facts.push(format!("handed off by {p}"));
         }
+        if let Some(o) = &s.overrides {
+            facts.push(format!("handed over to {}", o.harness));
+            if let Some(m) = &o.model {
+                facts.push(format!("model {m}"));
+            }
+            if let Some(e) = &o.effort {
+                facts.push(format!("effort {e}"));
+            }
+        }
         if !s.subscribers.is_empty() {
             facts.push(format!("subscribers {}", s.subscribers.join(", ")));
         }
@@ -540,6 +634,9 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             });
         }
         out.push_str(&format!("         {}\n", facts.join("  ·  ")));
+        if let Some(h) = &s.handover {
+            out.push_str(&format!("         handover pending: {}\n", h.describe()));
+        }
         if let Some(b) = &s.blocked {
             out.push_str(&format!("         BLOCKED: {}\n", b.describe()));
         }
@@ -651,6 +748,19 @@ pub fn render_status(snap: &Snapshot) -> String {
                     "          workspace released {}\n",
                     ago(s.released_at.as_deref())
                 ));
+            }
+            if let Some(o) = &s.overrides {
+                let mut what = format!("harness={}", o.harness);
+                if let Some(m) = &o.model {
+                    what.push_str(&format!(" model={m}"));
+                }
+                if let Some(e) = &o.effort {
+                    what.push_str(&format!(" effort={e}"));
+                }
+                out.push_str(&format!("          handed over: {what}\n"));
+            }
+            if let Some(h) = &s.handover {
+                out.push_str(&format!("          handover pending: {}\n", h.describe()));
             }
             if let Some(b) = &s.blocked {
                 out.push_str(&format!("          BLOCKED: {}\n", b.describe()));

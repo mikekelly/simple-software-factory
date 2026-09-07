@@ -23,7 +23,7 @@ use crate::prompt::{
 };
 use crate::release::{self, git};
 use crate::sessions;
-use crate::state::{Blocked, Ignored, IssueState, State, now_iso};
+use crate::state::{Blocked, Ignored, IssueState, Overrides, PendingHandover, State, now_iso};
 use crate::status::session_id;
 
 /// Consecutive delivery failures before an issue is re-onboarded from scratch.
@@ -105,6 +105,9 @@ pub struct Engine {
     /// Whether a harness is signed in where this daemon runs
     /// (`login::probe`; the tests supply their own).
     probe: std::sync::Arc<dyn Fn(&str) -> Probe + Send + Sync>,
+    /// Whether a harness is installed where this daemon runs
+    /// (`agents::installed`; the tests supply their own).
+    installed: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
     /// The probes run this pass, by harness: one per harness per pass
     /// however many sessions are blocked.
     probes: BTreeMap<String, Probe>,
@@ -175,6 +178,24 @@ impl Engine {
         }
     }
 
+    /// What one item's session runs with: the repository's config with
+    /// the item's own launch overrides applied (`ssf handover`). Every
+    /// launch, resume, relaunch, login check and event of that item goes
+    /// through this rather than through `repo` itself, or a handed-over
+    /// session would be started with the old harness's flags or probed as
+    /// the wrong harness.
+    fn effective(&self, repo: &RepoConfig, number: u64) -> RepoConfig {
+        repo.with_overrides(self.overrides_of(repo, number).as_ref())
+    }
+
+    /// The overrides that govern an item: its own, or, for an item bound
+    /// to another item's session, that session's (they share the
+    /// workspace, so they share the harness in it).
+    fn overrides_of(&self, repo: &RepoConfig, number: u64) -> Option<Overrides> {
+        let owner = self.owner_of(repo, number);
+        self.peek(repo, owner).and_then(|s| s.overrides.clone())
+    }
+
     fn driver_down(&self, repo: &RepoConfig) -> bool {
         self.down.contains(&self.cfg.driver_for(repo))
     }
@@ -234,6 +255,7 @@ impl Engine {
             collaborators: BTreeMap::new(),
             dropped_logged: std::sync::Mutex::new(BTreeSet::new()),
             probe: std::sync::Arc::new(login::probe),
+            installed: std::sync::Arc::new(crate::agents::installed),
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,
@@ -481,6 +503,27 @@ are resumed on the first pass that finds it: {err:#}"
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Request::Handover {
+                session,
+                harness,
+                model,
+                effort,
+                summary,
+                by,
+            } => match self
+                .handover(
+                    &session,
+                    &harness,
+                    model.as_deref(),
+                    effort.as_deref(),
+                    summary.as_deref(),
+                    by.as_deref(),
+                )
+                .await
+            {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
             Request::Purge {
                 dry_run,
                 older_than_days,
@@ -686,6 +729,14 @@ are resumed on the first pass that finds it: {err:#}"
                 session_id(&repo.name, acting)
             );
         }
+        if let Some(h) = ost.handover.as_ref() {
+            anyhow::bail!(
+                "a handover to {} is pending on {} ({}); the session is about to be replaced",
+                h.harness,
+                target,
+                session_id(&repo.name, acting)
+            );
+        }
         let (sender, sender_title) = match from {
             Some(f) => {
                 let (frepo, fnumber, fid) = self.known_session(f)?;
@@ -772,6 +823,9 @@ are resumed on the first pass that finds it: {err:#}"
             if self.driver_down(&repo) {
                 continue;
             }
+            // Before anything is delivered or resumed: a session that has
+            // been handed over is replaced first.
+            self.run_handovers(&repo).await;
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
@@ -879,8 +933,15 @@ are resumed on the first pass that finds it: {err:#}"
         let Some(rs) = self.state.repos.get(&repo.name) else {
             return Vec::new();
         };
-        let has_workspace =
-            |s: &IssueState| !s.cleanup_pending && !s.release_pending && s.worktree_id.is_some();
+        // A session with a handover pending is left alone: the pass ends
+        // it and starts the new one, and bringing the old harness back
+        // only to stop it would waste a launch (and a login check).
+        let has_workspace = |s: &IssueState| {
+            !s.cleanup_pending
+                && !s.release_pending
+                && s.handover.is_none()
+                && s.worktree_id.is_some()
+        };
         let owners: BTreeSet<u64> = rs
             .issues
             .values()
@@ -1436,7 +1497,8 @@ are resumed on the first pass that finds it: {err:#}"
             let Ok(screen) = self.driver(repo).screen(&handle).await else {
                 continue;
             };
-            if let Some(detail) = crate::driver::login_dialog(&repo.harness, &screen.join("\n")) {
+            let harness = self.effective(repo, number).harness;
+            if let Some(detail) = crate::driver::login_dialog(&harness, &screen.join("\n")) {
                 self.entry(repo, number).terminal_handle = Some(handle);
                 self.set_blocked(repo, number, detail).await;
                 self.report_blocked(repo, number).await;
@@ -1475,7 +1537,8 @@ are resumed on the first pass that finds it: {err:#}"
     /// twice and the next attempt waits longer.
     async fn set_blocked(&mut self, repo: &RepoConfig, number: u64, detail: String) -> Blocked {
         let session = session_id(&repo.name, number);
-        let probe = self.probe_harness(&repo.harness).await;
+        let harness = self.effective(repo, number).harness;
+        let probe = self.probe_harness(&harness).await;
         let e = self.entry(repo, number);
         if let Some(cur) = e.blocked.as_mut() {
             cur.detail = detail;
@@ -1495,15 +1558,15 @@ are resumed on the first pass that finds it: {err:#}"
         warn!(
             repo = repo.name,
             session,
-            harness = repo.harness,
+            harness,
             detail,
             "session is blocked: {} is at its sign-in prompt; sign in with {}",
-            login::display_name(&repo.harness),
-            login::how_to_sign_in(&repo.harness)
+            login::display_name(&harness),
+            login::how_to_sign_in(&harness)
         );
         let b = Blocked {
             reason: Blocked::LOGIN.into(),
-            harness: repo.harness.clone(),
+            harness: harness.clone(),
             detail,
             since: now_iso(),
             reported: false,
@@ -1580,11 +1643,23 @@ are resumed on the first pass that finds it: {err:#}"
     /// `attached` post: the repository's harness, model and effort as
     /// configured, the driver, and the workspace's branch when known.
     fn launch_of(&self, repo: &RepoConfig, number: u64) -> events::Launch {
+        self.launch_with(repo, number, self.overrides_of(repo, number).as_ref())
+    }
+
+    /// [`launch_of`](Self::launch_of) for overrides the item does not have
+    /// (yet): what a handover's target would be started with.
+    fn launch_with(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+        overrides: Option<&Overrides>,
+    ) -> events::Launch {
+        let eff = repo.with_overrides(overrides);
         events::Launch {
-            harness: login::display_name(&repo.harness),
-            model: repo.model.clone(),
-            effort: repo.effort.clone(),
-            command: repo.command.clone(),
+            harness: login::display_name(&eff.harness),
+            model: eff.model.clone(),
+            effort: eff.effort.clone(),
+            command: eff.command.clone(),
             driver: self.cfg.driver_for(repo).id().to_string(),
             branch: self.peek(repo, number).and_then(|s| s.branch.clone()),
         }
@@ -1602,6 +1677,7 @@ are resumed on the first pass that finds it: {err:#}"
     /// the attempt.
     async fn recover(&mut self, repo: &RepoConfig, number: u64, st: &IssueState, b: Blocked) {
         let session = session_id(&repo.name, number);
+        let harness = self.effective(repo, number).harness;
         if !b.reported {
             self.report_blocked(repo, number).await;
         }
@@ -1623,7 +1699,7 @@ are resumed on the first pass that finds it: {err:#}"
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };
-            if crate::driver::login_dialog(&repo.harness, &screen.join("\n")).is_none() {
+            if crate::driver::login_dialog(&harness, &screen.join("\n")).is_none() {
                 info!(
                     session,
                     "the harness is past its sign-in prompt; deliveries resume"
@@ -1632,7 +1708,7 @@ are resumed on the first pass that finds it: {err:#}"
                 return;
             }
         }
-        let probe = self.probe_harness(&repo.harness).await;
+        let probe = self.probe_harness(&harness).await;
         let changed = probe.fingerprint.is_some() && probe.fingerprint != b.credential;
         let last = b.retried_at.as_deref().unwrap_or(&b.since);
         let due = changed || age(last) >= retry_wait(b.retries);
@@ -1659,7 +1735,7 @@ are resumed on the first pass that finds it: {err:#}"
             return;
         }
         let text = prompt::login_back_prompt(&prompt::LoginBack {
-            harness: &login::display_name(&repo.harness),
+            harness: &login::display_name(&harness),
             since: &b.since,
             number: st.number,
             title: &st.title,
@@ -1787,6 +1863,7 @@ are resumed on the first pass that finds it: {err:#}"
             triggers: &st.triggers,
             owner: st.shares_workspace_of,
             delegated_by: st.delegated_by.as_deref(),
+            handed_over_from: None,
             projects: &st.projects,
             project_prompt,
             vm_guest: crate::vm::in_guest(),
@@ -2329,24 +2406,25 @@ are resumed on the first pass that finds it: {err:#}"
                     e.launched_at = Some(now_iso());
                     e.agent_session_id = None;
                 }
-                let title = format!("{} · #{}", repo.harness, issue.number);
+                let eff = self.effective(repo, issue.number);
+                let title = format!("{} · #{}", eff.harness, issue.number);
                 let cmd = self.launch_command(
                     repo,
                     issue.number,
                     &issue.html_url,
-                    &repo.harness_command(),
+                    &eff.harness_command(),
                 );
                 let text = self.initial_text(repo, issue, &mine);
                 let handle = self
                     .driver(repo)
-                    .start(&created.id, &cmd, &title, &repo.harness, &text)
+                    .start(&created.id, &cmd, &title, &eff.harness, &text)
                     .await?;
                 info!(
                     repo = repo.name,
                     issue = issue.number,
                     handle,
                     "launched {} and sent the {}",
-                    repo.harness,
+                    eff.harness,
                     if is_pr { "pull request" } else { "issue" }
                 );
                 let launch = self.launch_of(repo, issue.number);
@@ -2448,7 +2526,12 @@ are resumed on the first pass that finds it: {err:#}"
     /// The whole story of an item as its initial prompt would tell it, for
     /// a harness that starts from scratch and needs context for whatever is
     /// about to be delivered.
-    async fn story(&mut self, repo: &RepoConfig, number: u64) -> Result<String> {
+    async fn story(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        handed_over_from: Option<&str>,
+    ) -> Result<String> {
         let (owner, name) = repo.split()?;
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
@@ -2456,7 +2539,10 @@ are resumed on the first pass that finds it: {err:#}"
         let me = self.acting_on(repo, number);
         let all = self.for_recipient(&all, &me);
         let st = self.entry(repo, number).clone();
-        let ctx = self.ctx(repo, &st);
+        let ctx = PromptContext {
+            handed_over_from,
+            ..self.ctx(repo, &st)
+        };
         Ok(prompt::initial_prompt(&issue, &all, &ctx))
     }
 
@@ -3023,7 +3109,7 @@ are resumed on the first pass that finds it: {err:#}"
                 .unwrap_or(false);
         let mut story = None;
         if !live && (target != number || relaunch_text.is_none()) {
-            match self.story(repo, target).await {
+            match self.story(repo, target, None).await {
                 Ok(s) => story = Some(format!("{s}\n\n{text}")),
                 Err(e) => warn!(
                     repo = repo.name,
@@ -3033,13 +3119,14 @@ are resumed on the first pass that finds it: {err:#}"
             }
         }
         let relaunch_text = story.as_deref().or(relaunch_text);
-        let title = format!("{} · #{target}", repo.harness);
+        let eff = self.effective(repo, target);
+        let title = format!("{} · #{target}", eff.harness);
         let resume = st
             .agent_session_id
             .as_deref()
-            .and_then(|id| sessions::resume_command(&repo.harness, &repo.harness_command(), id))
+            .and_then(|id| sessions::resume_command(&eff.harness, &eff.harness_command(), id))
             .map(|c| self.launch_command(repo, st.number, &st.html_url, &c));
-        let relaunch = self.launch_command(repo, st.number, &st.html_url, &repo.harness_command());
+        let relaunch = self.launch_command(repo, st.number, &st.html_url, &eff.harness_command());
         let d = self
             .driver(repo)
             .deliver(
@@ -3048,7 +3135,7 @@ are resumed on the first pass that finds it: {err:#}"
                 Relaunch {
                     command: &relaunch,
                     resume_command: resume.as_deref(),
-                    harness: &repo.harness,
+                    harness: &eff.harness,
                     title: &title,
                     text: relaunch_text,
                 },
@@ -3088,7 +3175,7 @@ are resumed on the first pass that finds it: {err:#}"
         // blocked from here, and the prompt is held for later.
         if d.relaunched
             && let Ok(screen) = self.driver(repo).screen(&d.handle).await
-            && let Some(detail) = crate::driver::login_dialog(&repo.harness, &screen.join("\n"))
+            && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
         {
             let b = self.set_blocked(repo, target, detail).await;
             return Err(SessionBlocked {
@@ -3110,7 +3197,7 @@ are resumed on the first pass that finds it: {err:#}"
                 repo,
                 target,
                 Event::Resumed {
-                    harness: login::display_name(&repo.harness),
+                    harness: login::display_name(&eff.harness),
                     conversation: Conversation::of(d.resumed),
                     after: if self.startup_pass {
                         "restart"
@@ -3309,14 +3396,27 @@ are resumed on the first pass that finds it: {err:#}"
 
     /// Record harness session ids for workspaces that do not have one yet.
     fn capture_sessions(&mut self, repo: &RepoConfig) {
-        if !sessions::supports_resume(&repo.harness) {
-            return;
-        }
+        // Per item, since a handed-over item runs a harness of its own:
+        // the records worth looking at, each with the harness it runs.
+        let candidates: Vec<u64> = match self.state.repos.get(&repo.name) {
+            Some(rs) => rs
+                .issues
+                .values()
+                .filter(|s| s.agent_session_id.is_none() && s.worktree_id.is_some())
+                .map(|s| s.number)
+                .collect(),
+            None => Vec::new(),
+        };
+        let harnesses: Vec<(u64, String)> = candidates
+            .into_iter()
+            .map(|n| (n, self.effective(repo, n).harness))
+            .filter(|(_, h)| sessions::supports_resume(h))
+            .collect();
         let rs = self.state.repo_mut(&repo.name);
-        for st in rs.issues.values_mut() {
-            if st.agent_session_id.is_some() || st.worktree_id.is_none() {
+        for (number, harness) in harnesses {
+            let Some(st) = rs.issues.get_mut(&number) else {
                 continue;
-            }
+            };
             let (Some(path), Some(launched)) =
                 (st.worktree_path.as_deref(), st.launched_at.as_deref())
             else {
@@ -3325,13 +3425,12 @@ are resumed on the first pass that finds it: {err:#}"
             let since = chrono::DateTime::parse_from_rfc3339(launched)
                 .map(|t| SystemTime::from(t) - Duration::from_secs(5))
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            if let Some(id) = sessions::capture(&repo.harness, path, since) {
+            if let Some(id) = sessions::capture(&harness, path, since) {
                 info!(
                     repo = repo.name,
                     issue = st.number,
                     session = id,
-                    "captured {} session",
-                    repo.harness
+                    "captured {harness} session"
                 );
                 st.agent_session_id = Some(id);
             }
@@ -3508,6 +3607,9 @@ are resumed on the first pass that finds it: {err:#}"
         e.worktree_path = None;
         e.terminal_handle = None;
         e.released_at = Some(now.clone());
+        // The item comes back on the repository's own harness.
+        e.overrides = None;
+        e.handover = None;
         // Items bound to this session mirror its workspace.
         let bound: Vec<u64> = self
             .state
@@ -3526,6 +3628,328 @@ are resumed on the first pass that finds it: {err:#}"
         }
     }
 
+    // ---- handovers ------------------------------------------------------
+
+    /// `ssf handover`: record that the item's session is to be replaced by
+    /// one on another harness, model or effort in the same workspace. The
+    /// refusals are synchronous, so the agent that asked hears the reason
+    /// straight away; the work itself happens on the daemon's next pass
+    /// (`run_handovers`), because ending the caller's own terminal while
+    /// it waits for this answer would lose the answer.
+    async fn handover(
+        &mut self,
+        session: &str,
+        harness: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+        summary: Option<&str>,
+        by: Option<&str>,
+    ) -> Result<Value> {
+        let (repo, number, id) = self.known_session(session)?;
+        let st = self.entry(&repo, number).clone();
+        if !st.active || st.worktree_id.is_none() {
+            anyhow::bail!(
+                "{id}: the item has no running session; nothing to hand over (assign the bot to it instead)"
+            );
+        }
+        let harness = harness.trim();
+        if !crate::agents::is_known(harness) {
+            anyhow::bail!("{harness} is not a harness ssf knows (see `ssf agents`)");
+        }
+        crate::models::validate(harness, model, effort)?;
+        let name = login::display_name(harness);
+        if !(self.installed)(harness) {
+            anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");
+        }
+        let probe = self.probe_harness(harness).await;
+        if probe.state == LoginState::SignedOut {
+            anyhow::bail!(
+                "{name} is not signed in here; {}",
+                login::how_to_sign_in(harness)
+            );
+        }
+        if let Some(h) = st.handover.as_ref() {
+            anyhow::bail!("a handover to {} is already pending", h.harness);
+        }
+        if st.release_pending {
+            anyhow::bail!("a release is pending on this item");
+        }
+        let overrides = Overrides {
+            harness: harness.to_string(),
+            model: model.map(str::to_string),
+            effort: effort.map(str::to_string),
+        };
+        let from = self.effective(&repo, number);
+        let to = repo.with_overrides(Some(&overrides));
+        if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
+            anyhow::bail!("the item is already on {harness} with that model and effort");
+        }
+        let chars = summary.map(|s| s.chars().count());
+        if let Some(n) = chars.filter(|n| *n > crate::ipc::MAX_SUMMARY_CHARS) {
+            anyhow::bail!(
+                "the summary is {n} characters; the most a handover carries is {}",
+                crate::ipc::MAX_SUMMARY_CHARS
+            );
+        }
+        let pending = PendingHandover {
+            harness: overrides.harness.clone(),
+            model: overrides.model.clone(),
+            effort: overrides.effort.clone(),
+            summary: summary.map(str::to_string),
+            by: by.map(str::to_string),
+            requested_at: now_iso(),
+        };
+        self.entry(&repo, number).handover = Some(pending);
+        info!(
+            session = id,
+            harness,
+            model,
+            effort,
+            summary_chars = chars,
+            by,
+            "handover recorded"
+        );
+        let launch = |c: &RepoConfig| serde_json::json!({"harness": c.harness, "model": c.model, "effort": c.effort});
+        Ok(serde_json::json!({
+            "session": id,
+            "title": st.title,
+            "from": launch(&from),
+            "to": launch(&to),
+            "summary_chars": chars,
+            "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
+        }))
+    }
+
+    /// Carry out the handovers `ssf handover` accepted, before anything
+    /// else this repository does on this pass: the old session is not worth
+    /// resuming or delivering to.
+    async fn run_handovers(&mut self, repo: &RepoConfig) {
+        let pending: Vec<(u64, PendingHandover)> = match self.state.repos.get(&repo.name) {
+            Some(rs) => rs
+                .issues
+                .values()
+                .filter_map(|s| s.handover.clone().map(|h| (s.number, h)))
+                .collect(),
+            None => Vec::new(),
+        };
+        for (number, h) in pending {
+            self.finish_handover(repo, number, h).await;
+            if let Err(e) = self.state.save() {
+                error!("saving state: {e:#}");
+            }
+        }
+    }
+
+    /// Second half of `ssf handover`: end the session that is there, keep
+    /// its workspace and branch, write the item's launch overrides, and
+    /// start the new session in the same workspace with the outgoing
+    /// agent's summary ahead of the item's story.
+    async fn finish_handover(&mut self, repo: &RepoConfig, number: u64, h: PendingHandover) {
+        let session = session_id(&repo.name, number);
+        let st = self.entry(repo, number).clone();
+        if !st.active {
+            self.refuse_handover(repo, number, &h, "the item is no longer active".into())
+                .await;
+            return;
+        }
+        // The workspace normally stays; one that went missing between the
+        // request and now is re-created rather than the handover lost.
+        let alive = match st.worktree_id.as_deref() {
+            Some(id) => self.driver(repo).worktree_exists(id).await.unwrap_or(false),
+            None => false,
+        };
+        if !alive && let Err(e) = self.rehydrate(repo, number).await {
+            self.refuse_handover(
+                repo,
+                number,
+                &h,
+                format!("the workspace is gone and could not be re-created: {e:#}"),
+            )
+            .await;
+            return;
+        }
+        let st = self.entry(repo, number).clone();
+        let Some(wt) = st.worktree_id.clone() else {
+            self.refuse_handover(repo, number, &h, "the item has no workspace".into())
+                .await;
+            return;
+        };
+        // The new session's first message is built before anything is
+        // stopped: a story that cannot be assembled is a refusal, not a
+        // session ended with nothing to put in its place.
+        let from_launch = self.launch_of(repo, number);
+        let from_name = login::display_name(&self.effective(repo, number).harness);
+        let story = match self.story(repo, number, Some(&from_name)).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.refuse_handover(
+                    repo,
+                    number,
+                    &h,
+                    format!("the item could not be read for the new session: {e:#}"),
+                )
+                .await;
+                return;
+            }
+        };
+        let kind = match st.kind.as_deref() {
+            Some("pull_request") => "pull request",
+            _ => "issue",
+        };
+        let text = prompt::handover_prompt(&from_name, kind, h.summary.as_deref(), &story);
+        // End the caller's pane. The workspace stays, so the new session
+        // opens on the same checkout and branch.
+        match self
+            .driver(repo)
+            .live_handle(&wt, st.terminal_handle.as_deref())
+            .await
+        {
+            Ok(Some(handle)) => {
+                if let Err(e) = self.driver(repo).stop_agent(&wt, &handle).await {
+                    self.refuse_handover(
+                        repo,
+                        number,
+                        &h,
+                        format!("could not stop the running agent: {e:#}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+            Ok(None) => debug!(session, "no agent to stop; starting the new session"),
+            Err(e) => {
+                self.refuse_handover(
+                    repo,
+                    number,
+                    &h,
+                    format!("could not stop the running agent: {e:#}"),
+                )
+                .await;
+                return;
+            }
+        }
+        // The old session is retired on the record; everything about the
+        // item and its workspace stays.
+        {
+            let e = self.entry(repo, number);
+            e.agent_session_id = None;
+            e.terminal_handle = None;
+            e.blocked = None;
+            e.launched_at = None;
+            e.overrides = Some(h.overrides());
+            e.handover = None;
+        }
+        let eff = self.effective(repo, number);
+        let to_launch = self.launch_of(repo, number);
+        let title = format!("{} · #{number}", eff.harness);
+        let cmd = self.launch_command(repo, number, &st.html_url, &eff.harness_command());
+        self.entry(repo, number).launched_at = Some(now_iso());
+        let handle = match self
+            .driver(repo)
+            .start(&wt, &cmd, &title, &eff.harness, &text)
+            .await
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                // The handover stands (the item keeps the overrides), but
+                // nothing is running: the next delivery starts the new
+                // harness in the workspace.
+                warn!(
+                    session,
+                    harness = eff.harness,
+                    "handed over, but the new harness could not be started: {e:#}"
+                );
+                self.post_event(
+                    repo,
+                    number,
+                    handed_over(&from_launch, &to_launch, &h, None),
+                )
+                .await;
+                return;
+            }
+        };
+        info!(
+            session,
+            harness = eff.harness,
+            handle,
+            from = from_name,
+            summary = h.summary.is_some(),
+            "handed the item over to a new session"
+        );
+        {
+            let e = self.entry(repo, number);
+            e.terminal_handle = Some(handle.clone());
+            e.last_prompt_at = Some(now_iso());
+            e.prompts_sent += 1;
+        }
+        self.post_event(
+            repo,
+            number,
+            handed_over(&from_launch, &to_launch, &h, None),
+        )
+        .await;
+        // A harness started on a machine it is not signed in on shows its
+        // sign-in prompt instead of taking the message: the new session is
+        // blocked from here, and the old one is not brought back.
+        if let Ok(screen) = self.driver(repo).screen(&handle).await
+            && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
+        {
+            self.set_blocked(repo, number, detail).await;
+            self.report_blocked(repo, number).await;
+            return;
+        }
+        self.post_event(
+            repo,
+            number,
+            Event::Attached(Attach::HandedOver {
+                launch: to_launch,
+                from: from_name,
+            }),
+        )
+        .await;
+    }
+
+    /// A handover that was accepted and cannot be carried out: nothing
+    /// changes, the item says so, and the agent that asked (if it is still
+    /// there) hears it in one message.
+    async fn refuse_handover(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        h: &PendingHandover,
+        why: String,
+    ) {
+        let session = session_id(&repo.name, number);
+        warn!(session, harness = h.harness, "handover refused: {why}");
+        self.entry(repo, number).handover = None;
+        let from = self.launch_of(repo, number);
+        let to = self.launch_with(repo, number, Some(&h.overrides()));
+        self.post_event(repo, number, handed_over(&from, &to, h, Some(why.clone())))
+            .await;
+        let st = self.entry(repo, number).clone();
+        let live = match st.worktree_id.as_deref() {
+            Some(id) => self.driver(repo).has_live_agent(id).await.unwrap_or(false),
+            None => false,
+        };
+        if !live {
+            debug!(session, "no live agent to tell about the refused handover");
+            return;
+        }
+        let text = prompt::handover_refused_prompt(&login::display_name(&h.harness), &why);
+        match self.deliver_to(repo, number, &text, None).await {
+            Ok(d) => {
+                let e = self.entry(repo, number);
+                e.terminal_handle = Some(d.handle);
+                e.last_prompt_at = Some(now_iso());
+                e.prompts_sent += 1;
+            }
+            Err(e) => warn!(
+                session,
+                "could not tell the agent about the refused handover: {e:#}"
+            ),
+        }
+    }
+
     /// `ssf release`: the session's workspace goes on the next pass if the
     /// checks pass now (and again then); `force` skips them, for a person
     /// who has looked. Refused while the session still owns open items.
@@ -3536,6 +3960,9 @@ are resumed on the first pass that finds it: {err:#}"
             anyhow::bail!(
                 "{id} is still open and assigned; its workspace is in use. Close or unassign the item first"
             );
+        }
+        if let Some(h) = st.handover.as_ref() {
+            anyhow::bail!("{id}: a handover to {} is pending", h.harness);
         }
         let deps = self.active_dependents(&repo, number);
         if !deps.is_empty() {
@@ -3720,6 +4147,22 @@ are resumed on the first pass that finds it: {err:#}"
 }
 
 /// Listen for the CLI on the daemon's socket, replacing a stale one.
+/// The `handed-over` post of one handover, refused or not.
+fn handed_over(
+    from: &events::Launch,
+    to: &events::Launch,
+    h: &PendingHandover,
+    refused: Option<String>,
+) -> Event {
+    Event::HandedOver {
+        from: from.clone(),
+        to: to.clone(),
+        summary: h.summary.is_some(),
+        by: h.by.clone(),
+        refused,
+    }
+}
+
 fn bind_socket() -> Result<tokio::net::UnixListener> {
     let path = crate::ipc::socket_path();
     if let Some(parent) = path.parent() {
@@ -3893,6 +4336,7 @@ mod tests {
                 detail: "test".into(),
                 fingerprint: None,
             }),
+            installed: std::sync::Arc::new(|_| true),
             probes: BTreeMap::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,

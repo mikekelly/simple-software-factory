@@ -52,6 +52,10 @@ pub enum Attach {
         handed_off_from: Option<String>,
         conversation: Conversation,
     },
+    /// A handover (`ssf handover`) ended the session that was on the item
+    /// and started this one in the same workspace; `from` is the display
+    /// name of the harness it was handed over from.
+    HandedOver { launch: Launch, from: String },
     /// The workspace had to be re-created and the harness started in it
     /// again; `reason` is the word for why (`workspace gone`, `driver
     /// switch`).
@@ -113,6 +117,18 @@ pub enum Event {
     /// The binding was dropped after `failures` consecutive failures and
     /// the item is re-onboarded.
     GaveUp { failures: u32, last_error: String },
+    /// A session handed its item to a new session on another harness,
+    /// model or effort (`ssf handover`): `from` is what it ran with,
+    /// `to` what the new one runs with. `by` is the session that asked
+    /// (`None` for a person at a terminal). A `refused` handover was
+    /// recorded and then could not be carried out; nothing changed.
+    HandedOver {
+        from: Launch,
+        to: Launch,
+        summary: bool,
+        by: Option<String>,
+        refused: Option<String>,
+    },
     /// The workspace was removed, `by` `ssf release` or `ssf purge`.
     Released {
         by: &'static str,
@@ -138,6 +154,7 @@ impl Event {
             Self::Blocked { .. } => "blocked",
             Self::Unblocked { .. } => "unblocked",
             Self::GaveUp { .. } => "gave-up",
+            Self::HandedOver { .. } => "handed-over",
             Self::Released { .. } => "released",
         }
     }
@@ -173,6 +190,11 @@ impl Event {
                     ("shares", format!("workspace of #{shares}")),
                 ],
             ),
+            Self::Attached(Attach::HandedOver { launch, from }) => {
+                let mut lines = launch.lines();
+                lines.push(("handed over from", from.clone()));
+                (format!("attaching agent to {item_kind}"), lines)
+            }
             Self::Attached(Attach::ReCreated {
                 launch,
                 reason,
@@ -239,6 +261,38 @@ impl Event {
                     ("next", "re-onboarding the item".into()),
                 ],
             ),
+            Self::HandedOver {
+                from,
+                to,
+                summary,
+                by,
+                refused,
+            } => {
+                let who = match by {
+                    Some(session) => session.clone(),
+                    None => "a person at the terminal".to_string(),
+                };
+                let mut lines = Vec::new();
+                if refused.is_none() {
+                    lines.push(("from", from.harness.clone()));
+                    lines.push(("from model", from.model_value()));
+                    lines.push(("from effort", from.effort_value()));
+                }
+                lines.push(("to", to.harness.clone()));
+                lines.push(("to model", to.model_value()));
+                lines.push(("to effort", to.effort_value()));
+                if refused.is_none() {
+                    lines.push(("summary", if *summary { "yes" } else { "no" }.into()));
+                }
+                lines.push(("by", who));
+                match refused {
+                    None => (format!("handing over {item_kind}"), lines),
+                    Some(why) => {
+                        lines.push(("refused", one_line(why)));
+                        (format!("not handing over {item_kind}"), lines)
+                    }
+                }
+            }
             Self::Released { by, forced, branch } => {
                 let mut lines = vec![("by", by.to_string())];
                 if *forced {
@@ -253,25 +307,41 @@ impl Event {
     }
 }
 
+/// A setting as it was given, or nothing when it is blank.
+fn set(v: &Option<String>) -> Option<String> {
+    v.as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 impl Launch {
-    fn lines(&self) -> Vec<(&'static str, String)> {
-        let set = |v: &Option<String>| {
-            v.as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        let command = set(&self.command);
-        let fallback = if command.is_some() {
+    /// What decides an unset model or effort: the configured command when
+    /// there is one, else the harness itself.
+    fn fallback(&self) -> &'static str {
+        if set(&self.command).is_some() {
             COMMAND_DEFAULT
         } else {
             HARNESS_DEFAULT
-        };
-        let or_default = |v: &Option<String>| set(v).unwrap_or_else(|| fallback.into());
+        }
+    }
+
+    /// The model line's value: as configured, or what decides it.
+    pub fn model_value(&self) -> String {
+        set(&self.model).unwrap_or_else(|| self.fallback().into())
+    }
+
+    /// The effort line's value: as configured, or what decides it.
+    pub fn effort_value(&self) -> String {
+        set(&self.effort).unwrap_or_else(|| self.fallback().into())
+    }
+
+    fn lines(&self) -> Vec<(&'static str, String)> {
+        let command = set(&self.command);
         let mut lines = vec![
             ("harness", self.harness.clone()),
-            ("model", or_default(&self.model)),
-            ("effort", or_default(&self.effort)),
+            ("model", self.model_value()),
+            ("effort", self.effort_value()),
         ];
         if let Some(c) = command {
             lines.push(("command", c));

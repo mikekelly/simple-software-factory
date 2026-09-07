@@ -817,6 +817,34 @@ impl RepoConfig {
         )
     }
 
+    /// This config as an item with `overrides` runs: the same repository
+    /// with the item's harness, model and effort. Nothing overridden is
+    /// the config as it stands. An override that keeps the repository's
+    /// harness keeps its `command` too, and falls back to the
+    /// repository's model and effort; one that changes the harness drops
+    /// the command (it belongs to the old harness, so the new harness's
+    /// own default command is used) and falls back to the new harness's
+    /// own defaults rather than the repository's.
+    pub fn with_overrides(&self, overrides: Option<&crate::state::Overrides>) -> Self {
+        let Some(o) = overrides else {
+            return self.clone();
+        };
+        if o.harness == self.harness {
+            return Self {
+                model: o.model.clone().or_else(|| self.model.clone()),
+                effort: o.effort.clone().or_else(|| self.effort.clone()),
+                ..self.clone()
+            };
+        }
+        Self {
+            harness: o.harness.clone(),
+            command: None,
+            model: o.model.clone(),
+            effort: o.effort.clone(),
+            ..self.clone()
+        }
+    }
+
     /// Check that the model and effort settings fit the harness.
     pub fn validate_launch_prefs(&self) -> Result<()> {
         crate::models::validate(&self.harness, self.model.as_deref(), self.effort.as_deref())

@@ -206,12 +206,68 @@ pub struct IssueState {
     /// but no workspace, no owner and no session of its own.
     #[serde(default)]
     pub subscriber_only: bool,
+    /// Per-item launch overrides: the harness, model and effort this
+    /// item's session runs with, whatever the repository is configured
+    /// with. Written by a handover (`ssf handover`), used by every later
+    /// launch, resume and re-creation, cleared when the workspace is
+    /// released or the item purged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overrides: Option<Overrides>,
+    /// A handover the daemon has accepted and not carried out yet: the
+    /// next pass ends this session and starts the new one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<PendingHandover>,
     /// The session's harness cannot act: its screen shows a login prompt
     /// (see [`Blocked`]). Nothing is delivered while this is set; the
     /// daemon checks every pass whether the login is back and resumes the
     /// session itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<Blocked>,
+}
+
+/// What an item's session runs with instead of the repository's own
+/// settings (`ssf handover`). `model` and `effort` unset mean the
+/// harness's own defaults, not the repository's, when the harness
+/// differs; see `Engine::effective`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Overrides {
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+}
+
+/// A handover `ssf handover` recorded on an item: what the new session
+/// runs with, what the outgoing agent wrote for it, and who asked. The
+/// daemon carries it out on its next pass and clears it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PendingHandover {
+    pub harness: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
+    /// What the outgoing agent left for the new one; `None` for
+    /// `--no-summary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    /// The session that asked (`owner/repo#N`); `None` for a person at a
+    /// shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+    pub requested_at: String,
+}
+
+impl PendingHandover {
+    /// The overrides the item keeps once the handover has been carried out.
+    pub fn overrides(&self) -> Overrides {
+        Overrides {
+            harness: self.harness.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
 }
 
 /// Why a session cannot take prompts, and what has been done about it.
