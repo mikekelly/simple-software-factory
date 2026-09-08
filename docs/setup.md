@@ -34,15 +34,17 @@ service.
   Omarchy's; elsewhere the CLI and the service are the whole of it. On
   macOS, ssf is a Homebrew formula with a `brew services` (launchd)
   service; the VM is a lima instance and needs macOS 13.5 or later for
-  Apple's Virtualization framework. Apple silicon and Intel both work;
-  no KVM or nested virtualisation is involved.
+  Apple's Virtualization framework, and lima 2.0.1 or newer (what
+  `brew install lima` gives you; `ssf vm build` refuses an older one and
+  says so). Apple silicon and Intel both work; no KVM or nested
+  virtualisation is involved.
 - **`/dev/kvm`** (Linux) usable by your user for the microVM:
   world-writable on Omarchy, Arch and Fedora. On Debian and Ubuntu a
   user logged in at the machine's seat gets access through udev, and a
   user who only comes in over ssh needs the `kvm` group (`sudo usermod
   -aG kvm $USER`, then log in again) (**you**). Without it, the factory
-  runs on the host (step 6), or in lima over qemu (see
-  [Backends](vm.md#backends)).
+  runs on the host (step 6), or in lima over qemu (lima 2.0.1 or newer;
+  see [Backends](vm.md#backends)).
 - **About 30 GB free** under `~/.local/share/ssf/vm` for the VM: on
   Linux an 8 GB root image plus a copy of it per VM, a 20 GB data disk
   (sparse, grows with use), the guest kernel and the Firecracker and
