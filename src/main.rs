@@ -4109,6 +4109,9 @@ resource temporarily unavailable"
 
     #[test]
     fn the_widget_gets_an_answer_for_a_guest_that_did_not_give_one() {
+        // The document names the host service, which is read from the
+        // state directory: a test's must be its own (#140).
+        let _sandbox = crate::config::test_support::sandbox();
         // The host cannot fill in what only the guest knows, so the
         // sessions and repositories are empty rather than invented; what
         // it can fill in is the VM, and each of the three answers the
