@@ -21,7 +21,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::HerdrConfig;
 use crate::driver::{
-    self, Relaunch, add_local_worktree, find_local_worktree, number_of_name, remove_local_worktree,
+    self, Relaunch, add_local_worktree, checkout_of_worktree, find_local_worktree, number_of_name,
+    remove_local_worktree,
 };
 use crate::orca::{AgentInfo, Delivery, WorkspaceInfo, Worktree};
 
@@ -148,20 +149,11 @@ fn worktree_rows(v: &Value) -> impl Iterator<Item = &Value> {
 /// A workspace's checkout root and item number, from its checkout path:
 /// ssf's worktrees live in `<root>.worktrees/<name>`.
 fn root_and_item(cwd: &str) -> (Option<String>, Option<u64>) {
-    let p = Path::new(cwd);
-    let name = p.file_name().map(|n| n.to_string_lossy().to_string());
-    let parent = p
-        .parent()
-        .and_then(|d| d.file_name())
-        .map(|n| n.to_string_lossy().to_string());
-    let root = match (p.parent().and_then(Path::parent), parent) {
-        (Some(base), Some(dir)) => dir
-            .strip_suffix(".worktrees")
-            .map(|n| base.join(n).to_string_lossy().to_string()),
-        _ => None,
-    };
+    let root = checkout_of_worktree(cwd).map(|r| r.to_string_lossy().to_string());
     let item = if root.is_some() {
-        name.as_deref().and_then(number_of_name)
+        Path::new(cwd)
+            .file_name()
+            .and_then(|n| number_of_name(&n.to_string_lossy()))
     } else {
         None
     };

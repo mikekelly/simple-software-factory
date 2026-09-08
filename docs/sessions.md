@@ -556,6 +556,28 @@ comment, and then, only if everything is on origin, run `ssf release`.
   open items, of sessions that still own open items, and with a running
   agent are never touched. `--older-than` limits it to items retired more
   than that many days ago; `--json` gives the same rows as data.
+  A workspace the driver no longer has (closed by hand, say) whose git
+  checkout is still on disk is judged by that checkout, shown as
+  `(workspace gone, checkout still on disk)` (`"workspace": "gone"` in the
+  JSON), and removed with git when clean and pushed or forced; only when
+  the checkout is gone too is the row `already gone` and the record simply
+  forgotten.
+- **`ssf doctor` names the checkouts worth worrying about** before anyone
+  purges or deletes by hand. Per repository it walks `git worktree list`
+  of the checkout, looks at every worktree under `<checkout>.worktrees/`,
+  fetches origin once and counts what each holds beyond the base branch
+  (`repo.base_branch`, else origin's default branch) and beyond origin.
+  A worktree holding commits that are on no other branch and not on
+  origin, uncommitted changes, or a stash entry made on its branch, with
+  no agent in its workspace (or no workspace at all: a herdr tab or an
+  Orca worktree closed by hand leaves the checkout behind), gets a `WARN`
+  line naming it, what it holds (`6 commits ahead of master, not on
+  origin`), whether its workspace is open, and whether its item is active
+  on the record. `ssf tell <item> "..."` brings the session back in that
+  checkout; `ssf purge --force` or removing the directory loses the work.
+  Worktrees with an agent on them, and ones whose work is on origin or
+  merged, are counted but not listed. Worktrees elsewhere than
+  `<checkout>.worktrees/` (a person's own) are not ssf's to report.
 - **What the record says.** A released or purged item is marked
   `released` (with `released_at`), and `ssf status`/`ssf peers --all` show
   "retired, workspace kept", "retired, workspace released" or "retired,

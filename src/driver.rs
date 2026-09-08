@@ -924,6 +924,16 @@ pub fn worktrees_dir(repo_root: &str) -> PathBuf {
         .join(format!("{name}.worktrees"))
 }
 
+/// The checkout a worktree path belongs to, by ssf's layout: the
+/// `<root>` of `<root>.worktrees/<name>`. `None` for a path elsewhere.
+pub fn checkout_of_worktree(path: &str) -> Option<PathBuf> {
+    let p = Path::new(path);
+    let dir = p.parent()?;
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    let base = dir.parent()?;
+    name.strip_suffix(".worktrees").map(|n| base.join(n))
+}
+
 /// Branch a workspace named `name` works on.
 pub fn branch_for(name: &str) -> String {
     format!("bot/{name}")
@@ -1087,6 +1097,23 @@ pub async fn remove_local_worktree(repo_root: &str, path: &str) -> Result<()> {
     }
     let _ = git(repo_root, &["worktree", "prune"]).await;
     Ok(())
+}
+
+/// Remove a linked worktree no driver has a workspace on any more, asking
+/// git which checkout it belongs to (its branch stays).
+pub async fn remove_stray_worktree(path: &str) -> Result<()> {
+    let common = git(
+        path,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await
+    .with_context(|| format!("{path}: not a git worktree"))?;
+    let root = Path::new(&common)
+        .parent()
+        .with_context(|| format!("{path}: odd git dir {common}"))?
+        .to_string_lossy()
+        .to_string();
+    remove_local_worktree(&root, path).await
 }
 
 /// A worktree of the checkout, as `git worktree list` reports it.
