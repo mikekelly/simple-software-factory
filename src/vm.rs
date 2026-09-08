@@ -307,7 +307,7 @@ pub struct VmStatus {
     /// not name -- what a changed `[vm] name` leaves behind. Reported
     /// here because `instance: ssf-new missing` over a machine still
     /// holding `ssf-old` is the other half of the same silence.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strays: Vec<Stray>,
 }
 
@@ -352,6 +352,11 @@ pub struct Survey {
     /// that reached that decision would be a VM deleted because someone
     /// edited a name.
     pub strays: Vec<Stray>,
+    /// `[vm] dir` is there but could not be read, so what is in it is
+    /// unknown. Not the same as empty: the report calls that directory
+    /// "safe to remove", and safety nobody could verify must not be
+    /// asserted.
+    pub base_unread: bool,
 }
 
 /// Something of ssf's shape that this configuration does not name: what
@@ -1268,21 +1273,36 @@ impl Vm {
     /// Only directories holding a `data.ext4` count. The images and
     /// downloads share `[vm] dir` with them and are genuinely safe.
     fn fc_strays(&self) -> Vec<Stray> {
+        self.fc_dir_contents().0
+    }
+
+    /// [`Vm::fc_strays`], and whether the directory could be read at
+    /// all. A `read_dir` that failed is "nobody looked", which the
+    /// report must not print as "nothing there": a `[vm] dir` left
+    /// root-owned by an earlier `sudo`, or on a volume returning `EIO`,
+    /// would otherwise get `no VM` over `safe to remove` -- the two
+    /// sentences this whole change exists to abolish.
+    fn fc_dir_contents(&self) -> (Vec<Stray>, bool) {
         // Absolute, because the remedy is an `rm -rf` a person pastes:
         // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
         // means a different directory from every other working
         // directory. `expand_tilde` only expands a leading `~/`.
         let base = std::path::absolute(&self.base).unwrap_or_else(|_| self.base.clone());
-        // A `[vm] name` that makes this VM's own directory the whole of
-        // `[vm] dir` -- empty, or `.` -- would make every sibling a
-        // child of it, and the report would call the very directory the
-        // destroy step removes "untouched". Nothing refuses such a name
-        // yet (#169); this refuses to build a report on one.
-        if self.dir == self.base {
-            return Vec::new();
+        // A `[vm] name` that does not name a child of `[vm] dir` --
+        // empty, `.`, `..`, an absolute path -- makes what this would
+        // report either children of the VM's own directory or nothing to
+        // do with it, and the report would call directories the destroy
+        // step is about to remove "untouched". Nothing refuses such a
+        // name yet (#169); this refuses to build a report on one. Asking
+        // for the parent covers every spelling at once.
+        if self.dir.parent() != Some(self.base.as_path()) {
+            return (Vec::new(), false);
         }
-        let Ok(entries) = std::fs::read_dir(&base) else {
-            return Vec::new();
+        let entries = match std::fs::read_dir(&base) {
+            Ok(e) => e,
+            // Only a directory that is there and unreadable is unknown;
+            // one that is not there is genuinely empty.
+            Err(_) => return (Vec::new(), base.exists()),
         };
         let mut strays: Vec<Stray> = entries
             .flatten()
@@ -1304,7 +1324,7 @@ impl Vm {
             .map(|p| Stray::directory(&p))
             .collect();
         strays.sort_by(|a, b| a.name.cmp(&b.name));
-        strays
+        (strays, false)
     }
 
     /// The strays that can be found without asking the backend
@@ -1332,19 +1352,24 @@ impl Vm {
             BackendKind::Firecracker => {
                 let dir = self.dir.exists();
                 let running = self.firecracker_pid().is_some();
+                let (strays, base_unread) = self.fc_dir_contents();
                 Survey {
                     present: Some(dir || running),
                     running: Some(running),
                     startable: dir,
                     data: Some(self.data_disk().exists()),
-                    strays: self.fc_strays(),
+                    strays,
+                    base_unread,
                 }
             }
             BackendKind::Lima => {
                 let mut survey = self.lima_survey();
                 // `[vm] dir` is shared by the backends, so its strays
-                // are lima's business as much as Firecracker's.
-                survey.strays.splice(0..0, self.fc_strays());
+                // are lima's business as much as Firecracker's -- and so
+                // is a `[vm] dir` nobody could read.
+                let (strays, base_unread) = self.fc_dir_contents();
+                survey.strays.splice(0..0, strays);
+                survey.base_unread = base_unread;
                 lima::sort_strays(&mut survey.strays);
                 survey
             }
@@ -3189,6 +3214,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -3202,6 +3228,7 @@ mod tests {
                 startable: true,
                 data: Some(false),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
     }
@@ -3297,6 +3324,125 @@ mod tests {
             "the remedy is an absolute path: {}",
             st.strays[0].remove
         );
+    }
+
+    #[test]
+    fn a_relative_vm_dir_still_excludes_this_vm_and_prints_an_absolute_remedy() {
+        // The remedy is an `rm -rf` a person pastes, so a relative
+        // `[vm] dir` must not produce `rm -rf vm/old` -- a different
+        // directory from every working directory but this one. And the
+        // exclusion of this VM's own directory has to survive the
+        // absolutizing, or the report calls the directory the destroy
+        // step removes "untouched". Under `target/`, which is where a
+        // relative path from the test's own working directory can go.
+        let rel = format!(
+            "target/ssf-rel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = rel.clone();
+        let vm = Vm::new(&cfg);
+        for d in ["new", "old"] {
+            std::fs::create_dir_all(vm.dir.parent().unwrap().join(d)).unwrap();
+            std::fs::write(vm.dir.parent().unwrap().join(d).join("data.ext4"), b"disk").unwrap();
+        }
+        let strays = vm.survey().strays;
+        std::fs::remove_dir_all(&rel).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["old"],
+            "this VM's own directory is not a stray"
+        );
+        assert!(
+            strays[0].remove.starts_with("rm -rf /"),
+            "a pasted remedy must not be relative: {}",
+            strays[0].remove
+        );
+    }
+
+    #[test]
+    fn a_vm_dir_that_cannot_be_read_is_not_called_safe_to_remove() {
+        // "Could not look" is not "nothing there". Read as empty, a
+        // `[vm] dir` left root-owned by an earlier sudo got `no VM` over
+        // `safe to remove` -- the two sentences this change exists to
+        // abolish, printed over a directory nobody had looked in.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-unread-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        assert!(!vm.survey().base_unread, "readable while it is readable");
+        set_mode(&base, 0o000);
+        let survey = vm.survey();
+        set_mode(&base, 0o755);
+        std::fs::remove_dir_all(&base).unwrap();
+        // Running as root reads it anyway, and then there is nothing to
+        // assert about not having been able to.
+        if survey.strays.is_empty() {
+            assert!(
+                survey.base_unread,
+                "an unreadable directory is unknown, not empty"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_and_a_name_that_is_not_utf8_are_not_offered_a_remedy() {
+        // `rm -rf` on a symlink removes the link and leaves what it
+        // pointed at, so a remedy over one is not a remedy. A name that
+        // is not UTF-8 would be printed with replacement characters, in
+        // a command that then matches nothing. Both are lines a person
+        // would act on and get nowhere.
+        use std::os::unix::ffi::OsStrExt;
+        let base = std::env::temp_dir().join(format!(
+            "ssf-odd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("data.ext4"), b"disk").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("linked")).unwrap();
+        let odd = base.join(std::ffi::OsStr::from_bytes(b"bad\xff"));
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("data.ext4"), b"disk").unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let strays = Vm::new(&cfg).survey().strays;
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["real"],
+            "only the directory a remedy can actually remove"
+        );
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
     #[test]
