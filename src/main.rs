@@ -250,8 +250,9 @@ enum Command {
         /// Skip the confirmation (scripted use).
         #[arg(long, short = 'y')]
         yes: bool,
-        /// Go ahead even when a workspace holds uncommitted or unpushed work,
-        /// or the VM is stopped so its workspaces cannot be checked.
+        /// Go ahead even when a workspace holds uncommitted or unpushed work
+        /// (kept on the host; destroyed with the VM's disks in VM mode), or
+        /// the VM is stopped so its workspaces cannot be checked.
         #[arg(long)]
         force: bool,
         /// Also remove ~/.config/ssf (config, the bot's key) and

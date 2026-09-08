@@ -610,12 +610,13 @@ shuts the guest down cleanly and its sessions come back with it.
 2. `sudo pacman -R ssf` (**you**: sudo; nothing in ssf runs it). The
    command prints this line last.
 
-What stops it: a workspace with uncommitted or unpushed work, or a VM
-that is stopped so the clones on its data disk cannot be checked. Push
-or discard the work (`ssf vm start` to check a stopped VM), or pass
-`--force` to go ahead: on the host the work stays where it is; a
-`--force` on a stopped VM destroys its disks unchecked. `--yes` skips the
-question for scripted use.
+What stops it: a workspace with uncommitted or unpushed work (an open
+item's too), or a VM that is stopped so the clones on its data disk
+cannot be checked. Push or discard the work (`ssf vm start` to check a
+stopped VM), or pass `--force` to go ahead: on the host the work stays
+where it is; in the VM the clones live on its data disk and are
+destroyed with it, checked or not. `--yes` skips the question for
+scripted use.
 
 What it keeps, and lists at the end: the clones and worktrees under
 `~/ssf/projects` (or Orca's projects; may hold unpushed work), the
@@ -624,8 +625,9 @@ pass `--data`, `~/.config/ssf` (config and the bot's key) and
 `~/.local/state/ssf` (state, and the marker that keeps a disabled
 service off, so a reinstall stays stopped until `ssf ui service enable`;
 with `--data` gone, a reinstall starts the service). The bot GitHub
-account itself is not touched. `ssf status` afterwards reads as on a
-fresh machine.
+account itself is not touched, nor its gh sign-in. With the VM gone the
+config's `vm.enabled` is cleared, so `ssf status` afterwards reads as on
+a fresh machine.
 
 ## Checklist
 

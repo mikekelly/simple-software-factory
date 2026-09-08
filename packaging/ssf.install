@@ -48,6 +48,6 @@ post_remove() {
     ~/ssf/projects (clones and worktrees), ~/.local/share/ssf/vm (the microVM),
     ~/.config/omarchy/plugins/ssf.factory and the Factory menu entries.
     `ssf uninstall` before removing the package takes care of all but the
-    clones (`--data` includes config and state); now it is by hand.
+    clones and the VM image (`--data` includes config and state); now it is by hand.
 MSG
 }

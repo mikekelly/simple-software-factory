@@ -167,6 +167,7 @@ impl Facts {
             .drivers_in_use()
             .into_iter()
             .map(|d| cfg.projects_dir(d))
+            .filter(|p| p.exists())
             .collect();
         projects.dedup();
         let vm_running = vm.running();
@@ -276,7 +277,7 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     }
     if facts.vm_present {
         remove.push(format!(
-            "VM {} and its disks ({})",
+            "VM {} and its disks ({}); the clones and worktrees on its data disk go with it",
             facts.vm_name,
             facts.vm_dir.display()
         ));
@@ -433,6 +434,43 @@ fn confirm_default_no(question: &str) -> Result<bool> {
     Ok(a == "y" || a == "yes")
 }
 
+/// Why the command refuses to go on, unless `force`: work that is not
+/// on origin (which, in VM mode, goes with the VM's disks), or a VM whose
+/// workspaces could not be looked at.
+pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Option<String> {
+    if force {
+        return None;
+    }
+    let unpushed = report.unpushed();
+    if !unpushed.is_empty() {
+        let n = unpushed.len();
+        return Some(format!(
+            "{n} workspace{} hold{} uncommitted or unpushed work (listed above); push or discard it first, or pass --force to {}",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "s" } else { "" },
+            if facts.vm_mode {
+                "destroy it with the VM's disks"
+            } else {
+                "go ahead and leave it where it is"
+            }
+        ));
+    }
+    if opts.vm_unchecked {
+        return Some(if facts.vm_running {
+            format!(
+                "VM {} gave no report, so its workspaces cannot be checked; `ssf vm restart` first (the guest runs the ssf of its last start), or pass --force to destroy them unchecked",
+                facts.vm_name
+            )
+        } else {
+            format!(
+                "VM {} is not running, so its workspaces cannot be checked; `ssf vm start` first, or pass --force to destroy them unchecked",
+                facts.vm_name
+            )
+        });
+    }
+    None
+}
+
 /// The command: report, hard stops, one question, the steps, what is left.
 pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     let cfg = Config::load()?;
@@ -464,27 +502,8 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     };
     print!("{}", render(&facts, &report, &opts));
 
-    let unpushed = report.unpushed();
-    if !force {
-        if !unpushed.is_empty() {
-            bail!(
-                "{} workspace{} hold{} uncommitted or unpushed work (listed above); push or discard it first, or pass --force to go ahead and leave it where it is",
-                unpushed.len(),
-                if unpushed.len() == 1 { "" } else { "s" },
-                if unpushed.len() == 1 { "s" } else { "" }
-            );
-        }
-        if opts.vm_unchecked {
-            bail!(
-                "VM {} {}, so its workspaces cannot be checked; `ssf vm start` first, or pass --force to destroy them unchecked",
-                facts.vm_name,
-                if facts.vm_running {
-                    "gave no report"
-                } else {
-                    "is not running"
-                }
-            );
-        }
+    if let Some(why) = hard_stop(&facts, &report, &opts, force) {
+        bail!("{why}");
     }
     if !yes {
         if !vm::stdin_is_tty() {
@@ -527,7 +546,9 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     }
 
     println!("==> remove the bar widget and menu entries");
-    if let Err(e) = ui::uninstall_all() {
+    if !facts.desktop_present {
+        println!("already gone");
+    } else if let Err(e) = ui::uninstall_all() {
         fail("desktop", e);
     }
 
@@ -545,6 +566,25 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         }
     } else {
         println!("no VM");
+    }
+    // With the VM gone the factory is nowhere; a config still saying
+    // `vm.enabled` would send `ssf status` looking for it. Read the file
+    // again: the sign-out step wrote it. With `--data` it goes anyway.
+    if facts.vm_mode && !data {
+        match Config::load() {
+            Ok(mut cfg) if cfg.vm.enabled => {
+                cfg.vm.enabled = false;
+                match cfg.save() {
+                    Ok(()) => println!(
+                        "[vm] enabled = false written to {}",
+                        config::config_path().display()
+                    ),
+                    Err(e) => fail("vm", e),
+                }
+            }
+            Ok(_) => {}
+            Err(e) => fail("vm", e),
+        }
     }
 
     if data {
@@ -746,7 +786,7 @@ mod tests {
         );
         assert!(text.contains("clean and pushed (ssf purge)"), "{text}");
         assert!(
-            text.contains("VM factory and its disks (/vm/factory)"),
+            text.contains("VM factory and its disks (/vm/factory); the clones"),
             "{text}"
         );
         assert!(
@@ -844,6 +884,71 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("(none)"), "{text}");
+    }
+
+    #[test]
+    fn hard_stop_names_unpushed_work_and_what_force_does_to_it() {
+        let dirty = Report {
+            daemon: true,
+            items: vec![Item {
+                session: "o/r#1".into(),
+                title: "t".into(),
+                open: true,
+                path: "/p/w".into(),
+                state: "dirty".into(),
+                problems: vec![],
+            }],
+        };
+        let host = Facts::default();
+        let why = hard_stop(&host, &dirty, &Opts::default(), false).unwrap();
+        assert!(why.starts_with("1 workspace holds"), "{why}");
+        assert!(why.ends_with("leave it where it is"), "{why}");
+        let guest = Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            ..Facts::default()
+        };
+        let why = hard_stop(&guest, &dirty, &Opts::default(), false).unwrap();
+        assert!(why.ends_with("destroy it with the VM's disks"), "{why}");
+        assert!(hard_stop(&guest, &dirty, &Opts::default(), true).is_none());
+        // Clean and gone workspaces do not stop anything.
+        let mut clean = dirty.clone();
+        clean.items[0].state = "clean and pushed".into();
+        clean.items.push(Item {
+            state: "already gone".into(),
+            ..clean.items[0].clone()
+        });
+        assert!(hard_stop(&host, &clean, &Opts::default(), false).is_none());
+    }
+
+    #[test]
+    fn hard_stop_on_an_unchecked_vm_says_how_to_check_it() {
+        let stopped = Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            vm_present: true,
+            ..Facts::default()
+        };
+        let unchecked = Opts {
+            vm_unchecked: true,
+            ..Opts::default()
+        };
+        let why = hard_stop(&stopped, &Report::default(), &unchecked, false).unwrap();
+        assert!(
+            why.contains("is not running") && why.contains("`ssf vm start`"),
+            "{why}"
+        );
+        let running = Facts {
+            vm_running: true,
+            ..stopped.clone()
+        };
+        let why = hard_stop(&running, &Report::default(), &unchecked, false).unwrap();
+        assert!(
+            why.contains("gave no report") && why.contains("`ssf vm restart`"),
+            "{why}"
+        );
+        assert!(hard_stop(&running, &Report::default(), &unchecked, true).is_none());
+        assert!(hard_stop(&running, &Report::default(), &Opts::default(), false).is_none());
     }
 
     #[test]
