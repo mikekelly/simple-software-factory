@@ -63,11 +63,12 @@ commands, and the rest of `docs/` is the reference the document links to.
    under `<checkout>.worktrees/`; `ssf doctor` prints a `WARN` line per
    repository naming each such checkout holding commits on no other
    branch and not on origin (or uncommitted changes) with no agent on
-   it. The fix is `ssf tell <item> "..."`, which brings the session back
-   in that checkout; `ssf purge` says `(workspace gone, checkout still on
-   disk)` for one whose item is closed and removes it only when clean and
-   pushed. Show the person the line and let them decide about anything
-   else.
+   it. For an active item the fix is `ssf tell <item> "..."`, which
+   brings the session back in that checkout; a retired item refuses a
+   tell, and its branch is pushed by hand. `ssf purge` says `(workspace
+   gone, checkout still on disk)` for one whose item is closed and
+   removes it only when clean and pushed. Show the person the line and
+   let them decide about anything else.
 9. **Uninstall with `ssf uninstall`**, never by hand: it reports and
    asks once, and it refuses while a workspace holds unpushed work or
    the VM is stopped so its clones cannot be checked. Do not add

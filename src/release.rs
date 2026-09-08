@@ -16,6 +16,9 @@ pub async fn git(path: &str, args: &[&str]) -> Result<String> {
         .arg("-C")
         .arg(path)
         .args(args)
+        // Never wait on a terminal for credentials (`ssf doctor` has one):
+        // a fetch that needs them fails and is reported instead.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("running git")?;
@@ -201,17 +204,33 @@ pub struct Held {
     pub dirty: usize,
     /// Stash entries made on the branch.
     pub stashes: usize,
+    /// The directory is still there. Git lists a worktree whose directory
+    /// was removed by hand (as prunable) until `git worktree prune`; its
+    /// branch, and what only the branch holds, are still worth naming.
+    pub on_disk: bool,
+    /// Git could not answer for this one (a `.git` file pointing nowhere,
+    /// a branch that was deleted under it); the rest are unaffected.
+    pub error: Option<String>,
 }
 
 impl Held {
-    /// Removing the checkout would lose something.
+    /// Removing the checkout would lose something, or nobody can tell.
     pub fn at_risk(&self) -> bool {
-        self.lost > 0 || self.dirty > 0 || self.stashes > 0
+        self.lost > 0 || self.dirty > 0 || self.stashes > 0 || self.error.is_some()
     }
 
     /// `6 commits ahead of master, not on origin; 2 uncommitted changes`.
     pub fn describe(&self, base: &str) -> String {
+        if let Some(e) = &self.error {
+            return format!("could not be checked: {e}");
+        }
         let mut parts = Vec::new();
+        if !self.on_disk {
+            parts.push(match &self.branch {
+                Some(b) => format!("directory gone, branch {b} still there"),
+                None => "directory gone".to_string(),
+            });
+        }
         if self.branch.is_none() {
             parts.push("detached HEAD".to_string());
         }
@@ -300,60 +319,27 @@ pub async fn held_work(root: &str, base: Option<&str>) -> Result<HeldReport> {
     let mut worktrees = Vec::new();
     for w in crate::driver::local_worktrees(&root).await? {
         let p = std::path::Path::new(&w.path);
-        if p.parent() != Some(dir.as_path()) || !p.is_dir() {
+        if p.parent() != Some(dir.as_path()) {
             continue;
         }
-        let name = p
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let branch = w
-            .branch
-            .as_deref()
-            .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string());
-        let dirty = git(&w.path, &["status", "--porcelain", "--untracked-files=all"])
-            .await?
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .count();
-        let ahead = count(
-            &w.path,
-            &["rev-list", "--count", "HEAD", "--not", &base_ref],
-        )
-        .await?;
-        let lost = count(
-            &w.path,
-            &[
-                "rev-list",
-                "--count",
-                "HEAD",
-                "--not",
-                &base_ref,
-                "--remotes",
-            ],
-        )
-        .await?;
-        let stashes = match &branch {
-            Some(b) => {
-                let needle = format!("on {}:", b.to_lowercase());
-                git(&w.path, &["stash", "list", "--format=%gs"])
-                    .await
-                    .unwrap_or_default()
-                    .lines()
-                    .filter(|l| l.to_lowercase().contains(&needle))
-                    .count()
-            }
-            None => 0,
-        };
-        worktrees.push(Held {
+        let mut held = Held {
             path: w.path.clone(),
-            name,
-            branch,
-            ahead,
-            lost,
-            dirty,
-            stashes,
-        });
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            branch: w
+                .branch
+                .as_deref()
+                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string()),
+            on_disk: p.is_dir(),
+            ..Default::default()
+        };
+        // One worktree git cannot answer for does not hide the others.
+        if let Err(e) = look_at(&root, &base_ref, &w, &mut held).await {
+            held.error = Some(format!("{e:#}"));
+        }
+        worktrees.push(held);
     }
     Ok(HeldReport {
         base: short,
@@ -361,6 +347,50 @@ pub async fn held_work(root: &str, base: Option<&str>) -> Result<HeldReport> {
         dir: dir.to_string_lossy().to_string(),
         worktrees,
     })
+}
+
+/// Fill in what one worktree holds. A worktree whose directory is gone
+/// is asked about from the checkout, by its branch (or the commit git
+/// remembers it on): its files are gone, its commits may not be.
+async fn look_at(
+    root: &str,
+    base_ref: &str,
+    w: &crate::driver::LocalWorktree,
+    held: &mut Held,
+) -> Result<()> {
+    let (at, rev): (&str, String) = if held.on_disk {
+        (&w.path, "HEAD".to_string())
+    } else {
+        let rev = w
+            .branch
+            .clone()
+            .or_else(|| w.head.clone())
+            .context("git lists neither a branch nor a commit for it")?;
+        (root, rev)
+    };
+    if held.on_disk {
+        held.dirty = git(at, &["status", "--porcelain", "--untracked-files=all"])
+            .await?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+    }
+    held.ahead = count(at, &["rev-list", "--count", &rev, "--not", base_ref]).await?;
+    held.lost = count(
+        at,
+        &["rev-list", "--count", &rev, "--not", base_ref, "--remotes"],
+    )
+    .await?;
+    if let Some(b) = &held.branch {
+        let needle = format!("on {}:", b.to_lowercase());
+        held.stashes = git(at, &["stash", "list", "--format=%gs"])
+            .await
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.to_lowercase().contains(&needle))
+            .count();
+    }
+    Ok(())
 }
 
 async fn count(path: &str, args: &[&str]) -> Result<u64> {
@@ -539,6 +569,48 @@ mod tests {
         );
         // An unknown base is an error, not a silent zero.
         assert!(held_work(&s.work, Some("nope")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn held_work_names_a_removed_directory_and_survives_a_broken_worktree() {
+        let s = scratch("held-broken").await;
+        let gone = worktree(&s, "issue-1-gone").await;
+        std::fs::write(std::path::Path::new(&gone).join("g.txt"), "g\n").unwrap();
+        sh(&gone, &["add", "."]).await;
+        sh(&gone, &["commit", "-q", "-m", "only here"]).await;
+        let broken = worktree(&s, "issue-2-broken").await;
+        let fine = worktree(&s, "issue-3-fine").await;
+        std::fs::write(std::path::Path::new(&fine).join("f.txt"), "f\n").unwrap();
+        // The directory removed by hand; the `.git` file of another
+        // pointing nowhere.
+        std::fs::remove_dir_all(&gone).unwrap();
+        std::fs::write(
+            std::path::Path::new(&broken).join(".git"),
+            "gitdir: /nonexistent/x\n",
+        )
+        .unwrap();
+        let r = held_work(&s.work, None).await.unwrap();
+        let names: Vec<&str> = r.worktrees.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["issue-1-gone", "issue-2-broken", "issue-3-fine"]
+        );
+        let g = &r.worktrees[0];
+        assert!(!g.on_disk);
+        assert_eq!((g.ahead, g.lost, g.dirty), (1, 1, 0));
+        assert!(g.at_risk());
+        assert_eq!(
+            g.describe("main"),
+            "directory gone, branch bot/issue-1-gone still there; 1 commit ahead of main, not on origin"
+        );
+        let b = &r.worktrees[1];
+        assert!(b.error.is_some(), "{b:?}");
+        assert!(b.at_risk());
+        assert!(b.describe("main").starts_with("could not be checked: "));
+        let f = &r.worktrees[2];
+        assert!(f.error.is_none());
+        assert_eq!((f.ahead, f.lost, f.dirty), (0, 0, 1));
+        assert_eq!(f.describe("main"), "1 uncommitted change");
     }
 
     #[tokio::test]

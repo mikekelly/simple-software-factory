@@ -573,11 +573,22 @@ comment, and then, only if everything is on origin, run `ssf release`.
   Orca worktree closed by hand leaves the checkout behind), gets a `WARN`
   line naming it, what it holds (`6 commits ahead of master, not on
   origin`), whether its workspace is open, and whether its item is active
-  on the record. `ssf tell <item> "..."` brings the session back in that
-  checkout; `ssf purge --force` or removing the directory loses the work.
+  on the record. For an active item `ssf tell <item> "..."` brings the
+  session back in that checkout; a retired item refuses a tell, so its
+  branch is pushed by hand (`git -C <path> push -u origin <branch>`).
+  `ssf purge --force` or removing the directory loses the uncommitted
+  changes and leaves the commits on a local branch nothing lists.
   Worktrees with an agent on them, and ones whose work is on origin or
-  merged, are counted but not listed. Worktrees elsewhere than
-  `<checkout>.worktrees/` (a person's own) are not ssf's to report.
+  merged, are counted but not listed; a worktree whose directory was
+  removed by hand is still listed by git until `git worktree prune`, and
+  is named with what its branch still holds; one git cannot answer for
+  (a `.git` file pointing nowhere) is named as such and does not hide the
+  others. "On origin" means on any remote-tracking branch as of that
+  fetch, which does not prune: a branch deleted on GitHub after a squash
+  merge keeps counting as on origin until something prunes it, and with
+  `fetch.prune` set it stops counting as soon as it is pruned. Worktrees
+  elsewhere than `<checkout>.worktrees/` (a person's own) are not ssf's
+  to report.
 - **What the record says.** A released or purged item is marked
   `released` (with `released_at`), and `ssf status`/`ssf peers --all` show
   "retired, workspace kept", "retired, workspace released" or "retired,

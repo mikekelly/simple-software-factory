@@ -636,9 +636,11 @@ GitHub (@mentioning it, or a review request, works too).
   the git checkout under `<checkout>.worktrees/` survives, and so does
   whatever it holds. `ssf doctor` prints a `WARN` line per repository
   naming every such checkout with commits on no other branch and not on
-  origin, or uncommitted changes, and no agent on it; `ssf tell <item>
-  "..."` brings the session back in that checkout. Do not delete the
-  directory or `ssf purge --force` first: that loses the work. See
+  origin, or uncommitted changes, and no agent on it. For an active
+  item `ssf tell <item> "..."` brings the session back in that checkout;
+  a retired item's branch is pushed by hand. Do not delete the directory
+  or `ssf purge --force` first: that loses the uncommitted changes and
+  leaves the commits on a local branch nothing lists. See
   [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge).
 - **A session shows as blocked** when its harness login expired or was

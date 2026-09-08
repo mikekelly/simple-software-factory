@@ -324,8 +324,10 @@ Things to know when operating it:
 - A workspace closed by hand (a herdr tab, an Orca worktree) leaves its git
   checkout behind. `ssf doctor` warns, per repository, about every such
   checkout holding commits that are on no other branch and not on origin, or
-  uncommitted changes, with no agent on it; `ssf tell` to the item brings the
-  session back in that checkout (see [Workspaces after
+  uncommitted changes, with no agent on it. `ssf tell` to an active item
+  brings the session back in that checkout; a retired item's branch is
+  pushed by hand. Removing the directory loses the uncommitted changes and
+  leaves the commits on a local branch nothing lists (see [Workspaces after
   close](docs/sessions.md#workspaces-after-close-release-and-purge)).
 - `tell` is not mirrored to GitHub; decisions go on the item as comments,
   which the agent receives like any other activity.

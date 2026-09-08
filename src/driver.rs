@@ -1102,15 +1102,15 @@ pub async fn remove_local_worktree(repo_root: &str, path: &str) -> Result<()> {
 /// Remove a linked worktree no driver has a workspace on any more, asking
 /// git which checkout it belongs to (its branch stays).
 pub async fn remove_stray_worktree(path: &str) -> Result<()> {
-    let common = git(
-        path,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .await
-    .with_context(|| format!("{path}: not a git worktree"))?;
-    let root = Path::new(&common)
+    // Relative on older gits (`--path-format=absolute` needs 2.31), and
+    // then relative to the worktree.
+    let common = git(path, &["rev-parse", "--git-common-dir"])
+        .await
+        .with_context(|| format!("{path}: not a git worktree"))?;
+    let common = Path::new(path).join(common);
+    let root = common
         .parent()
-        .with_context(|| format!("{path}: odd git dir {common}"))?
+        .with_context(|| format!("{path}: odd git dir {}", common.display()))?
         .to_string_lossy()
         .to_string();
     remove_local_worktree(&root, path).await
@@ -1122,6 +1122,8 @@ pub struct LocalWorktree {
     pub path: String,
     /// Full ref (`refs/heads/...`), or `None` when detached.
     pub branch: Option<String>,
+    /// The commit checked out.
+    pub head: Option<String>,
 }
 
 /// Parse `git worktree list --porcelain`.
@@ -1136,11 +1138,16 @@ pub fn parse_worktree_list(text: &str) -> Vec<LocalWorktree> {
             cur = Some(LocalWorktree {
                 path: p.to_string(),
                 branch: None,
+                head: None,
             });
         } else if let Some(b) = line.strip_prefix("branch ")
             && let Some(c) = cur.as_mut()
         {
             c.branch = Some(b.to_string());
+        } else if let Some(h) = line.strip_prefix("HEAD ")
+            && let Some(c) = cur.as_mut()
+        {
+            c.head = Some(h.to_string());
         }
     }
     if let Some(c) = cur {

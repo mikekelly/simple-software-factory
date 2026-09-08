@@ -3414,37 +3414,48 @@ async fn doctor() -> Result<()> {
                         ),
                         None => String::new(),
                     };
-                    let workspaces = open_workspaces.get(&cfg.driver_for(r));
-                    let stranded: Vec<String> = report
+                    // Every driver's workspaces, not only this repository's
+                    // driver's: after a driver switch the old driver may
+                    // still have an agent on a worktree here.
+                    let rows: Vec<&orca::WorkspaceInfo> = open_workspaces
+                        .values()
+                        .filter_map(|r| r.as_ref().ok())
+                        .flatten()
+                        .collect();
+                    let driver_down = open_workspaces.values().any(|r| r.is_err());
+                    // (line, item is active)
+                    let stranded: Vec<(String, bool)> = report
                         .worktrees
                         .iter()
                         .filter(|h| h.at_risk())
                         .filter_map(|h| {
-                            let ws = match workspaces {
-                                Some(Ok(rows)) => {
-                                    match rows.iter().find(|w| same_path(&w.path, &h.path)) {
-                                        Some(w) if !w.agents.is_empty() => return None,
-                                        Some(_) => "workspace open, no agent in it",
-                                        None => "no workspace",
-                                    }
+                            let ws = match rows.iter().find(|w| same_path(&w.path, &h.path)) {
+                                Some(w) if !w.agents.is_empty() => return None,
+                                Some(_) => "workspace open, no agent in it",
+                                None if driver_down => {
+                                    "cannot tell whether an agent is on it (a driver is not answering)"
                                 }
-                                _ => "cannot tell whether an agent is on it (driver not answering)",
+                                None => "no workspace",
                             };
-                            let item = match driver::number_of_name(&h.name) {
-                                Some(n) => {
-                                    match state.repos.get(&r.name).and_then(|rs| rs.issues.get(&n))
-                                    {
-                                        Some(it) if it.active => format!("#{n} active"),
-                                        Some(_) => format!("#{n} retired"),
-                                        None => format!("#{n} not on record"),
-                                    }
-                                }
+                            let record = driver::number_of_name(&h.name).map(|n| {
+                                (
+                                    n,
+                                    state
+                                        .repos
+                                        .get(&r.name)
+                                        .and_then(|rs| rs.issues.get(&n))
+                                        .map(|it| it.active),
+                                )
+                            });
+                            let item = match record {
+                                Some((n, Some(true))) => format!("#{n} active"),
+                                Some((n, Some(false))) => format!("#{n} retired"),
+                                Some((n, None)) => format!("#{n} not on record"),
                                 None => "no item".to_string(),
                             };
-                            Some(format!(
-                                "{}: {}; {ws}; {item}",
-                                h.name,
-                                h.describe(&report.base)
+                            Some((
+                                format!("{}: {}; {ws}; {item}", h.name, h.describe(&report.base)),
+                                matches!(record, Some((_, Some(true)))),
                             ))
                         })
                         .collect();
@@ -3457,7 +3468,7 @@ async fn doctor() -> Result<()> {
                                 format!("{}: no worktrees under {}{stale}", r.name, report.dir)
                             } else {
                                 format!(
-                                    "{}: {total} worktree{} under {}; every one holding work that is only there has an agent on it{stale}",
+                                    "{}: {total} worktree{} under {}; none holds work that is only there without an agent on it{stale}",
                                     r.name,
                                     plural(total),
                                     report.dir
@@ -3473,11 +3484,25 @@ async fn doctor() -> Result<()> {
                             report.dir,
                             if stranded.len() == 1 { "s" } else { "" }
                         );
-                        for line in &stranded {
+                        for (line, _) in &stranded {
                             println!("              - {line}");
                         }
+                        // What to do depends on the item: a tell reaches an
+                        // active one and brings its session back in the
+                        // checkout; a retired one refuses a tell, so its
+                        // branch is pushed by hand.
+                        if stranded.iter().any(|(_, active)| *active) {
+                            println!(
+                                "              an active item: `ssf tell <item> \"...\"` brings its session back in that checkout"
+                            );
+                        }
+                        if stranded.iter().any(|(_, active)| !*active) {
+                            println!(
+                                "              a retired item, or none: push the branch by hand (`git -C <path> push -u origin <branch>`), or look and decide"
+                            );
+                        }
                         println!(
-                            "              `ssf tell <item> \"...\"` brings the session back in that checkout; `ssf purge --force` or removing the directory loses the work"
+                            "              `ssf purge --force` or removing the directory loses the uncommitted changes and leaves the commits on a local branch nothing lists"
                         );
                     }
                 }
