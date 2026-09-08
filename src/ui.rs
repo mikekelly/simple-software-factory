@@ -649,6 +649,7 @@ mod tests {
         assert!(out.contains("\"new\""));
         assert!(!out.contains("\"old\""));
     }
+
     /// The widget's install and uninstall write and delete under
     /// `~/.config/omarchy`; in a test they must land in the sandbox
     /// instead, and without one they are refused (#140).

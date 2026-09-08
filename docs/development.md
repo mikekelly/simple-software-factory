@@ -42,10 +42,17 @@ let _sandbox = crate::config::test_support::sandbox();
 which points both directories at a fresh temporary directory for that
 thread and deletes it when the guard is dropped. Tests run one per
 thread, so two running in parallel cannot see each other's `state.json`.
-`sandbox.config_dir()`, `sandbox.state_dir()` and `sandbox.root()` are
-the paths, for a test that wants to lay a fixture down first. Everything
-else a test writes goes under `std::env::temp_dir()` and is removed at
-the end.
+`sandbox.config_dir()`, `sandbox.state_dir()`, `sandbox.home()` and
+`sandbox.root()` are the paths, for a test that wants to lay a fixture
+down first. `ui::home()` is guarded the same way and answers
+`sandbox.home()`, since the Omarchy widget's install and uninstall write
+and delete under `~/.config/omarchy`, which is nobody's temporary
+directory either. The guard is the calling thread's: work a test hands
+to another thread (`spawn_blocking`, a multi-threaded runtime) does not
+inherit it and panics the same way.
+
+Everything else a test writes goes under `std::env::temp_dir()`, in a
+directory named after the test and the process.
 
 ## A dev build as the service
 

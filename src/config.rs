@@ -988,8 +988,9 @@ pub fn split_repo_name(name: &str) -> Result<(&str, &str)> {
 
 /// Where a directory lives, given the environment override and the
 /// platform's own answer. Split out of `config_dir` and `state_dir` so the
-/// resolution rules can be asserted without reading the process
-/// environment, which the test build refuses to trust (see `test_support`).
+/// rules can be asserted directly: under `cfg(test)` neither of those two
+/// reads the environment at all (see `test_support`), so there is nothing
+/// left to assert them through.
 fn dir_from(env: Option<&str>, base: Option<PathBuf>, fallback: &str) -> PathBuf {
     if let Some(dir) = env {
         return PathBuf::from(dir);
@@ -1064,6 +1065,7 @@ pub fn state_dir() -> PathBuf {
 #[cfg(test)]
 pub mod test_support {
     use std::cell::RefCell;
+    use std::marker::PhantomData;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1080,6 +1082,11 @@ pub mod test_support {
     #[must_use = "the sandbox only holds while the guard is alive"]
     pub struct Sandbox {
         root: PathBuf,
+        /// Not `Send`: dropping the guard on another thread would delete
+        /// the directory without taking it off the stack of the thread
+        /// that made it, which would go on resolving to a path that is
+        /// gone.
+        _thread_bound: PhantomData<*const ()>,
     }
 
     /// Point `config_dir()` and `state_dir()` at a fresh temporary
@@ -1098,7 +1105,10 @@ pub mod test_support {
                 .unwrap_or_else(|e| panic!("creating test sandbox {}: {e}", root.display()));
         }
         ACTIVE.with(|s| s.borrow_mut().push(root.clone()));
-        Sandbox { root }
+        Sandbox {
+            root,
+            _thread_bound: PhantomData,
+        }
     }
 
     impl Sandbox {
@@ -1154,7 +1164,10 @@ pub mod test_support {
                  not write outside a temporary directory of their own: \
                  hold a \
                  `let _sandbox = crate::config::test_support::sandbox();` \
-                 guard for as long as the test needs one (#140)."
+                 guard for as long as the test needs one (#140). A test \
+                 that holds one and still sees this is resolving the \
+                 directory on some other thread than its own, which the \
+                 guard does not reach."
             ),
         })
     }
@@ -2336,6 +2349,7 @@ harness = "claude"
         );
         let _ = std::fs::remove_dir_all(&home);
     }
+
     /// The resolution rules behind `config_dir`/`state_dir`, which the test
     /// build never runs for real: the environment wins outright, otherwise
     /// the platform's directory gets `ssf` on the end, and a platform that
