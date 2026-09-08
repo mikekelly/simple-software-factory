@@ -1304,11 +1304,6 @@ impl Config {
         }
         self.git.validate("git")?;
         self.git.validate_merged("[git]")?;
-        // Checked here rather than only in the lima build: `[vm] name`
-        // names the directory under `[vm] dir` on every backend, and an
-        // empty one makes that directory `[vm] dir` itself -- which
-        // `ssf vm destroy` removes whole.
-        crate::vm::check_name(&self.vm.name)?;
         for r in &self.repos {
             r.split()?;
             if r.harness.trim().is_empty() {

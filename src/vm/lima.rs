@@ -433,7 +433,7 @@ pub(super) fn sort_strays(strays: &mut [Stray]) {
 /// which costs a line in a report and nothing else, because nothing here
 /// removes what it finds. The report says what it observed rather than
 /// claiming the thing is ssf's. `ssf-` alone is not one: `check_name`
-/// refuses an empty `[vm] name`.
+/// never makes one from an empty `[vm] name`.
 pub fn is_ssf_name(name: &str) -> bool {
     name.strip_prefix("ssf-")
         .is_some_and(|rest| !rest.is_empty())
@@ -442,15 +442,8 @@ pub fn is_ssf_name(name: &str) -> bool {
 /// The longest `[vm] name` whose data-disk label fits (`lima-ssf-<name>`).
 pub const MAX_NAME_LEN: usize = 16 - "lima-ssf-".len();
 
-/// Refuse a `[vm] name` this backend cannot work with: too long for the
-/// disk label, or empty. Empty is not a nicety -- `ssf-` is not an
-/// `is_ssf_name`, so such an instance could never be reported as a
-/// stray, and `Vm::dir` would be `[vm] dir` itself, which `Vm::destroy`
-/// removes whole.
+/// Refuse a `[vm] name` the lima backend cannot label a disk for.
 pub fn check_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        bail!("[vm] name is empty; it names the lima instance and the directory under [vm] dir");
-    }
     if name.len() > MAX_NAME_LEN {
         bail!(
             "[vm] name \"{name}\" is too long for the lima backend: lima labels the data disk `lima-ssf-<name>` and an ext4 label holds 16 characters, so the name can have at most {MAX_NAME_LEN}"
@@ -931,6 +924,11 @@ impl Vm {
             .find(|d| d.name == name))
     }
 
+    /// [`Vm::lima_disks_within`] at the listing's own bound.
+    pub(super) fn lima_disks(&self) -> Result<Vec<Disk>> {
+        self.lima_disks_within(QUICK_LIMIT)
+    }
+
     /// Every disk lima has, for the same reason as
     /// [`Vm::lima_instances_within`].
     fn lima_disks_within(&self, limit: Duration) -> Result<Vec<Disk>> {
@@ -1053,7 +1051,7 @@ impl Vm {
 
     /// [`Vm::split_instances`] for the data disks, which outlive their
     /// instances and hold the clones and worktrees.
-    fn split_disks(&self, all: Vec<Disk>) -> (bool, Vec<Stray>) {
+    pub(super) fn split_disks(&self, all: Vec<Disk>) -> (bool, Vec<Stray>) {
         let name = self.lima_disk_name();
         let mut mine = false;
         let mut strays = Vec::new();
@@ -2852,15 +2850,26 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_vm_name_is_refused() {
-        // `ssf-` is not an `is_ssf_name`, so an instance built from an
-        // empty name could never be reported as a stray -- and `Vm::dir`
-        // would be `[vm] dir` itself, which `Vm::destroy` removes whole.
-        for bad in ["", " ", "\t"] {
-            let err = check_name(bad).unwrap_err().to_string();
-            assert!(err.contains("empty"), "{bad:?}: {err}");
-        }
-        assert!(check_name("default").is_ok());
+    fn a_vm_directory_under_vm_dir_is_a_stray_under_lima_too() {
+        // `[vm] dir` is shared by the backends. A VM built under
+        // Firecracker and then switched to lima leaves its directory,
+        // and its clones, right where they were -- and reading that as a
+        // Firecracker question left `ssf uninstall` calling `[vm] dir`
+        // "safe to remove" under lima, which is the same sentence this
+        // change exists to stop, on the other backend.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        let old = t.vm.base.join("old");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("data.ext4"), b"disk").unwrap();
+        let named: Vec<_> =
+            t.vm.survey()
+                .strays
+                .into_iter()
+                .map(|s| (s.kind, s.name))
+                .collect();
+        assert_eq!(named, [(StrayKind::Directory, "old".to_string())]);
+        // And the filesystem-only path doctor falls back to sees it too.
+        assert_eq!(t.vm.strays_on_filesystem().len(), 1);
     }
 
     #[test]

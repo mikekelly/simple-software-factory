@@ -1711,7 +1711,22 @@ mod tests {
             ..orphan.clone()
         };
         let clean_text = render(&clean, &Report::default(), &Opts::default());
+        // A lima disk is not in `[vm] dir` at all, so it must not put a
+        // caveat on that line. Rendered while the directory still
+        // exists, since the line only appears when it does.
+        let lima = kept(
+            &Facts {
+                vm_strays: vec![vm::Stray::lima_disk("ssf-old".into())],
+                ..orphan.clone()
+            },
+            false,
+        );
         std::fs::remove_dir_all(&base).unwrap();
+        assert!(
+            lima.iter()
+                .any(|l| l.contains("downloads; safe to remove)")),
+            "{lima:?}"
+        );
         assert!(
             text.contains("safe to remove except for what is listed below"),
             "{text}"
@@ -1721,6 +1736,16 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("rm -rf"), "{text}");
+        // Every line the epilogue prints after the last step is a line
+        // the report printed before the question. That sentence has
+        // drifted between the two twice, which is why they share a list
+        // rather than a fix.
+        for line in kept(&orphan, false) {
+            assert!(
+                text.contains(&line),
+                "epilogue line missing from report: {line}"
+            );
+        }
         // With nothing orphaned the old, true sentence stands.
         assert!(
             clean_text.contains("downloads; safe to remove)"),
