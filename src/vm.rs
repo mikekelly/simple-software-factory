@@ -1873,11 +1873,19 @@ impl Vm {
         (!s.is_empty()).then_some(s)
     }
 
+    /// `ssf <args>` as the guest runs it: the guest marker, so the
+    /// command in there knows it is the factory and does not forward
+    /// again, and the arguments as given.
+    fn ssf_remote(&self, args: &[String]) -> Vec<String> {
+        let mut remote = vec![format!("{GUEST_ENV}=1"), "ssf".to_string()];
+        remote.extend(args.iter().cloned());
+        remote
+    }
+
     /// Run an `ssf` command inside the guest with this terminal, and exit
     /// with its status.
     pub fn exec_ssf(&self, args: &[String]) -> Result<ExitStatus> {
-        let mut remote = vec![format!("{GUEST_ENV}=1"), "ssf".to_string()];
-        remote.extend(args.iter().cloned());
+        let remote = self.ssf_remote(args);
         let tty = stdin_is_tty();
         let st = self
             .ssh(&remote, tty)
@@ -1890,9 +1898,7 @@ impl Vm {
     /// on this terminal. For the caller that has to answer even when the
     /// guest does not: `status --json`, which the bar widget parses.
     pub fn capture_ssf(&self, args: &[String]) -> Result<std::process::Output> {
-        let mut remote = vec![format!("{GUEST_ENV}=1"), "ssf".to_string()];
-        remote.extend(args.iter().cloned());
-        self.ssh(&remote, false)
+        self.ssh(&self.ssf_remote(args), false)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

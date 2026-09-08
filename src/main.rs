@@ -661,7 +661,7 @@ async fn main() -> Result<()> {
         match forwarding_gate(&probe, &cfg.vm.name, &backend, name, missing.as_deref()) {
             Gate::Refuse(why) => match cli.command {
                 Command::Status { json: true } => {
-                    println!("{}", vm_status_for_guest("stopped"));
+                    println!("{}", vm_status_for_guest(probe_word(&probe)));
                     return Ok(());
                 }
                 Command::Status { json: false } => {
@@ -674,26 +674,43 @@ async fn main() -> Result<()> {
                 _ => bail!(why),
             },
             Gate::Send(note) => {
-                let unsure = note.is_some();
                 if let Some(note) = note {
                     eprintln!("{note}");
                 }
                 let args: Vec<String> = std::env::args().skip(1).collect();
-                // The bar widget parses `status --json`, and with the
-                // answer unsure the command may still be about to fail
-                // on ssh. Answer for it rather than leave the widget
-                // reading an empty document as a factory with nothing in
-                // it: the VM's state is the one thing not known here.
-                if unsure && matches!(cli.command, Command::Status { json: true }) {
-                    let out = vm
-                        .capture_ssf(&args)
-                        .with_context(|| format!("running `ssf {name}` in the VM"))?;
-                    if out.status.success() {
-                        print!("{}", String::from_utf8_lossy(&out.stdout));
-                    } else {
-                        println!("{}", vm_status_for_guest("unknown"));
+                // The bar widget parses `status --json` and has no other
+                // source, so this one is answered even when the guest
+                // does not answer it: an ssh that fails -- the VM down
+                // behind an unanswerable probe, or the window after
+                // `limactl start` where lima says Running before sshd
+                // does -- would otherwise leave the widget reading an
+                // empty document as a factory with nothing in it. The
+                // guest's own answer is passed through untouched;
+                // silence is what gets a document made for it, saying
+                // what the probe said about the VM and nothing about the
+                // sessions it could not ask after.
+                if matches!(cli.command, Command::Status { json: true }) {
+                    let out = vm.capture_ssf(&args);
+                    if let Err(e) = &out {
+                        eprintln!("running `ssf {name}` in the VM: {e:#}");
                     }
-                    return Ok(());
+                    let answer = out
+                        .as_ref()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .filter(|s| !s.trim().is_empty());
+                    match answer {
+                        Some(answer) => {
+                            print!("{answer}");
+                            std::process::exit(
+                                out.map(|o| o.status.code().unwrap_or(1)).unwrap_or(1),
+                            );
+                        }
+                        None => {
+                            println!("{}", vm_status_for_guest(probe_word(&probe)));
+                            return Ok(());
+                        }
+                    }
                 }
                 let st = vm
                     .exec_ssf(&args)
@@ -2175,20 +2192,37 @@ fn forwarding_gate(
         Err(why) => {
             let mut note = format!("could not tell whether VM {vm_name} is running: {why}");
             if let Some(detail) = missing {
-                note.push_str(&format!("\n{backend} cannot start it either: {detail}"));
+                note.push_str(&format!(
+                    "\nand if it is down, {backend} cannot start it: {detail}"
+                ));
             }
+            // The refusal this replaces said what to do about a VM that
+            // is down. An ssh failure says nothing of the sort, so the
+            // advice comes here instead, before the command that may be
+            // about to hit one.
             note.push_str(&format!(
-                "\nsending `ssf {cmd}` to it anyway; if it is not up, this fails as an ssh error"
+                "\nsending `ssf {cmd}` to it anyway; if that fails on ssh the VM is down: `ssf vm start` starts it, `ssf vm status` says what the host can see"
             ));
             Gate::Send(Some(note))
         }
     }
 }
 
-/// What `status --json` says for a guest the host could not reach:
-/// `stopped` when the VM is known to be down, `unknown` when the probe
-/// could not be made and the guest did not answer either. The bar widget
-/// parses this, so it is answered rather than left empty.
+/// The VM's state as the host knows it, for a `status --json` the guest
+/// did not answer: what the probe said, including that it said nothing.
+fn probe_word(probe: &Result<bool, String>) -> &'static str {
+    match probe {
+        Ok(true) => "running",
+        Ok(false) => "stopped",
+        Err(_) => "unknown",
+    }
+}
+
+/// What `status --json` says for a guest the host could not reach. The
+/// bar widget parses this and has no other source, so it is answered
+/// rather than left empty; `vm` is the one field the host can still fill
+/// in, and the sessions and repositories it could not ask after are
+/// empty rather than invented.
 fn vm_status_for_guest(vm: &str) -> serde_json::Value {
     serde_json::json!({
         "vm": vm, "service_active": false, "service_enabled": ui::service_enabled(),
@@ -4065,18 +4099,26 @@ resource temporarily unavailable"
             panic!("an unanswered probe forwards the command")
         };
         assert!(
-            note.contains("lima cannot start it either: limactl not installed"),
+            note.contains("if it is down, lima cannot start it: limactl not installed"),
             "{note}"
         );
+        // And the note carries the advice the refusal used to give: the
+        // ssh failure that may follow it says nothing about ssf.
+        assert!(note.contains("`ssf vm start` starts it"), "{note}");
     }
 
     #[test]
     fn the_widget_gets_an_answer_for_a_guest_that_did_not_give_one() {
-        // Both payloads are the shape `status --json` has from inside
-        // the guest, minus what only the guest knows. The `vm` field is
-        // the difference between the two cases, and an empty document --
-        // which is what an ssh failure would leave -- is neither.
-        for state in ["stopped", "unknown"] {
+        // The host cannot fill in what only the guest knows, so the
+        // sessions and repositories are empty rather than invented; what
+        // it can fill in is the VM, and each of the three answers the
+        // probe can give reaches the document as itself. An ssh failure
+        // with nothing put in its place is the case this exists to stop:
+        // the widget parses that as a factory with nothing in it.
+        assert_eq!(probe_word(&Ok(true)), "running");
+        assert_eq!(probe_word(&Ok(false)), "stopped");
+        assert_eq!(probe_word(&Err("no answer".into())), "unknown");
+        for state in ["running", "stopped", "unknown"] {
             let v = vm_status_for_guest(state);
             assert_eq!(v["vm"], state);
             assert_eq!(v["service_active"], false);

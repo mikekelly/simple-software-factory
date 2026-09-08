@@ -2401,6 +2401,19 @@ mod tests {
         Fails,
     }
 
+    /// Whether the fake answers `limactl list --json` -- the liveness
+    /// question every caller of [`Vm::running_state`] and
+    /// [`Vm::running_now`] asks. A fork that failed under load, a lima
+    /// home under someone else's lock and a limactl that has stopped
+    /// returning are all things a laptop does; none of them is the VM
+    /// having exited.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Listing {
+        Answers,
+        Fails,
+        Hangs,
+    }
+
     impl Drop for Fake {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
@@ -2413,6 +2426,15 @@ mod tests {
         }
 
         fn with(status: &str, edit: Edit, disks: DiskList) -> Self {
+            Self::with_all(status, edit, disks, Listing::Answers)
+        }
+
+        /// A running instance whose listing behaves like this.
+        fn listing(listing: Listing) -> Self {
+            Self::with_all("Running", Edit::Applies, DiskList::Answers, listing)
+        }
+
+        fn with_all(status: &str, edit: Edit, disks: DiskList, listing: Listing) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "ssf-lima-fake-{}-{}",
                 std::process::id(),
@@ -2437,6 +2459,15 @@ mod tests {
                 }
             };
             // lima's own `--set` rewrites the instance's copy in place.
+            let list_arm = match listing {
+                Listing::Answers => format!("echo '{json}'"),
+                Listing::Fails => {
+                    r#"echo 'FATAL[0000] failed to lock the lima home' >&2; exit 1"#.to_string()
+                }
+                // Long enough that no bound this test asks for expires
+                // on its own; the fake is killed with the probe.
+                Listing::Hangs => "sleep 120".to_string(),
+            };
             let edit_arm = match edit {
                 Edit::Applies => format!(
                     "sed 's/format: true/format: false/' {y} > {y}.new && mv {y}.new {y}",
@@ -2456,7 +2487,7 @@ shift
 printf '%s\n' "$*" >> {log}
 case "$*" in
   'disk list --json') {disk_arm} ;;
-  'list --json') echo '{json}' ;;
+  'list --json') {list_arm} ;;
   edit*--set*) {edit_arm} ;;
   shell*) echo 'instance "ssf-one" is stopped, run `limactl start ssf-one`' >&2; exit 1 ;;
 esac
@@ -2504,6 +2535,57 @@ exit 0
         fn ran(&self, verb: &str) -> bool {
             self.commands().iter().any(|c| c.starts_with(verb))
         }
+    }
+
+    #[test]
+    fn a_liveness_probe_that_could_not_be_made_is_not_a_stopped_vm() {
+        // The listing is a fork of a ~60 MB Go binary against a lima
+        // home someone else may hold the lock on. When it fails, the one
+        // thing that must not happen is the answer "the VM is not
+        // running": the gate in front of every forwarded command refuses
+        // on that, and the supervisor ends the daemon on it.
+        let t = Fake::listing(Listing::Fails);
+        let err =
+            t.vm.running_now()
+                .expect_err("a failed listing is not an answer");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("asking lima whether ssf-one is running"),
+            "{text}"
+        );
+        assert!(text.contains("failed to lock the lima home"), "{text}");
+        assert_eq!(t.vm.running_state(), None);
+        // And the lossy form is exactly what neither may use: it says
+        // the instance is stopped, over an instance the fake reports as
+        // Running.
+        assert!(!t.vm.running());
+        assert!(t.vm.running_now().is_err());
+        // A listing that answers is unchanged by any of this.
+        let up = Fake::listing(Listing::Answers);
+        assert!(up.vm.running_now().unwrap());
+        assert_eq!(up.vm.running_state(), Some(true));
+    }
+
+    #[test]
+    fn a_liveness_probe_that_never_returns_is_cut_off_rather_than_waited_out() {
+        // The gate asks this in front of every forwarded command, with a
+        // person waiting on it, so a limactl that has stopped returning
+        // is given a bound and its silence becomes "cannot tell" -- the
+        // answer the gate is willing to carry on without. The bound
+        // itself is LIVENESS_LIMIT; this holds the mechanism to a
+        // fraction of it so the suite does not sit out fifteen seconds.
+        let t = Fake::listing(Listing::Hangs);
+        let started = Instant::now();
+        let err =
+            t.vm.lima_running_probe(Duration::from_millis(300))
+                .expect_err("a listing that never returns is not an answer");
+        let text = format!("{err:#}");
+        assert!(text.contains("did not finish within"), "{text}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

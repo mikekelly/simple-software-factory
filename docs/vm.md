@@ -66,11 +66,12 @@ on. With the VM enabled and running, `doctor` is forwarded into the
 guest, which has no backend tooling of its own; with the VM enabled and
 stopped, the host command refuses to run and its error names what is
 missing (`the factory runs in VM default, which is not running, and
-lima cannot start it: limactl not installed; install lima ...`). A host
-with no `limactl` at all cannot be asked whether the VM is running
-either, so there the same detail comes on stderr as part of the note
-below and the command is still tried. So on a VM-enabled machine, `ssf
-vm status` is where you look.
+lima cannot start it: qemu-system-x86_64 not installed; install qemu
+...`). That refusal needs a VM known to be stopped, which needs a
+`limactl` that runs: a host that has not got one at all cannot be asked
+the question, so there the same detail comes on stderr as part of the
+note below and the command is still tried. So on a VM-enabled machine,
+`ssf vm status` is where you look.
 
 A Firecracker build on anything but Linux x86_64 refuses and says to set
 `vm.backend` to `lima`. Either way, `[vm] dir`
@@ -515,9 +516,17 @@ seconds, leaves ssf unable to tell. It then says so on stderr -- the
 reason it could not ask, whatever backend tooling this host is missing,
 and that it is sending the command anyway -- and forwards the command,
 which the guest answers if the VM is in fact up and which fails as an
-ssh error if it is not. `status --json` answers either way, so the bar
-widget is never left parsing an empty document: `vm` is `unknown` where
-the probe could not be made and the guest did not answer either.
+ssh error if it is not; the note carries the same `ssf vm start` advice
+the refusal would have given, since an ssh error carries none.
+
+`status --json` always answers, whatever the guest does, so nothing
+parsing it is left with an empty document: where the guest gives an
+answer that answer is passed through untouched, and where it gives none
+the host writes one of its own, carrying what it could see (`vm` is
+`running`, `stopped` or `unknown`) and no sessions or repositories,
+which are the guest's to know. That covers the window after `limactl
+start` when lima says `Running` before the guest's sshd does, as well as
+a probe that could not be made at all.
 
 A probe that could not be made is never read as a stopped factory:
 reading it that way refused `tell`, `release`, `purge` and `doctor` over
