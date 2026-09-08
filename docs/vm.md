@@ -125,7 +125,8 @@ is `vm.root_gib` with a floor of 20 GiB (a cloud image plus node and the
 harness CLIs does not fit in the Firecracker image's 8). The data disk
 is a lima disk, `ssf-<vm.name>`, of `vm.data_gib` (`limactl disk list`),
 which ssf attaches to the instance and which survives `ssf vm reset` and
-`ssf vm build --force`. That name is short on purpose: lima labels the
+`ssf vm build --force` (with one exception, at the end of this section:
+a disk no build ever got a filesystem onto). That name is short on purpose: lima labels the
 disk's filesystem `lima-<disk>` and an ext4 label holds 16 characters,
 which is why `vm.name` is at most 7 characters under this backend. The
 disk is formatted only by the build that creates it: that build alone
@@ -139,25 +140,52 @@ a running instance. If that last edit does not take, the build fails and
 says so, rather than reporting success over a flag it could not put
 right.
 
-A build that dies between `limactl create` and the guest answering
-leaves the flag on, so every command that could boot that instance looks
-before it goes on. `ssf vm build` over an existing instance and `ssf vm
-start` both repair what they find (ssf's own template, and lima's copy
-while the instance is stopped), and when the flag is still there
-afterwards they stop with an error rather than boot: it names lima's
-copy, the data disk, and the way out, which is to stop the instance
-(`ssf vm stop`) and run the command again, or to do the edit by hand
-(`limactl edit ssf-default --set '.additionalDisks[0].format =
-false'`). A running instance is the case that cannot be repaired in
-place, and it is reported rather than passed over: `ssf vm start` looks
-once more after the guest is up, and a flag that has come back by then
-(an instance edited by hand, a template restored from elsewhere) is
-warned about there, to be repaired at the next stop. `ssf vm reset`
-repairs ssf's own template before it creates the new instance, since
-that template is what the new one inherits and the instance being
-deleted is not worth fixing. All of this applies only once the data disk
-exists: with no disk there is nothing to lose, and the build that makes
-it is the one build allowed to hand lima a `format: true`.
+A build that dies between `limactl create` and the guest answering used
+to leave the flag on. It now cleans up after itself: a first boot that
+fails stops the instance and puts `format: false` back in both copies
+before the build returns its error (that cleanup runs `limactl` on a
+path where `limactl` may itself be what is stuck, so it says on screen
+that it is working, and it never replaces the build's own error). What
+it cannot repair -- the instance is running and `limactl edit` refuses
+one, or the edit did not take -- it warns about, and the next boot is
+refused.
+
+Every command that could boot the instance looks before it goes on all
+the same, because a flag can also come back from outside ssf. `ssf vm
+build` over an existing instance and `ssf vm start` both repair what
+they find (ssf's own template, and lima's copy while the instance is
+stopped), and when the flag is still there afterwards they stop with an
+error rather than boot: it names the copy that still says it, the data
+disk, and the way out, which is to stop the instance (`ssf vm stop`) and
+run the command again, or to do the edit by hand (`limactl edit
+ssf-default --set '.additionalDisks[0].format = false'`). Nothing on
+this path is taken on trust: a `limactl edit` that reported success is
+believed only after the file it edited has been read back, and a probe
+that failed (`limactl disk list` erroring, a template that cannot be
+read) counts as the dangerous answer rather than the convenient one, so
+the boot stops instead of going ahead on a question nobody could
+answer. The one case that cannot be repaired in place is a running
+instance. In practice `ssf vm start` does not meet it -- it prints
+"already running" and returns before any of this -- so it is what a
+build over a running instance runs into, and what `ssf vm start` warns
+about when it looks once more after the guest is up and finds a flag
+that has come back (an instance edited by hand, a template restored from
+elsewhere), to be repaired at the next stop. `ssf vm reset` repairs
+ssf's own template before it creates the new instance, since that
+template is what the new one inherits and the instance being deleted is
+not worth fixing. All of this applies only once the data disk exists:
+with no disk there is nothing to lose, and the build that makes it is
+the one build allowed to hand lima a `format: true`.
+
+That last rule has a tail: a build that dies before lima's boot script
+has put a filesystem on a disk it just created leaves the disk blank,
+and no later build, start or reset will format it (the guest's seed
+waits two minutes for a mount that never comes, and the build fails
+minutes later pointing at ssh). ssf marks such a disk
+(`<vm.dir>/<name>/disk-unproven`, removed as soon as a guest has used
+the disk), names it in the error the build fails with, and lets `ssf vm
+build --force` delete and re-create that one disk. A disk any finished
+build has used carries no marker and no build deletes it.
 
 ssf's own files are under `<vm.dir>/<name>/`: `lima.yaml` (the template
 `ssf vm build` writes from `[vm]`; edit the config and rebuild rather

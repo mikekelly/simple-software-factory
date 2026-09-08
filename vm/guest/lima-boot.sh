@@ -18,6 +18,10 @@
 # from the first line on. The host (src/vm/lima.rs) watches that log: a
 # non-empty log with none of the guest scripts running is how it sees a dead
 # provisioning within seconds instead of waiting out its half-hour timeout.
+# The log is emptied by the template's boot hook (src/vm/lima.rs,
+# boot_hook), in its first line and so before the wait for the share: doing
+# it here instead left the previous attempt's log on disk for the length of
+# that wait, where the host read it as this attempt's.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 marker=/etc/ssf-image-built
 log=/var/log/ssf-provision.log
@@ -25,15 +29,6 @@ guest=/mnt/ssf/guest
 if [ -f "$marker" ]; then
     exit 0
 fi
-# This boot is a provisioning attempt, so the log starts empty here rather
-# than each attempt appending to the last one's. The alternative was to tag
-# every attempt and let the host tell the runs apart; truncating is chosen
-# because it keeps the host's probe a one-line shell test, and because the
-# log a failed attempt left has already been printed by the host that saw it
-# fail. Without this, the log of a failed provisioning would still be there
-# when the next boot begins, and the host would read it as "this attempt
-# died" in its first seconds.
-: > "$log"
 # Say it once into both: lima's console/output and the log the host reads.
 say() {
     printf '%s\n' "$*" | tee -a "$log"
