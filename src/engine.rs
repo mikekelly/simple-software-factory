@@ -3231,6 +3231,68 @@ deliveries resume"
         Ok(())
     }
 
+    /// Whether an open item still carries any of the triggers it was
+    /// onboarded on, read from the item rather than from a listing. The
+    /// timeline is fetched only if a mention has to be re-checked, and is
+    /// handed back so the caller does not fetch it twice.
+    async fn still_ours(
+        &self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        issue: &Issue,
+        triggers: &[String],
+        timeline: &mut Option<Vec<Value>>,
+    ) -> bool {
+        let has = |t: &str| triggers.iter().any(|x| x == t);
+        if has("assigned") && issue.is_assigned_to(&self.login) {
+            return true;
+        }
+        if has("created") && issue.author().eq_ignore_ascii_case(&self.login) {
+            return true;
+        }
+        if has("mentioned") {
+            match self.gh.timeline(owner, name, issue.number).await {
+                Ok(tl) => {
+                    let found = mentions_bot(issue, &tl, &self.login);
+                    *timeline = Some(tl);
+                    if found {
+                        return true;
+                    }
+                }
+                // Without the timeline there is no evidence either way. A
+                // retirement is the destructive reading, so the item keeps
+                // the benefit of the doubt until a pass can read it.
+                Err(e) => {
+                    warn!(
+                        repo = repo.name,
+                        issue = issue.number,
+                        "could not re-check the mention before retiring: {e:#}"
+                    );
+                    return true;
+                }
+            }
+        }
+        if has("review_requested") && issue.is_pull_request() {
+            match self.gh.pull(owner, name, issue.number).await {
+                Ok(pr) => {
+                    if pr.requests_review_from(&self.login) {
+                        return true;
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        repo = repo.name,
+                        issue = issue.number,
+                        "could not re-check the review request before retiring: {e:#}"
+                    );
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Item left the set of open things involving the bot: tell the agent to stop.
     async fn retire_issue(
         &mut self,
@@ -3248,11 +3310,24 @@ deliveries resume"
             .context("retiring unknown item")?;
         let issue = self.gh.issue(owner, name, number).await?;
         let closed = issue.state == "closed";
-        let own = st.triggers.iter().any(|t| t == "created")
-            && issue.author().eq_ignore_ascii_case(&self.login);
-        if !closed && (issue.is_assigned_to(&self.login) || own) {
-            // Listing lag: still assigned, still requested for review, or
-            // still the bot's own open item.
+        // A listing can lag, and can come back without an item that is
+        // still the bot's. The item itself is the only reliable evidence,
+        // so every trigger it was onboarded on is re-checked against it
+        // before a session is told to stop. Testing only assignment and
+        // authorship retired a mention-triggered session whenever its
+        // listing hiccupped, even though the mention was still sitting in
+        // the issue, and the session was reattached on the next pass.
+        let mut timeline = None;
+        let still_ours = !closed
+            && self
+                .still_ours(repo, owner, name, &issue, &st.triggers, &mut timeline)
+                .await;
+        if still_ours {
+            debug!(
+                repo = repo.name,
+                issue = number,
+                "retirement held: the item still carries a trigger for the bot"
+            );
             return Ok(());
         }
         let merged = closed
@@ -3267,7 +3342,10 @@ deliveries resume"
             closed,
             "item no longer active for the bot"
         );
-        let timeline = self.gh.timeline(owner, name, number).await?;
+        let timeline = match timeline {
+            Some(t) => t,
+            None => self.gh.timeline(owner, name, number).await?,
+        };
         self.record_origins(repo, &issue, &timeline);
         let diff = self.diff(repo, &st.seen, &timeline);
         let session = self.owner_of(repo, number);
@@ -4569,8 +4647,9 @@ deliveries resume"
         let (repo, number, id) = self.known_session(session)?;
         let st = self.entry(&repo, number).clone();
         if st.active {
+            let (why, fix) = why_active(&st.triggers);
             anyhow::bail!(
-                "{id} is still open and assigned; its workspace is in use. Close or unassign the item first"
+                "{id} {why}; its workspace is in use. {fix} first, or `ssf release --as {id} --force` from a shell if the workspace should go anyway"
             );
         }
         if let Some(h) = st.handover.as_ref() {
@@ -4989,6 +5068,47 @@ async fn checkout_branch(path: &str, branch: &str) -> Result<()> {
 }
 
 /// `open`, `closed` or `merged`, as `ssf status` reports it.
+/// Why an item is still the bot's, and what would end that, for the
+/// message `ssf release` refuses with. Unassigning only helps an item that
+/// is actually assigned, and a mention cannot be withdrawn at all, so the
+/// remedy has to follow the trigger the item is held by.
+fn why_active(triggers: &[String]) -> (&'static str, &'static str) {
+    let has = |t: &str| triggers.iter().any(|x| x == t);
+    if has("assigned") {
+        ("is still open and assigned", "Close or unassign the item")
+    } else if has("review_requested") {
+        (
+            "still asks the bot for a review",
+            "Close the pull request, or withdraw the review request,",
+        )
+    } else if has("mentioned") {
+        (
+            "is still open and mentions the bot, which is not something anyone can withdraw",
+            "Close the item",
+        )
+    } else if has("created") {
+        ("is still open and was opened by the bot", "Close the item")
+    } else {
+        ("is still open for the bot", "Close the item")
+    }
+}
+
+/// Whether an item still mentions the bot, in its body or in any comment
+/// on it. That is what puts it on the `mentioned` listing, so it is what
+/// says the listing was right to carry it.
+fn mentions_bot(issue: &Issue, timeline: &[Value], login: &str) -> bool {
+    if issue
+        .body
+        .as_deref()
+        .is_some_and(|b| crate::github::mentions(b, login))
+    {
+        return true;
+    }
+    timeline.iter().any(|ev| {
+        crate::github::value_str(ev, &["body"]).is_some_and(|b| crate::github::mentions(b, login))
+    })
+}
+
 fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
     if merged || pr.is_some_and(|p| p.merged) {
         "merged".into()
@@ -6854,6 +6974,7 @@ mod tests {
         e.cfg.repos.push(r.clone());
         // Open and assigned: nothing to release, not even by force.
         seeded(&mut e, 1, Some("b1"), true);
+        e.entry(&r, 1).triggers = vec!["assigned".into()];
         e.entry(&r, 1).worktree_id = Some("repo::/w/1".into());
         e.entry(&r, 1).worktree_path = Some("/w/1".into());
         let resp = e
@@ -10028,5 +10149,89 @@ mod tests {
         assert!(!stub.hits().iter().any(|h| h.contains("/collaborators")));
         assert!(!e.allow_list(&r).allows("alice"));
         assert_eq!(e.allow_list(&r).source, Source::Repo);
+    }
+
+    /// Replays issue #137: the mentioned listing came back without an item
+    /// whose mention was still sitting in the issue, so the session was
+    /// told to stop and reattached on the next pass, over and over.
+    /// Retirement re-reads the item now, so a listing that loses it
+    /// changes nothing while the mention is there, and the session still
+    /// retires once the mention has really gone.
+    #[tokio::test]
+    async fn a_mention_still_in_the_item_holds_the_session_through_an_empty_listing() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let item = |body: &str| {
+            json!({
+                "number": 5, "title": "t", "body": body, "html_url": "https://gh/5",
+                "state": "open", "user": {"login": "alice"},
+                "created_at": "x", "updated_at": "u1"
+            })
+        };
+        let comment = |body: &str| {
+            json!({
+                "event": "commented", "body": body, "html_url": "https://gh/5#c1",
+                "updated_at": "u2", "actor": {"login": "alice"}, "user": {"login": "alice"}
+            })
+        };
+        // The stub's mentioned listing is always empty, which is the
+        // listing that retired this session on the live factory.
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.triggers = vec!["mentioned".into()];
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.terminal_handle = Some("t5".into());
+        }
+        d.seed("w5", "t5", READY_SCREEN);
+
+        // The mention is in the item's body: the session stays.
+        stub.set_issue(5, item("please look @bot"));
+        stub.set_timeline(5, vec![]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            e.entry(&r, 5).active,
+            "retired although the body still mentions the bot"
+        );
+
+        // The mention is in a comment instead: the session still stays.
+        stub.set_issue(5, item("nothing to see"));
+        stub.set_timeline(5, vec![comment("@bot what do you think?")]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            e.entry(&r, 5).active,
+            "retired although a comment still mentions the bot"
+        );
+
+        // A near miss is not a mention, so this one does retire.
+        stub.set_timeline(5, vec![comment("ask @bot-2, not this one")]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            !e.entry(&r, 5).active,
+            "kept although nothing mentions the bot any more"
+        );
+    }
+
+    /// The refusal names a remedy that fits the item. Unassigning helps
+    /// only an item that is assigned, and a mention cannot be withdrawn.
+    #[test]
+    fn the_release_refusal_follows_the_trigger_that_holds_the_item() {
+        let t = |s: &str| vec![s.to_string()];
+        assert_eq!(why_active(&t("assigned")).1, "Close or unassign the item");
+        assert!(why_active(&t("mentioned")).0.contains("mentions the bot"));
+        assert_eq!(why_active(&t("mentioned")).1, "Close the item");
+        assert!(why_active(&t("review_requested")).0.contains("review"));
+        assert!(why_active(&t("created")).0.contains("opened by the bot"));
+        // An assignment is the clearest thing to act on, so it wins.
+        assert_eq!(
+            why_active(&["mentioned".to_string(), "assigned".to_string()]).1,
+            "Close or unassign the item"
+        );
+        assert_eq!(why_active(&[]).1, "Close the item");
     }
 }

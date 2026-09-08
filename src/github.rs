@@ -87,6 +87,52 @@ impl Issue {
     }
 }
 
+/// Whether `text` mentions `login` the way GitHub's `mentioned` listing
+/// counts it: `@login`, case-insensitively, not glued to a longer word on
+/// either side. So `@bot` is a mention of `bot` but `@bot-2` is not, and
+/// neither is the address in `someone@bot`.
+pub fn mentions(text: &str, login: &str) -> bool {
+    if login.is_empty() {
+        return false;
+    }
+    let hay = text.to_ascii_lowercase();
+    let needle = format!("@{}", login.to_ascii_lowercase());
+    let bytes = hay.as_bytes();
+    let mut from = 0;
+    while let Some(i) = hay[from..].find(&needle) {
+        let at = from + i;
+        // Indexing bytes is safe here: only ASCII is tested, and any byte
+        // of a multi-byte character answers "not a word character", which
+        // is the right answer for a boundary.
+        let before = at == 0 || !is_word_byte(bytes[at - 1]) && bytes[at - 1] != b'@';
+        let end = at + needle.len();
+        let after = end >= bytes.len() || !bytes[end].is_ascii_alphanumeric() && bytes[end] != b'-';
+        if before && after {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// Bytes that can be part of a login, an address or a path, and so make an
+/// `@` that follows them something other than the start of a mention.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'/'
+}
+
+/// The logins a pull request payload asks for a review.
+fn reviewers(v: &Value) -> Vec<String> {
+    v.get("requested_reviewers")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| value_str(r, &["login"]).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Where a pull request's code lives.
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub struct PrInfo {
@@ -97,6 +143,11 @@ pub struct PrInfo {
     pub draft: bool,
     #[serde(default)]
     pub merged: bool,
+    /// Logins the pull request currently asks for a review. Kept so that a
+    /// review request can be re-checked against the pull request itself,
+    /// the way an assignment is re-checked against the issue.
+    #[serde(default)]
+    pub requested_reviewers: Vec<String>,
 }
 
 impl PrInfo {
@@ -110,11 +161,19 @@ impl PrInfo {
             draft: v.get("draft").and_then(Value::as_bool).unwrap_or(false),
             merged: v.get("merged").and_then(Value::as_bool).unwrap_or(false)
                 || v.get("merged_at").is_some_and(|m| !m.is_null()),
+            requested_reviewers: reviewers(v),
         }
     }
 
     pub fn same_repo(&self, full_name: &str) -> bool {
         self.head_repo.eq_ignore_ascii_case(full_name)
+    }
+
+    /// Whether the pull request still asks `login` for a review.
+    pub fn requests_review_from(&self, login: &str) -> bool {
+        self.requested_reviewers
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(login))
     }
 }
 
@@ -445,21 +504,10 @@ impl GitHub {
         }
         let mut out = Vec::new();
         for pr in pulls {
-            let requested = pr
-                .get("requested_reviewers")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter().any(|r| {
-                        r.get("login")
-                            .and_then(Value::as_str)
-                            .is_some_and(|l| l.eq_ignore_ascii_case(login))
-                    })
-                })
-                .unwrap_or(false);
-            if !requested {
+            let info = PrInfo::from_value(&pr);
+            if !info.requests_review_from(login) {
                 continue;
             }
-            let info = PrInfo::from_value(&pr);
             let mut v = pr.clone();
             v["pull_request"] = serde_json::json!({});
             let issue: Issue = serde_json::from_value(v).context("decoding pull as issue")?;
@@ -753,5 +801,54 @@ mod tests {
         assert!(cards[1].status_field_id.is_none());
         assert!(cards[1].status_options.is_empty());
         assert!(parse_project_items(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn a_mention_is_the_login_on_its_own_after_an_at_sign() {
+        for text in [
+            "@bot what do you think?",
+            "cc @Bot",
+            "please ask @BOT.",
+            "(@bot)",
+            "line\n@bot\n",
+            "> @bot in a quote",
+            "**@bot**",
+        ] {
+            assert!(mentions(text, "bot"), "should mention: {text:?}");
+        }
+        for text in [
+            "",
+            "bot",
+            "@bots",
+            "@bot-2",
+            "@robot",
+            "someone@bot",
+            "mail@bot.example",
+            "path/@bot",
+            "a@@bot",
+        ] {
+            assert!(!mentions(text, "bot"), "should not mention: {text:?}");
+        }
+        // An empty login never matches, and non-ASCII around the mention
+        // does not upset the boundary test.
+        assert!(!mentions("@bot", ""));
+        assert!(mentions("café @bot ☕", "bot"));
+    }
+
+    #[test]
+    fn a_pull_request_reports_who_it_asks_for_a_review() {
+        let v = json!({
+            "head": {"ref": "b", "repo": {"full_name": "o/r"}},
+            "base": {"ref": "main"},
+            "requested_reviewers": [{"login": "Bot"}, {"login": "someone"}]
+        });
+        let pr = PrInfo::from_value(&v);
+        assert_eq!(pr.requested_reviewers, vec!["Bot", "someone"]);
+        assert!(pr.requests_review_from("bot"));
+        assert!(!pr.requests_review_from("nobody"));
+        // A pull request with the key missing asks nobody.
+        let none = PrInfo::from_value(&json!({"head": {"ref": "b"}, "base": {"ref": "main"}}));
+        assert!(none.requested_reviewers.is_empty());
+        assert!(!none.requests_review_from("bot"));
     }
 }

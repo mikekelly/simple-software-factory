@@ -76,9 +76,18 @@ The details behind the README's [How it works](../README.md#how-it-works).
 - **Retirement.** Closed or unassigned issues get one final message (push,
   final comment, then `ssf release` if everything is on origin) and are
   marked inactive; the workspace is marked completed in the driver and left
-  in place. Removal is the agent's (`ssf release`) or a person's (`ssf
-  purge`) to ask for, and is refused whenever the worktree holds anything
-  that is not on origin (see [Workspaces after
+  in place. An item missing from the listings is not enough on its own:
+  before a session is told to stop, the item is read again and every
+  trigger it was taken on is re-checked against it (the assignees, the
+  author, a mention in the body or in any comment, a review request on the
+  pull request). A listing that lags, or that comes back without an item it
+  should carry, therefore changes nothing while the reason the session
+  exists is still in the item. One consequence is that an item the bot was
+  only ever mentioned on stays the bot's until it closes, since a mention
+  cannot be withdrawn; `ssf release` says that rather than suggesting an
+  unassignment that would do nothing. Removal is the agent's (`ssf
+  release`) or a person's (`ssf purge`) to ask for, and is refused whenever
+  the worktree holds anything that is not on origin (see [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge)).
   Re-assigning or reopening the issue re-creates a released workspace and
   resumes the conversation.
