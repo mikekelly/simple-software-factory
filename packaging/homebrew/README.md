@@ -8,6 +8,43 @@ placeholder) and pushes the result to the tap repository
 [mikekelly/homebrew-ssf](https://github.com/mikekelly/homebrew-ssf) as
 `Formula/ssf.rb`, which is what `brew install` reads.
 
+The formula is for macOS. On Linux `brew services` would write a
+`homebrew.ssf.service` unit of its own while ssf drives its own
+`ssf.service` through `ssf ui service enable|disable`, so the two would
+not line up; a Linux host installs the `.deb`, `.rpm` or Arch package
+from `packaging/linux` and `packaging/release` instead.
+
+## Two workflows, one tag filter
+
+This workflow and `.github/workflows/release.yml` trigger on the same
+tags, `v[0-9]+.[0-9]+.[0-9]+`, and they have to stay in step. A looser
+filter here would publish a formula for a tag release.yml never built
+(`v0.2.0-rc1`, say, which release.yml skips because nfpm would write
+`0.2.0~rc1` and makepkg refuses a pkgver with a hyphen), so `brew
+install` would build from a tarball whose release carries no packages.
+Change one filter and change the other in the same commit.
+
+One asset of that release matters to the Mac path: the Linux aarch64
+binary `ssf-X.Y.Z-linux-aarch64`, which `ssf vm build` fetches with `gh`
+as the guest's `ssf` on Apple silicon, since a macOS binary cannot run in
+the Linux guest. It comes from release.yml's `linux-aarch64-binary` job,
+which is `continue-on-error: true` so a cross-compilation failure never
+blocks the release: a release can exist, and the formula installs cleanly,
+with that asset missing, and `ssf vm build` then fails on the download.
+Build it as that job does (it sets the cross-linker environment variables;
+read the job) and attach it by hand when that happens:
+
+```sh
+rustup target add aarch64-unknown-linux-musl
+cargo build --locked --release --target aarch64-unknown-linux-musl
+install -m755 target/aarch64-unknown-linux-musl/release/ssf ssf-0.2.0-linux-aarch64
+gh release upload v0.2.0 ssf-0.2.0-linux-aarch64 \
+  --repo mikekelly/simple-software-factory
+```
+
+(`[vm] guest_binary` pointing at a Linux build is the way out on one
+machine; the asset is what every other Mac needs.)
+
 ## Installing
 
 ```sh

@@ -1,8 +1,14 @@
-# Homebrew formula for ssf (macOS, Linuxbrew): the source of truth lives in
+# Homebrew formula for ssf, for macOS: the source of truth lives in
 # this repository as packaging/homebrew/ssf.rb; .github/workflows/homebrew.yml
 # renders it on every vX.Y.Z tag (tag tarball url and its sha256, see
 # render.sh) and pushes the result to the tap mikekelly/homebrew-ssf as
 # Formula/ssf.rb, where `brew install mikekelly/ssf/ssf` finds it.
+#
+# Not for Linuxbrew: on Linux `brew services` writes a service of its own,
+# homebrew.ssf.service, while ssf drives its own systemd unit (ssf.service,
+# through `ssf ui service enable|disable`), so the two would not line up. A
+# Linux host installs the .deb, .rpm or Arch package instead (packaging/linux
+# and packaging/release, built by .github/workflows/release.yml).
 #
 # Differences from the Arch package (packaging/release/PKGBUILD): no ssf-ui
 # and no Omarchy bar widget (both Omarchy-only), no systemd unit (the
@@ -35,6 +41,13 @@ class Ssf < Formula
     # image scripts, relative to the binary (<bin>/../share/ssf/vm).
     pkgshare.install "vm", "config.example.toml", "SSF.example.md"
     doc.install "README.md", "docs"
+  end
+
+  # The service block below logs to #{var}/log/ssf.log, and neither Homebrew
+  # nor launchd makes the directory; var directories are created here by
+  # convention.
+  def post_install
+    (var/"log").mkpath
   end
 
   def caveats
