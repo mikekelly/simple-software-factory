@@ -16,17 +16,26 @@ does not work. On Linux `brew services` would write a
 not line up; a Linux host installs the `.deb`, `.rpm` or Arch package
 from `packaging/linux` and `packaging/release` instead.
 
-## Two workflows, one tag filter
+## One tag filter, in three places
 
-This workflow and `.github/workflows/release.yml` trigger on the same
-tags, `v[0-9]+.[0-9]+.[0-9]+`, and they have to stay in step. A looser
-filter here would publish a formula for a tag release.yml never built
-(`v0.2.0-rc1`, say, which release.yml skips because nfpm would write
-`0.2.0~rc1` and makepkg refuses a pkgver with a hyphen), so `brew
-install` would build from a tarball whose release carries no packages.
-Change one filter and change the other in the same commit.
+Three checks decide which tags get a formula, and they have to say the
+same thing: the `tags:` filter of `homebrew.yml`, the `vX.Y.Z` test its
+`workflow_dispatch` path applies to the tag you type, and `render.sh`'s
+own check on the version it is given. All three are
+`v[0-9]+.[0-9]+.[0-9]+`, which is `.github/workflows/release.yml`'s
+filter too. A looser one anywhere would publish a formula for a tag
+release.yml never built (`v0.2.0-rc1`, say, which release.yml skips
+because nfpm would write `0.2.0~rc1` and makepkg refuses a pkgver with a
+hyphen), so `brew install` would build from a tarball whose release
+carries no packages. Change one and change the others in the same commit.
 
-One asset of that release matters to the Mac path: the Linux aarch64
+`render.sh` takes the repository as its third argument (the workflow
+passes the one it is running in) and writes it into all three lines of
+the formula that name a repository: `url`, `homepage` and `head`. A
+formula rendered from a fork is therefore about that fork throughout,
+including what `brew install --HEAD` builds.
+
+One asset of each release matters to the Mac path: the Linux aarch64
 binary `ssf-X.Y.Z-linux-aarch64`, which `ssf vm build` fetches with `gh`
 as the guest's `ssf` on Apple silicon, since a macOS binary cannot run in
 the Linux guest. It comes from release.yml's `linux-aarch64-binary` job,

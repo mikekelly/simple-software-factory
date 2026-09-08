@@ -32,10 +32,13 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          case "$TAG" in
-            v[0-9]*) ;;
-            *) echo "::error::'$TAG' is not a vX.Y.Z tag"; exit 1 ;;
-          esac
+          # The same tags as the push trigger above and as release.yml: a
+          # dispatch of a pre-release tag (v0.2.0-rc1) would otherwise render
+          # a formula for a release release.yml never built packages for.
+          if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a vX.Y.Z tag; release.yml builds packages for those only"
+            exit 1
+          fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 

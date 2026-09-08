@@ -117,8 +117,9 @@ after `daemon.instructions` and `repo.instructions`. The same text is included
 when an agent is started again from scratch. No file, or an empty one, adds
 nothing, and `ssf doctor` reports a repository whose notes are missing
 (`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`;
-the message names the Linux path on a Mac too, where the file is under
-`$(brew --prefix)/share/ssf/`), looking for the file through the GitHub
+on a Mac the message names the Homebrew copy instead, under
+`$(brew --prefix)/share/ssf/`, since ssf looks beside its own binary
+first there), looking for the file through the GitHub
 contents API on `repo.base_branch`
 (else the default branch), so no clone is needed; an absolute or `~/`
 `prompt_file` is looked for on the machine instead. `repo.prompt_file` names another

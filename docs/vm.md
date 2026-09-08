@@ -29,11 +29,13 @@ ssf vm attach             # herdr in the guest, in this terminal
 ```
 
 The `[vm]` keys (`backend`, `name`, `dir`, `vcpus`, `mem_mib`,
-`data_gib`, `root_gib`, `ssh_port`, `files`, and the binaries and images
-to use instead of the downloaded ones: `firecracker`, `gvproxy`,
-`kernel`, `rootfs` for Firecracker; `limactl`, `image`, `vm_type`,
-`guest_binary`, `herdr` for lima) are in the
-[configuration table](configuration.md#every-key).
+`data_gib`, `root_gib`, `ssh_port`, `files`, `guest_binary`, and the
+binaries and images to use instead of the downloaded ones:
+`firecracker`, `gvproxy`, `kernel`, `rootfs` for Firecracker;
+`limactl`, `image`, `vm_type`, `herdr` for lima) are in the
+[configuration table](configuration.md#every-key). `guest_binary`
+belongs to neither backend: both seed that Linux `ssf` into the guest,
+and it is only on a Mac that it cannot be this binary.
 
 ## Backends
 

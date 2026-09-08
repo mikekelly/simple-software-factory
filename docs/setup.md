@@ -197,6 +197,7 @@ FAIL gh and ssf links in /home/you/.config/ssf/bin not installed yet (ssf launch
 ok   ssf on PATH at /usr/bin/ssf is this binary
 ok   every post by the bot carried an origin tag
 FAIL ssf.service running
+note firecracker backend: /dev/kvm usable; [vm] enabled is false, so nothing here needs it until you turn the VM on
 ok   bar widget enabled in ~/.config/omarchy/shell.json
 ok   new clones go under /home/you/ssf/projects
 Error: 5 problem(s) found
@@ -216,17 +217,25 @@ no herdr session is running on the host (none is needed once the factory
 is in the VM), no repository is watched, and the links are made when the
 first agent starts. What has to be `ok` now is the config line, the
 `herdr driver: CLI` line, the GitHub CLI, `ssf on PATH` and, on Omarchy,
-the bar widget. Logs, at any point: `journalctl --user -fu ssf.service`.
+the bar widget. The `note ... backend:` line is not a check but a
+statement of what this machine has for the VM backend it would use, and
+`ssf doctor` prints it on every host (inside the guest it is left out,
+since the guest runs no VM of its own); while `[vm] enabled` is still
+false it ends by saying so. Logs, at any point: `journalctl --user -fu
+ssf.service`.
 
-On a Mac the same output differs in four lines, none of them a problem:
+On a Mac the same output differs in five lines, none of them a problem:
 the `herdr driver: CLI` line fails too until step 6 (no herdr on the
 host; the guest brings its own), the `ssf on PATH` line names
-`/opt/homebrew/bin/ssf` (or `/usr/local/bin/ssf` on Intel), the
-`ssf.service running` line is the launchd service (checked with
-`launchctl`; it keeps its Linux name) and fails until step 6 starts it,
-and the widget line is the `note bar widget: not on Omarchy, nothing to
-enable` above rather than a check, since that check runs on Omarchy
-only. Logs, at any point: `tail -f $(brew --prefix)/var/log/ssf.log`.
+`/opt/homebrew/bin/ssf` (or `/usr/local/bin/ssf` on Intel), the service
+line names the launchd service rather than the systemd one and reads
+`FAIL the ssf Homebrew service running` (`ssf doctor` checks it with
+`launchctl`), failing until step 6 starts it, the backend line is `note
+lima backend: limactl at /opt/homebrew/bin/limactl; ...` because lima is
+the backend there and `brew` installed `limactl` alongside ssf, and the
+widget line is the `note bar widget: not on Omarchy, nothing to enable`
+above rather than a check, since that check runs on Omarchy only. Logs,
+at any point: `tail -f $(brew --prefix)/var/log/ssf.log`.
 
 ## 3. Create the bot account
 
@@ -413,19 +422,26 @@ systemctl --user restart ssf.service   # the service starts the VM and owns it f
 keeps it) and sizing the VM from this machine, writing the sizes to
 `config.toml` under `[vm]`: `vcpus` (the CPUs minus one, at least 2),
 `mem_mib` (half the RAM, at least 4096) and `data_gib` (half the free
-space of the filesystem under `vm.dir`, at least 20; the disk is sparse,
-so this reserves nothing). It prints what it chose:
+space of the filesystem the data disk will land on, at least 20; the
+disk is sparse, so this reserves nothing). Which filesystem that is
+depends on the backend: `vm.dir` under Firecracker, and under lima the
+directory lima keeps its own disks in (`$LIMA_HOME/_disks`, by default
+`~/.lima/_disks`), which can be another volume. The line it prints names
+the path it measured:
 
 ```
 VM backend: firecracker (for this machine)
-this machine: 8 CPUs, 32768 MiB RAM, 500 GiB free on /home (where [vm] dir is)
+this machine: 8 CPUs, 32768 MiB RAM, 500 GiB free on /home (measured at /home/you/.local/share/ssf/vm, [vm] dir)
 VM size: 7 vCPUs (from this machine), 16384 MiB RAM (from this machine), 250 GiB data disk (from this machine; sparse, so it takes host space only as the guest writes)
 written to /home/you/.config/ssf/config.toml under [vm] (backend, vcpus, mem_mib, data_gib); edit them there. The data disk itself is made once and only enlarged by `ssf vm grow`
 ```
 
-On a Mac the guest's `ssf` binary is the release asset for the installed
-version (`ssf-<version>-linux-<arch>`), fetched once with `gh release
-download`, and the guest downloads herdr's Linux release while it
+On a Mac, where the backend is lima, that line ends `(measured at
+/Users/you/.lima/_disks, lima's disk directory)` instead, and the free
+space it reports is the one lima's disks draw on. The guest's `ssf`
+binary there is the release asset for the installed version
+(`ssf-<version>-linux-<arch>`), fetched once with `gh release download`,
+and the guest downloads herdr's Linux release while it
 provisions itself; the guest OS is Arch on Intel and Ubuntu LTS on Apple
 silicon. `ssf vm build` ends with the instance stopped (`built lima
 instance ssf-default; ssf vm start boots it`); the service start above
