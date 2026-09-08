@@ -42,6 +42,25 @@ const MAX_DELIVERY_FAILURES: u32 = 5;
 /// not counted: only the daemon's own refusals can loop.
 pub const MAX_RELEASE_REFUSALS: u32 = 3;
 
+/// How long an ignored item that is open and on no listing keeps its
+/// record (`Engine::prune_ignored`). A listing that came back short is
+/// short for seconds or minutes, so anything still missing after this is
+/// not that: the item is off the bot's listings for a reason ssf cannot
+/// see (a mention edited away, an assignment withdrawn), and the record
+/// is given up rather than kept for ever. Giving up costs at most one
+/// onboarding, if the item ever does come back.
+const ABSENT_GIVE_UP: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// How long an ignored item that is off the listings is left alone
+/// between looks (`Engine::prune_ignored`), so that an item whose listing
+/// flaps costs one request every so often rather than one per pass.
+const ABSENT_RECHECK: Duration = Duration::from_secs(900);
+
+/// How many absent ignore records one pass looks at, so a repository that
+/// loses a long listing does not spend its pass on them; the rest are
+/// looked at on the passes that follow.
+const ABSENT_LOOKS_PER_PASS: usize = 20;
+
 /// How long a blocked session waits before starting its harness again
 /// when the login check cannot tell whether the login is back (or claims
 /// it is while the harness disagrees); doubled after every restart that
@@ -156,16 +175,21 @@ impl Ignored {
         Self {
             updated_at: issue.updated_at.clone(),
             triggers,
+            absent_since: None,
+            asked_at: None,
         }
     }
 
     /// Whether the item is still as it was: unchanged on GitHub (or on no
-    /// listing that changed, when `fresh` is `None`) and on the same
-    /// listings.
+    /// listing that changed, when `fresh` is `None`), and on no listing it
+    /// was not on when it was ignored. A listing it has *left* is not a
+    /// change worth looking at — nothing has happened to the item, and a
+    /// listing that comes back short would otherwise put every item on it
+    /// through onboarding again (issue #138) — but one it has joined is
+    /// what an assignment older than the `updated_at` looks like.
     fn stands(&self, fresh: Option<&Issue>, triggers: &[String]) -> bool {
-        let mut triggers = triggers.to_vec();
-        triggers.sort();
-        fresh.is_none_or(|i| i.updated_at == self.updated_at) && triggers == self.triggers
+        fresh.is_none_or(|i| i.updated_at == self.updated_at)
+            && triggers.iter().all(|t| self.triggers.contains(t))
     }
 }
 
@@ -1195,13 +1219,11 @@ are resumed on the first pass that finds it: {err:#}"
             }
         }
 
+        self.prune_ignored(repo, owner, name, &present).await;
+
         // Only trust the ETags when every item was handled; otherwise the next
         // pass must see the full listings again to retry.
         let rs = self.state.repo_mut(&repo.name);
-        // An ignored item that has left every listing (closed, or no longer
-        // the bot's) has nothing to be ignored as; if it comes back it is
-        // looked at afresh.
-        rs.ignored.retain(|n, _| present.contains(n));
         if all_ok {
             if let Some(t) = issues_etag {
                 rs.issues_etag = t;
@@ -1259,6 +1281,137 @@ are resumed on the first pass that finds it: {err:#}"
             .get(&repo.name)
             .and_then(|rs| rs.ignored.get(&number))
             .is_none_or(|at| !at.stands(fresh, triggers))
+    }
+
+    /// Forget the ignore records that have nothing left to guard.
+    ///
+    /// A record only does anything while its item is on a listing, so an
+    /// item missing from this pass's listings is no reason to drop one:
+    /// GitHub's filtered listings come back short now and then, and
+    /// dropping a record on absence alone means every item missing from
+    /// one short listing is onboarded again when the listing recovers
+    /// (issue #138: 21 of them, on and off for hours). `retire_issue`
+    /// has guarded sessions against the same lag from the start.
+    ///
+    /// So a missing item is looked at instead: its record goes if the
+    /// item is closed, or gone from GitHub altogether, and stands
+    /// otherwise. A record whose item stays off every listing for
+    /// [`ABSENT_GIVE_UP`] is given up then, without a request: that is no
+    /// longer a listing that lagged, and a record nothing can consult is
+    /// not worth keeping for ever. Both clocks are in the record itself,
+    /// so a daemon restart does not set them back.
+    ///
+    /// The looks are rationed, the giving up is not: a record is looked at
+    /// at most once per [`ABSENT_RECHECK`], longest-unlooked-at first and
+    /// [`ABSENT_LOOKS_PER_PASS`] to a pass, so neither a listing that
+    /// flaps nor one that drops a hundred items at once spends a pass or
+    /// the rate limit, and every record's turn comes round.
+    async fn prune_ignored(
+        &mut self,
+        repo: &RepoConfig,
+        owner: &str,
+        name: &str,
+        present: &BTreeSet<u64>,
+    ) {
+        let mut absent: Vec<(u64, Ignored)> = {
+            let Some(rs) = self.state.repos.get_mut(&repo.name) else {
+                return;
+            };
+            // Back on a listing: the absence is over. What was asked about
+            // it stands, so a flapping listing does not buy a look every
+            // time the item comes back.
+            for (_, at) in rs.ignored.iter_mut().filter(|(n, _)| present.contains(n)) {
+                at.absent_since = None;
+            }
+            rs.ignored
+                .iter_mut()
+                .filter(|(n, _)| !present.contains(n))
+                .map(|(n, at)| {
+                    // A stamp that cannot be read (a hand-edited state
+                    // file, a clock that went backwards) is replaced
+                    // rather than believed: an unreadable one would
+                    // otherwise read as "just now" for ever, and freeze
+                    // both the look and the giving up.
+                    if at
+                        .absent_since
+                        .as_deref()
+                        .is_some_and(|t| since(t).is_none())
+                    {
+                        at.absent_since = Some(now_iso());
+                    }
+                    if at.asked_at.as_deref().is_some_and(|t| since(t).is_none()) {
+                        at.asked_at = None;
+                    }
+                    at.absent_since.get_or_insert_with(now_iso);
+                    (*n, at.clone())
+                })
+                .collect()
+        };
+
+        // Giving up costs nothing, so it is not rationed.
+        absent.retain(|(number, at)| {
+            let absent_for = at
+                .absent_since
+                .as_deref()
+                .and_then(since)
+                .unwrap_or_default();
+            if absent_for < ABSENT_GIVE_UP {
+                return true;
+            }
+            info!(
+                repo = repo.name,
+                issue = number,
+                hours = ABSENT_GIVE_UP.as_secs() / 3600,
+                "on no listing for hours; giving up its ignore record"
+            );
+            self.state.repo_mut(&repo.name).ignored.remove(number);
+            false
+        });
+
+        // The one asked about longest ago goes first, and one never asked
+        // about before that, so a repository with more absent records than
+        // a pass looks at works through them rather than round the first.
+        absent.retain(|(_, at)| {
+            at.asked_at
+                .as_deref()
+                .and_then(since)
+                .is_none_or(|d| d >= ABSENT_RECHECK)
+        });
+        absent.sort_by(|a, b| a.1.asked_at.cmp(&b.1.asked_at));
+        if absent.len() > ABSENT_LOOKS_PER_PASS {
+            debug!(
+                repo = repo.name,
+                absent = absent.len(),
+                "more absent ignore records than one pass looks at; the rest wait"
+            );
+            absent.truncate(ABSENT_LOOKS_PER_PASS);
+        }
+        for (number, _) in absent {
+            let gone = match self.gh.issue_opt(owner, name, number).await {
+                // Closed, or gone from GitHub altogether (deleted, or not
+                // readable with this token any more). An item transferred
+                // to another repository answers for its new home, where it
+                // is open, so that record waits for the giving up.
+                Ok(item) => item.is_none_or(|i| i.state == "closed"),
+                // Nothing was answered: keep the record and ask again when
+                // the next look is due rather than on every pass for as
+                // long as the failure lasts.
+                Err(e) => {
+                    debug!(
+                        repo = repo.name,
+                        issue = number,
+                        "keeping the ignore record of an item that could not be fetched: {e:#}"
+                    );
+                    false
+                }
+            };
+            let rs = self.state.repo_mut(&repo.name);
+            if gone {
+                rs.ignored.remove(&number);
+            } else if let Some(at) = rs.ignored.get_mut(&number) {
+                at.asked_at = Some(now_iso());
+            }
+        }
     }
 
     /// Poll the items that are tracked only because sessions subscribed to
@@ -4772,6 +4925,20 @@ fn safe_error(text: &str) -> String {
 }
 
 /// How long ago an RFC 3339 time was (zero when it cannot be read).
+/// How long ago `iso` was, or `None` when it cannot be read as a time or
+/// claims to be in the future. `age` reads both of those as "just now",
+/// which is the safe answer for a countdown that only ever waits longer;
+/// a caller that would wait for ever on it wants to know instead.
+fn since(iso: &str) -> Option<Duration> {
+    chrono::DateTime::parse_from_rfc3339(iso)
+        .ok()
+        .and_then(|t| {
+            (chrono::Utc::now() - t.with_timezone(&chrono::Utc))
+                .to_std()
+                .ok()
+        })
+}
+
 fn age(iso: &str) -> Duration {
     chrono::DateTime::parse_from_rfc3339(iso)
         .ok()
@@ -4908,6 +5075,37 @@ mod tests {
             "state": "open", "user": {"login": author}, "created_at": "x", "updated_at": "x"
         }))
         .unwrap()
+    }
+
+    /// Put an ignored item's absence (and the look it has had) `by` into
+    /// the past, the way waiting would.
+    fn rewind_absence(e: &mut Engine, r: &RepoConfig, number: u64, by: Duration) {
+        let then = (chrono::Utc::now() - chrono::Duration::from_std(by).unwrap())
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let at = e
+            .state
+            .repo_mut(&r.name)
+            .ignored
+            .get_mut(&number)
+            .expect("an ignore record to rewind");
+        if at.absent_since.is_some() {
+            at.absent_since = Some(then.clone());
+        }
+        if at.asked_at.is_some() {
+            at.asked_at = Some(then);
+        }
+    }
+
+    /// The item numbers a pass asked GitHub about by number.
+    fn looked_at(hits: &[String]) -> BTreeSet<u64> {
+        hits.iter()
+            .filter_map(|h| h.strip_prefix("/repos/o/r/issues/"))
+            .filter_map(|n| n.parse().ok())
+            .collect()
+    }
+
+    fn ignored_numbers(e: &Engine, r: &RepoConfig) -> Vec<u64> {
+        e.state.repos[&r.name].ignored.keys().copied().collect()
     }
 
     fn seeded(e: &mut Engine, number: u64, branch: Option<&str>, active: bool) {
@@ -5584,7 +5782,16 @@ mod tests {
                         .and_then(|n| n.parse::<u64>().ok())
                         .and_then(|n| i.lock().unwrap().get(&n).cloned())
                     {
-                        ("200 OK", "\"i\"".to_string(), item.to_string())
+                        // A null stands for an item GitHub does not have.
+                        if item.is_null() {
+                            (
+                                "404 Not Found",
+                                "\"i\"".to_string(),
+                                r#"{"message":"Not Found"}"#.to_string(),
+                            )
+                        } else {
+                            ("200 OK", "\"i\"".to_string(), item.to_string())
+                        }
                     } else if let Some(n) = path
                         .strip_prefix("/repos/o/r/issues/")
                         .and_then(|rest| rest.strip_suffix("/timeline"))
@@ -5646,6 +5853,12 @@ mod tests {
         /// Serve one item by number, for the paths that read it directly.
         fn set_issue(&self, number: u64, item: Value) {
             self.issues.lock().unwrap().insert(number, item);
+        }
+
+        /// Answer 404 for one item, as GitHub does for one that was
+        /// deleted, or that this token may not read any more.
+        fn set_missing(&self, number: u64) {
+            self.issues.lock().unwrap().insert(number, Value::Null);
         }
 
         fn set_timeline(&self, number: u64, events: Vec<Value>) {
@@ -5778,11 +5991,33 @@ mod tests {
             "{hits:?}"
         );
 
-        // An item that left every listing (closed, say) loses its record;
-        // one still listed keeps it.
+        // An item that leaves every listing is looked at before its record
+        // is dropped (issue #138): closed, so #19's record goes, while #18
+        // is still listed and keeps its own.
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(19, Ignored::new(&issue(19, "bot", None), &created));
+        stub.set_issue(
+            19,
+            json!({
+                "number": 19, "title": "t", "body": null, "html_url": "https://gh/19",
+                "state": "closed", "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+            }),
+        );
         *stub.created.lock().unwrap() = vec![listed(18)];
         stub.bump_created_etag();
+        let _ = stub.hits();
         e.tick_repo(&r).await.unwrap();
+        let hits = stub.hits();
+        assert!(
+            hits.contains(&"/repos/o/r/issues/19".to_string()),
+            "#19 was looked at before being forgotten: {hits:?}"
+        );
+        assert!(
+            !hits.iter().any(|h| h.starts_with("/repos/o/r/issues/18")),
+            "#18 is still listed, so nothing is asked about it: {hits:?}"
+        );
         assert_eq!(
             e.state.repos[&r.name]
                 .ignored
@@ -5947,6 +6182,386 @@ mod tests {
         assert_eq!(stub.created_fulls(), 2, "one unblock, one full fetch");
         assert!(e.failures.is_empty(), "{:?}", e.failures);
         assert!(stub.post_bodies().is_empty());
+    }
+
+    /// A bot-opened item with no usable origin tag is onboarded once and
+    /// then skipped, not re-onboarded on every pass. This is what issue
+    /// #138 suspected was broken; it was not, and this guards the path it
+    /// named (it passes without the rest of this change).
+    #[tokio::test]
+    async fn a_rejected_bot_opened_item_is_not_onboarded_again() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        *stub.created.lock().unwrap() = vec![json!({
+            "number": 18, "title": "t", "body": "no tag here",
+            "html_url": "https://gh/18", "state": "open",
+            "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+        })];
+
+        // Pass 1: onboarded, found to be nobody's, ignored.
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        let hits = stub.hits();
+        assert!(
+            hits.iter()
+                .any(|h| h.starts_with("/repos/o/r/issues/18/timeline")),
+            "{hits:?}"
+        );
+        assert!(
+            e.state.repos[&r.name].ignored.contains_key(&18),
+            "the rejection records an ignore: {:?}",
+            e.state.repos[&r.name].ignored
+        );
+
+        // Pass 2, listing unchanged (304): nothing is looked at.
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+
+        // Pass 3, the same listing served in full (GitHub rolled its ETag):
+        // still nothing.
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert!(
+            e.state.repos[&r.name].ignored.contains_key(&18),
+            "the record survives the pass"
+        );
+    }
+
+    /// A bot-opened item with no usable origin tag, on a stub that serves
+    /// it from the `creator` listing and by number.
+    fn untagged_listed(n: u64, state: &str) -> Value {
+        json!({
+            "number": n, "title": "t", "body": "no tag here",
+            "html_url": format!("https://gh/{n}"), "state": state,
+            "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+        })
+    }
+
+    /// Issue #138: the daemon onboarded the same 21 bot-opened items every
+    /// half hour. The rejection records the ignore (and did before this),
+    /// but the prune at the end of a pass dropped every record whose item
+    /// was missing from the listings that pass, and GitHub's filtered
+    /// listings come back short now and then — `retire_issue` has guarded
+    /// sessions against exactly that lag from the start. So: a listing
+    /// that comes back short costs no re-onboarding when it recovers.
+    #[tokio::test]
+    async fn a_short_listing_does_not_throw_away_ignore_records() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        *stub.created.lock().unwrap() = vec![untagged_listed(18, "open")];
+        stub.set_issue(18, untagged_listed(18, "open"));
+
+        // Onboarded once, found to be nobody's, ignored.
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert_eq!(ignored_numbers(&e, &r), vec![18]);
+
+        // The listing comes back empty, and then it recovers.
+        *stub.created.lock().unwrap() = vec![];
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(ignored_numbers(&e, &r), vec![18], "the record stands");
+        *stub.created.lock().unwrap() = vec![untagged_listed(18, "open")];
+        stub.bump_created_etag();
+        let _ = stub.hits();
+        e.tick_repo(&r).await.unwrap();
+
+        // Nothing was fetched by number, so nothing was onboarded again.
+        assert_listings_only(&stub.hits());
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert_eq!(ignored_numbers(&e, &r), vec![18]);
+    }
+
+    /// The other half of the same prune: an item that is really gone loses
+    /// its record, and an absence is asked about once rather than on every
+    /// pass it lasts.
+    #[tokio::test]
+    async fn an_ignored_item_is_asked_about_once_and_forgotten_when_it_is_gone() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        *stub.created.lock().unwrap() =
+            vec![untagged_listed(18, "open"), untagged_listed(19, "open")];
+        stub.set_issue(18, untagged_listed(18, "open"));
+        stub.set_issue(19, untagged_listed(19, "open"));
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(ignored_numbers(&e, &r), vec![18, 19]);
+
+        // Both missing: each is asked about once...
+        *stub.created.lock().unwrap() = vec![];
+        stub.bump_created_etag();
+        let _ = stub.hits();
+        e.tick_repo(&r).await.unwrap();
+        let hits = stub.hits();
+        for n in [18, 19] {
+            assert!(
+                hits.contains(&format!("/repos/o/r/issues/{n}")),
+                "asked about #{n}: {hits:?}"
+            );
+        }
+
+        // ...and not again while the absence lasts.
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        let hits = stub.hits();
+        assert!(
+            !hits.iter().any(|h| h.starts_with("/repos/o/r/issues/1")),
+            "{hits:?}"
+        );
+        assert_eq!(ignored_numbers(&e, &r), vec![18, 19]);
+
+        // #19 comes back on the listing and goes missing again, closed
+        // this time. A listing that flaps buys no look of its own: the
+        // record is asked about again when the next look is due, and its
+        // record goes then. #18 keeps its own.
+        *stub.created.lock().unwrap() =
+            vec![untagged_listed(18, "open"), untagged_listed(19, "open")];
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        *stub.created.lock().unwrap() = vec![untagged_listed(18, "open")];
+        stub.set_issue(19, untagged_listed(19, "closed"));
+        stub.bump_created_etag();
+        let _ = stub.hits();
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert_eq!(
+            ignored_numbers(&e, &r),
+            vec![18, 19],
+            "asked about too soon"
+        );
+
+        rewind_absence(&mut e, &r, 19, ABSENT_RECHECK);
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(ignored_numbers(&e, &r), vec![18]);
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+
+        // #18 goes missing while open: looked at once, record kept, and
+        // then left alone. An item that never comes back (its mention
+        // edited away, say) would otherwise be looked at for ever, so the
+        // record is given up once the absence is too long to be a lagging
+        // listing — without asking GitHub again.
+        *stub.created.lock().unwrap() = vec![];
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(ignored_numbers(&e, &r), vec![18]);
+        let _ = stub.hits();
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert_eq!(ignored_numbers(&e, &r), vec![18], "given up too soon");
+
+        rewind_absence(&mut e, &r, 18, ABSENT_GIVE_UP);
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert!(ignored_numbers(&e, &r).is_empty(), "the record goes");
+        assert_listings_only(&stub.hits());
+    }
+
+    /// The record of an item GitHub 404s for (deleted, or no longer
+    /// readable with this token) goes; a fetch that fails
+    /// answers nothing, so that record stands and is not asked about
+    /// again until the backoff is up.
+    #[tokio::test]
+    async fn an_ignored_item_gone_from_github_loses_its_record_but_a_failure_does_not() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        let created = vec!["created".to_string()];
+        for n in [18, 19] {
+            e.state
+                .repo_mut(&r.name)
+                .ignored
+                .insert(n, Ignored::new(&issue(n, "bot", None), &created));
+        }
+        // #18 is gone from GitHub; #19's fetch fails (the stub answers 500
+        // for an item it was not given).
+        stub.set_missing(18);
+        *stub.created.lock().unwrap() = vec![];
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(ignored_numbers(&e, &r), vec![19]);
+
+        // The failure is not retried on every pass while it lasts.
+        let _ = stub.hits();
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert_eq!(ignored_numbers(&e, &r), vec![19]);
+    }
+
+    /// More absent records than a pass looks at: the looks are rationed
+    /// and rotate, so every record's turn comes round, while giving up
+    /// costs no request and so waits for nothing.
+    #[tokio::test]
+    async fn absent_records_beyond_a_pass_s_looks_are_not_starved() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        let created = vec!["created".to_string()];
+        let n = ABSENT_LOOKS_PER_PASS as u64;
+        // Twice what a pass looks at, all open and on no listing, plus one
+        // that has been absent long enough to be given up.
+        for i in 1..=2 * n {
+            e.state
+                .repo_mut(&r.name)
+                .ignored
+                .insert(i, Ignored::new(&issue(i, "bot", None), &created));
+            stub.set_issue(i, untagged_listed(i, "open"));
+        }
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(9000, Ignored::new(&issue(9000, "bot", None), &created));
+
+        e.tick_repo(&r).await.unwrap();
+        let mut asked: BTreeSet<u64> = looked_at(&stub.hits());
+        assert_eq!(asked.len(), ABSENT_LOOKS_PER_PASS, "one pass's worth");
+
+        // Every record is due again on the next pass, which is the
+        // ordinary case: the prune only runs on a pass where a listing
+        // changed, and those are rarer than the look interval.
+        for i in 1..=2 * n {
+            rewind_absence(&mut e, &r, i, ABSENT_RECHECK);
+        }
+        // #9000 sorts last by number and was never looked at, so under a
+        // budget that ran in number order it would wait behind everything.
+        // It is past the giving up, which the budget does not ration.
+        rewind_absence(&mut e, &r, 9000, ABSENT_GIVE_UP);
+        stub.bump_created_etag();
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            !e.state.repos[&r.name].ignored.contains_key(&9000),
+            "given up whatever the budget was spent on"
+        );
+        asked.extend(looked_at(&stub.hits()));
+
+        // The ones the earlier passes could not reach are asked about on
+        // the passes that follow, rather than the same few going round.
+        for _ in 0..3 {
+            for i in 1..=2 * n {
+                rewind_absence(&mut e, &r, i, ABSENT_RECHECK);
+            }
+            stub.bump_created_etag();
+            e.tick_repo(&r).await.unwrap();
+            asked.extend(looked_at(&stub.hits()));
+        }
+        let missed: Vec<u64> = (1..=2 * n).filter(|i| !asked.contains(i)).collect();
+        assert!(missed.is_empty(), "never looked at: {missed:?}");
+        assert_eq!(
+            e.state.repos[&r.name].ignored.len(),
+            2 * n as usize,
+            "all still open, so all still ignored"
+        );
+    }
+
+    /// A clock in the record that cannot be read — a hand-edited state
+    /// file, or a machine clock that went backwards — is replaced rather
+    /// than believed. `age` reads an unreadable stamp as "just now",
+    /// which would freeze both the look and the giving up for ever.
+    #[tokio::test]
+    async fn an_unreadable_clock_in_an_ignore_record_is_replaced() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        let created = vec!["created".to_string()];
+        let at = e
+            .state
+            .repo_mut(&r.name)
+            .ignored
+            .entry(18)
+            .or_insert_with(|| Ignored::new(&issue(18, "bot", None), &created));
+        at.absent_since = Some("not a date".into());
+        at.asked_at = Some("not a date".into());
+        stub.set_issue(18, untagged_listed(18, "open"));
+
+        e.tick_repo(&r).await.unwrap();
+        let at = &e.state.repos[&r.name].ignored[&18];
+        assert!(
+            at.absent_since.as_deref().and_then(since).is_some(),
+            "the absence is dated afresh: {at:?}"
+        );
+        assert!(
+            at.asked_at.as_deref().and_then(since).is_some(),
+            "and the look that was due happened: {at:?}"
+        );
+    }
+
+    /// A record that names two listings is not re-onboarded when one of
+    /// them comes back short: the item is still on the other, so the
+    /// prune never sees it, and only a listing it has *joined* counts as
+    /// a change (issue #138, which the trigger-set comparison would
+    /// otherwise reintroduce for every gate refusal an item collects two
+    /// triggers from).
+    #[tokio::test]
+    async fn an_ignored_item_that_leaves_one_of_its_listings_is_left_alone() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        let item = json!({
+            "number": 5, "title": "t", "body": "@bot look at this",
+            "html_url": "https://gh/5", "state": "open", "user": {"login": "stranger"},
+            "assignees": [{"login": "bot"}], "created_at": "x", "updated_at": "u1"
+        });
+        e.state.repo_mut(&r.name).ignored.insert(
+            5,
+            Ignored::new(
+                &serde_json::from_value(item.clone()).unwrap(),
+                &["assigned".to_string(), "mentioned".to_string()],
+            ),
+        );
+        // Only the assignee listing carries it this pass: nothing is
+        // fetched, and the record is left as it was.
+        stub.set_assigned(vec![item]);
+        e.tick_repo(&r).await.unwrap();
+        assert_listings_only(&stub.hits());
+        assert_eq!(
+            e.state.repos[&r.name].ignored[&5].triggers,
+            vec!["assigned".to_string(), "mentioned".to_string()],
+        );
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+    }
+
+    /// The prune asks whether the item is still there, not whose it is, so
+    /// a record made by the gate (`refuse`) survives a short listing too:
+    /// an item a stranger mentioned the bot on is neither assigned to the
+    /// bot nor opened by it, and used to lose its record on the first
+    /// listing that came back without it.
+    #[tokio::test]
+    async fn a_refused_item_keeps_its_record_when_its_listing_comes_back_short() {
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        let mentioned = vec!["mentioned".to_string()];
+        let item = json!({
+            "number": 42, "title": "t", "body": "@bot look at this",
+            "html_url": "https://gh/42", "state": "open",
+            "user": {"login": "stranger"}, "created_at": "x", "updated_at": "x"
+        });
+        e.state.repo_mut(&r.name).ignored.insert(
+            42,
+            Ignored::new(&serde_json::from_value(item.clone()).unwrap(), &mentioned),
+        );
+        stub.set_issue(42, item);
+        // On no listing this pass: still open, so the record stands.
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(ignored_numbers(&e, &r), vec![42]);
     }
 
     #[test]

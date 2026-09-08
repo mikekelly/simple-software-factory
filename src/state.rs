@@ -69,13 +69,27 @@ pub struct RepoState {
 /// 304 against an ETag from before the assignment), ignore it as
 /// created-only, and then find nothing "changed" when the assignee listing
 /// does carry it. Showing up on another listing is a change for our
-/// purposes even when `updated_at` stands still.
+/// purposes even when `updated_at` stands still. Leaving one is not:
+/// nothing has happened to the item, and a listing that comes back short
+/// would otherwise put everything on it through onboarding again.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Ignored {
     pub updated_at: String,
     /// Sorted, so two listings in any order compare equal.
     #[serde(default)]
     pub triggers: Vec<String>,
+    /// When the item stopped being on any listing, if it is not on one
+    /// now: a record whose item is open but stays off every listing is
+    /// given up eventually, and the clock is kept here rather than in
+    /// memory so a daemon restart does not set it back to zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absent_since: Option<String>,
+    /// When GitHub was last asked what became of the item, while it was
+    /// off the listings. Kept across the item coming back, so an item
+    /// whose listing flaps is asked about at the rate the absence
+    /// deserves rather than once per flap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -516,6 +530,38 @@ mod tests {
         let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         assert!(back.repos["a/b"].issues[&1].subscriber_only);
         assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+    }
+
+    /// The state file the daemon is restarted against was written before
+    /// the ignore record carried its clocks (issue #138), so a record with
+    /// only `updated_at` and `triggers` has to load, mean "not known to be
+    /// absent, never asked about", and write back the same two keys.
+    #[test]
+    fn an_ignore_record_from_before_its_clocks_loads_and_round_trips() {
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.state_dir().join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"repos":{"mikekelly/overlay-mono":{"ignored":{"337":{"updated_at":"2026-09-03T00:19:46Z","triggers":["created"]}}}}}"#,
+        )
+        .unwrap();
+        let st = State::load_from(&path).unwrap();
+        let at = &st.repos["mikekelly/overlay-mono"].ignored[&337];
+        assert_eq!(at.updated_at, "2026-09-03T00:19:46Z");
+        assert_eq!(at.triggers, vec!["created".to_string()]);
+        assert!(at.absent_since.is_none() && at.asked_at.is_none());
+
+        // And back out as it came in: an older ssf reading this file, or a
+        // person reading it, sees no new keys until there is something to
+        // say.
+        st.save_to(&path).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            written["repos"]["mikekelly/overlay-mono"]["ignored"]["337"],
+            serde_json::json!({"updated_at": "2026-09-03T00:19:46Z", "triggers": ["created"]})
+        );
     }
 
     #[test]

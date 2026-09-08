@@ -55,10 +55,18 @@ binding wins):
   with, so listing membership is part of what "unchanged" means. What it
   was ignored with is kept in `state.json` (under `ignored`, per
   repository), so a daemon restart does not fetch every such item again the
-  next time a listing changes; the record goes when the item leaves every
-  listing. (A state file from before this record existed still costs one
-  walk on the first pass that sees a change.) Items opened from a session
-  on a *different* repository are not bound across repositories.
+  next time a listing changes; the record goes when the item is gone from
+  GitHub — closed, or not there any more. Missing from a listing is not
+  that on its own: GitHub's filtered listings come back short now and
+  then, and every record dropped that way costs a re-onboarding when the
+  listing recovers. So a missing item is looked at rather than assumed
+  gone (at most every 15 minutes, and 20 to a pass), and a record whose
+  item is open but stays off every listing for six hours is given up
+  then, since that is no longer a listing that lagged. Both clocks are
+  kept in the record, so a daemon restart does not set them back. (A
+  state file from before this record existed still costs one walk on the
+  first pass that sees a change.) Items opened from a session on a
+  *different* repository are not bound across repositories.
 
 `ssf status --json` shows the binding as `owner` / `shares_workspace_of`
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
