@@ -3954,21 +3954,26 @@ async fn doctor() -> Result<()> {
         // abandoned -- so being named here is the only way they stop
         // being invisible.
         //
-        // Only where the backend's tooling is actually installed: the
-        // survey forks `limactl` twice, and on a machine that has no
-        // lima the line above has already said so, so asking would buy a
-        // warning and a wait in exchange for an answer already known.
-        if tooling.ok {
-            for stray in vm.survey().strays {
-                println!(
-                    "note {} {}, which this config does not name ([vm] name = {}); ssf leaves it alone -- `{}` removes it{}",
-                    stray.what(),
-                    stray.name,
-                    cfg.vm.name,
-                    stray.remove,
-                    stray.caveat()
-                );
-            }
+        // Without the tooling, off the filesystem: the survey forks
+        // `limactl` twice, and on a machine that has no lima the line
+        // above has already said so -- but a data disk of clones in
+        // lima's home is exactly what a person who cannot run `limactl
+        // list` needs told, so the answer is found the other way rather
+        // than not at all. Firecracker's strays never need tooling.
+        let strays = if tooling.ok {
+            vm.survey().strays
+        } else {
+            vm.strays_on_filesystem()
+        };
+        for stray in strays {
+            println!(
+                "note {} {}, which this config does not name ([vm] name = {}); ssf leaves it alone -- `{}` removes it{}",
+                stray.what(),
+                stray.name,
+                cfg.vm.name,
+                stray.remove,
+                stray.caveat()
+            );
         }
     }
     // The widget lives on the host; inside the guest there is no Omarchy

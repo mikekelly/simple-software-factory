@@ -1119,7 +1119,7 @@ impl Vm {
     }
 
     /// The instance half of [`Vm::strays_on_disk`].
-    fn instance_strays_on_disk(&self) -> Vec<Stray> {
+    pub(super) fn instance_strays_on_disk(&self) -> Vec<Stray> {
         Self::ssf_dirs_in(self.lima_home.as_deref(), &self.lima_name())
             .into_iter()
             .map(Stray::lima_instance)
