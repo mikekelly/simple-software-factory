@@ -367,15 +367,27 @@ pub fn set_service_enabled(enabled: bool) -> Result<()> {
         if marker.exists() {
             std::fs::remove_file(&marker)?;
         }
-        let _ = crate::platform::service_start();
+        report_service(crate::platform::service_start(), "start");
     } else {
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&marker, "created by `ssf ui service disable`\n")?;
-        let _ = crate::platform::service_stop();
+        report_service(crate::platform::service_stop(), "stop");
     }
     Ok(())
+}
+
+/// Say what systemctl (or `brew services`) said when it failed. It used
+/// to run with this terminal, so its error was on screen; it is captured
+/// now, and dropping it left `ssf ui service enable` printing "service
+/// enabled" over a daemon that had not started. Not the command's result:
+/// the marker is written either way, so the enable or disable itself did
+/// hold, and `ssf ui service status` shows what came of it.
+fn report_service(result: Result<()>, what: &str) {
+    if let Err(e) = result {
+        eprintln!("warning: could not {what} the service: {e:#}");
+    }
 }
 
 /// Is the daemon's service running (the guest's system unit inside the VM,
