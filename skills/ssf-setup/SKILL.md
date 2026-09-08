@@ -108,4 +108,3 @@ document links to.
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
     for review classes and stopping rules. Keep required verification in
     every class, including changes that need only self-review.
-

@@ -152,7 +152,8 @@ the body of the item before execution and keep it current there) and the
 **gauntlet** rule: ssf runs one session per item and starts no reviewer,
 so the boilerplate tells the author to choose self-review, one or two
 fresh-agent rounds, or deep review by blast radius, with explicit stopping
-rules and the same required verification in every class (see [Second opinions](sessions.md#second-opinions-the-gauntlet)).
+rules and the same required verification in every class (see [Second
+opinions](sessions.md#second-opinions-the-gauntlet)).
 This repository's own [`SSF.md`](../SSF.md) is what produced the comments
 quoted in the README's walkthrough.
 
