@@ -2871,9 +2871,14 @@ exit 0
         let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(
-                probe
-                    .replace(PROVISION_MARKER, "/nonexistent/marker")
-                    .replace(PROVISION_LOG, "/nonexistent/log"),
+                // Keep host processes from changing the probe's output: the
+                // test's shell-local pgrep always reports no match.
+                format!(
+                    "pgrep() {{ return 1; }}; {}",
+                    probe
+                        .replace(PROVISION_MARKER, "/nonexistent/marker")
+                        .replace(PROVISION_LOG, "/nonexistent/log")
+                ),
             )
             .output()
             .expect("sh runs");
