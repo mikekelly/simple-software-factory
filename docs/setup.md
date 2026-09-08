@@ -22,11 +22,13 @@ same steps, marked as such.
   or later, or Fedora; there is a package for each (step 2), and the
   microVM image is x86_64 only. ssf runs as a per-user systemd unit, so
   your user needs a systemd user session (every desktop login has one; a
-  server gets one with `loginctl enable-linger`, step 2). The bar widget
+  server gets one with `loginctl enable-linger`, step 2, which serves the
+  .deb and .rpm unit only: the Arch and Omarchy package's unit needs a
+  Wayland login and never runs on a headless machine). The bar widget
   and the **Factory** menu are Omarchy's; elsewhere the CLI and the
   service are the whole of it. macOS is not supported yet.
 - **`/dev/kvm`** usable by your user for the microVM: world-writable on
-  Omarchy and Fedora. On Debian, Ubuntu and Arch a user logged in at the
+  Omarchy, Arch and Fedora. On Debian and Ubuntu a user logged in at the
   machine's seat gets access through udev, and a user who only comes in
   over ssh needs the `kvm` group (`sudo usermod -aG kvm $USER`, then log
   in again) (**you**). Without it, the factory runs on the host (step 6).
@@ -100,7 +102,9 @@ ship a unit that starts with your systemd user manager at first login
 (`default.target`), display or not. On a machine nobody logs in to, a
 server, `loginctl enable-linger $USER` (**you**: sudo may be needed)
 keeps the user manager, and so the factory, running with no session at
-all. When the hook finds no running session it says so; `systemctl
+all; that is the .deb and .rpm unit only, the Arch and Omarchy package's
+unit needs a Wayland login and never runs on a headless machine. When the
+hook finds no running session it says so; `systemctl
 --user daemon-reload && systemctl --user start ssf.service` starts it
 now.
 

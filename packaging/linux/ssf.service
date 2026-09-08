@@ -1,5 +1,6 @@
-# ssf.service for Debian, Ubuntu, Fedora and plain Arch (the .deb, .rpm and
-# ../release packages). It differs from ../ssf.service, the Omarchy unit:
+# ssf.service for the .deb and .rpm (Debian, Ubuntu, Fedora). The Arch and
+# Omarchy packages (../release/PKGBUILD) install ../ssf.service instead,
+# which starts with the Wayland session. This unit differs from that one:
 #   - no ConditionEnvironment=WAYLAND_DISPLAY and no After=/PartOf=
 #     graphical-session.target: there is no bar widget to wait for, and a
 #     headless machine has no graphical session at all;

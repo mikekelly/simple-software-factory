@@ -132,9 +132,10 @@ jobs:
   # a release is only made once every package exists. The condition spells
   # that out: always() so a failed aarch64 job does not skip this one, then
   # the two package jobs must have succeeded (the aarch64 binary is uploaded
-  # when its job succeeded, skipped otherwise). Tags only.
+  # when its job succeeded, skipped otherwise). Tag pushes only: a manual
+  # run on a tag ref builds and uploads artifacts but publishes nothing.
   release:
-    if: always() && github.ref_type == 'tag' && needs.linux-packages.result == 'success' && needs.arch-package.result == 'success'
+    if: always() && github.event_name == 'push' && github.ref_type == 'tag' && needs.linux-packages.result == 'success' && needs.arch-package.result == 'success'
     needs: [linux-packages, arch-package, linux-aarch64-binary]
     runs-on: ubuntu-latest
     steps:

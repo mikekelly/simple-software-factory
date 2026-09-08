@@ -1,14 +1,16 @@
 #!/bin/sh
 # Post-remove script of the ssf .deb and .rpm (nfpm embeds it as postrm /
 # %postun). A port of post_remove in ../ssf.install.
-#   deb: `remove`, `purge` => removal; `upgrade`, `failed-upgrade`, `abort-*`,
-#        `disappear` => not a removal
+#   deb: `remove` => removal (`apt purge` runs `postrm remove` and then
+#        `postrm purge`, so the message prints once, on `remove`; the package
+#        ships no config files, so `purge` has nothing to say); `upgrade`,
+#        `failed-upgrade`, `abort-*`, `disappear` => not a removal
 #   rpm: `0` removal, `1` upgrade
 # Nothing here may fail the package operation; the script exits 0.
 set -u
 
 case "${1:-}" in
-  remove|purge|0)
+  remove|0)
     cat <<'MSG'
 ==> ssf removed. Per-user files are left in place:
     ~/.config/ssf (config, bot key), ~/.local/state/ssf (state),

@@ -10,8 +10,8 @@ microVM, and leaves the host only what builds, starts, stops and reaches
 the guest. The drivers are untouched; the guest runs herdr (Orca is a
 desktop app and needs a display the guest does not have, so a repository
 that says `driver = "orca"` runs in herdr there). Nothing needs root:
-Firecracker runs as you given `/dev/kvm` (world-writable on Omarchy and
-Fedora; on Debian, Ubuntu and Arch a user logged in at the machine's seat
+Firecracker runs as you given `/dev/kvm` (world-writable on Omarchy, Arch
+and Fedora; on Debian and Ubuntu a user logged in at the machine's seat
 gets access through udev, and a user who only comes in over ssh needs the
 `kvm` group: `sudo usermod -aG kvm $USER` and a new login), the guest's network is
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) (a

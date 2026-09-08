@@ -37,7 +37,8 @@
 # tui_idle_timeout_ms = 90000
 
 [herdr]
-# command = "herdr"                            # the herdr CLI; a herdr session must be running
+# command = "herdr"                            # the herdr CLI; a herdr session must be running. A bare name not on PATH
+#                                              # is also looked for at ~/.local/bin/<name>, where herdr's installer puts it
 # projects_dir = "~/ssf/projects"              # ssf clones repos here; worktrees go in <name>.worktrees/ next to the clone
 # tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
 

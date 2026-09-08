@@ -150,11 +150,6 @@ pub fn is_omarchy() -> bool {
     detect().omarchy
 }
 
-#[allow(dead_code)]
-pub fn is_arch_like() -> bool {
-    detect().is_arch_like()
-}
-
 pub fn herdr_install_hint() -> String {
     detect().herdr_install_hint()
 }
