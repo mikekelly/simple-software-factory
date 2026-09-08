@@ -15,46 +15,36 @@ omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
-**The rule that matters: give the scratch factory its own checkout.** Point
-it at a repository the real one does not watch *and* set `projects_dir`,
-because the clone path is the repository's **bare name** — a fork, or a
-sandbox with the same name, lands on the real checkout while satisfying
-"a different repository" exactly.
+**Assume everything except ssf's own config and state is the real thing.**
+`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's config file, its state file
+and the socket its commands talk to. They move nothing else. The driver's
+server, the checkouts, GitHub, the harness's own sessions, the microVM and
+the bar widget are all the ones you are already using, so a scratch factory
+is a second factory sharing them, not a sandbox.
 
-`SSF_CONFIG_DIR` and `SSF_STATE_DIR` isolate ssf's own files: its config,
-its state, the socket its commands talk to, the bot token and keys, and the
-`gh` directory its agents get. They isolate nothing else, and the driver is
-why the checkout rule is not optional:
+What that costs, and the two that surprise people:
 
-- **The driver's server is shared.** There is no per-factory herdr socket,
-  and no second Orca instance to aim at, so a scratch pass creates
-  workspaces, panes and agents in the same server the real factory drives.
-  `Herdr::open` adopts a workspace already open on a path, so two factories
-  on one checkout share a workspace: deliveries fall back to any live agent
-  in it, so the scratch factory's messages reach the real session's agent,
-  and `remove_worktree` interrupts every agent pane before deleting the
-  checkout.
-- **The clones.** `orca.projects_dir` (and `herdr.projects_dir`) default to
-  fixed paths under the home directory, so set the key for the driver you
-  are using. It is what keeps a fresh scratch factory off the real
-  checkout, and three things defeat it: a `[[repo]] path`, a
-  `repo add --path`, and an Orca project that already exists for that
-  repository, each of which decides the path before `projects_dir` is
-  consulted.
-- **GitHub.** The token above is real, and it is *yours*, not the bot's, so
-  a pass posts, moves cards and launches agents as you.
-- **The harness's own home.** Nothing sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME`
-  or `HOME`, so agents a scratch pass launches use the real sessions and
-  write the real `~/.codex/config.toml`.
-- **The VM and the widget.** `vm.dir` is `~/.local/share/ssf/vm`, so any
-  `ssf vm` command from a scratch factory acts on the real VM, `destroy`
-  included; on Omarchy, `ssf ui install` rewrites the real
-  `~/.config/omarchy`, which is what the bar is showing, and re-running the
-  packaged `ssf ui install` puts it back.
+- **The checkout.** Two factories on one checkout share a herdr workspace:
+  `Herdr::open` adopts whatever is already open on that path, deliveries
+  fall back to any live agent in it, and removing the worktree interrupts
+  every agent pane before deleting the directory. Give the scratch factory
+  a checkout nothing else is using — which means both a repository the real
+  factory does not watch *and* a path of its own, since `[[repo]] path` and
+  `repo add --path` decide the checkout before `projects_dir` is consulted,
+  and the clone path is otherwise the repository's bare name, so a fork
+  lands on the real one.
+- **The token.** `gh auth token` returns whatever `gh` is signed in as, and
+  inside a session that is the **bot**, because `ssf launch` exports
+  `GH_TOKEN`. So a pass from an agent's shell posts, moves cards and
+  launches agents as the production bot. Check with `gh auth status` before
+  the recipe rather than assuming it is you.
+- **The VM.** With `vm.enabled` in the config you copied, `ssf run --once`
+  does not do one pass at all: it starts the real microVM and supervises it
+  until killed. The `--once` is never read on that path.
 
-`ssf run --once` does a single pass, startup pass included, and exits. The
-installed service runs the last package installed, so a change is verified
-with unit tests and scratch runs rather than by expecting to see it live.
+The installed service runs the last package installed, so a change is
+verified with unit tests and scratch runs rather than by expecting to see
+it live.
 
 ## Tests write nowhere but a temporary directory
 
