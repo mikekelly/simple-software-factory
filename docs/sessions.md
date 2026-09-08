@@ -90,7 +90,10 @@ substantive diff. Required tests, formatting, linting and package builds still
 apply to every class.
 
 Give each reviewer the diff, issue and claimed outcome, and ask it to break
-correctness, requirements, tests, docs and conventions. Use an in-harness
+correctness, requirements, tests, docs and conventions. Feedback is advice:
+weigh it, discuss doubtful findings with the same reviewer, and explain why
+you decline substantive suggestions. Fix confirmed must-fixes before
+continuing; a discussion is not a fresh round. Use an in-harness
 subagent by default; for deep review prefer a strong reviewer on a different
 model through herdr from round one (`ssf guide` gives the invocation). Report
 the class, findings and fixes on the item. Who merges is the notes' autonomy
