@@ -591,7 +591,14 @@ fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Sur
     if let Some(d) = dir {
         parts.push(d.display().to_string());
     }
-    parts.join(" and ")
+    // "a and b and c" is a hard sentence to read in the one line a
+    // person scans before saying yes to destroying it all.
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, [one])) => format!("{one} and {last}"),
+        Some((last, rest)) => format!("{}, and {last}", rest.join(", ")),
+    }
 }
 
 /// Why the VM's workspaces could not be looked at, and what to do about
@@ -1378,7 +1385,7 @@ mod tests {
                 Some(Path::new("/v/f")),
                 &survey(true, Some(false), Some(true))
             ),
-            "the lima instance ssf-f and its data disk ssf-f in lima's home and /v/f"
+            "the lima instance ssf-f, its data disk ssf-f in lima's home, and /v/f"
         );
         // An instance whose directory was removed by hand: the missing
         // directory is not named.

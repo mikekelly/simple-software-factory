@@ -985,26 +985,25 @@ come back with it.
    when it is down), `ui service disable` (with `vm.enabled` that shuts
    the guest down; on macOS this is `brew services stop ssf`), `ui
    uninstall` (the bar widget and menu, Omarchy only), `auth logout`
-   (revokes the bot's keys on GitHub and forgets it), `vm destroy` (under
-   the lima backend the lima instance `ssf-default` and its disk
+   (revokes the bot's keys on GitHub and forgets it), `vm destroy`
+   (under the lima backend the lima instance `ssf-default` and its disk
    `ssf-default` too, on whichever OS you run it; whether there is a VM
    at all is a question for the backend rather than for `[vm] dir`, so
    an instance whose directory has been removed by hand, or whose `[vm]
-   dir` has since been changed, is still found and destroyed, and a
-   data disk that outlived its instance is too). Where lima itself will
-   not answer -- `limactl` moved by an upgrade, off the PATH the
-   service runs under, a stale `[vm] limactl` -- what settles it is
-   whether `[vm] dir` or lima's home still holds the instance or the
-   disk, so a machine with nothing of either on it gets a plain `no VM`
-   and one that still has a disk of workspaces is never told it has none.
-   Each
+   dir` has since been changed, is still found and destroyed, and a data
+   disk that outlived its instance is too). Where lima itself will not
+   answer -- `limactl` moved by an upgrade, off the PATH the service
+   runs under, a stale `[vm] limactl` -- what settles it is whether
+   `[vm] dir` or lima's home still holds the instance or the disk, so a
+   machine with nothing of either on it gets a plain `no VM` and one
+   that still has a disk of workspaces is never told it has none. Each
    step tolerates the thing being gone already, so a second run, or a
    run on a half-uninstalled machine, is fine. With the factory in the
-   VM the report and the purge come from the guest, before it goes. The one
-   step that can end the run early is `ui service disable`: everything
-   after it destroys something, and none of it may happen while the
-   daemon might still be working, so a service that would not stop
-   leaves the machine as it was and tells you to stop it by hand
+   VM the report and the purge come from the guest, before it goes. The
+   one step that can end the run early is `ui service disable`:
+   everything after it destroys something, and none of it may happen
+   while the daemon might still be working, so a service that would not
+   stop leaves the machine as it was and tells you to stop it by hand
    (`systemctl --user stop ssf.service`, or `brew services stop ssf`)
    and run `ssf uninstall` again.
 2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`

@@ -2704,7 +2704,9 @@ mod tests {
         assert!(err.contains("still holds something of ssf-one"), "{err}");
         assert!(!t.vm.dir.exists(), "the directory is ssf's own and goes");
         // Nothing of lima's and no directory: a destroy with nothing to
-        // do says so rather than claiming a removal it did not make.
+        // do is not a failure. What it prints is not pinned here --
+        // stdout is awkward to capture from a test -- so this asserts
+        // only what it can.
         std::fs::remove_dir_all(t.vm.lima_home.clone().unwrap()).unwrap();
         assert!(t.vm.destroy().await.is_ok());
     }
