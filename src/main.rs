@@ -2326,87 +2326,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&st)?);
             } else {
-                println!(
-                    "vm:       {} ({}){}",
-                    st.name,
-                    st.dir,
-                    if st.enabled {
-                        ""
-                    } else {
-                        "  [vm] enabled = false"
-                    }
-                );
-                println!("backend:  {}", st.backend);
-                if let Some(t) = &st.tooling {
-                    println!("tooling:  {}", t.detail);
-                }
-                match &st.instance {
-                    // A `limactl list` that failed is not "no such
-                    // instance": saying "missing (ssf vm build)" over a
-                    // VM lima could not be asked about sends people to
-                    // rebuild one that is already there.
-                    Some(inst) => println!(
-                        "instance: {inst}{}",
-                        match (&st.probe_error, &st.lima_dir, st.image) {
-                            (Some(e), ..) => format!(" unknown: {e}"),
-                            (None, Some(d), _) => format!(" ({d})"),
-                            (None, None, false) => " missing (ssf vm build)".to_string(),
-                            (None, None, true) => String::new(),
-                        }
-                    ),
-                    None => println!(
-                        "image:    {}",
-                        if st.image {
-                            "built"
-                        } else {
-                            "missing (ssf vm build)"
-                        }
-                    ),
-                }
-                println!(
-                    "state:    {}",
-                    match (&st.probe_error, st.running, st.firecracker_pid) {
-                        (Some(_), ..) => "unknown (lima did not answer)".to_string(),
-                        (None, Some(true), Some(p)) => format!("running (firecracker pid {p})"),
-                        (None, Some(true), None) => "running".to_string(),
-                        _ => "stopped".to_string(),
-                    }
-                );
-                for stray in &st.strays {
-                    println!("stray:    {}", stray.describe());
-                }
-                if st.base_unread {
-                    println!(
-                        "stray:    {} could not be read, so what else is in it is unknown",
-                        st.dir
-                    );
-                }
-                println!(
-                    "ssh:      {}",
-                    if st.ssh {
-                        format!("127.0.0.1:{} answers", st.ssh_port)
-                    } else {
-                        "not reachable".to_string()
-                    }
-                );
-                println!("daemon:   {}", st.daemon.as_deref().unwrap_or("unknown"));
-                println!(
-                    "size:     {} vCPUs, {} MiB; data disk {} GiB{}",
-                    st.vcpus,
-                    st.mem_mib,
-                    st.data_gib,
-                    match &st.data {
-                        Some(d) => format!(
-                            ", {}{}",
-                            d.describe(),
-                            if d.is_full() { "; `ssf vm grow`" } else { "" }
-                        ),
-                        None => String::new(),
-                    }
-                );
-                if !st.logins.is_empty() {
-                    println!("logins:   {}", login_summary(&st.logins));
-                }
+                print!("{}", render_vm_status(&st));
             }
             Ok(())
         }
@@ -2480,6 +2400,115 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
             vm.destroy().await
         }
     }
+}
+
+/// `ssf vm status` as a person reads it.
+///
+/// A function, because `main` is not reachable from a test and this
+/// block has hidden a must-fix in three separate gauntlet rounds: a
+/// missing ordering caveat, a sentence that did not use the shared one,
+/// and a line naming the wrong directory. The words are pinned where
+/// they can be.
+pub fn render_vm_status(st: &vm::VmStatus) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "vm:       {} ({}){}",
+        st.name,
+        st.dir,
+        if st.enabled {
+            ""
+        } else {
+            "  [vm] enabled = false"
+        }
+    );
+    let _ = writeln!(out, "backend:  {}", st.backend);
+    if let Some(t) = &st.tooling {
+        let _ = writeln!(out, "tooling:  {}", t.detail);
+    }
+    match &st.instance {
+        // A `limactl list` that failed is not "no such
+        // instance": saying "missing (ssf vm build)" over a
+        // VM lima could not be asked about sends people to
+        // rebuild one that is already there.
+        Some(inst) => {
+            let _ = writeln!(
+                out,
+                "instance: {inst}{}",
+                match (&st.probe_error, &st.lima_dir, st.image) {
+                    (Some(e), ..) => format!(" unknown: {e}"),
+                    (None, Some(d), _) => format!(" ({d})"),
+                    (None, None, false) => " missing (ssf vm build)".to_string(),
+                    (None, None, true) => String::new(),
+                }
+            );
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "image:    {}",
+                if st.image {
+                    "built"
+                } else {
+                    "missing (ssf vm build)"
+                }
+            );
+        }
+    }
+    let _ = writeln!(
+        out,
+        "state:    {}",
+        match (&st.probe_error, st.running, st.firecracker_pid) {
+            (Some(_), ..) => "unknown (lima did not answer)".to_string(),
+            (None, Some(true), Some(p)) => format!("running (firecracker pid {p})"),
+            (None, Some(true), None) => "running".to_string(),
+            _ => "stopped".to_string(),
+        }
+    );
+    for stray in &st.strays {
+        let _ = writeln!(out, "stray:    {}", stray.describe());
+    }
+    if !st.unread.is_empty() {
+        // The directories that could not be read, by name --
+        // this printed `<[vm] dir>/<name>`, which is neither
+        // where the trouble is nor a directory that need
+        // exist.
+        let _ = writeln!(out, "unread:   {}", uninstall::unread_note(&st.unread));
+    }
+    let _ = writeln!(
+        out,
+        "ssh:      {}",
+        if st.ssh {
+            format!("127.0.0.1:{} answers", st.ssh_port)
+        } else {
+            "not reachable".to_string()
+        }
+    );
+    let _ = writeln!(
+        out,
+        "daemon:   {}",
+        st.daemon.as_deref().unwrap_or("unknown")
+    );
+    let _ = writeln!(
+        out,
+        "size:     {} vCPUs, {} MiB; data disk {} GiB{}",
+        st.vcpus,
+        st.mem_mib,
+        st.data_gib,
+        match &st.data {
+            Some(d) => format!(
+                ", {}{}",
+                d.describe(),
+                if d.is_full() { "; `ssf vm grow`" } else { "" }
+            ),
+            None => String::new(),
+        }
+    );
+    if !st.logins.is_empty() {
+        let _ = writeln!(out, "logins:   {}", login_summary(&st.logins));
+    }
+    out
 }
 
 fn exit_with(st: std::process::ExitStatus) -> Result<()> {
@@ -3961,24 +3990,21 @@ async fn doctor() -> Result<()> {
         // lima's home is exactly what a person who cannot run `limactl
         // list` needs told, so the answer is found the other way rather
         // than not at all. Firecracker's strays never need tooling.
-        let (strays, base_unread) = if tooling.ok {
+        let (strays, unread) = if tooling.ok {
             let s = vm.survey();
-            (s.strays, s.base_unread)
+            (s.strays, s.unread)
         } else {
             vm.strays_on_filesystem()
         };
         for stray in strays {
             println!("note {}", stray.describe());
         }
-        if base_unread {
-            // The same fact `ssf vm status` and `ssf uninstall` report.
-            // A directory nobody could read may hold a VM a rename left
-            // behind, and this is the command a person runs to find out
-            // what is wrong.
-            println!(
-                "note {} could not be read, so what else is in it is unknown",
-                vm.base.display()
-            );
+        if !unread.is_empty() {
+            // The same sentence `ssf vm status` and `ssf uninstall`
+            // print, from the same function: a directory nobody could
+            // read may hold a VM a rename left behind, and this is the
+            // command a person runs to find out what is wrong.
+            println!("note {}", uninstall::unread_note(&unread));
         }
     }
     // The widget lives on the host; inside the guest there is no Omarchy
@@ -4059,6 +4085,79 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `VmStatus` with nothing interesting in it, to vary one field
+    /// at a time.
+    fn status() -> vm::VmStatus {
+        vm::VmStatus {
+            enabled: true,
+            name: "new".into(),
+            dir: "/v/new".into(),
+            backend: "lima".into(),
+            instance: Some("ssf-new".into()),
+            lima_dir: None,
+            image: false,
+            running: Some(false),
+            firecracker_pid: None,
+            gvproxy_pid: None,
+            ssh_port: 2222,
+            ssh: false,
+            daemon: None,
+            logins: Vec::new(),
+            vcpus: 2,
+            mem_mib: 4096,
+            data_gib: 20,
+            data: None,
+            tooling: None,
+            probe_error: None,
+            strays: Vec::new(),
+            unread: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn vm_status_names_the_directory_that_could_not_be_read() {
+        // It named `<[vm] dir>/<name>` -- neither where the trouble is
+        // nor a directory that need exist -- while `ssf doctor` and
+        // `ssf uninstall` named `[vm] dir` correctly. Three commands
+        // have to agree about one machine, so they share one sentence.
+        let st = vm::VmStatus {
+            unread: vec![PathBuf::from("/home/me/.lima")],
+            ..status()
+        };
+        let text = render_vm_status(&st);
+        assert!(text.contains("/home/me/.lima could not be read"), "{text}");
+        assert!(!text.contains("/v/new could not"), "{text}");
+        assert_eq!(
+            text.lines()
+                .find(|l| l.starts_with("unread:"))
+                .map(str::trim_end),
+            Some(
+                format!("unread:   {}", uninstall::unread_note(&st.unread))
+                    .trim_end()
+                    .to_string()
+            )
+            .as_deref(),
+            "the same sentence the other two print"
+        );
+        // Nothing unread, nothing said.
+        assert!(!render_vm_status(&status()).contains("unread:"));
+    }
+
+    #[test]
+    fn vm_status_says_a_stray_is_left_alone() {
+        // The half that went missing when this printer had its own
+        // wording: "ssf leaves it alone" is what the design turns on,
+        // and `config.example.toml` and `docs/vm.md` both promise it.
+        let st = vm::VmStatus {
+            strays: vec![vm::Stray::lima_disk("ssf-old".into())],
+            ..status()
+        };
+        let text = render_vm_status(&st);
+        assert!(text.contains("ssf leaves it alone"), "{text}");
+        assert!(text.contains("limactl disk delete ssf-old"), "{text}");
+        assert!(text.contains("after its instance"), "{text}");
+    }
 
     #[test]
     fn a_failed_forwarded_one_shot_names_its_guest() {
