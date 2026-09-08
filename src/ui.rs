@@ -20,12 +20,14 @@ pub fn plugin_source_dir() -> PathBuf {
     if let Ok(d) = std::env::var("SSF_PLUGIN_DIR") {
         return PathBuf::from(d);
     }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_default();
     let candidates = [
         PathBuf::from("/usr/share/ssf/omarchy-plugin"),
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("../../omarchy-plugin")))
-            .unwrap_or_default(),
+        exe_dir.join("../share/ssf/omarchy-plugin"),
+        exe_dir.join("../../omarchy-plugin"),
     ];
     candidates
         .into_iter()
@@ -366,31 +368,21 @@ pub fn set_service_enabled(enabled: bool) -> Result<()> {
         if marker.exists() {
             std::fs::remove_file(&marker)?;
         }
-        let _ = Command::new("systemctl")
-            .args(["--user", "start", SERVICE])
-            .status();
+        let _ = crate::platform::service_start();
     } else {
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&marker, "created by `ssf ui service disable`\n")?;
-        let _ = Command::new("systemctl")
-            .args(["--user", "stop", SERVICE])
-            .status();
+        let _ = crate::platform::service_stop();
     }
     Ok(())
 }
 
+/// Is the daemon's service running (the guest's system unit inside the VM,
+/// the user unit or the launchd service on the host)?
 pub fn service_active() -> bool {
-    // Inside the VM the daemon is a system unit of the guest.
-    let mut cmd = Command::new("systemctl");
-    if !crate::vm::in_guest() {
-        cmd.arg("--user");
-    }
-    cmd.args(["is-active", "--quiet", SERVICE])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    crate::platform::service_active()
 }
 
 pub fn install_all(quiet: bool) -> Result<()> {

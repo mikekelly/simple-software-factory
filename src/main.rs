@@ -2097,7 +2097,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
         } => {
             let mut cfg = cfg;
             size_vm(&mut cfg, &vm.base, [vcpus, mem_mib, data_gib])?;
-            vm::Vm::new(&cfg).build(force).await
+            vm::Vm::new(&cfg).build(&cfg, force).await
         }
         VmCommand::Grow { data_gib } => {
             if let Some(n) = vm.grow(data_gib)? {
@@ -2141,18 +2141,30 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                         "  [vm] enabled = false"
                     }
                 );
-                println!(
-                    "image:    {}",
-                    if st.image {
-                        "built"
-                    } else {
-                        "missing (ssf vm build)"
-                    }
-                );
+                println!("backend:  {}", st.backend);
+                match &st.instance {
+                    Some(inst) => println!(
+                        "instance: {inst}{}",
+                        match (&st.lima_dir, st.image) {
+                            (Some(d), _) => format!(" ({d})"),
+                            (None, false) => " missing (ssf vm build)".to_string(),
+                            (None, true) => String::new(),
+                        }
+                    ),
+                    None => println!(
+                        "image:    {}",
+                        if st.image {
+                            "built"
+                        } else {
+                            "missing (ssf vm build)"
+                        }
+                    ),
+                }
                 println!(
                     "state:    {}",
                     match (st.running, st.firecracker_pid) {
                         (true, Some(p)) => format!("running (firecracker pid {p})"),
+                        (true, None) => "running".to_string(),
                         _ => "stopped".to_string(),
                     }
                 );
@@ -2224,7 +2236,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
         VmCommand::Sync => vm.sync(&cfg),
         VmCommand::Logs { follow, lines } => exit_with(vm.logs(follow, lines)?),
         VmCommand::Console { follow } => {
-            let log = vm.console_log();
+            let log = vm.console_path()?;
             let mut cmd = std::process::Command::new("tail");
             cmd.arg("-n").arg("200");
             if follow {
@@ -2240,8 +2252,16 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
         VmCommand::Destroy { yes } => {
             if !yes {
                 bail!(
-                    "this removes {} and everything in it; pass --yes",
-                    vm.dir.display()
+                    "this removes {} and everything in it{}; pass --yes",
+                    vm.dir.display(),
+                    match vm.backend() {
+                        vm::BackendKind::Lima => format!(
+                            ", the lima instance {} and its disk {}",
+                            vm.lima_name(),
+                            vm.lima_disk_name()
+                        ),
+                        vm::BackendKind::Firecracker => String::new(),
+                    }
                 );
             }
             vm.destroy().await
@@ -2256,10 +2276,15 @@ fn exit_with(st: std::process::ExitStatus) -> Result<()> {
 /// `ssf vm build`'s sizing: a `--vcpus/--mem-mib/--data-gib` flag is
 /// written to `[vm]`; a key set there stays; a key set nowhere gets the
 /// rule for this machine and is written too. The choice is printed with
-/// where each value came from.
+/// where each value came from. `[vm] backend` is settled the same way
+/// (the platform's default, written once).
 fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()> {
     let facts = vm::HostFacts::probe(base)?;
-    let chosen = vm::choose_sizes(&mut cfg.vm, flags, vm::sizes_for(&facts));
+    let (backend, backend_from, backend_changed) =
+        vm::choose_backend(&mut cfg.vm, vm::BackendKind::platform_default());
+    println!("VM backend: {backend} ({backend_from})");
+    let mut chosen = vm::choose_sizes(&mut cfg.vm, flags, vm::sizes_for(&facts));
+    chosen.changed |= backend_changed;
     println!(
         "this machine: {} CPUs, {} MiB RAM, {} GiB free on {} (where [vm] dir is)",
         facts.cpus,
@@ -2279,7 +2304,7 @@ fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()>
     if chosen.changed {
         cfg.save()?;
         println!(
-            "written to {} under [vm] (vcpus, mem_mib, data_gib); edit them there. The data disk itself is made by `ssf vm start` and only enlarged by `ssf vm grow`",
+            "written to {} under [vm] (backend, vcpus, mem_mib, data_gib); edit them there. The data disk itself is made once and only enlarged by `ssf vm grow`",
             config::config_path().display()
         );
     }
@@ -3202,9 +3227,15 @@ async fn doctor() -> Result<()> {
                     "data disk {}{}",
                     d.describe(),
                     if d.is_full() {
-                        "; grow it from the host: stop the VM (`systemctl --user stop ssf.service`, or `ssf vm stop` when it was started by hand), `ssf vm grow`, start it again"
+                        // This runs in the guest, which does not know the
+                        // host's OS: both hints.
+                        format!(
+                            "; grow it from the host: stop the VM (`{}`, `{}` on macOS, or `ssf vm stop` when it was started by hand), `ssf vm grow`, start it again",
+                            platform::service_hint_for("linux", "stop"),
+                            platform::service_hint_for("macos", "stop")
+                        )
                     } else {
-                        ""
+                        String::new()
                     }
                 ),
             ),

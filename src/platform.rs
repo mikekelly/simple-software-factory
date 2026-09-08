@@ -1,8 +1,12 @@
-//! Which platform is this? The one place that reads `/etc/os-release` and
-//! looks for Omarchy, so the rest of the code asks a question instead of
-//! assuming an answer. Small on purpose: a later macOS port builds on it.
+//! Which platform is this, and what differs between the host operating
+//! systems ssf runs on? The one place that reads `/etc/os-release`, looks
+//! for Omarchy and knows the daemon's service (a systemd user unit on
+//! Linux, a Homebrew launchd service on macOS), so the rest of the code
+//! asks a question instead of assuming an answer.
 
+use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +162,119 @@ pub fn package_removal_command() -> String {
     detect().package_removal_command()
 }
 
+pub fn is_macos() -> bool {
+    detect().os == Os::MacOs
+}
+
+// ---- the daemon's service ----
+
+/// The systemd user unit (`systemctl --user ... ssf.service`); inside the
+/// guest, the system unit of the same name.
+pub const SERVICE: &str = "ssf.service";
+/// The launchd label Homebrew gives `brew services start ssf`.
+pub const LAUNCHD_LABEL: &str = "homebrew.mxcl.ssf";
+/// The Homebrew formula (`brew services <action> ssf`).
+pub const BREW_FORMULA: &str = "ssf";
+
+/// `gui/<uid>/homebrew.mxcl.ssf`: the service in the user's login session.
+fn launchd_target() -> String {
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    format!("gui/{uid}/{LAUNCHD_LABEL}")
+}
+
+/// The command a person types to `start`, `stop` or `restart` the daemon's
+/// service on `os` (`linux`, `macos`).
+pub fn service_hint_for(os: &str, action: &str) -> String {
+    if os == "macos" {
+        format!("brew services {action} {BREW_FORMULA}")
+    } else {
+        format!("systemctl --user {action} {SERVICE}")
+    }
+}
+
+/// `service_hint_for` on this machine.
+pub fn service_hint(action: &str) -> String {
+    service_hint_for(std::env::consts::OS, action)
+}
+
+/// Is the daemon's service running? On Linux `systemctl --user is-active`
+/// (the system unit inside the guest, where the daemon is a system
+/// service); on macOS `launchctl print` and its `state = running` line.
+pub fn service_active() -> bool {
+    if is_macos() && !crate::vm::in_guest() {
+        let out = Command::new("launchctl")
+            .args(["print", &launchd_target()])
+            .stdin(Stdio::null())
+            .output();
+        return match out {
+            Ok(o) => {
+                o.status.success() && launchctl_says_running(&String::from_utf8_lossy(&o.stdout))
+            }
+            Err(_) => false,
+        };
+    }
+    let mut cmd = Command::new("systemctl");
+    if !crate::vm::in_guest() {
+        cmd.arg("--user");
+    }
+    cmd.args(["is-active", "--quiet", SERVICE])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// `launchctl print` output for a service that runs has `state = running`.
+pub fn launchctl_says_running(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.trim().starts_with("state = ") && l.trim() == "state = running")
+}
+
+pub fn service_start() -> Result<()> {
+    service_action("start")
+}
+
+pub fn service_stop() -> Result<()> {
+    service_action("stop")
+}
+
+// The Omarchy menu restarts through `bin/ssf-ui` today; this is the
+// cross-platform way for what comes next (the Homebrew service).
+#[allow(dead_code)]
+pub fn service_restart() -> Result<()> {
+    service_action("restart")
+}
+
+/// Start, stop or restart the service: `systemctl --user <action>` on
+/// Linux; on macOS `launchctl kickstart -k` (start and restart) and
+/// `launchctl kill SIGTERM` (stop) on the Homebrew label.
+fn service_action(action: &str) -> Result<()> {
+    let mut cmd = if is_macos() {
+        let mut c = Command::new("launchctl");
+        match action {
+            "stop" => c.args(["kill", "SIGTERM", &launchd_target()]),
+            _ => c.args(["kickstart", "-k", &launchd_target()]),
+        };
+        c
+    } else {
+        let mut c = Command::new("systemctl");
+        c.args(["--user", action, SERVICE]);
+        c
+    };
+    let out = cmd
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("running {:?}", cmd.get_program()))?;
+    if !out.status.success() {
+        bail!(
+            "`{}` failed: {}",
+            service_hint(action),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +419,39 @@ mod tests {
             linux("alpine", &[], false).package_removal_command(),
             "remove the ssf package with your package manager"
         );
+    }
+
+    #[test]
+    fn service_hints_name_the_command_for_the_os() {
+        assert_eq!(
+            service_hint_for("linux", "stop"),
+            "systemctl --user stop ssf.service"
+        );
+        assert_eq!(
+            service_hint_for("linux", "restart"),
+            "systemctl --user restart ssf.service"
+        );
+        assert_eq!(service_hint_for("macos", "stop"), "brew services stop ssf");
+        assert_eq!(
+            service_hint_for("macos", "start"),
+            "brew services start ssf"
+        );
+        // This machine gets one of the two.
+        let here = service_hint("stop");
+        assert!(
+            here == service_hint_for("linux", "stop") || here == service_hint_for("macos", "stop")
+        );
+    }
+
+    #[test]
+    fn launchctl_print_is_read_for_its_state_line() {
+        let running = "gui/501/homebrew.mxcl.ssf = {\n\tactive count = 1\n\tpath = /Users/me/Library/LaunchAgents/homebrew.mxcl.ssf.plist\n\tstate = running\n\n\tprogram = /opt/homebrew/opt/ssf/bin/ssf\n}\n";
+        assert!(launchctl_says_running(running));
+        assert!(!launchctl_says_running(
+            &running.replace("state = running", "state = not running")
+        ));
+        assert!(!launchctl_says_running(""));
+        assert!(launchd_target().ends_with("/homebrew.mxcl.ssf"));
+        assert!(launchd_target().starts_with("gui/"));
     }
 }

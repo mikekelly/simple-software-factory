@@ -525,9 +525,59 @@ fn default_tui_timeout() -> u64 {
     90_000
 }
 
-/// `[vm]`: the daemon, herdr and the sessions inside a Firecracker microVM
-/// instead of on this machine. The host keeps only what builds, starts,
-/// stops and reaches the guest (`ssf vm ...`).
+/// What runs the VM: Firecracker (Linux with KVM; the original) or lima
+/// (`limactl`; macOS, and Linux with qemu).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendKind {
+    Firecracker,
+    Lima,
+}
+
+impl BackendKind {
+    /// The config value (`firecracker`, `lima`).
+    pub fn id(self) -> &'static str {
+        match self {
+            BackendKind::Firecracker => "firecracker",
+            BackendKind::Lima => "lima",
+        }
+    }
+
+    /// What an unset `[vm] backend` means: Firecracker on Linux, lima on
+    /// macOS (Firecracker needs KVM).
+    pub fn default_for(os: &str) -> BackendKind {
+        if os == "macos" {
+            BackendKind::Lima
+        } else {
+            BackendKind::Firecracker
+        }
+    }
+
+    pub fn platform_default() -> BackendKind {
+        Self::default_for(std::env::consts::OS)
+    }
+}
+
+impl std::fmt::Display for BackendKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+impl std::str::FromStr for BackendKind {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "firecracker" => Ok(BackendKind::Firecracker),
+            "lima" => Ok(BackendKind::Lima),
+            other => bail!("unknown VM backend {other:?}; one of firecracker, lima"),
+        }
+    }
+}
+
+/// `[vm]`: the daemon, herdr and the sessions inside a VM (a Firecracker
+/// microVM, or a lima instance) instead of on this machine. The host keeps
+/// only what builds, starts, stops and reaches the guest (`ssf vm ...`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmConfig {
@@ -542,6 +592,30 @@ pub struct VmConfig {
     /// Where the image, kernel, binaries and the VMs are kept.
     #[serde(default = "default_vm_dir")]
     pub dir: String,
+    /// `firecracker` or `lima`. Unset: Firecracker on Linux, lima on macOS;
+    /// `ssf vm build` writes the choice here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendKind>,
+    /// lima only: a cloud-init image (URL or path) to boot instead of the
+    /// default for the guest's architecture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+    /// lima only: `vz` or `qemu`, passed through; unset is lima's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm_type: Option<String>,
+    /// A Linux `ssf` binary to seed into the guest. Unset: this binary when
+    /// the host is Linux of the guest's architecture, else the release
+    /// asset for this version is downloaded with `gh`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guest_binary: Option<String>,
+    /// The limactl binary; `limactl` on PATH when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limactl: Option<String>,
+    /// lima only: a Linux herdr binary for the guest. Unset: the host's own
+    /// on a Linux host of the guest's architecture, else the guest
+    /// downloads herdr's release while provisioning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub herdr: Option<String>,
     /// The Firecracker binary; `<dir>/firecracker` (downloaded by `ssf vm build`) when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firecracker: Option<String>,
@@ -569,7 +643,9 @@ pub struct VmConfig {
     /// vm grow` enlarges an existing disk and updates this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_gib: Option<u32>,
-    /// Size of the root image `ssf vm build` makes.
+    /// Size of the root image `ssf vm build` makes (under lima, the
+    /// instance's root disk, with a 20 GiB floor: a cloud image plus node
+    /// and the harness CLIs does not fit in 8).
     #[serde(default = "default_vm_root_gib")]
     pub root_gib: u32,
     /// Port on 127.0.0.1 where the guest's sshd is reachable.
@@ -590,6 +666,12 @@ impl Default for VmConfig {
             enabled: false,
             name: default_vm_name(),
             dir: default_vm_dir(),
+            backend: None,
+            image: None,
+            vm_type: None,
+            guest_binary: None,
+            limactl: None,
+            herdr: None,
             firecracker: None,
             gvproxy: None,
             kernel: None,
@@ -904,18 +986,28 @@ pub fn split_repo_name(name: &str) -> Result<(&str, &str)> {
     }
 }
 
+/// `$SSF_CONFIG_DIR`, else `~/.config/ssf` (on macOS too: the XDG place,
+/// not `~/Library/Application Support`, so the paths in the documentation
+/// and the guest hold everywhere).
 pub fn config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SSF_CONFIG_DIR") {
         return PathBuf::from(dir);
+    }
+    if crate::platform::is_macos() {
+        return expand_tilde("~/.config").join("ssf");
     }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("~/.config"))
         .join("ssf")
 }
 
+/// `$SSF_STATE_DIR`, else `~/.local/state/ssf` (on macOS too).
 pub fn state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SSF_STATE_DIR") {
         return PathBuf::from(dir);
+    }
+    if crate::platform::is_macos() {
+        return expand_tilde("~/.local/state").join("ssf");
     }
     dirs::state_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
@@ -1361,6 +1453,57 @@ mod tests {
         let old: Config =
             toml::from_str("[vm]\nvcpus = 2\nmem_mib = 4096\ndata_gib = 20\n").unwrap();
         assert_eq!(old.vm.data_gib, Some(20));
+    }
+
+    #[test]
+    fn vm_backend_keys_round_trip_and_stay_unset_by_default() {
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        for k in [
+            "backend",
+            "image",
+            "vm_type",
+            "guest_binary",
+            "limactl",
+            "herdr",
+        ] {
+            assert!(!text.contains(&format!("\n{k} =")), "{k} in {text}");
+        }
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.vm.backend, None);
+        let mut cfg = Config::default();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        cfg.vm.image = Some("https://example.com/arch.qcow2".into());
+        cfg.vm.vm_type = Some("vz".into());
+        cfg.vm.guest_binary = Some("~/dl/ssf-linux".into());
+        cfg.vm.limactl = Some("/opt/homebrew/bin/limactl".into());
+        cfg.vm.herdr = Some("~/dl/herdr-linux".into());
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(text.contains("backend = \"lima\""), "{text}");
+        assert!(text.contains("vm_type = \"vz\""), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.vm.backend, Some(BackendKind::Lima));
+        assert_eq!(
+            back.vm.image.as_deref(),
+            Some("https://example.com/arch.qcow2")
+        );
+        assert_eq!(back.vm.guest_binary.as_deref(), Some("~/dl/ssf-linux"));
+        assert_eq!(
+            back.vm.limactl.as_deref(),
+            Some("/opt/homebrew/bin/limactl")
+        );
+        assert_eq!(back.vm.herdr.as_deref(), Some("~/dl/herdr-linux"));
+        // The value is checked at load; the string forms match the ids.
+        assert!(toml::from_str::<Config>("[vm]\nbackend = \"docker\"\n").is_err());
+        assert_eq!("lima".parse::<BackendKind>().unwrap(), BackendKind::Lima);
+        assert_eq!(
+            "Firecracker".parse::<BackendKind>().unwrap(),
+            BackendKind::Firecracker
+        );
+        assert!("qemu".parse::<BackendKind>().is_err());
+        assert_eq!(BackendKind::Lima.to_string(), "lima");
+        assert_eq!(BackendKind::default_for("macos"), BackendKind::Lima);
+        assert_eq!(BackendKind::default_for("linux"), BackendKind::Firecracker);
     }
 
     #[test]

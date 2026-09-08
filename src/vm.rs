@@ -1,27 +1,34 @@
-//! The factory inside a Firecracker microVM: the daemon, herdr and every
-//! agent session run in a guest, and the host keeps only what builds,
-//! starts, stops and reaches it (`ssf vm ...`). Nothing here needs root:
-//! Firecracker runs as the user given `/dev/kvm`, the guest's network is
-//! gvisor-tap-vsock (`gvproxy` on the host, a user-mode TCP/IP stack on the
-//! unix socket Firecracker maps to guest vsock port 1024; `gvforwarder` in
-//! the guest), and the images are made with `fakeroot` and `mkfs.ext4 -d`.
+//! The factory inside a VM: the daemon, herdr and every agent session run
+//! in a guest, and the host keeps only what builds, starts, stops and
+//! reaches it (`ssf vm ...`). Two backends (`[vm] backend`) run the guest:
 //!
-//! Files under `[vm] dir` (`~/.local/share/ssf/vm`): the downloaded
-//! `firecracker`, `gvproxy`, `gvforwarder` and `vmlinux`, the root image
-//! `rootfs.ext4` that `ssf vm build` provisions from the Arch bootstrap
-//! tarball, and one directory per VM with its persistent `root.ext4` (a
-//! copy-on-write copy of the image), `data.ext4` (ssf's state, the clones
-//! and worktrees, mounted at `/var/lib/ssf`), the `seed.ext4` written at
-//! every start (this binary, the config rewritten for the guest, the bot
-//! token, the ssh key, the `[vm] files`), Firecracker's config and sockets,
-//! PID files and the serial console log.
+//! * Firecracker (the default on Linux; this file). Nothing needs root:
+//!   Firecracker runs as the user given `/dev/kvm`, the guest's network is
+//!   gvisor-tap-vsock (`gvproxy` on the host, a user-mode TCP/IP stack on
+//!   the unix socket Firecracker maps to guest vsock port 1024;
+//!   `gvforwarder` in the guest), and the images are made with `fakeroot`
+//!   and `mkfs.ext4 -d`. Files under `[vm] dir` (`~/.local/share/ssf/vm`):
+//!   the downloaded `firecracker`, `gvproxy`, `gvforwarder` and `vmlinux`,
+//!   the root image `rootfs.ext4` that `ssf vm build` provisions from the
+//!   Arch bootstrap tarball, and one directory per VM with its persistent
+//!   `root.ext4` (a copy-on-write copy of the image), `data.ext4` (ssf's
+//!   state, the clones and worktrees, mounted at `/var/lib/ssf`), the
+//!   `seed.ext4` written at every start (this binary, the config rewritten
+//!   for the guest, the bot token, the ssh key, the `[vm] files`),
+//!   Firecracker's config and sockets, PID files and the serial console log.
+//! * lima (the default on macOS; `lima.rs`): a `limactl` instance from a
+//!   cloud image, provisioned by the same guest scripts on its first boot
+//!   and seeded from a read-only host directory at every boot.
 //!
-//! The guest is reached over ssh on `127.0.0.1:<ssh_port>` (gvproxy
-//! publishes the guest's sshd there) with a key made per VM. With `[vm]
-//! enabled = true` the daemon-facing commands are run inside the guest that
-//! way, so `ssf status --json` for the bar widget and `ssf tell` from a
-//! terminal work as before; `ssf run` on the host starts the VM and watches
-//! it, so the systemd unit is unchanged.
+//! What does not depend on the backend stays here: the seed tree, the
+//! sizing rule, the ssh layer, the harness logins, `sync`, `attach`, `logs`
+//! and the status. The guest is reached over ssh on `127.0.0.1:<ssh_port>`
+//! with a key made per VM. With `[vm] enabled = true` the daemon-facing
+//! commands are run inside the guest that way, so `ssf status --json` for
+//! the bar widget and `ssf tell` from a terminal work as before; `ssf run`
+//! on the host starts the VM and watches it, so the service is unchanged.
+
+mod lima;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -31,9 +38,11 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
+pub use crate::config::BackendKind;
 use crate::config::{
     Config, Credential, DriverKind, GitConfig, SigningKey, VmConfig, expand_tilde,
 };
+use crate::platform;
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
@@ -227,7 +236,10 @@ fn gvproxy_url(name: &str) -> String {
     )
 }
 
-/// One VM: its config and the directory its files live in.
+/// One VM: its config and the directory its files live in. The public
+/// operations (`build`, `start`, `stop`, `running`, `grow`, `reset`,
+/// `destroy`, `console_path`, `status`) switch on `backend()`; the
+/// Firecracker side is the `fc_*` methods here, the lima side `lima.rs`.
 #[derive(Clone)]
 pub struct Vm {
     pub cfg: VmConfig,
@@ -245,8 +257,16 @@ pub struct VmStatus {
     pub enabled: bool,
     pub name: String,
     pub dir: String,
+    /// `firecracker` or `lima`.
+    pub backend: String,
+    /// The lima instance (`ssf-<name>`); null under Firecracker.
+    pub instance: Option<String>,
+    /// lima's own directory for the instance, once it exists.
+    pub lima_dir: Option<String>,
+    /// Firecracker: the root image is built; lima: the instance exists.
     pub image: bool,
     pub running: bool,
+    /// Firecracker's and gvproxy's PIDs; null under lima.
     pub firecracker_pid: Option<u32>,
     pub gvproxy_pid: Option<u32>,
     pub ssh_port: u16,
@@ -282,22 +302,38 @@ pub struct HostFacts {
 }
 
 impl HostFacts {
-    /// Read this machine: the CPUs this process may use, `/proc/meminfo`,
-    /// and the free space where `dir` is (or would be: its nearest
-    /// existing ancestor).
+    /// Read this machine: the CPUs this process may use, `/proc/meminfo`
+    /// (`sysctl hw.memsize` on macOS), and the free space where `dir` is
+    /// (or would be: its nearest existing ancestor).
     // The statvfs field types differ between libc targets.
     #[allow(clippy::useless_conversion)]
     pub fn probe(dir: &Path) -> Result<Self> {
         let cpus = std::thread::available_parallelism()
             .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
             .unwrap_or(1);
-        let meminfo = std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
-        let mem = parse_meminfo(&meminfo).context("no MemTotal in /proc/meminfo")?;
+        let mem_mib = if platform::is_macos() {
+            let out = Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .context("running sysctl hw.memsize")?;
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u64>()
+                .context("reading hw.memsize")?
+                >> 20
+        } else {
+            let meminfo =
+                std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
+            parse_meminfo(&meminfo)
+                .context("no MemTotal in /proc/meminfo")?
+                .total_kib
+                / 1024
+        };
         let here = existing_ancestor(dir);
         let st = statvfs(&here)?;
         Ok(Self {
             cpus,
-            mem_mib: mem.total_kib / 1024,
+            mem_mib,
             free_bytes: u64::from(st.f_bavail) * u64::from(st.f_frsize),
             mount: mount_point_of(&here),
         })
@@ -537,9 +573,23 @@ fn existing_ancestor(p: &Path) -> PathBuf {
 }
 
 /// The mount point of the filesystem holding `p` (the longest one in
-/// `/proc/self/mounts` that is a prefix of it), or `p` itself.
+/// `/proc/self/mounts` that is a prefix of it; on macOS, the highest
+/// ancestor on the same filesystem), or `p` itself.
 fn mount_point_of(p: &Path) -> String {
     let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    if platform::is_macos() {
+        let Ok(here) = statvfs(&p) else {
+            return p.to_string_lossy().to_string();
+        };
+        let mut top = p.clone();
+        while let Some(parent) = top.parent() {
+            match statvfs(parent) {
+                Ok(st) if st.f_fsid == here.f_fsid => top = parent.to_path_buf(),
+                _ => break,
+            }
+        }
+        return top.to_string_lossy().to_string();
+    }
     std::fs::read_to_string("/proc/self/mounts")
         .ok()
         .and_then(|m| {
@@ -590,6 +640,23 @@ impl Vm {
             base,
             dir,
             binary: None,
+        }
+    }
+
+    /// The backend in effect: `[vm] backend`, else Firecracker on Linux
+    /// and lima on macOS.
+    pub fn backend(&self) -> BackendKind {
+        self.cfg
+            .backend
+            .unwrap_or_else(BackendKind::platform_default)
+    }
+
+    /// The serial console log: Firecracker's `console.log` next to the
+    /// disks, or lima's `serial.log` in the instance directory.
+    pub fn console_path(&self) -> Result<PathBuf> {
+        match self.backend() {
+            BackendKind::Firecracker => Ok(self.console_log()),
+            BackendKind::Lima => self.lima_console_log(),
         }
     }
 
@@ -670,27 +737,39 @@ impl Vm {
         }
     }
 
-    /// The data disk's cap in GiB: the file's size once it exists, else
+    /// The data disk's cap in GiB: the disk's size once it exists, else
     /// what a start would make.
     pub fn data_cap_gib(&self) -> u32 {
-        match std::fs::metadata(self.data_disk()) {
-            Ok(m) => u32::try_from(m.len().div_ceil(1 << 30)).unwrap_or(u32::MAX),
-            Err(_) => self.sizes().data_gib,
+        match self.backend() {
+            BackendKind::Firecracker => match std::fs::metadata(self.data_disk()) {
+                Ok(m) => u32::try_from(m.len().div_ceil(1 << 30)).unwrap_or(u32::MAX),
+                Err(_) => self.sizes().data_gib,
+            },
+            BackendKind::Lima => self.lima_data_cap_gib(),
         }
     }
 
     /// Enlarge the data disk to `want` GiB, or to the rule for today's
-    /// free space, keeping what is on it: the VM stopped, the filesystem
-    /// checked, the file lengthened, the filesystem resized to fill it.
-    /// Never shrinks. Returns the new size, or `None` when there was
-    /// nothing to do.
+    /// free space, keeping what is on it, with the VM stopped. Never
+    /// shrinks. Returns the new size, or `None` when there was nothing to
+    /// do. Firecracker: the filesystem checked, the file lengthened, the
+    /// filesystem resized to fill it. lima: `limactl disk resize`; the
+    /// guest's seed script resizes the filesystem on the next boot.
     pub fn grow(&self, want: Option<u32>) -> Result<Option<u32>> {
         if self.running() {
             bail!(
-                "VM {} is running; stop it first (`systemctl --user stop ssf.service` when the service owns it, else `ssf vm stop`), grow, then start it again",
-                self.cfg.name
+                "VM {} is running; stop it first (`{}` when the service owns it, else `ssf vm stop`), grow, then start it again",
+                self.cfg.name,
+                platform::service_hint("stop")
             );
         }
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_grow(want),
+            BackendKind::Lima => self.lima_grow(want),
+        }
+    }
+
+    fn fc_grow(&self, want: Option<u32>) -> Result<Option<u32>> {
         let disk = self.data_disk();
         let meta = std::fs::metadata(&disk).with_context(|| {
             format!(
@@ -749,18 +828,33 @@ impl Vm {
         self.pid_of(&self.gv_pid(), "gvproxy")
     }
 
+    /// Is the guest up? Firecracker: its PID file names a live
+    /// firecracker; lima: `limactl list` says `Running`.
     pub fn running(&self) -> bool {
-        self.firecracker_pid().is_some()
+        match self.backend() {
+            BackendKind::Firecracker => self.firecracker_pid().is_some(),
+            BackendKind::Lima => self.lima_running(),
+        }
     }
 
     // ---- build ----
 
-    /// Download what is missing, make the base image from the bootstrap
-    /// tarball and boot it once to provision it.
-    pub async fn build(&self, force: bool) -> Result<()> {
-        if std::env::consts::ARCH != "x86_64" {
+    /// Make the guest: Firecracker downloads what is missing, makes the
+    /// base image from the bootstrap tarball and boots it once to
+    /// provision it; lima creates the instance from a cloud image and
+    /// boots it once so the guest scripts provision it.
+    pub async fn build(&self, host: &Config, force: bool) -> Result<()> {
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_build(force).await,
+            BackendKind::Lima => self.lima_build(host, force).await,
+        }
+    }
+
+    async fn fc_build(&self, force: bool) -> Result<()> {
+        if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
             bail!(
-                "the VM image is x86_64 only for now (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {}",
+                "the Firecracker backend is Linux x86_64 only (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {} {}; use `ssf config set vm.backend lima`",
+                std::env::consts::OS,
                 std::env::consts::ARCH
             );
         }
@@ -998,13 +1092,57 @@ impl Vm {
         Ok(pid)
     }
 
-    /// Start the VM: make its disks if missing, write a fresh seed, start
-    /// gvproxy and Firecracker detached, and wait for ssh and the daemon.
+    /// Start the VM with a fresh seed and wait for ssh and the daemon.
     pub async fn start(&self, host: &Config) -> Result<()> {
         if self.running() {
             println!("VM {} is already running", self.cfg.name);
             return Ok(());
         }
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_start(host).await,
+            BackendKind::Lima => self.lima_start(host).await,
+        }
+    }
+
+    /// Stop the VM cleanly.
+    pub async fn stop(&self) -> Result<()> {
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_stop().await,
+            BackendKind::Lima => self.lima_stop().await,
+        }
+    }
+
+    /// The per-VM ssh key, made on first use.
+    fn ensure_key(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        set_mode(&self.dir, 0o700)?;
+        if !self.key().exists() {
+            run_ok(
+                Command::new("ssh-keygen")
+                    .args(["-q", "-t", "ed25519", "-N", "", "-C", "ssf-vm", "-f"])
+                    .arg(self.key()),
+                "ssh-keygen",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Print how the guest came up, after `wait_for_daemon`.
+    fn report_up(&self, daemon: Option<&str>) {
+        println!(
+            "VM {} is up: ssh -p {} (ssf vm ssh), daemon {}",
+            self.cfg.name,
+            self.cfg.ssh_port,
+            daemon.unwrap_or("unknown")
+        );
+        if daemon != Some("active") {
+            eprintln!("the guest daemon is not active; `ssf vm logs` has its journal");
+        }
+    }
+
+    /// Firecracker: make the disks if missing, write the seed disk, start
+    /// gvproxy and Firecracker detached.
+    async fn fc_start(&self, host: &Config) -> Result<()> {
         for (what, path) in [
             ("Firecracker", self.firecracker()),
             ("gvproxy", self.gvproxy()),
@@ -1015,8 +1153,7 @@ impl Vm {
                 bail!("{what} is missing ({}); run `ssf vm build`", path.display());
             }
         }
-        std::fs::create_dir_all(&self.dir)?;
-        set_mode(&self.dir, 0o700)?;
+        self.ensure_key()?;
         if !self.root_disk().exists() {
             info!("making {} from the image", self.root_disk().display());
             let st = Command::new("cp")
@@ -1039,14 +1176,6 @@ impl Vm {
                     .args(["-q", "-L", "ssf-data"])
                     .arg(self.data_disk()),
                 "mkfs.ext4",
-            )?;
-        }
-        if !self.key().exists() {
-            run_ok(
-                Command::new("ssh-keygen")
-                    .args(["-q", "-t", "ed25519", "-N", "", "-C", "ssf-vm", "-f"])
-                    .arg(self.key()),
-                "ssh-keygen",
             )?;
         }
         self.write_seed(host)?;
@@ -1085,21 +1214,13 @@ impl Vm {
             bail!("{e:#}; the console is in {}", self.console_log().display());
         }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
-        println!(
-            "VM {} is up: ssh -p {} (ssf vm ssh), daemon {}",
-            self.cfg.name,
-            self.cfg.ssh_port,
-            daemon.as_deref().unwrap_or("unknown")
-        );
-        if daemon.as_deref() != Some("active") {
-            eprintln!("the guest daemon is not active; `ssf vm logs` has its journal");
-        }
+        self.report_up(daemon.as_deref());
         Ok(())
     }
 
     /// Shut the guest down (Ctrl-Alt-Del through Firecracker's API, which
     /// systemd turns into a reboot that ends the VM), then gvproxy.
-    pub async fn stop(&self) -> Result<()> {
+    async fn fc_stop(&self) -> Result<()> {
         let Some(fc) = self.firecracker_pid() else {
             if let Some(gv) = self.gvproxy_pid() {
                 kill(gv, libc::SIGTERM);
@@ -1153,7 +1274,12 @@ impl Vm {
                         if let Some(gv) = self.gvproxy_pid() {
                             kill(gv, libc::SIGTERM);
                         }
-                        bail!("the VM exited; see {}", self.console_log().display());
+                        bail!(
+                            "the VM exited; see {}",
+                            self.console_path()
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|_| "`ssf vm console`".into())
+                        );
                     }
                 }
             }
@@ -1164,15 +1290,45 @@ impl Vm {
 
     // ---- seed ----
 
-    /// Write the seed disk: this binary, the config rewritten for the
-    /// guest, the token, the bot's ssh key, our public key and the `[vm]
-    /// files`. Regenerated at every start so the guest follows the host.
+    /// Firecracker: the seed tree as an ext4 disk (`seed.ext4`), made with
+    /// `mkfs.ext4 -d` at every start.
     fn write_seed(&self, host: &Config) -> Result<()> {
         let tree = self.dir.join("seed");
+        self.seed_tree(host, &tree)?;
+        // The disk: what the tree takes plus room, at least 16 MiB.
+        let bytes = dir_size(&tree)?;
+        let size = (bytes + bytes / 4 + (8 << 20)).max(16 << 20);
+        let size = size.div_ceil(1 << 20) << 20;
+        let disk = self.seed_disk();
+        let _ = std::fs::remove_file(&disk);
+        let f = std::fs::File::create(&disk)?;
+        f.set_len(size)?;
+        drop(f);
+        set_mode(&disk, 0o600)?;
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-L", "ssf-seed", "-d"])
+                .arg(&tree)
+                .arg(&disk),
+            "mkfs.ext4 -d",
+        )?;
         let _ = std::fs::remove_dir_all(&tree);
+        Ok(())
+    }
+
+    /// Build the seed tree at `tree` (replacing what was there): the guest
+    /// `ssf` binary, the config rewritten for the guest, the token, the
+    /// bot's ssh key, our public key and the `[vm] files`. Regenerated at
+    /// every start so the guest follows the host; each backend then
+    /// publishes it its own way.
+    fn seed_tree(&self, host: &Config, tree: &Path) -> Result<()> {
+        let _ = std::fs::remove_dir_all(tree);
         std::fs::create_dir_all(tree.join("config"))?;
-        set_mode(&tree, 0o700)?;
-        std::fs::copy(self.binary()?, tree.join("ssf"))?;
+        set_mode(tree, 0o700)?;
+        let binary = self.guest_binary()?;
+        std::fs::copy(&binary, tree.join("ssf"))
+            .with_context(|| format!("copying {}", binary.display()))?;
+        make_executable(&tree.join("ssf"))?;
         let mut guest = guest_config(host);
         if let Some(key) = host
             .github
@@ -1237,25 +1393,56 @@ impl Vm {
             list.push('\n');
         }
         std::fs::write(tree.join("files.list"), list)?;
-        // The disk: what the tree takes plus room, at least 16 MiB.
-        let bytes = dir_size(&tree)?;
-        let size = (bytes + bytes / 4 + (8 << 20)).max(16 << 20);
-        let size = size.div_ceil(1 << 20) << 20;
-        let disk = self.seed_disk();
-        let _ = std::fs::remove_file(&disk);
-        let f = std::fs::File::create(&disk)?;
-        f.set_len(size)?;
-        drop(f);
-        set_mode(&disk, 0o600)?;
-        run_ok(
-            Command::new("mkfs.ext4")
-                .args(["-q", "-L", "ssf-seed", "-d"])
-                .arg(&tree)
-                .arg(&disk),
-            "mkfs.ext4 -d",
-        )?;
-        let _ = std::fs::remove_dir_all(&tree);
         Ok(())
+    }
+
+    /// The Linux `ssf` binary the guest runs: `[vm] guest_binary`, this
+    /// binary on a Linux host of the guest's architecture, else the
+    /// release asset for this version, downloaded once with `gh`.
+    fn guest_binary(&self) -> Result<PathBuf> {
+        match guest_binary_source(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            self.cfg.guest_binary.as_deref(),
+        ) {
+            GuestBinary::Configured(p) => {
+                let p = expand_tilde(&p);
+                if !p.is_file() {
+                    bail!("[vm] guest_binary {} does not exist", p.display());
+                }
+                Ok(p)
+            }
+            GuestBinary::Own => self.binary(),
+            GuestBinary::Download { asset } => {
+                let dir = self.dir.join("guest-bin");
+                let path = dir.join(&asset);
+                if path.is_file() {
+                    return Ok(path);
+                }
+                std::fs::create_dir_all(&dir)?;
+                info!(asset, "downloading the guest ssf binary with gh");
+                let out = Command::new("gh")
+                    .args([
+                        "release",
+                        "download",
+                        &format!("v{}", env!("CARGO_PKG_VERSION")),
+                    ])
+                    .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
+                    .arg(&dir)
+                    .stdin(Stdio::null())
+                    .output()
+                    .context("running gh (is the GitHub CLI installed?)")?;
+                if !out.status.success() || !path.is_file() {
+                    bail!(
+                        "no guest binary: `gh release download v{} -R {RELEASE_REPO} --pattern {asset}` failed ({}); build one for Linux and set [vm] guest_binary to it",
+                        env!("CARGO_PKG_VERSION"),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+                make_executable(&path)?;
+                Ok(path)
+            }
+        }
     }
 
     // ---- ssh ----
@@ -1328,7 +1515,7 @@ impl Vm {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if !self.running() {
-                bail!("firecracker exited");
+                bail!("the VM exited");
             }
             if self.ssh_ok() {
                 return Ok(());
@@ -1491,7 +1678,16 @@ impl Vm {
     }
 
     pub async fn status(&self) -> VmStatus {
-        let running = self.running();
+        let backend = self.backend();
+        // One `limactl list` for everything lima knows.
+        let inst = match backend {
+            BackendKind::Lima => self.lima_instance().ok().flatten(),
+            BackendKind::Firecracker => None,
+        };
+        let running = match backend {
+            BackendKind::Firecracker => self.running(),
+            BackendKind::Lima => inst.as_ref().is_some_and(|i| i.is_running()),
+        };
         let ssh = running && self.ssh_ok();
         let sizes = self.sizes();
         VmStatus {
@@ -1506,10 +1702,25 @@ impl Vm {
             enabled: self.cfg.enabled,
             name: self.cfg.name.clone(),
             dir: self.dir.to_string_lossy().to_string(),
-            image: self.rootfs().exists(),
+            backend: backend.to_string(),
+            instance: match backend {
+                BackendKind::Lima => Some(self.lima_name()),
+                BackendKind::Firecracker => None,
+            },
+            lima_dir: inst.as_ref().map(|i| i.dir.clone()),
+            image: match backend {
+                BackendKind::Firecracker => self.rootfs().exists(),
+                BackendKind::Lima => inst.is_some(),
+            },
             running,
-            firecracker_pid: self.firecracker_pid(),
-            gvproxy_pid: self.gvproxy_pid(),
+            firecracker_pid: match backend {
+                BackendKind::Firecracker => self.firecracker_pid(),
+                BackendKind::Lima => None,
+            },
+            gvproxy_pid: match backend {
+                BackendKind::Firecracker => self.gvproxy_pid(),
+                BackendKind::Lima => None,
+            },
             ssh_port: self.cfg.ssh_port,
             ssh,
             daemon: if ssh { self.daemon_state() } else { None },
@@ -1597,17 +1808,22 @@ impl Vm {
         Ok(ok)
     }
 
-    /// Remake the root disk from the image at the next start; the data
-    /// disk (state, clones, worktrees) stays.
+    /// A fresh root at the next start (Firecracker: the root disk remade
+    /// from the image; lima: the instance re-created from its template);
+    /// the data disk (state, clones, worktrees) stays.
     pub async fn reset(&self) -> Result<()> {
         if self.running() {
             self.stop().await?;
         }
-        for f in [self.root_disk(), self.known_hosts()] {
-            let _ = std::fs::remove_file(f);
+        let _ = std::fs::remove_file(self.known_hosts());
+        match self.backend() {
+            BackendKind::Firecracker => {
+                let _ = std::fs::remove_file(self.root_disk());
+                println!("root disk removed; `ssf vm start` makes a fresh one from the image");
+                Ok(())
+            }
+            BackendKind::Lima => self.lima_reset(),
         }
-        println!("root disk removed; `ssf vm start` makes a fresh one from the image");
-        Ok(())
     }
 
     /// Remove the VM and everything in it.
@@ -1615,12 +1831,58 @@ impl Vm {
         if self.running() {
             self.stop().await?;
         }
+        if self.backend() == BackendKind::Lima {
+            self.lima_destroy()?;
+        }
         if self.dir.exists() {
             std::fs::remove_dir_all(&self.dir)
                 .with_context(|| format!("removing {}", self.dir.display()))?;
         }
         println!("removed {}", self.dir.display());
         Ok(())
+    }
+}
+
+/// Where `gh release download` finds the guest binary.
+pub const RELEASE_REPO: &str = "mikekelly/simple-software-factory";
+
+/// Where the guest's `ssf` binary comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuestBinary {
+    /// `[vm] guest_binary`.
+    Configured(String),
+    /// This binary: a Linux host of the guest's architecture.
+    Own,
+    /// The release asset for this version and the guest's architecture.
+    Download { asset: String },
+}
+
+/// Which binary a host running `os` on `arch` (the guest's architecture
+/// too) seeds into the guest: what `[vm] guest_binary` names, else its own
+/// when it is Linux, else the release asset `ssf-<version>-linux-<arch>`.
+pub fn guest_binary_source(os: &str, arch: &str, configured: Option<&str>) -> GuestBinary {
+    match configured {
+        Some(p) => GuestBinary::Configured(p.to_string()),
+        None if os == "linux" => GuestBinary::Own,
+        None => GuestBinary::Download {
+            asset: format!("ssf-{}-linux-{arch}", env!("CARGO_PKG_VERSION")),
+        },
+    }
+}
+
+/// Settle `[vm] backend` for a build the way `choose_sizes` settles the
+/// sizes: a value in the file stays; none gets `default` and is written.
+/// Returns the backend, where it came from, and whether the file changed.
+pub fn choose_backend(
+    cfg: &mut VmConfig,
+    default: BackendKind,
+) -> (BackendKind, &'static str, bool) {
+    match cfg.backend {
+        Some(b) => (b, "set in config.toml", false),
+        None => {
+            cfg.backend = Some(default);
+            (default, "for this machine", true)
+        }
     }
 }
 
@@ -1842,8 +2104,9 @@ pub fn parse_file_spec(spec: &str, home: &Path) -> (PathBuf, String) {
     (src, dest)
 }
 
-/// Where the image scripts are: `SSF_VM_DIR`, the package's
-/// `/usr/share/ssf/vm`, or `vm/` next to a source build.
+/// Where the guest scripts are: `SSF_VM_DIR`, the package's
+/// `/usr/share/ssf/vm`, `share/ssf/vm` under the prefix this binary is
+/// installed in (Homebrew), or `vm/` next to a source build.
 pub fn scripts_dir() -> Result<PathBuf> {
     if let Ok(d) = std::env::var("SSF_VM_DIR") {
         return Ok(PathBuf::from(d));
@@ -1852,14 +2115,15 @@ pub fn scripts_dir() -> Result<PathBuf> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(d) = exe.parent()
     {
+        candidates.push(d.join("../share/ssf/vm"));
         candidates.push(d.join("../../vm"));
     }
     candidates.push(PathBuf::from("vm"));
     candidates
         .into_iter()
-        .find(|p| p.join("make-base.sh").exists())
+        .find(|p| p.join("guest/provision.sh").exists())
         .map(|p| p.canonicalize().unwrap_or(p))
-        .context("the VM scripts (vm/make-base.sh) are not installed; set SSF_VM_DIR")
+        .context("the VM scripts (vm/guest/provision.sh) are not installed; set SSF_VM_DIR")
 }
 
 /// Is `pid` alive and running `program`?
@@ -2097,15 +2361,23 @@ impl UrlScanner {
     }
 }
 
-/// Whether a browser can open on this host.
+/// Whether a browser can open on this host (a macOS desktop always has one).
 fn host_has_display() -> bool {
+    if platform::is_macos() {
+        return true;
+    }
     (std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some())
         && which("xdg-open").is_some()
 }
 
 /// Open a URL in the host browser, detached; false when that failed.
 fn open_in_browser(url: &str) -> bool {
-    Command::new("xdg-open")
+    let opener = if platform::is_macos() {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    Command::new(opener)
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2595,6 +2867,68 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backend_is_the_platform_default_unless_configured() {
+        let vm = vm();
+        assert_eq!(vm.backend(), BackendKind::platform_default());
+        if std::env::consts::OS == "linux" {
+            assert_eq!(vm.backend(), BackendKind::Firecracker);
+        }
+        let mut cfg = Config::default();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        assert_eq!(Vm::new(&cfg).backend(), BackendKind::Lima);
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        assert_eq!(Vm::new(&cfg).backend(), BackendKind::Firecracker);
+        // A build writes the platform default once; a hand-set value wins.
+        let mut c = VmConfig::default();
+        assert_eq!(
+            choose_backend(&mut c, BackendKind::Lima),
+            (BackendKind::Lima, "for this machine", true)
+        );
+        assert_eq!(c.backend, Some(BackendKind::Lima));
+        assert_eq!(
+            choose_backend(&mut c, BackendKind::Firecracker),
+            (BackendKind::Lima, "set in config.toml", false)
+        );
+    }
+
+    #[test]
+    fn guest_binary_comes_from_the_config_the_host_or_the_release() {
+        assert_eq!(
+            guest_binary_source("macos", "aarch64", Some("~/dl/ssf")),
+            GuestBinary::Configured("~/dl/ssf".into())
+        );
+        assert_eq!(
+            guest_binary_source("linux", "x86_64", Some("/opt/ssf")),
+            GuestBinary::Configured("/opt/ssf".into())
+        );
+        assert_eq!(
+            guest_binary_source("linux", "x86_64", None),
+            GuestBinary::Own
+        );
+        assert_eq!(
+            guest_binary_source("linux", "aarch64", None),
+            GuestBinary::Own
+        );
+        assert_eq!(
+            guest_binary_source("macos", "aarch64", None),
+            GuestBinary::Download {
+                asset: format!("ssf-{}-linux-aarch64", env!("CARGO_PKG_VERSION"))
+            }
+        );
+        assert_eq!(
+            guest_binary_source("macos", "x86_64", None),
+            GuestBinary::Download {
+                asset: format!("ssf-{}-linux-x86_64", env!("CARGO_PKG_VERSION"))
+            }
+        );
+        // A configured path that is missing is an error naming the key.
+        let mut cfg = Config::default();
+        cfg.vm.guest_binary = Some("/nonexistent/ssf-linux".into());
+        let e = Vm::new(&cfg).guest_binary().unwrap_err().to_string();
+        assert!(e.contains("guest_binary"), "{e}");
     }
 
     #[test]
