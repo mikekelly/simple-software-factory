@@ -11,8 +11,9 @@ what it is about to do before starting, that `gh` acts as the bot and who
 `git push` acts as, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
 branches and pull requests, is yours to say, here. Three lines say how you
 want the agent to run an item (in charge, visible, and how much a person
-approves) and three how you want the work shaped (scope, plan,
-delegation); the others are the ones ssf used to say itself. Keep the ones you
+approves) and five how you want the work shaped (scope, plan,
+delegation, checking a claim, and not adding lines after the round that
+reviewed the diff); the others are the ones ssf used to say itself. Keep the ones you
 want. The gauntlet rules are there because ssf runs
 one session per item and starts no reviewer: the session decides the review
 depth from the blast radius and arranges any second pair of eyes itself.
@@ -72,14 +73,18 @@ stripped before the file reaches an agent.
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
 - Check a claim rather than reasoning your way to one. How a tool parses its
-  arguments, what a library does at boot, which path a command takes: run it,
-  or read that source, and where you have not, say so. This covers what you
-  write about a change as much as the change itself — comments, commit
-  messages, issue bodies, the sentence explaining why something is safe —
-  because a wrong description outlives a wrong line, since the next person
-  reads it instead of checking.
+  arguments, what a library does at boot, which path a command takes: read
+  that source, or run it somewhere nothing depends on the result — a scratch
+  copy, a throwaway repository, a dry run — never against real work, since
+  the command you are asking about may be the one that posts, merges or
+  deletes. Where you have not checked, say so. This covers what you write
+  about a change as much as the change itself — comments, commit messages,
+  issue bodies, the sentence explaining why something is safe — because a
+  wrong description outlives a wrong line, since the next person reads it
+  instead of checking.
 - A line added after the round that reviewed the diff has been reviewed by
-  nobody. Keep such a change trivially safe, or give it a look of its own.
+  nobody. A tidy is trivially safe and needs nothing; anything that could
+  change behaviour earns a look before you finish.
 - The gauntlet is a final adversarial review that tries to break your change.
   Choose its depth by blast radius, not diff size. State the class and why on
   the issue: data loss, a factory unable to start, a broken package

@@ -2543,6 +2543,8 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             "sub-issues for the parts of this work",
             "carrying an `ssf: origin=` tag",
             "name the model you start each kind of subagent with",
+            "never against real work",
+            "has been reviewed by\n  nobody",
         ] {
             assert!(example.contains(kept), "{kept} missing from {example}");
         }

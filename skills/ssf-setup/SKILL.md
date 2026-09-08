@@ -126,7 +126,7 @@ document links to.
     `SSF.md`: use the [boilerplate](../../SSF.example.md) and
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
     for review classes and stopping rules. Keep required verification in
-    every class, including changes that need only self-review, and keep
-    the two lines beside them: check a claim against the thing rather
+    every class, including changes that need only self-review. Keep the two
+    lines the boilerplate carries beside those rules: check a claim against the thing rather
     than reasoning your way to it, and treat a line added after the
     reviewing round as unreviewed.

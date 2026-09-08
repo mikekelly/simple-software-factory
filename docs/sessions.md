@@ -97,8 +97,7 @@ nor justify another round; the second clean deep round may inspect the same
 substantive diff. Required tests, formatting, linting and package builds still
 apply to every class.
 
-Two habits sit beside the classes, because they decide what a round has to
-find rather than how many rounds there are. A claim about how something
+Two habits sit beside the classes, and both are about what a round can see. A claim about how something
 behaves is checked against the thing rather than reasoned about, and that
 covers what a session writes about a change as much as the change: a wrong
 sentence in a comment or a commit message outlives a wrong line, because the
