@@ -3217,6 +3217,14 @@ mod tests {
         let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None, None);
         assert_eq!(mac.len(), 1);
         assert_eq!(mac[0].name, "limactl");
+        // The floor is in what it says to install: this string is the
+        // only place `ssf doctor` and `ssf vm status` carry the version,
+        // and the setup document promises they do.
+        assert!(
+            mac[0].install.contains(&lima::MIN_LIMA.to_string()),
+            "{:?}",
+            mac[0]
+        );
         // ... unless the config asks for qemu, which is the driver that
         // has to be installed. Keyed on the OS alone, a Mac with
         // `[vm] vm_type = "qemu"` passed every check ssf makes and then

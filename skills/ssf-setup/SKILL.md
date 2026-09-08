@@ -78,9 +78,10 @@ document links to.
    `limactl --version` and refuses an older one by name rather than
    letting it fail at the first boot, so a distribution shipping an old
    lima means lima's release tarball or `[vm] limactl` pointing at a
-   newer one. The document says where the alternatives branch off. On Debian, Ubuntu and Fedora the package
-   does not bring herdr; install it as the document's step 1 says before
-   expecting `ssf doctor`'s herdr line to pass.
+   newer one. The document says where the alternatives branch off. On
+   Debian, Ubuntu and Fedora the package does not bring herdr; install it
+   as the document's step 1 says before expecting `ssf doctor`'s herdr
+   line to pass.
 8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or

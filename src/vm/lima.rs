@@ -13,8 +13,9 @@
 //!   template's provision script runs `/mnt/ssf/guest/lima-boot.sh` as
 //!   root at every boot, which runs `provision.sh` when
 //!   `/etc/ssf-image-built` is missing (packages, the `ssf` user, herdr,
-//!   the harness CLIs, the units) and writes the marker on success. The host waits for the marker over `limactl shell`, then
-//!   for ssh as `ssf`, and stops the instance.
+//!   the harness CLIs, the units) and writes the marker on success. The
+//!   host waits for the marker over `limactl shell`, then for ssh as
+//!   `ssf`, and stops the instance.
 //! * `ssf vm start`: `share/` written fresh (the guest scripts, the seed
 //!   tree, `lima.env`, a herdr binary when the host has one for the
 //!   guest), `limactl start`, the marker checked (a reset instance
@@ -119,10 +120,14 @@ const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
 ///   lima says on the older spelling); a 1.x lima parses it as an empty
 ///   filename and dies with `filename "" is invalid`.
 /// * The `_images/` templates themselves arrived in lima 1.1 -- and lima
-///   2.0.0's own release tarball ships that directory empty, so
-///   `template:_images/archlinux` is "not found" there however it is
-///   spelled. 2.0.1 is the first release that both parses the locator and
-///   carries the templates, which is why the floor is not 2.0.0.
+///   2.0.0's release *tarball* ships that directory empty (its Makefile
+///   left `TEMPLATE_IMAGES` out of the artifact), so
+///   `template:_images/archlinux` is "not found" on the binaries lima
+///   published for it, however it is spelled. A 2.0.0 built from source,
+///   which is what Homebrew does, has the templates and would work; the
+///   floor excludes it anyway rather than admitting a version whose
+///   official binaries do not run ssf, and 2.0.1 came four hours later
+///   the same day.
 /// * The share the guest provisions itself from has to be mounted before
 ///   the provision scripts run, which is what leaving `mountType` out of
 ///   the template buys (see [`render_template`]): 9p for qemu is lima's
@@ -208,7 +213,10 @@ pub struct Template<'a> {
 /// reverse-sshfs would not be). That default is what [`MIN_LIMA`] holds
 /// the floor for, rather than the type being written here: naming one
 /// would have to name the right one per `vmType`, and would override
-/// lima's own fallback for a guest whose kernel cannot do 9p.
+/// lima's own fallback for a guest whose kernel cannot do 9p. It leaves
+/// one case the floor cannot reach -- a `mountType` set for every
+/// instance in lima's `~/.lima/_config` -- which is why [`boot_hook`]'s
+/// failure names `mountType` rather than only the mount point.
 pub fn render_template(t: &Template) -> String {
     let mut y = String::from(
         "# written by ssf; edit config.toml [vm] and run `ssf vm build --force` instead\n",
@@ -268,6 +276,16 @@ pub const SHARE_WAIT_SECS: u32 = 120;
 /// [`PROVISION_TIMEOUT`] with nothing to show. So the one failure the
 /// guest cannot delegate is handled here, in the log the host reads.
 ///
+/// What it says when the share never arrives names `mountType`, because
+/// that is what the wait usually ran out over and the mount type is not
+/// ssf's to decide alone: [`MIN_LIMA`] settles lima's *default* (9p for
+/// qemu, virtiofs for vz, both mounted before this hook), but a person
+/// with `mountType: reverse-sshfs` in lima's own `~/.lima/_config` --
+/// `default.yaml`, which the template would beat if it named a type, or
+/// `override.yaml`, which beats the template too -- gets reverse-sshfs,
+/// mounted only once the guest is up. The version floor cannot close
+/// that, so the message the host prints says where to look.
+///
 /// The log is truncated in the first line of the hook, before that wait,
 /// and not in `lima-boot.sh`: the host's rule is that a log with none of
 /// the guest scripts running means *this* boot's attempt died, and while
@@ -294,7 +312,7 @@ for ((i = 0; i < {SHARE_WAIT_SECS}; i++)); do
     sleep 1
 done
 if [ ! -f "$boot" ]; then
-    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s; is the {GUEST_MOUNT} mount in place?\n' "$boot" | tee -a "$log"
+    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s. lima mounts the share before this runs with mountType 9p or virtiofs, and after the guest is up with reverse-sshfs, which is too late for it: check mountType on the host, in ~/.lima/_config/default.yaml and override.yaml.\n' "$boot" | tee -a "$log"
     exit 1
 fi
 exec bash "$boot"
@@ -915,7 +933,7 @@ impl Vm {
         let version = match self.limactl_output_within(&["--version"], PROBE_LIMIT) {
             Ok(out) => out,
             Err(e) => bail!(
-                "limactl does not run ({}): {e:#}; install lima (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
+                "limactl does not run ({}): {e:#}; install lima {MIN_LIMA} or newer (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
                 self.limactl_hint()
             ),
         };
@@ -1826,7 +1844,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lima_under_the_floor_is_refused_before_anything_is_built() {
+    fn a_lima_under_the_floor_is_refused_with_its_version_named() {
         // The version limactl was asked for anyway is read: an older
         // lima used to get all the way to a first boot and fail there,
         // over a base image it could not resolve or a share that was
@@ -1858,13 +1876,14 @@ mod tests {
         // how lima 2.0 spells one, and 2.0.0's release tarball ships
         // `templates/_images/` empty. Held here so the constant and the
         // reason cannot drift apart.
-        assert_eq!(MIN_LIMA, LimaVersion(2, 0, 1));
+        // The versions the floor was settled against by running them:
+        // 1.2.1 and 2.0.0 fail `limactl template validate` on the
+        // template ssf renders, 2.0.1 and 2.2.0 pass it.
+        assert_eq!(MIN_LIMA.to_string(), "2.0.1");
         assert!(LimaVersion(1, 2, 1) < MIN_LIMA);
         assert!(LimaVersion(2, 0, 0) < MIN_LIMA);
-        assert!(MIN_LIMA <= LimaVersion(2, 0, 1));
-        assert!(LimaVersion(2, 2, 0) > MIN_LIMA);
-        assert!(LimaVersion(10, 0, 0) > MIN_LIMA);
-        assert_eq!(MIN_LIMA.to_string(), "2.0.1");
+        assert!(LimaVersion(2, 0, 1) >= MIN_LIMA);
+        assert!(LimaVersion(2, 2, 0) >= MIN_LIMA);
         // Both bases are named in the opaque form the floor is chosen
         // for -- `template://...`, which every 1.x takes, would mean a
         // different floor.
@@ -1896,7 +1915,14 @@ mod tests {
         assert!(y.contains("base:\n  - template:_images/archlinux\n"), "{y}");
         assert!(!y.contains("images:"), "{y}");
         assert!(!y.contains("vmType"), "{y}");
-        assert!(!y.contains("mountType"), "{y}");
+        // No `mountType` field: the type is lima's to pick (see
+        // `render_template`). The word itself does occur, in the boot
+        // hook's failure message, so this looks for the key rather than
+        // the string.
+        assert!(
+            !y.lines().any(|l| l.trim_start().starts_with("mountType")),
+            "{y}"
+        );
         assert!(y.contains("arch: x86_64\n"), "{y}");
         assert!(y.contains("cpus: 3\n"), "{y}");
         assert!(y.contains("memory: \"8192MiB\"\n"), "{y}");
@@ -2072,6 +2098,11 @@ mod tests {
             "{hook}"
         );
         assert!(hook.contains(&format!("i < {SHARE_WAIT_SECS}")), "{hook}");
+        // And what it says when the wait runs out names the one thing the
+        // version floor cannot settle: a `mountType` in lima's own
+        // `_config` that mounts the share only once the guest is up.
+        assert!(hook.contains("mountType"), "{hook}");
+        assert!(hook.contains("~/.lima/_config"), "{hook}");
         // The log is emptied before that wait, not after it and not in
         // lima-boot.sh: the host reads "a log and none of the guest
         // scripts running" as this attempt having died, and while the
