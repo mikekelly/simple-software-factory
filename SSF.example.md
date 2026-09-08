@@ -11,11 +11,10 @@ what it is about to do before starting, that `gh` acts as the bot and who
 `git push` acts as, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
 branches and pull requests, is yours to say, here. Three lines say how you
 want the agent to run an item (in charge, visible, and how much a person
-approves) and four how you want the work shaped (scope, plan,
-delegation and checking a claim); the others are the ones ssf used to
-say itself. Keep the ones you
-want. The gauntlet rules are there because ssf runs
-one session per item and starts no reviewer: the session decides the review
+approves) and four how you want the work shaped (scope, plan, delegation
+and checking a claim); the others are the ones ssf used to say itself.
+Keep the ones you want. The gauntlet rules are there because ssf runs one
+session per item and starts no reviewer: the session decides the review
 depth from the blast radius and arranges any second pair of eyes itself.
 The delegation line names the model each kind of subagent runs on, which ssf cannot set for you: it sets
 this session's model and nothing below it. Comments like this one are
@@ -73,7 +72,8 @@ stripped before the file reaches an agent.
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
 - Check a claim rather than reasoning your way to one: read the source, or
-  try it where trying it is safe. Where you have not checked, say so. This
+  try it where trying it is safe — a command that posts, merges, deletes or
+  starts an agent is not that. Where you have not checked, say so. This
   covers what you write about a change as much as the change itself —
   comments, commit messages, issue bodies, the sentence explaining why
   something is safe — because a wrong description outlives a wrong line,

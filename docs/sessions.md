@@ -101,7 +101,7 @@ One habit sits beside the classes. A claim about how something behaves is
 checked against the thing rather than reasoned about, and that covers what a
 session writes about a change as much as the change: a wrong sentence in a
 comment or a commit message outlives a wrong line, because the next reader
-takes it instead of checking.
+takes it instead of checking. Where a session has not checked, it says so.
 
 Give each reviewer the diff, issue and claimed outcome, and ask it to break
 correctness, requirements, tests, docs and conventions. The author decides
