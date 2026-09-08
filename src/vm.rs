@@ -309,6 +309,12 @@ pub struct VmStatus {
     /// holding `ssf-old` is the other half of the same silence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strays: Vec<Stray>,
+    /// `[vm] dir` or lima's home is there and could not be read, so what
+    /// else is in it is unknown. The three commands that name strays
+    /// have to agree about the same machine, and "I could not look" is
+    /// part of what there is to agree on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub base_unread: bool,
 }
 
 /// Where the data disk is mounted in the guest.
@@ -352,8 +358,8 @@ pub struct Survey {
     /// that reached that decision would be a VM deleted because someone
     /// edited a name.
     pub strays: Vec<Stray>,
-    /// `[vm] dir` is there but could not be read, so what is in it is
-    /// unknown. Not the same as empty: the report calls that directory
+    /// A directory that is there and could not be read, so what is in
+    /// it is unknown. Not the same as empty: the report calls that directory
     /// "safe to remove", and safety nobody could verify must not be
     /// asserted.
     pub base_unread: bool,
@@ -444,6 +450,21 @@ impl Stray {
     /// What is at stake in it, when anything is.
     pub fn holds_work(&self) -> bool {
         matches!(self.kind, StrayKind::LimaDisk | StrayKind::Directory)
+    }
+
+    /// How `ssf doctor` and `ssf vm status` say it. One sentence for
+    /// both, for the reason `kept()` and `no_vm_line` are one each: the
+    /// wording here has been fixed in one place and missed in another
+    /// twice, and neither command's own `println!` is reachable from a
+    /// test.
+    pub fn describe(&self) -> String {
+        format!(
+            "{} {}, which this config does not name; ssf leaves it alone -- `{}` removes it{}",
+            self.what(),
+            self.name,
+            self.remove,
+            self.caveat()
+        )
     }
 
     /// The half-clause that keeps a person from pasting the commands in
@@ -1288,14 +1309,27 @@ impl Vm {
         // means a different directory from every other working
         // directory. `expand_tilde` only expands a leading `~/`.
         let base = std::path::absolute(&self.base).unwrap_or_else(|_| self.base.clone());
-        // A `[vm] name` that does not name a child of `[vm] dir` --
-        // empty, `.`, `..`, an absolute path -- makes what this would
-        // report either children of the VM's own directory or nothing to
-        // do with it, and the report would call directories the destroy
-        // step is about to remove "untouched". Nothing refuses such a
-        // name yet (#169); this refuses to build a report on one. Asking
-        // for the parent covers every spelling at once.
-        if self.dir.parent() != Some(self.base.as_path()) {
+        // What `ssf vm destroy` removes has to be *inside* `[vm] dir`
+        // for the siblings this reports to be safe from it. A `[vm]
+        // name` of `""` or `.` makes it `[vm] dir` itself; `..` makes it
+        // the parent, and `remove_dir_all` there takes `[vm] dir` and
+        // every sibling with it -- including the ones this would have
+        // just called "untouched". An absolute name leaves `[vm] dir`
+        // altogether. Nothing refuses such a name yet (#169); this
+        // refuses to build a report on one.
+        //
+        // `Path::parent` is not the test: it treats a trailing `..` as a
+        // component, so `<base>/..` has parent `<base>` and would pass.
+        // A `..` anywhere is the thing to refuse, and being a strict
+        // descendant is the thing to require -- which a nested name like
+        // `a/b` satisfies, so its siblings are still reported.
+        let inside = self.dir.starts_with(&self.base)
+            && self.dir != self.base
+            && !self
+                .dir
+                .components()
+                .any(|c| c == std::path::Component::ParentDir);
+        if !inside {
             return (Vec::new(), false);
         }
         let entries = match std::fs::read_dir(&base) {
@@ -1369,7 +1403,10 @@ impl Vm {
                 // is a `[vm] dir` nobody could read.
                 let (strays, base_unread) = self.fc_dir_contents();
                 survey.strays.splice(0..0, strays);
-                survey.base_unread = base_unread;
+                // Either directory being unreadable is enough to make
+                // what is here unknown -- assigning would have thrown
+                // away lima's own answer about its home.
+                survey.base_unread |= base_unread;
                 lima::sort_strays(&mut survey.strays);
                 survey
             }
@@ -2338,7 +2375,11 @@ impl Vm {
                 Err(_) => strays.extend(self.disk_strays_on_disk()),
             }
         }
-        strays.extend(self.fc_strays());
+        let (dir_strays, mut base_unread) = self.fc_dir_contents();
+        strays.extend(dir_strays);
+        if backend == BackendKind::Lima {
+            base_unread |= self.strays_on_disk_read().1;
+        }
         lima::sort_strays(&mut strays);
         let running = match backend {
             BackendKind::Firecracker => Some(self.running()),
@@ -2393,6 +2434,7 @@ impl Vm {
             // here is what let `instance: ssf-new missing (ssf vm
             // build)` stand over a machine still holding ssf-old.
             strays,
+            base_unread,
         }
     }
 
@@ -3319,11 +3361,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["old"]
         );
-        assert!(
-            st.strays[0].remove.starts_with("rm -rf /"),
-            "the remedy is an absolute path: {}",
-            st.strays[0].remove
-        );
+        // (That the remedy is absolute even from a relative `[vm] dir`
+        // is pinned by
+        // `a_relative_vm_dir_still_excludes_this_vm_and_prints_an_absolute_remedy`;
+        // asserting it here, over an already-absolute `temp_dir()`,
+        // would pin nothing.)
     }
 
     #[test]
@@ -3443,6 +3485,54 @@ mod tests {
     fn set_mode(path: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_stray_never_makes_a_vm_out_of_nothing() {
+        // The load-bearing invariant: `present` gates the destroy step,
+        // so a stray reaching it would be a VM deleted because someone
+        // edited a name. Pinned on both backends -- lima had a test,
+        // Firecracker had the claim.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-present-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let survey = Vm::new(&cfg).survey();
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(survey.strays.len(), 1);
+        assert_eq!(survey.present, Some(false), "a stray is not this VM");
+        assert_eq!(survey.data, Some(false), "nor its data disk");
+        assert!(!survey.startable);
+    }
+
+    #[test]
+    fn the_sentence_the_printing_commands_share() {
+        // `ssf doctor` and `ssf vm status` only `println!`, which no
+        // test reaches, so the words live here where one can.
+        let d = Stray::lima_disk("ssf-old".into()).describe();
+        assert!(
+            d.starts_with("lima also holds the data disk ssf-old,"),
+            "{d}"
+        );
+        assert!(d.contains("this config does not name"), "{d}");
+        assert!(d.contains("ssf leaves it alone"), "{d}");
+        assert!(d.contains("`limactl disk delete ssf-old`"), "{d}");
+        assert!(d.contains("after its instance"), "{d}");
+        let i = Stray::lima_instance("ssf-old".into()).describe();
+        assert!(i.contains("`limactl delete ssf-old`"), "{i}");
+        assert!(!i.contains("after its instance"), "{i}");
+        let p = Stray::directory(Path::new("/v/old")).describe();
+        assert!(p.contains("`rm -rf /v/old`"), "{p}");
     }
 
     #[test]

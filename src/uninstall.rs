@@ -247,7 +247,11 @@ impl Facts {
                     &survey,
                 ),
             },
-            vm_base: vm.base.clone(),
+            // Absolute, for the same reason the `rm -rf` remedy is:
+            // the report names this directory beside a command that
+            // gives its full path, and a relative `[vm] dir` would print
+            // two different-looking paths for one place.
+            vm_base: std::path::absolute(&vm.base).unwrap_or_else(|_| vm.base.clone()),
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
             projects,
@@ -628,6 +632,17 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
     keep
 }
 
+/// The epilogue after the last step, in full. A function rather than a
+/// loop inside `run`, because `run` is not reachable from a test, and
+/// this is the half of `kept` that has drifted from the other twice.
+pub fn left_in_place(facts: &Facts, data: bool) -> String {
+    let mut out = String::from("left in place:\n");
+    for line in kept(facts, data) {
+        out.push_str(&format!("  {line}\n"));
+    }
+    out
+}
+
 /// "There is nothing to destroy", said so that it stays true. A bare
 /// "no VM" over an instance lima is holding, or a VM directory `[vm]
 /// dir` still has, is the sentence this whole change exists to stop --
@@ -944,10 +959,7 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         }
     }
 
-    println!("left in place:");
-    for line in kept(&facts, data) {
-        println!("  {line}");
-    }
+    print!("{}", left_in_place(&facts, data));
     println!("the one step that is yours: {}", package_removal_command());
     if failed > 0 {
         bail!(
@@ -1766,17 +1778,116 @@ mod tests {
         // the report printed before the question. That sentence has
         // drifted between the two twice, which is why they share a list
         // rather than a fix.
+        let printed = left_in_place(&orphan, false);
         for line in kept(&orphan, false) {
             assert!(
                 text.contains(&line),
                 "epilogue line missing from report: {line}"
             );
+            assert!(
+                printed.contains(&line),
+                "the epilogue does not print what kept() gives it: {line}"
+            );
         }
+        assert!(printed.starts_with("left in place:\n"), "{printed}");
         // With nothing orphaned the old, true sentence stands.
         assert!(
             clean_text.contains("downloads; safe to remove)"),
             "{clean_text}"
         );
+    }
+
+    #[test]
+    fn a_directory_nobody_could_read_is_never_called_safe_or_empty() {
+        // The whole point of knowing it, at the layer a person reads.
+        // Pinned here because the `Survey` flag being right buys nothing
+        // if `Facts::gather` drops it or the two sentences ignore it --
+        // all three of those reverted green before this test existed.
+        let unread = Facts {
+            vm_name: "new".into(),
+            vm_base: PathBuf::from("/v"),
+            vm_base_exists: true,
+            vm_base_unread: true,
+            vm_present: Some(false),
+            vm_data: Some(false),
+            vm_strays: Vec::new(),
+            ..facts()
+        };
+        let lines = kept(&unread, false);
+        assert!(
+            lines.iter().any(|l| l.contains("could not read it")),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("safe to remove")),
+            "safety nobody verified: {lines:?}"
+        );
+        let line = no_vm_line(&unread);
+        assert!(line.contains("could not be read"), "{line}");
+        assert_ne!(line, "no VM");
+        // ... and that `Facts::gather` actually carries it, which
+        // building `Facts` by hand does not pin: dropping it there left
+        // every assertion above green.
+        #[cfg(unix)]
+        {
+            let _sandbox = crate::config::test_support::sandbox();
+            let base = std::env::temp_dir().join(format!(
+                "ssf-gather-unread-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&base).unwrap();
+            let mut cfg = Config::default();
+            cfg.vm.name = "new".into();
+            cfg.vm.backend = Some(vm::BackendKind::Firecracker);
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            let vm = vm::Vm::new(&cfg);
+            let readable = Facts::gather(&cfg, &vm).vm_base_unread;
+            set_mode(&base, 0o000);
+            let unread = Facts::gather(&cfg, &vm).vm_base_unread;
+            set_mode(&base, 0o755);
+            std::fs::remove_dir_all(&base).unwrap();
+            assert!(!readable);
+            // Running as root reads it anyway.
+            if !unread {
+                assert!(
+                    nix_is_root(),
+                    "an unreadable [vm] dir must reach the report"
+                );
+            }
+        }
+
+        // And with the directory readable and empty, the plain sentences
+        // come back.
+        let known = Facts {
+            vm_base_unread: false,
+            ..unread
+        };
+        assert_eq!(no_vm_line(&known), "no VM");
+        assert!(
+            kept(&known, false)
+                .iter()
+                .any(|l| l.contains("safe to remove)")),
+            "{:?}",
+            kept(&known, false)
+        );
+    }
+
+    #[cfg(unix)]
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// A root that reads what it was told it could not.
+    #[cfg(unix)]
+    fn nix_is_root() -> bool {
+        std::fs::read_to_string("/proc/self/status")
+            .map(|s| s.lines().any(|l| l.starts_with("Uid:\t0")))
+            .unwrap_or(false)
     }
 
     #[test]
