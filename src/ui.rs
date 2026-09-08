@@ -10,7 +10,6 @@ use std::process::Command;
 use tracing::{info, warn};
 
 pub const PLUGIN_ID: &str = "ssf.factory";
-pub const SERVICE: &str = "ssf.service";
 const MENU_BEGIN: &str =
     "  // ssf:begin (managed by `ssf ui install`; edits inside are overwritten)";
 const MENU_END: &str = "  // ssf:end";
