@@ -80,11 +80,12 @@ stripped before the file reaches an agent.
   careful self-review, no fresh agent. For mixed changes use the highest class.
 - For each required round, give a fresh agent the diff, issue and claimed
   outcome; ask it to break correctness, requirements, tests, docs and project
-  conventions. Weigh the feedback: discuss doubtful findings with that
-  reviewer, and record why you decline substantive suggestions. Fix confirmed
-  must-fixes before continuing. A must-fix is a substantive finding that
-  requires changing the diff; wording, comment and naming tidies
-  do not count. Stop on a clean round (two consecutive for deep review).
+  conventions. The author decides: accept feedback, decline it with a sentence
+  explaining why, or debate it with that reviewer. Reviewers propose; they do
+  not instruct. A must-fix is a confirmed substantive issue requiring a diff
+  change; fix these before continuing. Wording, comment and naming tidies do
+  not count. A round with only declined suggestions is clean. Stop on a clean
+  round (two consecutive for deep review).
   Never run a round just to review tidies: take or leave them and finish;
   deep review's second clean round may review the same substantive diff.
   Use an in-harness subagent by default; for deep review prefer a strong
