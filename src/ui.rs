@@ -52,7 +52,8 @@ fn omarchy_available() -> bool {
     which("omarchy-plugin-enable").is_some()
 }
 
-fn which(bin: &str) -> Option<PathBuf> {
+/// The first `bin` on PATH.
+pub fn which(bin: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|p| {
         std::env::split_paths(&p)
             .map(|d| d.join(bin))
@@ -144,6 +145,16 @@ pub fn widget_enabled() -> Result<bool> {
         return Ok(false);
     };
     Ok(raw.contains(&format!("\"{PLUGIN_ID}\"")))
+}
+
+/// Is any of the desktop integration in place: the widget files (a
+/// directory, or the symlink older installs made) or the menu block?
+pub fn desktop_present() -> bool {
+    let widget = std::fs::symlink_metadata(plugin_target_dir()).is_ok();
+    let menu = std::fs::read_to_string(menu_extension_path())
+        .map(|t| t.contains(MENU_BEGIN))
+        .unwrap_or(false);
+    widget || menu
 }
 
 pub fn uninstall_plugin() -> Result<()> {

@@ -26,6 +26,7 @@ mod shim;
 mod state;
 mod status;
 mod ui;
+mod uninstall;
 mod vm;
 
 use anyhow::{Context, Result, bail};
@@ -238,6 +239,30 @@ enum Command {
     Ui {
         #[command(subcommand)]
         command: UiCommand,
+    },
+    /// Take this machine back to just the package: purge closed workspaces,
+    /// stop and disable the service, remove the bar widget and menu entries,
+    /// sign the bot out (revoking its keys on GitHub), destroy the microVM.
+    /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`
+    /// is yours), the projects directory (clones and worktrees), and, without
+    /// `--data`, the config and state directories.
+    Uninstall {
+        /// Skip the confirmation (scripted use).
+        #[arg(long, short = 'y')]
+        yes: bool,
+        /// Go ahead even when a workspace holds uncommitted or unpushed work
+        /// (kept on the host; destroyed with the VM's disks in VM mode), or
+        /// the VM is stopped so its workspaces cannot be checked.
+        #[arg(long)]
+        force: bool,
+        /// Also remove ~/.config/ssf (config, the bot's key) and
+        /// ~/.local/state/ssf (state, and the disabled-service marker).
+        #[arg(long)]
+        data: bool,
+        /// Only print the report (what would be stopped, removed and revoked),
+        /// as JSON. Used by the host to ask the guest in VM mode.
+        #[arg(long, hide = true)]
+        report: bool,
     },
     /// Run the whole factory (daemon, herdr, sessions) inside a Firecracker
     /// microVM instead of on this machine: build the image, start, stop
@@ -746,6 +771,20 @@ async fn main() -> Result<()> {
         Command::Doctor => doctor().await,
         Command::Vm { command } => vm_cmd(command).await,
         Command::Ui { command } => ui_cmd(command),
+        Command::Uninstall {
+            yes,
+            force,
+            data,
+            report,
+        } => {
+            if report {
+                uninstall::print_report().await
+            } else if vm::in_guest() {
+                bail!("`ssf uninstall` runs on the host, which owns the VM")
+            } else {
+                uninstall::run(yes, force, data).await
+            }
+        }
         Command::Launch {
             repo,
             issue,
@@ -1287,53 +1326,58 @@ async fn auth(command: AuthCommand) -> Result<()> {
             }
             Ok(())
         }
-        AuthCommand::Logout { keep_keys } => {
-            let mut cfg = Config::load()?;
-            if !keep_keys {
-                if let Ok(token) = cfg.github_token() {
-                    if let Ok(gh) = github::GitHub::new(&cfg.github.api_url, &token) {
-                        for (kind, id) in [
-                            ("keys", cfg.github.ssh_key_id),
-                            ("ssh_signing_keys", cfg.github.signing_key_id),
-                        ] {
-                            if let Some(id) = id {
-                                match gh.delete_key(kind, id).await {
-                                    Ok(()) => println!("Revoked {kind} entry {id} on GitHub"),
-                                    Err(e) => eprintln!(
-                                        "warning: could not revoke {kind} entry {id}: {e:#}"
-                                    ),
-                                }
-                            }
+        AuthCommand::Logout { keep_keys } => auth_logout(keep_keys).await,
+    }
+}
+
+/// `ssf auth logout`: revoke the bot's keys on GitHub and remove them here
+/// (unless `keep_keys`), remove its token, and forget it as the bot. Also
+/// the sign-out step of `ssf uninstall`.
+pub async fn auth_logout(keep_keys: bool) -> Result<()> {
+    let mut cfg = Config::load()?;
+    if !keep_keys {
+        if let Ok(token) = cfg.github_token()
+            && let Ok(gh) = github::GitHub::new(&cfg.github.api_url, &token)
+        {
+            for (kind, id) in [
+                ("keys", cfg.github.ssh_key_id),
+                ("ssh_signing_keys", cfg.github.signing_key_id),
+            ] {
+                if let Some(id) = id {
+                    match gh.delete_key(kind, id).await {
+                        Ok(()) => println!("Revoked {kind} entry {id} on GitHub"),
+                        Err(e) => {
+                            eprintln!("warning: could not revoke {kind} entry {id}: {e:#}")
                         }
                     }
                 }
-                if let Some(p) = cfg.github.ssh_key_path.take() {
-                    keys::remove(std::path::Path::new(&p));
-                    println!("Removed {p}");
-                }
-                cfg.github.ssh_key_id = None;
-                cfg.github.signing_key_id = None;
             }
-            let path = config::token_path();
-            match std::fs::remove_file(&path) {
-                Ok(()) => println!("Removed {}", path.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
-            }
-            if let Some(l) = &cfg.github.login {
-                println!(
-                    "Forgot @{l} as the bot. Its gh sign-in is untouched; remove it with `gh auth logout --user {l}` if you want."
-                );
-            }
-            cfg.github.login = None;
-            cfg.github.email = None;
-            cfg.save()?;
-            let mut st = state::State::load().unwrap_or_default();
-            st.bot_login = None;
-            let _ = st.save();
-            Ok(())
         }
+        if let Some(p) = cfg.github.ssh_key_path.take() {
+            keys::remove(std::path::Path::new(&p));
+            println!("Removed {p}");
+        }
+        cfg.github.ssh_key_id = None;
+        cfg.github.signing_key_id = None;
     }
+    let path = config::token_path();
+    match std::fs::remove_file(&path) {
+        Ok(()) => println!("Removed {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+    }
+    if let Some(l) = &cfg.github.login {
+        println!(
+            "Forgot @{l} as the bot. Its gh sign-in is untouched; remove it with `gh auth logout --user {l}` if you want."
+        );
+    }
+    cfg.github.login = None;
+    cfg.github.email = None;
+    cfg.save()?;
+    let mut st = state::State::load().unwrap_or_default();
+    st.bot_login = None;
+    let _ = st.save();
+    Ok(())
 }
 
 fn read_stdin_token(interactive: bool) -> Result<String> {

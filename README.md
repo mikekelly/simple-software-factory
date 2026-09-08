@@ -296,6 +296,7 @@ ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspa
 ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
+ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then `sudo pacman -R ssf` is yours
 journalctl --user -fu ssf.service
 ```
 
@@ -328,8 +329,9 @@ shuts the guest down cleanly.
 
 **Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
 the package upgrade restarts the service (and, in the VM, the guest, whose
-sessions are resumed), and uninstalling is a short ordered list ending in
-`sudo pacman -R ssf`.
+sessions are resumed); `ssf uninstall` takes the machine back to just the
+package (it reports, asks once, and keeps your clones), then `sudo pacman
+-R ssf` is yours.
 
 ## The rest of the story
 
