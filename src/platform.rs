@@ -246,15 +246,13 @@ pub fn service_restart() -> Result<()> {
 }
 
 /// Start, stop or restart the service: `systemctl --user <action>` on
-/// Linux; on macOS `launchctl kickstart -k` (start and restart) and
-/// `launchctl kill SIGTERM` (stop) on the Homebrew label.
+/// Linux; `brew services <action> ssf` on macOS, which loads or unloads
+/// the launchd agent (a `launchctl kill` alone would not hold: the agent
+/// is `keep_alive`, so launchd would start `ssf run` again).
 fn service_action(action: &str) -> Result<()> {
     let mut cmd = if is_macos() {
-        let mut c = Command::new("launchctl");
-        match action {
-            "stop" => c.args(["kill", "SIGTERM", &launchd_target()]),
-            _ => c.args(["kickstart", "-k", &launchd_target()]),
-        };
+        let mut c = Command::new("brew");
+        c.args(["services", action, BREW_FORMULA]);
         c
     } else {
         let mut c = Command::new("systemctl");

@@ -147,6 +147,11 @@ pub struct Instance {
     pub dir: String,
     #[serde(default, rename = "sshLocalPort")]
     pub ssh_local_port: u16,
+    #[serde(default)]
+    pub cpus: u32,
+    /// Bytes.
+    #[serde(default)]
+    pub memory: u64,
 }
 
 impl Instance {
@@ -541,6 +546,7 @@ impl Vm {
         }
         self.ensure_key()?;
         self.write_share(host)?;
+        self.apply_sizes()?;
         self.limactl_run(&["start", &name])?;
         // The template pins the port; an instance made from an older
         // template (or edited by hand) may listen elsewhere.
@@ -565,6 +571,37 @@ impl Vm {
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
         self.report_up(daemon.as_deref());
         Ok(())
+    }
+
+    /// `vcpus` and `mem_mib` from `config.toml` reach a stopped instance
+    /// through `limactl edit`, so a change and `ssf vm restart` apply them
+    /// as they do under Firecracker (the template itself is only rendered
+    /// by `ssf vm build`).
+    fn apply_sizes(&self) -> Result<()> {
+        let Some(inst) = self.lima_instance()? else {
+            return Ok(());
+        };
+        if inst.is_running() {
+            return Ok(());
+        }
+        let sizes = self.sizes();
+        let want_mem = u64::from(sizes.mem_mib) << 20;
+        let mut args = vec!["edit".to_string(), inst.name.clone()];
+        if inst.cpus != 0 && inst.cpus != sizes.vcpus {
+            args.push(format!("--cpus={}", sizes.vcpus));
+        }
+        if inst.memory != 0 && inst.memory != want_mem {
+            args.push(format!("--memory={}", sizes.mem_mib as f64 / 1024.0));
+        }
+        if args.len() == 2 {
+            return Ok(());
+        }
+        println!(
+            "applying [vm] vcpus = {} and mem_mib = {} to lima instance {}",
+            sizes.vcpus, sizes.mem_mib, inst.name
+        );
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        self.limactl_run(&args)
     }
 
     /// `limactl stop`, and `-f` when that fails (lima gives the guest a

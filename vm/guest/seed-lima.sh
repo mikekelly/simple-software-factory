@@ -21,3 +21,9 @@ resize2fs "$dev" >/dev/null 2>&1 || echo "seed: resize2fs $dev failed; the data 
 mkdir -p /var/lib/ssf
 findmnt -n /var/lib/ssf >/dev/null || mount --bind "$data" /var/lib/ssf
 seed_from "$share/seed"
+# A herdr the host supplies ([vm] herdr, or its own on a Linux host) is
+# refreshed here like the ssf binary, before herdr-server starts; a guest
+# that downloaded its herdr at provisioning keeps it.
+if [ -f "$share/herdr" ] && ! cmp -s "$share/herdr" /usr/local/bin/herdr; then
+    install -m755 "$share/herdr" /usr/local/bin/herdr
+fi
