@@ -569,14 +569,29 @@ impl GitHub {
     }
 
     pub async fn issue(&self, owner: &str, repo: &str, number: u64) -> Result<Issue> {
+        self.issue_opt(owner, repo, number)
+            .await?
+            .with_context(|| format!("GitHub 404 Not Found while fetching {owner}/{repo}#{number}"))
+    }
+
+    /// The item, or `None` when GitHub 404s for it: deleted, or not
+    /// readable with this token any more. An item transferred to another
+    /// repository answers a redirect, which is followed, so it comes back
+    /// as the item at its new home rather than as `None`. A caller asking
+    /// whether an item is still there (`prune_ignored`) reads a 404 as an
+    /// answer rather than as a request to retry.
+    pub async fn issue_opt(&self, owner: &str, repo: &str, number: u64) -> Result<Option<Issue>> {
         let url = self.url(&format!("repos/{owner}/{repo}/issues/{number}"));
         let resp = self
             .get(&url)
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
         let resp = Self::check(resp, &format!("fetching {owner}/{repo}#{number}")).await?;
-        resp.json().await.context("decoding issue")
+        resp.json().await.context("decoding issue").map(Some)
     }
 
     /// Whether `path` exists in the repository, on `branch` or the default
