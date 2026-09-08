@@ -1,8 +1,10 @@
 [Unit]
 Description=Mount the data disk and take the host's ssf binary, config and keys from the seed (disk or share)
+# Not before sshd: the host retries ssh until authorized_keys lands, and
+# under lima an ordering on sshd would loop through multi-user.target.
 DefaultDependencies=no
 After=local-fs.target
-Before=sshd.service ssh.service herdr-server.service ssf.service
+Before=herdr-server.service ssf.service
 
 [Service]
 Type=oneshot
