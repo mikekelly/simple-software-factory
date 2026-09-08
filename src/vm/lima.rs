@@ -1043,6 +1043,7 @@ impl Vm {
             // `[vm] dir` is the caller's question; lima's own home is
             // this one's.
             unread: home_unread,
+            stranded_disk: false,
         }
     }
 
@@ -1122,16 +1123,15 @@ impl Vm {
             data: disk,
             strays,
             unread,
+            stranded_disk: false,
         }
     }
 
-    /// Every `ssf-*` instance and disk in lima's home that this
-    /// configuration does not name, read off the filesystem for when
-    /// `limactl` will not list them. Reported, never removed -- so
-    /// naming a directory lima might disown costs a line, not a VM.
     /// Every `ssf-*` instance and disk in lima's own home that this
-    /// configuration does not name, and whether either of lima's
-    /// directories could not be read.
+    /// configuration does not name, read off the filesystem for when
+    /// `limactl` will not list them, and which of lima's directories
+    /// could not be read. Reported, never removed -- so naming a
+    /// directory lima might disown costs a line, not a VM.
     pub(super) fn strays_on_disk_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         let (mut strays, mut unread) = self.instance_strays_read();
         let (disks, disk_unread) = self.disk_strays_read();
@@ -1175,13 +1175,6 @@ impl Vm {
 
     /// The `ssf-*` directories in one of lima's directories, other than
     /// `ours`, and whether the directory could be read at all.
-    ///
-    /// The same rule as `[vm] dir`: a `read_dir` that failed is "nobody
-    /// looked", not "nothing there". A lima home left root-owned by an
-    /// earlier `sudo` is one of the reasons `limactl` fails in the first
-    /// place, so the two arrive together -- and reading it as empty
-    /// printed `no VM` over `safe to remove` about a home holding an
-    /// instance and a disk of clones.
     /// The name in lima's home this configuration calls its own -- and
     /// nothing, under Firecracker. A machine that switched `[vm]
     /// backend` from lima and kept its `[vm] name` has an `ssf-<name>`
@@ -1198,6 +1191,15 @@ impl Vm {
         (self.backend() == crate::config::BackendKind::Lima).then(|| self.lima_disk_name())
     }
 
+    /// The `ssf-*` directories in one of lima's directories, other than
+    /// `ours`, and whether the directory could be read at all.
+    ///
+    /// The same rule as `[vm] dir`: a `read_dir` that failed is "nobody
+    /// looked", not "nothing there". A lima home left root-owned by an
+    /// earlier `sudo` is one of the reasons `limactl` fails in the first
+    /// place, so the two arrive together -- and reading it as empty
+    /// printed `no VM` over `safe to remove` about a home holding an
+    /// instance and a disk of clones.
     fn ssf_dirs_in(dir: Option<&Path>, ours: Option<String>) -> (Vec<String>, Vec<PathBuf>) {
         let Some(dir) = dir else {
             return (Vec::new(), Vec::new());
@@ -2786,6 +2788,7 @@ mod tests {
                 data: Some(true),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
         let t = Fake::new("Running");
@@ -2809,6 +2812,7 @@ mod tests {
                 data: Some(true),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
     }
@@ -2949,14 +2953,16 @@ mod tests {
             t.vm.status().await.unread.is_empty(),
             "readable while readable"
         );
+        // Root reads it regardless, so the test skips rather than
+        // asserting inside a condition that would make it vacuous.
         set_mode(&home, 0o000);
         let hidden = std::fs::read_dir(&home).is_err();
         let unread = t.vm.status().await.unread;
         set_mode(&home, 0o755);
-        // Root reads it regardless; then there is nothing to assert.
-        if hidden {
-            assert_eq!(unread, std::slice::from_ref(&home));
+        if !hidden {
+            return;
         }
+        assert_eq!(unread, std::slice::from_ref(&home));
     }
 
     #[tokio::test]
@@ -3206,7 +3212,8 @@ mod tests {
         let dir_stray = t.vm.base.join("zzz-dir");
         std::fs::create_dir_all(&dir_stray).unwrap();
         std::fs::write(dir_stray.join("data.ext4"), b"disk").unwrap();
-        let (strays, _) = t.vm.strays_on_filesystem();
+        let (strays, unread) = t.vm.strays_on_filesystem();
+        assert!(unread.is_empty(), "everything here is readable");
         let names: Vec<_> = strays.iter().map(|s| s.name.as_str()).collect();
         // Sorted, not in the order the two directories were read: the
         // disk is last though its name sorts first.
@@ -3215,6 +3222,17 @@ mod tests {
             ["ssf-aaa-inst", "zzz-dir", "ssf-aaa"],
             "somebody else's, and a symlink, are not ssf's to name"
         );
+        // ... and this is what `ssf doctor` falls back to when there is
+        // no tooling to ask with, so it has to carry the unread
+        // directories too -- that is the note a person who cannot run
+        // `limactl list` most needs.
+        #[cfg(unix)]
+        {
+            let home = t.vm.lima_home.clone().unwrap();
+            if let Some(unread) = while_unreadable(&home, || t.vm.strays_on_filesystem().1) {
+                assert_eq!(unread, std::slice::from_ref(&home));
+            }
+        }
         let kinds: Vec<_> = strays.iter().map(|s| s.kind).collect();
         assert_eq!(kinds.len(), 3, "both of lima's, and [vm] dir's: {kinds:?}");
         assert!(kinds.contains(&StrayKind::LimaInstance), "{kinds:?}");
@@ -3305,26 +3323,57 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn a_data_disk_left_in_vm_dir_by_a_backend_change_stops_the_destroy() {
-        // The other direction, and this one deletes. `<[vm] dir>/<name>`
-        // is this VM's own directory under Firecracker; under lima it
-        // holds a template, an ssh key and a share and never a
-        // `data.ext4`. One there is what a switch to lima left, with
-        // every clone in it -- and `Vm::destroy` removes that directory.
+    #[tokio::test]
+    async fn a_data_disk_left_in_vm_dir_by_a_backend_change_stops_the_destroy() {
+        // A switch from Firecracker to lima leaves `data.ext4` inside
+        // this VM's own directory, with every clone of the old VM in it.
+        // `Vm::destroy` removes that directory, so the disk is work this
+        // command takes -- and the previous attempt at this reported the
+        // directory as an untouched *stray*, which named the very path
+        // the destroy step deletes and printed `rm -rf` over a live
+        // lima VM's own template, key and share.
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
-        std::fs::write(t.vm.dir.join("data.ext4"), b"clones").unwrap();
+        let disk = t.vm.dir.join("data.ext4");
+        std::fs::write(&disk, b"clones").unwrap();
         let s = t.vm.survey();
-        assert_eq!(
-            s.strays.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
-            [t.vm.cfg.name.as_str()],
-            "the Firecracker VM this configuration left behind"
-        );
+        assert!(s.stranded_disk, "a data disk lima never made");
+        assert_eq!(s.data, Some(true), "so there is work here to lose");
         assert!(
-            s.strays[0].holds_work(),
-            "and the report says the clones are in it"
+            s.strays.iter().all(|x| x.name != t.vm.cfg.name),
+            "and this VM's own directory is never called untouched: {:?}",
+            s.strays
         );
+
+        // The refusal says so, in its own words -- `limactl disk delete`
+        // is no remedy for a disk that was never lima's.
+        let facts = crate::uninstall::Facts {
+            vm_mode: true,
+            vm_name: t.vm.cfg.name.clone(),
+            vm_present: s.present,
+            vm_running: s.running,
+            vm_startable: s.startable,
+            vm_data: s.data,
+            vm_stranded_disk: s.stranded_disk,
+            ..Default::default()
+        };
+        assert!(crate::uninstall::unchecked_workspaces(facts.vm_data));
+        let why = crate::uninstall::hard_stop(
+            &facts,
+            &crate::uninstall::Report::default(),
+            &crate::uninstall::Opts {
+                vm_unchecked: true,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+        assert!(why.contains("before `[vm] backend` changed"), "{why}");
+        assert!(!why.contains("limactl disk delete"), "{why}");
+
+        // And it is still there afterwards only because the destroy was
+        // refused: run it and the disk goes, which is why it refuses.
+        t.vm.destroy().await.unwrap();
+        assert!(!disk.exists(), "destroy removes the directory it is in");
     }
 
     #[test]
@@ -3372,6 +3421,7 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
     }
@@ -3392,6 +3442,7 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
         // The direction that matters: the disk is on disk, so it is
@@ -3407,6 +3458,7 @@ mod tests {
                 data: Some(true),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
     }
