@@ -187,13 +187,6 @@ pub struct Facts {
     /// root-owned by an earlier `sudo` sent people to fix permissions
     /// on `[vm] dir`, which was never the problem.
     pub vm_unread: Vec<PathBuf>,
-    /// This VM's own directory holds a `data.ext4` its backend does not
-    /// use -- what a switch from Firecracker to lima leaves. The destroy
-    /// step removes that directory, and nothing can mount the disk to
-    /// look inside it first, so the refusal has to say so in its own
-    /// words: `limactl disk delete` is not the remedy for a disk that
-    /// was never lima's.
-    pub vm_stranded_disk: bool,
     /// `[vm] dir` was there when the report was built. Snapshotted, so
     /// that the list printed before the question and the list printed
     /// after the last step are the same list in fact and not only in
@@ -241,7 +234,6 @@ impl Facts {
             vm_data: survey.data,
             vm_strays: survey.strays.clone(),
             vm_unread: survey.unread.clone(),
-            vm_stranded_disk: survey.stranded_disk,
             vm_base_exists: vm.base.exists(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
@@ -291,7 +283,6 @@ impl Facts {
             // ssh says nothing about what else lima holds.
             strays: self.vm_strays.clone(),
             unread: Vec::new(),
-            stranded_disk: false,
         };
         self.vm_present = survey.present;
         self.vm_running = survey.running;
@@ -756,18 +747,6 @@ fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Sur
 /// refusal, so they cannot drift apart.
 fn vm_uncheckable(facts: &Facts) -> (String, String) {
     let name = &facts.vm_name;
-    // A Firecracker data disk inside the VM's own directory, left by a
-    // switch of `[vm] backend`. Nothing lima has will mount it and
-    // `limactl disk delete` is not its remedy, so it gets its own
-    // sentence rather than the disk-outlived-its-instance one.
-    if facts.vm_stranded_disk {
-        return (
-            format!(
-                "VM {name}'s directory holds a data disk from before `[vm] backend` changed"
-            ),
-            "nothing on this backend can mount it, so put `[vm] backend` back and `ssf vm start` to look inside, or move the disk out of that directory".to_string(),
-        );
-    }
     // Host mode is not a state of the VM but of the configuration: the
     // guest is never asked, whatever it would have answered, so none of
     // the remedies below would clear this one. Starting the VM does not
@@ -1157,7 +1136,6 @@ mod tests {
             vm_disk: Some("ssf-factory".into()),
             vm_strays: Vec::new(),
             vm_unread: Vec::new(),
-            vm_stranded_disk: false,
             vm_base_exists: false,
             vm_removed: "its disks in /vm/factory".into(),
             vm_base: PathBuf::from("/nonexistent/vm"),
@@ -1531,7 +1509,6 @@ mod tests {
             data,
             strays: Vec::new(),
             unread: Vec::new(),
-            stranded_disk: false,
         };
         assert_eq!(
             lima_removed(
@@ -1995,22 +1972,6 @@ mod tests {
                 "the VM a rename left behind must reach the report"
             );
             assert!(gathered.vm_base_exists, "and so must the snapshot");
-            // ... and so must a data disk a backend switch stranded in
-            // this VM's own directory, which is the one the destroy step
-            // removes. Building `Facts` by hand pins none of this.
-            let mut lima = cfg.clone();
-            lima.vm.backend = Some(vm::BackendKind::Lima);
-            lima.vm.limactl = Some("/nonexistent/limactl".into());
-            let lima_vm = vm::Vm::new(&lima);
-            std::fs::create_dir_all(&lima_vm.dir).unwrap();
-            assert!(
-                !Facts::gather(&lima, &lima_vm).vm_stranded_disk,
-                "no disk, nothing stranded"
-            );
-            std::fs::write(lima_vm.dir.join("data.ext4"), b"clones").unwrap();
-            let stranded = Facts::gather(&lima, &lima_vm);
-            assert!(stranded.vm_stranded_disk, "it has to reach the report");
-            assert_eq!(stranded.vm_data, Some(true), "and stop the command");
             // From a *relative* `[vm] dir`, since `temp_dir()` is
             // already absolute and asserting over it pins nothing.
             let mut rel = cfg.clone();
