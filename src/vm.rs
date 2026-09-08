@@ -283,6 +283,9 @@ pub struct VmStatus {
     pub data_gib: u32,
     /// The data disk as the guest sees it (`df`), when reachable.
     pub data: Option<DiskUse>,
+    /// The host tooling this backend needs (`limactl` and qemu, or
+    /// `/dev/kvm`). Null inside the guest, whose host owns the VM.
+    pub tooling: Option<Tooling>,
 }
 
 /// Where the data disk is mounted in the guest.
@@ -469,13 +472,11 @@ pub fn probe_tools(tools: &[Tool]) -> Vec<Option<String>> {
         .collect()
 }
 
-/// The `ssf doctor` line for a backend's host tooling: where each tool
-/// was found, or what to install for the ones that are missing.
-pub fn backend_tooling_line(
-    backend: BackendKind,
-    tools: &[Tool],
-    found: &[Option<String>],
-) -> (bool, String) {
+/// What `ssf doctor` and `ssf vm status` say about a backend's host
+/// tooling: whether it is all there, and where each tool was found, or
+/// what to install for the ones that are missing. The backend is not
+/// named here: both callers have said it already.
+pub fn backend_tooling_line(tools: &[Tool], found: &[Option<String>]) -> (bool, String) {
     let detail = |t: &Tool, f: &Option<String>| match (t.device, f) {
         (true, Some(_)) => format!("{} usable", t.name),
         (true, None) => format!("{} not usable by you", t.name),
@@ -490,14 +491,23 @@ pub fn backend_tooling_line(
             .map(|(t, f)| detail(t, f))
             .collect::<Vec<_>>()
             .join(", ");
-        return (true, format!("{backend} backend: {all}"));
+        return (true, all);
     }
     let bad = missing
         .iter()
         .map(|(t, f)| format!("{}; {}", detail(t, f), t.install))
         .collect::<Vec<_>>()
         .join("; ");
-    (false, format!("{backend} backend: {bad}"))
+    (false, bad)
+}
+
+/// The backend's host tooling as `ssf vm status` reports it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Tooling {
+    /// Every tool the backend needs is here.
+    pub ok: bool,
+    /// Where each tool is, or what to install for the ones missing.
+    pub detail: String,
 }
 
 /// What `ssf vm build` settled on, and whether the file changed.
@@ -1864,7 +1874,22 @@ impl Vm {
             } else {
                 Vec::new()
             },
+            tooling: (!in_guest()).then(|| self.tooling()),
         }
+    }
+
+    /// Look for the tooling this VM's backend needs on the machine this
+    /// runs on: what `ssf doctor` and `ssf vm status` report.
+    pub fn tooling(&self) -> Tooling {
+        let backend = self.backend();
+        let tools = backend_tools(
+            backend,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            self.cfg.limactl.as_deref(),
+        );
+        let (ok, detail) = backend_tooling_line(&tools, &probe_tools(&tools));
+        Tooling { ok, detail }
     }
 
     // ---- harness logins ----
@@ -2921,28 +2946,23 @@ mod tests {
             Some("/usr/bin/limactl".to_string()),
             Some("/usr/bin/qemu-system-x86_64".to_string()),
         ];
-        let (ok, msg) = backend_tooling_line(BackendKind::Lima, &linux, &found);
+        let (ok, msg) = backend_tooling_line(&linux, &found);
         assert!(ok);
         assert_eq!(
             msg,
-            "lima backend: limactl at /usr/bin/limactl, qemu-system-x86_64 at /usr/bin/qemu-system-x86_64"
+            "limactl at /usr/bin/limactl, qemu-system-x86_64 at /usr/bin/qemu-system-x86_64"
         );
         // Only what is missing is reported, with what to install.
-        let (ok, msg) = backend_tooling_line(
-            BackendKind::Lima,
-            &linux,
-            &[Some("/usr/bin/limactl".to_string()), None],
-        );
+        let (ok, msg) = backend_tooling_line(&linux, &[Some("/usr/bin/limactl".to_string()), None]);
         assert!(!ok);
-        assert!(msg.starts_with("lima backend: qemu-system-x86_64 not installed; install qemu"));
+        assert!(msg.starts_with("qemu-system-x86_64 not installed; install qemu"));
         assert!(!msg.contains("limactl at"), "{msg}");
-        let (ok, msg) = backend_tooling_line(BackendKind::Firecracker, &fc, &[None]);
+        let (ok, msg) = backend_tooling_line(&fc, &[None]);
         assert!(!ok);
-        assert!(msg.starts_with("firecracker backend: /dev/kvm not usable by you; "));
-        let (ok, msg) =
-            backend_tooling_line(BackendKind::Firecracker, &fc, &[Some("/dev/kvm".into())]);
+        assert!(msg.starts_with("/dev/kvm not usable by you; "));
+        let (ok, msg) = backend_tooling_line(&fc, &[Some("/dev/kvm".into())]);
         assert!(ok);
-        assert_eq!(msg, "firecracker backend: /dev/kvm usable");
+        assert_eq!(msg, "/dev/kvm usable");
     }
 
     #[test]

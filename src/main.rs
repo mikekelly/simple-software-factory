@@ -2179,6 +2179,9 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                     }
                 );
                 println!("backend:  {}", st.backend);
+                if let Some(t) = &st.tooling {
+                    println!("tooling:  {}", t.detail);
+                }
                 match &st.instance {
                     Some(inst) => println!(
                         "instance: {inst}{}",
@@ -3094,6 +3097,33 @@ fn ui_cmd(command: UiCommand) -> Result<()> {
     }
 }
 
+/// How `ssf doctor` reports the VM backend's host tooling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolingReport {
+    /// A check that counts: the factory runs in the VM.
+    Checked,
+    /// A note: `[vm] enabled` is false, so nothing here needs the tooling
+    /// yet, but this is what someone about to turn the VM on has to have.
+    Note,
+    /// Nothing: this doctor runs in the guest, and the VM is the host's.
+    Skip,
+}
+
+/// Whether a doctor reports the backend's tooling, and how. `doctor` is a
+/// forwarded command, so with the VM running it executes in the guest
+/// (nothing to say there: the host started the VM, and the guest has no
+/// limactl or /dev/kvm of its own) and with the VM stopped the host bails
+/// before it ever runs. Everything left is a host doctor, which always
+/// reports -- keying this on `[vm] enabled` as well was what made the
+/// line unreachable in all three cases.
+fn report_backend_tooling(in_guest: bool, vm_enabled: bool) -> ToolingReport {
+    match (in_guest, vm_enabled) {
+        (true, _) => ToolingReport::Skip,
+        (false, true) => ToolingReport::Checked,
+        (false, false) => ToolingReport::Note,
+    }
+}
+
 async fn doctor() -> Result<()> {
     let mut problems = 0;
     let mut check = |ok: bool, msg: String| {
@@ -3741,23 +3771,21 @@ async fn doctor() -> Result<()> {
             }
         ),
     );
-    // The tooling the VM backend needs, on the host that runs it: inside
-    // the guest there is no VM to start, and with `[vm] enabled` false
-    // nothing here uses one.
-    if !vm::in_guest() && cfg.vm.enabled {
-        let backend = cfg
-            .vm
-            .backend
-            .unwrap_or_else(vm::BackendKind::platform_default);
-        let tools = vm::backend_tools(
-            backend,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            cfg.vm.limactl.as_deref(),
-        );
-        let found = vm::probe_tools(&tools);
-        let (ok, msg) = vm::backend_tooling_line(backend, &tools, &found);
-        check(ok, msg);
+    // The tooling the VM backend needs, on the host that runs it.
+    let mode = report_backend_tooling(vm::in_guest(), cfg.vm.enabled);
+    if mode != ToolingReport::Skip {
+        let vm = vm::Vm::new(&cfg);
+        let t = vm.tooling();
+        let line = format!("{} backend: {}", vm.backend(), t.detail);
+        match mode {
+            ToolingReport::Checked => check(t.ok, line),
+            // Nothing here uses it yet, so a missing limactl is not a
+            // failure: it is what to install before turning the VM on.
+            ToolingReport::Note => println!(
+                "note {line}; [vm] enabled is false, so nothing here needs it until you turn the VM on"
+            ),
+            ToolingReport::Skip => {}
+        }
     }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.
@@ -3837,6 +3865,23 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_doctor_always_reports_the_backend_tooling() {
+        // The line is for the machine that runs the VM. `doctor` is
+        // forwarded, so in the guest there is nothing to say...
+        assert_eq!(report_backend_tooling(true, true), ToolingReport::Skip);
+        assert_eq!(report_backend_tooling(true, false), ToolingReport::Skip);
+        // ...and on the host it is always reported: as a check when the
+        // factory runs in the VM, as a note when it does not (nothing is
+        // broken yet, but this is what turning the VM on will need).
+        assert_eq!(report_backend_tooling(false, true), ToolingReport::Checked);
+        assert_eq!(report_backend_tooling(false, false), ToolingReport::Note);
+        // Requiring `[vm] enabled` on the host was the bug: with it on,
+        // the guest answers doctor; with it off, this was skipped; so the
+        // line could never print.
+        assert!(report_backend_tooling(false, false) != ToolingReport::Skip);
+    }
 
     #[test]
     fn the_machine_name_comes_from_whichever_source_this_os_has() {
