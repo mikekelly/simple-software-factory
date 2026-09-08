@@ -71,15 +71,24 @@ stripped before the file reaches an agent.
 - Work on the item's branch. When the work is done, push it and open a pull
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
-- Before you call work done, put it through a gauntlet: hand the diff, the
-  issue and your claim of what the change does to a fresh agent that has not
-  seen your reasoning, and ask it to break it (correctness first, then whether
-  it does what the issue asked, then tests, docs and the project's
-  conventions). Fix what it finds and run the gauntlet again until it finds
-  nothing that matters. A subagent of your own harness is the default; for
-  work that is complex, risky or important, use herdr to have a different
-  agent and model look (`ssf guide` has the invocation). Say on the item what
-  the gauntlet found and what you changed; nobody re-reviews after you.
+- Calibrate the gauntlet by blast radius, not diff size. State the class and
+  why on the issue: data loss, a factory unable to start, a broken package
+  or a destroyed workspace require deep review until two consecutive rounds
+  find no must-fix; ordinary daemon behaviour visible to sessions or people
+  gets one round, and a second only if the first found a must-fix. Changes
+  confined to documentation, comments, configuration examples or tests get
+  careful self-review, no fresh agent. For mixed changes use the highest class.
+- For each required round, give a fresh agent the diff, issue and claimed
+  outcome; ask it to break correctness, requirements, tests, docs and project
+  conventions. Fix must-fixes before continuing. A must-fix is a substantive
+  finding that requires changing the diff; wording, comment and naming tidies
+  do not count. Stop on a clean round (two consecutive for deep review).
+  Never run a round just to review tidies: take or leave them and finish;
+  deep review's second clean round may review the same substantive diff.
+  Use an in-harness subagent by default; for deep review prefer a strong
+  reviewer on a different model through herdr in round one (`ssf guide`).
+  Report the class, findings and fixes on the issue. Every class still runs
+  the required tests, formatter, linter and package build before delivery.
 - Autonomy: a person approves everything. Once the gauntlet has passed, say
   so on the item and stop: do not merge the pull request or close the issue
   yourself; a person reviews and merges.
