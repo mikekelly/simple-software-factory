@@ -181,6 +181,14 @@ pub struct Facts {
     /// it: ssf cannot tell a VM someone renamed away to keep from one
     /// they abandoned, and only one of those is safe to delete.
     pub vm_strays: Vec<vm::Stray>,
+    /// `[vm] dir` exists and could not be read, so nobody knows what is
+    /// in it -- including whether a VM directory a rename orphaned is.
+    pub vm_base_unread: bool,
+    /// `[vm] dir` was there when the report was built. Snapshotted, so
+    /// that the list printed before the question and the list printed
+    /// after the last step are the same list in fact and not only in
+    /// intent -- the steps in between can remove it.
+    pub vm_base_exists: bool,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
@@ -222,6 +230,8 @@ impl Facts {
             vm_startable: survey.startable,
             vm_data: survey.data,
             vm_strays: survey.strays.clone(),
+            vm_base_unread: survey.base_unread,
+            vm_base_exists: vm.base.exists(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
                 vm::BackendKind::Firecracker => None,
@@ -265,6 +275,7 @@ impl Facts {
             data: self.vm_data,
             // ssh says nothing about what else lima holds.
             strays: self.vm_strays.clone(),
+            base_unread: false,
         };
         self.vm_present = survey.present;
         self.vm_running = survey.running;
@@ -569,12 +580,16 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
             p.display()
         ));
     }
-    if facts.vm_base.exists() {
+    if facts.vm_base_exists {
         // "safe to remove" is true of the images and downloads. It is
         // not true of a VM directory a changed `[vm] name` orphaned,
         // which sits in here with its data disk -- and telling a person
         // their own clones are safe to delete is worse than deleting
         // them, because they run the command themselves and it works.
+        //
+        // Nor is it true of a directory nobody could read. "Could not
+        // look" is not "nothing there", and safety nobody verified is
+        // not safety.
         let holds_work = facts
             .vm_strays
             .iter()
@@ -582,10 +597,10 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         keep.push(format!(
             "{} (VM image and downloads{})",
             facts.vm_base.display(),
-            if holds_work {
-                "; safe to remove except for what is listed below"
-            } else {
-                "; safe to remove"
+            match (facts.vm_base_unread, holds_work) {
+                (true, _) => "; ssf could not read it, so what is in it is unknown",
+                (false, true) => "; safe to remove except for what is listed below",
+                (false, false) => "; safe to remove",
             }
         ));
     }
@@ -618,10 +633,17 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
 /// dir` still has, is the sentence this whole change exists to stop --
 /// so both the report and the destroy step say it through here.
 fn no_vm_line(facts: &Facts) -> String {
-    if facts.vm_strays.is_empty() {
-        "no VM".to_string()
-    } else {
-        format!("no VM named {} to remove", facts.vm_name)
+    match (facts.vm_strays.is_empty(), facts.vm_base_unread) {
+        // A `[vm] dir` nobody could read may hold a VM directory a
+        // rename orphaned, so "no VM" is a claim about contents nobody
+        // looked at.
+        (_, true) => format!(
+            "no VM named {} to remove; {} could not be read, so what else is in it is unknown",
+            facts.vm_name,
+            facts.vm_base.display()
+        ),
+        (true, false) => "no VM".to_string(),
+        (false, false) => format!("no VM named {} to remove", facts.vm_name),
     }
 }
 
@@ -1063,6 +1085,8 @@ mod tests {
             vm_data: Some(true),
             vm_disk: Some("ssf-factory".into()),
             vm_strays: Vec::new(),
+            vm_base_unread: false,
+            vm_base_exists: false,
             vm_removed: "its disks in /vm/factory".into(),
             vm_base: PathBuf::from("/nonexistent/vm"),
             config_dir: PathBuf::from("/c"),
@@ -1434,6 +1458,7 @@ mod tests {
             startable,
             data,
             strays: Vec::new(),
+            base_unread: false,
         };
         assert_eq!(
             lima_removed(
@@ -1700,6 +1725,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         let orphan = Facts {
             vm_base: base.clone(),
+            vm_base_exists: true,
             vm_present: Some(false),
             vm_data: Some(false),
             vm_strays: vec![vm::Stray::directory(&base.join("old"))],

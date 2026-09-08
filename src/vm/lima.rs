@@ -1030,6 +1030,8 @@ impl Vm {
             startable: mine.is_some(),
             data: disk,
             strays,
+            // `[vm] dir` is the caller's question, not lima's.
+            base_unread: false,
         }
     }
 
@@ -1105,6 +1107,7 @@ impl Vm {
             startable: false,
             data: disk,
             strays,
+            base_unread: false,
         }
     }
 
@@ -2723,6 +2726,7 @@ mod tests {
                 startable: true,
                 data: Some(true),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
         let t = Fake::new("Running");
@@ -2745,6 +2749,7 @@ mod tests {
                 startable: false,
                 data: Some(true),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
     }
@@ -2852,6 +2857,36 @@ mod tests {
         assert_eq!(s.data, Some(false));
     }
 
+    #[tokio::test]
+    async fn vm_status_names_every_stray_once_when_limactl_will_not_list() {
+        // Through `status()`, under lima, on the path where `limactl`
+        // answers nothing and lima's own home is all there is: the two
+        // halves of that fallback were once added twice, so every data
+        // disk was reported twice and the person went looking for a
+        // second one that was not there. `[vm] dir`'s own stray has to
+        // be here too, or `ssf vm status` and `ssf uninstall` disagree
+        // about the same machine.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Fails);
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("ssf-old")).unwrap();
+        std::fs::create_dir_all(home.join("_disks").join("ssf-old")).unwrap();
+        let dir_stray = t.vm.base.join("older");
+        std::fs::create_dir_all(&dir_stray).unwrap();
+        std::fs::write(dir_stray.join("data.ext4"), b"disk").unwrap();
+        let st = t.vm.status().await;
+        let named: Vec<&str> = st.strays.iter().map(|s| s.remove.as_str()).collect();
+        assert_eq!(named.len(), 3, "each exactly once: {named:?}");
+        assert!(named.contains(&"limactl delete ssf-old"), "{named:?}");
+        assert!(named.contains(&"limactl disk delete ssf-old"), "{named:?}");
+        assert!(
+            named
+                .iter()
+                .any(|c| c.starts_with("rm -rf ") && c.ends_with("older'")
+                    || c.starts_with("rm -rf ") && c.ends_with("older")),
+            "the [vm] dir stray is missing under lima: {named:?}"
+        );
+    }
+
     #[test]
     fn a_vm_directory_under_vm_dir_is_a_stray_under_lima_too() {
         // `[vm] dir` is shared by the backends. A VM built under
@@ -2919,6 +2954,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
     }
@@ -2938,6 +2974,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
         // The direction that matters: the disk is on disk, so it is
@@ -2952,6 +2989,7 @@ mod tests {
                 startable: false,
                 data: Some(true),
                 strays: Vec::new(),
+                base_unread: false,
             }
         );
     }
