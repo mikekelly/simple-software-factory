@@ -224,9 +224,9 @@ host; the guest brings its own), the `ssf on PATH` line names
 `/opt/homebrew/bin/ssf` (or `/usr/local/bin/ssf` on Intel), the
 `ssf.service running` line is the launchd service (checked with
 `launchctl`; it keeps its Linux name) and fails until step 6 starts it,
-and the `bar widget enabled in ~/.config/omarchy/shell.json` line fails
-because there is no Omarchy shell; ignore it. Logs, at any point:
-`tail -f $(brew --prefix)/var/log/ssf.log`.
+and the widget line is the `note bar widget: not on Omarchy, nothing to
+enable` above rather than a check, since that check runs on Omarchy
+only. Logs, at any point: `tail -f $(brew --prefix)/var/log/ssf.log`.
 
 ## 3. Create the bot account
 
@@ -405,8 +405,7 @@ Nothing here needs you at the keyboard, and nothing needs root.
 ```sh
 ssf vm build                 # once, a few minutes: makes and provisions the guest (Linux: downloads Firecracker, gvproxy and a kernel, makes the image; macOS: creates the lima instance and boots it once)
 ssf config set vm.enabled true
-systemctl --user restart ssf.service   # the service starts the VM and owns it from now on
-brew services start ssf                # macOS: the same, under launchd
+systemctl --user restart ssf.service   # the service starts the VM and owns it from now on; macOS: brew services start ssf
 ```
 
 `ssf vm build` starts by settling the backend (`firecracker` on Linux,
@@ -803,19 +802,20 @@ destroyed with it, checked or not. `--yes` skips the question for
 scripted use.
 
 What it keeps, and lists at the end: the clones and worktrees under
-`~/ssf/projects` (or Orca's projects; may hold unpushed work), the
-`[vm] dir` (the image and downloads, safe to remove; on macOS also
-`~/.lima`, lima's home, if nothing else of yours is in it, since lima
-caches its downloaded images there), and, unless you
-pass `--data`, `~/.config/ssf` (config and the bot's key) and
-`~/.local/state/ssf` (state, and the marker that keeps a disabled
-service off, so a reinstall stays stopped until `ssf ui service enable`;
-with `--data` gone, a reinstall starts the service). The bot GitHub
-account itself is not touched, nor its gh sign-in. `ssf status`
-afterwards says not signed in and stopped; the watched repositories and
-the records of past items still show until `--data` (or a reinstall
-from scratch) clears them. With the VM gone the config's `vm.enabled` is
-cleared, so `status` does not go looking for it.
+`~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
+dir` (the image and downloads, safe to remove), and, unless you pass
+`--data`, `~/.config/ssf` (config and the bot's key) and
+`~/.local/state/ssf` (state, and the marker that keeps a disabled service
+off, so a reinstall stays stopped until `ssf ui service enable`; with
+`--data` gone, a reinstall starts the service). Under lima the instance
+and the data disk go out of lima's own home with `vm destroy`, but
+`~/.lima` itself stays, holding lima's cache of downloaded images; the
+report does not name it, so remove it by hand once nothing else of yours
+uses lima. The bot GitHub account itself is not touched, nor its gh
+sign-in. `ssf status` afterwards says not signed in and stopped; the
+watched repositories and the records of past items still show until
+`--data` (or a reinstall from scratch) clears them. With the VM gone the
+config's `vm.enabled` is cleared, so `status` does not go looking for it.
 
 ## Checklist
 

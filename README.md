@@ -317,7 +317,7 @@ ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspace
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then the package manager's remove command is yours
-journalctl --user -fu ssf.service
+journalctl --user -fu ssf.service   # macOS: tail -f $(brew --prefix)/var/log/ssf.log
 ```
 
 Config changes are picked up on the next poll; no restart needed. Every
@@ -366,7 +366,8 @@ yours.
 ## The rest of the story
 
 The reference, one file per area. Each starts with a line saying what it
-covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
+covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`
+(`$(brew --prefix)/share/doc/ssf/docs/` on macOS).
 
 | Read | When you want to know |
 |------|-----------------------|

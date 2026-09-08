@@ -130,4 +130,6 @@ agents about it.
   still reported and its sessions' agent states show as unknown.
 - The bar widget and menu entries are installed per user on first service
   start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
-- Logs: `journalctl --user -fu ssf.service` (inside the VM, `ssf vm logs`).
+- Logs: `journalctl --user -fu ssf.service`, or on macOS, where the service
+  is launchd's, `tail -f $(brew --prefix)/var/log/ssf.log` (inside the VM,
+  `ssf vm logs`).

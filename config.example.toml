@@ -43,10 +43,11 @@
 # tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
 
 
-# The whole factory (daemon, herdr, sessions) inside a Firecracker microVM
-# instead of on this machine; see `ssf vm --help` and docs/vm.md. With
-# `enabled = true`, `ssf run` starts and watches the VM, and `ssf status`,
-# `tell`, `peers`, `sub`, `release`, `purge` and `doctor` run inside it.
+# The whole factory (daemon, herdr, sessions) inside a VM instead of on this
+# machine: a Firecracker microVM on Linux, a lima instance on macOS; see
+# `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf run` starts and
+# watches the VM, and `ssf status`, `tell`, `peers`, `sub`, `release`, `purge`
+# and `doctor` run inside it.
 [vm]
 # enabled = false
 # name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>; at most 7 characters under lima)

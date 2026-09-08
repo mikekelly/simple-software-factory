@@ -41,10 +41,14 @@ to use instead of the downloaded ones: `firecracker`, `gvproxy`,
 Linux and lima on macOS, and `ssf vm build` writes the choice to
 `config.toml` next to the sizes (`VM backend: lima (for this machine)` in
 its output), so a VM keeps its backend once built. `ssf vm status` names
-it on its `backend:` line. A Firecracker build on anything but Linux
-x86_64 refuses and says to set `vm.backend` to `lima`. Either way, `[vm]
-dir` (`~/.local/share/ssf/vm`) holds what ssf keeps for the VM, one
-directory per `name` under it.
+it on its `backend:` line, and `--json` carries it as `backend` next to
+`instance` and `lima_dir` (the lima instance's name and the directory lima
+keeps it in; both null under Firecracker). `ssf doctor` on the host has a
+line for the backend's own tooling: `limactl`, and `qemu-system-<arch>` on
+Linux, under lima; `/dev/kvm` under Firecracker. A Firecracker build on
+anything but Linux x86_64 refuses and says to set `vm.backend` to `lima`.
+Either way, `[vm] dir` (`~/.local/share/ssf/vm`) holds what ssf keeps for
+the VM, one directory per `name` under it.
 
 ### Firecracker (Linux)
 
@@ -90,7 +94,8 @@ tarball on Linux, or `[vm] limactl` pointing at one elsewhere), `gh`
 for the machine's architecture (Arch: `qemu-full` or `qemu-base`;
 Debian and Ubuntu: `qemu-system-x86` or `qemu-system-arm`; Fedora:
 `qemu-system-x86` or `qemu-system-aarch64`).
-`ssf vm build` checks for them first and names what is missing.
+`ssf vm build` checks for them first and names what is missing, as does
+the backend line of `ssf doctor` on the host.
 
 Two places hold a lima VM. The instance itself is lima's, named
 `ssf-<vm.name>` (`ssf-default`) in lima's own home (`~/.lima`, or
@@ -98,16 +103,21 @@ Two places hold a lima VM. The instance itself is lima's, named
 `limactl shell ssf-default` opens a shell as lima's user. Its root disk
 is `vm.root_gib` with a floor of 20 GiB (a cloud image plus node and the
 harness CLIs does not fit in the Firecracker image's 8). The data disk
-is a lima disk, `ssf-<vm.name>-data`, of `vm.data_gib` (`limactl disk
-list`), which ssf attaches to the instance and which survives `ssf vm
-reset` and `ssf vm build --force`. ssf's own files are under
-`<vm.dir>/<name>/`: `lima.yaml` (the template `ssf vm build` writes from
-`[vm]`; edit the config and rebuild rather than the file), `share/` (the
-guest scripts, the seed tree, and a herdr binary when the host has one
-for the guest), the ssh key and `known_hosts` for reaching the guest,
-and `guest-bin/` with a downloaded guest binary. `share/` is the only
-host directory the guest sees, mounted read-only at `/mnt/ssf`; nothing
-else on the host is visible.
+is a lima disk, `ssf-<vm.name>`, of `vm.data_gib` (`limactl disk list`),
+which ssf attaches to the instance and which survives `ssf vm reset` and
+`ssf vm build --force`. That name is short on purpose: lima labels the
+disk's filesystem `lima-<disk>` and an ext4 label holds 16 characters,
+which is why `vm.name` is at most 7 characters under this backend. Only
+the build that creates the disk writes `format: true` for it in the
+template; once the disk exists every build writes `format: false`, so lima
+can never reformat a disk that already holds the factory. ssf's own files
+are under `<vm.dir>/<name>/`: `lima.yaml` (the template `ssf vm build`
+writes from `[vm]`; edit the config and rebuild rather than the file),
+`share/` (the guest scripts, the seed tree, and a herdr binary when the
+host has one for the guest), the ssh key and `known_hosts` for reaching
+the guest, and `guest-bin/` with a downloaded guest binary. `share/` is
+the only host directory the guest sees, mounted read-only at `/mnt/ssf`;
+nothing else on the host is visible.
 
 The guest OS follows the architecture: on x86_64 the Arch Linux cloud
 image (the same distribution the Firecracker image is made from), on
@@ -138,7 +148,7 @@ What the commands do under lima:
 
 | command | under lima |
 |---|---|
-| `ssf vm build` | checks for `limactl` (and qemu on Linux), writes `lima.yaml` and `share/`, creates the data disk if it does not exist, `limactl create`, then a first `limactl start` during which the guest provisions itself (see [The image](#the-image)); waits for that, prints the harness lines, waits for ssh as `ssf`, and stops the instance. With an instance already there it says so and stops; `--force` deletes and re-creates the instance, never the data disk |
+| `ssf vm build` | checks for `limactl` (and qemu on Linux), writes `lima.yaml` and `share/`, creates the data disk if it does not exist (`format: true` in the template only on that build; an existing disk is attached with `format: false`), `limactl create`, then a first `limactl start` during which the guest provisions itself (see [The image](#the-image)); waits for that, prints the harness lines, waits for ssh as `ssf`, and stops the instance. With an instance already there it says so and stops; `--force` deletes and re-creates the instance, never the data disk |
 | `ssf vm start` | writes `share/` fresh (scripts, seed, herdr), `limactl start`, waits for the provisioning marker (a reset instance provisions itself again here), for ssh and for the guest daemon. Warns when lima forwards ssh to a port other than `vm.ssh_port` (an instance from an older template; `ssf vm build --force` remakes it) |
 | `ssf vm stop` | `limactl stop`, and `limactl stop -f` when the clean stop fails |
 | `ssf vm grow` | `limactl disk resize` on the data disk, with the VM stopped; the guest grows the filesystem at its next boot (see [Size](#size)) |
@@ -177,9 +187,10 @@ start without writing it.
 A rule of thumb per parallel session: about one vCPU and 2 GiB of RAM
 per active session, plus, on the data disk, the size of one clone per
 repository and a build tree per worktree. Change `vcpus` or `mem_mib` in
-`config.toml` and `ssf vm restart` to apply them (under lima, a new
-`vcpus` or `mem_mib` needs `ssf vm build --force`, which remakes the
-instance from the template; the data disk stays).
+`config.toml` and `ssf vm restart` to apply them. That is the same under
+both backends: `ssf vm start` gives a changed `vcpus` or `mem_mib` to the
+stopped lima instance with `limactl edit` before it starts it, so no
+rebuild is needed.
 
 The data disk is sparse: its size is a cap, not a reservation, and it
 takes host space only as the guest writes. Both backends give the guest
@@ -364,7 +375,8 @@ with the packages, and a `data.ext4` (`vm.data_gib`, sparse; see
 ssf's state, the clones and the worktrees, and the guest user's home
 (herdr's session state, the harness transcripts, caches), which is
 bind-mounted from there. Under lima the two are the instance's root disk
-in lima's home and the lima disk `ssf-<name>` (short because lima labels it `lima-<disk>` and an ext4 label holds 16 characters, so a `name` has at most 7), which lima mounts at
+in lima's home and the lima disk `ssf-<name>` (see
+[lima](#lima-macos-and-linux-with-qemu)), which lima mounts at
 `/mnt/lima-ssf-<name>` and the guest's seed unit bind-mounts on
 `/var/lib/ssf` at every boot, with the same layout on it. `ssf vm stop`
 shuts the guest down cleanly (Ctrl-Alt-Del through Firecracker's API;
