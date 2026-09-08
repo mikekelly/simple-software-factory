@@ -126,71 +126,13 @@ impl AllowList {
 ///
 /// This deliberately over-matches GitHub rather than reproducing it, since
 /// refusing a real mention would have the gate turn away a session
-/// somebody asked for. It counts mentions inside code spans and fences,
-/// which GitHub never sees, and it counts `@bot_2` and `@bot.foo`, which
-/// name somebody else (see [`github_links`]). Matching GitHub exactly
-/// would mean rendering Markdown. Under-matching has no such backstop,
-/// which is why `_` does not read as a word character before the `@`:
-/// GitHub renders `_@bot_` as emphasis around a real mention.
+/// somebody asked for, and would have retirement stop one that should
+/// have kept running. It counts mentions inside code spans and fences,
+/// which GitHub never sees, and `@bot_2` and `@bot.foo`, which name
+/// somebody else. Matching GitHub exactly would mean rendering Markdown.
+/// `_` does not read as a word character before the `@`, because GitHub
+/// renders `_@bot_` as emphasis around a real mention.
 pub fn mentions(body: &str, login: &str) -> bool {
-    scan(body, login, |bytes, _at, end| match bytes.get(end) {
-        None => true,
-        Some(&b) => !continues_a_login(b),
-    })
-}
-
-/// Whether GitHub itself would link `@login` here, which is what decides
-/// whether its `mentioned` listing could have carried the item.
-///
-/// GitHub takes as much of a login as it can and then refuses the match
-/// unless what follows could end one: `_`, or a `.` with more word
-/// characters after it, means the text named somebody else, so `@bot_2`
-/// and `@bot.foo` are not mentions of `bot` while `@bot.` ending a
-/// sentence is. Retirement uses this to tell a mention GitHub could have
-/// listed, where a listing that drops the item is the thing that is
-/// wrong, from one only [`mentions`] sees, where this module is.
-///
-/// It is still not GitHub: `under_@bot` reads as a mention here and not
-/// there, because telling that from the emphasis in `_@bot_` needs the
-/// rendered HTML. That residual errs towards holding a session.
-pub fn github_links(body: &str, login: &str) -> bool {
-    scan(body, login, |bytes, at, end| match bytes.get(end) {
-        None => true,
-        // A `_` on both sides is emphasis, which GitHub renders away
-        // before it looks, leaving a mention with nothing after it.
-        Some(&b'_') if at > 0 && bytes[at - 1] == b'_' => true,
-        Some(&b) if continues_a_login(b) || b == b'_' => false,
-        Some(&b'.') => {
-            // A run of dots ends a login only when nothing word-like
-            // follows it: `@bot.` does, `@bot.foo` does not.
-            let mut i = end;
-            while bytes.get(i) == Some(&b'.') {
-                i += 1;
-            }
-            match bytes.get(i) {
-                None => true,
-                Some(&c) => !(c.is_ascii_alphanumeric() || c == b'_'),
-            }
-        }
-        Some(_) => true,
-    })
-}
-
-/// What makes an `@` part of a word rather than the start of a mention:
-/// a letter or a digit, as in an address. Underscore is not one, because
-/// GitHub renders `_@bot_` as emphasis around a mention.
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
-}
-
-/// Whether a byte after a login means the mention named something else: a
-/// longer login (`@bot-2`, `@bots`) or a team (`@org/team`).
-fn continues_a_login(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'-' || b == b'/'
-}
-
-/// Look for `@login` in `body`, letting the caller say what may follow it.
-fn scan(body: &str, login: &str, after: impl Fn(&[u8], usize, usize) -> bool) -> bool {
     if login.is_empty() {
         return false;
     }
@@ -204,12 +146,28 @@ fn scan(body: &str, login: &str, after: impl Fn(&[u8], usize, usize) -> bool) ->
         // multi-byte character answers "not a word byte", which is the
         // right answer for a boundary, and `from` only ever lands one past
         // an ASCII `@`, so the slice stays on a character boundary.
-        if (at == 0 || !is_word_byte(bytes[at - 1])) && after(bytes, at, at + needle.len()) {
+        let before = at == 0 || !is_word_byte(bytes[at - 1]);
+        let end = at + needle.len();
+        let after = end >= bytes.len() || !continues_a_login(bytes[end]);
+        if before && after {
             return true;
         }
         from = at + 1;
     }
     false
+}
+
+/// What makes an `@` part of a word rather than the start of a mention:
+/// a letter or a digit, as in an address. Underscore is not one, because
+/// GitHub renders `_@bot_` as emphasis around a mention.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+}
+
+/// Whether a byte after a login means the mention named something else: a
+/// longer login (`@bot-2`, `@bots`) or a team (`@org/team`).
+fn continues_a_login(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'/'
 }
 
 /// One way the bot was asked onto an item, and by whom.
@@ -412,44 +370,6 @@ mod tests {
         // An empty login never matches, whatever follows the `@`.
         assert!(!mentions("@bot", ""));
         assert!(!mentions("@ ", ""));
-    }
-
-    /// The strict reading, which decides whether GitHub's own listing
-    /// could have carried the item. It ends a login the way GitHub does.
-    #[test]
-    fn github_links_only_what_github_would_link() {
-        for text in [
-            "@bot what do you think?",
-            "cc @Bot",
-            // A run of dots ends a login when nothing word-like follows.
-            "please ask @bot.",
-            "@bot...",
-            "(@bot)",
-            "_@bot_ please look",
-            "path/@bot",
-        ] {
-            assert!(github_links(text, "bot"), "should link: {text:?}");
-        }
-        for text in [
-            "",
-            "bot",
-            "@bots",
-            "@bot-2",
-            // These name somebody else, and the looser reading counts
-            // them; that difference is the whole point of this function.
-            "@bot_2 please",
-            "@bot.foo",
-            "@bot/reviewers",
-            "someone@bot",
-            "@bot", // with an empty login
-        ] {
-            let login = if text == "@bot" { "" } else { "bot" };
-            assert!(!github_links(text, login), "should not link: {text:?}");
-        }
-        // The looser reading disagrees on exactly the cases named above.
-        for text in ["@bot_2 please", "@bot.foo", "`@bot`"] {
-            assert!(mentions(text, "bot"), "the loose reading lost {text:?}");
-        }
     }
 
     fn issue(author: &str, body: &str) -> Issue {

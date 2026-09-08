@@ -73,13 +73,6 @@ const LOGIN_RETRY_MAX: Duration = Duration::from_secs(3600);
 /// the mention re-check is paced: the item itself is still read every
 /// pass, so a close is still noticed at once.
 const RETIREMENT_RECHECK: Duration = Duration::from_secs(600);
-/// How many paced re-checks may hold a retirement before the listings are
-/// believed instead. The mention matcher over-matches GitHub on purpose
-/// (see `allow::mentions`), so an item GitHub will never list again can
-/// read as the bot's for ever; without a bound the daemon could hold a
-/// session no person is able to release.
-const MAX_RETIREMENT_HOLDS: u32 = 6;
-
 /// The wait before the next restart after `retries` fruitless ones.
 fn retry_wait(retries: u32) -> Duration {
     LOGIN_RETRY
@@ -1172,7 +1165,7 @@ are resumed on the first pass that finds it: {err:#}"
                 .repos
                 .get(&repo.name)
                 .and_then(|r| r.issues.get(n))
-                .is_some_and(|s| s.retirement_held_at.is_some() || s.retirement_holds > 0)
+                .is_some_and(|s| s.retirement_held_at.is_some())
             {
                 self.clear_hold(repo, *n);
             }
@@ -3305,22 +3298,18 @@ deliveries resume"
             return StillOurs::Certain;
         }
         if has("mentioned") {
-            // The expensive part is the timeline walk, so that is what the
-            // hold paces. Everything above is read from the item already
+            // The timeline walk is the expensive part, so it is what the
+            // hold paces; everything above is read from the item already
             // in hand, and a closed item never reaches here at all.
-            // Inside the window nothing is read, so there is no fresh
-            // evidence to report and nothing to count either way.
             if self.held_recently(repo, issue.number) {
-                return StillOurs::Unproven;
+                return StillOurs::Paced;
             }
             match self.gh.timeline(owner, name, issue.number).await {
                 Ok(tl) => {
-                    let found = mention_kind(issue, &tl, &self.login);
+                    let found = mentions_bot(issue, &tl, &self.login);
                     *timeline = Some(tl);
-                    match found {
-                        Some(Mention::Listable) => return StillOurs::Mentioned,
-                        Some(Mention::Unlistable) => return StillOurs::OverMatched,
-                        None => {}
+                    if found {
+                        return StillOurs::Paced;
                     }
                 }
                 // Without the timeline there is no evidence either way. A
@@ -3332,7 +3321,7 @@ deliveries resume"
                         issue = issue.number,
                         "could not re-check the mention before retiring: {e:#}"
                     );
-                    return StillOurs::Unproven;
+                    return StillOurs::Paced;
                 }
             }
         }
@@ -3349,7 +3338,7 @@ deliveries resume"
                         issue = issue.number,
                         "could not re-check the review request before retiring: {e:#}"
                     );
-                    return StillOurs::Unproven;
+                    return StillOurs::Paced;
                 }
             }
         }
@@ -3361,18 +3350,15 @@ deliveries resume"
     fn clear_hold(&mut self, repo: &RepoConfig, number: u64) {
         let e = self.entry(repo, number);
         e.retirement_held_at = None;
-        e.retirement_holds = 0;
         e.retirement_announced = false;
     }
 
-    /// Record a hold that rests on the paced re-check and say whether to
-    /// keep holding. `bounded` is for the one reading that can be wrong
-    /// for ever: a mention the matcher sees and GitHub's listing never
-    /// will. Past `MAX_RETIREMENT_HOLDS` of those the matcher is the
-    /// likelier mistake, and the item retires. A mention GitHub could
-    /// have listed, or a re-check nobody managed to make, is held without
-    /// being counted: there the listing is what is in doubt.
-    fn note_paced_hold(&mut self, repo: &RepoConfig, number: u64, bounded: bool) -> bool {
+    /// Record a hold that rests on the paced re-check. The walk that
+    /// answers it is the expensive part, so this stamps the item and the
+    /// next walk waits out `RETIREMENT_RECHECK`. The stamp is only written
+    /// by a pass that actually read the item, so a hold expires rather
+    /// than rolling forward.
+    fn note_paced_hold(&mut self, repo: &RepoConfig, number: u64) -> bool {
         if self.held_recently(repo, number) {
             debug!(
                 repo = repo.name,
@@ -3382,19 +3368,6 @@ deliveries resume"
             return true;
         }
         let e = self.entry(repo, number);
-        if bounded {
-            e.retirement_holds += 1;
-        }
-        let holds = e.retirement_holds;
-        if bounded && holds > MAX_RETIREMENT_HOLDS {
-            warn!(
-                repo = repo.name,
-                issue = number,
-                holds,
-                "this item reads as the bot's only where GitHub cannot list it; retiring on the listings"
-            );
-            return false;
-        }
         e.retirement_held_at = Some(now_iso());
         if e.retirement_announced {
             debug!(
@@ -3458,10 +3431,7 @@ deliveries resume"
                 );
                 true
             }
-            // The listing is the thing that is wrong, which is the whole
-            // of this bug, so this hold is paced but never given up on.
-            StillOurs::Mentioned | StillOurs::Unproven => self.note_paced_hold(repo, number, false),
-            StillOurs::OverMatched => self.note_paced_hold(repo, number, true),
+            StillOurs::Paced => self.note_paced_hold(repo, number),
         };
         if hold {
             return Ok(());
@@ -3554,7 +3524,6 @@ deliveries resume"
         let e = self.entry(repo, number);
         e.active = false;
         e.retirement_held_at = None;
-        e.retirement_holds = 0;
         e.retirement_announced = false;
         e.title = issue.title.clone();
         e.github_state = Some(github_state(&issue, st.pr.as_ref(), merged));
@@ -5230,15 +5199,6 @@ fn why_active(triggers: &[String]) -> (&'static str, &'static str) {
     }
 }
 
-/// Whether an item still mentions the bot: in its body, in a comment, or
-/// in one of a pull request's inline review comments. That is what puts it
-/// on the `mentioned` listing, so it is what says the listing was right to
-/// carry it. `allow::askers` already walks exactly that shape for the
-/// gate, so this asks it rather than walking the timeline again.
-fn mentions_bot(issue: &Issue, timeline: &[Value], login: &str) -> bool {
-    !crate::allow::askers(issue, timeline, &["mentioned".to_string()], login).is_empty()
-}
-
 /// What an open item said when it was re-read before retiring a session.
 #[derive(Debug, PartialEq, Eq)]
 enum StillOurs {
@@ -5249,93 +5209,18 @@ enum StillOurs {
     /// an assignment, its author, or a live review request. Cheap to ask
     /// and as authoritative as the listing derived from it.
     Certain,
-    /// A mention GitHub could have listed says so. The walk is expensive,
-    /// so it is paced, but the disagreement is the listing's, which is
-    /// the whole of issue #137, so it is never given up on.
-    Mentioned,
-    /// A mention only somewhere GitHub's own listing cannot see it: inside
-    /// code, or in a pull request's review comments. The matcher
-    /// over-matches on purpose, so this is the reading that is bounded.
-    OverMatched,
-    /// The re-check could not be made. No evidence either way, so the item
-    /// keeps the benefit of the doubt, and nothing is counted against it
-    /// for a question nobody managed to ask.
-    Unproven,
+    /// A mention says so, or a re-check could not be made. The walk that
+    /// answers it is expensive, so it is paced.
+    Paced,
 }
 
-/// Where a mention was found, which decides whether GitHub's `mentioned`
-/// listing could have seen it.
-#[derive(Debug, PartialEq, Eq)]
-enum Mention {
-    /// In the item's body or a plain comment, outside code: GitHub indexes
-    /// this, so a listing that drops the item is the thing that is wrong.
-    Listable,
-    /// Only where GitHub does not look: inside a code span or fence, or in
-    /// a batch of review comments.
-    Unlistable,
-}
-
-/// The text with fenced blocks and inline code spans dropped, which is
-/// roughly what GitHub's mention filter sees: it runs over rendered HTML
-/// and never looks inside `pre` or `code`.
-fn without_code(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut fenced = false;
-    for line in text.lines() {
-        let start = line.trim_start();
-        // A backtick fence's info string may not itself contain backticks,
-        // so ```` ```code``` ```` opens no fence: it is a paragraph, and
-        // GitHub links any mention in it.
-        let fence = start.starts_with("~~~")
-            || (start.starts_with("```") && !start.trim_start_matches('`').contains('`'));
-        if fence {
-            fenced = !fenced;
-            continue;
-        }
-        if fenced {
-            continue;
-        }
-        // Backticks alternate between outside a span and inside one, so an
-        // odd count means there is no span here at all, just a stray
-        // backtick. Stripping on that reading would drop a mention GitHub
-        // does link, and dropping one is the reading that ends a session.
-        if line.matches('`').count() % 2 == 0 {
-            for (i, part) in line.split('`').enumerate() {
-                if i % 2 == 0 {
-                    out.push_str(part);
-                    out.push(' ');
-                }
-            }
-        } else {
-            out.push_str(line);
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// Whether an item still mentions the bot, and whether GitHub could have
-/// listed the mention. `allow::askers` decides what counts as a mention,
-/// so the gate that lets a session on and the check that keeps it on
-/// agree; this only adds where the mention was.
-fn mention_kind(issue: &Issue, timeline: &[Value], login: &str) -> Option<Mention> {
-    // The strict reading: a mention GitHub itself would link, outside the
-    // code its own filter never sees. Anything only the looser reading
-    // finds is this daemon's over-match, not the listing's mistake.
-    let listable = |b: &str| crate::allow::github_links(&without_code(b), login);
-    if issue.body.as_deref().is_some_and(listable) {
-        return Some(Mention::Listable);
-    }
-    for ev in timeline {
-        let commented = matches!(
-            crate::github::value_str(ev, &["event"]),
-            Some("commented" | "reviewed")
-        );
-        if commented && crate::github::value_str(ev, &["body"]).is_some_and(listable) {
-            return Some(Mention::Listable);
-        }
-    }
-    mentions_bot(issue, timeline, login).then_some(Mention::Unlistable)
+/// Whether an item still mentions the bot: in its body, in a comment, or
+/// in one of a pull request's inline review comments. That is what puts it
+/// on the `mentioned` listing, so it is what says the listing was right to
+/// carry it. `allow::askers` already walks exactly that shape for the
+/// gate, so this asks it rather than walking the timeline again.
+fn mentions_bot(issue: &Issue, timeline: &[Value], login: &str) -> bool {
+    !crate::allow::askers(issue, timeline, &["mentioned".to_string()], login).is_empty()
 }
 
 fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
@@ -10513,235 +10398,6 @@ mod tests {
         );
     }
 
-    /// The matcher over-matches GitHub on purpose, so an item GitHub will
-    /// never list again can read as the bot's for ever. The hold is
-    /// bounded: past a few re-checks the listings are believed instead,
-    /// so the daemon cannot hold a session no person is able to release.
-    #[tokio::test]
-    async fn a_hold_gives_way_to_the_listings_once_they_have_disagreed_long_enough() {
-        let _sandbox = crate::config::test_support::sandbox();
-        let stub = GitHubStub::start().await;
-        let r = repo();
-        // A mention the matcher sees and GitHub's listing does not: in a
-        // code span, which GitHub does not linkify.
-        stub.set_issue(
-            5,
-            json!({
-                "number": 5, "title": "t", "body": "a log line: `@bot`",
-                "html_url": "https://gh/5", "state": "open", "user": {"login": "alice"},
-                "created_at": "x", "updated_at": "u1"
-            }),
-        );
-        stub.set_timeline(5, vec![]);
-        let mut e = engine_at(&stub.base);
-        let d = crate::driver::StubDriver::new(DriverKind::Orca);
-        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
-        e.cfg.repos = vec![r.clone()];
-        seeded(&mut e, 5, Some("bot/issue-5"), true);
-        {
-            let st = e.entry(&r, 5);
-            st.triggers = vec!["mentioned".into()];
-            st.worktree_id = Some("w5".into());
-            st.worktree_path = Some("/w/5".into());
-            st.terminal_handle = Some("t5".into());
-        }
-        d.seed("w5", "t5", READY_SCREEN);
-
-        // Every re-check finds the mention and holds, up to the bound.
-        for n in 1..=MAX_RETIREMENT_HOLDS {
-            e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
-            e.tick_repo(&r).await.unwrap();
-            assert!(e.entry(&r, 5).active, "gave up after {n} of the re-checks");
-            assert_eq!(e.entry(&r, 5).retirement_holds, n);
-            // A pass inside the window is free: the bound counts
-            // re-checks, not passes, so it is an hour rather than a
-            // minute of disagreement.
-            e.tick_repo(&r).await.unwrap();
-            assert_eq!(
-                e.entry(&r, 5).retirement_holds,
-                n,
-                "a pass inside the hold was counted against the item"
-            );
-        }
-
-        // Nor may a pass inside the window refresh the stamp: a hold that
-        // rolled forward would never expire, so the walk that advances
-        // the bound would never happen again.
-        // Inside the ten-minute window, but old enough that a refresh
-        // would be visible: `now_iso` has one-second resolution.
-        let stamp = (chrono::Utc::now() - chrono::Duration::minutes(5))
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        e.entry(&r, 5).retirement_held_at = Some(stamp.clone());
-        e.tick_repo(&r).await.unwrap();
-        assert_eq!(
-            e.entry(&r, 5).retirement_held_at.as_deref(),
-            Some(stamp.as_str()),
-            "the hold rolled forward instead of expiring"
-        );
-
-        // One more, and the listings win.
-        e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
-        e.tick_repo(&r).await.unwrap();
-        assert!(
-            !e.entry(&r, 5).active,
-            "held past the bound on a mention GitHub does not list"
-        );
-        assert_eq!(e.entry(&r, 5).retirement_holds, 0, "the count outlived it");
-    }
-
-    /// The bound is only for the reading that can be wrong for ever. A
-    /// mention GitHub does index is the listing's mistake, which is this
-    /// whole bug, so it is held for as long as it stands; and a re-check
-    /// nobody could make is not counted against the item either.
-    #[tokio::test]
-    async fn a_mention_github_can_list_is_never_given_up_on() {
-        let _sandbox = crate::config::test_support::sandbox();
-        let stub = GitHubStub::start().await;
-        let r = repo();
-        let mut e = engine_at(&stub.base);
-        let d = crate::driver::StubDriver::new(DriverKind::Orca);
-        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
-        e.cfg.repos = vec![r.clone()];
-        seeded(&mut e, 5, Some("bot/issue-5"), true);
-        {
-            let st = e.entry(&r, 5);
-            st.triggers = vec!["mentioned".into()];
-            st.worktree_id = Some("w5".into());
-            st.worktree_path = Some("/w/5".into());
-            st.terminal_handle = Some("t5".into());
-        }
-        d.seed("w5", "t5", READY_SCREEN);
-        stub.set_issue(
-            5,
-            json!({
-                "number": 5, "title": "t", "body": "@bot what do you think?",
-                "html_url": "https://gh/5", "state": "open", "user": {"login": "alice"},
-                "created_at": "x", "updated_at": "u1"
-            }),
-        );
-        stub.set_timeline(5, vec![]);
-        for _ in 0..(MAX_RETIREMENT_HOLDS + 3) {
-            e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
-            e.tick_repo(&r).await.unwrap();
-        }
-        assert!(
-            e.entry(&r, 5).active,
-            "gave up on a mention GitHub indexes, which is the reported bug"
-        );
-        assert_eq!(
-            e.entry(&r, 5).retirement_holds,
-            0,
-            "an indexable mention was counted against the item"
-        );
-
-        // The same for a re-check nobody could make: item 6 is a pull
-        // request whose review request cannot be read, because the stub
-        // answers 500 for a pull it was never given.
-        seeded(&mut e, 6, Some("bot/issue-6"), true);
-        {
-            let st = e.entry(&r, 6);
-            st.triggers = vec!["review_requested".into()];
-            st.worktree_id = Some("w6".into());
-            st.worktree_path = Some("/w/6".into());
-            st.terminal_handle = Some("t6".into());
-        }
-        d.seed("w6", "t6", READY_SCREEN);
-        stub.set_issue(
-            6,
-            json!({
-                "number": 6, "title": "t", "body": "nothing here",
-                "html_url": "https://gh/6", "state": "open", "user": {"login": "alice"},
-                "pull_request": {"url": "https://gh/pulls/6"},
-                "created_at": "x", "updated_at": "u1"
-            }),
-        );
-        for _ in 0..(MAX_RETIREMENT_HOLDS + 3) {
-            e.entry(&r, 6).retirement_held_at = Some(EXPIRED.into());
-            e.tick_repo(&r).await.unwrap();
-        }
-        assert!(
-            e.entry(&r, 6).active,
-            "retired on a question nobody managed to ask"
-        );
-        assert_eq!(e.entry(&r, 6).retirement_holds, 0);
-        assert!(
-            e.entry(&r, 6).retirement_held_at.is_some(),
-            "an unanswerable re-check was treated as an answer"
-        );
-    }
-
-    /// The code stripper decides which mentions the bound may end a
-    /// session over, so everything it is unsure about has to read as one
-    /// GitHub could have listed. A stray backtick is not a code span, and
-    /// a line of prose that opens with backticks is not a fence.
-    #[test]
-    fn the_code_stripper_keeps_what_it_is_not_sure_is_code() {
-        let kept = |body: &str| {
-            let issue = issue(5, "alice", None);
-            let issue = Issue {
-                body: Some(body.to_string()),
-                ..issue
-            };
-            mention_kind(&issue, &[], "bot")
-        };
-        // Really inside code: GitHub links neither, so both are the
-        // over-match this daemon makes and the bound is allowed to end.
-        assert_eq!(kept("a log line: `@bot`"), Some(Mention::Unlistable));
-        assert_eq!(
-            kept("before\n```\n@bot in a fence\n```\nafter"),
-            Some(Mention::Unlistable)
-        );
-        assert_eq!(
-            kept("before\n~~~\n@bot in a tilde fence\n~~~\nafter"),
-            Some(Mention::Unlistable)
-        );
-        // Not code, however it looks. GitHub links every one of these, so
-        // a listing that drops the item is what is wrong, not the match.
-        for body in [
-            "The `--force flag is gone, @bot can you confirm?",
-            "It uses `a` and `b, so @bot please look",
-            "```code``` is how you fence, @bot",
-            "@bot plain and simple",
-            "`code` then @bot after it",
-        ] {
-            assert_eq!(kept(body), Some(Mention::Listable), "lost: {body:?}");
-        }
-        // And a login that names somebody else is this daemon's own
-        // over-match, whether or not it sits in prose.
-        assert_eq!(kept("ping @bot_2 about this"), Some(Mention::Unlistable));
-        assert_eq!(kept("see @bot.foo for that"), Some(Mention::Unlistable));
-        assert_eq!(kept("nothing here at all"), None);
-    }
-
-    /// A mention in an ordinary comment is the way most of these sessions
-    /// start, and is the shape of this bug: GitHub lists it, so a listing
-    /// that drops the item is wrong and the hold is never given up on.
-    #[test]
-    fn a_mention_in_a_comment_is_one_github_could_have_listed() {
-        let plain = issue(5, "alice", None);
-        let event = |kind: &str, body: &str| {
-            json!({"event": kind, "body": body, "user": {"login": "alice"},
-                   "actor": {"login": "alice"}, "html_url": "https://gh/5#c1"})
-        };
-        for kind in ["commented", "reviewed"] {
-            assert_eq!(
-                mention_kind(&plain, &[event(kind, "@bot what do you think?")], "bot"),
-                Some(Mention::Listable),
-                "a {kind} event was not read as listable"
-            );
-        }
-        // A batch of review comments is somewhere GitHub's listing cannot
-        // look, so a mention only there is the bounded reading.
-        let batch = json!({
-            "event": "line-commented",
-            "comments": [{"body": "@bot please look", "user": {"login": "alice"}}]
-        });
-        assert_eq!(
-            mention_kind(&plain, &[batch], "bot"),
-            Some(Mention::Unlistable)
-        );
-    }
-
     /// Only the paced arm keeps the bookkeeping. An item held on something
     /// read straight off it clears the hold, so an assignment cannot
     /// suppress a mention re-check that has never run.
@@ -10763,7 +10419,6 @@ mod tests {
             st.terminal_handle = Some("t5".into());
             // A hold left by an earlier pass.
             st.retirement_held_at = Some(now_iso());
-            st.retirement_holds = 3;
         }
         d.seed("w5", "t5", READY_SCREEN);
         // Still assigned, so the item itself answers and no walk is paced.
@@ -10783,7 +10438,6 @@ mod tests {
             e.entry(&r, 5).retirement_held_at.is_none(),
             "an assignment left a stamp pacing a walk it never made"
         );
-        assert_eq!(e.entry(&r, 5).retirement_holds, 0);
 
         // So the moment the assignment goes, the mention is re-checked at
         // once rather than waiting out a stamp it never earned.
@@ -10895,7 +10549,6 @@ mod tests {
             // no reason to look at the item: the hold must still clear.
             st.updated_at = Some("u2".into());
             st.retirement_held_at = Some(now_iso());
-            st.retirement_holds = 4;
         }
         d.seed("w5", "t5", READY_SCREEN);
         stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
@@ -10904,11 +10557,6 @@ mod tests {
         assert!(
             e.entry(&r, 5).retirement_held_at.is_none(),
             "the hold survived the item coming back onto a listing"
-        );
-        assert_eq!(
-            e.entry(&r, 5).retirement_holds,
-            0,
-            "the count survived the item coming back onto a listing"
         );
     }
 

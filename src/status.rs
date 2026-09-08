@@ -99,13 +99,6 @@ pub struct Session {
     /// still active and `ssf release` still refuses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retirement_held_at: Option<String>,
-    /// How many re-checks have found this item the bot's only somewhere
-    /// GitHub could not have listed it. Those are the ones the daemon
-    /// eventually gives up on, so the count says how close such an item
-    /// is to being let go; an item held on a mention GitHub could have
-    /// listed is never given up on and leaves this at zero.
-    #[serde(skip_serializing_if = "is_zero")]
-    pub retirement_holds: u32,
     /// When `ssf release` or `ssf purge` removed the workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
@@ -608,7 +601,6 @@ fn join(
         bound_at: item.bound_at.clone(),
         retired_at: item.retired_at.clone(),
         retirement_held_at: item.retirement_held_at.clone(),
-        retirement_holds: item.retirement_holds,
         released_at: item.released_at.clone(),
         workspace_state: workspace_state(item, ws, orca_available),
         pr: item.pr.clone(),
@@ -655,10 +647,6 @@ pub fn one_line(text: &str, max: usize) -> String {
 }
 
 /// The `ssf peers` table: one block per session, grouped by repository.
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
 pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
     let mut out = String::new();
     let mut current_repo = "";
@@ -967,7 +955,6 @@ mod tests {
     fn a_held_retirement_is_reported() {
         let mut held = item(1, Some("r1::/w/one"));
         held.retirement_held_at = Some("2026-09-08T14:30:55Z".into());
-        held.retirement_holds = 2;
         let st = state_with(vec![held, item(2, Some("r1::/w/two"))]);
         let s = sessions(&cfg(), &st, None);
         assert_eq!(
@@ -975,11 +962,9 @@ mod tests {
             Some("2026-09-08T14:30:55Z")
         );
         assert!(s[1].retirement_held_at.is_none());
-        assert_eq!(s[0].retirement_holds, 2);
         // Both are omitted from the JSON entirely when there is no hold.
         let json = serde_json::to_string(&s[1]).unwrap();
         assert!(!json.contains("retirement_held"), "{json}");
-        assert!(!json.contains("retirement_holds"), "{json}");
     }
 
     #[test]
