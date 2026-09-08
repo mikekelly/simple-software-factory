@@ -2803,6 +2803,22 @@ exit 0
         assert_eq!(up.vm.running_state(), Some(true));
     }
 
+    #[tokio::test]
+    async fn status_json_keeps_an_unanswered_lima_probe_unknown() {
+        let t = Fake::listing(Listing::Fails);
+        let status = t.vm.status().await;
+
+        assert_eq!(status.running, None);
+        assert!(status.probe_error.is_some());
+        let json = serde_json::to_value(status).unwrap();
+        assert_eq!(json["running"], serde_json::Value::Null);
+        assert!(
+            json["probe_error"]
+                .as_str()
+                .is_some_and(|error| error.contains("failed to lock the lima home"))
+        );
+    }
+
     #[test]
     fn a_liveness_probe_that_never_returns_is_cut_off_rather_than_waited_out() {
         // The gate asks this in front of every forwarded command, with a

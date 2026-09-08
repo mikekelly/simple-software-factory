@@ -47,8 +47,10 @@ it on its `backend:` line, and `--json` carries it as `backend` next to
 `instance` and `lima_dir` (the lima instance's name and the directory lima
 keeps it in; both null under Firecracker). A `limactl list` that does not
 answer is reported as such, not as a missing instance: the `instance:` and
-`state:` lines say `unknown` and give lima's error, and `--json` carries it
-as `probe_error`.
+`state:` lines say `unknown` and give lima's error. In `--json`, `running`
+is `null` rather than `false` when lima could not answer, and `probe_error`
+gives the reason; consumers can therefore distinguish an unknown state from
+a VM known to be stopped.
 
 The tooling the backend needs on the host is `limactl`, and
 `qemu-system-<arch>` wherever lima will drive the VM with qemu (always on

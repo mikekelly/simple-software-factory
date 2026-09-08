@@ -2340,11 +2340,9 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                 println!(
                     "state:    {}",
                     match (&st.probe_error, st.running, st.firecracker_pid) {
-                        // Same again: `running` is false because nothing
-                        // could be asked, not because the VM is stopped.
                         (Some(_), ..) => "unknown (lima did not answer)".to_string(),
-                        (None, true, Some(p)) => format!("running (firecracker pid {p})"),
-                        (None, true, None) => "running".to_string(),
+                        (None, Some(true), Some(p)) => format!("running (firecracker pid {p})"),
+                        (None, Some(true), None) => "running".to_string(),
                         _ => "stopped".to_string(),
                     }
                 );

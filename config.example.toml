@@ -47,7 +47,8 @@
 # machine: a Firecracker microVM on Linux, a lima instance on macOS; see
 # `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf run` starts and
 # watches the VM, and `ssf status`, `tell`, `peers`, `sub`, `release`, `purge`
-# and `doctor` run inside it.
+# and `doctor` run inside it. `ssf vm status --json` reports `running = null`
+# (with `probe_error`) when lima cannot answer, rather than claiming it stopped.
 [vm]
 # enabled = false
 # name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>; at most 7 characters under lima)

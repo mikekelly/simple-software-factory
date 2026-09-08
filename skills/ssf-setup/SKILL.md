@@ -81,7 +81,9 @@ document links to.
    newer one. The document says where the alternatives branch off. On
    Debian, Ubuntu and Fedora the package does not bring herdr; install it
    as the document's step 1 says before expecting `ssf doctor`'s herdr
-   line to pass.
+   line to pass. When reading `ssf vm status --json`, treat `running =
+   null` as an unanswered lima probe, not a stopped VM; `probe_error`
+   names why the host could not ask.
 8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or

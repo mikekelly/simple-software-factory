@@ -270,7 +270,9 @@ pub struct VmStatus {
     pub lima_dir: Option<String>,
     /// Firecracker: the root image is built; lima: the instance exists.
     pub image: bool,
-    pub running: bool,
+    /// Whether the host knows the VM is running. Null when lima could
+    /// not answer the probe; use `probe_error` for why.
+    pub running: Option<bool>,
     /// Firecracker's and gvproxy's PIDs; null under lima.
     pub firecracker_pid: Option<u32>,
     pub gvproxy_pid: Option<u32>,
@@ -2039,10 +2041,12 @@ impl Vm {
             BackendKind::Firecracker => (None, None),
         };
         let running = match backend {
-            BackendKind::Firecracker => self.running(),
-            BackendKind::Lima => inst.as_ref().is_some_and(|i| i.is_running()),
+            BackendKind::Firecracker => Some(self.running()),
+            BackendKind::Lima => probe_error
+                .is_none()
+                .then(|| inst.as_ref().is_some_and(|i| i.is_running())),
         };
-        let ssh = running && self.ssh_ok();
+        let ssh = running == Some(true) && self.ssh_ok();
         let sizes = self.sizes();
         VmStatus {
             vcpus: sizes.vcpus,
