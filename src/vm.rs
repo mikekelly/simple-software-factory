@@ -43,7 +43,6 @@ use crate::config::{
     Config, Credential, DriverKind, GitConfig, SigningKey, VmConfig, expand_tilde,
 };
 use crate::platform;
-pub use lima::check_name;
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
@@ -372,7 +371,9 @@ pub struct Stray {
     /// The command that removes it, for the person to run. The name is
     /// in it: a remedy whose argument has to be worked out is not a
     /// remedy, and this name is precisely the one they no longer have in
-    /// their config.
+    /// their config. Shell-quoted, all of them: these names come off a
+    /// directory listing ssf did not create, so a space in one turns a
+    /// pasted remedy into a command that does something else.
     pub remove: String,
 }
 
@@ -388,7 +389,7 @@ pub enum StrayKind {
 
 impl Stray {
     pub fn lima_instance(name: String) -> Self {
-        let remove = format!("limactl delete {name}");
+        let remove = format!("limactl delete {}", shell_join(std::slice::from_ref(&name)));
         Stray {
             name,
             kind: StrayKind::LimaInstance,
@@ -400,7 +401,10 @@ impl Stray {
         // Lima refuses to delete a disk still attached to an instance,
         // and `sort_strays` puts instances first for that reason -- but
         // a person reads one line, not an order.
-        let remove = format!("limactl disk delete {name}");
+        let remove = format!(
+            "limactl disk delete {}",
+            shell_join(std::slice::from_ref(&name))
+        );
         Stray {
             name,
             kind: StrayKind::LimaDisk,
@@ -1245,6 +1249,14 @@ impl Vm {
     /// VM directories under `[vm] dir` that this configuration does not
     /// name, each holding a `data.ext4` of its own.
     ///
+    /// Asked under *both* backends, because `[vm] dir` is shared by
+    /// them: a VM built under Firecracker and then switched to lima
+    /// leaves its old directory, and its clones, right where they were.
+    /// Treating this as a Firecracker question left `ssf uninstall`
+    /// calling that directory "safe to remove" under lima -- the same
+    /// sentence, on the other backend. Nothing under `[vm] dir` has a
+    /// `data.ext4` when lima made it: lima's disks are in its own home.
+    ///
     /// A changed `[vm] name` orphans one under Firecracker exactly as it
     /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
     /// and the data disk is inside it, so the clones and worktrees of
@@ -1256,11 +1268,11 @@ impl Vm {
     /// Only directories holding a `data.ext4` count. The images and
     /// downloads share `[vm] dir` with them and are genuinely safe.
     fn fc_strays(&self) -> Vec<Stray> {
-        // `[vm] name` empty would make this VM's own directory the whole
-        // of `[vm] dir`, and every sibling a child of it. `check_name`
-        // refuses that now; this is the second lock, because the first
-        // one being wrong would have the report call the directory the
-        // destroy step is about to remove "untouched".
+        // A `[vm] name` that makes this VM's own directory the whole of
+        // `[vm] dir` -- empty, or `.` -- would make every sibling a
+        // child of it, and the report would call the very directory the
+        // destroy step removes "untouched". Nothing refuses such a name
+        // yet (#169); this refuses to build a report on one.
         if self.dir == self.base {
             return Vec::new();
         }
@@ -1270,7 +1282,14 @@ impl Vm {
         let mut strays: Vec<Stray> = entries
             .flatten()
             .map(|e| e.path())
-            .filter(|p| *p != self.dir && p.join("data.ext4").exists())
+            // A real directory, not a symlink to one: `rm -rf` on a link
+            // removes the link and leaves what it pointed at, so a
+            // remedy over one would not be a remedy.
+            .filter(|p| {
+                *p != self.dir
+                    && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
+                    && p.join("data.ext4").exists()
+            })
             .map(|p| Stray::directory(&p))
             .collect();
         strays.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1285,7 +1304,12 @@ impl Vm {
     pub fn strays_on_filesystem(&self) -> Vec<Stray> {
         match self.backend() {
             BackendKind::Firecracker => self.fc_strays(),
-            BackendKind::Lima => self.strays_on_disk(),
+            BackendKind::Lima => {
+                let mut strays = self.fc_strays();
+                strays.extend(self.strays_on_disk());
+                lima::sort_strays(&mut strays);
+                strays
+            }
         }
     }
 
@@ -1305,7 +1329,14 @@ impl Vm {
                     strays: self.fc_strays(),
                 }
             }
-            BackendKind::Lima => self.lima_survey(),
+            BackendKind::Lima => {
+                let mut survey = self.lima_survey();
+                // `[vm] dir` is shared by the backends, so its strays
+                // are lima's business as much as Firecracker's.
+                survey.strays.splice(0..0, self.fc_strays());
+                lima::sort_strays(&mut survey.strays);
+                survey
+            }
         }
     }
 
@@ -2258,11 +2289,17 @@ impl Vm {
             BackendKind::Firecracker => (None, None, self.fc_strays()),
         };
         if backend == BackendKind::Lima {
-            // The disks are a second listing and this command does not
-            // need it for anything else, so the filesystem answers.
-            strays.extend(self.disk_strays_on_disk());
-            lima::sort_strays(&mut strays);
+            // The disks are a second listing, and lima's answer is
+            // better than the filesystem's where it can be had -- two
+            // commands reporting different strays for the same machine
+            // is its own kind of wrong.
+            match self.lima_disks() {
+                Ok(all) => strays.extend(self.split_disks(all).1),
+                Err(_) => strays.extend(self.disk_strays_on_disk()),
+            }
         }
+        strays.extend(self.fc_strays());
+        lima::sort_strays(&mut strays);
         let running = match backend {
             BackendKind::Firecracker => Some(self.running()),
             BackendKind::Lima => probe_error

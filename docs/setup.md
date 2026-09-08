@@ -1033,30 +1033,34 @@ not. `--yes` skips the question for scripted use.
 
 Anything this configuration does not name -- what changing `[vm] name`
 leaves behind, since renaming it in the config renames nothing on the
-machine -- is listed under **keep**, with the command that removes it:
-a lima instance or data disk still in lima's home, or, under Firecracker,
-the old VM's directory under `[vm] dir` with its data disk inside. The `[vm] dir` line calls itself safe to remove
-only when no such directory is in it, in the report and in the list
-printed at the end alike. `ssf uninstall` never removes one and `--force`
-does not reach it: ssf cannot tell a VM you renamed away to keep from one
-you abandoned, and only one of those is safe to delete. `ssf doctor` and
-`ssf vm status` name them too.
+machine -- is listed under **keep**, with the command that removes it: a
+lima instance or data disk still in lima's home, or, under Firecracker,
+the old VM's directory under `[vm] dir` with its data disk inside --
+that last one on either backend, since `[vm] dir` is shared by them. The
+`[vm] dir` line calls itself safe to remove only when no such directory
+is in it, in the report and in the list printed at the end alike. `ssf
+uninstall` never removes one and `--force` does not reach it: ssf cannot
+tell a VM you renamed away to keep from one you abandoned, and only one
+of those is safe to delete. `ssf doctor` and `ssf vm status` name them
+too.
 
-What it keeps, and lists at the end: the clones and worktrees under
-`~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
-dir` (the image and downloads, safe to remove), and, unless you pass
-`--data`, `~/.config/ssf` (config and the bot's key) and
-`~/.local/state/ssf` (state, and the marker that keeps a disabled service
-off, so a reinstall stays stopped until `ssf ui service enable`; with
-`--data` gone, a reinstall starts the service). Under lima the instance
-and the data disk go out of lima's own home with `vm destroy`, but
-`~/.lima` itself stays, holding lima's cache of downloaded images; the
-report does not name it, so remove it by hand once nothing else of yours
-uses lima. The bot GitHub account itself is not touched, nor its gh
-sign-in. `ssf status` afterwards says not signed in and stopped; the
-watched repositories and the records of past items still show until
-`--data` (or a reinstall from scratch) clears them. With the VM gone the
-config's `vm.enabled` is cleared, so `status` does not go looking for it.
+What it keeps, and lists at the end (the same list both times): the
+clones and worktrees under `~/ssf/projects` (or Orca's projects; may
+hold unpushed work), the `[vm] dir` (the image and downloads, safe to
+remove -- except for a VM directory a changed `[vm] name` left in it,
+which is listed on its own), and, unless you pass `--data`,
+`~/.config/ssf` (config and the bot's key) and `~/.local/state/ssf`
+(state, and the marker that keeps a disabled service off, so a reinstall
+stays stopped until `ssf ui service enable`; with `--data` gone, a
+reinstall starts the service). Under lima the instance and the data disk
+go out of lima's own home with `vm destroy`, but `~/.lima` itself stays,
+holding lima's cache of downloaded images; the report does not name it,
+so remove it by hand once nothing else of yours uses lima. The bot
+GitHub account itself is not touched, nor its gh sign-in. `ssf status`
+afterwards says not signed in and stopped; the watched repositories and
+the records of past items still show until `--data` (or a reinstall from
+scratch) clears them. With the VM gone the config's `vm.enabled` is
+cleared, so `status` does not go looking for it.
 
 ## Checklist
 

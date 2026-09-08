@@ -2374,10 +2374,11 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                 );
                 for stray in &st.strays {
                     println!(
-                        "stray:    {} {} ({})",
+                        "stray:    {} {}, which this config does not name; `{}` removes it{}",
                         stray.what(),
                         stray.name,
-                        stray.remove
+                        stray.remove,
+                        stray.caveat()
                     );
                 }
                 println!(
