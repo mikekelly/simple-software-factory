@@ -32,9 +32,12 @@ else
     tail -n 20 "$log"
     exit 1
 fi
-# The seed unit is ordered after cloud-init's final stage, which is what
-# runs this script, so it is queued rather than waited for: it starts the
-# moment provisioning ends, and the host waits for ssh as `ssf`.
+# The units were enabled after multi-user.target was processed, so this
+# boot has to start them itself; queued rather than waited for, since they
+# are ordered after cloud-init's final stage, which is what runs this
+# script. The seed runs the moment provisioning ends and the host waits for
+# ssh as `ssf`; herdr and the daemon follow it (a build stops the VM again,
+# a reset's start goes on to use them).
 systemctl daemon-reload
-systemctl start --no-block ssf-seed.service
+systemctl start --no-block ssf-seed.service herdr-server.service ssf.service
 echo "ssf-provision: DONE"
