@@ -234,21 +234,25 @@ impl Facts {
         }
     }
 
-    /// The guest answered on ssh, which settles every question the
-    /// backend could not: there is a VM, it is up, it is startable, and
-    /// it has the data disk it mounts at boot (the guest cannot reach
-    /// `ssf` over ssh before that mount). Without this the refusal
-    /// blamed `limactl` for a report the guest itself failed to give and
-    /// sent the person to fix the wrong thing -- `limactl list` will not
-    /// make the guest answer, so it would not clear on the next run
-    /// either -- and the report hedged with "if it is there" directly
-    /// above workspaces just fetched from that guest.
+    /// The guest answered on ssh, which settles what the backend could
+    /// not: there is a VM, it is up, and it is startable. Without this
+    /// the refusal blamed `limactl` for a report the guest itself failed
+    /// to give and sent the person to fix the wrong thing -- `limactl
+    /// list` will not make the guest answer, so it would not clear on
+    /// the next run either -- and the report hedged with "if it is
+    /// there" directly above workspaces just fetched from that guest.
+    ///
+    /// The data disk is *not* settled by it. Under lima the sshd that
+    /// answered is lima's own and is not gated on the mount, so an
+    /// instance whose disk was deleted by hand answers ssh perfectly
+    /// well; asserting a disk from that would promise to destroy clones
+    /// that are not there, and refuse over them.
     pub fn ssh_answered(&mut self, vm: &vm::Vm) {
         let survey = vm::Survey {
             present: Some(true),
             running: Some(true),
             startable: true,
-            data: Some(true),
+            data: self.vm_data,
         };
         self.vm_present = survey.present;
         self.vm_running = survey.running;
@@ -595,6 +599,18 @@ fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Sur
 /// refusal, so they cannot drift apart.
 fn vm_uncheckable(facts: &Facts) -> (String, String) {
     let name = &facts.vm_name;
+    // Host mode is not a state of the VM but of the configuration: the
+    // guest is never asked, whatever it would have answered, so none of
+    // the remedies below would clear this one. Starting the VM does not
+    // help while ssf is not pointed at it.
+    if !facts.vm_mode {
+        return (
+            format!(
+                "VM {name} still has a data disk, and `[vm] enabled = false` means ssf never asks its guest for anything"
+            ),
+            "point ssf back at it (`ssf config set vm.enabled true`) and run this again, so the clones and worktrees on that disk can be looked at".to_string(),
+        );
+    }
     match (facts.vm_running, facts.vm_startable, facts.vm_data) {
         (Some(true), _, _) => (
             format!("VM {name} gave no report"),
@@ -687,6 +703,14 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             Report::default()
         }
     } else {
+        // The host's own daemon answers for the workspaces on this
+        // machine. It knows nothing of the sessions that ran in a VM,
+        // and `[vm] enabled = false` does not remove one: the disk
+        // survives the flag, and the destroy step below is not gated on
+        // it. So an empty `items:` here means "not looked at", not
+        // "nothing to lose", and a data disk that may hold clones stops
+        // the command just as it does in VM mode.
+        opts.vm_unchecked = unchecked_workspaces(facts.vm_data);
         report().await
     };
     print!("{}", render(&facts, &report, &opts));
@@ -1445,6 +1469,97 @@ mod tests {
             let (_, remedy) = vm_uncheckable(&f(running, startable, None));
             assert!(!remedy.contains("ssf vm start"), "{remedy}");
             assert!(!remedy.contains("ssf vm restart"), "{remedy}");
+        }
+    }
+
+    #[test]
+    fn host_mode_does_not_destroy_a_data_disk_it_never_asked_about() {
+        // `[vm] enabled = false` does not remove a VM: the instance and
+        // the data disk survive the flag, and the destroy step is not
+        // gated on it. The host's own daemon answers for this machine's
+        // workspaces and knows nothing of the sessions that ran in the
+        // guest, so `items: (none)` there is "not looked at" -- and
+        // printing it under a line promising to delete a disk of clones,
+        // with no refusal in between, is how `--yes` came to destroy
+        // them.
+        let host = Facts {
+            vm_mode: false,
+            vm_name: "factory".into(),
+            vm_present: Some(true),
+            vm_running: Some(false),
+            vm_startable: true,
+            vm_data: Some(true),
+            vm_disk: Some("ssf-factory".into()),
+            ..Facts::default()
+        };
+        let unchecked = Opts {
+            vm_unchecked: unchecked_workspaces(host.vm_data),
+            ..Opts::default()
+        };
+        assert!(
+            unchecked.vm_unchecked,
+            "a data disk stops it in host mode too"
+        );
+        let why = hard_stop(&host, &Report::default(), &unchecked, false).unwrap();
+        assert!(why.contains("`[vm] enabled = false`"), "{why}");
+        assert!(why.contains("vm.enabled true"), "{why}");
+        // Starting the VM would not clear this one: nothing asks the
+        // guest while the configuration does not point at it.
+        assert!(!why.contains("`ssf vm start`"), "{why}");
+        let text = render(&host, &Report::default(), &unchecked);
+        assert!(!text.contains("(none)"), "{text}");
+        // A host that never had a VM is untouched by any of it.
+        let bare = Facts {
+            vm_data: Some(false),
+            ..host.clone()
+        };
+        assert!(!unchecked_workspaces(bare.vm_data));
+        assert!(hard_stop(&bare, &Report::default(), &Opts::default(), false).is_none());
+    }
+
+    #[test]
+    fn ssh_answering_proves_the_guest_is_there_and_not_that_it_has_a_disk() {
+        // Under lima the sshd that answered is lima's own, and it is not
+        // gated on the data disk being mounted -- so an instance whose
+        // disk was deleted by hand answers ssh perfectly well. Reading a
+        // disk out of that would promise to destroy clones that are not
+        // there, and refuse over them.
+        let mut cfg = Config::default();
+        cfg.vm.name = "factory".into();
+        cfg.vm.dir = "/nonexistent/ssf-vm".into();
+        cfg.vm.backend = Some(vm::BackendKind::Lima);
+        let vm = vm::Vm::new(&cfg);
+        for (data, promises_clones) in [(Some(true), true), (Some(false), false), (None, true)] {
+            let mut f = Facts {
+                vm_mode: true,
+                vm_name: "factory".into(),
+                vm_present: None,
+                vm_running: None,
+                vm_startable: false,
+                vm_data: data,
+                ..Facts::default()
+            };
+            f.ssh_answered(&vm);
+            assert_eq!(f.vm_present, Some(true));
+            assert_eq!(f.vm_running, Some(true));
+            assert!(f.vm_startable);
+            assert_eq!(f.vm_data, data, "ssh says nothing about the disk");
+            let text = render(&f, &Report::default(), &Opts::default());
+            assert_eq!(
+                text.contains("clones and worktrees on its data disk"),
+                promises_clones,
+                "{text}"
+            );
+            // A disk lima could not be asked about is hedged, never
+            // promised as fact.
+            assert_eq!(
+                text.contains("if it is there, go with it"),
+                data.is_none(),
+                "{text}"
+            );
+            // Whatever the backend could not say, nothing is hedged
+            // about the instance any more.
+            assert!(!f.vm_removed.contains("instance ssf-factory if it is there"));
         }
     }
 

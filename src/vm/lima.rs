@@ -98,6 +98,14 @@ const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
 /// probes in a row, so a slow answer there must be waited for rather
 /// than turned into a "cannot tell".
 pub(super) const LIVENESS_LIMIT: Duration = Duration::from_secs(15);
+/// The two questions [`Vm::lima_survey`] asks, back to back, before
+/// `ssf uninstall` prints its first line. On the listing's own bound a
+/// lima that had stopped answering would hold the report silent for
+/// twice [`QUICK_LIMIT`] -- and unlike the callers that bound applies
+/// to, the survey is built to treat "could not be asked" as an answer
+/// of its own, with lima's filesystem behind it. Waiting longer buys it
+/// nothing it cannot get another way.
+const SURVEY_LIMIT: Duration = PROBE_LIMIT;
 /// `limactl create`, which downloads the base image the first time.
 const CREATE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// `limactl stop`: lima gives the guest minutes to shut down first.
@@ -774,14 +782,10 @@ impl Vm {
         cmd
     }
 
-    /// Run limactl for its output, within [`QUICK_LIMIT`]; stderr goes
-    /// into the error.
-    fn limactl_output(&self, args: &[&str]) -> Result<String> {
-        self.limactl_output_within(args, QUICK_LIMIT)
-    }
-
-    /// [`Vm::limactl_output`] with a bound of its own, for the calls that
-    /// legitimately take longer (or must be shorter) than a local lookup.
+    /// Run limactl for its output; stderr goes into the error. Every
+    /// caller names its own bound: a local lookup, a create that
+    /// downloads an image and a probe with a person waiting are not the
+    /// same wait.
     fn limactl_output_within(&self, args: &[&str], limit: Duration) -> Result<String> {
         let mut cmd = self.limactl();
         cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -869,8 +873,14 @@ impl Vm {
 
     /// The data disk, when lima has it.
     fn lima_disk(&self) -> Result<Option<Disk>> {
+        self.lima_disk_within(QUICK_LIMIT)
+    }
+
+    /// [`Vm::lima_disk`] with a bound of its own, for the survey that
+    /// asks it on a path with a person waiting.
+    fn lima_disk_within(&self, limit: Duration) -> Result<Option<Disk>> {
         let name = self.lima_disk_name();
-        let out = self.limactl_output(&["disk", "list", "--json"])?;
+        let out = self.limactl_output_within(&["disk", "list", "--json"], limit)?;
         Ok(parse_disks(&out).into_iter().find(|d| d.name == name))
     }
 
@@ -929,11 +939,11 @@ impl Vm {
     /// `startable`.
     pub(super) fn lima_survey(&self) -> Survey {
         let dir = self.dir.exists();
-        let instance = match self.lima_instance() {
+        let instance = match self.lima_instance_within(SURVEY_LIMIT) {
             Ok(i) => i,
             Err(e) => return self.lima_unanswered(dir, "the instance", &self.lima_name(), &e),
         };
-        let disk = match self.lima_disk() {
+        let disk = match self.lima_disk_within(SURVEY_LIMIT) {
             Ok(d) => Some(d.is_some()),
             Err(e) => {
                 warn!(
@@ -2219,6 +2229,10 @@ mod tests {
         // question keeps the listing's own bound, since it gives up
         // after MAX_UNANSWERED_PROBES rounds with no answer.
         assert!(LIVENESS_LIMIT < QUICK_LIMIT);
+        // The survey asks two of these in a row with a person waiting on
+        // the report, and has a filesystem fallback when neither
+        // answers.
+        assert!(SURVEY_LIMIT < QUICK_LIMIT);
     }
 
     #[test]
@@ -2633,6 +2647,19 @@ mod tests {
                 data: Some(true),
             }
         );
+    }
+
+    #[test]
+    fn a_disk_that_could_not_be_deleted_fails_the_step_with_the_instance_gone() {
+        // The destroy is two deletions and the second can fail on its
+        // own. It must stay a failure: `ssf uninstall` only writes
+        // `[vm] enabled = false` when the destroy succeeded, and a
+        // swallowed error here would turn the next run into a host-mode
+        // one over a data disk that is still there.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Answers);
+        let err = t.vm.lima_destroy().unwrap_err().to_string();
+        assert!(err.contains("disk list"), "{err}");
+        assert!(t.ran("delete -f ssf-one"), "{:?}", t.commands());
     }
 
     #[test]

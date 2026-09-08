@@ -994,9 +994,10 @@ come back with it.
    data disk that outlived its instance is too). Where lima itself will
    not answer -- `limactl` moved by an upgrade, off the PATH the
    service runs under, a stale `[vm] limactl` -- what settles it is
-   whether lima's home still holds the instance or the disk, so a
-   machine with nothing of lima's on it gets a plain `no VM` and one
-   that still has a disk of workspaces is never told it has none. Each
+   whether `[vm] dir` or lima's home still holds the instance or the
+   disk, so a machine with nothing of either on it gets a plain `no VM`
+   and one that still has a disk of workspaces is never told it has
+   none. Each
    step tolerates the thing being gone already, so a second run, or a
    run on a half-uninstalled machine, is fine. With the factory in the
    VM the report and the purge come from the guest, before it goes. The one
@@ -1014,12 +1015,14 @@ come back with it.
 
 What stops it: a workspace with uncommitted or unpushed work (an open
 item's too), one that cannot be checked (no origin, a git error), or a
-VM whose clones on its data disk cannot be checked -- it is stopped, it
-gives no report, its data disk outlived the instance that mounted it, or
-lima would not say whether it is running or whether that disk is there.
-Push or discard the work (`ssf vm start` to check a stopped VM; the
-message says what to do in each of the other cases, and it is never
-`ssf vm start`), or pass
+VM with a data disk whose clones cannot be checked -- it is stopped, it
+gives no report, the disk outlived the instance that mounted it, `[vm]
+enabled = false` means ssf never asks its guest, or lima would not say
+whether it is running or whether that disk is there. Only a data disk
+stops it: what `[vm] dir` holds without one is ssf's own template, ssh
+key and share, and goes without a word. Push or discard the work
+(`ssf vm start` to check a stopped VM; the message says what to do in
+each of the other cases, and it is never `ssf vm start`), or pass
 `--force` to go ahead: on the host the work stays where it is; in the VM
 the clones live on its data disk and are destroyed with it, checked or
 not. `--yes` skips the question for scripted use.
