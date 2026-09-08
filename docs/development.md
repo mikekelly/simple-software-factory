@@ -79,16 +79,28 @@ unauthenticated: the repository has to be public for the build to work.
 Cutting a release:
 
 1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
-   commit, tag `vX.Y.Z` and push the tag; make the GitHub release from it.
+   commit, tag `vX.Y.Z` and push the tag. The tag runs
+   `.github/workflows/release.yml`, which makes the GitHub release if
+   there is none and attaches `ssf_X.Y.Z-1_amd64.deb`,
+   `ssf-X.Y.Z-1.x86_64.rpm` and the bare static binary
+   `ssf-X.Y.Z-linux-x86_64` (a musl build via `packaging/linux/build.sh`
+   and nfpm), `ssf-X.Y.Z-1-x86_64.pkg.tar.zst` (from
+   `packaging/release/PKGBUILD` in an Arch container, the PKGBUILD
+   Omarchy's repository builds) and, best effort, `ssf-X.Y.Z-linux-aarch64`.
+   x86_64 only, like the microVM image. A run started by hand
+   (`workflow_dispatch`) builds the same from the working tree and leaves
+   workflow artifacts, no release. Locally, `packaging/linux/build.sh`
+   builds the .deb, .rpm and the bare binary into `packaging/linux/dist/`
+   (it needs `nfpm` and the musl target, and says so).
 2. In `packaging/release/`: `pkgver=X.Y.Z`, `pkgrel=1`, `updpkgsums`
    (downloads the tag tarball and writes its sha256; it needs the
    repository to be public, or the tarball fetched with a token into
    that directory first), `makepkg -fd` to check it builds from the
-   tarball, commit. Attach the `ssf-X.Y.Z-1-x86_64.pkg.tar.zst` it made
-   to the GitHub release: a development build (`0.1.0.r271.g06491ae`)
-   sorts *above* the release version (`0.1.0`) for pacman, so a machine
-   installed from one would not be upgraded by the package from Omarchy's
-   repository until the next tag.
+   tarball, commit. The workflow attaches the same package to the
+   release, so nothing is uploaded by hand. A development build
+   (`0.1.0.r271.g06491ae`) sorts *above* the release version (`0.1.0`)
+   for pacman, so a machine installed from one would not be upgraded by
+   the package from Omarchy's repository until the next tag.
 3. Once ssf is in Omarchy's repository, Omarchy's `sync-upstream` does step
    2 on its side and opens the PR there; a change to `depends`,
    `package()` or `ssf.install` still needs a PR to omarchy-pkgs with the
@@ -105,8 +117,9 @@ When it lands, `README.md` "Install" and `docs/setup.md` steps 2 and 11
 and the checklist's first item switch from "download the package from the latest release" to
 `sudo pacman -S ssf`, and this document's development-build note stays as
 it is. Until then the release carries the package file
-(`ssf-X.Y.Z-1-x86_64.pkg.tar.zst`, built with `makepkg -fd` in
-`packaging/release/`) and [Setup](setup.md) says "from the latest release".
+(`ssf-X.Y.Z-1-x86_64.pkg.tar.zst`, built by the workflow) and
+[Setup](setup.md) says "from the latest release"; the .deb and .rpm come
+from the release either way.
 
 ## Layout
 
@@ -128,7 +141,8 @@ it is. Until then the release carries the package file
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
 | `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
-| `packaging/` | the development PKGBUILD, systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs |
+| `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks |
+| `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 

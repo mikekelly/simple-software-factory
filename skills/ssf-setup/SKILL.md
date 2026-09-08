@@ -1,6 +1,6 @@
 ---
 name: ssf-setup
-description: Setup runbook for Simple Software Factory (ssf), the Omarchy daemon that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the Firecracker microVM (ssf vm build, vm.enabled, ssf vm login) or on the host with herdr or Orca, when writing or changing ~/.config/ssf/config.toml ([github], [git], [[repo]], [daemon], [vm]), writing a repository's SSF.md (including its gauntlet rule, the second pair of eyes ssf leaves to the agent), project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
+description: Setup runbook for Simple Software Factory (ssf), the Linux daemon (Omarchy, Arch, Debian/Ubuntu, Fedora) that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the Firecracker microVM (ssf vm build, vm.enabled, ssf vm login) or on the host with herdr or Orca, when writing or changing ~/.config/ssf/config.toml ([github], [git], [[repo]], [daemon], [vm]), writing a repository's SSF.md (including its gauntlet rule, the second pair of eyes ssf leaves to the agent), project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
@@ -24,7 +24,7 @@ commands, and the rest of `docs/` is the reference the document links to.
 ## Rules for an agent following it
 
 1. **Stop where only the person can act.** The document marks them
-   **you**: type a sudo password (`pacman`), create a GitHub account,
+   **you**: type a sudo password (`pacman`, `apt`, `dnf`), create a GitHub account,
    sign in in a browser, approve a token or scopes, sign a harness in.
    Give the exact command or URL, say what they will see, and wait;
    carry on when they say it is done. Everything else is for the agent
@@ -49,7 +49,9 @@ commands, and the rest of `docs/` is the reference the document links to.
 6. **Take the default path** (the factory inside the microVM, herdr
    inside it) unless the person asks for an alternative or the machine
    cannot run the VM (no `/dev/kvm`, not x86_64); the document says
-   where the alternatives branch off.
+   where the alternatives branch off. On Debian, Ubuntu and Fedora the
+   package does not bring herdr; install it as the document's step 1
+   says before expecting `ssf doctor`'s herdr line to pass.
 7. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or

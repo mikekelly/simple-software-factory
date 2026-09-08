@@ -6,7 +6,8 @@ request, answers the review, and reports back on the issue. Every issue gets
 its own agent. The agents know about each other, about the project board, and
 about the notes your repository keeps for them.
 
-ssf is a small daemon for [Omarchy](https://omarchy.org/). It runs the
+ssf is a small daemon for Linux, packaged for [Omarchy](https://omarchy.org/),
+Arch, Debian/Ubuntu and Fedora. It runs the
 agents in [herdr](https://herdr.dev/) by default, or in
 [Orca](https://onorca.dev/), so you can watch them work, take over, or
 nudge them at any time (see [Drivers](docs/drivers.md)). Nothing
@@ -164,36 +165,47 @@ you set (see
 
 ## Install
 
-ssf is an Arch package for Omarchy. Until it is in Omarchy's package
-repository, the package comes from the latest release: download
-`ssf-<version>-1-x86_64.pkg.tar.zst` from the Releases page and install
-it, then follow [Setup](docs/setup.md), yourself or with your coding
-agent (the `ssf-setup` skill in this repository points an agent at that
-document).
+ssf is packaged for Omarchy, Arch, Debian/Ubuntu and Fedora (x86_64);
+every release on the Releases page carries the packages. Download the one
+for your machine and install it, then follow [Setup](docs/setup.md),
+yourself or with your coding agent (the `ssf-setup` skill in this
+repository points an agent at that document).
 
-```sh
-sudo pacman -U ssf-*.pkg.tar.zst
-```
+- **Omarchy**: `ssf-<version>-1-x86_64.pkg.tar.zst`, `sudo pacman -U
+  ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's
+  repositories (until ssf is in Omarchy's own package repository, then
+  `sudo pacman -S ssf`).
+- **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
+  `herdr` or `herdr-bin` (AUR), which it depends on.
+- **Debian 12+, Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
+  install ./ssf_*_amd64.deb`; `gh`, `git` and `jq` come from the
+  repositories (Debian 12 needs GitHub's apt repository for a new enough
+  `gh`), and herdr is installed by hand ([Setup, step
+  1](docs/setup.md#1-before-you-start)).
+- **Fedora**: `ssf-<version>-1.x86_64.rpm`, `sudo dnf install
+  ./ssf-*.x86_64.rpm`; herdr by hand, as above.
 
-The package installs:
+The package installs the same paths on every distribution:
 
 | Path | What |
 |------|------|
 | `/usr/bin/ssf` | the daemon and management CLI |
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
-| `/usr/lib/systemd/user/ssf.service` | background service, enabled for every user via `graphical-session.target.wants` |
-| `/usr/share/ssf/omarchy-plugin/` | the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start; it and the **Factory** menu show the state of the factory, and the service toggle is their one control |
+| `/usr/lib/systemd/user/ssf.service` | background service, enabled for every user: with the graphical session on Omarchy and Arch, with the systemd user manager at login on Debian, Ubuntu and Fedora |
+| `/usr/share/ssf/omarchy-plugin/` | Omarchy only: the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start; it and the **Factory** menu show the state of the factory, and the service toggle is their one control |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
 | `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
 | `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
 | `/usr/share/doc/ssf/` | this file and `docs/`, [Setup](docs/setup.md) among them |
 
-`github-cli` and `herdr` are dependencies and come with it. The service
-starts with the graphical session, and the package's install hook also
-starts it in any session that is running at install time, so there is
-nothing to enable; it stays in a restart loop until the bot is signed
-in. It comes back with the next login after a reboot (unless it was
-switched off with the toggle), waits for the driver, and resumes the
+The service starts with the graphical session (Omarchy, Arch) or with
+your systemd user manager at login (Debian, Ubuntu, Fedora; `loginctl
+enable-linger` keeps it running on a server), and the package's install
+hook also starts it in any session that is running at install time, so
+there is nothing to enable; it stays in a restart loop until the bot is
+signed in. It comes back with the next login after a reboot (unless it
+was switched off with the toggle or `ssf ui service disable`), waits for
+the driver, and resumes the
 agent sessions the reboot cut off. Building from a checkout, and running
 the service from a dev build, is in [Development](docs/development.md).
 
@@ -319,7 +331,7 @@ Things to know when operating it:
   does nothing; `ssf doctor` reports a
   repository without an `SSF.md`.
 
-**Stopping it.** The toggle in the bar widget, or `ssf ui service
+**Stopping it.** The toggle in the bar widget (Omarchy), or `ssf ui service
 disable`, stops the service and keeps it from starting at the next login
 (`enable` turns it back on); `systemctl --user stop ssf.service` stops it
 until the next login. Running agents are left where they are: nothing
@@ -330,8 +342,8 @@ shuts the guest down cleanly.
 **Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
 the package upgrade restarts the service (and, in the VM, the guest, whose
 sessions are resumed); `ssf uninstall` takes the machine back to just the
-package (it reports, asks once, and keeps your clones), then `sudo pacman
--R ssf` is yours.
+package (it reports, asks once, and keeps your clones), then `sudo pacman -R
+ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf` is yours.
 
 ## The rest of the story
 

@@ -10,8 +10,8 @@ microVM, and leaves the host only what builds, starts, stops and reaches
 the guest. The drivers are untouched; the guest runs herdr (Orca is a
 desktop app and needs a display the guest does not have, so a repository
 that says `driver = "orca"` runs in herdr there). Nothing needs root:
-Firecracker runs as you given `/dev/kvm` (world-writable on Omarchy; the
-`kvm` group elsewhere), the guest's network is
+Firecracker runs as you given `/dev/kvm` (world-writable on Omarchy;
+elsewhere `sudo usermod -aG kvm $USER` and a new login), the guest's network is
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) (a
 user-mode TCP/IP stack on the host end of a vsock, so no tap, bridge or
 firewall rule on the host), and the images are made with `fakeroot` and
@@ -21,6 +21,11 @@ plus Firecracker's seccomp filter.
 The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
 (libarchive), `mkfs.ext4`, `e2fsck` and `resize2fs` (e2fsprogs), `curl`,
 `openssh`, and its own `herdr` binary, which is copied into the image.
+All of that is on a stock Omarchy; elsewhere `sudo pacman -S --needed
+fakeroot libarchive e2fsprogs curl openssh`, `sudo apt install fakeroot
+libarchive-tools e2fsprogs curl openssh-client` or `sudo dnf install
+fakeroot bsdtar e2fsprogs curl openssh-clients` (the .deb and .rpm
+recommend them, so apt and dnf bring them with the package).
 
 ```sh
 ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)

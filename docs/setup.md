@@ -1,6 +1,6 @@
 # Setup
 
-From a fresh Omarchy machine to the first issue worked by an agent: prerequisites, the package, the bot account, where the agents run, the first repository, upgrading, stopping and uninstalling. For whoever installs ssf, or the coding agent they ask to; read it top to bottom the first time. Once the bot is signed in, the later steps stand on their own for changing a factory.
+From a fresh Linux machine (Omarchy, Arch, Debian or Ubuntu, Fedora) to the first issue worked by an agent: prerequisites, the package, the bot account, where the agents run, the first repository, upgrading, stopping and uninstalling. For whoever installs ssf, or the coding agent they ask to; read it top to bottom the first time. Once the bot is signed in, the later steps stand on their own for changing a factory.
 
 Installed, this file is `/usr/share/doc/ssf/docs/setup.md`, next to the
 [README](../README.md) (what ssf is, the everyday commands) and the rest
@@ -18,14 +18,17 @@ same steps, marked as such.
 
 ## 1. Before you start
 
-- **Omarchy on x86_64.** ssf is an Arch package with a per-user systemd
-  unit that starts with the graphical (Wayland) session; the microVM image
-  is x86_64 only. The `ssf` binary itself runs on any Arch-based system,
-  but the service needs a Wayland session and the bar widget needs
-  Omarchy.
-- **`/dev/kvm`** usable by your user for the microVM (world-writable on
-  Omarchy; the `kvm` group elsewhere). Without it, the factory runs on the
-  host (step 6).
+- **Linux on x86_64**: Omarchy, Arch, Debian 12 or later, Ubuntu 24.04
+  or later, or Fedora; there is a package for each (step 2), and the
+  microVM image is x86_64 only. ssf runs as a per-user systemd unit, so
+  your user needs a systemd user session (every desktop login has one; a
+  server gets one with `loginctl enable-linger`, step 2). The bar widget
+  and the **Factory** menu are Omarchy's; elsewhere the CLI and the
+  service are the whole of it. macOS is not supported yet.
+- **`/dev/kvm`** usable by your user for the microVM: world-writable on
+  Omarchy; on Arch, Debian, Ubuntu and Fedora add yourself to the `kvm`
+  group (`sudo usermod -aG kvm $USER`, then log in again) (**you**).
+  Without it, the factory runs on the host (step 6).
 - **About 30 GB free** under `~/.local/share/ssf/vm` for the microVM: an
   8 GB root image plus a copy of it per VM, a 20 GB data disk (sparse,
   grows with use), the guest kernel and the Firecracker and gvproxy
@@ -34,38 +37,86 @@ same steps, marked as such.
   for the harness you use (Claude Code, Codex, Gemini, Copilot, OpenCode,
   Pi, Oh My Pi, Grok, Crush). The agent is signed in where it runs, in
   step 7.
-- **`github-cli` and `herdr`** are dependencies of the package and come
-  with it. Orca (`orca-ide-bin`) is only for the host alternative in step
-  6 and is installed by hand.
+- **`gh` and `herdr`.** The package depends on the GitHub CLI, 2.40 or
+  newer: `github-cli` on Omarchy and Arch, `gh` on Ubuntu 24.04 and
+  Fedora, all from the distribution's own repositories; Debian 12 ships
+  2.23, too old, so there `gh` comes from [GitHub's apt
+  repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md),
+  added before the package. herdr comes with the package on Omarchy
+  (its repository has it) and, on Arch, from the AUR (`herdr` or
+  `herdr-bin`, installed before the package, which depends on it). The
+  .deb and .rpm do not depend on it, since no apt or dnf package exists:
+  install it by hand, before or after the package, one of
+
+  ```sh
+  sudo curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-x86_64 && sudo chmod +x /usr/local/bin/herdr
+  curl -fsSL https://herdr.dev/install.sh | sh     # herdr's own installer, into ~/.local/bin; ssf finds it there
+  mise use -g herdr
+  ```
+
+  While it is missing, `ssf doctor` prints ``FAIL herdr driver: CLI
+  `herdr` not found; install it: ...`` with the command for this machine.
+  Orca (`orca-ide-bin`) is only for the host alternative in step 6 and is
+  installed by hand.
 - The microVM image is built with `fakeroot`, `bsdtar` (libarchive),
-  `mkfs.ext4` (e2fsprogs), `curl` and `openssh`, all present on a stock
-  Omarchy; `sudo pacman -S --needed fakeroot libarchive e2fsprogs openssh
-  curl` if `ssf vm build` says one is missing.
+  `mkfs.ext4` (e2fsprogs), `curl` and `ssh` (openssh), all present on a
+  stock Omarchy and recommended by the .deb and .rpm, so apt and dnf
+  install them with the package. If `ssf vm build` says one is missing:
+  `sudo pacman -S --needed fakeroot libarchive e2fsprogs openssh curl`,
+  `sudo apt install fakeroot libarchive-tools e2fsprogs curl
+  openssh-client` or `sudo dnf install fakeroot bsdtar e2fsprogs curl
+  openssh-clients`.
 
 ## 2. Install the package
 
-Until ssf is in Omarchy's package repository, the package comes from the
-latest release on GitHub: download `ssf-<version>-1-x86_64.pkg.tar.zst`
-from the repository's Releases page and install it (**you**: pacman asks
-for your sudo password).
+The packages come from the latest release on GitHub (the repository's
+Releases page; a `vX.Y.Z` tag builds and attaches them). Download the
+one for this machine and install it (**you**: the package manager asks
+for your sudo password):
 
-```sh
-sudo pacman -U ssf-*.pkg.tar.zst
-```
+- **Omarchy**: `ssf-<version>-1-x86_64.pkg.tar.zst`, `sudo pacman -U
+  ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's
+  repositories. Once ssf is in Omarchy's package repository, `sudo
+  pacman -S ssf` instead.
+- **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
+  `herdr` or `herdr-bin` (AUR), which it depends on: `sudo pacman -U
+  ssf-*.pkg.tar.zst`.
+- **Debian 12+, Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
+  install ./ssf_*_amd64.deb` (apt resolves `gh`, `git` and `jq` from the
+  repositories; `dpkg -i` would not). herdr by hand, step 1.
+- **Fedora**: `ssf-<version>-1.x86_64.rpm`, `sudo dnf install
+  ./ssf-*.x86_64.rpm`. herdr by hand, step 1.
+
+The binary in the .deb and .rpm is static, so one file serves every
+release of the distribution; the release also carries it bare, as
+`ssf-<version>-linux-x86_64`, for anything that is not one of these
+packages.
+
+**What starts when.** The user unit `ssf.service` is enabled for every
+user and started in your session by the install hook, so there is
+nothing to enable. On Omarchy and Arch it starts with the graphical
+(Wayland) session, which the bar widget lives in; the .deb and .rpm
+ship a unit that starts with your systemd user manager at first login
+(`default.target`), display or not. On a machine nobody logs in to, a
+server, `loginctl enable-linger $USER` (**you**: sudo may be needed)
+keeps the user manager, and so the factory, running with no session at
+all. When the hook finds no running session it says so; `systemctl
+--user daemon-reload && systemctl --user start ssf.service` starts it
+now.
 
 The package installs `/usr/bin/ssf` (the daemon and management CLI),
 `/usr/bin/ssf-ui` (the helper behind the bar widget and the **Factory**
-menu: service toggle, log, status terminal, open a workspace), the user
-unit `ssf.service`
-(enabled for every user through `graphical-session.target.wants` and
-started in your session by the install hook, so there is nothing to
-enable), the bar widget under `/usr/share/ssf/omarchy-plugin/` (copied
-into `~/.config/omarchy/plugins/ssf.factory` on the service's first
-start; it shows the state of the factory, and the service toggle is its
-one control), `/usr/share/ssf/SSF.example.md`
-and `config.example.toml`, the microVM scripts under `/usr/share/ssf/vm/`,
-and this documentation under `/usr/share/doc/ssf/`. Nothing else: no
-config, no state, no account.
+menu: service toggle, log, status terminal, open a workspace; installed
+everywhere, useful only with the menu), the user unit above, the bar
+widget under `/usr/share/ssf/omarchy-plugin/` (Omarchy: copied into
+`~/.config/omarchy/plugins/ssf.factory` on the service's first start; it
+shows the state of the factory, and the service toggle is its one
+control), `/usr/share/ssf/SSF.example.md` and `config.example.toml`, the
+microVM scripts under `/usr/share/ssf/vm/`, and this documentation under
+`/usr/share/doc/ssf/`; the same paths on every distribution. Nothing
+else: no config, no state, no account. Off Omarchy there is no widget
+and no menu (`ssf ui install` says `not on Omarchy: no bar widget or
+menu to install`); `ssf ui service enable|disable` works everywhere.
 
 Check:
 
@@ -88,13 +139,21 @@ ok   new clones go under /home/you/ssf/projects
 Error: 5 problem(s) found
 ```
 
-Every `FAIL` here is expected: there is no bot yet, so the service
+That is Omarchy. Elsewhere the widget line is a note, and until herdr is
+installed (step 1) its line fails, naming the command for this machine:
+
+```
+FAIL herdr driver: CLI `herdr` not found; install it: sudo curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-x86_64 && sudo chmod +x /usr/local/bin/herdr
+note bar widget: not on Omarchy, nothing to enable
+```
+
+Every other `FAIL` is expected: there is no bot yet, so the service
 cannot start (it exits and systemd retries it every 15 s until step 4),
 no herdr session is running on the host (none is needed once the factory
 is in the VM), no repository is watched, and the links are made when the
 first agent starts. What has to be `ok` now is the config line, the
-`herdr driver: CLI` line, the GitHub CLI, `ssf on PATH` and the bar
-widget. Logs, at any point: `journalctl --user -fu ssf.service`.
+`herdr driver: CLI` line, the GitHub CLI, `ssf on PATH` and, on Omarchy,
+the bar widget. Logs, at any point: `journalctl --user -fu ssf.service`.
 
 ## 3. Create the bot account
 
@@ -333,7 +392,7 @@ so one daemon can run some repositories in Orca and others in herdr; the
 per-repository driver is ignored in the VM.
 
 - **herdr** (the default): needs a running herdr session (start `herdr`
-  in a terminal and leave it). ssf clones under `herdr.projects_dir`
+  in a terminal and leave it; where herdr comes from is in step 1). ssf clones under `herdr.projects_dir`
   (`~/ssf/projects`) and makes a worktree per item in `<name>.worktrees/`
   next to the clone. herdr only runs the agents it recognises (`herdr
   agent start --help`; `crush` is not among them), and `ssf repo add`
@@ -565,11 +624,12 @@ their own reference from `ssf guide`.
 
 ## 11. Upgrading
 
-Upgrade the package like any other; until it is in Omarchy's repository,
-that is the next release's file with `sudo pacman -U`, afterwards `sudo
-pacman -Syu`. The package's hook restarts `ssf.service` in every running
-user session (or tells you to, when it finds none). What that restart
-means:
+Upgrade the package like any other: the next release's file with the
+command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst`, `sudo apt
+install ./ssf_*_amd64.deb`, `sudo dnf install ./ssf-*.x86_64.rpm`); on
+Omarchy, once ssf is in its repository, `sudo pacman -Syu`. The
+package's hook restarts `ssf.service` in every running user session (or
+tells you to, when it finds none). What that restart means:
 
 - **On the host, nothing for the agents.** A daemon restart is invisible
   to them: their terminals stay where they are, and the daemon delivers
@@ -607,8 +667,9 @@ shuts the guest down cleanly and its sessions come back with it.
    being gone already, so a second run, or a run on a half-uninstalled
    machine, is fine. With the factory in the VM the report and the purge
    come from the guest, before it goes.
-2. `sudo pacman -R ssf` (**you**: sudo; nothing in ssf runs it). The
-   command prints this line last.
+2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`
+   (**you**: sudo; nothing in ssf runs it). The command prints the one
+   for this machine last.
 
 What stops it: a workspace with uncommitted or unpushed work (an open
 item's too), one that cannot be checked (no origin, a git error), or a
@@ -633,8 +694,10 @@ cleared, so `status` does not go looking for it.
 
 ## Checklist
 
-1. `sudo pacman -U ssf-*.pkg.tar.zst` (**you**); `ssf doctor` fails only
-   on the bot, herdr, the repository and the links.
+1. The package for this machine (**you**): `sudo pacman -U
+   ssf-*.pkg.tar.zst`, `sudo apt install ./ssf_*_amd64.deb` or `sudo dnf
+   install ./ssf-*.x86_64.rpm`, plus herdr by hand off Omarchy; `ssf
+   doctor` fails only on the bot, herdr, the repository and the links.
 2. Bot account created (**you**), with Write on each repository and
    access to the boards.
 3. `ssf auth login --web` as the bot (**you**, in a private window);
