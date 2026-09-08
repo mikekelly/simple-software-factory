@@ -1,6 +1,6 @@
 ---
 name: ssf-setup
-description: Setup runbook for Simple Software Factory (ssf), the daemon for Linux (Omarchy, Arch, Debian/Ubuntu, Fedora) and macOS that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (including its gauntlet rule), project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
+description: Setup runbook for Simple Software Factory (ssf), the daemon for Linux (Omarchy, Arch, Debian/Ubuntu, Fedora) and macOS that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf", when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, and who commits), when running the factory in the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (its gauntlet, scope, plan and delegation rules), when choosing a repository's harness, model and effort level, project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the `ssf` blocks the daemon posts on an issue (daemon.event_comments).
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
@@ -17,9 +17,10 @@ checklist), or the one step that matches what the person asked for on an
 installed factory. It has the prerequisites, the package, the bot
 account, the sign-in, who may drive the factory, the VM (the default:
 Firecracker on Linux, lima on macOS) and the host alternatives, the
-harness login, the first repository, `SSF.md`, the first issue,
-upgrading, stopping and uninstalling, with what a healthy `ssf doctor`
-looks like after each step and which commands differ on a Mac. There is
+harness login, the first repository and the harness and model it runs
+on, `SSF.md`, the first issue, upgrading, stopping and uninstalling,
+with what a healthy `ssf doctor` looks like after each step and which
+commands differ on a Mac. There is
 no second copy of the steps here. The README next to it
 (`/usr/share/doc/ssf/README.md`, or `$(brew --prefix)/share/doc/ssf/README.md`)
 has the everyday commands, and the rest of `docs/` is the reference the
@@ -43,14 +44,28 @@ document links to.
    harness, model and effort ids, and the daemon picks changes up on its
    next poll without a restart. Never write `github.token` into the
    file; `ssf config set` refuses it on purpose.
-4. **Never sign in as the person** or use their token, key or account for
+4. **Raise the harness and the model; do not silently take the
+   defaults.** Follow [Choosing the harness and the
+   model](../../docs/setup.md#choosing-the-harness-and-the-model): it
+   has the commands that say what the machine can run, what to ask the
+   person (which subscriptions or keys, what must not be exhausted —
+   the machine shows only what is *installed*), the chart to read
+   instead of answering from memory, and the three tiers. Propose a
+   model and effort per repository and say why; the session's is `ssf
+   repo add`/`ssf repo set --model --effort`, the tiers below it are the
+   harness's own configuration and the repository's `SSF.md`. Say what
+   it would cost and let the person decide. If you cannot verify the
+   numbers, say so and ask for them, or leave `model` and `effort` unset
+   with a note of what you would have looked up — an unverified
+   recommendation is worse than the default.
+5. **Never sign in as the person** or use their token, key or account for
    the bot. The bot is an account of its own; `ssf auth login --user
    <bot> -y` is the form an agent may run, once the bot is in gh's
    keyring.
-5. **Never pass `--accept-anyone-risk`** on the person's behalf, and do
+6. **Never pass `--accept-anyone-risk`** on the person's behalf, and do
    not set `allowed_users` to `"*"` for them; say what it means and let
    them decide.
-6. **Take the default path** (the factory inside the VM, herdr inside
+7. **Take the default path** (the factory inside the VM, herdr inside
    it) unless the person asks for an alternative or the machine cannot
    run the VM at all (on macOS the VM is lima and needs macOS 13.5 or
    later). A Linux machine without a usable `/dev/kvm`, or one that is
@@ -60,13 +75,13 @@ document links to.
    the alternatives branch off. On Debian, Ubuntu and Fedora the package
    does not bring herdr; install it as the document's step 1 says before
    expecting `ssf doctor`'s herdr line to pass.
-7. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
+8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or
    `--data-gib` only when they ask for a size. When `ssf doctor` says the
    data disk is full, `ssf vm grow` (VM stopped) enlarges it without
    losing anything; see [Size](../../docs/vm.md#size).
-8. **Never delete a worktree directory or `ssf purge --force` on the
+9. **Never delete a worktree directory or `ssf purge --force` on the
    person's behalf.** A workspace closed by hand leaves its git checkout
    under `<checkout>.worktrees/`; `ssf doctor` prints a `WARN` line per
    repository naming each such checkout holding commits on no other
@@ -77,12 +92,12 @@ document links to.
    gone, checkout still on disk)` for one whose item is closed and
    removes it only when clean and pushed. Show the person the line and
    let them decide about anything else.
-9. **Uninstall with `ssf uninstall`**, never by hand: it reports and
-   asks once, and it refuses while a workspace holds unpushed work or
-   the VM is stopped so its clones cannot be checked. Do not add
-   `--force` on the person's behalf: show them the report and let them
-   settle the work or decide; `--data` (config, the bot's key, state)
-   is also theirs to ask for. The package removal that follows (`sudo
-   pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or on
-   macOS `brew uninstall ssf` and then `brew untap mikekelly/ssf`; the
-   command prints the one for the machine) is **you**.
+10. **Uninstall with `ssf uninstall`**, never by hand: it reports and
+    asks once, and it refuses while a workspace holds unpushed work or
+    the VM is stopped so its clones cannot be checked. Do not add
+    `--force` on the person's behalf: show them the report and let them
+    settle the work or decide; `--data` (config, the bot's key, state)
+    is also theirs to ask for. The package removal that follows (`sudo
+    pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or on
+    macOS `brew uninstall ssf` and then `brew untap mikekelly/ssf`; the
+    command prints the one for the machine) is **you**.

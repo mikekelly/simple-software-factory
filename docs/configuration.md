@@ -129,19 +129,46 @@ path for notes you would rather not commit.
 This is also where working style goes. ssf's prompts carry rules, not
 advice (see [What the agent is told](prompts.md)), so a repository that
 wants its agents told to comment when they start and finish, to ask rather
-than guess, or to commit as they go, says so here.
+than guess, or to commit as they go, says so here. It is also the only
+natural place to steer the models a session spawns its subagents on
+(`daemon.instructions` and `repo.instructions` reach the prompt too),
+since `repo.model` reaches the session alone: a line naming the model
+for planning, diagnosis and the gauntlet and the model for the bulk of
+the implementation work is a rule like any other, and like any other it
+is advice in a prompt rather than configuration, so it holds only where
+the harness lets a session choose a model as it spawns one (see
+[Choosing the harness and the
+model](setup.md#choosing-the-harness-and-the-model)).
 [`SSF.example.md`](../SSF.example.md) (installed as
 `/usr/share/ssf/SSF.example.md`, and on macOS as
 `$(brew --prefix)/share/ssf/SSF.example.md`) is a starting point with
 those lines, who is in charge of the item, how visible to stay, an
-autonomy line (how much a person approves) and the **gauntlet** rule: ssf runs one session per item and starts
-no reviewer, so the boilerplate tells the agent that did the work to have
-a fresh agent break it, fix what it finds and repeat before calling it
+autonomy line (how much a person approves), a delegation line (choose
+the model and effort each subagent runs on rather than taking the
+default), a scope line (an item is one cohesive piece of work; split it
+into sub-issues and sibling issues when it is not, so the shape of the
+work can be read off the issue tree), a plan line (write the plan into
+the body of the item before execution and keep it current there) and the
+**gauntlet** rule: ssf runs one session per item and starts no reviewer,
+so the boilerplate tells the agent that did the work to have a fresh
+agent break it, fix what it finds and repeat before calling it
 done (see [Second opinions](sessions.md#second-opinions-the-gauntlet)).
 This repository's own [`SSF.md`](../SSF.md) is what produced the comments
 quoted in the README's walkthrough.
 
 ## Models and effort levels
+
+`repo.model` and `repo.effort` are the *session's* model: the agent ssf
+starts for an item, which plans and delegates. They are not the model of
+the subagents it spawns underneath itself, which is the harness's own
+business — on some harnesses a subagent inherits the session's model
+unless the session or an agent definition names another, so a session
+left on an expensive model is an expensive subagent too. What ssf can do
+about the tiers below the session is the line the repository's `SSF.md`
+puts in the prompt. Which model to put where, and how to work it out
+from what the person can run and what a task costs, is [Choosing the
+harness and the model](setup.md#choosing-the-harness-and-the-model) in
+the setup document; the rest of this section is the mechanics.
 
 For the agents Orca has a model catalogue for, `repo.model` and `repo.effort`
 use the same identifiers as Orca's own `--model`/`--effort` options (`orca
@@ -187,10 +214,10 @@ belongs to:
   repository's; either one left out keeps the repository's. As
   everywhere else, the model and effort are appended to `command` as
   flags rather than rewritten into it, so a `command` that hard-codes a
-  model or effort itself (`command = "claude --model opus"`) wins on the
-  agent's own command line and the handover's model changes nothing but
-  two conflicting flags: keep the model and effort in their own keys on
-  a repository whose items are handed over.
+  model or effort itself (`command = "claude --model opus"`) leaves the
+  agent with the flag twice and the handover's model changes nothing it
+  can rely on: keep the model and effort in their own keys on a
+  repository whose items are handed over.
 - **Another harness**: the item runs on that harness with the
   permission-free command from [Permissions](#permissions) (the
   repository's `command` belongs to its own harness and is not reused),

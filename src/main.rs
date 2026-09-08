@@ -467,7 +467,8 @@ enum RepoCommand {
         #[arg(long)]
         command: Option<String>,
         /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
-        /// and grok; provider/model for pi, omp, opencode and copilot. `ssf models <harness>` lists them.
+        /// and grok; provider/model for pi, omp and opencode; `auto` or a model
+        /// name for copilot. `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
         /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
@@ -509,7 +510,8 @@ enum RepoCommand {
         #[arg(long)]
         command: Option<String>,
         /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
-        /// and grok; provider/model for pi, omp, opencode and copilot. `ssf models <harness>` lists them.
+        /// and grok; provider/model for pi, omp and opencode; `auto` or a model
+        /// name for copilot. `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
         /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).

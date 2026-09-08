@@ -411,8 +411,9 @@ impl ProjectPrompt {
 /// `text` without its HTML comments (`<!-- ... -->`), trimmed, with the
 /// blank runs a removed comment leaves behind collapsed: the comments in
 /// a notes file are for the person editing it (`SSF.example.md` explains
-/// itself in one, and names the other end of its autonomy line in
-/// another), and read as instructions if they reach the agent. A comment
+/// itself in one, and names the other end of its autonomy line and where
+/// to write the models its delegation line asks for in two more), and
+/// read as instructions if they reach the agent. A comment
 /// that never closes runs to the end, as in HTML; the line it opens on
 /// comes back with the text so the caller can say so.
 fn without_html_comments(text: &str) -> (String, Option<usize>) {
@@ -2503,14 +2504,27 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             without_html_comments("plain\n\ntext\n"),
             ("plain\n\ntext".into(), None)
         );
-        // The shipped boilerplate keeps every bullet and loses both comments.
+        // The shipped boilerplate keeps every bullet and loses its comments.
         let (example, unclosed) = without_html_comments(include_str!("../SSF.example.md"));
         assert!(unclosed.is_none());
         assert!(example.starts_with("# Notes for ssf agents\n\n- You are in charge"));
         assert!(!example.contains("<!--") && !example.contains("-->"));
         assert!(!example.contains("cautious end"), "{example}");
+        assert!(
+            !example.contains("write the ids into the line above"),
+            "{example}"
+        );
+        // Each bullet's own text survives: a stray `<!--` in one would be
+        // stripped with everything after it, silently gutting the rule.
+        for kept in [
+            "sub-issues for the parts of this work",
+            "the item stops being routed",
+            "name the model you start each kind of subagent with",
+        ] {
+            assert!(example.contains(kept), "{kept} missing from {example}");
+        }
         assert!(example.contains("- Autonomy: a person approves everything."));
-        assert_eq!(example.matches("\n- ").count(), 7, "{example}");
+        assert_eq!(example.matches("\n- ").count(), 10, "{example}");
     }
 
     #[test]
