@@ -504,4 +504,14 @@ start`) outlives that shell and any later `ssf` command. The service
 stopping or restarting the service shuts the guest down cleanly, and a
 crash of the host daemon ends it with the service's cgroup on Linux.
 With the VM stopped, `ssf status` says so instead of forwarding (the bar
-widget shows the service as stopped).
+widget shows the service as stopped), and the other forwarded commands
+refuse with `the factory runs in VM <name>, which is not running`. Only a
+definite answer does that. The liveness question forks `limactl` under
+lima, and a `limactl` that fails, or does not answer within fifteen
+seconds, leaves ssf unable to tell: it says so on stderr -- could not
+tell whether the VM is running, so the command goes to it anyway -- and
+sends the command to the guest, which answers it if the VM is in fact up
+and fails as an ssh error if it is not. A probe that could not be made is
+never read as a stopped factory: reading it that way refused `tell`,
+`release`, `purge` and `doctor` over a running VM, and showed the bar
+widget an idle one.

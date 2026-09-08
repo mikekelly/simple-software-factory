@@ -1071,8 +1071,10 @@ impl Vm {
     /// the probe is a PID file read, which answers either way; under lima
     /// it forks `limactl`, and one fork that fails is not the guest
     /// exiting. The callers that act on "the VM is gone" -- the
-    /// supervisor and the ssh wait -- use this, so that a transient
-    /// `limactl` failure cannot end them with "the VM exited".
+    /// supervisor, the ssh wait, and the gate every command the host
+    /// forwards into the guest goes through -- use this, so that a
+    /// transient `limactl` failure cannot end them with "the VM exited"
+    /// or refuse a command over a factory that is up.
     pub fn running_state(&self) -> Option<bool> {
         match self.backend() {
             BackendKind::Firecracker => Some(self.firecracker_pid().is_some()),

@@ -644,7 +644,11 @@ async fn main() -> Result<()> {
         && cfg.vm.enabled
     {
         let vm = vm::Vm::new(&cfg);
-        if !vm.running() {
+        // Ask whether the guest is up, and keep "no" apart from "could
+        // not ask": under lima the question forks `limactl`, and a fork
+        // that fails is not a factory that has stopped.
+        let running = vm.running_state();
+        if vm_is_down(running) {
             match cli.command {
                 Command::Status { json: true } => {
                     println!(
@@ -684,6 +688,12 @@ async fn main() -> Result<()> {
                     )
                 }
             }
+        }
+        // "Cannot tell" is said out loud and then acted on the only way
+        // that cannot be wrong: the command goes to the guest and
+        // succeeds or fails on its own terms.
+        if running.is_none() {
+            eprintln!("{}", cannot_tell_note(&cfg.vm.name, name));
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
         let st = vm
@@ -2120,6 +2130,27 @@ fn parse_toml_scalar(value: &str) -> toml::Value {
         return x.clone();
     }
     toml::Value::String(value.to_string())
+}
+
+/// Does the liveness probe stop a command from being forwarded into the
+/// guest? Only a definite "not running" does. `None` is "the probe could
+/// not be made", which under lima means a `limactl` that did not answer,
+/// not a factory that has stopped: reading it as "stopped" refused
+/// `tell`, `release`, `purge` and `doctor` over a running VM, and made
+/// `status --json` -- which the bar widget polls -- report an idle
+/// factory. See [`vm::Vm::running_state`].
+fn vm_is_down(running: Option<bool>) -> bool {
+    running == Some(false)
+}
+
+/// What a command says for itself when the liveness probe could not be
+/// made. The reason is already on stderr, from the probe; this says what
+/// ssf is doing about it, so that an ssh error afterwards reads as the
+/// guest being down rather than as a broken command.
+fn cannot_tell_note(vm_name: &str, cmd: &str) -> String {
+    format!(
+        "could not tell whether VM {vm_name} is running, so `ssf {cmd}` goes to it anyway; if it is down, this fails as an ssh error rather than as `ssf vm start` advice"
+    )
 }
 
 /// The name of a command that runs in the guest when the factory is in a VM.
@@ -3927,6 +3958,30 @@ mod tests {
             "mac"
         );
         assert_eq!(pick_hostname(None, || None, || None), "localhost");
+    }
+
+    #[test]
+    fn only_a_definite_no_keeps_a_command_out_of_the_guest() {
+        // The gate exists for the VM that is genuinely down: `tell` and
+        // the rest have nothing to talk to, and `status` answers for the
+        // guest instead of forwarding.
+        assert!(vm_is_down(Some(false)));
+        assert!(!vm_is_down(Some(true)));
+        // A probe that could not be made is neither. Under lima it forks
+        // `limactl`, and one fork that fails -- or is cut off by
+        // `LIVENESS_LIMIT` -- would otherwise refuse every forwarded
+        // command over a factory that is running, and report a stopped
+        // VM to the bar widget.
+        assert!(!vm_is_down(None));
+        // And it says so, naming the command it is sending anyway: the
+        // probe's own error is on stderr above this, from the warning
+        // `running_state` logs.
+        let note = cannot_tell_note("default", "tell");
+        assert!(
+            note.starts_with("could not tell whether VM default is running"),
+            "{note}"
+        );
+        assert!(note.contains("`ssf tell` goes to it anyway"), "{note}");
     }
 
     #[test]
