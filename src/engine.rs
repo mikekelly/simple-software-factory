@@ -1986,8 +1986,8 @@ deliveries resume"
     /// One full listing set is owed, so that every item involving the bot
     /// is looked at again whatever the ETags said. Where it lands depends
     /// on when the session came back: an unblock before the pass reads its
-    /// listings gets it on that pass, and the flag it armed is spent
-    /// unused two lines into that same pass; one after gets it on the next
+    /// listings gets it on that pass, and the flag it armed is spent,
+    /// unused, when that pass begins; one after gets it on the next
     /// pass, because the pass under way stores the ETags it read at its
     /// end and so puts back what was cleared here. Either way it is one:
     /// the pass that spends the flag clears the ETags without arming it
@@ -6553,6 +6553,7 @@ mod tests {
         // the listings are fetched afresh and the item is told.
         probe_returning(&mut e, LoginState::SignedIn, Some("cred-new"));
         d.with(|s| s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect());
+        let fulls_before = stub.created_fulls();
         e.tick_repo(&repo()).await.unwrap();
         let st = e.entry(&repo(), 5).clone();
         assert!(st.blocked.is_none(), "{:?}", st.blocked);
@@ -6581,6 +6582,20 @@ mod tests {
         );
         // ETags were dropped by the recovery, then set again by the pass.
         assert!(e.state.repos["o/r"].issues_etag.is_some());
+        // The recovery ran before the pass read its listings, so the full
+        // fetch it is owed is this pass, and the `refetch` flag it armed is
+        // spent unused at the start of it: the passes after this one are
+        // conditional again (issue #141).
+        assert_eq!(stub.created_fulls(), fulls_before + 1, "one full fetch");
+        assert!(e.refetch.is_empty());
+        for _ in 0..2 {
+            e.tick_repo(&repo()).await.unwrap();
+        }
+        assert_eq!(
+            stub.created_fulls(),
+            fulls_before + 1,
+            "and no more after it"
+        );
     }
 
     #[tokio::test]
