@@ -106,6 +106,12 @@ if [ "$backend" = lima ]; then
     for u in ssf-seed herdr-server ssf; do
         install -Dm644 "$share/guest/units/lima/$u.conf" /etc/systemd/system/$u.service.d/lima.conf
     done
+    # lima hands the guest a new cloud-init instance-id at every start, and
+    # cloud-init then treats the boot as a first one: without this it would
+    # delete and regenerate the ssh host keys each time, and the host would
+    # see a changed host key at every connection.
+    install -d /etc/cloud/cloud.cfg.d
+    printf 'ssh_deletekeys: false\n' > /etc/cloud/cloud.cfg.d/99-ssf.cfg
     if [ -f "$share/herdr" ]; then
         install -m755 "$share/herdr" /usr/local/bin/herdr
     else
