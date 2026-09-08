@@ -420,6 +420,31 @@ pub fn supervise_interval(backend: BackendKind) -> Duration {
     }
 }
 
+/// How many rounds in a row [`Vm::supervise`] may fail to get an answer
+/// out of the probe before it gives up. A probe that could not be made
+/// says nothing, so one of them must not end the supervision -- but a
+/// probe that can never be made says nothing for ever, and the loop that
+/// only warned left `ssf run` "supervising" a VM it had not heard about
+/// for hours while the service read active. Ten rounds is under a minute
+/// under Firecracker and five minutes under lima: long enough to sit out
+/// a busy laptop or a lima home someone else has locked, short enough
+/// that the daemon does not pretend all day.
+const MAX_UNANSWERED_PROBES: u32 = 10;
+
+/// What the supervisor says when the probe has stopped answering: the
+/// question, the tool that could not answer it, and how long it has been
+/// like that. The warnings from the probe itself are above it in the log.
+fn cannot_tell_error(backend: BackendKind, rounds: u32, every: Duration) -> anyhow::Error {
+    let tool = match backend {
+        BackendKind::Firecracker => "reading the VM's pid file",
+        BackendKind::Lima => "`limactl list --json`",
+    };
+    anyhow::anyhow!(
+        "cannot tell whether the VM is running: {tool} has not answered for {rounds} tries in a row ({}), and supervising a VM that cannot be asked about is not supervising anything. `ssf vm status` asks the same question by hand",
+        lima::human_duration(every * rounds)
+    )
+}
+
 /// A tool the host needs to run the VM under a backend, for `ssf doctor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tool {
@@ -1466,6 +1491,13 @@ impl Vm {
                         Some(true) => unanswered = 0,
                         None => {
                             unanswered += 1;
+                            if unanswered >= MAX_UNANSWERED_PROBES {
+                                return Err(cannot_tell_error(
+                                    self.backend(),
+                                    unanswered,
+                                    every,
+                                ));
+                            }
                             warn!(
                                 "could not tell whether the VM is running ({unanswered} probe(s) in a row); still supervising it"
                             );
@@ -3055,6 +3087,35 @@ mod tests {
         // Still well inside the wait a person would sit through before
         // asking what happened.
         assert!(supervise_interval(BackendKind::Lima) <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_probe_that_can_never_be_made_ends_the_supervision() {
+        // A probe that could not be made says nothing, so one of them
+        // must not end the supervision -- but the loop that only ever
+        // warned left `ssf run` "supervising" a VM it had not heard about
+        // for hours, with the service reading active the whole time.
+        const { assert!(MAX_UNANSWERED_PROBES > 1) };
+        for backend in [BackendKind::Lima, BackendKind::Firecracker] {
+            let every = supervise_interval(backend);
+            // Long enough to sit out a busy laptop, short enough that the
+            // daemon does not pretend all day.
+            let gave_up_after = every * MAX_UNANSWERED_PROBES;
+            assert!(gave_up_after >= Duration::from_secs(30), "{backend:?}");
+            assert!(gave_up_after <= Duration::from_secs(15 * 60), "{backend:?}");
+            let err = cannot_tell_error(backend, MAX_UNANSWERED_PROBES, every).to_string();
+            assert!(
+                err.contains("cannot tell whether the VM is running"),
+                "{err}"
+            );
+            // It names the tool that stopped answering, so the next thing
+            // to look at is not a guess.
+            let tool = match backend {
+                BackendKind::Lima => "limactl",
+                BackendKind::Firecracker => "pid file",
+            };
+            assert!(err.contains(tool), "{err}");
+        }
     }
 
     #[test]
