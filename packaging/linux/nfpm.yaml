@@ -1,0 +1,179 @@
+# nfpm configuration for the Debian/Ubuntu (.deb) and Fedora (.rpm) packages.
+# Paths are relative to the repository root: build.sh runs nfpm from there,
+# after building the static musl binary it packages. `VERSION` comes from the
+# environment (build.sh sets it from Cargo.toml, `$1` or `$VERSION`).
+# The file list mirrors package() in ../release/PKGBUILD, with the
+# non-Omarchy unit (./ssf.service) in place of ../ssf.service.
+
+name: ssf
+arch: amd64
+platform: linux
+version: ${VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: Mike Kelly <mikekelly321@gmail.com>
+vendor: https://github.com/mikekelly/simple-software-factory
+homepage: https://github.com/mikekelly/simple-software-factory
+license: MIT
+description: |
+  GitHub issues assigned to a bot become coding-agent sessions in herdr or Orca
+  Simple Software Factory watches the repositories you point it at; an issue
+  assigned to the bot account, or a pull request it is asked to review, becomes
+  a coding-agent workspace in herdr (by default inside a microVM) or in Orca.
+  The agent reports back on GitHub. herdr, the default driver, is not packaged
+  for Debian or Fedora and is installed separately (docs/setup.md, step 1).
+
+depends:
+  - git
+  - jq
+  - systemd
+# Version constraints are spelled differently per format, so gh goes in the
+# per-packager overrides (an override replaces the whole list).
+overrides:
+  deb:
+    depends:
+      - gh (>= 2.40)
+      - git
+      - jq
+      - systemd
+      # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
+      - openssh-client
+    recommends:
+      # A minimal Debian has no `systemctl --user` without it.
+      - libpam-systemd
+      - fakeroot
+      - libarchive-tools
+      - e2fsprogs
+      - curl
+  rpm:
+    depends:
+      - gh >= 2.40
+      - git
+      - jq
+      - systemd
+      # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
+      - openssh-clients
+    recommends:
+      - fakeroot
+      - bsdtar
+      - e2fsprogs
+      - curl
+
+contents:
+  # Directories, so the rpm owns and removes them (dpkg does so on its own;
+  # nfpm's rpm packager only owns what is listed).
+  - dst: /usr/lib/systemd/user/default.target.wants
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/omarchy-plugin
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/vm
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/vm/guest
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/vm/guest/units
+    type: dir
+    packager: rpm
+  - dst: /usr/share/doc/ssf
+    type: dir
+    packager: rpm
+  - dst: /usr/share/doc/ssf/docs
+    type: dir
+    packager: rpm
+  - dst: /usr/share/licenses/ssf
+    type: dir
+    packager: rpm
+  - src: target/x86_64-unknown-linux-musl/release/ssf
+    dst: /usr/bin/ssf
+    file_info:
+      mode: 0755
+  - src: bin/ssf-ui
+    dst: /usr/bin/ssf-ui
+    file_info:
+      mode: 0755
+  - src: packaging/linux/ssf.service
+    dst: /usr/lib/systemd/user/ssf.service
+    file_info:
+      mode: 0644
+  # Enabled for every user out of the box; `ssf ui service disable` turns it off.
+  - src: ../ssf.service
+    dst: /usr/lib/systemd/user/default.target.wants/ssf.service
+    type: symlink
+  - src: omarchy-plugin/manifest.json
+    dst: /usr/share/ssf/omarchy-plugin/manifest.json
+    file_info:
+      mode: 0644
+  - src: omarchy-plugin/Panel.qml
+    dst: /usr/share/ssf/omarchy-plugin/Panel.qml
+    file_info:
+      mode: 0644
+  - src: config.example.toml
+    dst: /usr/share/ssf/config.example.toml
+    file_info:
+      mode: 0644
+  - src: vm/make-base.sh
+    dst: /usr/share/ssf/vm/make-base.sh
+    file_info:
+      mode: 0755
+  - src: vm/guest/provision-init.sh
+    dst: /usr/share/ssf/vm/guest/provision-init.sh
+    file_info:
+      mode: 0755
+  - src: vm/guest/provision.sh
+    dst: /usr/share/ssf/vm/guest/provision.sh
+    file_info:
+      mode: 0755
+  - src: vm/guest/net-up.sh
+    dst: /usr/share/ssf/vm/guest/net-up.sh
+    file_info:
+      mode: 0755
+  - src: vm/guest/seed.sh
+    dst: /usr/share/ssf/vm/guest/seed.sh
+    file_info:
+      mode: 0755
+  - src: vm/guest/sudoers
+    dst: /usr/share/ssf/vm/guest/sudoers
+    file_info:
+      mode: 0644
+  - src: vm/guest/units/*.service
+    dst: /usr/share/ssf/vm/guest/units/
+    file_info:
+      mode: 0644
+  - src: SSF.example.md
+    dst: /usr/share/ssf/SSF.example.md
+    file_info:
+      mode: 0644
+  # No `type: doc` on these: nfpm 2.47's deb packager silently drops
+  # doc/license-typed entries, and its rpm packager does not expand globs on
+  # them ("Open docs/*.md: no such file or directory").
+  - src: README.md
+    dst: /usr/share/doc/ssf/README.md
+    file_info:
+      mode: 0644
+  - src: docs/*.md
+    dst: /usr/share/doc/ssf/docs/
+    file_info:
+      mode: 0644
+  # The rpm gets LICENSE as %license (type: license); the deb a plain file.
+  - src: LICENSE
+    dst: /usr/share/licenses/ssf/LICENSE
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/licenses/ssf/LICENSE
+    type: license
+    packager: rpm
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: packaging/linux/postinstall.sh
+  postremove: packaging/linux/postremove.sh

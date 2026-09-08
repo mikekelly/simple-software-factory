@@ -19,6 +19,7 @@ mod login;
 mod models;
 mod orca;
 mod origin;
+mod platform;
 mod prompt;
 mod release;
 mod sessions;
@@ -243,8 +244,9 @@ enum Command {
     /// Take this machine back to just the package: purge closed workspaces,
     /// stop and disable the service, remove the bar widget and menu entries,
     /// sign the bot out (revoking its keys on GitHub), destroy the microVM.
-    /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`
-    /// is yours), the projects directory (clones and worktrees), and, without
+    /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`,
+    /// `apt remove` or `dnf remove`; the command prints the one for this
+    /// machine), the projects directory (clones and worktrees), and, without
     /// `--data`, the config and state directories.
     Uninstall {
         /// Skip the confirmation (scripted use).
@@ -1518,14 +1520,14 @@ fn hostname() -> String {
         .map(|s| s.trim().to_string())
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "omarchy".to_string())
+        .unwrap_or_else(|| "localhost".to_string())
 }
 
 /// herdr starts and reads only the agents it can recognise in a pane.
 fn check_herdr_harness(harness: &str) {
-    let known = std::process::Command::new(
-        std::env::var("HERDR_COMMAND").unwrap_or_else(|_| "herdr".into()),
-    )
+    let known = std::process::Command::new(config::herdr_command_path(
+        &std::env::var("HERDR_COMMAND").unwrap_or_else(|_| "herdr".into()),
+    ))
     .args(["agent", "start", "--help"])
     .output()
     .ok()
@@ -3080,11 +3082,28 @@ async fn doctor() -> Result<()> {
         Err(e) => check(false, format!("{e:#}")),
     }
     for d in driver::Drivers::from_config(&cfg).iter() {
-        let cli_present =
-            std::path::Path::new(d.command()).exists() || which(d.command()).is_some();
+        let herdr = d.kind() == config::DriverKind::Herdr;
+        // herdr may live in ~/.local/bin (the herdr.dev installer's default),
+        // which the systemd user manager's PATH does not include.
+        let cmd = if herdr {
+            config::herdr_command_path(d.command())
+        } else {
+            std::path::PathBuf::from(d.command())
+        };
+        let cmd = cmd.to_string_lossy().into_owned();
+        let cli_present = std::path::Path::new(&cmd).exists() || which(&cmd).is_some();
         check(
             cli_present,
-            format!("{} driver: CLI at {}", d.label(), d.command()),
+            if !cli_present && herdr {
+                format!(
+                    "{} driver: CLI `{}` not found; install it: {}",
+                    d.label(),
+                    d.command(),
+                    platform::herdr_install_hint()
+                )
+            } else {
+                format!("{} driver: CLI at {}", d.label(), cmd)
+            },
         );
         if cli_present {
             match d.status().await {
@@ -3510,6 +3529,8 @@ async fn doctor() -> Result<()> {
     // shell to check.
     if vm::in_guest() {
         println!("note bar widget: checked on the host, not inside the VM");
+    } else if !platform::is_omarchy() {
+        println!("note bar widget: not on Omarchy, nothing to enable");
     } else {
         check(
             ui::widget_enabled().unwrap_or(false),

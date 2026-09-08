@@ -472,6 +472,51 @@ impl Default for HerdrConfig {
 fn default_herdr_command() -> String {
     std::env::var("HERDR_COMMAND").unwrap_or_else(|_| "herdr".to_string())
 }
+
+/// The herdr CLI to run for the configured command. A bare name that is not
+/// on PATH falls back to `~/.local/bin/<name>` when that is an executable
+/// file: the herdr.dev installer puts the binary there, and the systemd
+/// user manager's PATH does not include it. Only an executable regular
+/// file counts, on PATH too (a placeholder named `herdr` that cannot run
+/// does not stop the fallback). Anything else is returned as given.
+pub fn herdr_command_path(configured: &str) -> PathBuf {
+    herdr_command_path_in(
+        configured,
+        std::env::var_os("PATH").as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+fn herdr_command_path_in(
+    configured: &str,
+    path: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+) -> PathBuf {
+    let given = PathBuf::from(configured);
+    if configured.contains('/') {
+        return given;
+    }
+    let on_path = path.is_some_and(|p| {
+        std::env::split_paths(p)
+            .map(|d| d.join(configured))
+            .any(|c| is_executable_file(&c))
+    });
+    if on_path {
+        return given;
+    }
+    match home.map(|h| h.join(".local/bin").join(configured)) {
+        Some(local) if is_executable_file(&local) => local,
+        _ => given,
+    }
+}
+
+/// A regular file with an execute bit set, which is what PATH lookup
+/// accepts.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 fn default_ssf_projects_dir() -> String {
     "~/ssf/projects".to_string()
 }
@@ -1943,5 +1988,64 @@ harness = "claude"
         // An empty table round-trips to nothing.
         let text = toml::to_string_pretty(&Config::default()).unwrap();
         assert!(!text.contains("[git]"), "{text}");
+    }
+
+    /// A bare `herdr` that is not on PATH resolves to `~/.local/bin/herdr`
+    /// when that file exists; otherwise, and for any path, it is returned
+    /// as given.
+    #[test]
+    fn herdr_command_falls_back_to_local_bin() {
+        let home = std::env::temp_dir().join(format!("ssf-herdr-home-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let empty_path = std::ffi::OsString::from(home.join("nothing-here"));
+        // Not installed anywhere: the name as given.
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&empty_path), Some(&home)),
+            PathBuf::from("herdr")
+        );
+        // A file that cannot run is not the CLI: still the name as given.
+        let write = |path: &Path, mode: u32| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(path, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        write(&bin.join("herdr"), 0o644);
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&empty_path), Some(&home)),
+            PathBuf::from("herdr")
+        );
+        // The installer's default location.
+        write(&bin.join("herdr"), 0o755);
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&empty_path), Some(&home)),
+            bin.join("herdr")
+        );
+        // On PATH: the bare name stays so PATH resolves it.
+        let on_path = std::ffi::OsString::from(&bin);
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&on_path), Some(&home)),
+            PathBuf::from("herdr")
+        );
+        // A non-executable placeholder on PATH does not stop the fallback.
+        let stub_dir = home.join("stubs");
+        std::fs::create_dir_all(&stub_dir).unwrap();
+        write(&stub_dir.join("herdr"), 0o644);
+        let stub_path = std::ffi::OsString::from(&stub_dir);
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&stub_path), Some(&home)),
+            bin.join("herdr")
+        );
+        // A path is never rewritten.
+        assert_eq!(
+            herdr_command_path_in("/opt/herdr/bin/herdr", Some(&empty_path), Some(&home)),
+            PathBuf::from("/opt/herdr/bin/herdr")
+        );
+        assert_eq!(
+            herdr_command_path_in("herdr", None, None),
+            PathBuf::from("herdr")
+        );
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

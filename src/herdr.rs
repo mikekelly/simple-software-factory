@@ -362,7 +362,7 @@ impl Herdr {
     /// prints the screen as it is).
     pub async fn run_raw(&self, args: &[&str]) -> Result<String> {
         debug!(cmd = %self.cfg.command, args = ?driver::redacted_args(args), "herdr");
-        let out = Command::new(&self.cfg.command)
+        let out = Command::new(crate::config::herdr_command_path(&self.cfg.command))
             .args(args)
             // The daemon may itself run inside a herdr pane; commands must
             // not default to it.
