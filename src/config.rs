@@ -1010,10 +1010,6 @@ fn real_config_dir() -> PathBuf {
     )
 }
 
-/// Not compiled into the test build. `real_config_dir` is, because the
-/// `#[ignore]`d `vm_live` has to name the real token file to seed its
-/// guest; nothing needs the real state directory, so nothing gets it.
-#[cfg(not(test))]
 fn real_state_dir() -> PathBuf {
     dir_from(
         std::env::var("SSF_STATE_DIR").ok().as_deref(),
@@ -1072,8 +1068,16 @@ pub mod test_support {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     thread_local! {
-        /// A stack, so a nested sandbox puts the outer one back on drop.
-        static ACTIVE: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
+        /// A stack, so a nested guard puts the outer one back on drop.
+        static ACTIVE: RefCell<Vec<Dirs>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// What the guard on top of the stack points the three directories at.
+    enum Dirs {
+        /// A temporary root with `config`, `state` and `home` under it.
+        Sandbox(PathBuf),
+        /// The machine's own, for the live tests.
+        Machine,
     }
 
     /// A temporary config and state directory, in force for the thread that
@@ -1106,7 +1110,7 @@ pub mod test_support {
             std::fs::create_dir_all(root.join(sub))
                 .unwrap_or_else(|e| panic!("creating test sandbox {}: {e}", root.display()));
         }
-        ACTIVE.with(|s| s.borrow_mut().push(root.clone()));
+        ACTIVE.with(|s| s.borrow_mut().push(Dirs::Sandbox(root.clone())));
         Sandbox {
             root,
             _thread_bound: PhantomData,
@@ -1141,11 +1145,45 @@ pub mod test_support {
         fn drop(&mut self) {
             ACTIVE.with(|s| {
                 let mut stack = s.borrow_mut();
-                if let Some(at) = stack.iter().rposition(|p| p == &self.root) {
+                if let Some(at) = stack
+                    .iter()
+                    .rposition(|d| matches!(d, Dirs::Sandbox(p) if p == &self.root))
+                {
                     stack.remove(at);
                 }
             });
             let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// The machine's own config, state and home directories, for the
+    /// `#[ignore]`d live tests: they are run by hand against the factory
+    /// installed here, and a sandbox would give `vm_live` an empty config
+    /// directory and a VM seeded with no credentials. It creates nothing
+    /// and deletes nothing. Nothing `cargo test` runs on its own may hold
+    /// one.
+    #[must_use = "the directories are only the machine's while the guard is alive"]
+    pub struct TheMachineItself {
+        _thread_bound: PhantomData<*const ()>,
+    }
+
+    /// Answer the three directories from the machine itself for as long as
+    /// the guard is alive. See [`TheMachineItself`].
+    pub fn the_machine_itself() -> TheMachineItself {
+        ACTIVE.with(|s| s.borrow_mut().push(Dirs::Machine));
+        TheMachineItself {
+            _thread_bound: PhantomData,
+        }
+    }
+
+    impl Drop for TheMachineItself {
+        fn drop(&mut self) {
+            ACTIVE.with(|s| {
+                let mut stack = s.borrow_mut();
+                if let Some(at) = stack.iter().rposition(|d| matches!(d, Dirs::Machine)) {
+                    stack.remove(at);
+                }
+            });
         }
     }
 
@@ -1156,21 +1194,16 @@ pub mod test_support {
         require("home")
     }
 
-    /// Where the machine's own config directory really is. Only for the
-    /// `#[ignore]`d live tests, which are run by hand and are meant to
-    /// work against the factory installed here: `vm_live` seeds the guest
-    /// from `~/.config/ssf/token`, and a sandbox would give it an empty
-    /// directory and a VM with no credentials. Nothing `cargo test` runs
-    /// on its own may call this, and nothing may write through it.
-    pub(crate) fn real_config_dir() -> PathBuf {
-        super::real_config_dir()
-    }
-
     /// The sandbox's `which` subdirectory for the calling thread, or a
     /// panic naming what the test has to do about it.
     pub(super) fn require(which: &str) -> PathBuf {
         ACTIVE.with(|s| match s.borrow().last() {
-            Some(root) => root.join(which),
+            Some(Dirs::Sandbox(root)) => root.join(which),
+            Some(Dirs::Machine) => match which {
+                "config" => super::real_config_dir(),
+                "state" => super::real_state_dir(),
+                _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")),
+            },
             None => panic!(
                 "this test reached the real {which} directory. Tests must \
                  not write outside a temporary directory of their own: \
@@ -2425,23 +2458,17 @@ harness = "claude"
     /// The point of the guard: a test that would have written to the live
     /// daemon's state file fails where it would have written, and the
     /// message says what to do about it.
-    /// A token in the config is answered without going near the token
-    /// file, which is what lets the `#[ignore]`d `vm_live` seed its guest
-    /// with the real one while holding no sandbox: reaching `token_path()`
-    /// there would panic.
+    /// The escape the `#[ignore]`d live tests take: the machine's own
+    /// directories, answered without creating or deleting anything.
     #[test]
-    fn a_configured_token_is_answered_without_reading_the_token_file() {
-        let mut cfg = Config::default();
-        cfg.github.token = Some("  gho_from_the_config  ".into());
-        // `SSF_GITHUB_TOKEN` is looked at first and an agent session has
-        // one, so say what wins rather than assuming; what is being
-        // asserted is that neither answer reaches `token_path()`.
-        let want = std::env::var("SSF_GITHUB_TOKEN")
-            .ok()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| "gho_from_the_config".to_string());
-        assert_eq!(cfg.github_token().unwrap(), want);
+    fn the_live_test_guard_answers_the_machine_s_own_directories() {
+        let _machine = test_support::the_machine_itself();
+        assert_eq!(config_dir(), real_config_dir());
+        assert_eq!(state_dir(), real_state_dir());
+        assert_eq!(
+            crate::state::state_path(),
+            real_state_dir().join("state.json")
+        );
     }
 
     #[test]
