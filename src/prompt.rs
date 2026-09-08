@@ -2543,15 +2543,26 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             "sub-issues for the parts of this work",
             "carrying an `ssf: origin=` tag",
             "name the model you start each kind of subagent with",
-            "Check a claim rather than reasoning your way to one",
-            "try it where trying it changes nothing",
-            "Where you have not checked, say",
-            "read the source, or",
-            "This covers what you write about a change",
-            "the next person reads it instead of checking",
         ] {
             assert!(example.contains(kept), "{kept} missing from {example}");
         }
+        // Phrases catch a comment that swallows the phrase; they leave the
+        // spans between them open, which cost this rule three rounds. The
+        // rule added by #170 is asserted whole instead, unwrapped, so no
+        // span of it can go missing.
+        let unwrapped = example.replace("\n  ", " ");
+        assert!(
+            unwrapped.contains(
+                "- Check a claim rather than reasoning your way to one: read the source, \
+                 or try it where trying it changes nothing. Where you have not checked, \
+                 say so. This covers what you write about a change as much as the change \
+                 itself \u{2014} comments, commit messages, issue bodies, the sentence \
+                 explaining why something is safe \u{2014} because a wrong description \
+                 outlives a wrong line, since the next person reads it instead of \
+                 checking."
+            ),
+            "the checking rule is not intact in {unwrapped}"
+        );
         assert!(example.contains("- Autonomy: a person approves everything."));
         assert_eq!(example.matches("\n- ").count(), 12, "{example}");
     }

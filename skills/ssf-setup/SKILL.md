@@ -129,5 +129,5 @@ document links to.
     every class, including changes that need only self-review. Keep the
     line the boilerplate carries beside those rules: check a claim by
     reading the source or trying it where trying it changes nothing,
-    rather than reasoning your way to an answer, and say where you have
-    not.
+    rather than reasoning your way to an answer; say where you have not,
+    and apply the same to what you write about a change.
