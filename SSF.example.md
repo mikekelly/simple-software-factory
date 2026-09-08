@@ -13,9 +13,9 @@ branches and pull requests, is yours to say, here. Three lines say how you
 want the agent to run an item (in charge, visible, and how much a person
 approves) and three how you want the work shaped (scope, plan,
 delegation); the others are the ones ssf used to say itself. Keep the ones you
-want. The gauntlet line is there because ssf runs
-one session per item and starts no reviewer: the second pair of eyes is the
-session's own to arrange, and this is how. The delegation line names the
+want. The gauntlet rules are there because ssf runs
+one session per item and starts no reviewer: the session decides the review
+depth from the blast radius and arranges any second pair of eyes itself. The delegation line names the
 model each kind of subagent runs on, which ssf cannot set for you: it sets
 this session's model and nothing below it. Comments like this one are
 stripped before the file reaches an agent.
