@@ -364,8 +364,8 @@ with the packages, and a `data.ext4` (`vm.data_gib`, sparse; see
 ssf's state, the clones and the worktrees, and the guest user's home
 (herdr's session state, the harness transcripts, caches), which is
 bind-mounted from there. Under lima the two are the instance's root disk
-in lima's home and the lima disk `ssf-<name>-data`, which lima mounts at
-`/mnt/lima-ssf-<name>-data` and the guest's seed unit bind-mounts on
+in lima's home and the lima disk `ssf-<name>` (short because lima labels it `lima-<disk>` and an ext4 label holds 16 characters, so a `name` has at most 7), which lima mounts at
+`/mnt/lima-ssf-<name>` and the guest's seed unit bind-mounts on
 `/var/lib/ssf` at every boot, with the same layout on it. `ssf vm stop`
 shuts the guest down cleanly (Ctrl-Alt-Del through Firecracker's API;
 `limactl stop` under lima); on the next start the guest daemon's own

@@ -1,7 +1,7 @@
 //! The lima backend of `ssf vm` (`[vm] backend = "lima"`; the default on
 //! macOS): the guest is a [lima](https://lima-vm.io) instance, `ssf-<name>`
 //! in lima's own home (`~/.lima` or `$LIMA_HOME`), with a lima data disk
-//! `ssf-<name>-data`, and the same guest scripts and units as the
+//! `ssf-<name>`, and the same guest scripts and units as the
 //! Firecracker image. The flow:
 //!
 //! * `ssf vm build`: preflight (`limactl`, and qemu on Linux), the
@@ -196,8 +196,26 @@ pub fn instance_name(name: &str) -> String {
     format!("ssf-{name}")
 }
 
+/// The lima data disk, `ssf-<name>`. Short on purpose: lima labels the
+/// filesystem `lima-<disk>`, an ext4 label holds 16 characters, and lima
+/// looks the disk up by the untruncated label at every boot and formats it
+/// again when it finds none (lima 2.2.0, `boot.Linux/05-lima-disks.sh`).
+/// So `lima-ssf-<name>` must fit: [`check_name`] refuses a longer name.
 pub fn disk_name(name: &str) -> String {
-    format!("ssf-{name}-data")
+    format!("ssf-{name}")
+}
+
+/// The longest `[vm] name` whose data-disk label fits (`lima-ssf-<name>`).
+pub const MAX_NAME_LEN: usize = 16 - "lima-ssf-".len();
+
+/// Refuse a `[vm] name` the lima backend cannot label a disk for.
+pub fn check_name(name: &str) -> Result<()> {
+    if name.len() > MAX_NAME_LEN {
+        bail!(
+            "[vm] name \"{name}\" is too long for the lima backend: lima labels the data disk `lima-ssf-<name>` and an ext4 label holds 16 characters, so the name can have at most {MAX_NAME_LEN}"
+        );
+    }
+    Ok(())
 }
 
 impl Vm {
@@ -206,7 +224,7 @@ impl Vm {
         instance_name(&self.cfg.name)
     }
 
-    /// The lima data disk: `ssf-<name>-data`.
+    /// The lima data disk: `ssf-<name>`.
     pub fn lima_disk_name(&self) -> String {
         disk_name(&self.cfg.name)
     }
@@ -342,6 +360,7 @@ impl Vm {
     /// What a build needs: limactl that runs, and on Linux qemu for the
     /// architecture (lima's only Linux driver), naming what to install.
     fn lima_preflight(&self) -> Result<()> {
+        check_name(&self.cfg.name)?;
         let arch = self.lima_arch()?;
         if self.limactl().arg("--version").output().is_err() {
             bail!(
@@ -667,15 +686,24 @@ mod tests {
     }
 
     #[test]
+    fn a_name_whose_disk_label_would_not_fit_is_refused() {
+        assert_eq!(MAX_NAME_LEN, 7);
+        assert!(check_name("default").is_ok());
+        assert!(check_name("e2e").is_ok());
+        let err = check_name("factory1").unwrap_err().to_string();
+        assert!(err.contains("at most 7"), "{err}");
+    }
+
+    #[test]
     fn names_and_files_follow_the_vm_name() {
         let vm = vm();
         assert_eq!(vm.lima_name(), "ssf-one");
-        assert_eq!(vm.lima_disk_name(), "ssf-one-data");
+        assert_eq!(vm.lima_disk_name(), "ssf-one");
         assert_eq!(vm.share_dir(), PathBuf::from("/v/one/share"));
         assert_eq!(vm.template_path(), PathBuf::from("/v/one/lima.yaml"));
         assert_eq!(
             lima_env("one"),
-            "SSF_VM_DATA_DISK=ssf-one-data\nSSF_VM_NAME=one\n"
+            "SSF_VM_DATA_DISK=ssf-one\nSSF_VM_NAME=one\n"
         );
         assert_eq!(lima_arch("x86_64").unwrap(), "x86_64");
         assert_eq!(lima_arch("aarch64").unwrap(), "aarch64");
@@ -689,7 +717,7 @@ mod tests {
     fn template_has_the_base_per_arch_the_sizes_the_mount_and_the_disk() {
         let vm = vm();
         let t = Template {
-            disk: "ssf-one-data",
+            disk: "ssf-one",
             share: Path::new("/v/one/share"),
             ssh_port: 2222,
             sizes: vm.sizes(),
@@ -716,9 +744,7 @@ mod tests {
         assert!(y.contains("localPort: 2222\n"), "{y}");
         assert!(y.contains("loadDotSSHPubKeys: false"), "{y}");
         assert!(
-            y.contains(
-                "additionalDisks:\n  - name: ssf-one-data\n    format: true\n    fsType: ext4\n"
-            ),
+            y.contains("additionalDisks:\n  - name: ssf-one\n    format: true\n    fsType: ext4\n"),
             "{y}"
         );
         assert!(
@@ -758,7 +784,7 @@ mod tests {
         // Through the VM: its own share dir and port.
         let y = vm.lima_template().unwrap();
         assert!(y.contains("location: \"/v/one/share\""), "{y}");
-        assert!(y.contains("name: ssf-one-data"), "{y}");
+        assert!(y.contains("name: ssf-one"), "{y}");
     }
 
     #[test]
@@ -777,12 +803,12 @@ not json at all
         assert!(v.iter().all(|i| i.name != "missing"));
         assert!(parse_instances("").is_empty());
         let d = parse_disks(
-            r#"{"name":"ssf-default-data","size":21474836480,"format":"qcow2","dir":"/Users/me/.lima/_disks/ssf-default-data","instance":"","instanceDir":"","mountPoint":"/mnt/lima-ssf-default-data"}
+            r#"{"name":"ssf-default","size":21474836480,"format":"qcow2","dir":"/Users/me/.lima/_disks/ssf-default","instance":"","instanceDir":"","mountPoint":"/mnt/lima-ssf-default"}
 "#,
         );
         assert_eq!(d.len(), 1);
         assert_eq!(gib_ceil(d[0].size), 20);
-        assert_eq!(d[0].mount_point, "/mnt/lima-ssf-default-data");
+        assert_eq!(d[0].mount_point, "/mnt/lima-ssf-default");
         assert!(parse_disks("").is_empty());
     }
 

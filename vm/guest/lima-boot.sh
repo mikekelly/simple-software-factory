@@ -32,11 +32,9 @@ else
     tail -n 20 "$log"
     exit 1
 fi
+# The seed unit is ordered after cloud-init's final stage, which is what
+# runs this script, so it is queued rather than waited for: it starts the
+# moment provisioning ends, and the host waits for ssh as `ssf`.
 systemctl daemon-reload
-if systemctl start ssf-seed.service; then
-    echo "ssf-provision: DONE"
-else
-    echo "ssf-provision: FAILED: ssf-seed.service did not start (see $log)"
-    journalctl -u ssf-seed.service --no-pager >>"$log" 2>&1
-    exit 1
-fi
+systemctl start --no-block ssf-seed.service
+echo "ssf-provision: DONE"
