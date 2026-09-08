@@ -361,32 +361,59 @@ pub fn service_enabled() -> bool {
     !disabled_marker().exists()
 }
 
+/// What to do with a service command (`systemctl`, `brew services`) that
+/// failed. The marker is written either way, so the enable or disable
+/// itself always holds; this is only about the daemon that was meant to
+/// start or stop with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnServiceError {
+    /// Print it and carry on: `ssf ui service enable|disable` reports the
+    /// marker, and `ssf ui service status` shows what came of the daemon.
+    Warn,
+    /// Return it: `ssf uninstall` goes on to destroy the VM and remove
+    /// the state after this step, so a `brew services stop` that failed
+    /// must not be reported as "service stopped and disabled" -- that
+    /// would leave a live daemon working on files being deleted.
+    Fail,
+}
+
 pub fn set_service_enabled(enabled: bool) -> Result<()> {
+    set_service_enabled_on_error(enabled, OnServiceError::Warn)
+}
+
+/// [`set_service_enabled`], choosing what a failed service command does.
+pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> Result<()> {
     let marker = disabled_marker();
-    if enabled {
+    let (result, what) = if enabled {
         if marker.exists() {
             std::fs::remove_file(&marker)?;
         }
-        report_service(crate::platform::service_start(), "start");
+        (crate::platform::service_start(), "start")
     } else {
         if let Some(parent) = marker.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(&marker, "created by `ssf ui service disable`\n")?;
-        report_service(crate::platform::service_stop(), "stop");
-    }
-    Ok(())
+        (crate::platform::service_stop(), "stop")
+    };
+    report_service(result, what, on_error)
 }
 
 /// Say what systemctl (or `brew services`) said when it failed. It used
 /// to run with this terminal, so its error was on screen; it is captured
 /// now, and dropping it left `ssf ui service enable` printing "service
-/// enabled" over a daemon that had not started. Not the command's result:
-/// the marker is written either way, so the enable or disable itself did
-/// hold, and `ssf ui service status` shows what came of it.
-fn report_service(result: Result<()>, what: &str) {
-    if let Err(e) = result {
-        eprintln!("warning: could not {what} the service: {e:#}");
+/// enabled" over a daemon that had not started.
+fn report_service(result: Result<()>, what: &str, on_error: OnServiceError) -> Result<()> {
+    match (result, on_error) {
+        (Ok(()), _) => Ok(()),
+        (Err(e), OnServiceError::Warn) => {
+            eprintln!("warning: could not {what} the service: {e:#}");
+            Ok(())
+        }
+        (Err(e), OnServiceError::Fail) => Err(e.context(format!(
+            "could not {what} the {} service",
+            platform::service_name()
+        ))),
     }
 }
 
@@ -437,6 +464,35 @@ pub fn uninstall_all() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_service_command_that_failed_is_a_warning_or_the_answer() {
+        // `ssf ui service disable` reports the marker, which was written
+        // whatever systemd said, so a failed `systemctl stop` is a
+        // warning there. `ssf uninstall` is the other case: it goes on to
+        // destroy the VM and remove the state, so "service stopped and
+        // disabled" over a `brew services stop` that failed would leave a
+        // live daemon working on files being deleted.
+        assert!(report_service(Ok(()), "stop", OnServiceError::Warn).is_ok());
+        assert!(report_service(Ok(()), "stop", OnServiceError::Fail).is_ok());
+        assert!(
+            report_service(
+                Err(anyhow::anyhow!("brew services stop said no")),
+                "stop",
+                OnServiceError::Warn,
+            )
+            .is_ok()
+        );
+        let err = report_service(
+            Err(anyhow::anyhow!("brew services stop said no")),
+            "stop",
+            OnServiceError::Fail,
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("could not stop the"), "{text}");
+        assert!(text.contains("brew services stop said no"), "{text}");
+    }
 
     #[test]
     fn merges_into_comment_only_file() {

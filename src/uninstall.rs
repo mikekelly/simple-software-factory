@@ -558,7 +558,11 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
 
     println!("==> stop and disable {}", crate::platform::service_name());
     let was_off = !facts.service_active && !facts.service_enabled;
-    match ui::set_service_enabled(false) {
+    // The service command's own failure is the finding here, not a
+    // warning on the way to "service stopped and disabled": the VM is
+    // destroyed and the state removed a few steps below, and doing that
+    // under a daemon still running is what this step exists to prevent.
+    match ui::set_service_enabled_on_error(false, ui::OnServiceError::Fail) {
         Ok(()) if was_off => println!("already stopped and disabled"),
         Ok(()) => println!("service stopped and disabled"),
         Err(e) => fail("service", e),
