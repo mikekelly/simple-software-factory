@@ -5,7 +5,7 @@
 //! asks a question instead of assuming an answer.
 
 use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -166,6 +166,48 @@ pub fn is_macos() -> bool {
     detect().os == Os::MacOs
 }
 
+// ---- the files the package installs beside the binary ----
+
+/// Where a file the package installs under `share/ssf/` could be, best
+/// first: `/usr/share/ssf/<name>` (the .deb, .rpm and Arch packages),
+/// `share/ssf/<name>` under the prefix this binary is installed in
+/// (Homebrew's `$(brew --prefix)`, which is where a Mac has it, so that
+/// one comes first there), and `<name>` at the top of a source build.
+pub fn share_candidates(name: &str, exe_dir: Option<&Path>, os: Os) -> Vec<PathBuf> {
+    let package = PathBuf::from("/usr/share/ssf").join(name);
+    // `<prefix>/bin/ssf` -> `<prefix>/share/ssf/<name>`.
+    let prefixed = exe_dir
+        .and_then(Path::parent)
+        .map(|p| p.join("share/ssf").join(name));
+    let mut v = Vec::new();
+    if os == Os::MacOs {
+        v.extend(prefixed);
+        v.push(package);
+    } else {
+        v.push(package);
+        v.extend(prefixed);
+    }
+    // `target/<profile>/ssf` -> the repository it was built in.
+    if let Some(src) = exe_dir.and_then(Path::parent).and_then(Path::parent) {
+        v.push(src.join(name));
+    }
+    v.push(PathBuf::from(name));
+    v
+}
+
+/// The first of [`share_candidates`] that exists, else the first (the
+/// place this platform installs it), so a message can name it either way.
+pub fn share_file(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().ok();
+    let candidates = share_candidates(name, exe.as_deref().and_then(Path::parent), detect().os);
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .or_else(|| candidates.first())
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
 // ---- the daemon's service ----
 
 /// The systemd user unit (`systemctl --user ... ssf.service`); inside the
@@ -196,6 +238,22 @@ pub fn service_hint_for(os: &str, action: &str) -> String {
 /// `service_hint_for` on this machine.
 pub fn service_hint(action: &str) -> String {
     service_hint_for(std::env::consts::OS, action)
+}
+
+/// How a message names the daemon's service on `os`: the systemd user
+/// unit on Linux, Homebrew's service on macOS (there is no `ssf.service`
+/// on a Mac).
+pub fn service_name_for(os: &str) -> &'static str {
+    if os == "macos" {
+        "the ssf Homebrew service"
+    } else {
+        SERVICE
+    }
+}
+
+/// `service_name_for` on this machine.
+pub fn service_name() -> &'static str {
+    service_name_for(std::env::consts::OS)
 }
 
 /// Is the daemon's service running? On Linux `systemctl --user is-active`
@@ -417,6 +475,56 @@ mod tests {
             linux("alpine", &[], false).package_removal_command(),
             "remove the ssf package with your package manager"
         );
+    }
+
+    #[test]
+    fn a_shared_file_is_looked_for_where_this_platform_installs_it() {
+        let bin = Path::new("/opt/homebrew/bin");
+        // On a Mac the file is under Homebrew's prefix, so that comes
+        // first: /usr/share/ssf is the Linux packages' place.
+        assert_eq!(
+            share_candidates("SSF.example.md", Some(bin), Os::MacOs),
+            vec![
+                PathBuf::from("/opt/homebrew/share/ssf/SSF.example.md"),
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("/opt/SSF.example.md"),
+                PathBuf::from("SSF.example.md"),
+            ]
+        );
+        assert_eq!(
+            share_candidates("SSF.example.md", Some(Path::new("/usr/bin")), Os::Linux),
+            vec![
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("/SSF.example.md"),
+                PathBuf::from("SSF.example.md"),
+            ]
+        );
+        // A source build: `target/debug/ssf` finds it in the repository.
+        let v = share_candidates(
+            "SSF.example.md",
+            Some(Path::new("/src/ssf/target/debug")),
+            Os::Linux,
+        );
+        assert!(
+            v.contains(&PathBuf::from("/src/ssf/SSF.example.md")),
+            "{v:?}"
+        );
+        // Nothing to go on: the package's path and the bare name.
+        assert_eq!(
+            share_candidates("SSF.example.md", None, Os::Linux),
+            vec![
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("SSF.example.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_service_is_named_for_the_os() {
+        assert_eq!(service_name_for("linux"), "ssf.service");
+        assert_eq!(service_name_for("macos"), "the ssf Homebrew service");
+        assert!(!service_name_for("macos").contains(".service"));
     }
 
     #[test]
