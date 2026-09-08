@@ -2547,7 +2547,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             assert!(example.contains(kept), "{kept} missing from {example}");
         }
         assert!(example.contains("- Autonomy: a person approves everything."));
-        assert_eq!(example.matches("\n- ").count(), 11, "{example}");
+        assert_eq!(example.matches("\n- ").count(), 13, "{example}");
     }
 
     #[test]
