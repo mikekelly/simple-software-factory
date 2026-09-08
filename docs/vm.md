@@ -282,7 +282,10 @@ what this configuration does not, with the command that removes it, and
 `ssf doctor` does on a host that is not running the factory in a VM (in
 VM mode it is forwarded into the guest, which cannot see the host's
 `[vm] dir`). None of them removes it for you: nothing can tell a VM you
-renamed away to keep from one you abandoned.
+renamed away to keep from one you abandoned. The one thing not merely
+reported is a data disk from the *other* backend inside the VM's own
+directory, since `ssf vm destroy` removes that directory: `ssf
+uninstall` refuses over it and says so, and `--force` takes it.
 
 Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,
 `run`, `ssh-config`) goes over ssh and works the same under both.
