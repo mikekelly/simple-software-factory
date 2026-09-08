@@ -534,7 +534,11 @@ mod tests {
             })
             .unwrap();
             let before = std::fs::read_to_string(&log).unwrap_or_default();
-            let path = format!("{}:/usr/bin:/bin", bin.display());
+            let mut paths = vec![bin.clone()];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            let path = std::env::join_paths(paths).unwrap();
             let output = std::process::Command::new("bash")
                 .arg(&script)
                 .args(["open-workspace", "workspace", "https://example.com"])
