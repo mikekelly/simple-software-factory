@@ -1022,14 +1022,17 @@ item's too), one that cannot be checked (no origin, a git error), or a
 VM with a data disk whose clones cannot be checked -- it is stopped, it
 gives no report, the disk outlived the instance that mounted it, `[vm]
 enabled = false` means ssf never asks its guest, or lima would not say
-whether it is running or whether that disk is there. Only a data disk
-stops it: what `[vm] dir` holds without one is ssf's own template, ssh
-key and share, and goes without a word. Push or discard the work
-(`ssf vm start` to check a stopped VM; the message says what to do in
-each of the other cases, and it is never `ssf vm start`), or pass
-`--force` to go ahead: on the host the work stays where it is; in the VM
-the clones live on its data disk and are destroyed with it, checked or
-not. `--yes` skips the question for scripted use.
+whether it is running or whether that disk is there, or the VM's own
+directory holds a data disk from before `[vm] backend` changed -- one
+the current backend cannot mount, and which the destroy step removes
+with that directory. Only a data disk stops it: what `[vm] dir` holds
+without one is ssf's own template, ssh key and share, and goes without a
+word. Push or discard the work (`ssf vm start` to check a stopped VM;
+the message says what to do in each of the other cases, and it is never
+`ssf vm start`), or pass `--force` to go ahead: on the host the work
+stays where it is; in the VM the clones live on its data disk and are
+destroyed with it, checked or not. `--yes` skips the question for
+scripted use.
 
 Anything this configuration does not name -- what changing `[vm] name`
 leaves behind, since renaming it in the config renames nothing on the

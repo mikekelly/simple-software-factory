@@ -382,6 +382,12 @@ pub struct Survey {
     /// never the problem, while the one holding their clones went
     /// unnamed. The remedy has to carry the real name here too.
     pub unread: Vec<PathBuf>,
+    /// This VM's own directory holds a `data.ext4` its backend does not
+    /// use -- what switching `[vm] backend` from Firecracker to lima
+    /// leaves, with every clone of that VM in it. `ssf vm destroy`
+    /// removes that directory, so the work in it is work this command
+    /// would take, and nothing can mount it to look first.
+    pub stranded_disk: bool,
 }
 
 /// Something of ssf's shape that this configuration does not name: what
@@ -1298,27 +1304,6 @@ impl Vm {
         }
     }
 
-    /// VM directories under `[vm] dir` that this configuration does not
-    /// name, each holding a `data.ext4` of its own.
-    ///
-    /// Asked under *both* backends, because `[vm] dir` is shared by
-    /// them: a VM built under Firecracker and then switched to lima
-    /// leaves its old directory, and its clones, right where they were.
-    /// Treating this as a Firecracker question left `ssf uninstall`
-    /// calling that directory "safe to remove" under lima -- the same
-    /// sentence, on the other backend. Nothing under `[vm] dir` has a
-    /// `data.ext4` when lima made it: lima's disks are in its own home.
-    ///
-    /// A changed `[vm] name` orphans one under Firecracker exactly as it
-    /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
-    /// and the data disk is inside it, so the clones and worktrees of
-    /// the old VM are still there under the old name. Nothing named
-    /// them, and `ssf uninstall` calls `[vm] dir` "safe to remove" --
-    /// which over one of these would be the report telling a person to
-    /// delete their own work.
-    ///
-    /// Only directories holding a `data.ext4` count. The images and
-    /// downloads share `[vm] dir` with them and are genuinely safe.
     /// Is this path this VM's own directory, however `[vm] dir` was
     /// spelled?
     fn is_own_dir(&self, p: &Path) -> bool {
@@ -1326,11 +1311,28 @@ impl Vm {
     }
 
     /// The VM directories under `[vm] dir` that this configuration does
-    /// not name, and whether the directory could be read at all. A `read_dir` that failed is "nobody looked", which the
-    /// report must not print as "nothing there": a `[vm] dir` left
-    /// root-owned by an earlier `sudo`, or on a volume returning `EIO`,
-    /// would otherwise get `no VM` over `safe to remove` -- the two
-    /// sentences this whole change exists to abolish.
+    /// not name, each holding a `data.ext4` of its own, and whether the
+    /// directory could be read at all.
+    ///
+    /// A changed `[vm] name` orphans one under Firecracker exactly as it
+    /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
+    /// and the data disk is inside it, so the clones and worktrees of
+    /// the old VM are still there under the old name. Nothing named
+    /// them, and `ssf uninstall` called `[vm] dir` "safe to remove" --
+    /// which over one of these is the report telling a person to delete
+    /// their own work.
+    ///
+    /// Asked under both backends, because `[vm] dir` is shared by them.
+    /// Only directories holding a `data.ext4` count: the images and
+    /// downloads share `[vm] dir` with them and are genuinely safe. This
+    /// VM's own directory is never one of them -- `Vm::destroy` removes
+    /// it, and calling it untouched would be false on the one path where
+    /// being wrong costs the clones.
+    ///
+    /// A `read_dir` that failed is "nobody looked", which the report must
+    /// not print as "nothing there": a `[vm] dir` left root-owned by an
+    /// earlier `sudo`, or on a volume returning `EIO`, would otherwise
+    /// get `no VM` over `safe to remove`.
     fn fc_dir_contents(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         // Absolute, because the remedy is an `rm -rf` a person pastes:
         // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
@@ -1383,14 +1385,14 @@ impl Vm {
             // removes the link and leaves what it pointed at, so a
             // remedy over one would not be a remedy.
             .filter(|p| {
-                // Under lima this VM's own directory holds a template,
-                // an ssh key and a share -- never a `data.ext4`. One
-                // there is what a machine that switched `[vm] backend`
-                // away from Firecracker and kept its `[vm] name` left,
-                // with every clone in it, and excluding it let
-                // `ssf uninstall` remove the directory with no refusal
-                // and no mention of what was in it.
-                (self.backend() == BackendKind::Lima || !self.is_own_dir(p))
+                // Never this VM's own directory, on either backend:
+                // `Vm::destroy` removes it, and a line calling it
+                // "untouched, `--force` included" would be false on the
+                // one path where being wrong costs the clones. What a
+                // backend switch stranded *inside* it is `stranded_disk`
+                // below, which is a different question with a different
+                // answer.
+                !self.is_own_dir(p)
                     && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
                     && p.join("data.ext4").exists()
             })
@@ -1440,6 +1442,7 @@ impl Vm {
                     data: Some(self.data_disk().exists()),
                     strays,
                     unread,
+                    stranded_disk: false,
                 }
             }
             BackendKind::Lima => {
@@ -1449,6 +1452,16 @@ impl Vm {
                 // is a `[vm] dir` nobody could read.
                 let (strays, unread) = self.fc_dir_contents();
                 survey.strays.splice(0..0, strays);
+                // A `data.ext4` in this VM's own directory is not lima's
+                // -- lima keeps its disk in its own home -- so it is
+                // what a switch away from Firecracker stranded there.
+                // `destroy` removes that directory, so the clones in it
+                // are work this command takes, and `data` is how the
+                // report and the refusal learn there is work at all.
+                survey.stranded_disk = self.data_disk().exists();
+                if survey.stranded_disk {
+                    survey.data = Some(true);
+                }
                 // Either directory being unreadable is enough to make
                 // what is here unknown -- assigning would have thrown
                 // away lima's own answer about its home.
@@ -3311,6 +3324,7 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -3325,6 +3339,7 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
                 unread: Vec::new(),
+                stranded_disk: false,
             }
         );
     }
