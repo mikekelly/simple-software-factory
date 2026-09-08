@@ -998,14 +998,31 @@ fn dir_from(env: Option<&str>, base: Option<PathBuf>, fallback: &str) -> PathBuf
     base.unwrap_or_else(|| PathBuf::from(fallback)).join("ssf")
 }
 
+/// The platform's own answer for each directory. macOS is told rather
+/// than asked, so a test can assert the branch it is not running on: ssf
+/// keeps the XDG places under `~` there, not `~/Library/Application
+/// Support`, so the paths in the documentation and in the guest hold
+/// everywhere.
+fn platform_config_base(macos: bool) -> Option<PathBuf> {
+    if macos {
+        Some(expand_tilde("~/.config"))
+    } else {
+        dirs::config_dir()
+    }
+}
+
+fn platform_state_base(macos: bool) -> Option<PathBuf> {
+    if macos {
+        Some(expand_tilde("~/.local/state"))
+    } else {
+        dirs::state_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
+    }
+}
+
 fn real_config_dir() -> PathBuf {
     dir_from(
         std::env::var("SSF_CONFIG_DIR").ok().as_deref(),
-        if crate::platform::is_macos() {
-            Some(expand_tilde("~/.config"))
-        } else {
-            dirs::config_dir()
-        },
+        platform_config_base(crate::platform::is_macos()),
         "~/.config",
     )
 }
@@ -1013,11 +1030,7 @@ fn real_config_dir() -> PathBuf {
 fn real_state_dir() -> PathBuf {
     dir_from(
         std::env::var("SSF_STATE_DIR").ok().as_deref(),
-        if crate::platform::is_macos() {
-            Some(expand_tilde("~/.local/state"))
-        } else {
-            dirs::state_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
-        },
+        platform_state_base(crate::platform::is_macos()),
         "~/.local/state",
     )
 }
@@ -1158,10 +1171,12 @@ pub mod test_support {
 
     /// The machine's own config, state and home directories, for the
     /// `#[ignore]`d live tests: they are run by hand against the factory
-    /// installed here, and a sandbox would give `vm_live` an empty config
-    /// directory and a VM seeded with no credentials. It creates nothing
-    /// and deletes nothing. Nothing `cargo test` runs on its own may hold
-    /// one.
+    /// installed here, and `vm_live` cannot seed its guest without
+    /// resolving the config directory the way the daemon does. The guard
+    /// itself creates nothing and deletes nothing, but it hands out real
+    /// paths, so nothing `cargo test` runs on its own may *write* through
+    /// one — that is #140 again, with no panic left to catch it. The one
+    /// test below that holds one only compares paths.
     #[must_use = "the directories are only the machine's while the guard is alive"]
     pub struct TheMachineItself {
         _thread_bound: PhantomData<*const ()>,
@@ -1202,7 +1217,8 @@ pub mod test_support {
             Some(Dirs::Machine) => match which {
                 "config" => super::real_config_dir(),
                 "state" => super::real_state_dir(),
-                _ => dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")),
+                "home" => dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")),
+                _ => panic!("no machine directory for {which:?}"),
             },
             None => panic!(
                 "this test reached the real {which} directory. Tests must \
@@ -2455,11 +2471,36 @@ harness = "claude"
         assert_eq!(state_dir(), outer.state_dir());
     }
 
-    /// The point of the guard: a test that would have written to the live
-    /// daemon's state file fails where it would have written, and the
-    /// message says what to do about it.
+    /// macOS keeps ssf's directories in the XDG places under `~`, never
+    /// `~/Library/Application Support`, so a guest and its host name the
+    /// same paths. Asserted for both platforms from here, since the suite
+    /// only ever runs on one of them.
+    #[test]
+    fn macos_keeps_the_xdg_places_under_the_home_directory() {
+        let home = dirs::home_dir().expect("a home directory");
+        assert_eq!(platform_config_base(true), Some(home.join(".config")));
+        assert_eq!(platform_state_base(true), Some(home.join(".local/state")));
+        assert_eq!(
+            dir_from(None, platform_config_base(true), "~/.config"),
+            home.join(".config/ssf")
+        );
+        assert_eq!(
+            dir_from(None, platform_state_base(true), "~/.local/state"),
+            home.join(".local/state/ssf")
+        );
+        // The environment still wins on either platform.
+        for macos in [true, false] {
+            assert_eq!(
+                dir_from(Some("/scratch"), platform_config_base(macos), "~/.config"),
+                PathBuf::from("/scratch")
+            );
+        }
+    }
+
     /// The escape the `#[ignore]`d live tests take: the machine's own
-    /// directories, answered without creating or deleting anything.
+    /// directories, answered without creating or deleting anything. This
+    /// one only compares paths — nothing `cargo test` runs on its own may
+    /// write through that guard.
     #[test]
     fn the_live_test_guard_answers_the_machine_s_own_directories() {
         let _machine = test_support::the_machine_itself();
@@ -2471,6 +2512,9 @@ harness = "claude"
         );
     }
 
+    /// The point of the guard: a test that would have written to the live
+    /// daemon's state file fails where it would have written, and the
+    /// message says what to do about it.
     #[test]
     #[should_panic(expected = "reached the real state directory")]
     fn without_a_sandbox_the_state_directory_is_refused() {

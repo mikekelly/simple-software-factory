@@ -50,6 +50,14 @@ down first. `ui::home()` is guarded the same way and answers
 and delete under `~/.config/omarchy`, which is nobody's temporary
 directory either.
 
+`cfg(test)` is what makes any of this hold, and that in turn rests on
+`ssf` having no `[lib]` target: the tests are all inline, so they are the
+only thing that compiles `config.rs`. `tests/packaging.rs` cannot reach
+`crate::config` at all for the same reason. Give the crate a library and
+anything under `tests/` links it built *without* `cfg(test)`, with the
+real directories back — so a `[lib]` target comes with moving the guard
+somewhere it does not depend on how the file was compiled.
+
 The guard is the calling thread's, and nothing carries it: resolve a
 directory on a thread the test handed work to (`spawn_blocking`, a
 multi-threaded runtime) and it panics there instead. That is not always
