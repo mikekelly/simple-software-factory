@@ -109,13 +109,19 @@ document links to.
    --json` marks such an item with `retirement_held_at`.
 10. **Uninstall with `ssf uninstall`**, never by hand: it reports and
     asks once, and it refuses while a workspace holds unpushed work or
-    the VM is stopped so its clones cannot be checked. Do not add
-    `--force` on the person's behalf: show them the report and let them
-    settle the work or decide; `--data` (config, the bot's key, state)
-    is also theirs to ask for. The package removal that follows (`sudo
-    pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or on
-    macOS `brew uninstall ssf` and then `brew untap mikekelly/ssf`; the
-    command prints the one for the machine) is **you**.
+    the VM's clones cannot be checked. Under the lima backend it asks
+    lima what it holds rather than reading `[vm] dir`, so the instance
+    and its data disk are found and destroyed even where that directory
+    has gone or `[vm] dir` has changed. The refusal names its own
+    remedy: `ssf vm start` only where there is an instance to start, and
+    never for a data disk that outlived its instance or for a lima that
+    would not say whether the VM is running. Do not add `--force` on the
+    person's behalf: show them the report and let them settle the work
+    or decide; `--data` (config, the bot's key, state) is also theirs to
+    ask for. The package removal that follows (`sudo pacman -R ssf`,
+    `sudo apt remove ssf`, `sudo dnf remove ssf`, or on macOS `brew
+    uninstall ssf` and then `brew untap mikekelly/ssf`; the command
+    prints the one for the machine) is **you**.
 11. **Calibrate the project's gauntlet by blast radius** when writing
     `SSF.md`: use the [boilerplate](../../SSF.example.md) and
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)

@@ -37,7 +37,9 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
-use super::{HostFacts, Sizes, Vm, make_executable, plan_grow, scripts_dir, sizes_for, which};
+use super::{
+    HostFacts, Sizes, Survey, Vm, make_executable, plan_grow, scripts_dir, sizes_for, which,
+};
 use crate::config::{Config, HerdrConfig, expand_tilde};
 use crate::platform;
 
@@ -554,6 +556,14 @@ pub fn disks_dir_from(env: Option<&str>, home: Option<&Path>) -> Option<PathBuf>
     lima_home_from(env, home).map(|h| h.join("_disks"))
 }
 
+/// [`lima_home_from`] for this process.
+pub fn lima_home() -> Option<PathBuf> {
+    lima_home_from(
+        std::env::var("LIMA_HOME").ok().as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
 /// [`disks_dir_from`] for this process.
 pub fn disks_dir() -> Option<PathBuf> {
     disks_dir_from(
@@ -886,6 +896,98 @@ impl Vm {
                 warn!("{e:#}");
                 None
             }
+        }
+    }
+
+    /// Where lima keeps this instance: `<lima home>/<name>`.
+    fn lima_instance_dir(&self) -> Option<PathBuf> {
+        self.lima_home.as_ref().map(|h| h.join(self.lima_name()))
+    }
+
+    /// Where lima keeps this VM's external data disk:
+    /// `<lima home>/_disks/<disk>`.
+    fn lima_disk_dir(&self) -> Option<PathBuf> {
+        self.lima_home
+            .as_ref()
+            .map(|h| h.join("_disks").join(self.lima_disk_name()))
+    }
+
+    /// Is either of them on disk? What is left to go on when `limactl`
+    /// will not answer. `None` when there is no lima home to look in --
+    /// no home directory at all -- which is not the same as "nothing
+    /// there".
+    fn lima_leftovers(&self) -> Option<bool> {
+        let (instance, disk) = (self.lima_instance_dir()?, self.lima_disk_dir()?);
+        Some(instance.exists() || disk.exists())
+    }
+
+    /// What lima holds of this VM. The data disk is asked about as well
+    /// as the instance: `limactl delete` of an instance leaves an
+    /// external disk where it is, so a disk full of clones and worktrees
+    /// can outlive the instance that mounted it -- and nothing can then
+    /// be started to look inside it, which is why that case is not
+    /// `startable`.
+    pub(super) fn lima_survey(&self) -> Survey {
+        let dir = self.dir.exists();
+        let instance = match self.lima_instance() {
+            Ok(i) => i,
+            Err(e) => return self.lima_unanswered(dir, "the instance", &self.lima_name(), &e),
+        };
+        let disk = match self.lima_disk() {
+            Ok(d) => Some(d.is_some()),
+            Err(e) => {
+                warn!(
+                    "could not ask lima about the data disk {}: {e:#}",
+                    self.lima_disk_name()
+                );
+                // Lima's own filesystem, for the one answer whose loss
+                // cannot be undone.
+                self.lima_disk_dir().map(|p| p.exists())
+            }
+        };
+        Survey {
+            present: match (instance.is_some(), disk) {
+                (true, _) | (false, Some(true)) => Some(true),
+                (false, Some(false)) => Some(dir),
+                (false, None) => dir.then_some(true),
+            },
+            running: Some(instance.as_ref().is_some_and(Instance::is_running)),
+            startable: instance.is_some(),
+            data: disk,
+        }
+    }
+
+    /// A `limactl` question that came back an error.
+    ///
+    /// An unrunnable or silent `limactl` -- moved by an upgrade, off the
+    /// PATH the service runs under, a stale `[vm] limactl`, a locked
+    /// lima home -- is evidence about the tool, not about the machine.
+    /// So lima's own filesystem answers instead: `<lima home>/<name>`
+    /// for the instance, `<lima home>/_disks/<disk>` for the data disk.
+    /// Nothing there is a real "no VM", and a Mac that never built one
+    /// gets its clean `ssf uninstall`. Something there is a VM that
+    /// cannot be asked about -- never a missing binary's licence to
+    /// treat a disk full of workspaces as absent.
+    fn lima_unanswered(&self, dir: bool, what: &str, name: &str, e: &anyhow::Error) -> Survey {
+        warn!("could not ask lima about {what} {name}: {e:#}");
+        let instance = self.lima_instance_dir().map(|p| p.exists());
+        let disk = self.lima_disk_dir().map(|p| p.exists());
+        let here = instance == Some(true) || disk == Some(true);
+        let nothing = instance == Some(false) && disk == Some(false);
+        Survey {
+            present: if here || dir {
+                Some(true)
+            } else if nothing {
+                Some(false)
+            } else {
+                None
+            },
+            // Nothing of it anywhere is not running; anything else is a
+            // question that was never answered, and `ssf vm start` is no
+            // cure for it.
+            running: nothing.then_some(false),
+            startable: false,
+            data: disk,
         }
     }
 
@@ -1716,20 +1818,52 @@ impl Vm {
     }
 
     /// Delete the instance and the data disk (the VM's directory goes
-    /// after this).
-    pub(super) fn lima_destroy(&self) -> Result<()> {
+    /// after this). `Ok(false)`: lima had neither.
+    ///
+    /// A `limactl` that will not answer fails the step only when lima's
+    /// home still holds something: there is then a VM here that ssf
+    /// cannot delete, and saying so is the point. With nothing there,
+    /// the same failure is just a tool that is not around any more, and
+    /// `ssf uninstall` carries on.
+    pub(super) fn lima_destroy(&self) -> Result<bool> {
+        let mut removed = false;
         let name = self.lima_name();
-        if self.lima_instance()?.is_some() {
+        let instance = match self.lima_instance() {
+            Ok(i) => i,
+            Err(e) => match self.lima_leftovers() {
+                Some(false) => {
+                    warn!("could not ask lima about {name} ({e:#}); its home holds nothing of it");
+                    return Ok(false);
+                }
+                Some(true) => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "lima's home still holds something of {name}, and lima cannot be asked about it"
+                        )
+                    });
+                }
+                None => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "lima cannot be asked about {name}, and there is no home directory to find lima's own in instead"
+                        )
+                    });
+                }
+            },
+        };
+        if instance.is_some() {
             self.limactl_run(&["delete", "-f", &name])?;
             println!("deleted lima instance {name}");
+            removed = true;
         }
         let disk = self.lima_disk_name();
         if self.lima_disk()?.is_some() {
             self.limactl_run(&["disk", "delete", &disk])?;
             println!("deleted lima disk {disk}");
+            removed = true;
         }
         let _ = std::fs::remove_file(self.unproven_disk());
-        Ok(())
+        Ok(removed)
     }
 }
 
@@ -2381,6 +2515,141 @@ mod tests {
     }
 
     #[test]
+    fn lima_answers_whether_there_is_a_vm_here_the_directory_does_not() {
+        // `ssf uninstall` used to read "is there a VM" off `[vm]
+        // dir`/<name>. Under Firecracker that directory *is* the VM;
+        // under lima it holds the template, the ssh key and the share,
+        // and the instance and the data disk are in lima's home. A
+        // directory removed by hand, or a `[vm] dir` that was changed,
+        // then read as "no VM" and left both behind.
+        let t = Fake::new("Stopped");
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        assert!(!t.vm.dir.exists());
+        assert_eq!(
+            t.vm.survey(),
+            Survey {
+                present: Some(true),
+                running: Some(false),
+                startable: true,
+                data: Some(true),
+            }
+        );
+        let t = Fake::new("Running");
+        assert_eq!(t.vm.survey().running, Some(true));
+    }
+
+    #[test]
+    fn a_data_disk_that_outlived_its_instance_is_a_vm_with_nothing_to_start() {
+        // `limactl delete` of an instance leaves an external disk where
+        // it is, so the disk holding the clones and worktrees can be all
+        // that is left. It is worth not losing silently -- and nothing
+        // can be started to mount it, so `ssf vm start` is no remedy.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Answers, Listing::Empty);
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        assert_eq!(
+            t.vm.survey(),
+            Survey {
+                present: Some(true),
+                running: Some(false),
+                startable: false,
+                data: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn nothing_in_lima_and_no_directory_is_no_vm() {
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        assert_eq!(t.vm.survey().present, Some(false));
+        // The directory on its own is still ssf's to remove -- the
+        // template, the ssh key and the share are in it -- but none of
+        // that is anyone's work, so it is no reason to refuse.
+        std::fs::create_dir_all(&t.vm.dir).unwrap();
+        let s = t.vm.survey();
+        assert_eq!((s.present, s.data), (Some(true), Some(false)));
+    }
+
+    #[test]
+    fn a_lima_that_will_not_answer_falls_back_to_limas_own_filesystem() {
+        // `limactl` moved by an upgrade, off the PATH the service runs
+        // under, a stale `[vm] limactl`, a locked lima home: evidence
+        // about the tool, not about the machine. What settles it is
+        // whether `<lima home>/<name>` or `<lima home>/_disks/<disk>` is
+        // on disk -- so a missing binary can never be the reason a disk
+        // full of workspaces is treated as absent, and a machine with
+        // nothing of lima's on it still gets a clean `no VM`.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Fails);
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        let home = t.vm.lima_home.clone().unwrap();
+        // The fake's instance directory is there.
+        let s = t.vm.survey();
+        assert_eq!(
+            (s.present, s.running, s.startable, s.data),
+            (Some(true), None, false, Some(false))
+        );
+        // ... and so is a data disk, which is the half that matters.
+        std::fs::create_dir_all(home.join("_disks").join("ssf-one")).unwrap();
+        assert_eq!(t.vm.survey().data, Some(true));
+        // Nothing of lima's anywhere: a real "no VM", not a refusal.
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(
+            t.vm.survey(),
+            Survey {
+                present: Some(false),
+                running: Some(false),
+                startable: false,
+                data: Some(false),
+            }
+        );
+    }
+
+    #[test]
+    fn a_disk_probe_that_failed_leaves_the_instances_answer_standing() {
+        // Only the disk question went unanswered: lima still said there
+        // is no instance, so nothing is running and nothing can start.
+        // The disk falls back to lima's own filesystem.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Empty);
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        assert_eq!(
+            t.vm.survey(),
+            Survey {
+                present: Some(false),
+                running: Some(false),
+                startable: false,
+                data: Some(false),
+            }
+        );
+        // The direction that matters: the disk is on disk, so it is
+        // there to be destroyed and there to stop the destroying.
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("_disks").join("ssf-one")).unwrap();
+        assert_eq!(
+            t.vm.survey(),
+            Survey {
+                present: Some(true),
+                running: Some(false),
+                startable: false,
+                data: Some(true),
+            }
+        );
+    }
+
+    #[test]
+    fn a_limactl_that_cannot_run_does_not_fail_a_destroy_over_nothing() {
+        // `ssf uninstall` on a machine with no lima left: the destroy
+        // step must not end in a failed step over a binary that is not
+        // there any more. With something of lima's still in its home it
+        // must, because there is then a VM ssf cannot delete.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Fails);
+        let home = t.vm.lima_home.clone().unwrap();
+        let err = t.vm.lima_destroy().unwrap_err().to_string();
+        assert!(err.contains("still holds something of ssf-one"), "{err}");
+        std::fs::remove_dir_all(&home).unwrap();
+        assert!(!t.vm.lima_destroy().unwrap());
+    }
+
+    #[test]
     fn a_copy_of_the_template_that_cannot_be_read_counts_as_stale() {
         // A file that cannot be read says nothing about what lima will do
         // with the disk, and "nothing" is not "clean". A directory where
@@ -2626,23 +2895,29 @@ mod tests {
         Ignored,
     }
 
-    /// Whether the fake can answer `limactl disk list --json` at all: a
-    /// lima home someone else holds the lock on cannot.
+    /// What the fake's `limactl disk list --json` does. `Fails` is a
+    /// lima home someone else holds the lock on; `Empty` is a lima that
+    /// has no such disk.
     #[derive(Clone, Copy, PartialEq)]
     enum DiskList {
         Answers,
+        Empty,
         Fails,
     }
 
-    /// Whether the fake answers `limactl list --json` -- the liveness
-    /// question every caller of [`Vm::running_state`] and
-    /// [`Vm::running_now`] asks. A fork that failed under load, a lima
-    /// home under someone else's lock and a limactl that has stopped
-    /// returning are all things a laptop does; none of them is the VM
-    /// having exited.
+    /// What the fake's `limactl list --json` does. It is both the
+    /// liveness question every caller of [`Vm::running_state`] and
+    /// [`Vm::running_now`] asks and the "is there an instance at all"
+    /// question [`Vm::lima_survey`] asks, so it has to be able to name
+    /// the instance, name nothing (lima never had it, or it has been
+    /// deleted), fail the way a locked lima home fails, and stop
+    /// returning. A fork that failed under load, a lima home under
+    /// someone else's lock and a limactl that hangs are all things a
+    /// laptop does; none of them is the VM having exited.
     #[derive(Clone, Copy, PartialEq)]
     enum Listing {
         Answers,
+        Empty,
         Fails,
         Hangs,
     }
@@ -2687,6 +2962,7 @@ mod tests {
             let yaml = inst_dir.join("lima.yaml");
             let disk_arm = match disks {
                 DiskList::Answers => r#"echo '{"name":"ssf-one","size":21474836480,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
+                DiskList::Empty => ":".to_string(),
                 DiskList::Fails => {
                     r#"echo 'FATAL[0000] failed to lock the lima home' >&2; exit 1"#.to_string()
                 }
@@ -2694,6 +2970,7 @@ mod tests {
             // lima's own `--set` rewrites the instance's copy in place.
             let list_arm = match listing {
                 Listing::Answers => format!("echo '{json}'"),
+                Listing::Empty => ":".to_string(),
                 Listing::Fails => {
                     r#"echo 'FATAL[0000] failed to lock the lima home' >&2; exit 1"#.to_string()
                 }
@@ -2747,7 +3024,11 @@ exit 0
             // test. The fake stands in for it: what is being tested here
             // is the order of the steps, not what the seed carries.
             cfg.vm.guest_binary = Some(limactl.to_string_lossy().into_owned());
-            let vm = Vm::new(&cfg);
+            let mut vm = Vm::new(&cfg);
+            // lima's home, where the instance directory the fake made
+            // lives and where `_disks/` would be: the tests must not
+            // reach the person's own `~/.lima`.
+            vm.lima_home = Some(dir.join("lima"));
             std::fs::create_dir_all(&vm.dir).unwrap();
             // What a build that died after `limactl create` leaves: both
             // copies of the template still say `format: true`.

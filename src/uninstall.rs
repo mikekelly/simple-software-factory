@@ -147,9 +147,34 @@ pub struct Facts {
     /// `[vm] enabled`: the factory runs in the VM.
     pub vm_mode: bool,
     pub vm_name: String,
-    /// The VM's directory exists or it is running.
-    pub vm_present: bool,
-    pub vm_running: bool,
+    /// There is a VM to destroy, as the backend answers it
+    /// ([`vm::Survey`]): under lima the instance and the data disk are
+    /// in lima's home, not under `[vm] dir`. `None` when the backend
+    /// could not be asked, which is not "no".
+    pub vm_present: Option<bool>,
+    /// The guest is up. `None` when the probe could not be made: under
+    /// lima it forks `limactl`, and reading that as "not running" put
+    /// "`ssf vm start` first, or --force to destroy them unchecked" in
+    /// front of a person whose VM was working the whole time.
+    pub vm_running: Option<bool>,
+    /// There is a guest `ssf vm start` could bring up. Under lima a data
+    /// disk outlives a deleted instance: there is then something to
+    /// destroy and nothing to start, so "start it and try again" is no
+    /// remedy.
+    pub vm_startable: bool,
+    /// There is a data disk that may hold clones and worktrees: the one
+    /// part of a VM whose loss cannot be undone, and so the one that
+    /// decides whether the command refuses. `None` when that could not
+    /// be established, which refuses too. What `[vm] dir` holds without
+    /// it is ssf's own -- a template, an ssh key, a share -- and stops
+    /// nothing.
+    pub vm_data: Option<bool>,
+    /// The data disk's name in lima's home, for the one refusal whose
+    /// whole remedy is "remove it by hand": `limactl disk delete` needs
+    /// an argument, and it is not `[vm] name`. `None` under Firecracker,
+    /// where the disk is a file inside `[vm] dir` and no such refusal is
+    /// reachable.
+    pub vm_disk: Option<String>,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
@@ -173,7 +198,7 @@ impl Facts {
             .filter(|p| p.exists())
             .collect();
         projects.dedup();
-        let vm_running = vm.running();
+        let survey = vm.survey();
         Facts {
             service_active: ui::service_active(),
             service_enabled: ui::service_enabled(),
@@ -183,23 +208,59 @@ impl Facts {
             key_ids: cfg.github.ssh_key_id.is_some() || cfg.github.signing_key_id.is_some(),
             vm_mode: cfg.vm.enabled,
             vm_name: cfg.vm.name.clone(),
-            vm_present: vm.dir.exists() || vm_running,
-            vm_running,
+            vm_present: survey.present,
+            vm_running: survey.running,
+            vm_startable: survey.startable,
+            vm_data: survey.data,
+            vm_disk: match vm.backend() {
+                vm::BackendKind::Lima => Some(vm.lima_disk_name()),
+                vm::BackendKind::Firecracker => None,
+            },
             vm_removed: match vm.backend() {
                 vm::BackendKind::Firecracker => {
                     format!("its disks in {}", vm.dir.display())
                 }
-                vm::BackendKind::Lima => format!(
-                    "the lima instance {} and its data disk {} in lima's home, and {}",
-                    vm.lima_name(),
-                    vm.lima_disk_name(),
-                    vm.dir.display()
+                vm::BackendKind::Lima => lima_removed(
+                    &vm.lima_name(),
+                    &vm.lima_disk_name(),
+                    vm.dir.exists().then_some(vm.dir.as_path()),
+                    &survey,
                 ),
             },
             vm_base: vm.base.clone(),
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
             projects,
+        }
+    }
+
+    /// The guest answered on ssh, which settles every question the
+    /// backend could not: there is a VM, it is up, it is startable, and
+    /// it has the data disk it mounts at boot (the guest cannot reach
+    /// `ssf` over ssh before that mount). Without this the refusal
+    /// blamed `limactl` for a report the guest itself failed to give and
+    /// sent the person to fix the wrong thing -- `limactl list` will not
+    /// make the guest answer, so it would not clear on the next run
+    /// either -- and the report hedged with "if it is there" directly
+    /// above workspaces just fetched from that guest.
+    pub fn ssh_answered(&mut self, vm: &vm::Vm) {
+        let survey = vm::Survey {
+            present: Some(true),
+            running: Some(true),
+            startable: true,
+            data: Some(true),
+        };
+        self.vm_present = survey.present;
+        self.vm_running = survey.running;
+        self.vm_startable = survey.startable;
+        self.vm_data = survey.data;
+        if vm.backend() == vm::BackendKind::Lima {
+            self.vm_removed = lima_removed(
+                &vm.lima_name(),
+                &vm.lima_disk_name(),
+                vm.dir.exists().then_some(vm.dir.as_path()),
+                &survey,
+            );
         }
     }
 
@@ -260,8 +321,16 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
             }
         ));
     }
-    if facts.vm_running {
-        stop.push(format!("VM {}", facts.vm_name));
+    match facts.vm_running {
+        Some(true) => stop.push(format!("VM {}", facts.vm_name)),
+        // Not "no": the service stop shuts the guest down if it is up,
+        // and saying nothing here would read as "there is nothing to
+        // stop".
+        None => stop.push(format!(
+            "VM {} (if it is up: it could not be asked)",
+            facts.vm_name
+        )),
+        Some(false) => {}
     }
     if !stop.is_empty() {
         section(&mut out, "stop:", &[stop.join(" and ")]);
@@ -275,22 +344,36 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     if report.daemon {
         remove.push("workspaces of closed items that are clean and pushed (ssf purge)".to_string());
     } else {
-        let why = if facts.vm_mode && !facts.vm_running {
-            format!("VM {} is not running", facts.vm_name)
-        } else {
-            "the daemon is not running".to_string()
+        let why = match (facts.vm_mode, facts.vm_running) {
+            (true, Some(false)) => format!("VM {} is not running", facts.vm_name),
+            (true, None) => format!(
+                "VM {} could not be asked whether it is running",
+                facts.vm_name
+            ),
+            _ => "the daemon is not running".to_string(),
         };
         remove.push(format!(
             "workspaces of closed items: not purged ({why}); left in place"
         ));
     }
-    if facts.vm_present {
-        remove.push(format!(
-            "VM {} and {}; the clones and worktrees on its data disk go with it",
-            facts.vm_name, facts.vm_removed
-        ));
-    } else {
-        remove.push("no VM".to_string());
+    match facts.vm_present {
+        Some(true) => remove.push(format!(
+            "VM {} and {}{}",
+            facts.vm_name,
+            facts.vm_removed,
+            // Only a data disk holds anyone's work; the rest of what
+            // goes is ssf's own.
+            match facts.vm_data {
+                Some(true) => "; the clones and worktrees on its data disk go with it",
+                None => "; the clones and worktrees on its data disk, if it is there, go with it",
+                Some(false) => "",
+            }
+        )),
+        Some(false) => remove.push("no VM".to_string()),
+        None => remove.push(format!(
+            "VM {}: could not be asked whether it is there; the destroy step tries anyway and says what happened",
+            facts.vm_name
+        )),
     }
     if opts.data {
         remove.push(format!(
@@ -358,14 +441,9 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
         out.push_str(&format!("  {e}\n"));
     }
     if opts.vm_unchecked {
-        let (what, first) = if facts.vm_running {
-            ("gave no report", "`ssf vm restart` first")
-        } else {
-            ("is not running", "`ssf vm start` first")
-        };
+        let (what, remedy) = vm_uncheckable(facts);
         out.push_str(&format!(
-            "  VM {} {what}: its workspaces (the clones on its data disk) cannot be checked; {first}, or --force destroys them unchecked\n",
-            facts.vm_name
+            "  {what}: its workspaces (the clones on its data disk) cannot be checked; {remedy}, or --force destroys them unchecked\n"
         ));
     } else if report.items.is_empty() {
         out.push_str("  (none)\n");
@@ -469,32 +547,115 @@ pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Op
         ));
     }
     if opts.vm_unchecked {
-        return Some(if facts.vm_running {
-            format!(
-                "VM {} gave no report, so its workspaces cannot be checked; `ssf vm restart` first (the guest runs the ssf of its last start), or pass --force to destroy them unchecked",
-                facts.vm_name
-            )
-        } else {
-            format!(
-                "VM {} is not running, so its workspaces cannot be checked; `ssf vm start` first, or pass --force to destroy them unchecked",
-                facts.vm_name
-            )
-        });
+        let (what, remedy) = vm_uncheckable(facts);
+        return Some(format!(
+            "{what}, so its workspaces cannot be checked; {remedy}, or pass --force to destroy them unchecked"
+        ));
     }
     None
+}
+
+/// Would going ahead destroy work nobody has looked at? Only a data disk
+/// holds clones and worktrees, so only a data disk can stop the command
+/// -- and a disk that could not be asked about (`None`) stops it too,
+/// because the wrong answer in that direction is silent data loss. What
+/// `[vm] dir` holds without one is ssf's own: a template, an ssh key, a
+/// share.
+fn unchecked_workspaces(data: Option<bool>) -> bool {
+    data != Some(false)
+}
+
+/// What `ssf vm destroy` takes with it under lima, in words: only the
+/// parts that are there. The instance, the data disk and `[vm] dir` come
+/// and go separately -- an instance whose directory was removed by hand,
+/// a disk that outlived its instance -- and a report that promises to
+/// remove what is not there is a report to trust less.
+fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Survey) -> String {
+    let mut parts = Vec::new();
+    match (survey.startable, survey.running) {
+        (true, _) => parts.push(format!("the lima instance {instance}")),
+        (false, None) => parts.push(format!("the lima instance {instance} if it is there")),
+        (false, Some(_)) => {}
+    }
+    match survey.data {
+        Some(true) => parts.push(format!("its data disk {disk} in lima's home")),
+        None => parts.push(format!(
+            "its data disk {disk} in lima's home if it is there"
+        )),
+        Some(false) => {}
+    }
+    if let Some(d) = dir {
+        parts.push(d.display().to_string());
+    }
+    parts.join(" and ")
+}
+
+/// Why the VM's workspaces could not be looked at, and what to do about
+/// it instead of `--force`: the same two halves in the report and in the
+/// refusal, so they cannot drift apart.
+fn vm_uncheckable(facts: &Facts) -> (String, String) {
+    let name = &facts.vm_name;
+    match (facts.vm_running, facts.vm_startable, facts.vm_data) {
+        (Some(true), _, _) => (
+            format!("VM {name} gave no report"),
+            "`ssf vm restart` first (the guest runs the ssf of its last start)".to_string(),
+        ),
+        (Some(false), true, _) => (
+            format!("VM {name} is not running"),
+            "`ssf vm start` first".to_string(),
+        ),
+        // Nothing to start, and a disk that lima says is there: it
+        // outlived the instance that mounted it. `ssf vm start` refuses
+        // an instance that is not there, so it is no remedy and must not
+        // be offered as one. The disk is named because this is the one
+        // refusal whose whole remedy is a command the person types, and
+        // `limactl disk delete` needs an argument -- which is
+        // `ssf-<name>`, not `[vm] name`.
+        (Some(false), false, Some(true)) => (
+            format!("VM {name}'s data disk outlived its instance"),
+            format!(
+                "nothing can mount it to look inside, so decide about the disk and remove it by hand (`limactl disk delete{}`)",
+                match &facts.vm_disk {
+                    Some(d) => format!(" {d}"),
+                    None => String::new(),
+                }
+            ),
+        ),
+        // The disk question is the one that went unanswered, so nothing
+        // may be asserted about a disk here.
+        (Some(false), false, None) => (
+            format!("VM {name} has no guest to start, and its data disk could not be asked about"),
+            "find out why first (`limactl disk list` by hand says what lima answers)".to_string(),
+        ),
+        // Written out rather than folded into the arm above so that the
+        // compiler, not a comment, is what keeps the two apart. Nothing
+        // reaches it: `vm_unchecked` is false where there is no disk.
+        (Some(false), false, Some(false)) => (
+            format!("VM {name} has no data disk"),
+            "there is no work on it to lose".to_string(),
+        ),
+        (None, _, _) => (
+            format!("VM {name} could not be asked whether it is running"),
+            "find out why first (`limactl list` by hand says what lima answers)".to_string(),
+        ),
+    }
 }
 
 /// The command: report, hard stops, one question, the steps, what is left.
 pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     let cfg = Config::load()?;
     let vm = vm::Vm::new(&cfg);
-    let facts = Facts::gather(&cfg, &vm);
+    let mut facts = Facts::gather(&cfg, &vm);
     let mut opts = Opts {
         data,
         ..Opts::default()
     };
     let report = if facts.vm_mode {
-        if facts.vm_running && vm.ssh_ok() {
+        // A probe that could not be made is not "the guest is down", and
+        // ssh is the better evidence either way: try it unless the
+        // backend actually said no.
+        if facts.vm_running != Some(false) && vm.ssh_ok() {
+            facts.ssh_answered(&vm);
             match guest_report(&vm) {
                 Ok(r) => r,
                 Err(e) => {
@@ -507,13 +668,22 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
                 }
             }
         } else {
-            opts.vm_unchecked = facts.vm_present;
-            if facts.vm_running {
-                opts.report_error = Some(format!(
+            // "There might be a data disk" is reason enough not to
+            // destroy the work on it unasked; only a backend that said
+            // "there is none" lets this through. Leftovers in `[vm] dir`
+            // with no disk are ssf's own and stop nothing.
+            opts.vm_unchecked = unchecked_workspaces(facts.vm_data);
+            opts.report_error = match facts.vm_running {
+                Some(true) => Some(format!(
                     "VM {} is running but does not answer on ssh",
                     facts.vm_name
-                ));
-            }
+                )),
+                None => Some(format!(
+                    "VM {} could not be asked whether it is running, and does not answer on ssh",
+                    facts.vm_name
+                )),
+                Some(false) => None,
+            };
             Report::default()
         }
     } else {
@@ -603,17 +773,26 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     }
 
     println!("==> destroy the VM");
-    if vm.dir.exists() || vm.running() {
-        if let Err(e) = vm.destroy().await {
-            fail("vm", e);
-        }
-    } else {
+    // The report the person said yes to, not a fresh probe: a backend
+    // that answered differently in between would make the step and the
+    // report disagree. Only a plain "there is none" skips it; an
+    // unknown goes through `destroy`, which says what it found.
+    let mut vm_gone = true;
+    if facts.vm_present == Some(false) {
         println!("no VM");
+    } else if let Err(e) = vm.destroy().await {
+        fail("vm", e);
+        vm_gone = false;
     }
     // With the VM gone the factory is nowhere; a config still saying
     // `vm.enabled` would send `ssf status` looking for it. Read the file
     // again: the sign-out step wrote it. With `--data` it goes anyway.
-    if facts.vm_mode && !data {
+    //
+    // Only with the VM actually gone. Written over a destroy that
+    // failed, it turns the next run into a host-mode one: no guest
+    // report, no refusal over the workspaces on the surviving data disk,
+    // and a `Continue?` that destroys them unchecked.
+    if facts.vm_mode && vm_gone && !data {
         match Config::load() {
             Ok(mut cfg) if cfg.vm.enabled => {
                 cfg.vm.enabled = false;
@@ -795,8 +974,11 @@ mod tests {
             key_ids: true,
             vm_mode: true,
             vm_name: "factory".into(),
-            vm_present: true,
-            vm_running: true,
+            vm_present: Some(true),
+            vm_running: Some(true),
+            vm_startable: true,
+            vm_data: Some(true),
+            vm_disk: Some("ssf-factory".into()),
             vm_removed: "its disks in /vm/factory".into(),
             vm_base: PathBuf::from("/nonexistent/vm"),
             config_dir: PathBuf::from("/c"),
@@ -881,10 +1063,26 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("(none)"), "{text}");
-        f.vm_running = false;
+        f.vm_running = Some(false);
         let text = render(&f, &Report::default(), &Opts::default());
         assert!(
             text.contains("not purged (VM factory is not running)"),
+            "{text}"
+        );
+        // A probe that could not be made is a third answer, and saying
+        // "is not running" over it points at `ssf vm start` for a guest
+        // that may be working.
+        f.vm_running = None;
+        let text = render(&f, &Report::default(), &Opts::default());
+        assert!(
+            text.contains("not purged (VM factory could not be asked whether it is running)"),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!(
+                "stop:    {} (running, enabled) and VM factory (if it is up",
+                crate::platform::service_name()
+            )),
             "{text}"
         );
     }
@@ -912,8 +1110,10 @@ mod tests {
             bot: None,
             has_token: false,
             key_ids: false,
-            vm_present: false,
-            vm_running: false,
+            vm_present: Some(false),
+            vm_running: Some(false),
+            vm_startable: false,
+            vm_data: Some(false),
             ..facts()
         };
         let text = render(&f, &Report::default(), &Opts::default());
@@ -934,7 +1134,7 @@ mod tests {
     fn render_with_the_vm_unchecked_says_so_instead_of_none() {
         // The VM's disks are there but it is not running.
         let stopped = Facts {
-            vm_running: false,
+            vm_running: Some(false),
             ..facts()
         };
         let text = render(
@@ -995,7 +1195,9 @@ mod tests {
         let stopped = Facts {
             vm_mode: true,
             vm_name: "factory".into(),
-            vm_present: true,
+            vm_present: Some(true),
+            vm_running: Some(false),
+            vm_startable: true,
             ..Facts::default()
         };
         let unchecked = Opts {
@@ -1008,7 +1210,7 @@ mod tests {
             "{why}"
         );
         let running = Facts {
-            vm_running: true,
+            vm_running: Some(true),
             ..stopped.clone()
         };
         let why = hard_stop(&running, &Report::default(), &unchecked, false).unwrap();
@@ -1025,8 +1227,9 @@ mod tests {
         let facts = Facts {
             vm_mode: true,
             vm_name: "factory".into(),
-            vm_present: true,
-            vm_running: true,
+            vm_present: Some(true),
+            vm_running: Some(true),
+            vm_startable: true,
             ..Facts::default()
         };
         let opts = Opts {
@@ -1042,6 +1245,207 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("factory is not running"), "{text}");
+    }
+
+    #[test]
+    fn an_unaskable_backend_is_neither_a_running_vm_nor_a_missing_one() {
+        // The three answers the report and the refusal have to keep
+        // apart. Reading "the probe could not be made" as "not running"
+        // put `ssf vm start`, and a `--force` that destroys the clones
+        // on the data disk, in front of a person whose VM was up.
+        let base = Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            vm_present: None,
+            vm_running: None,
+            vm_startable: false,
+            ..Facts::default()
+        };
+        let unchecked = Opts {
+            vm_unchecked: true,
+            ..Opts::default()
+        };
+        let why = hard_stop(&base, &Report::default(), &unchecked, false).unwrap();
+        assert!(
+            why.contains("could not be asked whether it is running")
+                && why.contains("limactl list"),
+            "{why}"
+        );
+        assert!(!why.contains("ssf vm start"), "{why}");
+        let text = render(&base, &Report::default(), &unchecked);
+        // The report may not promise to destroy what it could not find.
+        assert!(
+            text.contains("could not be asked whether it is there"),
+            "{text}"
+        );
+        assert!(!text.contains("go with it"), "{text}");
+        assert!(!text.contains("no VM"), "{text}");
+    }
+
+    #[test]
+    fn a_disk_that_outlived_its_instance_is_not_offered_a_start() {
+        // `ssf vm start` refuses an instance that is not there, so
+        // offering it as the way to check the workspaces on a disk that
+        // outlived one leaves `--force` as the only real route.
+        let orphan = Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            vm_present: Some(true),
+            vm_running: Some(false),
+            vm_startable: false,
+            // The state that reaches this message: a disk, and no
+            // instance. Leftovers in `[vm] dir` alone hold no work, so
+            // they never get here.
+            vm_data: Some(true),
+            ..Facts::default()
+        };
+        let unchecked = Opts {
+            vm_unchecked: true,
+            ..Opts::default()
+        };
+        let why = hard_stop(&orphan, &Report::default(), &unchecked, false).unwrap();
+        assert!(why.contains("data disk outlived its instance"), "{why}");
+        assert!(!why.contains("ssf vm start"), "{why}");
+        assert!(why.contains("--force"), "{why}");
+    }
+
+    #[test]
+    fn leftovers_in_the_vm_directory_are_removed_without_a_refusal() {
+        // Under lima `[vm] dir`/<name> holds the generated template, the
+        // ssh key and the share -- ssf's own, no one's work. A build
+        // that died before `limactl create`, or a person who deleted the
+        // instance and the disk by hand, leaves exactly that. There is
+        // something to remove and nothing to check, so the command must
+        // not refuse, and must not say a data disk outlived anything.
+        let leftovers = Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            vm_present: Some(true),
+            vm_running: Some(false),
+            vm_startable: false,
+            vm_data: Some(false),
+            vm_removed: "/v/factory".into(),
+            ..Facts::default()
+        };
+        // The rule itself, not `Opts::default()`, which would make any
+        // facts pass: a disk that is not there is the one answer that
+        // lets the command go ahead.
+        assert!(!unchecked_workspaces(leftovers.vm_data));
+        assert!(unchecked_workspaces(Some(true)));
+        assert!(unchecked_workspaces(None), "an unasked disk stops it too");
+        let text = render(&leftovers, &Report::default(), &Opts::default());
+        assert!(text.contains("VM factory and /v/factory"), "{text}");
+        assert!(!text.contains("go with it"), "{text}");
+        assert!(!text.contains("outlived"), "{text}");
+    }
+
+    #[test]
+    fn the_report_names_only_the_parts_of_a_lima_vm_that_are_there() {
+        let survey = |startable, running, data| vm::Survey {
+            present: Some(true),
+            running,
+            startable,
+            data,
+        };
+        assert_eq!(
+            lima_removed(
+                "ssf-f",
+                "ssf-f",
+                Some(Path::new("/v/f")),
+                &survey(true, Some(false), Some(true))
+            ),
+            "the lima instance ssf-f and its data disk ssf-f in lima's home and /v/f"
+        );
+        // An instance whose directory was removed by hand: the missing
+        // directory is not named.
+        assert_eq!(
+            lima_removed(
+                "ssf-f",
+                "ssf-f",
+                None,
+                &survey(true, Some(true), Some(true))
+            ),
+            "the lima instance ssf-f and its data disk ssf-f in lima's home"
+        );
+        // A disk that outlived its instance.
+        assert_eq!(
+            lima_removed(
+                "ssf-f",
+                "ssf-f",
+                None,
+                &survey(false, Some(false), Some(true))
+            ),
+            "its data disk ssf-f in lima's home"
+        );
+        // Leftovers in `[vm] dir` and nothing of lima's: ssf's own
+        // template, ssh key and share, and no promise about anyone else.
+        assert_eq!(
+            lima_removed(
+                "ssf-f",
+                "ssf-f",
+                Some(Path::new("/v/f")),
+                &survey(false, Some(false), Some(false))
+            ),
+            "/v/f"
+        );
+        // Nothing could be asked: everything is hedged, nothing asserted.
+        assert_eq!(
+            lima_removed("ssf-f", "ssf-f", None, &survey(false, None, None)),
+            "the lima instance ssf-f if it is there and its data disk ssf-f in lima's home if it is there"
+        );
+    }
+
+    #[test]
+    fn the_refusal_names_the_thing_that_actually_could_not_be_checked() {
+        // One source of wording for the report and the refusal, and no
+        // arm may assert a fact its inputs do not carry.
+        let f = |running, startable, data| Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            vm_present: Some(true),
+            vm_running: running,
+            vm_startable: startable,
+            vm_data: data,
+            ..Facts::default()
+        };
+        // ssh answered but the guest's report did not: `run` settles
+        // `vm_running` to `Some(true)` on the strength of that ssh, so
+        // the refusal blames the guest and not `limactl`.
+        let (what, remedy) = vm_uncheckable(&f(Some(true), false, None));
+        assert!(what.contains("gave no report"), "{what}");
+        assert!(remedy.contains("ssf vm restart"), "{remedy}");
+        let (what, remedy) = vm_uncheckable(&f(Some(false), true, Some(true)));
+        assert!(what.contains("is not running"), "{what}");
+        assert!(remedy.contains("ssf vm start"), "{remedy}");
+        // The one refusal whose whole remedy is a command the person
+        // types, so it has to carry the disk's own name -- `ssf-factory`,
+        // not `[vm] name`.
+        let named = Facts {
+            vm_disk: Some("ssf-factory".into()),
+            ..f(Some(false), false, Some(true))
+        };
+        let (what, remedy) = vm_uncheckable(&named);
+        assert!(what.contains("data disk outlived its instance"), "{what}");
+        assert!(
+            remedy.contains("limactl disk delete ssf-factory"),
+            "{remedy}"
+        );
+        // The disk question is the one that failed: nothing may be said
+        // about a disk outliving anything.
+        let (what, remedy) = vm_uncheckable(&f(Some(false), false, None));
+        assert!(what.contains("could not be asked about"), "{what}");
+        assert!(!what.contains("outlived"), "{what}");
+        assert!(remedy.contains("limactl disk list"), "{remedy}");
+        let (what, remedy) = vm_uncheckable(&f(None, false, None));
+        assert!(what.contains("whether it is running"), "{what}");
+        assert!(remedy.contains("limactl list"), "{remedy}");
+        // Only a guest that is up, or one that can be started, may be
+        // pointed at a start or a restart.
+        for (running, startable) in [(Some(false), false), (None, false), (None, true)] {
+            let (_, remedy) = vm_uncheckable(&f(running, startable, None));
+            assert!(!remedy.contains("ssf vm start"), "{remedy}");
+            assert!(!remedy.contains("ssf vm restart"), "{remedy}");
+        }
     }
 
     #[test]
