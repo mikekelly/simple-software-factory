@@ -175,6 +175,12 @@ pub struct Facts {
     /// where the disk is a file inside `[vm] dir` and no such refusal is
     /// reachable.
     pub vm_disk: Option<String>,
+    /// Instances and disks of ssf's that this configuration does not
+    /// name -- what a changed `[vm] name` leaves behind. Named in the
+    /// report as things `ssf uninstall` will not touch, never removed by
+    /// it: ssf cannot tell a VM someone renamed away to keep from one
+    /// they abandoned, and only one of those is safe to delete.
+    pub vm_strays: Vec<vm::Stray>,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
@@ -212,6 +218,7 @@ impl Facts {
             vm_running: survey.running,
             vm_startable: survey.startable,
             vm_data: survey.data,
+            vm_strays: survey.strays.clone(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
                 vm::BackendKind::Firecracker => None,
@@ -253,6 +260,8 @@ impl Facts {
             running: Some(true),
             startable: true,
             data: self.vm_data,
+            // ssh says nothing about what else lima holds.
+            strays: self.vm_strays.clone(),
         };
         self.vm_present = survey.present;
         self.vm_running = survey.running;
@@ -373,7 +382,14 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
                 Some(false) => "",
             }
         )),
-        Some(false) => remove.push("no VM".to_string()),
+        // "no VM" on its own would be a lie while lima holds an
+        // `ssf-*` instance: what there is none of is a VM for *this*
+        // configuration, and the strays are named under `keep:` below.
+        Some(false) => remove.push(if facts.vm_strays.is_empty() {
+            "no VM".to_string()
+        } else {
+            format!("no VM named {} to remove", facts.vm_name)
+        }),
         None => remove.push(format!(
             "VM {}: could not be asked whether it is there; the destroy step tries anyway and says what happened",
             facts.vm_name
@@ -431,6 +447,14 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
             "{} and {} (remove with --data)",
             facts.config_dir.display(),
             facts.state_dir.display()
+        ));
+    }
+    for stray in &facts.vm_strays {
+        keep.push(format!(
+            "the {} {} -- not this configuration's, so untouched, `--force` included; remove it yourself with `{}`",
+            stray.what(),
+            stray.name,
+            stray.remove_command()
         ));
     }
     keep.push(format!(
@@ -1010,6 +1034,7 @@ mod tests {
             vm_startable: true,
             vm_data: Some(true),
             vm_disk: Some("ssf-factory".into()),
+            vm_strays: Vec::new(),
             vm_removed: "its disks in /vm/factory".into(),
             vm_base: PathBuf::from("/nonexistent/vm"),
             config_dir: PathBuf::from("/c"),
@@ -1377,6 +1402,7 @@ mod tests {
             running,
             startable,
             data,
+            strays: Vec::new(),
         };
         assert_eq!(
             lima_removed(
@@ -1568,6 +1594,58 @@ mod tests {
             // about the instance any more.
             assert!(!f.vm_removed.contains("instance ssf-factory if it is there"));
         }
+    }
+
+    #[test]
+    fn a_stray_is_named_and_kept_and_no_flag_reaches_it() {
+        // A VM someone renamed `[vm] name` away from. `ssf uninstall`
+        // must stop saying a bare "no VM" over it -- that sentence is
+        // the bug -- and must never remove it: ssf cannot tell one kept
+        // on purpose from one abandoned, and only one of those is safe
+        // to delete. So it is named under `keep:`, with the command,
+        // and `--force` does not reach it.
+        let stray = Facts {
+            vm_name: "new".into(),
+            vm_present: Some(false),
+            vm_running: Some(false),
+            vm_startable: false,
+            vm_data: Some(false),
+            vm_strays: vec![
+                vm::Stray {
+                    name: "ssf-old".into(),
+                    kind: vm::StrayKind::Instance,
+                },
+                vm::Stray {
+                    name: "ssf-old".into(),
+                    kind: vm::StrayKind::Disk,
+                },
+            ],
+            ..facts()
+        };
+        let text = render(&stray, &Report::default(), &Opts::default());
+        assert!(
+            !text.contains("no VM\n") && text.contains("no VM named new to remove"),
+            "{text}"
+        );
+        assert!(text.contains("keep:"), "{text}");
+        for cmd in ["limactl delete ssf-old", "limactl disk delete ssf-old"] {
+            assert!(text.contains(cmd), "{cmd} missing from:\n{text}");
+        }
+        assert!(text.contains("`--force` included"), "{text}");
+        // A stray is outside the thing being uninstalled, so nothing
+        // stops the command over it and no flag turns it into a target.
+        assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
+        assert!(hard_stop(&stray, &Report::default(), &Opts::default(), true).is_none());
+        assert!(!unchecked_workspaces(stray.vm_data));
+        // With nothing of ssf's elsewhere in lima, the plain sentence
+        // comes back.
+        let alone = Facts {
+            vm_strays: Vec::new(),
+            ..stray
+        };
+        let text = render(&alone, &Report::default(), &Opts::default());
+        assert!(text.contains("no VM"), "{text}");
+        assert!(!text.contains("limactl delete"), "{text}");
     }
 
     #[test]
