@@ -532,10 +532,17 @@ overrides and a pending handover.
 ssf never deletes a workspace that might hold unpushed work. Closing an
 issue is a signal anyone can send, an agent included, and the moment the
 agent looks idle is not the moment its last commit is safe. So when an item
-closes (or the bot is unassigned) the agent gets one message and the
+closes (or the bot is dropped from it) the agent gets one message and the
 worktree is left exactly as it is, whatever state it is in. The message
 tells the agent to commit what is worth keeping, push, leave a final
 comment, and then, only if everything is on origin, run `ssf release`.
+
+What counts as being dropped from an item follows the trigger it was taken
+on: an assignment can be removed, a review request withdrawn, but a mention
+cannot be taken back, so an item the bot was only ever mentioned on stays
+the bot's until it closes. `ssf release` refuses while the item is still
+the bot's and names the remedy that fits, so it asks you to close a
+mentioned item rather than to unassign one that has no assignee.
 
 - **`ssf release`** (inside the session, or `ssf release 12` /
   `--as owner/repo#12` from a shell) asks the daemon to remove the
@@ -555,10 +562,12 @@ comment, and then, only if everything is on origin, run `ssf release`.
   "release given up, workspace kept" (in `ssf status`, `ssf peers --all`
   and `ssf purge --dry-run`) for a person to deal with; only the daemon's
   own refusals count, not the ones `ssf release` prints straight away.
-  A release is also refused while the item is still open and assigned, or
-  while the session still owns open items (a pull request bound to it,
-  say), and one already accepted is dropped if the item comes back to life
-  before the pass.
+  A release is also refused while the item is still the bot's, or while the
+  session still owns open items (a pull request bound to it, say), and one
+  already accepted is dropped if the item comes back to life before the
+  pass. Neither refusal yields to `--force`, which covers the worktree
+  checks only: an item that is still the bot's has to stop being the bot's
+  first.
 - **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
   for what agents left behind: every workspace whose item is closed and
   whose session has no running agent, listed with its state (`clean and

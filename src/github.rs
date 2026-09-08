@@ -87,6 +87,18 @@ impl Issue {
     }
 }
 
+/// The logins a pull request payload asks for a review.
+fn reviewers(v: &Value) -> Vec<String> {
+    v.get("requested_reviewers")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(|r| value_str(r, &["login"]).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Where a pull request's code lives.
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub struct PrInfo {
@@ -97,6 +109,11 @@ pub struct PrInfo {
     pub draft: bool,
     #[serde(default)]
     pub merged: bool,
+    /// Logins the pull request currently asks for a review. Kept so that a
+    /// review request can be re-checked against the pull request itself,
+    /// the way an assignment is re-checked against the issue.
+    #[serde(default)]
+    pub requested_reviewers: Vec<String>,
 }
 
 impl PrInfo {
@@ -110,11 +127,19 @@ impl PrInfo {
             draft: v.get("draft").and_then(Value::as_bool).unwrap_or(false),
             merged: v.get("merged").and_then(Value::as_bool).unwrap_or(false)
                 || v.get("merged_at").is_some_and(|m| !m.is_null()),
+            requested_reviewers: reviewers(v),
         }
     }
 
     pub fn same_repo(&self, full_name: &str) -> bool {
         self.head_repo.eq_ignore_ascii_case(full_name)
+    }
+
+    /// Whether the pull request still asks `login` for a review.
+    pub fn requests_review_from(&self, login: &str) -> bool {
+        self.requested_reviewers
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(login))
     }
 }
 
@@ -445,21 +470,10 @@ impl GitHub {
         }
         let mut out = Vec::new();
         for pr in pulls {
-            let requested = pr
-                .get("requested_reviewers")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter().any(|r| {
-                        r.get("login")
-                            .and_then(Value::as_str)
-                            .is_some_and(|l| l.eq_ignore_ascii_case(login))
-                    })
-                })
-                .unwrap_or(false);
-            if !requested {
+            let info = PrInfo::from_value(&pr);
+            if !info.requests_review_from(login) {
                 continue;
             }
-            let info = PrInfo::from_value(&pr);
             let mut v = pr.clone();
             v["pull_request"] = serde_json::json!({});
             let issue: Issue = serde_json::from_value(v).context("decoding pull as issue")?;
@@ -753,5 +767,22 @@ mod tests {
         assert!(cards[1].status_field_id.is_none());
         assert!(cards[1].status_options.is_empty());
         assert!(parse_project_items(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn a_pull_request_reports_who_it_asks_for_a_review() {
+        let v = json!({
+            "head": {"ref": "b", "repo": {"full_name": "o/r"}},
+            "base": {"ref": "main"},
+            "requested_reviewers": [{"login": "Bot"}, {"login": "someone"}]
+        });
+        let pr = PrInfo::from_value(&v);
+        assert_eq!(pr.requested_reviewers, vec!["Bot", "someone"]);
+        assert!(pr.requests_review_from("bot"));
+        assert!(!pr.requests_review_from("nobody"));
+        // A pull request with the key missing asks nobody.
+        let none = PrInfo::from_value(&json!({"head": {"ref": "b"}, "base": {"ref": "main"}}));
+        assert!(none.requested_reviewers.is_empty());
+        assert!(!none.requests_review_from("bot"));
     }
 }

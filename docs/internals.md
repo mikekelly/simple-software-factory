@@ -76,8 +76,32 @@ The details behind the README's [How it works](../README.md#how-it-works).
 - **Retirement.** Closed or unassigned issues get one final message (push,
   final comment, then `ssf release` if everything is on origin) and are
   marked inactive; the workspace is marked completed in the driver and left
-  in place. Removal is the agent's (`ssf release`) or a person's (`ssf
-  purge`) to ask for, and is refused whenever the worktree holds anything
+  in place. An item missing from the listings is not enough on its own:
+  before a session is told to stop, the item is read again and every
+  trigger it was taken on is re-checked against it (the assignees, the
+  author, a mention in the body or in any comment, a review request on the
+  pull request). A listing that lags, or that comes back without an item it
+  should carry, therefore changes nothing while the reason the session
+  exists is still in the item. One consequence is that an item the bot was
+  only ever mentioned on stays the bot's until it closes, since a mention
+  cannot be withdrawn; `ssf release` says that rather than suggesting an
+  unassignment that would do nothing. A retirement held this way is
+  recorded on the item as `retirement_held_at`, shown by `ssf status
+  --json`, and the item's timeline is not walked again for ten minutes:
+  the listing that dropped it is wrong and stays wrong for a while, and
+  the walk is the expensive part. Only that walk is paced. The item itself
+  is still read every pass, so an item that closes is still noticed at
+  once, and the hold is cleared as soon as a listing carries the item
+  again. The mention re-check reads generously: it counts mentions inside
+  code, in a pull request's review comments and logins like `@bot_2`,
+  none of which GitHub's own listing indexes. That is the safe direction
+  in both places it is used, since refusing a real mention would have the
+  gate turn away a session somebody asked for and have retirement stop
+  one that should have kept running. Its cost is that an item the bot is
+  mentioned on only in one of those places holds its workspace until it
+  closes, the same as one mentioned in plain sight. Removal is the
+  agent's (`ssf release`) or a person's (`ssf purge`) to ask for, and is
+  refused whenever the worktree holds anything
   that is not on origin (see [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge)).
   Re-assigning or reopening the issue re-creates a released workspace and
@@ -95,7 +119,7 @@ driver. Its `sessions` array has one entry per item:
 | `id`, `repo`, `number`, `kind` (`issue`/`pull_request`), `title`, `url` | ssf; `id` is the session identity `owner/repo#N` |
 | `github_state` (`open`/`closed`/`merged`), `active`, `triggers`, `pr` | GitHub, as of the last poll |
 | `owner`, `subscribers`, `subscriber_only`, `shares_workspace_of`, `delegated_by` | which session acts on the item: its own, or the session it is bound to (opened from it, or a PR on its branch); `subscribers` are the sessions that hear about it without acting on it; `subscriber_only` marks an item tracked only for them (no owner, no workspace); `delegated_by` names the session that handed the item off (`mode=delegate`) |
-| `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at` | ssf's delivery record |
+| `agent_session_id`, `prompts_sent`, `last_prompt_at`, `bound_at`, `retired_at`, `retirement_held_at` | ssf's delivery record; `retirement_held_at` is present while a listing has dropped an item that still carries one of its triggers, which is why `ssf release` refuses it |
 | `harness`, `model`, `effort`, `overrides`, `handover`, `handover_note` | what the session runs: `harness`, `model` and `effort` are the effective ones (the repository's, with the item's overrides applied), and `overrides` is present only where [`ssf handover`](sessions.md#handover) put them there (`harness`, and `model` and `effort` where the handover named them; the same shape in `state.json` as `overrides` on the item). `handover_note` is what an earlier handover left for a session that has not read it yet (`from`, the harness it came from, and `summary_chars`), shown by `ssf status` and `ssf peers` as `handover note waiting:`. `handover` is a handover asked for and not yet carried out: `harness`, `harness_name` (for people), `model`, `effort`, `summary_chars`, `by` (the session that asked, absent for a person at a shell) and `requested_at`. `state.json` keeps the pending record itself as `handover` on the item, with the `summary` the outgoing session wrote in place of its length, the ids of the conversations a handover retired as `retired_session_ids` (never resumed or captured again), when the last handover happened as `handed_over_at`, and what the outgoing session left for the new one as `handover_note` (kept until a session has read it, so a harness that would not start does not take the summary with it) |
 | `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
 | `origin`, `posts_by_session`, `untagged_posts` | attribution (see [Identity and bylines](identity-and-bylines.md)): the session that opened the item, how many posts each session made on it, and how many bot posts carry no tag (the daemon's own `🤖 ssf` event posts count in neither) |

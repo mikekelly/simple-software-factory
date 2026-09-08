@@ -171,6 +171,18 @@ pub struct IssueState {
     pub release_refusals: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<String>,
+    /// When a retirement was last held because the item itself still
+    /// carried one of the triggers it was taken on, while the listings had
+    /// dropped it. The listings stay wrong until GitHub's end catches up,
+    /// so re-reading the item (and walking its whole timeline) on every
+    /// pass buys nothing; this paces the re-check instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retirement_held_at: Option<String>,
+    /// Whether the log has already said that the listings and the item
+    /// disagree about this one, so that a hold announces itself once per
+    /// incident rather than once in the item's life.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retirement_announced: bool,
     /// `updated_at` of the issue when the timeline was last reconciled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,

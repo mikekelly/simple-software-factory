@@ -98,7 +98,13 @@ document links to.
    tell, and its branch is pushed by hand. `ssf purge` says `(workspace
    gone, checkout still on disk)` for one whose item is closed and
    removes it only when clean and pushed. Show the person the line and
-   let them decide about anything else.
+   let them decide about anything else. `ssf release` refuses while an
+   item is still the bot's, and `--force` does not lift that (it covers
+   the worktree checks only): the item has to stop being the bot's
+   first. An item the bot was only ever mentioned on stays the bot's
+   until it closes, since nobody can withdraw a mention, so its
+   workspace is not releasable while the item is open. `ssf status
+   --json` marks such an item with `retirement_held_at`.
 10. **Uninstall with `ssf uninstall`**, never by hand: it reports and
     asks once, and it refuses while a workspace holds unpushed work or
     the VM is stopped so its clones cannot be checked. Do not add
