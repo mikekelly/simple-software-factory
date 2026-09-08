@@ -44,6 +44,14 @@ impl Platform {
         self.is_like(&["arch"])
     }
 
+    pub fn is_debian_like(&self) -> bool {
+        self.is_like(&["debian", "ubuntu"])
+    }
+
+    pub fn is_fedora_like(&self) -> bool {
+        self.is_like(&["fedora", "rhel", "centos"])
+    }
+
     /// What to run to install herdr here: the command only.
     pub fn herdr_install_hint(&self) -> String {
         let binary = format!(
@@ -61,6 +69,21 @@ impl Platform {
             }
             _ => binary,
         }
+    }
+
+    /// What removes the ssf package here: `sudo pacman -R ssf` on Arch
+    /// (Omarchy included), apt on Debian and Ubuntu, dnf on Fedora, RHEL
+    /// and CentOS, brew on macOS. Printed, never run: nothing in ssf runs
+    /// sudo.
+    pub fn package_removal_command(&self) -> String {
+        match self.os {
+            Os::MacOs => "brew uninstall ssf",
+            _ if self.is_arch_like() => "sudo pacman -R ssf",
+            _ if self.is_debian_like() => "sudo apt remove ssf",
+            _ if self.is_fedora_like() => "sudo dnf remove ssf",
+            _ => "remove the ssf package with your package manager",
+        }
+        .to_string()
     }
 }
 
@@ -136,6 +159,10 @@ pub fn herdr_install_hint() -> String {
     detect().herdr_install_hint()
 }
 
+pub fn package_removal_command() -> String {
+    detect().package_removal_command()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +174,16 @@ mod tests {
             id_like: id_like.iter().map(|s| s.to_string()).collect(),
             omarchy,
             arch: "x86_64",
+        }
+    }
+
+    fn mac() -> Platform {
+        Platform {
+            os: Os::MacOs,
+            id: "macos".into(),
+            id_like: vec![],
+            omarchy: false,
+            arch: "aarch64",
         }
     }
 
@@ -222,13 +259,53 @@ mod tests {
         let mut pi = linux("debian", &[], false);
         pi.arch = "aarch64";
         assert!(pi.herdr_install_hint().contains("herdr-linux-aarch64"));
-        let mac = Platform {
-            os: Os::MacOs,
-            id: "macos".into(),
-            id_like: vec![],
-            omarchy: false,
-            arch: "aarch64",
-        };
-        assert_eq!(mac.herdr_install_hint(), "brew install herdr");
+        assert_eq!(mac().herdr_install_hint(), "brew install herdr");
+    }
+
+    #[test]
+    fn package_removal_names_the_package_manager() {
+        let pacman = "sudo pacman -R ssf";
+        assert_eq!(
+            linux("omarchy", &["arch"], true).package_removal_command(),
+            pacman
+        );
+        assert_eq!(linux("arch", &[], false).package_removal_command(), pacman);
+        assert_eq!(
+            linux("manjaro", &["arch"], false).package_removal_command(),
+            pacman
+        );
+        let apt = "sudo apt remove ssf";
+        assert_eq!(linux("debian", &[], false).package_removal_command(), apt);
+        assert_eq!(
+            linux("ubuntu", &["debian"], false).package_removal_command(),
+            apt
+        );
+        assert_eq!(
+            linux("linuxmint", &["ubuntu", "debian"], false).package_removal_command(),
+            apt
+        );
+        let dnf = "sudo dnf remove ssf";
+        assert_eq!(linux("fedora", &[], false).package_removal_command(), dnf);
+        assert_eq!(
+            linux("rhel", &["fedora"], false).package_removal_command(),
+            dnf
+        );
+        assert_eq!(
+            linux("centos", &["rhel", "fedora"], false).package_removal_command(),
+            dnf
+        );
+        assert_eq!(
+            linux("rocky", &["rhel", "centos", "fedora"], false).package_removal_command(),
+            dnf
+        );
+        assert_eq!(mac().package_removal_command(), "brew uninstall ssf");
+        assert_eq!(
+            linux("linux", &[], false).package_removal_command(),
+            "remove the ssf package with your package manager"
+        );
+        assert_eq!(
+            linux("alpine", &[], false).package_removal_command(),
+            "remove the ssf package with your package manager"
+        );
     }
 }

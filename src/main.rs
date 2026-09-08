@@ -244,8 +244,9 @@ enum Command {
     /// Take this machine back to just the package: purge closed workspaces,
     /// stop and disable the service, remove the bar widget and menu entries,
     /// sign the bot out (revoking its keys on GitHub), destroy the microVM.
-    /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`
-    /// is yours), the projects directory (clones and worktrees), and, without
+    /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`,
+    /// `apt remove` or `dnf remove`; the command prints the one for this
+    /// machine), the projects directory (clones and worktrees), and, without
     /// `--data`, the config and state directories.
     Uninstall {
         /// Skip the confirmation (scripted use).

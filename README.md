@@ -308,7 +308,7 @@ ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspa
 ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
-ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then `sudo pacman -R ssf` is yours
+ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then the package manager's remove command is yours
 journalctl --user -fu ssf.service
 ```
 

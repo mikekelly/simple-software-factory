@@ -714,4 +714,5 @@ cleared, so `status` does not go looking for it.
 9. Assign an issue to the bot; a workspace appears and the agent
    comments.
 10. To undo all of it later: `ssf uninstall` (add `--data` to drop
-    config and state too), then `sudo pacman -R ssf` (**you**).
+    config and state too), then the package manager's remove command it
+    prints (**you**).

@@ -64,4 +64,5 @@ commands, and the rest of `docs/` is the reference the document links to.
    `--force` on the person's behalf: show them the report and let them
    settle the work or decide; `--data` (config, the bot's key, state)
    is also theirs to ask for. The package removal that follows (`sudo
-   pacman -R ssf`) is **you**.
+   pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`; the
+   command prints the one for the machine) is **you**.

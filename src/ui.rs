@@ -49,8 +49,6 @@ pub fn disabled_marker() -> PathBuf {
     crate::config::state_dir().join("disabled")
 }
 
-pub use crate::platform::which;
-
 fn run_quiet(cmd: &str, args: &[&str]) -> Result<String> {
     let out = Command::new(cmd)
         .args(args)

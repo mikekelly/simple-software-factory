@@ -208,15 +208,11 @@ pub struct Opts {
     pub report_error: Option<String>,
 }
 
-/// What `sudo pacman -R ssf` is on this machine. Only pacman is known
-/// today; #127 (other distributions) extends this with their package
-/// managers. Printed, never run: nothing in ssf runs sudo.
+/// What removes the ssf package on this machine (`sudo pacman -R ssf`,
+/// `sudo apt remove ssf`, `sudo dnf remove ssf`, ...), by platform.
+/// Printed, never run: nothing in ssf runs sudo.
 pub fn package_removal_command() -> String {
-    if ui::which("pacman").is_some() {
-        "sudo pacman -R ssf".into()
-    } else {
-        "remove the ssf package with your package manager".into()
-    }
+    crate::platform::package_removal_command()
 }
 
 /// The report as text: what will stop, go and be revoked, what stays,
@@ -993,12 +989,12 @@ mod tests {
     }
 
     #[test]
-    fn package_removal_is_pacman_where_pacman_is() {
+    fn package_removal_is_pacman_on_omarchy() {
         let cmd = package_removal_command();
-        if ui::which("pacman").is_some() {
+        if crate::platform::is_omarchy() && crate::platform::which("pacman").is_some() {
             assert_eq!(cmd, "sudo pacman -R ssf");
         } else {
-            assert!(cmd.contains("package manager"), "{cmd}");
+            assert!(cmd.contains("ssf"), "{cmd}");
         }
     }
 
