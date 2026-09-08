@@ -5283,21 +5283,31 @@ fn without_code(text: &str) -> String {
     let mut fenced = false;
     for line in text.lines() {
         let start = line.trim_start();
-        if start.starts_with("```") || start.starts_with("~~~") {
+        // A backtick fence's info string may not itself contain backticks,
+        // so ```` ```code``` ```` opens no fence: it is a paragraph, and
+        // GitHub links any mention in it.
+        let fence = start.starts_with("~~~")
+            || (start.starts_with("```") && !start.trim_start_matches('`').contains('`'));
+        if fence {
             fenced = !fenced;
             continue;
         }
         if fenced {
             continue;
         }
-        // Backticks alternate between outside a span and inside one. A
-        // stray backtick misreads the rest of the line, which only moves a
-        // mention between two readings that both hold the session.
-        for (i, part) in line.split('`').enumerate() {
-            if i % 2 == 0 {
-                out.push_str(part);
-                out.push(' ');
+        // Backticks alternate between outside a span and inside one, so an
+        // odd count means there is no span here at all, just a stray
+        // backtick. Stripping on that reading would drop a mention GitHub
+        // does link, and dropping one is the reading that ends a session.
+        if line.matches('`').count() % 2 == 0 {
+            for (i, part) in line.split('`').enumerate() {
+                if i % 2 == 0 {
+                    out.push_str(part);
+                    out.push(' ');
+                }
             }
+        } else {
+            out.push_str(line);
         }
         out.push('\n');
     }
@@ -5309,7 +5319,10 @@ fn without_code(text: &str) -> String {
 /// so the gate that lets a session on and the check that keeps it on
 /// agree; this only adds where the mention was.
 fn mention_kind(issue: &Issue, timeline: &[Value], login: &str) -> Option<Mention> {
-    let listable = |b: &str| crate::allow::mentions(&without_code(b), login);
+    // The strict reading: a mention GitHub itself would link, outside the
+    // code its own filter never sees. Anything only the looser reading
+    // finds is this daemon's over-match, not the listing's mistake.
+    let listable = |b: &str| crate::allow::github_links(&without_code(b), login);
     if issue.body.as_deref().is_some_and(listable) {
         return Some(Mention::Listable);
     }
@@ -10398,6 +10411,7 @@ mod tests {
     /// retires once the mention has really gone.
     #[tokio::test]
     async fn a_mention_still_in_the_item_holds_the_session_through_an_empty_listing() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         let item = |body: &str| {
@@ -10441,6 +10455,10 @@ mod tests {
         assert!(
             e.entry(&r, 5).retirement_held_at.is_some(),
             "the hold was not recorded"
+        );
+        assert!(
+            e.entry(&r, 5).retirement_announced,
+            "the incident was not announced"
         );
 
         // While that hold is fresh the timeline is not walked again: the
@@ -10489,6 +10507,10 @@ mod tests {
             e.entry(&r, 5).retirement_held_at.is_none(),
             "the hold outlived the retirement"
         );
+        assert!(
+            !e.entry(&r, 5).retirement_announced,
+            "the next incident would announce itself as an old one"
+        );
     }
 
     /// The matcher over-matches GitHub on purpose, so an item GitHub will
@@ -10497,6 +10519,7 @@ mod tests {
     /// so the daemon cannot hold a session no person is able to release.
     #[tokio::test]
     async fn a_hold_gives_way_to_the_listings_once_they_have_disagreed_long_enough() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         // A mention the matcher sees and GitHub's listing does not: in a
@@ -10572,6 +10595,7 @@ mod tests {
     /// nobody could make is not counted against the item either.
     #[tokio::test]
     async fn a_mention_github_can_list_is_never_given_up_on() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         let mut e = engine_at(&stub.base);
@@ -10646,11 +10670,84 @@ mod tests {
         );
     }
 
+    /// The code stripper decides which mentions the bound may end a
+    /// session over, so everything it is unsure about has to read as one
+    /// GitHub could have listed. A stray backtick is not a code span, and
+    /// a line of prose that opens with backticks is not a fence.
+    #[test]
+    fn the_code_stripper_keeps_what_it_is_not_sure_is_code() {
+        let kept = |body: &str| {
+            let issue = issue(5, "alice", None);
+            let issue = Issue {
+                body: Some(body.to_string()),
+                ..issue
+            };
+            mention_kind(&issue, &[], "bot")
+        };
+        // Really inside code: GitHub links neither, so both are the
+        // over-match this daemon makes and the bound is allowed to end.
+        assert_eq!(kept("a log line: `@bot`"), Some(Mention::Unlistable));
+        assert_eq!(
+            kept("before\n```\n@bot in a fence\n```\nafter"),
+            Some(Mention::Unlistable)
+        );
+        assert_eq!(
+            kept("before\n~~~\n@bot in a tilde fence\n~~~\nafter"),
+            Some(Mention::Unlistable)
+        );
+        // Not code, however it looks. GitHub links every one of these, so
+        // a listing that drops the item is what is wrong, not the match.
+        for body in [
+            "The `--force flag is gone, @bot can you confirm?",
+            "It uses `a` and `b, so @bot please look",
+            "```code``` is how you fence, @bot",
+            "@bot plain and simple",
+            "`code` then @bot after it",
+        ] {
+            assert_eq!(kept(body), Some(Mention::Listable), "lost: {body:?}");
+        }
+        // And a login that names somebody else is this daemon's own
+        // over-match, whether or not it sits in prose.
+        assert_eq!(kept("ping @bot_2 about this"), Some(Mention::Unlistable));
+        assert_eq!(kept("see @bot.foo for that"), Some(Mention::Unlistable));
+        assert_eq!(kept("nothing here at all"), None);
+    }
+
+    /// A mention in an ordinary comment is the way most of these sessions
+    /// start, and is the shape of this bug: GitHub lists it, so a listing
+    /// that drops the item is wrong and the hold is never given up on.
+    #[test]
+    fn a_mention_in_a_comment_is_one_github_could_have_listed() {
+        let plain = issue(5, "alice", None);
+        let event = |kind: &str, body: &str| {
+            json!({"event": kind, "body": body, "user": {"login": "alice"},
+                   "actor": {"login": "alice"}, "html_url": "https://gh/5#c1"})
+        };
+        for kind in ["commented", "reviewed"] {
+            assert_eq!(
+                mention_kind(&plain, &[event(kind, "@bot what do you think?")], "bot"),
+                Some(Mention::Listable),
+                "a {kind} event was not read as listable"
+            );
+        }
+        // A batch of review comments is somewhere GitHub's listing cannot
+        // look, so a mention only there is the bounded reading.
+        let batch = json!({
+            "event": "line-commented",
+            "comments": [{"body": "@bot please look", "user": {"login": "alice"}}]
+        });
+        assert_eq!(
+            mention_kind(&plain, &[batch], "bot"),
+            Some(Mention::Unlistable)
+        );
+    }
+
     /// Only the paced arm keeps the bookkeeping. An item held on something
     /// read straight off it clears the hold, so an assignment cannot
     /// suppress a mention re-check that has never run.
     #[tokio::test]
     async fn a_hold_on_the_item_itself_leaves_no_pacing_behind() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         let mut e = engine_at(&stub.base);
@@ -10717,6 +10814,7 @@ mod tests {
     /// until wall-clock catches up.
     #[tokio::test]
     async fn a_hold_paces_the_re_read_without_delaying_a_close_or_outliving_the_clock() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         let item = |state: &str| {
@@ -10779,6 +10877,7 @@ mod tests {
     /// later hold is a new incident rather than a stamp that never moves.
     #[tokio::test]
     async fn an_item_back_on_a_listing_clears_the_hold_it_left_behind() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         let mut e = engine_at(&stub.base);
@@ -10818,6 +10917,7 @@ mod tests {
     /// because retiring is the destructive reading of missing evidence.
     #[tokio::test]
     async fn a_review_request_still_on_the_pull_request_holds_the_session() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let r = repo();
         stub.set_issue(

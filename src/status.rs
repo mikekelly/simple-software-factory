@@ -21,10 +21,6 @@ use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover
 const DRIVER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Session identity: `owner/repo#N`, the same form `--as` takes.
-fn is_zero(n: &u32) -> bool {
-    *n == 0
-}
-
 pub fn session_id(repo: &str, number: u64) -> String {
     format!("{repo}#{number}")
 }
@@ -103,10 +99,11 @@ pub struct Session {
     /// still active and `ssf release` still refuses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retirement_held_at: Option<String>,
-    /// How many re-checks have found this item the bot's only where
-    /// GitHub could not have listed it. Counts towards the point at which
-    /// the listings are believed instead and the item retires, so it says
-    /// how close a held item is to being let go.
+    /// How many re-checks have found this item the bot's only somewhere
+    /// GitHub could not have listed it. Those are the ones the daemon
+    /// eventually gives up on, so the count says how close such an item
+    /// is to being let go; an item held on a mention GitHub could have
+    /// listed is never given up on and leaves this at zero.
     #[serde(skip_serializing_if = "is_zero")]
     pub retirement_holds: u32,
     /// When `ssf release` or `ssf purge` removed the workspace.
@@ -658,6 +655,10 @@ pub fn one_line(text: &str, max: usize) -> String {
 }
 
 /// The `ssf peers` table: one block per session, grouped by repository.
+fn is_zero(n: &u32) -> bool {
+    *n == 0
+}
+
 pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
     let mut out = String::new();
     let mut current_repo = "";
