@@ -12,7 +12,8 @@
 //! The byline links to the session's item, as `#N` on the item's own
 //! repository and `owner/repo#N` elsewhere, so the shim works out which
 //! repository the post goes to the way gh does: `--repo`, an item given as
-//! a URL, `GH_REPO`, else the checkout's `origin` remote. The shim reads
+//! a URL (but not one that is a `NOT_THE_ITEM` flag's value),
+//! `GH_REPO`, else the checkout's `origin` remote. The shim reads
 //! nothing but its environment (a `--body-file`, and `git config` for that
 //! remote), writes nothing, and keeps stdin and the terminal intact, so it
 //! works inside read-only sandboxes and leaves gh's interactive flows alone.
@@ -204,16 +205,57 @@ pub fn repo_of(s: &str) -> Option<String> {
     Some(name)
 }
 
+/// Flags of the tagged commands whose value is not the item, so a URL
+/// there must not be read as one. The body and title flags hold free
+/// text; `--parent`, `--blocked-by` and `--blocking` (on `issue
+/// create`) take "numbers or URLs", and gh's own help shows the URL
+/// form. Each is skipped with its value.
+///
+/// A positional rule ("an argument after an option is its value") would
+/// need no list, but it hides the item's own URL after a valueless flag
+/// — `gh pr review --approve <url>`, gh's own example — and the answer
+/// then falls through to the checkout, which is the session's own
+/// repository in the ordinary case, giving the short `#N` on a post
+/// landing elsewhere. That is the same defect in mirror image, so the
+/// list is the safer shape: it is short, gh states it, and it misses no
+/// URL these commands take today. The inline spellings
+/// (`--parent=<url>`) need no entry, since they start with `-` and the
+/// scan below skips them. A flag gh grows later is not covered, which is
+/// the price of naming them; the failure is a wrong byline form, never a
+/// lost tag.
+const NOT_THE_ITEM: &[&str] = &[
+    "--body",
+    "-b",
+    "--body-file",
+    "-F",
+    "--title",
+    "-t",
+    "--parent",
+    "--blocked-by",
+    "--blocking",
+];
+
 /// The repository a gh command posts to, as far as its arguments say:
-/// `--repo`/`-R` (in any spelling), else an item named by its URL. Values
-/// of the body and title flags are not looked at.
+/// `--repo`/`-R` (in any spelling), else an item named by its URL.
+/// [`NOT_THE_ITEM`] says which flags' values are not that item.
+///
+/// This answer outranks `GH_REPO` in [`Shim::rewrite`] and decides the
+/// byline's form, so reading a flag's URL as the item is not cosmetic: a
+/// post that lands on another repository carrying the short `#N` links
+/// to *that* repository's issue N.
 fn repo_in_args(args: &[String]) -> Option<String> {
     let mut i = 0;
     let mut url = None;
     while i < args.len() {
         let a = args[i].as_str();
         if a == "--" {
-            break;
+            // Everything after `--` is positional for gh too, so the
+            // item can be there (`gh issue comment -- <url>` names the
+            // same item as without it). Stop reading flags, keep looking
+            // for it: giving up here would leave the answer to the
+            // checkout, which is this session's own repository, and put
+            // the short `#N` on a post landing elsewhere.
+            return url.or_else(|| args[i + 1..].iter().find_map(|a| item_url(a)));
         }
         if (a == "--repo" || a == "-R") && i + 1 < args.len() {
             return repo_of(&args[i + 1]);
@@ -224,19 +266,25 @@ fn repo_in_args(args: &[String]) -> Option<String> {
         if let Some(v) = a.strip_prefix("-R").filter(|v| !v.is_empty()) {
             return repo_of(v);
         }
-        if matches!(a, "--body" | "-b" | "--body-file" | "-F" | "--title" | "-t") {
+        if NOT_THE_ITEM.contains(&a) {
             i += 2;
             continue;
         }
-        if url.is_none()
-            && !a.starts_with('-')
-            && (a.starts_with("https://") || a.starts_with("http://"))
-        {
-            url = repo_of(a);
+        if url.is_none() {
+            url = item_url(a);
         }
         i += 1;
     }
     url
+}
+
+/// The repository of an argument that names an item by its URL, if it
+/// does: a bare `http(s)://…`, not a flag and not a flag's value (the
+/// caller decides that).
+fn item_url(a: &str) -> Option<String> {
+    (!a.starts_with('-') && (a.starts_with("https://") || a.starts_with("http://")))
+        .then(|| repo_of(a))
+        .flatten()
 }
 
 /// What the shim knows about the session it runs in, and how it reads the
@@ -603,6 +651,72 @@ mod tests {
         s.gh_repo = Some("ACME/OTHER");
         let out = s.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
         assert!(out.contains(&long), "{out:?}");
+        // A URL that is one of NOT_THE_ITEM's values is not the item.
+        // gh documents the URL form for all three of `issue create`'s
+        // number-or-URL flags; reading one as the item beats GH_REPO and
+        // stamps the short `#N` on a post landing elsewhere, where it
+        // links to that repository's own issue N. A fresh shim, so the
+        // checkout is this session's repository and GH_REPO is the only
+        // thing that can give the long form.
+        for flag in ["--parent", "--blocked-by", "--blocking"] {
+            let mut s = shim(&o);
+            s.gh_repo = Some("acme/other");
+            let out = s.rewrite(args(&[
+                "issue",
+                "create",
+                flag,
+                "https://github.com/acme/widgets/issues/5",
+                "--title",
+                "t",
+                "--body",
+                "hi",
+            ]));
+            assert!(
+                out.contains(&long),
+                "{flag}'s value is not the item: {out:?}"
+            );
+        }
+        // The item's own URL still is one, flags before it or not: a
+        // valueless flag must not hide it, or the fallback (the
+        // checkout, this session's own repository) puts the short form
+        // on a post landing elsewhere -- the same defect mirrored.
+        let mut s = shim(&o);
+        s.gh_repo = Some("ACME/OTHER");
+        let out = s.rewrite(args(&[
+            "issue",
+            "comment",
+            "https://github.com/acme/widgets/issues/3",
+            "--body",
+            "hi",
+        ]));
+        assert!(out.contains(&short), "the item's URL still counts: {out:?}");
+        let s = shim(&o);
+        let out = s.rewrite(args(&[
+            "pr",
+            "review",
+            "--approve",
+            "https://github.com/acme/other/pull/7",
+            "--body",
+            "hi",
+        ]));
+        assert!(
+            out.contains(&long),
+            "a valueless flag does not hide the item: {out:?}"
+        );
+        // `--` ends the flags for gh too, and the item can be after it.
+        let s = shim(&o);
+        let out = s.rewrite(args(&[
+            "issue",
+            "comment",
+            "--body",
+            "hi",
+            "--",
+            "https://github.com/acme/other/issues/3",
+        ]));
+        assert!(
+            out.contains(&long),
+            "the item after `--` still counts: {out:?}"
+        );
         // Nothing says: the long form, which links from anywhere.
         let mut s = shim(&o);
         s.checkout = &unknown;
