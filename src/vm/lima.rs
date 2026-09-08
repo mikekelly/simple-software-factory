@@ -509,6 +509,15 @@ struct Repair {
 ///   what `ssf vm reset` creates the next instance from;
 /// * the instance's copy is edited only while the instance is stopped,
 ///   and a running instance is reported, never quietly skipped.
+/// Why a `format: false` is being written: the build that created the
+/// disk finishing its job, or a later command finding a flag an
+/// unfinished build left behind. Only the second is worth a warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Why {
+    FinishingBuild,
+    FoundStale,
+}
+
 fn plan_repair(
     disk_exists: bool,
     template_stale: bool,
@@ -857,7 +866,7 @@ impl Vm {
                 // put right, which is how a later `ssf vm start` came to
                 // boot a guest that was still allowed to reformat the
                 // factory's disk.
-                if let Some(yaml) = self.repair_stale_format(Some(&inst)) {
+                if let Some(yaml) = self.repair_stale_format(Some(&inst), Why::FoundStale) {
                     return Err(self.stale_format_error(&yaml));
                 }
                 println!(
@@ -952,7 +961,7 @@ impl Vm {
         self.write_template(false)?;
         self.limactl_run_within(&["stop", &name], STOP_LIMIT)?;
         let stopped = self.lima_instance().ok().flatten();
-        if let Some(yaml) = self.repair_stale_format(stopped.as_ref()) {
+        if let Some(yaml) = self.repair_stale_format(stopped.as_ref(), Why::FinishingBuild) {
             return Err(self.stale_format_error(&yaml));
         }
         Ok(())
@@ -981,7 +990,7 @@ impl Vm {
             );
         }
         let inst = self.lima_instance().ok().flatten();
-        if let Some(yaml) = self.repair_stale_format(inst.as_ref()) {
+        if let Some(yaml) = self.repair_stale_format(inst.as_ref(), Why::FoundStale) {
             warn!("{}", self.stale_format_note(&yaml));
         }
         // A disk this build created but never got a filesystem onto is
@@ -1064,7 +1073,7 @@ impl Vm {
     /// back. The cost of being wrong is a refused boot and a message; the
     /// cost of the other way round is the factory's disk.
     #[must_use = "a stale `format: true` must stop the boot, not be dropped"]
-    fn repair_stale_format(&self, inst: Option<&Instance>) -> Option<PathBuf> {
+    fn repair_stale_format(&self, inst: Option<&Instance>, why: Why) -> Option<PathBuf> {
         let path = self.template_path();
         let instance_yaml = inst.map(|i| Path::new(&i.dir).join("lima.yaml"));
         let stale = |p: &Path| match std::fs::read_to_string(p) {
@@ -1101,15 +1110,24 @@ impl Vm {
         if plan == Repair::default() {
             return None;
         }
-        warn!(
-            "the data disk {} exists, but {} still lets lima format it (a build that did not finish); putting `format: false` back",
-            self.lima_disk_name(),
-            if plan.template {
-                path.display().to_string()
-            } else {
-                format!("lima's copy of {}", path.display())
-            }
-        );
+        let which = if plan.template {
+            path.display().to_string()
+        } else {
+            format!("lima's copy of {}", path.display())
+        };
+        match why {
+            // The build that made the disk is the one build allowed to
+            // let lima format it, and this is that build finishing: the
+            // flag comes off as a matter of course, not as a repair.
+            Why::FinishingBuild => info!(
+                "the data disk {} carries the factory now; turning `format` off in {which}",
+                self.lima_disk_name()
+            ),
+            Why::FoundStale => warn!(
+                "the data disk {} exists, but {which} still lets lima format it (a build that did not finish); putting `format: false` back",
+                self.lima_disk_name()
+            ),
+        }
         // What is still stale when this returns. ssf's own template is
         // the lesser of the two (lima boots from its own copy), so lima's
         // copy overwrites it below when both are unrepaired.
@@ -1334,7 +1352,7 @@ impl Vm {
         // state `limactl edit` accepts. A flag that survives the repair
         // (an instance already running) stops the start rather than
         // booting into it.
-        if let Some(yaml) = self.repair_stale_format(Some(&inst)) {
+        if let Some(yaml) = self.repair_stale_format(Some(&inst), Why::FoundStale) {
             return Err(self.stale_format_error(&yaml));
         }
         self.ensure_key()?;
@@ -1368,7 +1386,10 @@ impl Vm {
         // instance edited by hand, a template restored from elsewhere)
         // is said out loud rather than waiting for the next boot to be
         // discovered.
-        if let Some(yaml) = self.repair_stale_format(self.lima_instance().ok().flatten().as_ref()) {
+        if let Some(yaml) = self.repair_stale_format(
+            self.lima_instance().ok().flatten().as_ref(),
+            Why::FoundStale,
+        ) {
             warn!("{}", self.stale_format_note(&yaml));
         }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
@@ -1493,7 +1514,7 @@ impl Vm {
         // `format: true` in it has to go before the create, not after:
         // the instance that is about to be deleted is not worth fixing,
         // which is why no instance is passed and nothing can come back.
-        let _ = self.repair_stale_format(None);
+        let _ = self.repair_stale_format(None, Why::FoundStale);
         if self.lima_instance()?.is_some() {
             self.limactl_run(&["delete", "-f", &name])?;
         }
@@ -1904,7 +1925,7 @@ mod tests {
         // what it was asked to do.
         for (status, edited) in [("Stopped", true), ("Running", false)] {
             let t = Fake::new(status);
-            let stale = t.vm.repair_stale_format(Some(&t.instance));
+            let stale = t.vm.repair_stale_format(Some(&t.instance), Why::FoundStale);
             // ssf's own template is a file: it is put right either way.
             assert!(
                 !says_format_true(&std::fs::read_to_string(t.vm.template_path()).unwrap()),
@@ -1999,7 +2020,7 @@ mod tests {
         // and the whole "no boot over a flag that is still there"
         // guarantee would rest on that exit status alone.
         let t = Fake::with("Stopped", Edit::Ignored, DiskList::Answers);
-        let stale = t.vm.repair_stale_format(Some(&t.instance));
+        let stale = t.vm.repair_stale_format(Some(&t.instance), Why::FoundStale);
         assert!(t.ran("edit"), "{:?}", t.commands());
         assert!(
             says_format_true(&std::fs::read_to_string(t.instance_yaml()).unwrap()),
@@ -2033,7 +2054,7 @@ mod tests {
         // "the disk is there": the cost is a refused boot and a message.
         let t = Fake::with("Running", Edit::Applies, DiskList::Fails);
         assert_eq!(
-            t.vm.repair_stale_format(Some(&t.instance)),
+            t.vm.repair_stale_format(Some(&t.instance), Why::FoundStale),
             Some(t.instance_yaml())
         );
     }
@@ -2048,7 +2069,10 @@ mod tests {
         let yaml = t.instance_yaml();
         std::fs::remove_file(&yaml).unwrap();
         std::fs::create_dir(&yaml).unwrap();
-        assert_eq!(t.vm.repair_stale_format(Some(&t.instance)), Some(yaml));
+        assert_eq!(
+            t.vm.repair_stale_format(Some(&t.instance), Why::FoundStale),
+            Some(yaml)
+        );
     }
 
     #[test]
@@ -2061,7 +2085,10 @@ mod tests {
         let path = t.vm.template_path();
         std::fs::remove_file(&path).unwrap();
         std::fs::create_dir(&path).unwrap();
-        assert_eq!(t.vm.repair_stale_format(None), Some(path.clone()));
+        assert_eq!(
+            t.vm.repair_stale_format(None, Why::FoundStale),
+            Some(path.clone())
+        );
         let err = t.vm.stale_format_error(&path).to_string();
         assert!(err.contains("refusing to boot ssf-one"), "{err}");
         assert!(err.contains("could not rewrite"), "{err}");
