@@ -309,12 +309,23 @@ pub struct VmStatus {
     /// holding `ssf-old` is the other half of the same silence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strays: Vec<Stray>,
-    /// `[vm] dir` or lima's home is there and could not be read, so what
-    /// else is in it is unknown. The three commands that name strays
-    /// have to agree about the same machine, and "I could not look" is
-    /// part of what there is to agree on.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub base_unread: bool,
+    /// Directories that are there and could not be read. The three
+    /// commands that name strays have to agree about the same machine,
+    /// and "I could not look, and here is where" is part of what there
+    /// is to agree on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unread: Vec<PathBuf>,
+}
+
+/// A directory that could not be read, when it is there at all: a path
+/// that does not exist is genuinely empty, and only one that is there
+/// and would not open is unknown.
+fn unread_if_there(dir: &Path) -> Vec<PathBuf> {
+    if dir.exists() {
+        vec![dir.to_path_buf()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Where the data disk is mounted in the guest.
@@ -358,11 +369,19 @@ pub struct Survey {
     /// that reached that decision would be a VM deleted because someone
     /// edited a name.
     pub strays: Vec<Stray>,
-    /// A directory that is there and could not be read, so what is in
-    /// it is unknown. Not the same as empty: the report calls that directory
-    /// "safe to remove", and safety nobody could verify must not be
-    /// asserted.
-    pub base_unread: bool,
+    /// Directories that are there and could not be read, so what is in
+    /// them is unknown -- `[vm] dir`, lima's home, lima's disk
+    /// directory, or several. Not the same as empty: the report calls
+    /// `[vm] dir` "safe to remove", and safety nobody could verify must
+    /// not be asserted.
+    ///
+    /// The paths, not a flag. A bool said "something could not be read"
+    /// and left every printer to guess which, so all three named
+    /// `[vm] dir` -- and a `~/.lima` left root-owned by an earlier
+    /// `sudo` sent people to fix permissions on a directory that was
+    /// never the problem, while the one holding their clones went
+    /// unnamed. The remedy has to carry the real name here too.
+    pub unread: Vec<PathBuf>,
 }
 
 /// Something of ssf's shape that this configuration does not name: what
@@ -1299,7 +1318,7 @@ impl Vm {
     /// root-owned by an earlier `sudo`, or on a volume returning `EIO`,
     /// would otherwise get `no VM` over `safe to remove` -- the two
     /// sentences this whole change exists to abolish.
-    fn fc_dir_contents(&self) -> (Vec<Stray>, bool) {
+    fn fc_dir_contents(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         // Absolute, because the remedy is an `rm -rf` a person pastes:
         // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
         // means a different directory from every other working
@@ -1331,13 +1350,13 @@ impl Vm {
             // just declined to read -- `safe to remove` and `no VM` over
             // a data disk of clones, from the guard added to prevent
             // exactly that.
-            return (Vec::new(), base.exists());
+            return (Vec::new(), unread_if_there(&base));
         }
         let entries = match std::fs::read_dir(&base) {
             Ok(e) => e,
             // Only a directory that is there and unreadable is unknown;
             // one that is not there is genuinely empty.
-            Err(_) => return (Vec::new(), base.exists()),
+            Err(_) => return (Vec::new(), unread_if_there(&base)),
         };
         let mut strays: Vec<Stray> = entries
             .flatten()
@@ -1359,7 +1378,7 @@ impl Vm {
             .map(|p| Stray::directory(&p))
             .collect();
         strays.sort_by(|a, b| a.name.cmp(&b.name));
-        (strays, false)
+        (strays, Vec::new())
     }
 
     /// The strays that can be found without asking the backend
@@ -1367,13 +1386,15 @@ impl Vm {
     /// lima. For the caller that has no tooling to ask with -- which is
     /// exactly when the person cannot run `limactl list` either, so
     /// going quiet then would take the report away at its most useful.
-    pub fn strays_on_filesystem(&self) -> (Vec<Stray>, bool) {
+    pub fn strays_on_filesystem(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         let (mut strays, mut unread) = self.fc_dir_contents();
-        if self.backend() == BackendKind::Lima {
-            let (lima, lima_unread) = self.strays_on_disk_read();
-            strays.extend(lima);
-            unread |= lima_unread;
-        }
+        // Lima's home under both backends: reading it costs no
+        // `limactl`, and changing `[vm] backend` leaves an `ssf-*`
+        // instance and a data disk of clones behind exactly as changing
+        // `[vm] name` does.
+        let (lima, lima_unread) = self.strays_on_disk_read();
+        strays.extend(lima);
+        unread.extend(lima_unread);
         lima::sort_strays(&mut strays);
         (strays, unread)
     }
@@ -1386,14 +1407,20 @@ impl Vm {
             BackendKind::Firecracker => {
                 let dir = self.dir.exists();
                 let running = self.firecracker_pid().is_some();
-                let (strays, base_unread) = self.fc_dir_contents();
+                let (mut strays, mut unread) = self.fc_dir_contents();
+                // Lima's home on this backend too: see
+                // `strays_on_filesystem`.
+                let (lima, lima_unread) = self.strays_on_disk_read();
+                strays.extend(lima);
+                unread.extend(lima_unread);
+                lima::sort_strays(&mut strays);
                 Survey {
                     present: Some(dir || running),
                     running: Some(running),
                     startable: dir,
                     data: Some(self.data_disk().exists()),
                     strays,
-                    base_unread,
+                    unread,
                 }
             }
             BackendKind::Lima => {
@@ -1401,12 +1428,12 @@ impl Vm {
                 // `[vm] dir` is shared by the backends, so its strays
                 // are lima's business as much as Firecracker's -- and so
                 // is a `[vm] dir` nobody could read.
-                let (strays, base_unread) = self.fc_dir_contents();
+                let (strays, unread) = self.fc_dir_contents();
                 survey.strays.splice(0..0, strays);
                 // Either directory being unreadable is enough to make
                 // what is here unknown -- assigning would have thrown
                 // away lima's own answer about its home.
-                survey.base_unread |= base_unread;
+                survey.unread.extend(unread);
                 lima::sort_strays(&mut survey.strays);
                 survey
             }
@@ -2375,10 +2402,18 @@ impl Vm {
                 Err(_) => strays.extend(self.disk_strays_on_disk()),
             }
         }
-        let (dir_strays, mut base_unread) = self.fc_dir_contents();
+        let (dir_strays, mut unread) = self.fc_dir_contents();
         strays.extend(dir_strays);
-        if backend == BackendKind::Lima {
-            base_unread |= self.strays_on_disk_read().1;
+        if backend == BackendKind::Firecracker {
+            // Under lima the listings above already covered its home;
+            // under Firecracker nothing has, and a machine that changed
+            // `[vm] backend` orphans an `ssf-*` instance and its data
+            // disk exactly as one that changed `[vm] name` does.
+            let (lima, lima_unread) = self.strays_on_disk_read();
+            strays.extend(lima);
+            unread.extend(lima_unread);
+        } else {
+            unread.extend(self.strays_on_disk_read().1);
         }
         lima::sort_strays(&mut strays);
         let running = match backend {
@@ -2434,7 +2469,7 @@ impl Vm {
             // here is what let `instance: ssf-new missing (ssf vm
             // build)` stand over a machine still holding ssf-old.
             strays,
-            base_unread,
+            unread,
         }
     }
 
@@ -3256,7 +3291,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
-                base_unread: false,
+                unread: Vec::new(),
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -3270,7 +3305,7 @@ mod tests {
                 startable: true,
                 data: Some(false),
                 strays: Vec::new(),
-                base_unread: false,
+                unread: Vec::new(),
             }
         );
     }
@@ -3429,19 +3464,35 @@ mod tests {
         cfg.vm.backend = Some(BackendKind::Firecracker);
         cfg.vm.dir = base.to_string_lossy().into_owned();
         let vm = Vm::new(&cfg);
-        assert!(!vm.survey().base_unread, "readable while it is readable");
-        set_mode(&base, 0o000);
-        let survey = vm.survey();
-        set_mode(&base, 0o755);
+        assert!(
+            vm.survey().unread.is_empty(),
+            "readable while it is readable"
+        );
+        let survey = while_unreadable(&base, || vm.survey());
         std::fs::remove_dir_all(&base).unwrap();
-        // Running as root reads it anyway, and then there is nothing to
-        // assert about not having been able to.
-        if survey.strays.is_empty() {
-            assert!(
-                survey.base_unread,
-                "an unreadable directory is unknown, not empty"
-            );
-        }
+        let Some(survey) = survey else {
+            return; // running as root, which reads it anyway
+        };
+        assert_eq!(
+            survey.unread,
+            std::slice::from_ref(&base),
+            "unknown, not empty -- and which directory is the point"
+        );
+        assert!(survey.strays.is_empty(), "nothing was read to find");
+    }
+
+    /// Run `f` with `path` unreadable, or `None` when this user reads it
+    /// regardless -- which root does, and which would otherwise make
+    /// every assertion inside vacuously true. A test that tolerates an
+    /// environment by making its assertions conditional has disabled
+    /// itself in both environments; this one skips instead.
+    #[cfg(unix)]
+    fn while_unreadable<T>(path: &Path, f: impl FnOnce() -> T) -> Option<T> {
+        set_mode(path, 0o000);
+        let readable = std::fs::read_dir(path).is_ok();
+        let out = f();
+        set_mode(path, 0o755);
+        (!readable).then_some(out)
     }
 
     #[cfg(unix)]
@@ -3485,6 +3536,53 @@ mod tests {
     fn set_mode(path: &Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn limas_home_is_read_on_the_firecracker_backend_too() {
+        // Changing `[vm] backend` orphans an `ssf-*` instance and its
+        // data disk exactly as changing `[vm] name` does, and reading
+        // lima's home costs no `limactl` -- so a Firecracker machine
+        // that used to run lima still hears about the clones it left
+        // there. Treating it as a lima-only question was the same
+        // mistake as treating `[vm] dir` as a Firecracker-only one.
+        let root = std::env::temp_dir().join(format!(
+            "ssf-fc-lima-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = root.join("lima");
+        std::fs::create_dir_all(home.join("ssf-old")).unwrap();
+        std::fs::create_dir_all(root.join("vm")).unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = root.join("vm").to_string_lossy().into_owned();
+        let mut vm = Vm::new(&cfg);
+        vm.lima_home = Some(home.clone());
+        let survey = vm.survey();
+        let (fallback, _) = vm.strays_on_filesystem();
+        // ... and a lima home nobody can read is unknown here too, named.
+        let unread = while_unreadable(&home, || vm.survey().unread);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            survey
+                .strays
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ssf-old"],
+            "a lima instance a backend change left behind"
+        );
+        assert_eq!(fallback.len(), 1, "and doctor's fallback sees it too");
+        assert_ne!(survey.present, Some(true), "it is still not this VM");
+        if let Some(unread) = unread {
+            assert_eq!(unread, std::slice::from_ref(&home));
+        }
     }
 
     #[test]
