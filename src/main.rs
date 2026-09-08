@@ -678,17 +678,22 @@ async fn main() -> Result<()> {
                     eprintln!("{note}");
                 }
                 let args: Vec<String> = std::env::args().skip(1).collect();
-                // The bar widget parses `status --json` and has no other
-                // source, so this one is answered even when the guest
-                // does not answer it: an ssh that fails -- the VM down
-                // behind an unanswerable probe, or the window after
-                // `limactl start` where lima says Running before sshd
-                // does -- would otherwise leave the widget reading an
-                // empty document as a factory with nothing in it. The
-                // guest's own answer is passed through untouched;
-                // silence is what gets a document made for it, saying
-                // what the probe said about the VM and nothing about the
-                // sessions it could not ask after.
+                // `status --json` is answered even when the guest does
+                // not answer it: an ssh that fails -- the VM down behind
+                // an unanswerable probe, or the window after `limactl
+                // start` where lima says Running before sshd does --
+                // would otherwise print nothing at all. What that buys
+                // is a document to parse, whose `service_enabled` and
+                // `vm` are read from this host and true: the bar widget
+                // coerces anything it cannot parse to an empty object,
+                // where its own service toggle reads as disabled, and a
+                // `jq` over this command gets a field rather than a
+                // parse error. The guest's own answer is passed through
+                // untouched, with its exit status; silence is what gets
+                // a document made for it, saying what the probe saw of
+                // the VM, nothing of the sessions it could not ask
+                // after, and exiting 0 the way a stopped VM's answer
+                // above does.
                 if matches!(cli.command, Command::Status { json: true }) {
                     let out = vm.capture_ssf(&args);
                     if let Err(e) = &out {

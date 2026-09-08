@@ -2465,8 +2465,12 @@ mod tests {
                     r#"echo 'FATAL[0000] failed to lock the lima home' >&2; exit 1"#.to_string()
                 }
                 // Long enough that no bound this test asks for expires
-                // on its own; the fake is killed with the probe.
-                Listing::Hangs => "sleep 120".to_string(),
+                // on its own. `exec` so that the fake shell *is* the
+                // sleep: what the probe kills is its direct child, and a
+                // `sleep` forked under that shell would outlive the test
+                // by two minutes, once per run and again under
+                // `makepkg`'s check().
+                Listing::Hangs => "exec sleep 120".to_string(),
             };
             let edit_arm = match edit {
                 Edit::Applies => format!(

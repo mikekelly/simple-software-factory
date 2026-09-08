@@ -520,13 +520,18 @@ ssh error if it is not; the note carries the same `ssf vm start` advice
 the refusal would have given, since an ssh error carries none.
 
 `status --json` always answers, whatever the guest does, so nothing
-parsing it is left with an empty document: where the guest gives an
-answer that answer is passed through untouched, and where it gives none
-the host writes one of its own, carrying what it could see (`vm` is
-`running`, `stopped` or `unknown`) and no sessions or repositories,
-which are the guest's to know. That covers the window after `limactl
-start` when lima says `Running` before the guest's sshd does, as well as
-a probe that could not be made at all.
+parsing it is left with no document at all. Where the guest answers,
+that answer is passed through untouched and with its exit status. Where
+it does not, the host writes one of its own and exits 0, the way it does
+for a VM it knows is stopped: it carries what the host could see (`vm`
+is `running`, `stopped` or `unknown`, and the service line is this
+machine's) and no sessions or repositories, which are the guest's to
+know. That covers the window after `limactl start` when lima says
+`Running` before the guest's sshd does, as well as a probe that could
+not be made at all. The bar widget shows the same panel either way --
+it reads sessions, not `vm` -- but its service toggle reads the truth
+rather than the empty object it falls back to, and a `jq` over the
+command gets a field rather than a parse error.
 
 A probe that could not be made is never read as a stopped factory:
 reading it that way refused `tell`, `release`, `purge` and `doctor` over
