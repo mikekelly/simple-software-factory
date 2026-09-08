@@ -660,10 +660,25 @@ async fn main() -> Result<()> {
                     );
                     return Ok(());
                 }
-                _ => bail!(
-                    "the factory runs in VM {}, which is not running; `ssf vm start` first",
-                    cfg.vm.name
-                ),
+                // A host that cannot start the VM at all is told why here:
+                // the tooling check is the same one `ssf vm status` and
+                // `ssf doctor` print, and this is the message a person hits
+                // first on a machine where the backend is not installed.
+                _ => {
+                    let tooling = vm.tooling();
+                    if tooling.ok {
+                        bail!(
+                            "the factory runs in VM {}, which is not running; `ssf vm start` first",
+                            cfg.vm.name
+                        )
+                    }
+                    bail!(
+                        "the factory runs in VM {}, which is not running, and {} cannot start it: {}",
+                        cfg.vm.name,
+                        vm.backend(),
+                        tooling.detail
+                    )
+                }
             }
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
