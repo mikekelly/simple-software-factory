@@ -270,7 +270,9 @@ pub struct VmStatus {
     pub lima_dir: Option<String>,
     /// Firecracker: the root image is built; lima: the instance exists.
     pub image: bool,
-    pub running: bool,
+    /// Whether the host knows the VM is running. Null when lima could
+    /// not answer the probe; use `probe_error` for why.
+    pub running: Option<bool>,
     /// Firecracker's and gvproxy's PIDs; null under lima.
     pub firecracker_pid: Option<u32>,
     pub gvproxy_pid: Option<u32>,
@@ -292,10 +294,9 @@ pub struct VmStatus {
     /// `/dev/kvm`). Null inside the guest, whose host owns the VM.
     pub tooling: Option<Tooling>,
     /// Why lima could not be asked about the instance, when it could not
-    /// be. Null when the answer below is an answer: `instance`,
-    /// `lima_dir`, `image` and `running` all read as "no instance, not
-    /// running" on a `limactl list` that failed, and reporting that as
-    /// fact is how a working VM came to be described as missing.
+    /// be. Absent after a successful probe. On failure, `running` is
+    /// null; `instance`, `lima_dir` and `image` must not be read as proof
+    /// that the instance is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_error: Option<String>,
 }
@@ -2039,10 +2040,12 @@ impl Vm {
             BackendKind::Firecracker => (None, None),
         };
         let running = match backend {
-            BackendKind::Firecracker => self.running(),
-            BackendKind::Lima => inst.as_ref().is_some_and(|i| i.is_running()),
+            BackendKind::Firecracker => Some(self.running()),
+            BackendKind::Lima => probe_error
+                .is_none()
+                .then(|| inst.as_ref().is_some_and(|i| i.is_running())),
         };
-        let ssh = running && self.ssh_ok();
+        let ssh = running == Some(true) && self.ssh_ok();
         let sizes = self.sizes();
         VmStatus {
             vcpus: sizes.vcpus,

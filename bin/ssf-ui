@@ -72,7 +72,7 @@ cmd_open_workspace() {
   local id="${1:-}" url="${2:-}"
   local orca="${ORCA_CLI_COMMAND:-/usr/lib/orca-ide/bin/orca-ide}"
   # The factory in a VM: the workspace is in the guest's herdr; attach to it.
-  if [[ -n $id ]] && ssf vm status --json 2>/dev/null | jq -e '.enabled and .running' >/dev/null 2>&1; then
+  if [[ -n $id ]] && ssf vm status --json 2>/dev/null | jq -e '.enabled and (.running != false)' >/dev/null 2>&1; then
     if command -v omarchy-launch-terminal >/dev/null 2>&1; then
       omarchy-launch-terminal ssf vm attach
     else

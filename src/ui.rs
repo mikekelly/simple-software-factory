@@ -486,6 +486,81 @@ pub fn uninstall_all() -> Result<()> {
 mod tests {
     use super::*;
 
+    // ssf-ui is Linux desktop glue and is not shipped by the macOS package.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn workspace_attachment_accepts_an_unknown_vm_state_but_not_a_stopped_one() {
+        let root = std::env::temp_dir().join(format!(
+            "ssf-ui-status-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let log = root.join("terminal.log");
+        let ssf = bin.join("ssf");
+        let terminal = bin.join("omarchy-launch-terminal");
+        let browser = bin.join("omarchy-launch-browser");
+        std::fs::write(
+            &terminal,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSF_UI_TEST_LOG\"\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&terminal, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(&browser, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/ssf-ui");
+        for (name, status, attaches) in [
+            ("running", r#"{"enabled":true,"running":true}"#, true),
+            ("unknown", r#"{"enabled":true,"running":null}"#, true),
+            ("stopped", r#"{"enabled":true,"running":false}"#, false),
+            ("disabled", r#"{"enabled":false,"running":true}"#, false),
+        ] {
+            std::fs::write(&ssf, format!("#!/bin/sh\nprintf '%s\\n' '{status}'\n")).unwrap();
+            #[cfg(unix)]
+            std::fs::set_permissions(&ssf, {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::Permissions::from_mode(0o755)
+            })
+            .unwrap();
+            let before = std::fs::read_to_string(&log).unwrap_or_default();
+            let mut paths = vec![bin.clone()];
+            paths.extend(std::env::split_paths(
+                &std::env::var_os("PATH").unwrap_or_default(),
+            ));
+            let path = std::env::join_paths(paths).unwrap();
+            let output = std::process::Command::new("bash")
+                .arg(&script)
+                .args(["open-workspace", "workspace", "https://example.com"])
+                .env("PATH", path)
+                .env("TERMINAL", &terminal)
+                .env("SSF_UI_PRESENTED", "1")
+                .env("SSF_UI_TEST_LOG", &log)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{name}: {output:?}");
+            let after = std::fs::read_to_string(&log).unwrap_or_default();
+            if attaches {
+                assert_eq!(after, format!("{before}ssf vm attach\n"), "{name}");
+            } else {
+                assert_eq!(after, before, "{name} status should not attach");
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn a_service_command_that_failed_is_a_warning_or_the_answer() {
         // `ssf ui service disable` reports the marker, which was written
