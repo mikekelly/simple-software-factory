@@ -74,10 +74,9 @@ stripped before the file reaches an agent.
 - Check a claim rather than reasoning your way to one: read the source, or
   try it where trying it changes nothing. Where you have not checked, say
   so. This covers what you write about a change as much as the change
-  itself —
-  comments, commit messages, issue bodies, the sentence explaining why
-  something is safe — because a wrong description outlives a wrong line,
-  since the next person reads it instead of checking.
+  itself — comments, commit messages, issue bodies, the sentence explaining
+  why something is safe — because a wrong description outlives a wrong
+  line, since the next person reads it instead of checking.
 - The gauntlet is a final adversarial review that tries to break your change.
   Choose its depth by blast radius, not diff size. State the class and why on
   the issue: data loss, a factory unable to start, a broken package
