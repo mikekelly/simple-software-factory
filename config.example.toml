@@ -53,6 +53,8 @@
 [vm]
 # enabled = false
 # name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>; at most 7 characters under lima)
+#                                              # changing it renames nothing that exists: the old <dir>/<old>/ and lima's ssf-<old> stay, with their
+#                                              # clones, and `ssf uninstall`, `ssf vm status` and `ssf doctor` name them as things ssf will not remove
 # dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
 # backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it
 # vcpus = 7                                    # unset = chosen from the machine by `ssf vm build`: its CPUs minus one, at least 2

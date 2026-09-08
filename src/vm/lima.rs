@@ -416,8 +416,10 @@ pub fn disk_name(name: &str) -> String {
     format!("ssf-{name}")
 }
 
-/// Instances before disks, then by name: the order they were made in,
-/// and the order a person has to delete them in. Both ways of finding
+/// Disks last, everything else before them by name: `limactl disk
+/// delete` refuses a disk still attached to its instance, so that is the
+/// order a person has to work in. Directory strays have no such
+/// dependency and sort among the instances. Both ways of finding
 /// strays -- lima's listing and lima's filesystem -- report in it, so
 /// what `ssf uninstall` prints does not depend on which one answered.
 pub(super) fn sort_strays(strays: &mut [Stray]) {
@@ -432,8 +434,9 @@ pub(super) fn sort_strays(strays: &mut [Stray]) {
 /// instance someone else happened to call `ssf-something` matches too --
 /// which costs a line in a report and nothing else, because nothing here
 /// removes what it finds. The report says what it observed rather than
-/// claiming the thing is ssf's. `ssf-` alone is not one: `check_name`
-/// never makes one from an empty `[vm] name`.
+/// claiming the thing is ssf's. `ssf-` alone is not one: an empty
+/// `[vm] name` is a broken configuration in its own right (#169), and
+/// nothing here should describe one as a stray.
 pub fn is_ssf_name(name: &str) -> bool {
     name.strip_prefix("ssf-")
         .is_some_and(|rest| !rest.is_empty())
@@ -2875,8 +2878,8 @@ mod tests {
     #[test]
     fn only_ssf_names_are_ssfs_to_report() {
         // Someone else's lima instances are none of ssf's business, and
-        // a bare `ssf-` is not one of ours: `check_name` refuses an
-        // empty `[vm] name`.
+        // a bare `ssf-` is what an empty `[vm] name` would make -- a
+        // broken configuration (#169), not a VM to report.
         assert!(is_ssf_name("ssf-default"));
         assert!(is_ssf_name("ssf-x"));
         assert!(!is_ssf_name("ssf-"));

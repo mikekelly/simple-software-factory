@@ -1041,8 +1041,10 @@ that last one on either backend, since `[vm] dir` is shared by them. The
 is in it, in the report and in the list printed at the end alike. `ssf
 uninstall` never removes one and `--force` does not reach it: ssf cannot
 tell a VM you renamed away to keep from one you abandoned, and only one
-of those is safe to delete. `ssf doctor` and `ssf vm status` name them
-too.
+of those is safe to delete. `ssf vm status` names them too, and `ssf
+doctor` does when it runs on the host -- in VM mode `ssf doctor` is
+forwarded into the guest, which cannot see the host's `[vm] dir` or
+lima's home.
 
 What it keeps, and lists at the end (the same list both times): the
 clones and worktrees under `~/ssf/projects` (or Orca's projects; may
