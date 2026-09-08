@@ -97,6 +97,14 @@ nor justify another round; the second clean deep round may inspect the same
 substantive diff. Required tests, formatting, linting and package builds still
 apply to every class.
 
+One habit sits beside the classes. A claim about how something behaves is
+checked against the thing rather than reasoned about, and that covers what a
+session writes about a change as much as the change: a wrong sentence in a
+comment or a commit message outlives a wrong line, because the next reader
+takes it instead of checking. A claim is checked by reading the source or by
+trying it where trying it changes nothing, and where a session has not
+checked, it says so.
+
 Give each reviewer the diff, issue and claimed outcome, and ask it to break
 correctness, requirements, tests, docs and conventions. The author decides
 what to act on: accept feedback, decline it with a sentence explaining why,

@@ -148,7 +148,10 @@ the model and effort each subagent runs on rather than taking the
 default), a scope line (an item is one cohesive piece of work; split it
 into sub-issues and sibling issues when it is not, so the shape of the
 work can be read off the issue tree), a plan line (write the plan into
-the body of the item before execution and keep it current there) and the
+the body of the item before execution and keep it current there), a line
+on checking a claim (read the source or try it where trying it changes
+nothing, rather than reasoning your way to an answer; say where you have
+not, and apply the same to what you write about a change) and the
 **gauntlet** rule: ssf runs one session per item and starts no reviewer,
 so the boilerplate tells the author to choose self-review, one or two
 fresh-agent rounds, or deep review by blast radius, with explicit stopping
