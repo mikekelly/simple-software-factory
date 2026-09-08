@@ -30,8 +30,9 @@
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -48,10 +49,33 @@ pub const PROVISION_LOG: &str = "/var/log/ssf-provision.log";
 /// The instance's root disk is at least this (a cloud image plus node and
 /// the harness CLIs does not fit in the Firecracker image's 8 GiB).
 pub const ROOT_GIB_FLOOR: u32 = 20;
-/// How long the first boot may take to provision the guest.
+/// How long the first boot may take to provision the guest. The guest
+/// provisions itself inside `limactl start`, so this is also what that
+/// call is given as its own `--timeout` ([`start_timeout_arg`]) and what
+/// ssf's backstop around it is derived from: one allowance for
+/// provisioning, not three rival ones that could cut each other short.
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// `limactl start` waits this long for the instance on its first boot.
-const START_TIMEOUT: &str = "15m";
+/// Every `limactl` invocation gets an upper bound, so a `limactl` that
+/// never returns (a lost hostagent, a qemu waiting on something) cannot
+/// wedge ssf with no output and no child to look at. The bounds below are
+/// for a command that is stuck, not for a slow one: a person waiting for a
+/// build should never see one.
+///
+/// A probe or a short read over `limactl shell`, and `limactl --version`.
+const PROBE_LIMIT: Duration = Duration::from_secs(60);
+/// `limactl list`, `disk` and `edit`: local bookkeeping.
+const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
+/// `limactl create`, which downloads the base image the first time.
+const CREATE_LIMIT: Duration = Duration::from_secs(30 * 60);
+/// `limactl stop`: lima gives the guest minutes to shut down first.
+const STOP_LIMIT: Duration = Duration::from_secs(10 * 60);
+/// What ssf adds to a limit something else enforces itself (lima's
+/// `--timeout`, the provisioning wait's own deadline), so that the inner
+/// limit fires first and a person reads its message rather than ssf's
+/// backstop: one limit, plus a margin, not two rival ones.
+const OWN_TIMEOUT_MARGIN: Duration = Duration::from_secs(2 * 60);
+/// How often [`wait_within`] looks at the child.
+const WAIT_POLL: Duration = Duration::from_millis(100);
 /// The yq expression `limactl edit` takes to turn the data disk's
 /// `format` off once the disk exists (`limactl help yq-restrictions`).
 const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
@@ -234,6 +258,13 @@ pub fn check_name(name: &str) -> Result<()> {
 /// marker there, has provisioning written to its log, is one of the guest
 /// scripts still running?
 ///
+/// `lima-boot.sh` writes its first line to the log before it does anything
+/// else, and truncates the log when an attempt starts, so "a log and
+/// nothing running" means this attempt died — including the failure the
+/// script reports itself, which used to go to stdout only and left the
+/// host waiting out [`PROVISION_TIMEOUT`] for a guest that had already
+/// given up.
+///
 /// The bracket classes in the `pgrep -f` pattern are load-bearing.
 /// `pgrep -f` matches a process's whole command line, and the shell
 /// running this probe is such a process: `limactl shell <name> sh -c
@@ -283,12 +314,20 @@ enum Step {
 }
 
 /// How many rounds in a row must look finished-but-unmarked before the
-/// wait calls provisioning dead: a pause between the guest's scripts
-/// shows the same way for a moment.
+/// wait calls provisioning dead. `lima-boot.sh` is the parent of
+/// `provision.sh`, so one of the two matches for the whole attempt and a
+/// single idle round is already a strong signal; three (fifteen seconds)
+/// is the margin for a probe that lands on the moment the boot script
+/// exits, or on a guest whose `pgrep` came back empty for a reason of its
+/// own. It is a delay, not a hang: the failure still arrives in seconds
+/// instead of after [`PROVISION_TIMEOUT`].
 const IDLE_ROUNDS: u32 = 3;
 
 /// Provisioning wrote a log, nothing of it runs and the marker is not
-/// there: it died. Anything else keeps the wait going.
+/// there: it died. Anything else keeps the wait going -- including a
+/// round with no log at all, which is a boot whose `lima-boot.sh` has not
+/// started yet (it truncates the log, so the log a failed attempt left
+/// cannot be read as this attempt's).
 fn provision_step(seen: Probe, idle: u32) -> Step {
     if seen.done {
         return Step::Provisioned;
@@ -326,6 +365,78 @@ pub fn disks_dir() -> Option<PathBuf> {
         std::env::var("LIMA_HOME").ok().as_deref(),
         dirs::home_dir().as_deref(),
     )
+}
+
+/// The provisioning allowance as `limactl start --timeout` takes it: the
+/// guest provisions inside that call, so lima must wait for it at least
+/// as long as ssf's own wait for the marker would.
+fn start_timeout_arg() -> String {
+    format!("{}m", PROVISION_TIMEOUT.as_secs() / 60)
+}
+
+/// Does this lima YAML let lima format the data disk? A line test rather
+/// than a YAML parse: ssf writes the template itself, and lima's copy of
+/// it keeps the key on a line of its own.
+fn says_format_true(yaml: &str) -> bool {
+    yaml.lines()
+        .any(|l| l.trim_start().trim_start_matches("- ").trim() == "format: true")
+}
+
+/// What an error calls the command that ran.
+fn limactl_label(args: &[&str]) -> String {
+    format!("limactl {}", args.join(" "))
+}
+
+/// Read a child's pipe to the end on a thread of its own.
+fn drain<R: Read + Send + 'static>(mut r: R) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = r.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// Wait for a child, and kill it when `limit` passes. The point is that
+/// no external command can leave ssf waiting for ever with nothing to
+/// show for it (an `ssf vm build` once sat for a quarter of an hour with
+/// no output and no child process); the error names the command and the
+/// limit, so what timed out is in the message rather than in a debugger.
+fn wait_within(child: &mut Child, label: &str, limit: Duration) -> Result<ExitStatus> {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(st) = child
+            .try_wait()
+            .with_context(|| format!("waiting for `{label}`"))?
+        {
+            return Ok(st);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "`{label}` did not finish within {}; ssf stopped it",
+                human_duration(limit)
+            );
+        }
+        std::thread::sleep(WAIT_POLL);
+    }
+}
+
+/// A limit as an error says it.
+fn human_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    if secs == 0 {
+        return format!("{} ms", d.as_millis());
+    }
+    match (secs / 60, secs % 60) {
+        (0, s) => plural(s, "second"),
+        (m, 0) => plural(m, "minute"),
+        (m, s) => format!("{} {}", plural(m, "minute"), plural(s, "second")),
+    }
+}
+
+fn plural(n: u64, unit: &str) -> String {
+    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
 impl Vm {
@@ -390,33 +501,55 @@ impl Vm {
         cmd
     }
 
-    /// Run limactl for its output; stderr goes into the error.
+    /// Run limactl for its output, within [`QUICK_LIMIT`]; stderr goes
+    /// into the error.
     fn limactl_output(&self, args: &[&str]) -> Result<String> {
-        let mut cmd = self.limactl();
-        cmd.args(args);
-        let out = cmd
-            .output()
-            .with_context(|| format!("running {}", self.limactl_hint()))?;
-        if !out.status.success() {
-            bail!(
-                "`limactl {}` failed ({}): {}",
-                args.join(" "),
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+        self.limactl_output_within(args, QUICK_LIMIT)
     }
 
-    /// Run limactl with this terminal (its progress lines are worth seeing).
+    /// [`Vm::limactl_output`] with a bound of its own, for the calls that
+    /// legitimately take longer (or must be shorter) than a local lookup.
+    fn limactl_output_within(&self, args: &[&str], limit: Duration) -> Result<String> {
+        let mut cmd = self.limactl();
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        let label = limactl_label(args);
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("running {}", self.limactl_hint()))?;
+        // Drain both pipes while it runs: a child blocked writing into a
+        // full pipe would look exactly like a hang, and be killed for it.
+        let out = drain(child.stdout.take().expect("piped"));
+        let err = drain(child.stderr.take().expect("piped"));
+        let status = wait_within(&mut child, &label, limit)?;
+        let stdout = out.join().unwrap_or_default();
+        let stderr = err.join().unwrap_or_default();
+        if !status.success() {
+            bail!(
+                "`{label}` failed ({status}): {}",
+                String::from_utf8_lossy(&stderr).trim()
+            );
+        }
+        Ok(String::from_utf8_lossy(&stdout).to_string())
+    }
+
+    /// Run limactl with this terminal (its progress lines are worth
+    /// seeing), within [`QUICK_LIMIT`].
     fn limactl_run(&self, args: &[&str]) -> Result<()> {
+        self.limactl_run_within(args, QUICK_LIMIT)
+    }
+
+    /// [`Vm::limactl_run`] with a bound of its own: `create` downloads an
+    /// image, `start` provisions a guest, `stop` waits for one.
+    fn limactl_run_within(&self, args: &[&str], limit: Duration) -> Result<()> {
         let mut cmd = self.limactl();
         cmd.args(args);
-        let st = cmd
-            .status()
+        let label = limactl_label(args);
+        let mut child = cmd
+            .spawn()
             .with_context(|| format!("running {}", self.limactl_hint()))?;
+        let st = wait_within(&mut child, &label, limit)?;
         if !st.success() {
-            bail!("`limactl {}` failed ({st})", args.join(" "));
+            bail!("`{label}` failed ({st})");
         }
         Ok(())
     }
@@ -481,9 +614,9 @@ impl Vm {
     fn lima_preflight(&self) -> Result<()> {
         check_name(&self.cfg.name)?;
         let arch = self.lima_arch()?;
-        if self.limactl().arg("--version").output().is_err() {
+        if let Err(e) = self.limactl_output_within(&["--version"], PROBE_LIMIT) {
             bail!(
-                "limactl is not installed ({}); install lima (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
+                "limactl does not run ({}): {e:#}; install lima (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
                 self.limactl_hint()
             );
         }
@@ -552,6 +685,11 @@ impl Vm {
         let name = self.lima_name();
         if let Some(inst) = self.lima_instance()? {
             if !force {
+                // A build that died between `limactl create` and the
+                // guest answering ssh left `format: true` behind; this is
+                // the run that would otherwise return without repairing
+                // it, so it repairs it here.
+                self.repair_stale_format(Some(&inst));
                 println!(
                     "lima instance {name} exists ({}); `ssf vm build --force` makes a new one",
                     inst.dir
@@ -578,9 +716,11 @@ impl Vm {
         }
         self.lima_create()?;
         info!("starting {name} for its first boot: the guest provisions itself (a few minutes)");
-        self.limactl_run(&["start", "--timeout", START_TIMEOUT, &name])?;
+        self.limactl_start(&["start", "--timeout", &start_timeout_arg(), &name])?;
         self.wait_for_provisioning().await?;
-        if let Ok(log) = self.limactl_output(&["shell", &name, "sudo", "cat", PROVISION_LOG]) {
+        if let Ok(log) =
+            self.limactl_output_within(&["shell", &name, "sudo", "cat", PROVISION_LOG], PROBE_LIMIT)
+        {
             for line in log.lines().filter(|l| l.starts_with("provision: ")) {
                 eprintln!("  {line}");
             }
@@ -591,14 +731,66 @@ impl Vm {
                 super::GUEST_USER
             );
         }
-        self.limactl_run(&["stop", &name])?;
-        // The disk exists and carries its filesystem now: neither this
-        // instance nor one `ssf vm reset` makes from the template may
-        // format it again.
+        // The guest has provisioned and answered as `ssf`: the disk holds
+        // the factory now, and nothing from here on may let lima format
+        // it. The template goes first and at once, because it is what
+        // `ssf vm reset` builds the next instance from and because
+        // everything below can still fail; the instance's own copy
+        // follows the stop, since `limactl edit` is for a stopped
+        // instance.
         self.write_template(false)?;
+        self.limactl_run_within(&["stop", &name], STOP_LIMIT)?;
         self.stop_formatting_data_disk();
         println!("built lima instance {name}; `ssf vm start` boots it");
         Ok(())
+    }
+
+    /// `limactl start`, bounded by the allowance lima is given for the
+    /// same work plus a margin (see [`OWN_TIMEOUT_MARGIN`]): lima times
+    /// the boot out first and says so; ssf's bound is only for a
+    /// `limactl` that never returns at all.
+    fn limactl_start(&self, args: &[&str]) -> Result<()> {
+        self.limactl_run_within(args, PROVISION_TIMEOUT + OWN_TIMEOUT_MARGIN)
+    }
+
+    /// Put `format: false` back where a build that did not reach the end
+    /// left `format: true`: the template ssf writes (what `ssf vm reset`
+    /// creates the next instance from) and, when one is given, the
+    /// instance's own copy of it (the only copy lima reads at boot).
+    /// Only when the data disk exists -- with no disk there is nothing to
+    /// protect, and the build that makes it is the one build that may
+    /// hand lima a `format: true`.
+    fn repair_stale_format(&self, inst: Option<&Instance>) {
+        if !matches!(self.lima_disk(), Ok(Some(_))) {
+            return;
+        }
+        let path = self.template_path();
+        let template_stale = std::fs::read_to_string(&path)
+            .map(|t| says_format_true(&t))
+            .unwrap_or(false);
+        let instance_stale = inst.is_some_and(|i| {
+            std::fs::read_to_string(Path::new(&i.dir).join("lima.yaml"))
+                .map(|t| says_format_true(&t))
+                .unwrap_or(false)
+        });
+        if !template_stale && !instance_stale {
+            return;
+        }
+        warn!(
+            "the data disk {} exists, but {} still lets lima format it (a build that did not finish); putting `format: false` back",
+            self.lima_disk_name(),
+            if template_stale {
+                path.display().to_string()
+            } else {
+                format!("lima's copy of {}", path.display())
+            }
+        );
+        if template_stale && let Err(e) = self.write_template(false) {
+            warn!("could not rewrite {}: {e:#}", path.display());
+        }
+        if instance_stale {
+            self.stop_formatting_data_disk();
+        }
     }
 
     /// Write `lima.yaml` for this VM.
@@ -612,8 +804,11 @@ impl Vm {
     /// is read at boot). A build made the disk with `format: true`
     /// because there was nothing to lose yet; from here on a boot that
     /// cannot find the disk's label must fail rather than reformat it.
-    /// Not fatal: the build succeeded, and the message says how to do it
-    /// by hand.
+    /// Not fatal: the build succeeded, ssf's own template (the one
+    /// `ssf vm reset` reads, and the source of truth for what the next
+    /// instance gets) already says false, and the message says how to do
+    /// the instance by hand. [`Vm::repair_stale_format`] tries again on
+    /// the next `ssf vm build`.
     fn stop_formatting_data_disk(&self) {
         let name = self.lima_name();
         if let Err(e) = self.limactl_run(&["edit", &name, "--set", FORMAT_OFF]) {
@@ -632,27 +827,54 @@ impl Vm {
         }
         let name = self.lima_name();
         info!("creating lima instance {name} from {}", template.display());
-        self.limactl_run(&["create", "--name", &name, &template.to_string_lossy()])
+        self.limactl_run_within(
+            &["create", "--name", &name, &template.to_string_lossy()],
+            CREATE_LIMIT,
+        )
     }
 
     /// Wait for `/etc/ssf-image-built` over `limactl shell`: present at
     /// once on a provisioned instance; on a first boot, until
     /// `provision.sh` has written it, or has ended without it (then the
     /// end of its log is the error).
+    ///
+    /// The loop keeps [`PROVISION_TIMEOUT`] itself, and this wraps the
+    /// whole wait in a deadline as well: an `ssf vm build` was once found
+    /// parked at an `.await` for fifteen minutes -- past `limactl start`,
+    /// no child process, no output, no CPU -- and a limit that lives
+    /// inside a loop cannot end a loop that is no longer running. The
+    /// deadline starts here, after `limactl start` has returned, so the
+    /// minutes the guest spends provisioning inside that call are not
+    /// counted twice.
     async fn wait_for_provisioning(&self) -> Result<()> {
+        let name = self.lima_name();
+        let backstop = PROVISION_TIMEOUT + OWN_TIMEOUT_MARGIN;
+        match tokio::time::timeout(backstop, self.provisioning_loop()).await {
+            Ok(r) => r,
+            Err(_) => bail!(
+                "waiting for {name} to provision itself stopped making progress after {}; `limactl shell {name} sudo tail {PROVISION_LOG}` shows where it got to, and `ssf vm console` has its console",
+                human_duration(backstop)
+            ),
+        }
+    }
+
+    async fn provisioning_loop(&self) -> Result<()> {
         let name = self.lima_name();
         let probe = provision_probe();
         let deadline = Instant::now() + PROVISION_TIMEOUT;
         let mut idle = 0;
         loop {
             let out = self
-                .limactl_output(&["shell", &name, "sh", "-c", &probe])
+                .limactl_output_within(&["shell", &name, "sh", "-c", &probe], PROBE_LIMIT)
                 .unwrap_or_default();
             match provision_step(parse_probe(&out), idle) {
                 Step::Provisioned => return Ok(()),
                 Step::Failed => {
                     let tail = self
-                        .limactl_output(&["shell", &name, "sudo", "tail", "-50", PROVISION_LOG])
+                        .limactl_output_within(
+                            &["shell", &name, "sudo", "tail", "-50", PROVISION_LOG],
+                            PROBE_LIMIT,
+                        )
                         .unwrap_or_default();
                     bail!(
                         "provisioning failed in {name} (no {PROVISION_MARKER}); the end of {PROVISION_LOG}:\n{}",
@@ -680,7 +902,7 @@ impl Vm {
         self.ensure_key()?;
         self.write_share(host)?;
         self.apply_sizes()?;
-        self.limactl_run(&["start", &name])?;
+        self.limactl_start(&["start", "--timeout", &start_timeout_arg(), &name])?;
         // The template pins the port; an instance made from an older
         // template (or edited by hand) may listen elsewhere.
         if let Ok(Some(inst)) = self.lima_instance()
@@ -745,9 +967,9 @@ impl Vm {
             println!("VM {} is not running", self.cfg.name);
             return Ok(());
         }
-        if let Err(e) = self.limactl_run(&["stop", &name]) {
+        if let Err(e) = self.limactl_run_within(&["stop", &name], STOP_LIMIT) {
             warn!("{e:#}; forcing it");
-            self.limactl_run(&["stop", "-f", &name])?;
+            self.limactl_run_within(&["stop", "-f", &name], STOP_LIMIT)?;
         }
         println!("VM {} stopped", self.cfg.name);
         Ok(())
@@ -797,6 +1019,10 @@ impl Vm {
     /// data disk stays, and the next start provisions the fresh root.
     pub(super) fn lima_reset(&self) -> Result<()> {
         let name = self.lima_name();
+        // The template is what the new instance inherits, so a stale
+        // `format: true` in it has to go before the create, not after:
+        // the instance that is about to be deleted is not worth fixing.
+        self.repair_stale_format(None);
         if self.lima_instance()?.is_some() {
             self.limactl_run(&["delete", "-f", &name])?;
         }
@@ -990,6 +1216,91 @@ mod tests {
         // What flips the instance's own copy (yq syntax; `limactl help
         // yq-restrictions`).
         assert_eq!(FORMAT_OFF, ".additionalDisks[0].format = false");
+    }
+
+    #[test]
+    fn a_command_that_does_not_return_is_killed_at_its_limit() {
+        // The reason every limactl call is bounded: an `ssf vm build`
+        // once sat for a quarter of an hour with nothing to show and no
+        // child process to look at. A command that sleeps stands in for
+        // the limactl that never returned.
+        let mut child = Command::new("sh")
+            .args(["-c", "sleep 60"])
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawning sh");
+        let started = Instant::now();
+        let err = wait_within(
+            &mut child,
+            "limactl start ssf-one",
+            Duration::from_millis(300),
+        )
+        .unwrap_err()
+        .to_string();
+        // It gave up at the limit rather than waiting for the sleep...
+        assert!(started.elapsed() < Duration::from_secs(10), "{err}");
+        // ...the message says which command and how long it was given...
+        assert!(err.contains("`limactl start ssf-one`"), "{err}");
+        assert!(err.contains("300 ms"), "{err}");
+        // ...and the child is gone, not left behind still running.
+        assert!(child.try_wait().unwrap().is_some(), "the child outlived it");
+
+        // A command that does return does so with its own status, and the
+        // limit is not waited out.
+        let mut quick = Command::new("sh")
+            .args(["-c", "exit 3"])
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("spawning sh");
+        let started = Instant::now();
+        let st = wait_within(&mut quick, "limactl list --json", Duration::from_secs(60)).unwrap();
+        assert_eq!(st.code(), Some(3));
+        assert!(started.elapsed() < Duration::from_secs(10));
+
+        assert_eq!(human_duration(Duration::from_millis(300)), "300 ms");
+        assert_eq!(human_duration(Duration::from_secs(1)), "1 second");
+        assert_eq!(human_duration(PROBE_LIMIT), "1 minute");
+        assert_eq!(human_duration(QUICK_LIMIT), "2 minutes");
+        assert_eq!(
+            human_duration(Duration::from_secs(90)),
+            "1 minute 30 seconds"
+        );
+    }
+
+    #[test]
+    fn every_limit_leaves_room_for_the_slow_commands() {
+        // ssf's bound around `limactl start` is lima's own `--timeout`
+        // plus a margin, so that lima times the boot out first and its
+        // message is what a person reads; ssf's is the backstop for a
+        // limactl that does not return at all.
+        assert_eq!(start_timeout_arg(), "30m");
+        assert_eq!(PROVISION_TIMEOUT, Duration::from_secs(30 * 60));
+        // The guest provisions inside `limactl start`, so lima is given
+        // the whole provisioning allowance and ssf's bound around the
+        // call is that plus the margin -- neither can cut a slow but
+        // healthy provisioning short.
+        assert!(PROVISION_TIMEOUT + OWN_TIMEOUT_MARGIN > PROVISION_TIMEOUT);
+        // A `limactl create` may download the base image; a probe over
+        // `limactl shell` is a one-liner and must not hold up the loop.
+        assert!(CREATE_LIMIT > QUICK_LIMIT);
+        assert!(PROBE_LIMIT < QUICK_LIMIT);
+        assert!(STOP_LIMIT > QUICK_LIMIT);
+    }
+
+    #[test]
+    fn a_stale_format_true_is_recognised_in_either_template() {
+        // What `repair_stale_format` reads: ssf's own template, and
+        // lima's copy of it in the instance directory (a build that died
+        // after `limactl create` leaves `format: true` in both).
+        assert!(says_format_true(&vm().lima_template(true).unwrap()));
+        assert!(!says_format_true(&vm().lima_template(false).unwrap()));
+        // lima's copy indents and lists it as it pleases.
+        assert!(says_format_true(
+            "additionalDisks:\n- name: ssf-one\n  format: true\n  fsType: ext4\n"
+        ));
+        assert!(says_format_true("  - format: true\n"));
+        assert!(!says_format_true("# format: true is what a build writes\n"));
+        assert!(!says_format_true(""));
     }
 
     #[test]

@@ -62,6 +62,11 @@ pub const GUEST_HERDR: &str = "/usr/local/bin/herdr";
 const GUEST_CID: u32 = 3;
 /// The vsock port gvforwarder dials; Firecracker turns it into `v.sock_1024`.
 const NET_PORT: u32 = 1024;
+/// What a whole-wait deadline adds to the limit the wait's own loop
+/// keeps: the loop's message is the one a person normally reads, and the
+/// outer deadline only catches a wait that has stopped making progress
+/// altogether. See [`Vm::wait_for_ssh`].
+const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
@@ -1593,6 +1598,11 @@ impl Vm {
     // ---- ssh ----
 
     /// The ssh options that reach the guest.
+    /// ssh's own options: the VM's key, port and hosts file, and the
+    /// limits that keep one attempt from lasting for ever. `batch` (every
+    /// probe and forwarded command; not an interactive session) adds the
+    /// keepalives, so an ssh whose connection has gone silent gives up
+    /// after a minute instead of holding the waits below open.
     pub fn ssh_args(&self, batch: bool) -> Vec<String> {
         let mut v = vec![
             "-i".to_string(),
@@ -1611,6 +1621,10 @@ impl Vm {
         if batch {
             v.push("-o".into());
             v.push("BatchMode=yes".into());
+            v.push("-o".into());
+            v.push("ServerAliveInterval=15".into());
+            v.push("-o".into());
+            v.push("ServerAliveCountMax=4".into());
         }
         v
     }
@@ -1656,7 +1670,27 @@ impl Vm {
         self.ssh_output(&["true"]).is_ok()
     }
 
+    /// Wait for the guest to answer as `ssf`, `timeout` at the most.
+    ///
+    /// The loop below watches its own deadline; this wraps the whole wait
+    /// in one too, because a loop can stop reaching its deadline check at
+    /// all: an `ssf vm build` was once found parked at an `.await` for
+    /// fifteen minutes with no child process, no output and no CPU. The
+    /// inner check is what a person normally sees, the outer one is the
+    /// backstop, and each attempt is bounded in turn by ssh's own
+    /// `ConnectTimeout` and keepalives ([`Vm::ssh_args`]).
     async fn wait_for_ssh(&self, timeout: Duration) -> Result<()> {
+        let waited = tokio::time::timeout(timeout + WAIT_BACKSTOP_MARGIN, self.ssh_loop(timeout));
+        match waited.await {
+            Ok(r) => r,
+            Err(_) => bail!(
+                "the guest did not answer on ssh in {}s, and the wait itself stopped making progress; `ssf vm console` has its console",
+                timeout.as_secs()
+            ),
+        }
+    }
+
+    async fn ssh_loop(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             if !self.running() {
@@ -1670,8 +1704,21 @@ impl Vm {
         bail!("the guest did not answer on ssh in {}s", timeout.as_secs())
     }
 
-    /// `systemctl is-active ssf` in the guest once it stops `activating`.
+    /// `systemctl is-active ssf` in the guest once it stops `activating`,
+    /// with the same backstop around the whole wait as [`Vm::wait_for_ssh`].
     async fn wait_for_daemon(&self, timeout: Duration) -> Option<String> {
+        let waited =
+            tokio::time::timeout(timeout + WAIT_BACKSTOP_MARGIN, self.daemon_loop(timeout));
+        waited.await.unwrap_or_else(|_| {
+            warn!(
+                "waiting for the daemon in the guest stopped making progress after {}s; `ssf vm ssh -- systemctl status ssf` says where it is",
+                (timeout + WAIT_BACKSTOP_MARGIN).as_secs()
+            );
+            None
+        })
+    }
+
+    async fn daemon_loop(&self, timeout: Duration) -> Option<String> {
         let deadline = Instant::now() + timeout;
         loop {
             let state = self.daemon_state();
@@ -2713,6 +2760,15 @@ mod tests {
         assert!(joined.contains("UserKnownHostsFile=/v/one/known_hosts"));
         assert!(joined.contains("BatchMode=yes"));
         assert!(!vm.ssh_args(false).join(" ").contains("BatchMode"));
+        // Every attempt is bounded: a connection that never comes up
+        // gives up after ConnectTimeout, and one that goes silent after
+        // the keepalives, so the waits that call ssh in a loop cannot be
+        // held open by a single attempt. An interactive session keeps the
+        // connect timeout but not the keepalives.
+        assert!(joined.contains("ConnectTimeout=5"));
+        assert!(joined.contains("ServerAliveInterval=15"));
+        assert!(joined.contains("ServerAliveCountMax=4"));
+        assert!(!vm.ssh_args(false).join(" ").contains("ServerAlive"));
         let cfg = vm.ssh_config();
         assert!(cfg.starts_with("Host ssf-one\n"));
         assert!(cfg.contains("Port 2222"));
