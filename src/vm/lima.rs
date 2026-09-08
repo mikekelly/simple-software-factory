@@ -52,6 +52,9 @@ pub const ROOT_GIB_FLOOR: u32 = 20;
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// `limactl start` waits this long for the instance on its first boot.
 const START_TIMEOUT: &str = "15m";
+/// The yq expression `limactl edit` takes to turn the data disk's
+/// `format` off once the disk exists (`limactl help yq-restrictions`).
+const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
 
 /// lima's name for a host architecture (the guest's too).
 pub fn lima_arch(arch: &str) -> Result<&'static str> {
@@ -84,6 +87,10 @@ pub struct Template<'a> {
     pub arch: &'a str,
     pub image: Option<&'a str>,
     pub vm_type: Option<&'a str>,
+    /// Whether lima may format the data disk on a boot that cannot find
+    /// its `lima-<disk>` label: true only for the build that creates the
+    /// disk. See [`Vm::lima_template`].
+    pub format_disk: bool,
 }
 
 /// The lima template for a VM. `mountType` is left to lima (9p on qemu,
@@ -121,8 +128,8 @@ pub fn render_template(t: &Template) -> String {
         t.ssh_port
     ));
     y.push_str(&format!(
-        "additionalDisks:\n  - name: {}\n    format: true\n    fsType: ext4\n",
-        t.disk
+        "additionalDisks:\n  - name: {}\n    format: {}\n    fsType: ext4\n",
+        t.disk, t.format_disk
     ));
     y.push_str(&format!(
         "provision:\n  - mode: system\n    script: |\n      #!/bin/bash\n      # every boot, as root: provision the guest once, then seed it\n      exec bash {GUEST_MOUNT}/guest/lima-boot.sh\n"
@@ -223,6 +230,104 @@ pub fn check_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The shell the first boot's readiness probe runs in the guest: is the
+/// marker there, has provisioning written to its log, is one of the guest
+/// scripts still running?
+///
+/// The bracket classes in the `pgrep -f` pattern are load-bearing.
+/// `pgrep -f` matches a process's whole command line, and the shell
+/// running this probe is such a process: `limactl shell <name> sh -c
+/// "<probe>"` puts the pattern in its own argv, so a pattern written
+/// plainly would always find itself, "running" would be reported forever,
+/// and the failure branch below could never fire — a failed provisioning
+/// would hang for the whole timeout instead of printing its log.
+/// `[l]ima-boot[.]sh` matches the running script but not this string.
+fn provision_probe() -> String {
+    format!(
+        "test -f {PROVISION_MARKER} && echo done; test -s {PROVISION_LOG} && echo log; pgrep -f '{PROVISION_PGREP}' >/dev/null 2>&1 && echo running"
+    )
+}
+
+/// The `pgrep -f` pattern of [`provision_probe`]: the guest's two scripts,
+/// each with a bracket class so the pattern does not occur literally in
+/// the probe (see there).
+const PROVISION_PGREP: &str = "[l]ima-boot[.]sh|[p]rovision[.]sh";
+
+/// What one round of [`provision_probe`] saw.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Probe {
+    /// The marker is there: the guest provisioned itself.
+    done: bool,
+    /// Provisioning has written to its log.
+    log: bool,
+    /// `lima-boot.sh` or `provision.sh` is running.
+    running: bool,
+}
+
+fn parse_probe(out: &str) -> Probe {
+    let has = |w: &str| out.lines().any(|l| l.trim() == w);
+    Probe {
+        done: has("done"),
+        log: has("log"),
+        running: has("running"),
+    }
+}
+
+/// What the wait does after a probe round.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Provisioned,
+    Failed,
+    /// Look again, with this many finished-but-unmarked rounds behind us.
+    Wait(u32),
+}
+
+/// How many rounds in a row must look finished-but-unmarked before the
+/// wait calls provisioning dead: a pause between the guest's scripts
+/// shows the same way for a moment.
+const IDLE_ROUNDS: u32 = 3;
+
+/// Provisioning wrote a log, nothing of it runs and the marker is not
+/// there: it died. Anything else keeps the wait going.
+fn provision_step(seen: Probe, idle: u32) -> Step {
+    if seen.done {
+        return Step::Provisioned;
+    }
+    let idle = if seen.log && !seen.running {
+        idle + 1
+    } else {
+        0
+    };
+    if idle >= IDLE_ROUNDS {
+        Step::Failed
+    } else {
+        Step::Wait(idle)
+    }
+}
+
+/// lima's home, where the instances and the disks live: `$LIMA_HOME`,
+/// else `~/.lima` (what lima itself does).
+pub fn lima_home_from(env: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    match env.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(h) => Some(expand_tilde(h)),
+        None => home.map(|h| h.join(".lima")),
+    }
+}
+
+/// Where lima keeps the data disks (`<lima home>/_disks`): the filesystem
+/// a lima VM's data disk fills, which is not the one `[vm] dir` is on.
+pub fn disks_dir_from(env: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    lima_home_from(env, home).map(|h| h.join("_disks"))
+}
+
+/// [`disks_dir_from`] for this process.
+pub fn disks_dir() -> Option<PathBuf> {
+    disks_dir_from(
+        std::env::var("LIMA_HOME").ok().as_deref(),
+        dirs::home_dir().as_deref(),
+    )
+}
+
 impl Vm {
     /// The lima instance: `ssf-<name>`.
     pub fn lima_name(&self) -> String {
@@ -248,8 +353,16 @@ impl Vm {
         lima_arch(std::env::consts::ARCH)
     }
 
-    /// The template for this VM from `[vm]`.
-    pub fn lima_template(&self) -> Result<String> {
+    /// The template for this VM from `[vm]`. `format_disk` says whether
+    /// lima may format the data disk: only the build that creates the
+    /// disk passes true. lima's guest boot script formats a disk whose
+    /// `lima-<disk>` label it cannot find and `format` is true, and then
+    /// mounts the partition by device either way, so with it false a
+    /// healthy disk still mounts and a damaged or mislabelled one fails
+    /// loudly instead of being wiped (a label too long for ext4 once cost
+    /// this VM its data disk). `vm/guest/seed.sh` states the same policy
+    /// for Firecracker: checked and mounted, never formatted.
+    pub fn lima_template(&self, format_disk: bool) -> Result<String> {
         Ok(render_template(&Template {
             disk: &self.lima_disk_name(),
             share: &self.share_dir(),
@@ -259,6 +372,7 @@ impl Vm {
             arch: self.lima_arch()?,
             image: self.cfg.image.as_deref(),
             vm_type: self.cfg.vm_type.as_deref(),
+            format_disk,
         }))
     }
 
@@ -452,11 +566,12 @@ impl Vm {
         }
         self.ensure_key()?;
         let _ = std::fs::remove_file(self.known_hosts());
-        std::fs::write(self.template_path(), self.lima_template()?)
-            .with_context(|| format!("writing {}", self.template_path().display()))?;
-        self.write_share(host)?;
+        // Only the build that makes the data disk lets lima format it.
         let disk = self.lima_disk_name();
-        if self.lima_disk()?.is_none() {
+        let disk_exists = self.lima_disk()?.is_some();
+        self.write_template(!disk_exists)?;
+        self.write_share(host)?;
+        if !disk_exists {
             let gib = self.sizes().data_gib;
             info!("creating lima disk {disk} ({gib} GiB)");
             self.limactl_run(&["disk", "create", &disk, "--size", &format!("{gib}GiB")])?;
@@ -477,8 +592,36 @@ impl Vm {
             );
         }
         self.limactl_run(&["stop", &name])?;
+        // The disk exists and carries its filesystem now: neither this
+        // instance nor one `ssf vm reset` makes from the template may
+        // format it again.
+        self.write_template(false)?;
+        self.stop_formatting_data_disk();
         println!("built lima instance {name}; `ssf vm start` boots it");
         Ok(())
+    }
+
+    /// Write `lima.yaml` for this VM.
+    fn write_template(&self, format_disk: bool) -> Result<()> {
+        std::fs::write(self.template_path(), self.lima_template(format_disk)?)
+            .with_context(|| format!("writing {}", self.template_path().display()))
+    }
+
+    /// Turn `format` off for the data disk in the instance's own copy of
+    /// the template (`limactl create` took a copy, and only lima's copy
+    /// is read at boot). A build made the disk with `format: true`
+    /// because there was nothing to lose yet; from here on a boot that
+    /// cannot find the disk's label must fail rather than reformat it.
+    /// Not fatal: the build succeeded, and the message says how to do it
+    /// by hand.
+    fn stop_formatting_data_disk(&self) {
+        let name = self.lima_name();
+        if let Err(e) = self.limactl_run(&["edit", &name, "--set", FORMAT_OFF]) {
+            warn!(
+                "could not turn `format` off for {}'s data disk ({e:#}); `limactl edit {name} --set '{FORMAT_OFF}'` does it, and until then a boot that cannot find the disk's label would reformat it",
+                name
+            );
+        }
     }
 
     /// `limactl create` from the template written by a build.
@@ -498,35 +641,25 @@ impl Vm {
     /// end of its log is the error).
     async fn wait_for_provisioning(&self) -> Result<()> {
         let name = self.lima_name();
-        let probe = format!(
-            "test -f {PROVISION_MARKER} && echo done; test -s {PROVISION_LOG} && echo log; pgrep -f 'lima-boot.sh|provision.sh' >/dev/null 2>&1 && echo running"
-        );
+        let probe = provision_probe();
         let deadline = Instant::now() + PROVISION_TIMEOUT;
         let mut idle = 0;
         loop {
-            let seen = self
+            let out = self
                 .limactl_output(&["shell", &name, "sh", "-c", &probe])
                 .unwrap_or_default();
-            let has = |w: &str| seen.lines().any(|l| l.trim() == w);
-            if has("done") {
-                return Ok(());
-            }
-            // Provisioning wrote a log, nothing runs, no marker: it failed.
-            // Three looks in a row, so a pause between the scripts is not
-            // mistaken for the end.
-            idle = if has("log") && !has("running") {
-                idle + 1
-            } else {
-                0
-            };
-            if idle >= 3 {
-                let tail = self
-                    .limactl_output(&["shell", &name, "sudo", "tail", "-50", PROVISION_LOG])
-                    .unwrap_or_default();
-                bail!(
-                    "provisioning failed in {name} (no {PROVISION_MARKER}); the end of {PROVISION_LOG}:\n{}",
-                    tail.trim_end()
-                );
+            match provision_step(parse_probe(&out), idle) {
+                Step::Provisioned => return Ok(()),
+                Step::Failed => {
+                    let tail = self
+                        .limactl_output(&["shell", &name, "sudo", "tail", "-50", PROVISION_LOG])
+                        .unwrap_or_default();
+                    bail!(
+                        "provisioning failed in {name} (no {PROVISION_MARKER}); the end of {PROVISION_LOG}:\n{}",
+                        tail.trim_end()
+                    );
+                }
+                Step::Wait(n) => idle = n,
             }
             if Instant::now() >= deadline {
                 bail!(
@@ -628,7 +761,10 @@ impl Vm {
             format!("lima disk {disk} does not exist yet; `ssf vm build` makes it at [vm] data_gib")
         })?;
         let current = gib_ceil(d.size);
-        let facts = HostFacts::probe(&self.base)?;
+        // The lima disks are lima's, not under `[vm] dir`: the warning
+        // below has to be about the filesystem they are on.
+        let (dir, _) = self.sizing_dir();
+        let facts = HostFacts::probe(&dir)?;
         let rule = sizes_for(&facts).data_gib;
         let Some(target) = plan_grow(current, want, rule)? else {
             println!(
@@ -762,6 +898,7 @@ mod tests {
             arch: "x86_64",
             image: None,
             vm_type: None,
+            format_disk: true,
         };
         let y = render_template(&t);
         assert!(y.starts_with("# written by ssf;"), "{y}");
@@ -819,9 +956,126 @@ mod tests {
             .contains("template:_images/ubuntu-lts"),
         );
         // Through the VM: its own share dir and port.
-        let y = vm.lima_template().unwrap();
+        let y = vm.lima_template(true).unwrap();
         assert!(y.contains("location: \"/v/one/share\""), "{y}");
         assert!(y.contains("name: ssf-one"), "{y}");
+    }
+
+    #[test]
+    fn only_the_build_that_makes_the_data_disk_lets_lima_format_it() {
+        // lima's guest boot script formats an additional disk when it
+        // cannot find the `lima-<disk>` label and `format` is true, then
+        // mounts the partition by device either way. So the build that
+        // creates the disk asks for a filesystem, and every template
+        // after that (and the instance's own copy, through
+        // `limactl edit --set`) says false: a disk that has lost its
+        // label must then fail to mount rather than be reformatted.
+        let vm = vm();
+        let made = vm.lima_template(true).unwrap();
+        assert!(
+            made.contains(
+                "additionalDisks:\n  - name: ssf-one\n    format: true\n    fsType: ext4\n"
+            ),
+            "{made}"
+        );
+        let kept = vm.lima_template(false).unwrap();
+        assert!(
+            kept.contains(
+                "additionalDisks:\n  - name: ssf-one\n    format: false\n    fsType: ext4\n"
+            ),
+            "{kept}"
+        );
+        // Everything else about the two is the same.
+        assert_eq!(made.replace("format: true", "format: false"), kept);
+        // What flips the instance's own copy (yq syntax; `limactl help
+        // yq-restrictions`).
+        assert_eq!(FORMAT_OFF, ".additionalDisks[0].format = false");
+    }
+
+    #[test]
+    fn the_provision_probe_cannot_match_itself() {
+        let probe = provision_probe();
+        assert!(
+            probe.contains(&format!("pgrep -f '{PROVISION_PGREP}'")),
+            "{probe}"
+        );
+        // `pgrep -f` matches whole command lines, and `limactl shell
+        // <name> sh -c "<probe>"` puts this string in one. The bracket
+        // classes exist so that what pgrep looks for does not occur in
+        // what it is looking through: with them gone, the probe would
+        // always report "running" and a dead provisioning would never be
+        // caught. Undo the brackets to get what pgrep matches, and hold
+        // that neither is in the probe.
+        for plain in [
+            PROVISION_PGREP
+                .replace("[l]", "l")
+                .replace("[.]", ".")
+                .split('|')
+                .next()
+                .unwrap()
+                .to_string(),
+            "provision.sh".to_string(),
+        ] {
+            assert!(!probe.contains(&plain), "{probe} contains {plain}");
+        }
+        assert_eq!(PROVISION_PGREP, "[l]ima-boot[.]sh|[p]rovision[.]sh");
+    }
+
+    #[test]
+    fn the_wait_ends_on_the_marker_and_on_three_idle_looks() {
+        let seen = |out: &str| parse_probe(out);
+        assert_eq!(
+            seen("done\nlog\n"),
+            Probe {
+                done: true,
+                log: true,
+                running: false
+            }
+        );
+        assert_eq!(seen(""), Probe::default());
+        assert_eq!(
+            seen("  log \n running \n"),
+            Probe {
+                done: false,
+                log: true,
+                running: true
+            }
+        );
+        // The marker ends it whatever else the round saw.
+        assert_eq!(
+            provision_step(seen("done\nlog\nrunning\n"), 2),
+            Step::Provisioned
+        );
+        // A log and nothing running: three rounds in a row, then failed.
+        assert_eq!(provision_step(seen("log\n"), 0), Step::Wait(1));
+        assert_eq!(provision_step(seen("log\n"), 1), Step::Wait(2));
+        assert_eq!(provision_step(seen("log\n"), 2), Step::Failed);
+        // A script running (or no log yet) puts the count back.
+        assert_eq!(provision_step(seen("log\nrunning\n"), 2), Step::Wait(0));
+        assert_eq!(provision_step(seen(""), 2), Step::Wait(0));
+    }
+
+    #[test]
+    fn lima_home_and_the_disk_directory_follow_lima() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            lima_home_from(None, Some(home)),
+            Some(PathBuf::from("/home/me/.lima"))
+        );
+        assert_eq!(
+            disks_dir_from(None, Some(home)),
+            Some(PathBuf::from("/home/me/.lima/_disks"))
+        );
+        // LIMA_HOME wins, and a tilde in it is expanded.
+        assert_eq!(
+            disks_dir_from(Some("/elsewhere/lima"), Some(home)),
+            Some(PathBuf::from("/elsewhere/lima/_disks"))
+        );
+        assert_eq!(
+            disks_dir_from(Some("  "), Some(home)),
+            Some(PathBuf::from("/home/me/.lima/_disks"))
+        );
+        assert_eq!(disks_dir_from(None, None), None);
     }
 
     #[test]

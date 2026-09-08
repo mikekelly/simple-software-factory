@@ -295,7 +295,9 @@ pub struct HostFacts {
     pub cpus: u32,
     /// RAM in MiB.
     pub mem_mib: u64,
-    /// Free space, in bytes, on the filesystem that holds `[vm] dir`.
+    /// Free space, in bytes, on the filesystem that holds the directory
+    /// [`HostFacts::probe`] was given (see [`sizing_dir`]: not the same
+    /// directory under both backends).
     pub free_bytes: u64,
     /// That filesystem's mount point, for the message.
     pub mount: String,
@@ -369,6 +371,133 @@ pub fn sizes_for(facts: &HostFacts) -> Sizes {
         mem_mib: mem.max(Sizes::MIN.mem_mib),
         data_gib: data.max(Sizes::MIN.data_gib),
     }
+}
+
+/// Where the sizing rule and `ssf vm grow` measure free space, and how a
+/// message names it. Under Firecracker the VM's own directory: its disks
+/// are files under `[vm] dir`. Under lima the directory lima keeps its
+/// disks in (`$LIMA_HOME/_disks`, else `~/.lima/_disks`), which can be on
+/// another volume entirely — measuring `[vm] dir` there would size the
+/// data disk against a filesystem that never fills up. Falls back to the
+/// VM's directory when lima's home cannot be worked out.
+pub fn sizing_dir_for(
+    backend: BackendKind,
+    base: &Path,
+    lima_disks: Option<PathBuf>,
+) -> (PathBuf, &'static str) {
+    match (backend, lima_disks) {
+        (BackendKind::Lima, Some(d)) => (d, "lima's disk directory"),
+        _ => (base.to_path_buf(), "[vm] dir"),
+    }
+}
+
+/// [`sizing_dir_for`] on this machine.
+pub fn sizing_dir(backend: BackendKind, base: &Path) -> (PathBuf, &'static str) {
+    sizing_dir_for(backend, base, lima::disks_dir())
+}
+
+/// A tool the host needs to run the VM under a backend, for `ssf doctor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tool {
+    /// A program to find on PATH (or an absolute path from `[vm]
+    /// limactl`), or a device to open.
+    pub name: String,
+    /// Open it rather than look for it: `/dev/kvm` is there on every
+    /// Linux with the module loaded, and the question is whether this
+    /// user may use it.
+    pub device: bool,
+    /// What to do when it is not usable.
+    pub install: String,
+}
+
+/// What a host running `os` on `arch` needs for `backend`: `limactl` and,
+/// on Linux, qemu for the architecture (lima's only Linux driver) under
+/// lima; a usable `/dev/kvm` under Firecracker. `limactl` is `[vm]
+/// limactl` where that is set. Pure: [`probe_tools`] goes looking.
+pub fn backend_tools(
+    backend: BackendKind,
+    os: &str,
+    arch: &str,
+    limactl: Option<&str>,
+) -> Vec<Tool> {
+    match backend {
+        BackendKind::Firecracker => vec![Tool {
+            name: "/dev/kvm".into(),
+            device: true,
+            install: "Firecracker runs the guest through KVM: on Debian and Ubuntu `sudo usermod -aG kvm $USER` and a new login, elsewhere check that the kvm module is loaded; a machine without KVM needs [vm] backend = \"lima\"".into(),
+        }],
+        BackendKind::Lima => {
+            let mut v = vec![Tool {
+                name: limactl.unwrap_or("limactl").to_string(),
+                device: false,
+                install: "install lima (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it".into(),
+            }];
+            if os != "macos" {
+                v.push(Tool {
+                    name: format!("qemu-system-{arch}"),
+                    device: false,
+                    install: format!(
+                        "install qemu (Arch: `qemu-full` or `qemu-base`; Debian/Ubuntu: `qemu-system-{}`; Fedora: `qemu-system-{}`)",
+                        if arch == "x86_64" { "x86" } else { "arm" },
+                        if arch == "x86_64" { "x86" } else { "aarch64" },
+                    ),
+                });
+            }
+            v
+        }
+    }
+}
+
+/// Where each tool is, or `None` when it is not usable here.
+pub fn probe_tools(tools: &[Tool]) -> Vec<Option<String>> {
+    tools
+        .iter()
+        .map(|t| {
+            if t.device {
+                // Firecracker opens it read-write; being able to do the
+                // same is the whole question.
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&t.name)
+                    .ok()
+                    .map(|_| t.name.clone())
+            } else {
+                which(&t.name).map(|p| p.display().to_string())
+            }
+        })
+        .collect()
+}
+
+/// The `ssf doctor` line for a backend's host tooling: where each tool
+/// was found, or what to install for the ones that are missing.
+pub fn backend_tooling_line(
+    backend: BackendKind,
+    tools: &[Tool],
+    found: &[Option<String>],
+) -> (bool, String) {
+    let detail = |t: &Tool, f: &Option<String>| match (t.device, f) {
+        (true, Some(_)) => format!("{} usable", t.name),
+        (true, None) => format!("{} not usable by you", t.name),
+        (false, Some(p)) => format!("{} at {p}", t.name),
+        (false, None) => format!("{} not installed", t.name),
+    };
+    let pairs: Vec<(&Tool, &Option<String>)> = tools.iter().zip(found.iter()).collect();
+    let missing: Vec<_> = pairs.iter().filter(|(_, f)| f.is_none()).collect();
+    if missing.is_empty() {
+        let all = pairs
+            .iter()
+            .map(|(t, f)| detail(t, f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return (true, format!("{backend} backend: {all}"));
+    }
+    let bad = missing
+        .iter()
+        .map(|(t, f)| format!("{}; {}", detail(t, f), t.install))
+        .collect::<Vec<_>>()
+        .join("; ");
+    (false, format!("{backend} backend: {bad}"))
 }
 
 /// What `ssf vm build` settled on, and whether the file changed.
@@ -719,12 +848,18 @@ impl Vm {
 
     // ---- sizes ----
 
+    /// The directory whose free space this VM is sized against, and how
+    /// to name it: [`sizing_dir`] for this VM's backend.
+    pub fn sizing_dir(&self) -> (PathBuf, &'static str) {
+        sizing_dir(self.backend(), &self.base)
+    }
+
     /// The sizes this VM runs at: `[vm]` where set, the rule for this
     /// machine where not (the minimums when the machine cannot be read).
     pub fn sizes(&self) -> Sizes {
         let c = &self.cfg;
         let rule = if c.vcpus.is_none() || c.mem_mib.is_none() || c.data_gib.is_none() {
-            HostFacts::probe(&self.base)
+            HostFacts::probe(&self.sizing_dir().0)
                 .map(|f| sizes_for(&f))
                 .unwrap_or(Sizes::MIN)
         } else {
@@ -2727,6 +2862,87 @@ mod tests {
         let e = plan_grow(20, Some(10), 80).unwrap_err().to_string();
         assert!(e.contains("shrink"), "{e}");
         assert!(plan_grow(20, Some(0), 80).is_err());
+    }
+
+    #[test]
+    fn sizing_measures_the_filesystem_the_disks_are_on() {
+        let base = Path::new("/home/me/.local/share/ssf/vm");
+        let disks = PathBuf::from("/other/.lima/_disks");
+        // Firecracker's disks are files under `[vm] dir`.
+        assert_eq!(
+            sizing_dir_for(BackendKind::Firecracker, base, Some(disks.clone())),
+            (base.to_path_buf(), "[vm] dir")
+        );
+        // lima's are in lima's home, which can be another volume: the
+        // "half the free space" rule and grow's warning have to be about
+        // that one.
+        assert_eq!(
+            sizing_dir_for(BackendKind::Lima, base, Some(disks.clone())),
+            (disks, "lima's disk directory")
+        );
+        // No home, no lima directory: the VM's own is the honest answer.
+        assert_eq!(
+            sizing_dir_for(BackendKind::Lima, base, None),
+            (base.to_path_buf(), "[vm] dir")
+        );
+    }
+
+    #[test]
+    fn the_doctor_line_names_the_backend_tooling_and_what_to_install() {
+        // lima needs limactl, and qemu too on Linux (its only driver
+        // there); a Mac runs the Virtualization framework instead.
+        let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None);
+        assert_eq!(mac.len(), 1);
+        assert_eq!(mac[0].name, "limactl");
+        let linux = backend_tools(BackendKind::Lima, "linux", "x86_64", None);
+        assert_eq!(linux.len(), 2);
+        assert_eq!(linux[1].name, "qemu-system-x86_64");
+        assert!(
+            linux[1].install.contains("qemu-system-x86"),
+            "{:?}",
+            linux[1]
+        );
+        // `[vm] limactl` is what doctor looks for when it is set.
+        let set = backend_tools(
+            BackendKind::Lima,
+            "macos",
+            "aarch64",
+            Some("/opt/l/limactl"),
+        );
+        assert_eq!(set[0].name, "/opt/l/limactl");
+        // Firecracker asks one question: may this user use KVM?
+        let fc = backend_tools(BackendKind::Firecracker, "linux", "x86_64", None);
+        assert_eq!(fc.len(), 1);
+        assert!(fc[0].device);
+        assert_eq!(fc[0].name, "/dev/kvm");
+        assert!(fc[0].install.contains("usermod -aG kvm"), "{:?}", fc[0]);
+
+        let found = vec![
+            Some("/usr/bin/limactl".to_string()),
+            Some("/usr/bin/qemu-system-x86_64".to_string()),
+        ];
+        let (ok, msg) = backend_tooling_line(BackendKind::Lima, &linux, &found);
+        assert!(ok);
+        assert_eq!(
+            msg,
+            "lima backend: limactl at /usr/bin/limactl, qemu-system-x86_64 at /usr/bin/qemu-system-x86_64"
+        );
+        // Only what is missing is reported, with what to install.
+        let (ok, msg) = backend_tooling_line(
+            BackendKind::Lima,
+            &linux,
+            &[Some("/usr/bin/limactl".to_string()), None],
+        );
+        assert!(!ok);
+        assert!(msg.starts_with("lima backend: qemu-system-x86_64 not installed; install qemu"));
+        assert!(!msg.contains("limactl at"), "{msg}");
+        let (ok, msg) = backend_tooling_line(BackendKind::Firecracker, &fc, &[None]);
+        assert!(!ok);
+        assert!(msg.starts_with("firecracker backend: /dev/kvm not usable by you; "));
+        let (ok, msg) =
+            backend_tooling_line(BackendKind::Firecracker, &fc, &[Some("/dev/kvm".into())]);
+        assert!(ok);
+        assert_eq!(msg, "firecracker backend: /dev/kvm usable");
     }
 
     #[test]
