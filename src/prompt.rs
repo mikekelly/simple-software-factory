@@ -2543,13 +2543,12 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             "sub-issues for the parts of this work",
             "carrying an `ssf: origin=` tag",
             "name the model you start each kind of subagent with",
-            "never against real work",
-            "rather than by how small it looks",
+            "is one that acts",
         ] {
             assert!(example.contains(kept), "{kept} missing from {example}");
         }
         assert!(example.contains("- Autonomy: a person approves everything."));
-        assert_eq!(example.matches("\n- ").count(), 13, "{example}");
+        assert_eq!(example.matches("\n- ").count(), 12, "{example}");
     }
 
     #[test]

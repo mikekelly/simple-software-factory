@@ -97,15 +97,13 @@ nor justify another round; the second clean deep round may inspect the same
 substantive diff. Required tests, formatting, linting and package builds still
 apply to every class.
 
-Two habits sit beside the classes, and both are about what a round can see. A claim about how something
-behaves is checked against the thing rather than reasoned about, and that
-covers what a session writes about a change as much as the change: a wrong
-sentence in a comment or a commit message outlives a wrong line, because the
-next reader takes it instead of checking; reading real state to find out is
-free, while running something that writes belongs in a scratch copy. And a
-line added after the round that reviewed the diff has been reviewed by
-nobody, judged by what it could do rather than by how small it looks — the
-text these files feed to an agent is behaviour too.
+One habit sits beside the classes. A claim about how something behaves is
+checked against the thing rather than reasoned about, and that covers what a
+session writes about a change as much as the change: a wrong sentence in a
+comment or a commit message outlives a wrong line, because the next reader
+takes it instead of checking. Reading to find out is usually free; running a
+command that acts belongs in the scratch factory of
+[Development](development.md), never in this one.
 
 Give each reviewer the diff, issue and claimed outcome, and ask it to break
 correctness, requirements, tests, docs and conventions. The author decides
