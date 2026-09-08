@@ -1983,11 +1983,14 @@ deliveries resume"
         .await;
     }
 
-    /// Make the next listings full ones, so every item involving the bot
-    /// is looked at again whatever the ETags said: now, and (since a pass
-    /// that is under way stores the ETags it read at its end) once more
-    /// at the start of the next pass. That second one is all that is owed:
-    /// the pass which spends the flag clears the ETags without arming it
+    /// One full listing set is owed, so that every item involving the bot
+    /// is looked at again whatever the ETags said. Where it lands depends
+    /// on when the session came back: an unblock before the pass reads its
+    /// listings gets it on that pass, and the flag it armed is spent
+    /// unused two lines into that same pass; one after gets it on the next
+    /// pass, because the pass under way stores the ETags it read at its
+    /// end and so puts back what was cleared here. Either way it is one:
+    /// the pass that spends the flag clears the ETags without arming it
     /// again, so the pass after that is back to conditional requests.
     fn forget_etags(&mut self, repo: &RepoConfig) {
         self.clear_etags(repo);
@@ -5808,7 +5811,8 @@ mod tests {
             .ignored
             .insert(18, Ignored::new(&issue(18, "bot", None), &created));
 
-        // Pass 1: no ETags yet, so a full creator listing.
+        // Pass 1: no ETags yet, so a full creator listing. That listing is
+        // the one the stub answers 304 to, so it stands for all four here.
         e.tick_repo(&r).await.unwrap();
         assert_eq!(stub.created_fulls(), 1);
 
@@ -5846,6 +5850,68 @@ mod tests {
         }
         assert_eq!(stub.created_fulls(), 2, "one unblock, one full fetch");
         assert!(e.refetch.is_empty());
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert!(stub.post_bodies().is_empty());
+    }
+
+    /// The case the `refetch` flag exists for, and the one the test above
+    /// cannot reach: a session that comes back after the pass has read its
+    /// listings (`reconcile_issue`, rather than `check_logins`). That pass
+    /// stores the ETags it read at its end, putting back the ones the
+    /// unblock cleared, so only the flag can make the next pass a full one
+    /// — and only the next one.
+    #[tokio::test]
+    async fn an_unblock_after_the_listings_were_read_makes_the_next_pass_full() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let created = vec!["created".to_string()];
+        *stub.created.lock().unwrap() = vec![json!({
+            "number": 18, "title": "t", "body": null, "html_url": "https://gh/18",
+            "state": "open", "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+        })];
+        let mut e = engine_at(&stub.base);
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(18, Ignored::new(&issue(18, "bot", None), &created));
+
+        // Pass 1 has no ETags, pass 2 sends the ones it stored and is
+        // answered 304.
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(stub.created_fulls(), 1);
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(stub.created_fulls(), 1, "pass 2 was conditional");
+
+        // The session comes back part-way through a pass that has already
+        // read its listings: the ETags it clears are written back when that
+        // pass stores what it read, so nothing but the flag survives it.
+        let b = Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired".into(),
+            since: now_iso(),
+            reported: false,
+            credential: None,
+            retried_at: None,
+            retries: 0,
+            told_at: None,
+            tell_failures: 0,
+        };
+        let read_this_pass = e.state.repos[&r.name].created_etag.clone();
+        assert!(read_this_pass.is_some());
+        e.unblock(&r, 18, &b, Conversation::Kept).await;
+        e.state.repo_mut(&r.name).created_etag = read_this_pass;
+
+        // The next pass is a full one on the strength of the flag alone.
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(stub.created_fulls(), 2, "the next pass was full");
+        assert!(e.refetch.is_empty());
+
+        // And only that one: the passes after it are conditional again.
+        for _ in 0..3 {
+            e.tick_repo(&r).await.unwrap();
+        }
+        assert_eq!(stub.created_fulls(), 2, "one unblock, one full fetch");
         assert!(e.failures.is_empty(), "{:?}", e.failures);
         assert!(stub.post_bodies().is_empty());
     }
