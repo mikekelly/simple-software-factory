@@ -844,16 +844,16 @@ per-project prompt file](configuration.md#the-per-project-prompt-file).
 
 **The gauntlet.** ssf runs one session per item and starts no reviewer
 for an agent's own pull request (it used to, on a `review` label; that
-went with #115). The boilerplate's gauntlet rule is what stands in: the
-agent that did the work hands the diff, the issue and its claim of what
-the change does to a fresh agent that has not seen its reasoning, asks it
-to break the work, fixes what it finds and repeats until nothing that
-matters is left, then says on the item what was found. A subagent of its
-own harness is the default; for complex, risky or important work it uses
-herdr for a different agent and model, with the invocation from `ssf
-guide`. Keep the rule, or write your own; nobody re-reviews after the
-agent. Details: [Second
-opinions](sessions.md#second-opinions-the-gauntlet).
+went with #115). The boilerplate calibrates review by blast radius:
+self-review for documentation, comments, configuration examples and tests;
+one fresh-agent round for ordinary daemon behaviour, a second only after a
+must-fix; rounds until two consecutive ones find no must-fix for data loss,
+startup failure, broken packages or workspace destruction. Cosmetic tidies do
+not justify more rounds. State the class and result on the item, and keep
+running the required tests, formatting, linting and package build in every
+class. Keep the rule, or write your own; see [Second
+opinions](sessions.md#second-opinions-the-gauntlet) for the reviewer brief,
+stopping rules and when to prefer a different model through herdr.
 
 **Autonomy.** How far the agents go on their own is a line in `SSF.md`,
 and the choice is yours: at one end, everything is approved by a person
