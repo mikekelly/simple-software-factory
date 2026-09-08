@@ -135,7 +135,10 @@ from `format: false`. Turning the flag off in lima's copy is best
 effort, though: if that `limactl edit` fails the build still succeeds
 and warns, naming the command to run by hand (`limactl edit ssf-default
 --set '.additionalDisks[0].format = false'`), and until you run it a
-boot that cannot find the disk's label would reformat it. ssf's own files
+boot that cannot find the disk's label would reformat it. A build that
+fails after the instance is made leaves the flag on, so `ssf vm build`
+and `ssf vm reset` both put it back to `false` when they find it set on a
+disk that already exists; the template is what `ssf vm reset` reads. ssf's own files
 are under `<vm.dir>/<name>/`: `lima.yaml` (the template `ssf vm build`
 writes from `[vm]`; edit the config and rebuild rather than the file),
 `share/` (the guest scripts, the seed tree, and a herdr binary when the
