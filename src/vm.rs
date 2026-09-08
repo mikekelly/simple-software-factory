@@ -43,6 +43,7 @@ use crate::config::{
     Config, Credential, DriverKind, GitConfig, SigningKey, VmConfig, expand_tilde,
 };
 use crate::platform;
+pub use lima::check_name;
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
@@ -414,7 +415,11 @@ impl Stray {
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             kind: StrayKind::Directory,
-            remove: format!("rm -rf {}", path.display()),
+            // Quoted, because this is the one command in here that
+            // destroys something: unquoted, a `[vm] dir` with a space in
+            // it makes `rm -rf /Volumes/My Disk/vm/old` -- a remedy that
+            // deletes two things, neither of them the right one.
+            remove: format!("rm -rf {}", shell_join(&[path.display().to_string()])),
         }
     }
 
@@ -1251,6 +1256,14 @@ impl Vm {
     /// Only directories holding a `data.ext4` count. The images and
     /// downloads share `[vm] dir` with them and are genuinely safe.
     fn fc_strays(&self) -> Vec<Stray> {
+        // `[vm] name` empty would make this VM's own directory the whole
+        // of `[vm] dir`, and every sibling a child of it. `check_name`
+        // refuses that now; this is the second lock, because the first
+        // one being wrong would have the report call the directory the
+        // destroy step is about to remove "untouched".
+        if self.dir == self.base {
+            return Vec::new();
+        }
         let Ok(entries) = std::fs::read_dir(&self.base) else {
             return Vec::new();
         };
@@ -1262,6 +1275,18 @@ impl Vm {
             .collect();
         strays.sort_by(|a, b| a.name.cmp(&b.name));
         strays
+    }
+
+    /// The strays that can be found without asking the backend
+    /// anything: `[vm] dir` under Firecracker, lima's own home under
+    /// lima. For the caller that has no tooling to ask with -- which is
+    /// exactly when the person cannot run `limactl list` either, so
+    /// going quiet then would take the report away at its most useful.
+    pub fn strays_on_filesystem(&self) -> Vec<Stray> {
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_strays(),
+            BackendKind::Lima => self.strays_on_disk(),
+        }
     }
 
     /// What is here of this VM, asked of the backend in one pass:
@@ -2224,10 +2249,11 @@ impl Vm {
                     let (mine, others) = self.split_instances(all);
                     (mine, None, others)
                 }
-                // The listing is also the only way to see the strays, so
-                // when it fails they come off lima's filesystem, on the
-                // rule the survey uses.
-                Err(e) => (None, Some(format!("{e:#}")), self.strays_on_disk()),
+                // The listing is also the only way to see the stray
+                // instances, so when it fails they come off lima's
+                // filesystem, on the rule the survey uses. Only the
+                // instances: the disks are added below either way.
+                Err(e) => (None, Some(format!("{e:#}")), self.instance_strays_on_disk()),
             },
             BackendKind::Firecracker => (None, None, self.fc_strays()),
         };
@@ -3154,15 +3180,66 @@ mod tests {
         std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
         // A directory of ssf's own that holds nobody's work.
         std::fs::create_dir_all(base.join("dl")).unwrap();
+        // This VM's own directory has a data disk too, and must never
+        // be reported: the report calls a stray "untouched", and the
+        // destroy step removes this one.
+        std::fs::write(vm.dir.join("data.ext4"), b"disk").unwrap();
         let strays = vm.survey().strays;
+        // A `[vm] dir` with a space in it: the one command here that
+        // destroys something has to survive being pasted into a shell.
+        let spaced = base.join("My VMs");
+        std::fs::create_dir_all(spaced.join("old")).unwrap();
+        std::fs::write(spaced.join("old").join("data.ext4"), b"disk").unwrap();
+        let mut spaced_cfg = cfg.clone();
+        spaced_cfg.vm.dir = spaced.to_string_lossy().into_owned();
+        let quoted = Vm::new(&spaced_cfg).survey().strays;
         std::fs::remove_dir_all(&base).unwrap();
-        assert_eq!(strays.len(), 1, "{strays:?}");
+        assert_eq!(quoted.len(), 1, "{quoted:?}");
+        assert!(
+            quoted[0].remove.ends_with("/old'") && quoted[0].remove.contains("'"),
+            "unquoted path would delete two things: {}",
+            quoted[0].remove
+        );
+        assert_eq!(strays.len(), 1, "own directory reported: {strays:?}");
         assert_eq!(strays[0].name, "old");
         assert!(strays[0].holds_work());
         assert!(
             strays[0].remove.ends_with("old"),
             "the path is in it: {}",
             strays[0].remove
+        );
+    }
+
+    #[test]
+    fn vm_status_lists_each_stray_once() {
+        // The instance strays and the disk strays are found by two
+        // different calls, and adding the whole of one to the other put
+        // every disk in twice -- in the text and in the JSON any
+        // consumer reads.
+        let home = std::env::temp_dir().join(format!(
+            "ssf-status-strays-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(home.join("ssf-old")).unwrap();
+        std::fs::create_dir_all(home.join("_disks").join("ssf-old")).unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        cfg.vm.dir = home.join("vm").to_string_lossy().into_owned();
+        // A limactl that cannot run, so both listings fail and the
+        // filesystem answers -- the path where the duplication was.
+        cfg.vm.limactl = Some("/nonexistent/limactl".into());
+        let mut vm = Vm::new(&cfg);
+        vm.lima_home = Some(home.clone());
+        let strays = vm.strays_on_filesystem();
+        std::fs::remove_dir_all(&home).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.remove.as_str()).collect::<Vec<_>>(),
+            ["limactl delete ssf-old", "limactl disk delete ssf-old"]
         );
     }
 
