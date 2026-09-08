@@ -57,6 +57,35 @@ overrides:
       - openssh-clients
 
 contents:
+  # Directories, so the rpm owns and removes them (dpkg does so on its own;
+  # nfpm's rpm packager only owns what is listed).
+  - dst: /usr/lib/systemd/user/default.target.wants
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/omarchy-plugin
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/vm
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/vm/guest
+    type: dir
+    packager: rpm
+  - dst: /usr/share/ssf/vm/guest/units
+    type: dir
+    packager: rpm
+  - dst: /usr/share/doc/ssf
+    type: dir
+    packager: rpm
+  - dst: /usr/share/doc/ssf/docs
+    type: dir
+    packager: rpm
+  - dst: /usr/share/licenses/ssf
+    type: dir
+    packager: rpm
   - src: target/x86_64-unknown-linux-musl/release/ssf
     dst: /usr/bin/ssf
     file_info:

@@ -91,6 +91,9 @@ jobs:
           pacman -Syu --noconfirm rust jq systemd github-cli git
           useradd -m builder
       - uses: actions/checkout@v4
+        with:
+          # The development PKGBUILD's pkgver counts the commits on HEAD.
+          fetch-depth: 0
       - name: makepkg
         # On a tag the release PKGBUILD builds the tag tarball. GitHub's
         # archive is `git archive` with a simple-software-factory-X.Y.Z/
