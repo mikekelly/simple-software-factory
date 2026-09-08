@@ -404,6 +404,22 @@ pub fn sizing_dir(backend: BackendKind, base: &Path) -> (PathBuf, &'static str) 
     sizing_dir_for(backend, base, lima::disks_dir())
 }
 
+/// How often [`Vm::supervise`] asks whether the guest is still up.
+///
+/// Under Firecracker the question is a PID file and a `/proc` lookup, so
+/// five seconds costs nothing. Under lima it forks a ~60 MB Go binary
+/// (`limactl list --json`) and takes a lock in lima's home, which is too
+/// much to do every five seconds on a laptop for the whole time the
+/// factory runs -- and every one of those forks is a chance to fail and
+/// be misread. Half a minute is still far quicker than a person notices a
+/// dead VM, and `ssf status` answers the same question on demand.
+pub fn supervise_interval(backend: BackendKind) -> Duration {
+    match backend {
+        BackendKind::Firecracker => Duration::from_secs(5),
+        BackendKind::Lima => Duration::from_secs(30),
+    }
+}
+
 /// A tool the host needs to run the VM under a backend, for `ssf doctor`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tool {
@@ -436,7 +452,15 @@ pub fn backend_tools(
         }],
         BackendKind::Lima => {
             let mut v = vec![Tool {
-                name: limactl.unwrap_or("limactl").to_string(),
+                // `[vm] limactl` is a path, and `~/bin/limactl` is a path
+                // the run-time side expands (`Vm::limactl`) -- so it is
+                // expanded here too, or `ssf doctor` and `ssf vm status`
+                // would look a tilde up on PATH and report a limactl that
+                // works as "not installed".
+                name: limactl.map_or_else(
+                    || "limactl".to_string(),
+                    |p| expand_tilde(p).to_string_lossy().into_owned(),
+                ),
                 device: false,
                 install: "install lima (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it".into(),
             }];
@@ -979,11 +1003,24 @@ impl Vm {
     }
 
     /// Is the guest up? Firecracker: its PID file names a live
-    /// firecracker; lima: `limactl list` says `Running`.
+    /// firecracker; lima: `limactl list` says `Running`. A probe that
+    /// could not be made counts as not running; use
+    /// [`Vm::running_state`] where that difference matters.
     pub fn running(&self) -> bool {
+        self.running_state().unwrap_or(false)
+    }
+
+    /// [`Vm::running`], with "the question could not be asked" kept apart
+    /// from "no": `None` when the probe itself failed. Under Firecracker
+    /// the probe is a PID file read, which answers either way; under lima
+    /// it forks `limactl`, and one fork that fails is not the guest
+    /// exiting. The callers that act on "the VM is gone" -- the
+    /// supervisor and the ssh wait -- use this, so that a transient
+    /// `limactl` failure cannot end them with "the VM exited".
+    pub fn running_state(&self) -> Option<bool> {
         match self.backend() {
-            BackendKind::Firecracker => self.firecracker_pid().is_some(),
-            BackendKind::Lima => self.lima_running(),
+            BackendKind::Firecracker => Some(self.firecracker_pid().is_some()),
+            BackendKind::Lima => self.lima_running_state(),
         }
     }
 
@@ -1414,22 +1451,37 @@ impl Vm {
         self.start(host).await?;
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let every = supervise_interval(self.backend());
+        let mut unanswered = 0u32;
         loop {
             tokio::select! {
                 _ = term.recv() => break,
                 _ = int.recv() => break,
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    if !self.running() {
-                        warn!("the VM exited");
-                        if let Some(gv) = self.gvproxy_pid() {
-                            kill(gv, libc::SIGTERM);
+                _ = tokio::time::sleep(every) => {
+                    // Only a definite "not running" ends the supervision.
+                    // A probe that could not be made says nothing (it has
+                    // logged itself); ending on one killed the daemon
+                    // with "the VM exited" over a live VM.
+                    match self.running_state() {
+                        Some(true) => unanswered = 0,
+                        None => {
+                            unanswered += 1;
+                            warn!(
+                                "could not tell whether the VM is running ({unanswered} probe(s) in a row); still supervising it"
+                            );
                         }
-                        bail!(
-                            "the VM exited; see {}",
-                            self.console_path()
-                                .map(|p| p.display().to_string())
-                                .unwrap_or_else(|_| "`ssf vm console`".into())
-                        );
+                        Some(false) => {
+                            warn!("the VM exited");
+                            if let Some(gv) = self.gvproxy_pid() {
+                                kill(gv, libc::SIGTERM);
+                            }
+                            bail!(
+                                "the VM exited; see {}",
+                                self.console_path()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_else(|_| "`ssf vm console`".into())
+                            );
+                        }
                     }
                 }
             }
@@ -1693,7 +1745,10 @@ impl Vm {
     async fn ssh_loop(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if !self.running() {
+            // Only a definite "not running" ends the wait: a probe that
+            // could not be made (under lima, a `limactl` that did not
+            // run) is not the guest exiting.
+            if self.running_state() == Some(false) {
                 bail!("the VM exited");
             }
             if self.ssh_ok() {
@@ -1942,6 +1997,15 @@ impl Vm {
     // ---- harness logins ----
 
     /// Every harness's login state in the guest, in one ssh round trip.
+    ///
+    /// What the script found is in its output, not in its status: every
+    /// test in it fails for a harness that is not installed or not logged
+    /// in, which is the ordinary case. [`Vm::ssh_output`] throws stdout
+    /// away when the status is not zero, so a script ending in a failed
+    /// test would come back as an error with the answer discarded. The
+    /// closing `exit 0` is what keeps that from happening -- nothing may
+    /// be appended after it, and a test appended before it must not be
+    /// the last command of the script.
     pub fn logins(&self) -> Result<Vec<LoginState>> {
         let script: String = LOGINS
             .iter()
@@ -1952,6 +2016,7 @@ impl Vm {
                     check = l.check()
                 )
             })
+            .chain(std::iter::once("exit 0".to_string()))
             .collect();
         let out = self.ssh_output(&["sh", "-c", &script])?;
         Ok(parse_login_states(&out))
@@ -2474,7 +2539,10 @@ pub fn stdin_is_tty() -> bool {
 
 fn which(name: &str) -> Option<PathBuf> {
     let p = Path::new(name);
-    if p.is_absolute() {
+    // Anything with a separator in it is a path, not a name to look up:
+    // `PATH` is searched for `limactl`, never for `~/bin/limactl` (which
+    // reaches here expanded) or `./limactl`.
+    if name.contains('/') {
         return p.exists().then(|| p.to_path_buf());
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
@@ -2969,6 +3037,42 @@ mod tests {
     }
 
     #[test]
+    fn the_supervisor_polls_a_lima_vm_less_often_than_a_firecracker_one() {
+        // Firecracker's "is it up?" is a PID file and a /proc lookup;
+        // lima's forks a ~60 MB Go binary and takes a lock in lima's
+        // home. Doing that every five seconds for as long as the factory
+        // runs is more than the question is worth on a laptop, and every
+        // fork is another chance to fail and be misread as "the VM
+        // exited".
+        assert_eq!(
+            supervise_interval(BackendKind::Firecracker),
+            Duration::from_secs(5)
+        );
+        assert!(supervise_interval(BackendKind::Lima) >= Duration::from_secs(30));
+        assert!(
+            supervise_interval(BackendKind::Lima) > supervise_interval(BackendKind::Firecracker)
+        );
+        // Still well inside the wait a person would sit through before
+        // asking what happened.
+        assert!(supervise_interval(BackendKind::Lima) <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_firecracker_vm_answers_the_running_question_either_way() {
+        // Under Firecracker the probe is a file read, so it always has an
+        // answer -- `None` (the probe could not be made) is lima's case,
+        // and it is what keeps a transient `limactl` failure from ending
+        // the supervisor and the ssh wait with "the VM exited".
+        let mut cfg = Config::default();
+        cfg.vm.dir = std::env::temp_dir().to_string_lossy().into_owned();
+        cfg.vm.name = "no-such-vm".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        let vm = Vm::new(&cfg);
+        assert_eq!(vm.running_state(), Some(false));
+        assert!(!vm.running());
+    }
+
+    #[test]
     fn the_doctor_line_names_the_backend_tooling_and_what_to_install() {
         // lima needs limactl, and qemu too on Linux (its only driver
         // there); a Mac runs the Virtualization framework instead.
@@ -2991,6 +3095,23 @@ mod tests {
             Some("/opt/l/limactl"),
         );
         assert_eq!(set[0].name, "/opt/l/limactl");
+        // And a `~` in it is expanded, as `Vm::limactl` expands it when
+        // it runs the thing: doctor and `ssf vm status` used to look
+        // "~/bin/limactl" up on PATH -- which `which` only searches for a
+        // bare name -- and report a limactl that works as not installed.
+        if let Some(home) = dirs::home_dir() {
+            let tilde = backend_tools(BackendKind::Lima, "macos", "aarch64", Some("~/bin/limactl"));
+            assert_eq!(
+                tilde[0].name,
+                home.join("bin/limactl").to_string_lossy().to_string()
+            );
+        }
+        // A path is a path, whatever it starts with; a bare name is
+        // looked up on PATH.
+        assert_eq!(which("/nonexistent/limactl"), None);
+        assert_eq!(which("./nonexistent-limactl"), None);
+        assert!(which("sh").is_some());
+        assert_eq!(which("definitely-not-a-program-on-this-path"), None);
         // Firecracker asks one question: may this user use KVM?
         let fc = backend_tools(BackendKind::Firecracker, "linux", "x86_64", None);
         assert_eq!(fc.len(), 1);

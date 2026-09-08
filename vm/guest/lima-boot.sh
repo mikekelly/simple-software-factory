@@ -7,12 +7,17 @@
 # enabled units. A failed provisioning leaves no marker: the host checks
 # for it over ssh, and the next boot tries again.
 #
+# This script is itself in the share, so by the time it runs the share is
+# mounted: waiting for /mnt/ssf is not its job and cannot be (an `exec` of a
+# file that is not there leaves nothing behind to read). That wait, and the
+# message when the share never appears, are in the template's provision hook
+# instead (src/vm/lima.rs, boot_hook). What is left here is a check that the
+# share is the whole share and not half of one.
+#
 # Everything an attempt says goes into $log as well as to lima's own output,
 # from the first line on. The host (src/vm/lima.rs) watches that log: a
 # non-empty log with none of the guest scripts running is how it sees a dead
 # provisioning within seconds instead of waiting out its half-hour timeout.
-# So a failure this script reports itself -- the share never appearing --
-# has to be in the log too, not only on stdout.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 marker=/etc/ssf-image-built
 log=/var/log/ssf-provision.log
@@ -33,15 +38,8 @@ fi
 say() {
     printf '%s\n' "$*" | tee -a "$log"
 }
-# The share is mounted by lima before its provisioning scripts run (9p and
-# virtiofs); give a slow mount a chance rather than fail on it.
-say "ssf-provision: waiting for $guest/provision.sh"
-for _ in $(seq 120); do
-    [ -f "$guest/provision.sh" ] && break
-    sleep 1
-done
 if [ ! -f "$guest/provision.sh" ]; then
-    say "ssf-provision: FAILED: $guest/provision.sh not visible after 120s (is /mnt/ssf mounted?)"
+    say "ssf-provision: FAILED: $guest/provision.sh is not there, though $0 is; the share is incomplete"
     exit 1
 fi
 say "ssf-provision: provisioning the guest, log in $log"

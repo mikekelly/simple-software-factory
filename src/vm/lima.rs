@@ -55,6 +55,25 @@ pub const ROOT_GIB_FLOOR: u32 = 20;
 /// ssf's backstop around it is derived from: one allowance for
 /// provisioning, not three rival ones that could cut each other short.
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long the guest may take to answer on ssh as `ssf` once it has
+/// provisioned itself. Not a round number: `/etc/ssf-image-built` means
+/// "the image is provisioned", and it is written *before*
+/// `ssf-seed.service` is queued, so what the host waits for after it is
+/// the seed -- and `vm/guest/seed-lima.sh` may spend 120 seconds waiting
+/// for the share plus 120 for the data disk before it copies the home
+/// tree and installs `authorized_keys`. A shorter allowance gives up on a
+/// slow but healthy guest with "provisioned, but the guest does not
+/// answer as ssf".
+///
+/// The marker was left meaning what it says rather than moved to the end
+/// of the seed: the seed runs at *every* boot from its unit, while the
+/// marker is what tells a boot whether the image still needs
+/// provisioning. Making it wait for the seed would tie a once-per-image
+/// fact to a once-per-boot one, and `ssf vm reset` (a fresh root, the old
+/// data disk) reads it on a boot whose seed has its own reasons to be
+/// slow. The test `the_ssh_wait_outlasts_the_seeds_own_waits` holds this
+/// against the script itself.
+const SEED_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 /// Every `limactl` invocation gets an upper bound, so a `limactl` that
 /// never returns (a lost hostagent, a qemu waiting on something) cannot
 /// wedge ssf with no output and no child to look at. The bounds below are
@@ -155,10 +174,50 @@ pub fn render_template(t: &Template) -> String {
         "additionalDisks:\n  - name: {}\n    format: {}\n    fsType: ext4\n",
         t.disk, t.format_disk
     ));
-    y.push_str(&format!(
-        "provision:\n  - mode: system\n    script: |\n      #!/bin/bash\n      # every boot, as root: provision the guest once, then seed it\n      exec bash {GUEST_MOUNT}/guest/lima-boot.sh\n"
-    ));
+    y.push_str("provision:\n  - mode: system\n    script: |\n");
+    for line in boot_hook().lines() {
+        if line.is_empty() {
+            y.push('\n');
+        } else {
+            y.push_str(&format!("      {line}\n"));
+        }
+    }
     y
+}
+
+/// How long the template's hook waits for the share before it gives up.
+pub const SHARE_WAIT_SECS: u32 = 120;
+
+/// The template's `provision` script: what lima runs as root at every
+/// boot, before the guest's own boot script, which lives in the share.
+///
+/// The wait for the share is here rather than in `lima-boot.sh` because
+/// `lima-boot.sh` is *in* the share: a hook that only exec'd it could not
+/// report the share missing at all -- the exec would fail, nothing would
+/// be written to [`PROVISION_LOG`], and the host would wait out
+/// [`PROVISION_TIMEOUT`] with nothing to show. So the one failure the
+/// guest cannot delegate is handled here, in the log the host reads.
+fn boot_hook() -> String {
+    format!(
+        r#"#!/bin/bash
+# every boot, as root: provision the guest once, then seed it. The work is
+# in lima-boot.sh, which is in the host's share -- so waiting for that
+# share, and saying so when it never arrives, has to happen here, in the
+# log the host watches (src/vm/lima.rs): an `exec` of a script that is not
+# there leaves no log at all.
+log={PROVISION_LOG}
+boot={GUEST_MOUNT}/guest/lima-boot.sh
+for ((i = 0; i < {SHARE_WAIT_SECS}; i++)); do
+    [ -f "$boot" ] && break
+    sleep 1
+done
+if [ ! -f "$boot" ]; then
+    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s; is the {GUEST_MOUNT} mount in place?\n' "$boot" | tee -a "$log"
+    exit 1
+fi
+exec bash "$boot"
+"#
+    )
 }
 
 /// A double-quoted YAML scalar.
@@ -350,6 +409,23 @@ fn provision_step(seen: Probe, idle: u32) -> Step {
     }
 }
 
+/// A probe that could not run has to be told apart from a guest that is
+/// never going to answer. Given what `limactl list` says about the
+/// instance -- `None` when lima does not list it at all -- this returns
+/// how to describe the end, or `None` when the wait should go on.
+///
+/// Only `Running` is worth waiting for: a `Stopped` instance would need
+/// `limactl start` (which is not this wait's job), and a `Broken` one
+/// needs a person. `src/vm.rs`'s `ssh_loop` makes the same call for
+/// Firecracker by looking at the process.
+fn terminal_state(status: Option<&str>) -> Option<String> {
+    match status {
+        None => Some("is not there any more (lima does not list it)".to_string()),
+        Some("Running") => None,
+        Some(s) => Some(format!("is {}, not running", s.to_lowercase())),
+    }
+}
+
 /// lima's home, where the instances and the disks live: `$LIMA_HOME`,
 /// else `~/.lima` (what lima itself does).
 pub fn lima_home_from(env: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
@@ -386,6 +462,47 @@ fn start_timeout_arg() -> String {
 fn says_format_true(yaml: &str) -> bool {
     yaml.lines()
         .any(|l| l.trim_start().trim_start_matches("- ").trim() == "format: true")
+}
+
+/// What can be done about a `format: true` that outlived the build that
+/// wrote it, given what says it and whether the instance is running.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Repair {
+    /// Rewrite ssf's own template: a plain file, always possible.
+    template: bool,
+    /// Turn `format` off in the instance's own copy with `limactl edit`.
+    instance: bool,
+    /// The instance's copy says `format: true` and cannot be changed
+    /// here: `limactl edit` refuses a running instance (lima 2.2.0,
+    /// "cannot edit a running instance"), so pretending it was repaired
+    /// is how a guest ends up booting from a template that lets lima
+    /// reformat the disk the factory lives on.
+    blocked: bool,
+}
+
+/// The decision behind [`Vm::repair_stale_format`], kept separate from
+/// the file and process work so it can be held to the rules:
+///
+/// * with no data disk there is nothing to protect -- the build that
+///   creates the disk is the one build that may hand lima `format: true`;
+/// * ssf's own template is rewritten whenever it is stale, because it is
+///   what `ssf vm reset` creates the next instance from;
+/// * the instance's copy is edited only while the instance is stopped,
+///   and a running instance is reported, never quietly skipped.
+fn plan_repair(
+    disk_exists: bool,
+    template_stale: bool,
+    instance_stale: bool,
+    running: bool,
+) -> Repair {
+    if !disk_exists {
+        return Repair::default();
+    }
+    Repair {
+        template: template_stale,
+        instance: instance_stale && !running,
+        blocked: instance_stale && running,
+    }
 }
 
 /// What an error calls the command that ran.
@@ -588,11 +705,23 @@ impl Vm {
         Ok(parse_disks(&out).into_iter().find(|d| d.name == name))
     }
 
-    pub(super) fn lima_running(&self) -> bool {
-        self.lima_instance()
-            .ok()
-            .flatten()
-            .is_some_and(|i| i.is_running())
+    /// Is the instance running? `None` when the question could not be
+    /// asked -- the probe forks a ~60 MB Go binary, so a fired resource
+    /// limit or a fork that failed under load is a plausible answer, and
+    /// it is not the same answer as "stopped". `Vm::supervise` polls
+    /// this, and a probe failure read as "stopped" once ended the
+    /// supervisor with "the VM exited" over a VM that was running.
+    pub(super) fn lima_running_state(&self) -> Option<bool> {
+        match self.lima_instance() {
+            Ok(inst) => Some(inst.is_some_and(|i| i.is_running())),
+            Err(e) => {
+                warn!(
+                    "could not ask lima whether {} is running: {e:#}",
+                    self.lima_name()
+                );
+                None
+            }
+        }
     }
 
     /// The data disk's size as lima has it, else what a build would make.
@@ -701,8 +830,14 @@ impl Vm {
                 // A build that died between `limactl create` and the
                 // guest answering ssh left `format: true` behind; this is
                 // the run that would otherwise return without repairing
-                // it, so it repairs it here.
-                self.repair_stale_format(Some(&inst));
+                // it, so it repairs it here -- and says so rather than
+                // returning "instance exists" over a flag it could not
+                // put right, which is how a later `ssf vm start` came to
+                // boot a guest that was still allowed to reformat the
+                // factory's disk.
+                if let Some(yaml) = self.repair_stale_format(Some(&inst)) {
+                    return Err(self.stale_format_error(&yaml));
+                }
                 println!(
                     "lima instance {name} exists ({}); `ssf vm build --force` makes a new one",
                     inst.dir
@@ -728,6 +863,26 @@ impl Vm {
             self.limactl_run(&["disk", "create", &disk, "--size", &format!("{gib}GiB")])?;
         }
         self.lima_create()?;
+        // From here the instance exists and boots with `format: true`
+        // when this build made the disk. A failure that left it running
+        // used to leave that flag behind with nothing able to change it
+        // (`limactl edit` refuses a running instance), so the next
+        // `ssf vm start` booted a guest that could still reformat a disk
+        // by then holding the factory. The first boot is therefore
+        // cleaned up after.
+        if let Err(e) = self.lima_first_boot().await {
+            self.after_failed_build().await;
+            return Err(e);
+        }
+        println!("built lima instance {name}; `ssf vm start` boots it");
+        Ok(())
+    }
+
+    /// The first boot of a freshly created instance: the guest provisions
+    /// itself inside `limactl start`, the host waits for the marker and
+    /// then for ssh, and the instance is stopped again.
+    async fn lima_first_boot(&self) -> Result<()> {
+        let name = self.lima_name();
         info!("starting {name} for its first boot: the guest provisions itself (a few minutes)");
         self.limactl_start(&["start", "--timeout", &start_timeout_arg(), &name])?;
         self.wait_for_provisioning().await?;
@@ -738,7 +893,7 @@ impl Vm {
                 eprintln!("  {line}");
             }
         }
-        if let Err(e) = self.wait_for_ssh(Duration::from_secs(120)).await {
+        if let Err(e) = self.wait_for_ssh(SEED_TIMEOUT).await {
             bail!(
                 "{e:#} (provisioned, but the guest does not answer as {}); `ssf vm console` has its console",
                 super::GUEST_USER
@@ -753,9 +908,41 @@ impl Vm {
         // instance.
         self.write_template(false)?;
         self.limactl_run_within(&["stop", &name], STOP_LIMIT)?;
-        self.stop_formatting_data_disk();
-        println!("built lima instance {name}; `ssf vm start` boots it");
+        let stopped = self.lima_instance().ok().flatten();
+        if let Some(yaml) = self.repair_stale_format(stopped.as_ref()) {
+            return Err(self.stale_format_error(&yaml));
+        }
         Ok(())
+    }
+
+    /// After a first boot that failed: stop the instance and put
+    /// `format: false` back. Both are best effort and nothing here
+    /// replaces the build's own error -- the point is only that the next
+    /// command finds a stopped instance whose template cannot reformat
+    /// the data disk.
+    async fn after_failed_build(&self) {
+        if let Err(e) = self.lima_stop().await {
+            warn!(
+                "could not stop {} after the build failed ({e:#}); `limactl stop -f {}` does it",
+                self.lima_name(),
+                self.lima_name()
+            );
+        }
+        let inst = self.lima_instance().ok().flatten();
+        if let Some(yaml) = self.repair_stale_format(inst.as_ref()) {
+            warn!("{:#}", self.stale_format_error(&yaml));
+        } else if matches!(self.lima_disk(), Ok(Some(_))) {
+            // `format: false` is now the rule for this disk, and lima's
+            // boot script is the only thing that ever puts a filesystem
+            // on it. A build that died before the guest booted at all
+            // therefore leaves a blank disk that no later boot will
+            // format -- worth saying, because the disk is the one thing
+            // a build never deletes.
+            info!(
+                "the data disk {disk} is kept (a build never deletes it) and lima may no longer format it; if this build never got as far as booting the guest the disk is still blank, and `limactl disk delete {disk}` before the next `ssf vm build` makes a fresh one",
+                disk = self.lima_disk_name()
+            );
+        }
     }
 
     /// `limactl start`, bounded by the allowance lima is given for the
@@ -772,38 +959,72 @@ impl Vm {
     /// instance's own copy of it (the only copy lima reads at boot).
     /// Only when the data disk exists -- with no disk there is nothing to
     /// protect, and the build that makes it is the one build that may
-    /// hand lima a `format: true`.
-    fn repair_stale_format(&self, inst: Option<&Instance>) {
-        if !matches!(self.lima_disk(), Ok(Some(_))) {
-            return;
-        }
+    /// hand lima a `format: true`. See [`plan_repair`] for the rules.
+    ///
+    /// Returns lima's copy of the template when that copy still says
+    /// `format: true` afterwards -- a running instance, which `limactl
+    /// edit` refuses, or an edit that failed. A caller that is about to
+    /// boot the instance must not go on when it does: that boot is
+    /// exactly what would let lima reformat a disk the factory is
+    /// already living on.
+    #[must_use = "a stale `format: true` must stop the boot, not be dropped"]
+    fn repair_stale_format(&self, inst: Option<&Instance>) -> Option<PathBuf> {
         let path = self.template_path();
-        let template_stale = std::fs::read_to_string(&path)
-            .map(|t| says_format_true(&t))
-            .unwrap_or(false);
-        let instance_stale = inst.is_some_and(|i| {
-            std::fs::read_to_string(Path::new(&i.dir).join("lima.yaml"))
+        let instance_yaml = inst.map(|i| Path::new(&i.dir).join("lima.yaml"));
+        let stale = |p: &Path| {
+            std::fs::read_to_string(p)
                 .map(|t| says_format_true(&t))
                 .unwrap_or(false)
-        });
-        if !template_stale && !instance_stale {
-            return;
+        };
+        let plan = plan_repair(
+            matches!(self.lima_disk(), Ok(Some(_))),
+            stale(&path),
+            instance_yaml.as_deref().is_some_and(stale),
+            inst.is_some_and(|i| i.is_running()),
+        );
+        if plan == Repair::default() {
+            return None;
         }
         warn!(
             "the data disk {} exists, but {} still lets lima format it (a build that did not finish); putting `format: false` back",
             self.lima_disk_name(),
-            if template_stale {
+            if plan.template {
                 path.display().to_string()
             } else {
                 format!("lima's copy of {}", path.display())
             }
         );
-        if template_stale && let Err(e) = self.write_template(false) {
+        if plan.template
+            && let Err(e) = self.write_template(false)
+        {
             warn!("could not rewrite {}: {e:#}", path.display());
         }
-        if instance_stale {
-            self.stop_formatting_data_disk();
+        let name = self.lima_name();
+        if plan.blocked {
+            warn!(
+                "lima's copy of the template for {name} still says `format: true` and {name} is running, which `limactl edit` refuses; stop it (`ssf vm stop`) and ssf repairs it at the next `ssf vm build` or `ssf vm start`"
+            );
+        } else if plan.instance
+            && let Err(e) = self.stop_formatting_data_disk()
+        {
+            warn!(
+                "could not turn `format` off for {name}'s data disk ({e:#}); `limactl edit {name} --set '{FORMAT_OFF}'` does it with the instance stopped, and until then a boot that cannot find the disk's label would reformat it"
+            );
+        } else {
+            return None;
         }
+        instance_yaml
+    }
+
+    /// What to tell a person whose boot has just been refused because
+    /// lima's copy of the template would let it reformat the data disk.
+    fn stale_format_error(&self, yaml: &Path) -> anyhow::Error {
+        let name = self.lima_name();
+        anyhow::anyhow!(
+            "{} still lets lima format the data disk {}, and that disk holds the factory's state; refusing to boot {name}. Stop the instance (`ssf vm stop`, or `limactl stop {name}`) and run this again -- ssf turns the flag off while the instance is stopped -- or do it by hand with `limactl edit {name} --set '{FORMAT_OFF}'`",
+            yaml.display(),
+            self.lima_disk_name(),
+        )
     }
 
     /// Write `lima.yaml` for this VM.
@@ -817,19 +1038,13 @@ impl Vm {
     /// is read at boot). A build made the disk with `format: true`
     /// because there was nothing to lose yet; from here on a boot that
     /// cannot find the disk's label must fail rather than reformat it.
-    /// Not fatal: the build succeeded, ssf's own template (the one
-    /// `ssf vm reset` reads, and the source of truth for what the next
-    /// instance gets) already says false, and the message says how to do
-    /// the instance by hand. [`Vm::repair_stale_format`] tries again on
-    /// the next `ssf vm build`.
-    fn stop_formatting_data_disk(&self) {
+    /// The instance must be stopped: `limactl edit` refuses a running one
+    /// ("cannot edit a running instance"), so callers go through
+    /// [`Vm::repair_stale_format`], which knows the instance's state,
+    /// rather than calling this on an instance they have not checked.
+    fn stop_formatting_data_disk(&self) -> Result<()> {
         let name = self.lima_name();
-        if let Err(e) = self.limactl_run(&["edit", &name, "--set", FORMAT_OFF]) {
-            warn!(
-                "could not turn `format` off for {}'s data disk ({e:#}); `limactl edit {name} --set '{FORMAT_OFF}'` does it, and until then a boot that cannot find the disk's label would reformat it",
-                name
-            );
-        }
+        self.limactl_run(&["edit", &name, "--set", FORMAT_OFF])
     }
 
     /// `limactl create` from the template written by a build.
@@ -877,15 +1092,35 @@ impl Vm {
         let deadline = Instant::now() + PROVISION_TIMEOUT;
         let mut idle = 0;
         loop {
-            // A probe that cannot run at all (the instance went away, ssh
-            // is not answering yet) is a round with nothing seen, not a
-            // failure: the wait's own deadline ends it. Said out loud so
-            // it is not silent.
+            // A probe that cannot run at all is usually transient: ssh in
+            // the guest is not up yet, or one `limactl shell` timed out.
+            // But `limactl shell` against a stopped or deleted instance
+            // ("instance %q is stopped, run `limactl start %s`") is the
+            // end, and reading that as "nothing seen" is what parked a
+            // wait for half an hour in silence. So a failed probe asks
+            // lima what the instance is doing, and only a definite answer
+            // other than Running ends the wait.
             let out = match self
                 .limactl_output_within(&["shell", &name, "sh", "-c", &probe], PROBE_LIMIT)
             {
                 Ok(out) => out,
                 Err(e) => {
+                    match self.lima_instance() {
+                        Ok(state) => {
+                            if let Some(why) =
+                                terminal_state(state.as_ref().map(|i| i.status.as_str()))
+                            {
+                                bail!(
+                                    "{name} {why} while waiting for it to provision itself ({e:#}); `ssf vm console` has its console, and `limactl shell {name} sudo tail {PROVISION_LOG}` its log once it runs again"
+                                );
+                            }
+                        }
+                        // Two failures in a row say nothing definite:
+                        // keep waiting, but not silently.
+                        Err(list) => warn!(
+                            "the provisioning probe did not run ({e:#}) and asking lima about {name} failed too ({list:#}); still waiting"
+                        ),
+                    }
                     debug!(error = format!("{e:#}"), "provisioning probe did not run");
                     String::new()
                 }
@@ -921,8 +1156,18 @@ impl Vm {
     /// Write `share/` fresh, start the instance, wait for the guest.
     pub(super) async fn lima_start(&self, host: &Config) -> Result<()> {
         let name = self.lima_name();
-        if self.lima_instance()?.is_none() {
+        let Some(inst) = self.lima_instance()? else {
             bail!("lima instance {name} does not exist; run `ssf vm build`");
+        };
+        // The boot below is what a `format: true` left by a build that
+        // did not finish would reach, and by now the data disk holds the
+        // factory. This is also the one point where the flag can still be
+        // put right: the instance is stopped here, which is the only
+        // state `limactl edit` accepts. A flag that survives the repair
+        // (an instance already running) stops the start rather than
+        // booting into it.
+        if let Some(yaml) = self.repair_stale_format(Some(&inst)) {
+            return Err(self.stale_format_error(&yaml));
         }
         self.ensure_key()?;
         self.write_share(host)?;
@@ -940,13 +1185,23 @@ impl Vm {
             );
         }
         self.wait_for_provisioning().await?;
-        if let Err(e) = self.wait_for_ssh(Duration::from_secs(120)).await {
+        if let Err(e) = self.wait_for_ssh(SEED_TIMEOUT).await {
             bail!(
                 "{e:#}; the console is in {}",
                 self.lima_console_log()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| "lima's instance directory".into())
             );
+        }
+        // The guest has provisioned and answered as `ssf`: the data disk
+        // is the factory's. The repair above ran before this boot, which
+        // is where it can work; this is the same point `ssf vm build`
+        // checks, and it is here so that a flag that came back (an
+        // instance edited by hand, a template restored from elsewhere)
+        // is said out loud rather than waiting for the next boot to be
+        // discovered.
+        if let Some(yaml) = self.repair_stale_format(self.lima_instance().ok().flatten().as_ref()) {
+            warn!("{:#}", self.stale_format_error(&yaml));
         }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
         self.report_up(daemon.as_deref());
@@ -988,9 +1243,31 @@ impl Vm {
     /// few minutes to shut down first).
     pub(super) async fn lima_stop(&self) -> Result<()> {
         let name = self.lima_name();
-        if !self.lima_running() {
-            println!("VM {} is not running", self.cfg.name);
-            return Ok(());
+        // "Not running" has to come from lima, not from a probe that
+        // failed: `.ok().flatten()` printed "VM is not running" over a
+        // running VM whenever `limactl list` had a bad moment, and the
+        // VM was then left up.
+        match self
+            .lima_instance()
+            .with_context(|| format!("asking lima whether {name} is running"))?
+        {
+            None => {
+                println!("there is no lima instance {name}");
+                return Ok(());
+            }
+            Some(inst) if !inst.is_running() => {
+                println!(
+                    "VM {} is not running{}",
+                    self.cfg.name,
+                    if inst.status.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" ({})", inst.status)
+                    }
+                );
+                return Ok(());
+            }
+            Some(_) => {}
         }
         if let Err(e) = self.limactl_run_within(&["stop", &name], STOP_LIMIT) {
             warn!("{e:#}; forcing it");
@@ -1046,8 +1323,9 @@ impl Vm {
         let name = self.lima_name();
         // The template is what the new instance inherits, so a stale
         // `format: true` in it has to go before the create, not after:
-        // the instance that is about to be deleted is not worth fixing.
-        self.repair_stale_format(None);
+        // the instance that is about to be deleted is not worth fixing,
+        // which is why no instance is passed and nothing can come back.
+        let _ = self.repair_stale_format(None);
         if self.lima_instance()?.is_some() {
             self.limactl_run(&["delete", "-f", &name])?;
         }
@@ -1177,10 +1455,7 @@ mod tests {
             "{y}"
         );
         assert!(y.contains("  - mode: system\n"), "{y}");
-        assert!(
-            y.contains("      exec bash /mnt/ssf/guest/lima-boot.sh\n"),
-            "{y}"
-        );
+        assert!(y.contains("      exec bash \"$boot\"\n"), "{y}");
         // aarch64 boots Ubuntu; a set image replaces the base; vmType
         // and a larger root pass through.
         let y = render_template(&Template {
@@ -1310,6 +1585,323 @@ mod tests {
         assert!(CREATE_LIMIT > QUICK_LIMIT);
         assert!(PROBE_LIMIT < QUICK_LIMIT);
         assert!(STOP_LIMIT > QUICK_LIMIT);
+    }
+
+    #[test]
+    fn the_templates_boot_hook_waits_for_the_share_itself() {
+        // The hook is the only part of the boot that is not in the share,
+        // so it is the only part that can report the share missing. If it
+        // went back to a bare `exec`, a guest that never got its mount
+        // would write no log at all and the host would wait out
+        // PROVISION_TIMEOUT with nothing to show.
+        let hook = boot_hook();
+        assert!(hook.starts_with("#!/bin/bash\n"), "{hook}");
+        assert!(hook.contains(&format!("log={PROVISION_LOG}")), "{hook}");
+        assert!(
+            hook.contains(&format!("boot={GUEST_MOUNT}/guest/lima-boot.sh")),
+            "{hook}"
+        );
+        assert!(hook.contains(&format!("i < {SHARE_WAIT_SECS}")), "{hook}");
+        // The failure goes to the log the host watches, not only to
+        // lima's output, and it is a failure (`exit 1`), not a fall
+        // through into an `exec` that cannot work.
+        let fail = hook
+            .lines()
+            .find(|l| l.contains("FAILED"))
+            .unwrap_or_else(|| panic!("{hook}"));
+        assert!(fail.contains("tee -a \"$log\""), "{fail}");
+        assert!(hook.contains("    exit 1\n"), "{hook}");
+        assert!(hook.trim_end().ends_with("exec bash \"$boot\""), "{hook}");
+        // It has to be shell that runs: the guest gets it as written.
+        let out = std::process::Command::new("bash")
+            .args(["-n", "-c", &hook])
+            .output()
+            .expect("bash runs");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        // And the template indents every line of it under `script: |`.
+        let y = vm().lima_template(true).unwrap();
+        for line in hook.lines().filter(|l| !l.is_empty()) {
+            assert!(y.contains(&format!("\n      {line}\n")), "{line} in {y}");
+        }
+    }
+
+    #[test]
+    fn the_ssh_wait_outlasts_the_seeds_own_waits() {
+        // The marker the provisioning wait ends on is written before
+        // `ssf-seed.service` is queued, so what the ssh wait after it is
+        // really waiting for is the seed -- which waits for the share and
+        // for the data disk before it writes authorized_keys. Read those
+        // waits out of the script itself, so that lengthening one of them
+        // and leaving this alone fails here rather than in the field with
+        // "provisioned, but the guest does not answer as ssf".
+        let script = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("vm/guest/seed-lima.sh"),
+        )
+        .expect("vm/guest/seed-lima.sh");
+        let waits: u64 = script
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("wait_for "))
+            .filter_map(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
+            .sum();
+        assert!(waits >= 240, "the seed's waits are {waits}s: {script}");
+        assert!(
+            SEED_TIMEOUT > Duration::from_secs(waits),
+            "SEED_TIMEOUT is {}, the seed may wait {waits}s before it writes authorized_keys",
+            human_duration(SEED_TIMEOUT)
+        );
+        // With room left for the home copy that follows them.
+        assert!(SEED_TIMEOUT - Duration::from_secs(waits) >= Duration::from_secs(120));
+    }
+
+    #[test]
+    fn a_running_instance_is_never_edited_in_place() {
+        // `limactl edit` refuses a running instance (lima 2.2.0: "cannot
+        // edit a running instance"), so a repair that ran it anyway got
+        // an error, warned, and left the instance booting with
+        // `format: true` over a disk that by then held the factory. The
+        // rule is: ssf's own template is always rewritten, the instance's
+        // copy only while it is stopped, and a running one is reported.
+        assert_eq!(
+            plan_repair(true, true, true, true),
+            Repair {
+                template: true,
+                instance: false,
+                blocked: true
+            }
+        );
+        assert_eq!(
+            plan_repair(true, true, true, false),
+            Repair {
+                template: true,
+                instance: true,
+                blocked: false
+            }
+        );
+        // Only lima's copy stale (a build rewrote ssf's own and then died).
+        assert_eq!(
+            plan_repair(true, false, true, false),
+            Repair {
+                template: false,
+                instance: true,
+                blocked: false
+            }
+        );
+        // Only ssf's own stale: nothing to edit, and nothing blocked.
+        assert_eq!(
+            plan_repair(true, true, false, true),
+            Repair {
+                template: true,
+                instance: false,
+                blocked: false
+            }
+        );
+        // Nothing stale, and -- whatever the templates say -- no disk
+        // means nothing to protect: the build that makes the disk is the
+        // one build that may hand lima `format: true`.
+        assert_eq!(plan_repair(true, false, false, false), Repair::default());
+        assert_eq!(plan_repair(false, true, true, false), Repair::default());
+        assert_eq!(plan_repair(false, true, true, true), Repair::default());
+    }
+
+    #[test]
+    fn the_repair_edits_a_stopped_instance_and_reports_a_running_one() {
+        // The same rules through `limactl` itself: a fake one records
+        // what it was asked to do.
+        for (status, edited) in [("Stopped", true), ("Running", false)] {
+            let t = Fake::new(status);
+            let stale = t.vm.repair_stale_format(Some(&t.instance));
+            // ssf's own template is a file: it is put right either way.
+            assert!(
+                !says_format_true(&std::fs::read_to_string(t.vm.template_path()).unwrap()),
+                "{status}"
+            );
+            assert_eq!(
+                t.ran("edit"),
+                edited,
+                "{status}: limactl ran {:?}",
+                t.commands()
+            );
+            if edited {
+                assert!(
+                    t.commands()
+                        .iter()
+                        .any(|c| c == &format!("edit ssf-one --set {FORMAT_OFF}")),
+                    "{:?}",
+                    t.commands()
+                );
+                // Repaired: nothing for the caller to refuse over.
+                assert_eq!(stale, None);
+            } else {
+                // Not repaired, and said so: lima's copy of the template
+                // comes back, and every caller that is about to boot the
+                // instance stops on it.
+                assert_eq!(stale, Some(t.instance_yaml()));
+                let err = t.vm.stale_format_error(&stale.unwrap()).to_string();
+                assert!(err.contains("refusing to boot ssf-one"), "{err}");
+                assert!(err.contains("ssf vm stop"), "{err}");
+                assert!(err.contains(FORMAT_OFF), "{err}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_start_repairs_the_flag_before_the_boot_and_refuses_what_it_cannot_repair() {
+        // `ssf vm start` is the boot that a `format: true` left by a
+        // failed build would reach, and by then the data disk holds the
+        // factory. A stopped instance is repaired in place and the start
+        // goes on (as far as this fake takes it); a running one cannot be
+        // edited, and the start stops rather than leaving lima free to
+        // reformat the disk.
+        let t = Fake::new("Running");
+        let err =
+            t.vm.lima_start(&Config::default())
+                .await
+                .expect_err("a start over a stale format flag must not go ahead")
+                .to_string();
+        assert!(
+            err.contains("still lets lima format the data disk"),
+            "{err}"
+        );
+        assert!(err.contains("refusing to boot ssf-one"), "{err}");
+        // It stopped before it did anything to the instance.
+        assert!(!t.ran("start") && !t.ran("edit"), "{:?}", t.commands());
+
+        // Stopped: the flag is turned off first (`limactl edit` takes a
+        // stopped instance) and the start goes on to boot it. This fake's
+        // instance never comes up, which is the other fix in the same
+        // path: a probe that cannot run against an instance lima says is
+        // stopped ends the wait then and there, instead of leaving it
+        // parked for PROVISION_TIMEOUT with nothing on screen.
+        let t = Fake::new("Stopped");
+        let started = Instant::now();
+        let err =
+            t.vm.lima_start(&Config::default())
+                .await
+                .expect_err("this instance never provisions itself")
+                .to_string();
+        assert!(t.ran("edit"), "{:?}", t.commands());
+        assert!(
+            t.commands()
+                .iter()
+                .any(|c| c == &format!("edit ssf-one --set {FORMAT_OFF}")),
+            "{:?}",
+            t.commands()
+        );
+        assert!(err.contains("is stopped, not running"), "{err}");
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "the wait sat for {:?}",
+            started.elapsed()
+        );
+    }
+
+    /// A `Vm` whose `limactl` is a script that answers `list` and `disk
+    /// list` and records everything it is asked, with both templates left
+    /// saying `format: true` as a build that died would leave them.
+    struct Fake {
+        vm: Vm,
+        instance: Instance,
+        dir: PathBuf,
+    }
+
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl Fake {
+        fn new(status: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "ssf-lima-fake-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let inst_dir = dir.join("lima/ssf-one");
+            std::fs::create_dir_all(&inst_dir).unwrap();
+            let log = dir.join("limactl.log");
+            let json = format!(
+                r#"{{"name":"ssf-one","status":"{status}","dir":"{}","sshLocalPort":2222,"cpus":3,"memory":8589934592}}"#,
+                inst_dir.display()
+            );
+            let limactl = dir.join("limactl");
+            std::fs::write(
+                &limactl,
+                format!(
+                    // `shell` fails the way limactl fails against an
+                    // instance that is not running, so a wait that got
+                    // that far ends on the instance's state instead of
+                    // sitting out PROVISION_TIMEOUT.
+                    "#!/bin/sh\nshift\nprintf '%s\\n' \"$*\" >> {log}\ncase \"$*\" in\n  'disk list --json') echo '{{\"name\":\"ssf-one\",\"size\":21474836480,\"dir\":\"/d\",\"mountPoint\":\"/mnt/lima-ssf-one\"}}' ;;\n  'list --json') echo '{json}' ;;\n  shell*) echo 'instance \"ssf-one\" is stopped, run `limactl start ssf-one`' >&2; exit 1 ;;\nesac\nexit 0\n",
+                    log = log.display(),
+                ),
+            )
+            .unwrap();
+            make_executable(&limactl).unwrap();
+            let mut cfg = Config::default();
+            cfg.vm.dir = dir.join("vm").to_string_lossy().into_owned();
+            cfg.vm.name = "one".into();
+            cfg.vm.backend = Some(BackendKind::Lima);
+            cfg.vm.limactl = Some(limactl.to_string_lossy().into_owned());
+            // `share/` is written on the way into a start, and the seed
+            // tree in it holds the guest's own `ssf` binary. On a Linux
+            // host that is this process's binary -- 150 MB of debug build
+            // copied into the temporary directory on every run of this
+            // test. The fake stands in for it: what is being tested here
+            // is the order of the steps, not what the seed carries.
+            cfg.vm.guest_binary = Some(limactl.to_string_lossy().into_owned());
+            let vm = Vm::new(&cfg);
+            std::fs::create_dir_all(&vm.dir).unwrap();
+            // What a build that died after `limactl create` leaves: both
+            // copies of the template still say `format: true`.
+            std::fs::write(vm.template_path(), vm.lima_template(true).unwrap()).unwrap();
+            std::fs::write(inst_dir.join("lima.yaml"), vm.lima_template(true).unwrap()).unwrap();
+            let instance = parse_instances(&json).pop().expect("one instance");
+            Self { vm, instance, dir }
+        }
+
+        fn instance_yaml(&self) -> PathBuf {
+            PathBuf::from(&self.instance.dir).join("lima.yaml")
+        }
+
+        fn commands(&self) -> Vec<String> {
+            std::fs::read_to_string(self.dir.join("limactl.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn ran(&self, verb: &str) -> bool {
+            self.commands().iter().any(|c| c.starts_with(verb))
+        }
+    }
+
+    #[test]
+    fn a_stopped_or_missing_instance_ends_the_provisioning_wait() {
+        // A probe that cannot run is usually transient (ssh in the guest
+        // is not up yet). A stopped or deleted instance is not: nothing
+        // is going to provision itself, and reading it as "nothing seen"
+        // is what parked a wait for the whole PROVISION_TIMEOUT in
+        // silence.
+        assert_eq!(terminal_state(Some("Running")), None);
+        let gone = terminal_state(None).unwrap();
+        assert!(gone.contains("not there any more"), "{gone}");
+        assert_eq!(
+            terminal_state(Some("Stopped")).unwrap(),
+            "is stopped, not running"
+        );
+        assert_eq!(
+            terminal_state(Some("Broken")).unwrap(),
+            "is broken, not running"
+        );
     }
 
     #[test]
