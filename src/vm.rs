@@ -2282,7 +2282,7 @@ impl Vm {
         match (self.backend(), self.running_state()) {
             (_, Some(false)) => {}
             (BackendKind::Firecracker, _) => self.stop().await?,
-            (BackendKind::Lima, _) => {
+            (BackendKind::Lima, Some(true)) => {
                 if let Err(e) = self.stop().await {
                     warn!(
                         "could not stop {} before destroying it: {e:#}; deleting it anyway",
@@ -2290,6 +2290,15 @@ impl Vm {
                     );
                 }
             }
+            // A lima that could not be asked is not asked twice more for
+            // nothing: `lima_stop` re-runs the same listing and
+            // `lima_destroy` runs it again after that, so a limactl that
+            // hangs rather than fails bought this step minutes of
+            // silence and a warning that explains none of it. The
+            // graceful shutdown is worth its wait where the guest is
+            // known to be up; where it is not, `limactl delete -f` stops
+            // whatever is there.
+            (BackendKind::Lima, None) => {}
         }
         let lima = match self.backend() {
             BackendKind::Lima => self.lima_destroy(),
@@ -2324,7 +2333,9 @@ impl Vm {
             (Err(e), Ok(())) | (Ok(_), Err(e)) => return Err(e),
         }
         if !removed {
-            println!("nothing to remove ({} is not there)", self.dir.display());
+            // Not "the directory is not there": under lima that
+            // directory is precisely what the question did not turn on.
+            println!("nothing to remove");
         }
         Ok(())
     }

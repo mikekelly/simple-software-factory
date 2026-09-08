@@ -996,8 +996,8 @@ come back with it.
    service runs under, a stale `[vm] limactl` -- what settles it is
    whether `[vm] dir` or lima's home still holds the instance or the
    disk, so a machine with nothing of either on it gets a plain `no VM`
-   and one that still has a disk of workspaces is never told it has
-   none. Each
+   and one that still has a disk of workspaces is never told it has none.
+   Each
    step tolerates the thing being gone already, so a second run, or a
    run on a half-uninstalled machine, is fine. With the factory in the
    VM the report and the purge come from the guest, before it goes. The one

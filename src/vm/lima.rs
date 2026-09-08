@@ -1867,7 +1867,29 @@ impl Vm {
             removed = true;
         }
         let disk = self.lima_disk_name();
-        if self.lima_disk()?.is_some() {
+        // The same rule as the instance above: a `limactl` that will not
+        // answer is not the last word when lima's own filesystem can be
+        // looked at. The survey already trusts `<lima home>/_disks/` for
+        // the decision that *permits* the destroying, so refusing to
+        // trust it for the one that declares the destroying finished
+        // failed the step over a disk directory demonstrably not there.
+        let held = match self.lima_disk() {
+            Ok(d) => d.is_some(),
+            Err(e) => match self.lima_disk_dir().map(|p| p.exists()) {
+                Some(false) => {
+                    warn!(
+                        "could not ask lima about disk {disk} ({e:#}); its home holds no such disk"
+                    );
+                    false
+                }
+                _ => {
+                    return Err(e).with_context(|| {
+                        format!("lima cannot be asked about disk {disk}, and its home may hold it")
+                    });
+                }
+            },
+        };
+        if held {
             self.limactl_run(&["disk", "delete", &disk])?;
             println!("deleted lima disk {disk}");
             removed = true;
@@ -2657,9 +2679,34 @@ mod tests {
         // swallowed error here would turn the next run into a host-mode
         // one over a data disk that is still there.
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Answers);
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("_disks").join("ssf-one")).unwrap();
         let err = t.vm.lima_destroy().unwrap_err().to_string();
-        assert!(err.contains("disk list"), "{err}");
+        assert!(err.contains("may hold it"), "{err}");
         assert!(t.ran("delete -f ssf-one"), "{:?}", t.commands());
+        // With nothing of the disk in lima's home there is nothing to
+        // delete, and a limactl that would not say so is no reason to
+        // fail the step.
+        std::fs::remove_dir_all(home.join("_disks")).unwrap();
+        assert!(t.vm.lima_destroy().is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_vm_directory_goes_even_when_limas_half_of_the_destroy_failed() {
+        // `[vm] dir` is ssf's own -- the generated template, the ssh key
+        // and the share -- and lima not answering is no reason to leave
+        // it behind for the next run to trip over. The failure is still
+        // the step's failure, and it has to be, because `ssf uninstall`
+        // only writes `[vm] enabled = false` once the destroy succeeded.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Fails);
+        assert!(t.vm.dir.exists());
+        let err = t.vm.destroy().await.unwrap_err().to_string();
+        assert!(err.contains("still holds something of ssf-one"), "{err}");
+        assert!(!t.vm.dir.exists(), "the directory is ssf's own and goes");
+        // Nothing of lima's and no directory: a destroy with nothing to
+        // do says so rather than claiming a removal it did not make.
+        std::fs::remove_dir_all(t.vm.lima_home.clone().unwrap()).unwrap();
+        assert!(t.vm.destroy().await.is_ok());
     }
 
     #[test]
