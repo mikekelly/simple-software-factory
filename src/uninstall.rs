@@ -385,11 +385,7 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
         // "no VM" on its own would be a lie while lima holds an
         // `ssf-*` instance: what there is none of is a VM for *this*
         // configuration, and the strays are named under `keep:` below.
-        Some(false) => remove.push(if facts.vm_strays.is_empty() {
-            "no VM".to_string()
-        } else {
-            format!("no VM named {} to remove", facts.vm_name)
-        }),
+        Some(false) => remove.push(no_vm_line(facts)),
         None => remove.push(format!(
             "VM {}: could not be asked whether it is there; the destroy step tries anyway and says what happened",
             facts.vm_name
@@ -437,9 +433,18 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
         ));
     }
     if facts.vm_base.exists() {
+        // "safe to remove" is only true of the images and downloads. A
+        // VM directory a changed `[vm] name` orphaned sits in here too,
+        // with its data disk, and is listed on its own below.
+        let holds_work = facts.vm_strays.iter().any(|s| s.holds_work());
         keep.push(format!(
-            "{} (VM image and downloads; safe to remove)",
-            facts.vm_base.display()
+            "{} (VM image and downloads{})",
+            facts.vm_base.display(),
+            if holds_work {
+                "; safe to remove except for what is listed below"
+            } else {
+                "; safe to remove"
+            }
         ));
     }
     if !opts.data {
@@ -451,10 +456,16 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     }
     for stray in &facts.vm_strays {
         keep.push(format!(
-            "the {} {} -- not this configuration's, so untouched, `--force` included; remove it yourself with `{}`",
+            "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
             stray.what(),
             stray.name,
-            stray.remove_command()
+            if stray.holds_work() {
+                " (its clones and worktrees are in it)"
+            } else {
+                ""
+            },
+            stray.remove,
+            stray.caveat()
         ));
     }
     keep.push(format!(
@@ -581,6 +592,18 @@ pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Op
         ));
     }
     None
+}
+
+/// "There is nothing to destroy", said so that it stays true. A bare
+/// "no VM" over an instance lima is holding, or a VM directory `[vm]
+/// dir` still has, is the sentence this whole change exists to stop --
+/// so both the report and the destroy step say it through here.
+fn no_vm_line(facts: &Facts) -> String {
+    if facts.vm_strays.is_empty() {
+        "no VM".to_string()
+    } else {
+        format!("no VM named {} to remove", facts.vm_name)
+    }
 }
 
 /// Would going ahead destroy work nobody has looked at? Only a data disk
@@ -834,7 +857,9 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     // unknown goes through `destroy`, which says what it found.
     let mut vm_gone = true;
     if facts.vm_present == Some(false) {
-        println!("no VM");
+        // The same sentence the report is careful about: there is no VM
+        // *named this*, which is not the same as nothing being here.
+        println!("{}", no_vm_line(&facts));
     } else if let Err(e) = vm.destroy().await {
         fail("vm", e);
         vm_gone = false;
@@ -1611,14 +1636,8 @@ mod tests {
             vm_startable: false,
             vm_data: Some(false),
             vm_strays: vec![
-                vm::Stray {
-                    name: "ssf-old".into(),
-                    kind: vm::StrayKind::Instance,
-                },
-                vm::Stray {
-                    name: "ssf-old".into(),
-                    kind: vm::StrayKind::Disk,
-                },
+                vm::Stray::lima_instance("ssf-old".into()),
+                vm::Stray::lima_disk("ssf-old".into()),
             ],
             ..facts()
         };
@@ -1632,6 +1651,20 @@ mod tests {
             assert!(text.contains(cmd), "{cmd} missing from:\n{text}");
         }
         assert!(text.contains("`--force` included"), "{text}");
+        // An observation, not a claim of ownership: ssf did not
+        // necessarily create it and does not need to have, because
+        // nothing here removes one.
+        assert!(
+            text.contains("which this configuration does not name"),
+            "{text}"
+        );
+        assert!(!text.contains("not this configuration's"), "{text}");
+        // The disk cannot go before its instance, and one line is all a
+        // person reads.
+        assert!(text.contains("after its instance"), "{text}");
+        // The step that runs after the confirmation says it the same
+        // way; a bare "no VM" there is the last word the person reads.
+        assert_eq!(no_vm_line(&stray), "no VM named new to remove");
         // A stray is outside the thing being uninstalled, so nothing
         // stops the command over it and no flag turns it into a target.
         assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
@@ -1646,6 +1679,47 @@ mod tests {
         let text = render(&alone, &Report::default(), &Opts::default());
         assert!(text.contains("no VM"), "{text}");
         assert!(!text.contains("limactl delete"), "{text}");
+        assert_eq!(no_vm_line(&alone), "no VM");
+    }
+
+    #[test]
+    fn the_directory_holding_an_orphaned_data_disk_is_not_called_safe_to_remove() {
+        // `[vm] dir` is "the image and downloads, safe to remove" -- and
+        // under Firecracker it is also where a VM directory a changed
+        // `[vm] name` orphaned sits, with its clones. Saying "safe to
+        // remove" over that is the report telling a person to delete
+        // their own work, which is worse than deleting it: they run the
+        // command themselves and it succeeds.
+        let base = std::env::temp_dir().join(format!("ssf-keep-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let orphan = Facts {
+            vm_base: base.clone(),
+            vm_present: Some(false),
+            vm_data: Some(false),
+            vm_strays: vec![vm::Stray::directory(&base.join("old"))],
+            ..facts()
+        };
+        let text = render(&orphan, &Report::default(), &Opts::default());
+        let clean = Facts {
+            vm_strays: Vec::new(),
+            ..orphan.clone()
+        };
+        let clean_text = render(&clean, &Report::default(), &Opts::default());
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(
+            text.contains("safe to remove except for what is listed below"),
+            "{text}"
+        );
+        assert!(
+            text.contains("its clones and worktrees are in it"),
+            "{text}"
+        );
+        assert!(text.contains("rm -rf"), "{text}");
+        // With nothing orphaned the old, true sentence stands.
+        assert!(
+            clean_text.contains("downloads; safe to remove)"),
+            "{clean_text}"
+        );
     }
 
     #[test]
