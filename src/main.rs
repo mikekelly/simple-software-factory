@@ -2372,6 +2372,14 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                         _ => "stopped".to_string(),
                     }
                 );
+                for stray in &st.strays {
+                    println!(
+                        "stray:    {} {} ({})",
+                        stray.what(),
+                        stray.name,
+                        stray.remove
+                    );
+                }
                 println!(
                     "ssh:      {}",
                     if st.ssh {
@@ -3930,28 +3938,37 @@ async fn doctor() -> Result<()> {
     // VM on.
     if reports_backend_tooling(vm::in_guest()) {
         let vm = vm::Vm::new(&cfg);
+        let tooling = vm.tooling();
         println!(
             "note {} backend: {}{}",
             vm.backend(),
-            vm.tooling().detail,
+            tooling.detail,
             if cfg.vm.enabled {
                 ""
             } else {
                 "; [vm] enabled is false, so nothing here needs it until you turn the VM on"
             }
         );
-        // Instances and disks a changed `[vm] name` left behind. Nothing
-        // ssf runs will remove them -- it cannot tell one kept on
-        // purpose from one abandoned -- so the only way they stop being
-        // invisible is by being named here, with the command.
-        for stray in vm.survey().strays {
-            println!(
-                "note {} {}: not named by this config ([vm] name = {}); remove it with `{}` if you are done with it",
-                stray.what(),
-                stray.name,
-                cfg.vm.name,
-                stray.remove_command()
-            );
+        // What a changed `[vm] name` left behind. Nothing ssf runs will
+        // remove one -- it cannot tell one kept on purpose from one
+        // abandoned -- so being named here is the only way they stop
+        // being invisible.
+        //
+        // Only where the backend's tooling is actually installed: the
+        // survey forks `limactl` twice, and on a machine that has no
+        // lima the line above has already said so, so asking would buy a
+        // warning and a wait in exchange for an answer already known.
+        if tooling.ok {
+            for stray in vm.survey().strays {
+                println!(
+                    "note {} {}, which this config does not name ([vm] name = {}); ssf leaves it alone -- `{}` removes it{}",
+                    stray.what(),
+                    stray.name,
+                    cfg.vm.name,
+                    stray.remove,
+                    stray.caveat()
+                );
+            }
         }
     }
     // The widget lives on the host; inside the guest there is no Omarchy

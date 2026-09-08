@@ -420,17 +420,20 @@ pub fn disk_name(name: &str) -> String {
 /// and the order a person has to delete them in. Both ways of finding
 /// strays -- lima's listing and lima's filesystem -- report in it, so
 /// what `ssf uninstall` prints does not depend on which one answered.
-fn sort_strays(strays: &mut [Stray]) {
+pub(super) fn sort_strays(strays: &mut [Stray]) {
     strays.sort_by(|a, b| {
-        (matches!(a.kind, StrayKind::Disk), &a.name)
-            .cmp(&(matches!(b.kind, StrayKind::Disk), &b.name))
+        (matches!(a.kind, StrayKind::LimaDisk), &a.name)
+            .cmp(&(matches!(b.kind, StrayKind::LimaDisk), &b.name))
     });
 }
 
-/// Does lima's name for this belong to an ssf VM? Everything ssf creates
-/// in lima's home is `ssf-<[vm] name>`, so the prefix is what marks the
-/// instances and disks a changed `[vm] name` orphaned. `ssf-` alone is
-/// not one: `[vm] name` is never empty (`check_name` refuses it).
+/// Does this name have the shape ssf gives things in lima's home
+/// (`ssf-<[vm] name>`)? That prefix is all there is to go on, so a lima
+/// instance someone else happened to call `ssf-something` matches too --
+/// which costs a line in a report and nothing else, because nothing here
+/// removes what it finds. The report says what it observed rather than
+/// claiming the thing is ssf's. `ssf-` alone is not one: `check_name`
+/// refuses an empty `[vm] name`.
 pub fn is_ssf_name(name: &str) -> bool {
     name.strip_prefix("ssf-")
         .is_some_and(|rest| !rest.is_empty())
@@ -439,8 +442,15 @@ pub fn is_ssf_name(name: &str) -> bool {
 /// The longest `[vm] name` whose data-disk label fits (`lima-ssf-<name>`).
 pub const MAX_NAME_LEN: usize = 16 - "lima-ssf-".len();
 
-/// Refuse a `[vm] name` the lima backend cannot label a disk for.
+/// Refuse a `[vm] name` this backend cannot work with: too long for the
+/// disk label, or empty. Empty is not a nicety -- `ssf-` is not an
+/// `is_ssf_name`, so such an instance could never be reported as a
+/// stray, and `Vm::dir` would be `[vm] dir` itself, which `Vm::destroy`
+/// removes whole.
 pub fn check_name(name: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        bail!("[vm] name is empty; it names the lima instance and the directory under [vm] dir");
+    }
     if name.len() > MAX_NAME_LEN {
         bail!(
             "[vm] name \"{name}\" is too long for the lima backend: lima labels the data disk `lima-ssf-<name>` and an ext4 label holds 16 characters, so the name can have at most {MAX_NAME_LEN}"
@@ -894,6 +904,11 @@ impl Vm {
             .find(|i| i.name == name))
     }
 
+    /// [`Vm::lima_instances_within`] at the listing's own bound.
+    pub(super) fn lima_instances(&self) -> Result<Vec<Instance>> {
+        self.lima_instances_within(QUICK_LIMIT)
+    }
+
     /// Every instance lima has, so the survey can see the ones this
     /// configuration does not name as well as the one it does.
     fn lima_instances_within(&self, limit: Duration) -> Result<Vec<Instance>> {
@@ -995,7 +1010,11 @@ impl Vm {
                     self.lima_disk_name()
                 );
                 // Lima's own filesystem, for the one answer whose loss
-                // cannot be undone.
+                // cannot be undone -- and for the *other* disks in it,
+                // on the same rule. Leaving those out hid an old data
+                // disk full of clones in exactly the case where
+                // `limactl disk list` is no use to the person either.
+                strays.extend(self.disk_strays_on_disk());
                 self.lima_disk_dir().map(|p| p.exists())
             }
         };
@@ -1018,7 +1037,7 @@ impl Vm {
     /// in lima's home: the old instance keeps its old name, and asking
     /// only about the new one is how `ssf uninstall` came to say "no VM"
     /// over a VM that was sitting right there.
-    fn split_instances(&self, all: Vec<Instance>) -> (Option<Instance>, Vec<Stray>) {
+    pub(super) fn split_instances(&self, all: Vec<Instance>) -> (Option<Instance>, Vec<Stray>) {
         let name = self.lima_name();
         let mut mine = None;
         let mut strays = Vec::new();
@@ -1026,10 +1045,7 @@ impl Vm {
             if i.name == name {
                 mine = Some(i);
             } else if is_ssf_name(&i.name) {
-                strays.push(Stray {
-                    name: i.name,
-                    kind: StrayKind::Instance,
-                });
+                strays.push(Stray::lima_instance(i.name));
             }
         }
         (mine, strays)
@@ -1045,10 +1061,7 @@ impl Vm {
             if d.name == name {
                 mine = true;
             } else if is_ssf_name(&d.name) {
-                strays.push(Stray {
-                    name: d.name,
-                    kind: StrayKind::Disk,
-                });
+                strays.push(Stray::lima_disk(d.name));
             }
         }
         (mine, strays)
@@ -1098,30 +1111,47 @@ impl Vm {
     /// configuration does not name, read off the filesystem for when
     /// `limactl` will not list them. Reported, never removed -- so
     /// naming a directory lima might disown costs a line, not a VM.
-    fn strays_on_disk(&self) -> Vec<Stray> {
-        let mine = (self.lima_name(), self.lima_disk_name());
-        let mut strays = Vec::new();
-        for (dir, kind, ours) in [
-            (self.lima_home.clone(), StrayKind::Instance, mine.0),
-            (
-                self.lima_home.as_ref().map(|h| h.join("_disks")),
-                StrayKind::Disk,
-                mine.1,
-            ),
-        ] {
-            let Some(dir) = dir else { continue };
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for e in entries.flatten() {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if name != ours && is_ssf_name(&name) && e.path().is_dir() {
-                    strays.push(Stray { name, kind });
-                }
-            }
-        }
+    pub(super) fn strays_on_disk(&self) -> Vec<Stray> {
+        let mut strays = self.instance_strays_on_disk();
+        strays.extend(self.disk_strays_on_disk());
         sort_strays(&mut strays);
         strays
+    }
+
+    /// The instance half of [`Vm::strays_on_disk`].
+    fn instance_strays_on_disk(&self) -> Vec<Stray> {
+        Self::ssf_dirs_in(self.lima_home.as_deref(), &self.lima_name())
+            .into_iter()
+            .map(Stray::lima_instance)
+            .collect()
+    }
+
+    /// The data-disk half, which is the one that holds clones and
+    /// worktrees -- so it is wanted on its own whenever `limactl disk
+    /// list` is the call that failed.
+    pub(super) fn disk_strays_on_disk(&self) -> Vec<Stray> {
+        Self::ssf_dirs_in(
+            self.lima_home.as_ref().map(|h| h.join("_disks")).as_deref(),
+            &self.lima_disk_name(),
+        )
+        .into_iter()
+        .map(Stray::lima_disk)
+        .collect()
+    }
+
+    /// The `ssf-*` directories in one of lima's directories, other than
+    /// `ours`.
+    fn ssf_dirs_in(dir: Option<&Path>, ours: &str) -> Vec<String> {
+        let Some(dir) = dir else { return Vec::new() };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name != ours && is_ssf_name(name))
+            .collect()
     }
 
     /// The data disk's size as lima has it, else what a build would make.
@@ -2744,13 +2774,7 @@ mod tests {
         std::fs::remove_dir_all(&t.vm.dir).unwrap();
         let s = t.vm.survey();
         assert_eq!(s.present, Some(true), "this config's own disk is there");
-        assert_eq!(
-            s.strays,
-            vec![Stray {
-                name: "ssf-old".into(),
-                kind: StrayKind::Instance,
-            }]
-        );
+        assert_eq!(s.strays, vec![Stray::lima_instance("ssf-old".into())]);
         // And it changes none of the answers about *this* VM, which is
         // the whole point: `ssf-one` is still the stopped, startable
         // instance with the data disk, and `ssf-old` is a line in the
@@ -2784,8 +2808,7 @@ mod tests {
             ["ssf-old", "ssf-one"]
         );
         assert_eq!(
-            s.strays[0].remove_command(),
-            "limactl delete ssf-old",
+            s.strays[0].remove, "limactl delete ssf-old",
             "the command carries the name the person no longer has"
         );
     }
@@ -2798,16 +2821,46 @@ mod tests {
         let home = t.vm.lima_home.clone().unwrap();
         std::fs::create_dir_all(home.join("ssf-old")).unwrap();
         std::fs::create_dir_all(home.join("_disks").join("ssf-older")).unwrap();
-        let named: Vec<_> =
-            t.vm.survey()
-                .strays
-                .into_iter()
-                .map(|s| s.remove_command())
-                .collect();
+        let named: Vec<_> = t.vm.survey().strays.into_iter().map(|s| s.remove).collect();
         assert_eq!(
             named,
             ["limactl delete ssf-old", "limactl disk delete ssf-older"]
         );
+    }
+
+    #[test]
+    fn a_failed_disk_listing_does_not_hide_the_other_disks() {
+        // The rule that lima's filesystem answers what `limactl` will
+        // not, applied to the strays and not just to this VM's own disk.
+        // Leaving it out hid an old data disk of clones in exactly the
+        // case where `limactl disk list` is no use to the person either.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Empty);
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("_disks").join("ssf-old")).unwrap();
+        let s = t.vm.survey();
+        assert_eq!(
+            s.strays
+                .iter()
+                .map(|x| x.remove.as_str())
+                .collect::<Vec<_>>(),
+            ["limactl disk delete ssf-old"]
+        );
+        // And it is still not this configuration's VM.
+        assert_eq!(s.present, Some(false));
+        assert_eq!(s.data, Some(false));
+    }
+
+    #[test]
+    fn an_empty_vm_name_is_refused() {
+        // `ssf-` is not an `is_ssf_name`, so an instance built from an
+        // empty name could never be reported as a stray -- and `Vm::dir`
+        // would be `[vm] dir` itself, which `Vm::destroy` removes whole.
+        for bad in ["", " ", "\t"] {
+            let err = check_name(bad).unwrap_err().to_string();
+            assert!(err.contains("empty"), "{bad:?}: {err}");
+        }
+        assert!(check_name("default").is_ok());
     }
 
     #[test]
