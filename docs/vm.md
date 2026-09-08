@@ -138,20 +138,21 @@ either (a 2.0.0 built from source, which is what Homebrew does, has
 them; the floor excludes it anyway, and 2.0.1 came the same day). And
 the template leaves the share's mount type to lima, whose default for
 qemu is 9p -- mounted before the guest provisions itself -- only from
-lima 1.0; reverse-sshfs, the default before that, is mounted after the
-guest is up and so is not there when the guest looks for `/mnt/ssf`. A
+lima 1.0; reverse-sshfs, the default before that, is mounted by the host
+agent instead, around the time the guest starts waiting for the share
+rather than ahead of it. A
 `limactl` whose version cannot be read (a build with none stamped in
 prints `<unknown>`) is let through with a warning. ssf is tested against
 lima 2.2.0.
 
 The version check is `ssf vm build`'s: the `tooling:` line reports where
 `limactl` was found, not what version it is, so an old lima shows there
-as installed and is refused by the build. One thing the floor cannot
-settle either way is a `mountType` set for every instance in lima's own
-`~/.lima/_config` (`default.yaml`, or `override.yaml`, which beats a
-template outright): set to `reverse-sshfs` there, the share is mounted
-too late whatever lima's version is, so the guest's own failure names
-`mountType` and that directory.
+as installed and is refused by the build. And the floor settles lima's
+*default* mount type, not the person's: `_config/default.yaml` in lima's
+home sets it where the template is silent, and `_config/override.yaml`
+sets it over any template. Which is why the guest's own failure, when
+the share never arrives, names `mountType` and those two files rather
+than only the mount point.
 
 Two places hold a lima VM. The instance itself is lima's, named
 `ssf-<vm.name>` (`ssf-default`) in lima's own home (`~/.lima`, or

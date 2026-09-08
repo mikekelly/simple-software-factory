@@ -128,11 +128,12 @@ const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
 ///   floor excludes it anyway rather than admitting a version whose
 ///   official binaries do not run ssf, and 2.0.1 came four hours later
 ///   the same day.
-/// * The share the guest provisions itself from has to be mounted before
-///   the provision scripts run, which is what leaving `mountType` out of
-///   the template buys (see [`render_template`]): 9p for qemu is lima's
-///   default only from 1.0, and before that reverse-sshfs, mounted after
-///   the guest is up.
+/// * The share the guest provisions itself from is mounted before the
+///   provision scripts run, which is what leaving `mountType` out of the
+///   template buys (see [`render_template`]): 9p for qemu is lima's
+///   default only from 1.0, and reverse-sshfs before that, which the
+///   host agent mounts around the time the hook starts waiting for it
+///   rather than ahead of it (see [`boot_hook`]).
 ///
 /// ssf is tested against 2.2.0.
 pub const MIN_LIMA: LimaVersion = LimaVersion(2, 0, 1);
@@ -277,14 +278,18 @@ pub const SHARE_WAIT_SECS: u32 = 120;
 /// guest cannot delegate is handled here, in the log the host reads.
 ///
 /// What it says when the share never arrives names `mountType`, because
-/// that is what the wait usually ran out over and the mount type is not
-/// ssf's to decide alone: [`MIN_LIMA`] settles lima's *default* (9p for
-/// qemu, virtiofs for vz, both mounted before this hook), but a person
-/// with `mountType: reverse-sshfs` in lima's own `~/.lima/_config` --
-/// `default.yaml`, which the template would beat if it named a type, or
-/// `override.yaml`, which beats the template too -- gets reverse-sshfs,
-/// mounted only once the guest is up. The version floor cannot close
-/// that, so the message the host prints says where to look.
+/// that decides *when* the share is there and it is not ssf's to decide
+/// alone. 9p and virtiofs are mounted from cloud-init's fstab and
+/// lima's own boot scripts, both before this hook runs. reverse-sshfs
+/// is mounted by the host agent instead, once the guest's boot scripts
+/// have satisfied its essential requirements -- which is about when
+/// this hook starts, so it races [`SHARE_WAIT_SECS`] rather than
+/// beating it, and usually wins. [`MIN_LIMA`] settles lima's default
+/// (9p for qemu since lima 1.0, virtiofs for vz), but the person's own
+/// `_config/default.yaml` and `_config/override.yaml` in lima's home
+/// set it too, the latter over any template, and no version floor
+/// reaches those. So the message says where to look rather than what to
+/// conclude.
 ///
 /// The log is truncated in the first line of the hook, before that wait,
 /// and not in `lima-boot.sh`: the host's rule is that a log with none of
@@ -312,7 +317,7 @@ for ((i = 0; i < {SHARE_WAIT_SECS}; i++)); do
     sleep 1
 done
 if [ ! -f "$boot" ]; then
-    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s. lima mounts the share before this runs with mountType 9p or virtiofs, and after the guest is up with reverse-sshfs, which is too late for it: check mountType on the host, in ~/.lima/_config/default.yaml and override.yaml.\n' "$boot" | tee -a "$log"
+    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s: the {GUEST_MOUNT} share never arrived. Check mountType on the host -- 9p and virtiofs are mounted before this runs, reverse-sshfs while it waits -- in the template and in _config/default.yaml and _config/override.yaml under lima home (~/.lima, or $LIMA_HOME).\n' "$boot" | tee -a "$log"
     exit 1
 fi
 exec bash "$boot"
@@ -938,10 +943,9 @@ impl Vm {
             ),
         };
         // The version was fetched anyway to see that limactl runs, so it
-        // is read: an older lima does not fail here, it fails two minutes
-        // into the first boot with "is the /mnt/ssf mount in place?" or
-        // with a base image it could not resolve, neither of which names
-        // the real reason.
+        // is read: an older lima does not fail here, it fails inside
+        // `limactl create` on a base image it could not resolve, which
+        // does not name the reason.
         match parse_lima_version(&version) {
             Some(v) if v < MIN_LIMA => bail!(
                 "this is lima {v} ({}), and ssf needs {MIN_LIMA} or newer: the VM template names its base image the way lima 2.0 spells a template locator, and leaves the share's mount type to lima, whose default for qemu is 9p -- mounted before the guest provisions itself -- only from lima 1.0. Upgrade lima (`brew upgrade lima` on macOS, your distribution's package or lima's release tarball on Linux), or point [vm] limactl at a newer one",
@@ -2102,7 +2106,10 @@ mod tests {
         // version floor cannot settle: a `mountType` in lima's own
         // `_config` that mounts the share only once the guest is up.
         assert!(hook.contains("mountType"), "{hook}");
-        assert!(hook.contains("~/.lima/_config"), "{hook}");
+        assert!(hook.contains("_config/override.yaml"), "{hook}");
+        // lima's home is not always `~/.lima`, and the message is read
+        // by someone looking for a file.
+        assert!(hook.contains("$LIMA_HOME"), "{hook}");
         // The log is emptied before that wait, not after it and not in
         // lima-boot.sh: the host reads "a log and none of the guest
         // scripts running" as this attempt having died, and while the

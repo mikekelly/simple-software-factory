@@ -3217,9 +3217,11 @@ mod tests {
         let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None, None);
         assert_eq!(mac.len(), 1);
         assert_eq!(mac[0].name, "limactl");
-        // The floor is in what it says to install: this string is the
-        // only place `ssf doctor` and `ssf vm status` carry the version,
-        // and the setup document promises they do.
+        // The floor is in what it says to install. That string is only
+        // rendered for a tool that is missing, so it is what someone
+        // with no lima at all is told to get -- the version of a lima
+        // that *is* installed is `ssf vm build`'s to check, not this
+        // line's.
         assert!(
             mac[0].install.contains(&lima::MIN_LIMA.to_string()),
             "{:?}",
