@@ -45,11 +45,15 @@ Linux and lima on macOS, and `ssf vm build` writes the choice to
 its output), so a VM keeps its backend once built. `ssf vm status` names
 it on its `backend:` line, and `--json` carries it as `backend` next to
 `instance` and `lima_dir` (the lima instance's name and the directory lima
-keeps it in; both null under Firecracker).
+keeps it in; both null under Firecracker). A `limactl list` that does not
+answer is reported as such, not as a missing instance: the `instance:` and
+`state:` lines say `unknown` and give lima's error, and `--json` carries it
+as `probe_error`.
 
 The tooling the backend needs on the host is `limactl`, and
-`qemu-system-<arch>` on Linux, under lima; a `/dev/kvm` you can open
-under Firecracker. `ssf vm status` reports it on every host, on a
+`qemu-system-<arch>` wherever lima will drive the VM with qemu (always on
+Linux, and on a Mac with `[vm] vm_type = "qemu"`), under lima; a
+`/dev/kvm` you can open under Firecracker. `ssf vm status` reports it on every host, on a
 `tooling:` line under `backend:`, saying where each tool was found
 (`limactl at /opt/homebrew/bin/limactl`) or, for the ones missing, what
 to install; `--json` carries the same as a `tooling` object with `ok`
@@ -110,10 +114,13 @@ The host needs `limactl` (`brew install lima` on macOS, which the
 Homebrew `ssf` formula pulls in; the `lima` package or lima's release
 tarball on Linux, or `[vm] limactl` pointing at one elsewhere), `gh`
 (the GitHub CLI, to fetch the guest's `ssf` binary on a Mac; see below),
-`openssh`, and on Linux `qemu-system-x86_64` or `qemu-system-aarch64`
-for the machine's architecture (Arch: `qemu-full` or `qemu-base`;
-Debian and Ubuntu: `qemu-system-x86` or `qemu-system-arm`; Fedora:
-`qemu-system-x86` or `qemu-system-aarch64`).
+`openssh`, and `qemu-system-x86_64` or `qemu-system-aarch64` for the
+machine's architecture wherever qemu is the driver (Arch: `qemu-full` or
+`qemu-base`; Debian and Ubuntu: `qemu-system-x86` or `qemu-system-arm`;
+Fedora: `qemu-system-x86` or `qemu-system-aarch64`; macOS: `brew install
+qemu`). That is every Linux host, and a Mac only when `[vm] vm_type` is
+`"qemu"` -- lima's own default there is `vz`, the Virtualization
+framework, which needs no qemu at all.
 `ssf vm build` checks for them first and names what is missing, as does
 the `tooling:` line of `ssf vm status`.
 
@@ -231,7 +238,7 @@ What the commands do under lima:
 | `ssf vm grow` | `limactl disk resize` on the data disk, with the VM stopped; the guest grows the filesystem at its next boot (see [Size](#size)) |
 | `ssf vm reset` | `limactl delete` and `limactl create` from the template; the data disk stays, and the next start provisions the fresh root again (a few minutes) |
 | `ssf vm destroy --yes` | the instance, the data disk and `<vm.dir>/<name>/`; the confirmation names all three |
-| `ssf vm console` | the instance's serial console log (`serial.log`, or `serialv.log`, in lima's instance directory) |
+| `ssf vm console` | the instance's serial console log (`serial.log`, or `serialv.log`, in lima's instance directory); fails naming the instance when it has not been booted yet and neither is there |
 
 Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,
 `run`, `ssh-config`) goes over ssh and works the same under both.

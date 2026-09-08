@@ -20,6 +20,18 @@ env:
   # The tap repository; the formula is pushed there as Formula/ssf.rb.
   HOMEBREW_TAP: mikekelly/homebrew-ssf
 
+# One tap push at a time. Two tags close together (a v0.2.0 and the v0.2.1
+# that fixes it minutes later) would otherwise render, clone, commit and
+# push Formula/ssf.rb in parallel, and the loser of the race either force
+# -pushes an older formula over a newer one or fails on a non-fast-forward.
+# The group is the workflow, not the ref: keying it on the ref would put
+# every tag in a group of its own and let exactly the case this guards
+# against run. `cancel-in-progress: false` so the earlier tag finishes its
+# push and the later one goes second, over it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

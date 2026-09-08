@@ -784,11 +784,16 @@ upgrade should look as it did before.
 
 **Stopping.** `ssf ui service disable` (the same as the bar widget's
 toggle) stops the service and keeps it from starting at the next login;
-`enable` turns it back on. `systemctl --user stop ssf.service` stops it
-until the next login. On macOS use `brew services stop ssf`, which
-unloads the launchd service until `brew services start ssf` (the
-`disable` marker is written there too, but launchd's keep-alive brings
-`ssf run` back, so `stop` is the command that holds). Running agents are
+`enable` turns it back on. It holds on both platforms, by different
+means: it writes `~/.local/state/ssf/disabled` either way, and then on
+Linux runs `systemctl --user stop ssf.service` -- the marker is what
+keeps the next login from starting it, through the unit's
+`ConditionPathExists` -- and on macOS runs `brew services stop ssf`,
+which unloads the launchd agent until `brew services start ssf`. By hand,
+`systemctl --user stop ssf.service` stops it only until the next login,
+while `brew services stop ssf` does hold; what it does not do is leave
+the marker, so `ssf doctor` and the bar widget report the daemon as
+merely not running rather than as disabled. Running agents are
 left where they are: nothing reaches them while the daemon is down, and
 it delivers what they missed when it comes back. With the factory in the
 VM, stopping the service shuts the guest down cleanly and its sessions
