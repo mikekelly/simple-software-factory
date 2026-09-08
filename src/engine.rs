@@ -65,13 +65,14 @@ const ABSENT_LOOKS_PER_PASS: usize = 20;
 /// when the login check cannot tell whether the login is back (or claims
 /// it is while the harness disagrees); doubled after every restart that
 /// comes back to the prompt, up to `LOGIN_RETRY_MAX`.
-/// How long a retirement held by the item itself stays held before the
-/// item is read again. The listing that dropped it is wrong, and will
-/// stay wrong for a while, so re-reading it every poll only pays for a
-/// walk of the item's whole timeline.
-const RETIREMENT_RECHECK: Duration = Duration::from_secs(600);
 const LOGIN_RETRY: Duration = Duration::from_secs(600);
 const LOGIN_RETRY_MAX: Duration = Duration::from_secs(3600);
+/// How long a retirement held by the item itself waits before the item's
+/// timeline is walked again. The listing that dropped it is wrong and
+/// stays wrong for a while, so walking it every poll buys nothing. Only
+/// the mention re-check is paced: the item itself is still read every
+/// pass, so a close is still noticed at once.
+const RETIREMENT_RECHECK: Duration = Duration::from_secs(600);
 
 /// The wait before the next restart after `retries` fruitless ones.
 fn retry_wait(retries: u32) -> Duration {
@@ -1210,11 +1211,6 @@ are resumed on the first pass that finds it: {err:#}"
                     issue = number,
                     "retirement held: the session is blocked"
                 );
-                continue;
-            }
-            // A retirement already held because the item itself still
-            // carries a trigger is not re-read on every pass.
-            if self.held_recently(repo, number) {
                 continue;
             }
             match self.retire_issue(repo, owner, name, number).await {
@@ -2499,6 +2495,17 @@ deliveries resume"
             .get(&issue.number)
             .cloned();
         let mut existing = existing;
+        // The item is on a listing again, so whatever a hiccup held is
+        // settled: a later hold is a new incident and says so in the log.
+        if existing
+            .as_ref()
+            .is_some_and(|s| s.retirement_held_at.is_some())
+        {
+            self.entry(repo, issue.number).retirement_held_at = None;
+            if let Some(st) = existing.as_mut() {
+                st.retirement_held_at = None;
+            }
+        }
         if let Some(st) = existing
             .as_mut()
             .filter(|s| s.seeded && s.triggers != triggers)
@@ -2824,7 +2831,6 @@ deliveries resume"
         e.seen = diff.seen;
         e.seeded = true;
         e.active = true;
-        e.retirement_held_at = None;
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
@@ -2876,7 +2882,6 @@ deliveries resume"
         e.seen = diff.seen;
         e.seeded = true;
         e.active = true;
-        e.retirement_held_at = None;
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
@@ -3229,7 +3234,6 @@ deliveries resume"
         e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.seen = diff.seen;
         e.active = true;
-        e.retirement_held_at = None;
         e.cleanup_pending = false;
         // A release the agent asked for before the item came back is off:
         // the session is live again in this workspace.
@@ -3258,9 +3262,13 @@ deliveries resume"
         let Some(at) = st.retirement_held_at.as_deref() else {
             return false;
         };
+        let window = chrono::Duration::from_std(RETIREMENT_RECHECK).unwrap();
         chrono::DateTime::parse_from_rfc3339(at)
             .map(|t| chrono::Utc::now().signed_duration_since(t.with_timezone(&chrono::Utc)))
-            .is_ok_and(|age| age < chrono::Duration::from_std(RETIREMENT_RECHECK).unwrap())
+            // A stamp ahead of the clock (a backward step from NTP, or a
+            // guest resuming without a reliable one) would otherwise read
+            // as fresh until the clock caught up, holding for hours.
+            .is_ok_and(|age| age >= chrono::Duration::zero() && age < window)
     }
 
     /// Whether an open item still carries any of the triggers it was
@@ -3277,13 +3285,23 @@ deliveries resume"
         timeline: &mut Option<Vec<Value>>,
     ) -> bool {
         let has = |t: &str| triggers.iter().any(|x| x == t);
-        if has("assigned") && issue.is_assigned_to(&self.login) {
+        let held = self.held_recently(repo, issue.number);
+        // Not gated on the triggers: they are rewritten from the listings
+        // every pass, so the assigned listing hiccupping is exactly when
+        // this is worth asking, and the item is already in hand.
+        if issue.is_assigned_to(&self.login) {
             return true;
         }
         if has("created") && issue.author().eq_ignore_ascii_case(&self.login) {
             return true;
         }
         if has("mentioned") {
+            // The expensive part is the timeline, so that is what the hold
+            // paces. Everything above is read from the item already in
+            // hand, and a closed item never reaches here at all.
+            if held {
+                return true;
+            }
             match self.gh.timeline(owner, name, issue.number).await {
                 Ok(tl) => {
                     let found = mentions_bot(issue, &tl, &self.login);
@@ -3350,27 +3368,27 @@ deliveries resume"
         // listing hiccupped, even though the mention was still sitting in
         // the issue, and the session was reattached on the next pass.
         let mut timeline = None;
+        let held = self.held_recently(repo, number);
         let still_ours = !closed
             && self
                 .still_ours(repo, owner, name, &issue, &st.triggers, &mut timeline)
                 .await;
         if still_ours {
-            let e = self.entry(repo, number);
-            let first = e.retirement_held_at.is_none();
-            e.retirement_held_at = Some(now_iso());
-            // The first hold says a listing disagreed with the item, which
-            // is worth seeing; the repeats are not.
-            if first {
+            if held {
+                debug!(
+                    repo = repo.name,
+                    issue = number,
+                    "retirement still held: the item carried a trigger recently"
+                );
+            } else {
+                // A listing disagreeing with an item is worth seeing, and
+                // the stamp is only refreshed by a re-check that read the
+                // item, so a hold expires rather than rolling forward.
+                self.entry(repo, number).retirement_held_at = Some(now_iso());
                 info!(
                     repo = repo.name,
                     issue = number,
                     "retirement held: the listings dropped the item but it still carries a trigger"
-                );
-            } else {
-                debug!(
-                    repo = repo.name,
-                    issue = number,
-                    "retirement still held: the item carries a trigger"
                 );
             }
             return Ok(());
@@ -5137,33 +5155,13 @@ fn why_active(triggers: &[String]) -> (&'static str, &'static str) {
     }
 }
 
-/// Whether an item still mentions the bot, in its body or in any comment
-/// on it. That is what puts it on the `mentioned` listing, so it is what
-/// says the listing was right to carry it.
+/// Whether an item still mentions the bot: in its body, in a comment, or
+/// in one of a pull request's inline review comments. That is what puts it
+/// on the `mentioned` listing, so it is what says the listing was right to
+/// carry it. `allow::askers` already walks exactly that shape for the
+/// gate, so this asks it rather than walking the timeline again.
 fn mentions_bot(issue: &Issue, timeline: &[Value], login: &str) -> bool {
-    if issue
-        .body
-        .as_deref()
-        .is_some_and(|b| crate::github::mentions(b, login))
-    {
-        return true;
-    }
-    timeline.iter().any(|ev| {
-        let hit = |b: &str| crate::github::mentions(b, login);
-        if crate::github::value_str(ev, &["body"]).is_some_and(hit) {
-            return true;
-        }
-        // A batch of review comments keeps its bodies one level down, the
-        // way `line-commented` and `commit-commented` events are read
-        // everywhere else. A mention of the bot in an inline review
-        // comment is the whole reason many sessions exist.
-        ev.get("comments")
-            .and_then(Value::as_array)
-            .is_some_and(|cs| {
-                cs.iter()
-                    .any(|c| crate::github::value_str(c, &["body"]).is_some_and(hit))
-            })
-    })
+    !crate::allow::askers(issue, timeline, &["mentioned".to_string()], login).is_empty()
 }
 
 fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
@@ -10280,14 +10278,20 @@ mod tests {
             "the hold was not recorded"
         );
 
-        // While that hold is fresh the item is not read again: the listing
-        // is wrong and stays wrong, and each read walks a whole timeline.
+        // While that hold is fresh the timeline is not walked again: the
+        // listing is wrong and stays wrong, and the walk is the expensive
+        // part. The item itself is still read every pass, so a close is
+        // still noticed at once.
         stub.hits();
         e.tick_repo(&r).await.unwrap();
         let paths: Vec<String> = stub.hits();
         assert!(
-            !paths.iter().any(|p| p.starts_with("/repos/o/r/issues/5")),
-            "the item was read again inside the hold: {paths:?}"
+            !paths.iter().any(|p| p.contains("/timeline")),
+            "the timeline was walked inside the hold: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "/repos/o/r/issues/5"),
+            "the item itself was not read inside the hold: {paths:?}"
         );
 
         // Once the interval has passed the item is read again. This time
@@ -10319,6 +10323,100 @@ mod tests {
         assert!(
             e.entry(&r, 5).retirement_held_at.is_none(),
             "the hold outlived the retirement"
+        );
+    }
+
+    /// A hold paces the timeline walk and nothing else. A close is still
+    /// noticed on the next pass, an expired hold reads the item again, and
+    /// a stamp ahead of the clock counts as expired rather than holding
+    /// until wall-clock catches up.
+    #[tokio::test]
+    async fn a_hold_paces_the_re_read_without_delaying_a_close_or_outliving_the_clock() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let item = |state: &str| {
+            json!({
+                "number": 5, "title": "t", "body": "no mention here",
+                "html_url": "https://gh/5", "state": state, "user": {"login": "alice"},
+                "created_at": "x", "updated_at": "u1"
+            })
+        };
+        let held_session = |e: &mut Engine, at: &str| {
+            seeded(e, 5, Some("bot/issue-5"), true);
+            let st = e.entry(&repo(), 5);
+            st.triggers = vec!["mentioned".into()];
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.terminal_handle = Some("t5".into());
+            st.retirement_held_at = Some(at.to_string());
+        };
+
+        // A closed item retires on the next pass, hold or no hold: the
+        // hold only ever paces the mention re-check, which a closed item
+        // never reaches.
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        held_session(&mut e, &now_iso());
+        d.seed("w5", "t5", READY_SCREEN);
+        stub.set_issue(5, item("closed"));
+        stub.set_timeline(5, vec![]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            !e.entry(&r, 5).active,
+            "a closed item waited for the hold to expire"
+        );
+
+        // An expired hold reads the item again and retires it.
+        let mut e = engine_at(&stub.base);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        held_session(&mut e, "2026-01-01T00:00:00Z");
+        stub.set_issue(5, item("open"));
+        e.tick_repo(&r).await.unwrap();
+        assert!(!e.entry(&r, 5).active, "an expired hold went on holding");
+
+        // So does one stamped ahead of the clock, which would otherwise
+        // read as fresh until the clock caught up with it.
+        let mut e = engine_at(&stub.base);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        held_session(&mut e, "2099-01-01T00:00:00Z");
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            !e.entry(&r, 5).active,
+            "a hold stamped in the future held forever"
+        );
+    }
+
+    /// An item back on a listing settles whatever a hiccup held, so a
+    /// later hold is a new incident rather than a stamp that never moves.
+    #[tokio::test]
+    async fn an_item_back_on_a_listing_clears_the_hold_it_left_behind() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.triggers = vec!["assigned".into()];
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.terminal_handle = Some("t5".into());
+            st.updated_at = Some("u1".into());
+            st.retirement_held_at = Some(now_iso());
+        }
+        d.seed("w5", "t5", READY_SCREEN);
+        stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+        stub.set_timeline(5, vec![]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            e.entry(&r, 5).retirement_held_at.is_none(),
+            "the hold survived the item coming back onto a listing"
         );
     }
 

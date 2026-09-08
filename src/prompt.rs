@@ -2215,6 +2215,22 @@ For information only; you will not hear about it again unless it comes back."
         };
         let u = unassigned_prompt(&pr_issue, &[], &assigned_ctx);
         assert!(u.starts_with("[ssf] @bot is no longer assigned to or requested on #4.\n\n"));
+        // A mention-triggered item was never assigned, so it is not told
+        // it was unassigned; and the login is written without its `@` so
+        // an agent quoting the line cannot mention the bot back onto it.
+        let mentioned = vec!["mentioned".to_string()];
+        let mentioned_ctx = PromptContext {
+            triggers: &mentioned,
+            ..own.clone()
+        };
+        let u = unassigned_prompt(&pr_issue, &[], &mentioned_ctx);
+        assert!(
+            u.starts_with(
+                "[ssf] The mention of bot that started this session on #4 is gone.\n\nStop working on it:"
+            ),
+            "{u}"
+        );
+        assert!(!u.contains("@bot"));
         let r = reassigned_prompt(&pr_issue, &[], &assigned_ctx);
         assert_eq!(
             r,

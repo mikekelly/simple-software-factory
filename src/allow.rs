@@ -119,24 +119,51 @@ impl AllowList {
     }
 }
 
-/// Whether `body` mentions `@login` (case-insensitive; a longer login that
-/// starts the same way is not a mention).
+/// Whether `body` mentions `@login`, the way GitHub's `mentioned` listing
+/// counts it: case-insensitive, opened by anything that is not a letter,
+/// digit or underscore, and not run on into a longer login. So `@bot` and
+/// `path/@bot` mention `bot`, while `@bot-2`, the team `@bot/reviewers`
+/// and the address in `someone@bot` do not. `@bot_2` does, because a
+/// GitHub login cannot contain an underscore, so the login ends there.
+///
+/// One deliberate difference from GitHub: a mention inside a code span or
+/// fence counts here and does not there. Reproducing that means parsing
+/// Markdown, and being too generous only lets a session on, or holds one
+/// that already exists, which is the safe direction for both callers.
 pub fn mentions(body: &str, login: &str) -> bool {
+    if login.is_empty() {
+        return false;
+    }
     let lower = body.to_ascii_lowercase();
     let needle = format!("@{}", login.to_ascii_lowercase());
+    let bytes = lower.as_bytes();
     let mut from = 0;
     while let Some(i) = lower[from..].find(&needle) {
-        let end = from + i + needle.len();
-        let boundary = lower[end..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '-'));
-        if boundary {
+        let at = from + i;
+        // Indexing bytes is safe: only ASCII is tested, any byte of a
+        // multi-byte character answers "not a word byte", which is the
+        // right answer for a boundary, and `from` only ever lands one past
+        // an ASCII `@`, so the slice stays on a character boundary.
+        let before = at == 0 || !is_word_byte(bytes[at - 1]);
+        let end = at + needle.len();
+        let after = end >= bytes.len() || !continues_a_login(bytes[end]);
+        if before && after {
             return true;
         }
-        from = end;
+        from = at + 1;
     }
     false
+}
+
+/// A letter, digit or underscore: GitHub's `\W` boundary before an `@`.
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Whether a byte after a login means the mention named something else: a
+/// longer login (`@bot-2`, `@bots`) or a team (`@org/team`).
+fn continues_a_login(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'/'
 }
 
 /// One way the bot was asked onto an item, and by whom.
@@ -317,6 +344,18 @@ mod tests {
         assert!(!mentions("@bot-2 look", "bot"));
         assert!(mentions("@bot-2 and @bot.", "bot"));
         assert!(!mentions("bot@example.com", "bot"));
+        // Anything that is not a letter, digit or underscore opens a
+        // mention; a word character before the `@` makes it an address.
+        assert!(mentions("path/@bot", "bot"));
+        assert!(mentions("v1.@bot", "bot"));
+        assert!(mentions("a@@bot", "bot"));
+        assert!(!mentions("someone@bot", "bot"));
+        assert!(!mentions("under_@bot", "bot"));
+        // A login cannot contain `_`, so the login ends before it and this
+        // is a mention of `bot`; `/` after one names a team instead.
+        assert!(mentions("@bot_2 please", "bot"));
+        assert!(!mentions("@bot/reviewers", "bot"));
+        assert!(!mentions("@bot", ""));
     }
 
     fn issue(author: &str, body: &str) -> Issue {

@@ -93,6 +93,12 @@ pub struct Session {
     pub bound_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<String>,
+    /// When a retirement was last held because the item still carried one
+    /// of its triggers while the listings had dropped it. Present on an
+    /// item that `ssf release` will refuse for a reason nothing else in
+    /// this report explains.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retirement_held_at: Option<String>,
     /// When `ssf release` or `ssf purge` removed the workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
@@ -594,6 +600,7 @@ fn join(
         last_prompt_at: item.last_prompt_at.clone(),
         bound_at: item.bound_at.clone(),
         retired_at: item.retired_at.clone(),
+        retirement_held_at: item.retirement_held_at.clone(),
         released_at: item.released_at.clone(),
         workspace_state: workspace_state(item, ws, orca_available),
         pr: item.pr.clone(),

@@ -87,55 +87,6 @@ impl Issue {
     }
 }
 
-/// Whether `text` mentions `login` the way GitHub's `mentioned` listing
-/// counts it: `@login`, case-insensitively, with a non-word character (or
-/// nothing) before it, and not run on into a longer login after it. So
-/// `@bot` is a mention of `bot`, `path/@bot` and `a@@bot` are too, while
-/// `@bot-2`, `@bot_2`, the team `@bot/reviewers` and the address in
-/// `someone@bot` are not.
-///
-/// One deliberate difference: GitHub does not count a mention inside a
-/// code span or fence and this does. Reproducing that means parsing
-/// Markdown, and the cost of being too generous is only that a session is
-/// held a little longer, which is the safe direction for a check whose
-/// other answer retires somebody's work.
-pub fn mentions(text: &str, login: &str) -> bool {
-    if login.is_empty() {
-        return false;
-    }
-    let hay = text.to_ascii_lowercase();
-    let needle = format!("@{}", login.to_ascii_lowercase());
-    let bytes = hay.as_bytes();
-    let mut from = 0;
-    while let Some(i) = hay[from..].find(&needle) {
-        let at = from + i;
-        // Indexing bytes is safe here: only ASCII is tested, and any byte
-        // of a multi-byte character answers "not a word character", which
-        // is the right answer for a boundary. `from` only ever lands one
-        // past an ASCII `@`, so the slice stays on a character boundary.
-        let before = at == 0 || !is_word_byte(bytes[at - 1]);
-        let end = at + needle.len();
-        let after = end >= bytes.len() || !continues_a_login(bytes[end]);
-        if before && after {
-            return true;
-        }
-        from = at + 1;
-    }
-    false
-}
-
-/// GitHub's `\W` boundary before an `@`: a word character is a letter, a
-/// digit or an underscore, and everything else opens a mention.
-fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// Whether a byte after a login means the mention was of something else:
-/// a longer login (`@bot-2`, `@bot_2`, `@bots`) or a team (`@org/team`).
-fn continues_a_login(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/'
-}
-
 /// The logins a pull request payload asks for a review.
 fn reviewers(v: &Value) -> Vec<String> {
     v.get("requested_reviewers")
@@ -816,47 +767,6 @@ mod tests {
         assert!(cards[1].status_field_id.is_none());
         assert!(cards[1].status_options.is_empty());
         assert!(parse_project_items(&Value::Null).is_empty());
-    }
-
-    #[test]
-    fn a_mention_is_the_login_on_its_own_after_an_at_sign() {
-        for text in [
-            "@bot what do you think?",
-            "cc @Bot",
-            "please ask @BOT.",
-            "(@bot)",
-            "line\n@bot\n",
-            "> @bot in a quote",
-            "**@bot**",
-            // Anything that is not a letter, digit or underscore opens a
-            // mention, which is what GitHub's own boundary comes to.
-            "path/@bot",
-            "v1.@bot",
-            "a@@bot",
-        ] {
-            assert!(mentions(text, "bot"), "should mention: {text:?}");
-        }
-        for text in [
-            "",
-            "bot",
-            // A longer login, not this one.
-            "@bots",
-            "@bot-2",
-            "@bot_2",
-            "@robot",
-            // A team, not a user.
-            "@bot/reviewers",
-            // An address, not a mention.
-            "someone@bot",
-            "mail@bot.example",
-            "under_@bot",
-        ] {
-            assert!(!mentions(text, "bot"), "should not mention: {text:?}");
-        }
-        // An empty login never matches, and non-ASCII around the mention
-        // does not upset the boundary test.
-        assert!(!mentions("@bot", ""));
-        assert!(mentions("café @bot ☕", "bot"));
     }
 
     #[test]
