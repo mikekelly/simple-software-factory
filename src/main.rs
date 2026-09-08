@@ -266,9 +266,11 @@ enum Command {
         #[arg(long, hide = true)]
         report: bool,
     },
-    /// Run the whole factory (daemon, herdr, sessions) inside a Firecracker
-    /// microVM instead of on this machine: build the image, start, stop
-    /// and reach the guest.
+    /// Run the whole factory (daemon, herdr, sessions) inside a VM instead
+    /// of on this machine: build the guest, start, stop and reach it.
+    /// `[vm] backend` picks what runs it: a Firecracker microVM (the
+    /// default on Linux) or a lima instance (the default on macOS, and
+    /// Linux with qemu).
     Vm {
         #[command(subcommand)]
         command: VmCommand,
@@ -585,7 +587,7 @@ enum UiCommand {
     },
     /// Remove the bar widget and menu entries.
     Uninstall,
-    /// Control the background service (`ssf.service` user unit).
+    /// Control the background service (the `ssf.service` user unit on Linux, the Homebrew service on macOS).
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
@@ -1521,11 +1523,40 @@ fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>> {
     }
 }
 
+/// This machine's name, for the label on the bot's GitHub key. Linux has
+/// `/etc/hostname`; macOS does not, and answers `scutil --get
+/// ComputerName` (the name a person gave the Mac) or `hostname`.
 fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
+    let ran = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    pick_hostname(
+        std::fs::read_to_string("/etc/hostname").ok(),
+        || ran("scutil", &["--get", "ComputerName"]),
+        || ran("hostname", &[]),
+    )
+}
+
+/// The first of `/etc/hostname`, `scutil --get ComputerName` and
+/// `hostname` that answers with something, trimmed; "localhost" when none
+/// does. The file comes first, so a Linux host keeps the name it had.
+fn pick_hostname(
+    file: Option<String>,
+    computer_name: impl Fn() -> Option<String>,
+    hostname: impl Fn() -> Option<String>,
+) -> String {
+    let clean = |s: String| {
+        let s = s.trim().to_string();
+        (!s.is_empty()).then_some(s)
+    };
+    file.and_then(clean)
+        .or_else(|| computer_name().and_then(clean))
+        .or_else(|| hostname().and_then(clean))
         .unwrap_or_else(|| "localhost".to_string())
 }
 
@@ -2285,18 +2316,22 @@ fn exit_with(st: std::process::ExitStatus) -> Result<()> {
 /// where each value came from. `[vm] backend` is settled the same way
 /// (the platform's default, written once).
 fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()> {
-    let facts = vm::HostFacts::probe(base)?;
     let (backend, backend_from, backend_changed) =
         vm::choose_backend(&mut cfg.vm, vm::BackendKind::platform_default());
     println!("VM backend: {backend} ({backend_from})");
+    // The backend decides which filesystem the data disk will fill, so it
+    // has to be settled before the machine is measured.
+    let (dir, what) = vm::sizing_dir(backend, base);
+    let facts = vm::HostFacts::probe(&dir)?;
     let mut chosen = vm::choose_sizes(&mut cfg.vm, flags, vm::sizes_for(&facts));
     chosen.changed |= backend_changed;
     println!(
-        "this machine: {} CPUs, {} MiB RAM, {} GiB free on {} (where [vm] dir is)",
+        "this machine: {} CPUs, {} MiB RAM, {} GiB free on {} (measured at {}, {what})",
         facts.cpus,
         facts.mem_mib,
         facts.free_bytes >> 30,
-        facts.mount
+        facts.mount,
+        dir.display(),
     );
     println!(
         "VM size: {} vCPUs ({}), {} MiB RAM ({}), {} GiB data disk ({}; sparse, so it takes host space only as the guest writes)",
@@ -3316,6 +3351,9 @@ async fn doctor() -> Result<()> {
     for d in driver::Drivers::from_config(&cfg).iter() {
         open_workspaces.insert(d.kind(), d.ps().await);
     }
+    // Where a person starts their SSF.md from: the packages put it in
+    // /usr/share/ssf, Homebrew under its own prefix.
+    let example_notes = platform::share_file("SSF.example.md");
     for r in &cfg.repos {
         // Who may drive it: the configured list, or the collaborators with
         // push access fetched the way the daemon does.
@@ -3376,9 +3414,9 @@ async fn doctor() -> Result<()> {
                     r.name,
                     notes_path.display(),
                     if present {
-                        "present"
+                        "present".to_string()
                     } else {
-                        "missing; start from /usr/share/ssf/SSF.example.md"
+                        format!("missing; start from {}", example_notes.display())
                     }
                 ),
             );
@@ -3393,12 +3431,13 @@ async fn doctor() -> Result<()> {
                         Ok(false) => check(
                             false,
                             format!(
-                                "no {notes} in {}{}; start from /usr/share/ssf/SSF.example.md",
+                                "no {notes} in {}{}; start from {}",
                                 r.name,
                                 match &r.base_branch {
                                     Some(b) => format!(" on branch {b} (does the branch exist?)"),
                                     None => String::new(),
-                                }
+                                },
+                                example_notes.display()
                             ),
                         ),
                         Err(e) => check(
@@ -3694,7 +3733,7 @@ async fn doctor() -> Result<()> {
         ui::service_active(),
         format!(
             "{} running{}",
-            ui::SERVICE,
+            platform::service_name(),
             if ui::service_enabled() {
                 ""
             } else {
@@ -3702,6 +3741,24 @@ async fn doctor() -> Result<()> {
             }
         ),
     );
+    // The tooling the VM backend needs, on the host that runs it: inside
+    // the guest there is no VM to start, and with `[vm] enabled` false
+    // nothing here uses one.
+    if !vm::in_guest() && cfg.vm.enabled {
+        let backend = cfg
+            .vm
+            .backend
+            .unwrap_or_else(vm::BackendKind::platform_default);
+        let tools = vm::backend_tools(
+            backend,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            cfg.vm.limactl.as_deref(),
+        );
+        let found = vm::probe_tools(&tools);
+        let (ok, msg) = vm::backend_tooling_line(backend, &tools, &found);
+        check(ok, msg);
+    }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.
     if vm::in_guest() {
@@ -3780,6 +3837,37 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_machine_name_comes_from_whichever_source_this_os_has() {
+        // Linux: /etc/hostname, exactly as before.
+        assert_eq!(pick_hostname(Some("box\n".into()), || None, || None), "box");
+        // macOS has no /etc/hostname; the name a person gave the Mac
+        // comes first, `hostname` after it. Neither must be allowed to
+        // leave the key labelled "ssf on localhost".
+        assert_eq!(
+            pick_hostname(
+                None,
+                || Some("Mike's MacBook Pro\n".into()),
+                || Some("mikes-mbp.local\n".into())
+            ),
+            "Mike's MacBook Pro"
+        );
+        assert_eq!(
+            pick_hostname(None, || None, || Some("mikes-mbp.local\n".into())),
+            "mikes-mbp.local"
+        );
+        // Empty answers count as no answer.
+        assert_eq!(
+            pick_hostname(
+                Some("  \n".into()),
+                || Some("".into()),
+                || Some(" mac \n".into())
+            ),
+            "mac"
+        );
+        assert_eq!(pick_hostname(None, || None, || None), "localhost");
+    }
 
     #[test]
     fn item_refs_accept_numbers_and_sessions() {
