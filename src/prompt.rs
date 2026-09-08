@@ -2546,7 +2546,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             "Check a claim rather than reasoning your way to one",
             "try it where trying it changes nothing",
             "Where you have not checked, say",
-            "a wrong description outlives a wrong line",
+            "the next person reads it instead of checking",
         ] {
             assert!(example.contains(kept), "{kept} missing from {example}");
         }
