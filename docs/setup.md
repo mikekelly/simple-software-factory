@@ -447,6 +447,7 @@ with its version or the failure; make sure yours is on it. Check:
 $ ssf vm status
 vm:       default (/home/you/.local/share/ssf/vm/default)
 backend:  firecracker
+tooling:  /dev/kvm usable
 image:    built
 state:    running (firecracker pid 12345)
 ssh:      127.0.0.1:2222 answers
@@ -464,10 +465,15 @@ FAIL 0 repositories configured
 ...
 ```
 
-On a Mac the `backend:` line says `lima`, the `image:` line is
+On a Mac the `backend:` line says `lima`, `tooling:` says where lima is
+(`limactl at /opt/homebrew/bin/limactl`), the `image:` line is
 `instance: ssf-default (/Users/you/.lima/ssf-default)` and `state:` is
-`running` without a pid; the rest is the same. `ssf doctor`, `status`,
-`peers`, `tell`, `sub`, `release` and `purge` now run inside the guest
+`running` without a pid; the rest is the same. The `tooling:` line is
+the host's own, so it is where you see a missing `limactl` or, on a
+Linux lima host, a missing `qemu-system-<arch>`; `ssf doctor` does not
+answer that question here, because with the VM enabled it runs inside
+the guest. `ssf doctor`, `status`, `peers`, `tell`, `sub`, `release`
+and `purge` now run inside the guest
 (the paths in their output are the guest's, and its service line is the
 guest's systemd unit on either host OS), and the herdr line is `ok`: the
 guest runs its own herdr session. The one failure left is the repository
@@ -781,12 +787,12 @@ come back with it.
    when it is down), `ui service disable` (with `vm.enabled` that shuts
    the guest down; on macOS this is `brew services stop ssf`), `ui
    uninstall` (the bar widget and menu, Omarchy only), `auth logout`
-   (revokes the bot's keys on GitHub and forgets it), `vm destroy` (on
-   macOS the lima instance `ssf-default` and its disk `ssf-default`
-   too). Each step tolerates the thing being gone already, so a second
-   run, or a run on a half-uninstalled machine, is fine. With the
-   factory in the VM the report and the purge come from the guest,
-   before it goes.
+   (revokes the bot's keys on GitHub and forgets it), `vm destroy` (under
+   the lima backend the lima instance `ssf-default` and its disk
+   `ssf-default` too, on whichever OS you run it). Each step tolerates
+   the thing being gone already, so a second run, or a run on a
+   half-uninstalled machine, is fine. With the factory in the VM the
+   report and the purge come from the guest, before it goes.
 2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`
    (**you**: sudo; nothing in ssf runs it); on macOS `brew uninstall
    ssf`, then `brew untap mikekelly/ssf` (`gh` and `lima` stay unless

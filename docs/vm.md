@@ -43,12 +43,30 @@ Linux and lima on macOS, and `ssf vm build` writes the choice to
 its output), so a VM keeps its backend once built. `ssf vm status` names
 it on its `backend:` line, and `--json` carries it as `backend` next to
 `instance` and `lima_dir` (the lima instance's name and the directory lima
-keeps it in; both null under Firecracker). `ssf doctor` on the host has a
-line for the backend's own tooling: `limactl`, and `qemu-system-<arch>` on
-Linux, under lima; `/dev/kvm` under Firecracker. A Firecracker build on
-anything but Linux x86_64 refuses and says to set `vm.backend` to `lima`.
-Either way, `[vm] dir` (`~/.local/share/ssf/vm`) holds what ssf keeps for
-the VM, one directory per `name` under it.
+keeps it in; both null under Firecracker).
+
+The tooling the backend needs on the host is `limactl`, and
+`qemu-system-<arch>` on Linux, under lima; a `/dev/kvm` you can open
+under Firecracker. `ssf vm status` reports it on every host, on a
+`tooling:` line under `backend:`, saying where each tool was found
+(`limactl at /opt/homebrew/bin/limactl`) or, for the ones missing, what
+to install; `--json` carries the same as a `tooling` object with `ok`
+and `detail`, null inside the guest, whose host owns the VM.
+
+`ssf doctor` has the line too, but you see it only on a machine where
+`[vm] enabled` is false, and there as a `note` rather than a check,
+since nothing on such a host needs the tooling until you turn the VM
+on. With the VM enabled and running, `doctor` is forwarded into the
+guest, which has no backend tooling of its own; with the VM enabled and
+stopped, the host command refuses to run and its error names what is
+missing (`the factory runs in VM default, which is not running, and
+lima cannot start it: limactl not installed; install lima ...`). So on
+a VM-enabled machine, `ssf vm status` is where you look.
+
+A Firecracker build on anything but Linux x86_64 refuses and says to set
+`vm.backend` to `lima`. Either way, `[vm] dir`
+(`~/.local/share/ssf/vm`) holds what ssf keeps for the VM, one directory
+per `name` under it.
 
 ### Firecracker (Linux)
 
@@ -95,7 +113,7 @@ for the machine's architecture (Arch: `qemu-full` or `qemu-base`;
 Debian and Ubuntu: `qemu-system-x86` or `qemu-system-arm`; Fedora:
 `qemu-system-x86` or `qemu-system-aarch64`).
 `ssf vm build` checks for them first and names what is missing, as does
-the backend line of `ssf doctor` on the host.
+the `tooling:` line of `ssf vm status`.
 
 Two places hold a lima VM. The instance itself is lima's, named
 `ssf-<vm.name>` (`ssf-default`) in lima's own home (`~/.lima`, or
@@ -107,10 +125,17 @@ is a lima disk, `ssf-<vm.name>`, of `vm.data_gib` (`limactl disk list`),
 which ssf attaches to the instance and which survives `ssf vm reset` and
 `ssf vm build --force`. That name is short on purpose: lima labels the
 disk's filesystem `lima-<disk>` and an ext4 label holds 16 characters,
-which is why `vm.name` is at most 7 characters under this backend. Only
-the build that creates the disk writes `format: true` for it in the
-template; once the disk exists every build writes `format: false`, so lima
-can never reformat a disk that already holds the factory. ssf's own files
+which is why `vm.name` is at most 7 characters under this backend. The
+disk is formatted only by the build that creates it: that build alone
+writes `format: true` for it in the template, and as soon as the disk
+carries its filesystem the same build turns the flag off, both in the
+template and, with `limactl edit`, in the instance's own copy, which is
+the one lima reads at boot. A later build over an existing disk starts
+from `format: false`. Turning the flag off in lima's copy is best
+effort, though: if that `limactl edit` fails the build still succeeds
+and warns, naming the command to run by hand (`limactl edit ssf-default
+--set '.additionalDisks[0].format = false'`), and until you run it a
+boot that cannot find the disk's label would reformat it. ssf's own files
 are under `<vm.dir>/<name>/`: `lima.yaml` (the template `ssf vm build`
 writes from `[vm]`; edit the config and rebuild rather than the file),
 `share/` (the guest scripts, the seed tree, and a herdr binary when the
@@ -172,7 +197,24 @@ where they stay visible and editable:
 |---|---|---|
 | `vcpus` | the host's logical CPUs minus one | 2 |
 | `mem_mib` | half the host's RAM, rounded down to 256 MiB | 4096 |
-| `data_gib` | half the free space of the filesystem holding `vm.dir`, at build time | 20 |
+| `data_gib` | half the free space, at build time, of the filesystem that will hold the data disk | 20 |
+
+Which filesystem that is depends on the backend, because the two keep
+the disk in different places: `vm.dir` under Firecracker, and under lima
+lima's own disk directory (`$LIMA_HOME/_disks`, by default
+`~/.lima/_disks`), which is often on another volume (with no home
+directory to work lima's out from, ssf falls back to `vm.dir`). `ssf vm build`
+measures the one the disk will live on and names it in the line above
+its choice, so you can see which it read:
+
+```
+this machine: 8 CPUs, 32768 MiB RAM, 155 GiB free on /home (measured at /home/you/.lima/_disks, lima's disk directory)
+```
+
+Under Firecracker the same line ends `(measured at
+/home/you/.local/share/ssf/vm, [vm] dir)`. `ssf vm grow` measures the
+same directory when it applies the rule or warns that a size is more
+than the host has free.
 
 `root_gib` stays 8 under Firecracker: the root image only holds the
 system. Under lima it is the instance's root disk and is at least 20

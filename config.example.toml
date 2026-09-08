@@ -56,7 +56,10 @@
 # vcpus = 7                                    # unset = chosen from the machine by `ssf vm build`: its CPUs minus one, at least 2
 # mem_mib = 16384                              # unset = chosen from the machine: half its RAM, at least 4096
 # data_gib = 250                               # persistent data disk: state, clones, worktrees; sparse, so a cap, not a reservation.
-#                                              # unset = chosen from the machine: half the free space under `dir`, at least 20; `ssf vm grow` enlarges it
+#                                              # unset = chosen from the machine: half the free space where the disk will live, at least 20;
+#                                              # that is `dir` under Firecracker and lima's own disk directory ($LIMA_HOME/_disks, by
+#                                              # default ~/.lima/_disks) under lima; `ssf vm build` prints the path it measured, and
+#                                              # `ssf vm grow` enlarges the disk later
 # root_gib = 8                                 # size of the root image `ssf vm build` makes (lima: the instance's root disk, at least 20)
 # ssh_port = 2222                              # the guest's sshd on 127.0.0.1
 # files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start; `src:dest` to place them

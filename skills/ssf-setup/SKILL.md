@@ -52,9 +52,12 @@ document links to.
    them decide.
 6. **Take the default path** (the factory inside the VM, herdr inside
    it) unless the person asks for an alternative or the machine cannot
-   run the VM (on Linux no `/dev/kvm` or not x86_64; on macOS the VM is
-   lima and needs macOS 13.5 or later); the document says where the
-   alternatives branch off. On Debian, Ubuntu and Fedora the package
+   run the VM at all (on macOS the VM is lima and needs macOS 13.5 or
+   later). A Linux machine without a usable `/dev/kvm`, or one that is
+   not x86_64, cannot run the Firecracker backend, but it can still run
+   the VM: set `[vm] backend = "lima"`, which uses qemu there (slower,
+   and it needs `qemu-system-<arch>` installed). The document says where
+   the alternatives branch off. On Debian, Ubuntu and Fedora the package
    does not bring herdr; install it as the document's step 1 says before
    expecting `ssf doctor`'s herdr line to pass.
 7. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
