@@ -159,3 +159,52 @@ fn nfpm_owns_every_vm_directory_in_the_rpm() {
          for each (nfpm's rpm packager only owns what is listed, so an unlisted directory is left behind on erase)"
     );
 }
+
+/// A systemd drop-in goes in `/etc/systemd/system/<unit>.d/`, and the unit
+/// there is named in full, type included. `vm/guest/provision.sh` reads the
+/// directory off the file's name for exactly that reason -- a drop-in named
+/// `ssf-seed.conf` would be installed for a *service* called `ssf-seed`
+/// whatever the real unit is, and quietly do nothing -- and it refuses a
+/// name that does not end in a unit type at run time. This is the same rule
+/// held at build time, where a mistake costs a test rather than a boot.
+#[test]
+fn every_unit_drop_in_names_its_unit_in_full() {
+    let (files, _) = vm_tree();
+    // `vm/guest/units/<backend>/<unit>.<type>.conf`.
+    let drop_ins: Vec<&String> = files
+        .iter()
+        .filter(|f| f.starts_with("vm/guest/units/") && f.ends_with(".conf"))
+        .collect();
+    assert!(
+        !drop_ins.is_empty(),
+        "no drop-ins found under vm/guest/units/; the walk found {files:?}"
+    );
+    let types = [
+        ".service", ".socket", ".timer", ".target", ".path", ".mount",
+    ];
+    for f in &drop_ins {
+        let name = f.rsplit('/').next().unwrap();
+        let unit = name.strip_suffix(".conf").unwrap();
+        assert!(
+            types.iter().any(|t| unit.ends_with(t)),
+            "the drop-in {f} does not name a unit type: it must be <unit>.<type>.conf (one of {types:?}), \
+             because vm/guest/provision.sh installs it as /etc/systemd/system/{unit}.d/<backend>.conf \
+             and a name without the type silently makes a drop-in for a service of that name"
+        );
+        // And the unit it is a drop-in for has to be one we ship.
+        let for_unit = format!("vm/guest/units/{unit}");
+        assert!(
+            files.contains(&for_unit),
+            "the drop-in {f} is for {for_unit}, which is not in the repository"
+        );
+    }
+    // The names provision.sh installs by hand under lima are among them.
+    for unit in ["ssf-seed.service", "herdr-server.service", "ssf.service"] {
+        assert!(
+            drop_ins
+                .iter()
+                .any(|f| f.ends_with(&format!("/lima/{unit}.conf"))),
+            "vm/guest/provision.sh installs a lima drop-in for {unit}, but there is none: {drop_ins:?}"
+        );
+    }
+}
