@@ -133,16 +133,35 @@ writes `format: true` for it in the template, and as soon as the disk
 carries its filesystem the same build turns the flag off, both in the
 template and, with `limactl edit`, in the instance's own copy, which is
 the one lima reads at boot. A later build over an existing disk starts
-from `format: false`. Turning the flag off in lima's copy is best
-effort, though: if that `limactl edit` fails the build still succeeds
-and warns, naming the command to run by hand (`limactl edit ssf-default
---set '.additionalDisks[0].format = false'`), and until you run it a
-boot that cannot find the disk's label would reformat it. A build that
-fails after the instance is made leaves the flag on, so `ssf vm build`
-and `ssf vm reset` both put it back to `false` when they find it set on a
-disk that already exists; the template is what `ssf vm reset` reads. ssf's own files
-are under `<vm.dir>/<name>/`: `lima.yaml` (the template `ssf vm build`
-writes from `[vm]`; edit the config and rebuild rather than the file),
+from `format: false`. lima's copy can only be edited while the instance
+is stopped, which is why the build stops it first: `limactl edit` refuses
+a running instance. If that last edit does not take, the build fails and
+says so, rather than reporting success over a flag it could not put
+right.
+
+A build that dies between `limactl create` and the guest answering
+leaves the flag on, so every command that could boot that instance looks
+before it goes on. `ssf vm build` over an existing instance and `ssf vm
+start` both repair what they find (ssf's own template, and lima's copy
+while the instance is stopped), and when the flag is still there
+afterwards they stop with an error rather than boot: it names lima's
+copy, the data disk, and the way out, which is to stop the instance
+(`ssf vm stop`) and run the command again, or to do the edit by hand
+(`limactl edit ssf-default --set '.additionalDisks[0].format =
+false'`). A running instance is the case that cannot be repaired in
+place, and it is reported rather than passed over: `ssf vm start` looks
+once more after the guest is up, and a flag that has come back by then
+(an instance edited by hand, a template restored from elsewhere) is
+warned about there, to be repaired at the next stop. `ssf vm reset`
+repairs ssf's own template before it creates the new instance, since
+that template is what the new one inherits and the instance being
+deleted is not worth fixing. All of this applies only once the data disk
+exists: with no disk there is nothing to lose, and the build that makes
+it is the one build allowed to hand lima a `format: true`.
+
+ssf's own files are under `<vm.dir>/<name>/`: `lima.yaml` (the template
+`ssf vm build` writes from `[vm]`; edit the config and rebuild rather
+than the file),
 `share/` (the guest scripts, the seed tree, and a herdr binary when the
 host has one for the guest), the ssh key and `known_hosts` for reaching
 the guest, and `guest-bin/` with a downloaded guest binary. `share/` is
@@ -178,8 +197,8 @@ What the commands do under lima:
 
 | command | under lima |
 |---|---|
-| `ssf vm build` | checks for `limactl` (and qemu on Linux), writes `lima.yaml` and `share/`, creates the data disk if it does not exist (`format: true` in the template only on that build; an existing disk is attached with `format: false`), `limactl create`, then a first `limactl start` during which the guest provisions itself (see [The image](#the-image)); waits for that, prints the harness lines, waits for ssh as `ssf`, and stops the instance. With an instance already there it says so and stops; `--force` deletes and re-creates the instance, never the data disk |
-| `ssf vm start` | writes `share/` fresh (scripts, seed, herdr), `limactl start`, waits for the provisioning marker (a reset instance provisions itself again here), for ssh and for the guest daemon. Warns when lima forwards ssh to a port other than `vm.ssh_port` (an instance from an older template; `ssf vm build --force` remakes it) |
+| `ssf vm build` | checks for `limactl` (and qemu on Linux), writes `lima.yaml` and `share/`, creates the data disk if it does not exist (`format: true` in the template only on that build; an existing disk is attached with `format: false`), `limactl create`, then a first `limactl start` during which the guest provisions itself (see [The image](#the-image)); waits for that, prints the harness lines, waits for ssh as `ssf`, stops the instance and turns `format` off in lima's copy of the template. With an instance already there it repairs that flag, says so and stops; `--force` deletes and re-creates the instance, never the data disk |
+| `ssf vm start` | repairs a stale `format: true` on the stopped instance and refuses to boot while one survives (see above), writes `share/` fresh (scripts, seed, herdr), `limactl start`, waits for the provisioning marker (a reset instance provisions itself again here), for ssh and for the guest daemon. Warns when lima forwards ssh to a port other than `vm.ssh_port` (an instance from an older template; `ssf vm build --force` remakes it) |
 | `ssf vm stop` | `limactl stop`, and `limactl stop -f` when the clean stop fails |
 | `ssf vm grow` | `limactl disk resize` on the data disk, with the VM stopped; the guest grows the filesystem at its next boot (see [Size](#size)) |
 | `ssf vm reset` | `limactl delete` and `limactl create` from the template; the data disk stays, and the next start provisions the fresh root again (a few minutes) |
