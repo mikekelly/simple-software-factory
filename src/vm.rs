@@ -252,6 +252,10 @@ pub struct Vm {
     pub base: PathBuf,
     /// `<base>/<name>`.
     pub dir: PathBuf,
+    /// lima's own home (`$LIMA_HOME`, else `~/.lima`), where the
+    /// instance and its external data disk live -- not under `[vm] dir`.
+    /// `None` when there is no home directory to derive it from.
+    pub lima_home: Option<PathBuf>,
     /// The `ssf` binary the guest gets: this one, normally.
     pub binary: Option<PathBuf>,
 }
@@ -303,6 +307,39 @@ pub struct VmStatus {
 
 /// Where the data disk is mounted in the guest.
 pub const GUEST_DATA_DIR: &str = "/var/lib/ssf";
+
+/// What a backend holds of one VM, from [`Vm::survey`].
+///
+/// Under Firecracker the VM *is* the files under `[vm] dir`, so that
+/// directory answers all of it. Under lima it does not: the instance and
+/// the data disk live in lima's own home, and the directory holds only
+/// the generated template, the ssh key and the share. Reading presence
+/// off the directory let `ssf uninstall` report "no VM" over a stopped
+/// lima instance whose directory had been removed by hand, or whose
+/// `[vm] dir` had since been changed, skip the destroy step, and leave
+/// the instance and its data disk -- the clones and worktrees with them
+/// -- for the person to find with `limactl list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Survey {
+    /// Is there anything [`Vm::destroy`] would take? `None` when the
+    /// backend could not be asked -- which is not "no", and must not be
+    /// reported as one.
+    pub present: Option<bool>,
+    /// Is the guest up? `None` when the probe itself could not be made,
+    /// as [`Vm::running_state`] means it.
+    pub running: Option<bool>,
+    /// Is there a guest `ssf vm start` could bring up? Under lima a data
+    /// disk outlives a deleted instance: there is then something to
+    /// destroy and nothing that can mount it to look inside first, so
+    /// "start it and try again" is no remedy.
+    pub startable: bool,
+    /// Is there a data disk that may hold clones and worktrees -- the
+    /// only part of a VM whose loss cannot be undone? `None` when that
+    /// could not be established. `ssf uninstall` refuses over anything
+    /// but `Some(false)`; the leftovers in `[vm] dir` are ssf's own and
+    /// hold nothing of anyone's work.
+    pub data: Option<bool>,
+}
 
 /// What the sizing rule reads off this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -867,6 +904,7 @@ impl Vm {
             cfg: cfg.vm.clone(),
             base,
             dir,
+            lima_home: lima::lima_home(),
             binary: None,
         }
     }
@@ -1095,6 +1133,25 @@ impl Vm {
         match self.backend() {
             BackendKind::Firecracker => Ok(self.firecracker_pid().is_some()),
             BackendKind::Lima => self.lima_running_probe(lima::LIVENESS_LIMIT),
+        }
+    }
+
+    /// What is here of this VM, asked of the backend in one pass:
+    /// `ssf uninstall` needs every answer and each one costs a `limactl`
+    /// fork under lima, so they are taken together.
+    pub fn survey(&self) -> Survey {
+        match self.backend() {
+            BackendKind::Firecracker => {
+                let dir = self.dir.exists();
+                let running = self.firecracker_pid().is_some();
+                Survey {
+                    present: Some(dir || running),
+                    running: Some(running),
+                    startable: dir,
+                    data: Some(self.data_disk().exists()),
+                }
+            }
+            BackendKind::Lima => self.lima_survey(),
         }
     }
 
@@ -2210,19 +2267,76 @@ impl Vm {
         }
     }
 
-    /// Remove the VM and everything in it.
+    /// Remove the VM and everything in it. Every part of it may be gone
+    /// already -- a second `ssf uninstall`, a half-uninstalled machine
+    /// -- so each is removed only if it is there, and the command says
+    /// so rather than claiming a removal it did not make.
     pub async fn destroy(&self) -> Result<()> {
-        if self.running() {
-            self.stop().await?;
+        // Firecracker must have its process gone before its disks:
+        // removing them under a live firecracker leaves it running on
+        // unlinked inodes, so a stop that fails ends the destroy. Lima's
+        // `limactl delete -f` force-stops the instance itself, so
+        // neither a stop that fails nor a running state that could not
+        // be read is a reason to leave a VM standing for ever -- which
+        // is what a guest that would not shut down did, on every run.
+        match (self.backend(), self.running_state()) {
+            (_, Some(false)) => {}
+            (BackendKind::Firecracker, _) => self.stop().await?,
+            (BackendKind::Lima, Some(true)) => {
+                if let Err(e) = self.stop().await {
+                    warn!(
+                        "could not stop {} before destroying it: {e:#}; deleting it anyway",
+                        self.cfg.name
+                    );
+                }
+            }
+            // A lima that could not be asked is not asked twice more for
+            // nothing: `lima_stop` re-runs the same listing and
+            // `lima_destroy` runs it again after that, so a limactl that
+            // hangs rather than fails bought this step minutes of
+            // silence and a warning that explains none of it. The
+            // graceful shutdown is worth its wait where the guest is
+            // known to be up; where it is not, `limactl delete -f` stops
+            // whatever is there.
+            (BackendKind::Lima, None) => {}
         }
-        if self.backend() == BackendKind::Lima {
-            self.lima_destroy()?;
+        let lima = match self.backend() {
+            BackendKind::Lima => self.lima_destroy(),
+            BackendKind::Firecracker => Ok(false),
+        };
+        let mut removed = lima.as_ref().copied().unwrap_or(false);
+        // Under lima this directory is often the only thing that was
+        // ever here, and under either backend it may be gone already. It
+        // is ssf's own either way, so it goes even when lima's half
+        // failed: leaving it behind only makes the next run harder to
+        // read, and the failure is still the step's failure below.
+        let dir = if self.dir.exists() {
+            match std::fs::remove_dir_all(&self.dir) {
+                Ok(()) => {
+                    println!("removed {}", self.dir.display());
+                    removed = true;
+                    Ok(())
+                }
+                Err(e) => {
+                    Err(anyhow::Error::new(e).context(format!("removing {}", self.dir.display())))
+                }
+            }
+        } else {
+            Ok(())
+        };
+        // Both halves are reported. A directory that would not go is no
+        // reason to lose the news that lima still holds an instance and
+        // a data disk.
+        match (lima, dir) {
+            (Ok(_), Ok(())) => {}
+            (Err(l), Err(d)) => bail!("{l:#}; and {d:#}"),
+            (Err(e), Ok(())) | (Ok(_), Err(e)) => return Err(e),
         }
-        if self.dir.exists() {
-            std::fs::remove_dir_all(&self.dir)
-                .with_context(|| format!("removing {}", self.dir.display()))?;
+        if !removed {
+            // Not "the directory is not there": under lima that
+            // directory is precisely what the question did not turn on.
+            println!("nothing to remove");
         }
-        println!("removed {}", self.dir.display());
         Ok(())
     }
 }
@@ -2816,6 +2930,55 @@ mod tests {
         let vm = Vm::new(&cfg);
         assert!(vm.kernel().ends_with("k/vmlinux"));
         assert!(!vm.kernel().starts_with("~"));
+    }
+
+    #[test]
+    fn under_firecracker_the_directory_is_the_vm() {
+        // The disks are the VM, so the directory (or a guest running off
+        // them) is the whole answer -- there is no bookkeeping of
+        // lima's kind to ask on top of it, and no question that could
+        // fail to be asked.
+        let mut cfg = Config::default();
+        cfg.vm.name = "one".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-fc-present-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        cfg.vm.dir = dir.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        assert!(!vm.dir.exists());
+        let empty = vm.survey();
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        let built = vm.survey();
+        // Removed before the assertions, so a failure leaves nothing in
+        // the temporary directory behind it.
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            empty,
+            Survey {
+                present: Some(false),
+                running: Some(false),
+                startable: false,
+                data: Some(false),
+            }
+        );
+        // The directory is the VM, but only the data disk in it holds
+        // anyone's work, and a build that got no further than the
+        // directory has none.
+        assert_eq!(
+            built,
+            Survey {
+                present: Some(true),
+                running: Some(false),
+                startable: true,
+                data: Some(false),
+            }
+        );
     }
 
     #[test]

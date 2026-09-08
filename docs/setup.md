@@ -985,16 +985,25 @@ come back with it.
    when it is down), `ui service disable` (with `vm.enabled` that shuts
    the guest down; on macOS this is `brew services stop ssf`), `ui
    uninstall` (the bar widget and menu, Omarchy only), `auth logout`
-   (revokes the bot's keys on GitHub and forgets it), `vm destroy` (under
-   the lima backend the lima instance `ssf-default` and its disk
-   `ssf-default` too, on whichever OS you run it). Each step tolerates
-   the thing being gone already, so a second run, or a run on a
-   half-uninstalled machine, is fine. With the factory in the VM the
-   report and the purge come from the guest, before it goes. The one
-   step that can end the run early is `ui service disable`: everything
-   after it destroys something, and none of it may happen while the
-   daemon might still be working, so a service that would not stop
-   leaves the machine as it was and tells you to stop it by hand
+   (revokes the bot's keys on GitHub and forgets it), `vm destroy`
+   (under the lima backend the lima instance `ssf-default` and its disk
+   `ssf-default` too, on whichever OS you run it; whether there is a VM
+   at all is a question for the backend rather than for `[vm] dir`, so
+   an instance whose directory has been removed by hand, or whose `[vm]
+   dir` has since been changed, is still found and destroyed, and a data
+   disk that outlived its instance is too). Where lima itself will not
+   answer -- `limactl` moved by an upgrade, off the PATH the service
+   runs under, a stale `[vm] limactl` -- what settles it is whether
+   `[vm] dir` or lima's home still holds the instance or the disk, so a
+   machine with nothing of either on it gets a plain `no VM` and one
+   that still has a disk of workspaces is never told it has none. Each
+   step tolerates the thing being gone already, so a second run, or a
+   run on a half-uninstalled machine, is fine. With the factory in the
+   VM the report and the purge come from the guest, before it goes. The
+   one step that can end the run early is `ui service disable`:
+   everything after it destroys something, and none of it may happen
+   while the daemon might still be working, so a service that would not
+   stop leaves the machine as it was and tells you to stop it by hand
    (`systemctl --user stop ssf.service`, or `brew services stop ssf`)
    and run `ssf uninstall` again.
 2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`
@@ -1005,11 +1014,17 @@ come back with it.
 
 What stops it: a workspace with uncommitted or unpushed work (an open
 item's too), one that cannot be checked (no origin, a git error), or a
-VM that is stopped so the clones on its data disk cannot be checked. Push or discard the work (`ssf vm start` to check a
-stopped VM), or pass `--force` to go ahead: on the host the work stays
-where it is; in the VM the clones live on its data disk and are
-destroyed with it, checked or not. `--yes` skips the question for
-scripted use.
+VM with a data disk whose clones cannot be checked -- it is stopped, it
+gives no report, the disk outlived the instance that mounted it, `[vm]
+enabled = false` means ssf never asks its guest, or lima would not say
+whether it is running or whether that disk is there. Only a data disk
+stops it: what `[vm] dir` holds without one is ssf's own template, ssh
+key and share, and goes without a word. Push or discard the work
+(`ssf vm start` to check a stopped VM; the message says what to do in
+each of the other cases, and it is never `ssf vm start`), or pass
+`--force` to go ahead: on the host the work stays where it is; in the VM
+the clones live on its data disk and are destroyed with it, checked or
+not. `--yes` skips the question for scripted use.
 
 What it keeps, and lists at the end: the clones and worktrees under
 `~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
