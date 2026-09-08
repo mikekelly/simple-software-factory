@@ -5,10 +5,12 @@ Every key in `~/.config/ssf/config.toml`, the per-project prompt file, model and
 `~/.config/ssf/config.toml` is mostly written for you by `ssf repo add` and
 `ssf config set` (the bar widget only shows the state of the factory);
 [`config.example.toml`](../config.example.toml) (installed as
-`/usr/share/ssf/config.example.toml`) shows every key with a comment. The
-token is never in this file: a pasted one (`ssf auth login --token`) lives
-in `~/.config/ssf/token` (mode 0600), otherwise it is read from gh's
-keyring when needed. `ssf config set` refuses to touch `github.token`; use
+`/usr/share/ssf/config.example.toml`, and on macOS as
+`$(brew --prefix)/share/ssf/config.example.toml`) shows every key with a
+comment. The token is never in this file: a pasted one
+(`ssf auth login --token`) lives in `~/.config/ssf/token` (mode 0600),
+otherwise it is read from gh's keyring when needed.
+`ssf config set` refuses to touch `github.token`; use
 `ssf auth login` for that. Changes are picked up on the next poll; no
 restart needed.
 
@@ -55,14 +57,20 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
-| `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
-| `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
+| `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
+| `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends)); unset, `ssf vm build` writes the platform's default here |
+| `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's files live (`<dir>/<name>/`); under lima the instance is `ssf-<name>` and its data disk `ssf-<name>` in lima's home, and `name` is then at most 7 characters, since lima labels the disk's filesystem `lima-<disk>` and an ext4 label holds 16 |
 | `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
-| `vm.data_gib` | chosen from the machine | The persistent data disk (state, clones, worktrees) in GiB, sparse; unset, `ssf vm build` writes half the free space of the filesystem holding `vm.dir` (at least 20) here; `ssf vm grow` enlarges it later |
-| `vm.root_gib` | `8` | The root image `ssf vm build` makes |
+| `vm.data_gib` | chosen from the machine | The persistent data disk (state, clones, worktrees) in GiB, sparse; unset, `ssf vm build` writes half the free space of the filesystem that will hold the disk (at least 20) here, and prints the path it measured: `vm.dir` under Firecracker, lima's own disk directory (`$LIMA_HOME/_disks`, by default `~/.lima/_disks`) under lima, since that is where lima keeps its disks; `ssf vm grow` enlarges it later |
+| `vm.root_gib` | `8` | The root image `ssf vm build` makes; under lima the instance's root disk, at least 20 whatever is set |
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
 | `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
-| `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Use binaries or images of your own instead of the downloaded ones |
+| `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Firecracker only: use binaries or images of your own instead of the downloaded ones |
+| `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with |
+| `vm.image` | Arch's cloud image on x86_64, Ubuntu LTS on aarch64 | lima only: a cloud-init image (URL or path; Arch or Debian/Ubuntu) to boot instead of the default for the guest's architecture |
+| `vm.vm_type` | lima's default | lima only: `vz` or `qemu`, passed through to lima (`vz` is macOS only) |
+| `vm.guest_binary` | this binary on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` binary to seed into the guest, for a dev build or a version without a release asset |
+| `vm.herdr` | the host's own `herdr` on a Linux host, else herdr's latest Linux release downloaded by the guest while provisioning | lima only: a Linux herdr binary for the guest; installed when the guest is provisioned, so a change needs `ssf vm reset` |
 | `repo.name` | | `owner/name` on GitHub (required) |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
@@ -108,8 +116,11 @@ version) and appends it to the initial prompt under a "Project notes" heading,
 after `daemon.instructions` and `repo.instructions`. The same text is included
 when an agent is started again from scratch. No file, or an empty one, adds
 nothing, and `ssf doctor` reports a repository whose notes are missing
-(`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`),
-looking for the file through the GitHub contents API on `repo.base_branch`
+(`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`;
+on a Mac the message names the Homebrew copy instead, under
+`$(brew --prefix)/share/ssf/`, since ssf looks beside its own binary
+first there), looking for the file through the GitHub
+contents API on `repo.base_branch`
 (else the default branch), so no clone is needed; an absolute or `~/`
 `prompt_file` is looked for on the machine instead. `repo.prompt_file` names another
 file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
@@ -120,9 +131,10 @@ advice (see [What the agent is told](prompts.md)), so a repository that
 wants its agents told to comment when they start and finish, to ask rather
 than guess, or to commit as they go, says so here.
 [`SSF.example.md`](../SSF.example.md) (installed as
-`/usr/share/ssf/SSF.example.md`) is a starting point with those lines,
-who is in charge of the item, how visible to stay, an autonomy line (how
-much a person approves) and the **gauntlet** rule: ssf runs one session per item and starts
+`/usr/share/ssf/SSF.example.md`, and on macOS as
+`$(brew --prefix)/share/ssf/SSF.example.md`) is a starting point with
+those lines, who is in charge of the item, how visible to stay, an
+autonomy line (how much a person approves) and the **gauntlet** rule: ssf runs one session per item and starts
 no reviewer, so the boilerplate tells the agent that did the work to have
 a fresh agent break it, fix what it finds and repeat before calling it
 done (see [Second opinions](sessions.md#second-opinions-the-gauntlet)).

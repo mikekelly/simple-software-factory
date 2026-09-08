@@ -1,8 +1,12 @@
-//! Which platform is this? The one place that reads `/etc/os-release` and
-//! looks for Omarchy, so the rest of the code asks a question instead of
-//! assuming an answer. Small on purpose: a later macOS port builds on it.
+//! Which platform is this, and what differs between the host operating
+//! systems ssf runs on? The one place that reads `/etc/os-release`, looks
+//! for Omarchy and knows the daemon's service (a systemd user unit on
+//! Linux, a Homebrew launchd service on macOS), so the rest of the code
+//! asks a question instead of assuming an answer.
 
-use std::path::PathBuf;
+use anyhow::{Context, Result, bail};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +162,175 @@ pub fn package_removal_command() -> String {
     detect().package_removal_command()
 }
 
+pub fn is_macos() -> bool {
+    detect().os == Os::MacOs
+}
+
+// ---- the files the package installs beside the binary ----
+
+/// Where a file the package installs under `share/ssf/` could be, best
+/// first: `/usr/share/ssf/<name>` (the .deb, .rpm and Arch packages),
+/// `share/ssf/<name>` under the prefix this binary is installed in
+/// (Homebrew's `$(brew --prefix)`, which is where a Mac has it, so that
+/// one comes first there), and `<name>` at the top of a source build.
+pub fn share_candidates(name: &str, exe_dir: Option<&Path>, os: Os) -> Vec<PathBuf> {
+    let package = PathBuf::from("/usr/share/ssf").join(name);
+    // `<prefix>/bin/ssf` -> `<prefix>/share/ssf/<name>`.
+    let prefixed = exe_dir
+        .and_then(Path::parent)
+        .map(|p| p.join("share/ssf").join(name));
+    let mut v = Vec::new();
+    if os == Os::MacOs {
+        v.extend(prefixed);
+        v.push(package);
+    } else {
+        v.push(package);
+        v.extend(prefixed);
+    }
+    // `target/<profile>/ssf` -> the repository it was built in.
+    if let Some(src) = exe_dir.and_then(Path::parent).and_then(Path::parent) {
+        v.push(src.join(name));
+    }
+    v.push(PathBuf::from(name));
+    v
+}
+
+/// The first of [`share_candidates`] that exists, else the first (the
+/// place this platform installs it), so a message can name it either way.
+pub fn share_file(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().ok();
+    let candidates = share_candidates(name, exe.as_deref().and_then(Path::parent), detect().os);
+    candidates
+        .iter()
+        .find(|p| p.exists())
+        .or_else(|| candidates.first())
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(name))
+}
+
+// ---- the daemon's service ----
+
+/// The systemd user unit (`systemctl --user ... ssf.service`); inside the
+/// guest, the system unit of the same name.
+pub const SERVICE: &str = "ssf.service";
+/// The launchd label Homebrew gives `brew services start ssf`.
+pub const LAUNCHD_LABEL: &str = "homebrew.mxcl.ssf";
+/// The Homebrew formula (`brew services <action> ssf`).
+pub const BREW_FORMULA: &str = "ssf";
+
+/// `gui/<uid>/homebrew.mxcl.ssf`: the service in the user's login session.
+fn launchd_target() -> String {
+    // SAFETY: getuid cannot fail.
+    let uid = unsafe { libc::getuid() };
+    format!("gui/{uid}/{LAUNCHD_LABEL}")
+}
+
+/// The command a person types to `start`, `stop` or `restart` the daemon's
+/// service on `os` (`linux`, `macos`).
+pub fn service_hint_for(os: &str, action: &str) -> String {
+    if os == "macos" {
+        format!("brew services {action} {BREW_FORMULA}")
+    } else {
+        format!("systemctl --user {action} {SERVICE}")
+    }
+}
+
+/// `service_hint_for` on this machine.
+pub fn service_hint(action: &str) -> String {
+    service_hint_for(std::env::consts::OS, action)
+}
+
+/// How a message names the daemon's service on `os`: the systemd user
+/// unit on Linux, Homebrew's service on macOS (there is no `ssf.service`
+/// on a Mac).
+pub fn service_name_for(os: &str) -> &'static str {
+    if os == "macos" {
+        "the ssf Homebrew service"
+    } else {
+        SERVICE
+    }
+}
+
+/// `service_name_for` on this machine.
+pub fn service_name() -> &'static str {
+    service_name_for(std::env::consts::OS)
+}
+
+/// Is the daemon's service running? On Linux `systemctl --user is-active`
+/// (the system unit inside the guest, where the daemon is a system
+/// service); on macOS `launchctl print` and its `state = running` line.
+pub fn service_active() -> bool {
+    if is_macos() && !crate::vm::in_guest() {
+        let out = Command::new("launchctl")
+            .args(["print", &launchd_target()])
+            .stdin(Stdio::null())
+            .output();
+        return match out {
+            Ok(o) => {
+                o.status.success() && launchctl_says_running(&String::from_utf8_lossy(&o.stdout))
+            }
+            Err(_) => false,
+        };
+    }
+    let mut cmd = Command::new("systemctl");
+    if !crate::vm::in_guest() {
+        cmd.arg("--user");
+    }
+    cmd.args(["is-active", "--quiet", SERVICE])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// `launchctl print` output for a service that runs has `state = running`.
+pub fn launchctl_says_running(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.trim().starts_with("state = ") && l.trim() == "state = running")
+}
+
+pub fn service_start() -> Result<()> {
+    service_action("start")
+}
+
+pub fn service_stop() -> Result<()> {
+    service_action("stop")
+}
+
+// The Omarchy menu restarts through `bin/ssf-ui` today; this is the
+// cross-platform way for what comes next (the Homebrew service).
+#[allow(dead_code)]
+pub fn service_restart() -> Result<()> {
+    service_action("restart")
+}
+
+/// Start, stop or restart the service: `systemctl --user <action>` on
+/// Linux; `brew services <action> ssf` on macOS, which loads or unloads
+/// the launchd agent (a `launchctl kill` alone would not hold: the agent
+/// is `keep_alive`, so launchd would start `ssf run` again).
+fn service_action(action: &str) -> Result<()> {
+    let mut cmd = if is_macos() {
+        let mut c = Command::new("brew");
+        c.args(["services", action, BREW_FORMULA]);
+        c
+    } else {
+        let mut c = Command::new("systemctl");
+        c.args(["--user", action, SERVICE]);
+        c
+    };
+    let out = cmd
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("running {:?}", cmd.get_program()))?;
+    if !out.status.success() {
+        bail!(
+            "`{}` failed: {}",
+            service_hint(action),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +475,89 @@ mod tests {
             linux("alpine", &[], false).package_removal_command(),
             "remove the ssf package with your package manager"
         );
+    }
+
+    #[test]
+    fn a_shared_file_is_looked_for_where_this_platform_installs_it() {
+        let bin = Path::new("/opt/homebrew/bin");
+        // On a Mac the file is under Homebrew's prefix, so that comes
+        // first: /usr/share/ssf is the Linux packages' place.
+        assert_eq!(
+            share_candidates("SSF.example.md", Some(bin), Os::MacOs),
+            vec![
+                PathBuf::from("/opt/homebrew/share/ssf/SSF.example.md"),
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("/opt/SSF.example.md"),
+                PathBuf::from("SSF.example.md"),
+            ]
+        );
+        assert_eq!(
+            share_candidates("SSF.example.md", Some(Path::new("/usr/bin")), Os::Linux),
+            vec![
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("/SSF.example.md"),
+                PathBuf::from("SSF.example.md"),
+            ]
+        );
+        // A source build: `target/debug/ssf` finds it in the repository.
+        let v = share_candidates(
+            "SSF.example.md",
+            Some(Path::new("/src/ssf/target/debug")),
+            Os::Linux,
+        );
+        assert!(
+            v.contains(&PathBuf::from("/src/ssf/SSF.example.md")),
+            "{v:?}"
+        );
+        // Nothing to go on: the package's path and the bare name.
+        assert_eq!(
+            share_candidates("SSF.example.md", None, Os::Linux),
+            vec![
+                PathBuf::from("/usr/share/ssf/SSF.example.md"),
+                PathBuf::from("SSF.example.md"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_service_is_named_for_the_os() {
+        assert_eq!(service_name_for("linux"), "ssf.service");
+        assert_eq!(service_name_for("macos"), "the ssf Homebrew service");
+        assert!(!service_name_for("macos").contains(".service"));
+    }
+
+    #[test]
+    fn service_hints_name_the_command_for_the_os() {
+        assert_eq!(
+            service_hint_for("linux", "stop"),
+            "systemctl --user stop ssf.service"
+        );
+        assert_eq!(
+            service_hint_for("linux", "restart"),
+            "systemctl --user restart ssf.service"
+        );
+        assert_eq!(service_hint_for("macos", "stop"), "brew services stop ssf");
+        assert_eq!(
+            service_hint_for("macos", "start"),
+            "brew services start ssf"
+        );
+        // This machine gets one of the two.
+        let here = service_hint("stop");
+        assert!(
+            here == service_hint_for("linux", "stop") || here == service_hint_for("macos", "stop")
+        );
+    }
+
+    #[test]
+    fn launchctl_print_is_read_for_its_state_line() {
+        let running = "gui/501/homebrew.mxcl.ssf = {\n\tactive count = 1\n\tpath = /Users/me/Library/LaunchAgents/homebrew.mxcl.ssf.plist\n\tstate = running\n\n\tprogram = /opt/homebrew/opt/ssf/bin/ssf\n}\n";
+        assert!(launchctl_says_running(running));
+        assert!(!launchctl_says_running(
+            &running.replace("state = running", "state = not running")
+        ));
+        assert!(!launchctl_says_running(""));
+        assert!(launchd_target().ends_with("/homebrew.mxcl.ssf"));
+        assert!(launchd_target().starts_with("gui/"));
     }
 }

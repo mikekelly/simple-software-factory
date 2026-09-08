@@ -1,0 +1,113 @@
+# On every vX.Y.Z tag, render packaging/homebrew/ssf.rb with the tag tarball's
+# url and sha256 and push it to the Homebrew tap as Formula/ssf.rb.
+# packaging/homebrew/README.md says how the tap and the token are set up.
+# The tag filter is release.yml's, exactly: a tag this workflow publishes a
+# formula for but release.yml does not build would point Homebrew at a
+# release with no packages in it.
+name: Homebrew formula
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, vX.Y.Z"
+        required: true
+        type: string
+
+env:
+  # The tap repository; the formula is pushed there as Formula/ssf.rb.
+  HOMEBREW_TAP: mikekelly/homebrew-ssf
+
+# One tap push at a time. Two tags close together (a v0.2.0 and the v0.2.1
+# that fixes it minutes later) would otherwise render, clone, commit and
+# push Formula/ssf.rb in parallel, and the loser of the race either force
+# -pushes an older formula over a newer one or fails on a non-fast-forward.
+# The group is the workflow, not the ref: keying it on the ref would put
+# every tag in a group of its own and let exactly the case this guards
+# against run. `cancel-in-progress: false` so the earlier tag finishes its
+# push and the later one goes second, over it.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Version from the tag
+        id: version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # The same tags as the push trigger above and as release.yml: a
+          # dispatch of a pre-release tag (v0.2.0-rc1) would otherwise render
+          # a formula for a release release.yml never built packages for.
+          if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not a vX.Y.Z tag; release.yml builds packages for those only"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Download the tag tarball and render the formula
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/v${VERSION}.tar.gz"
+          # Unauthenticated on purpose: Homebrew downloads the same url the
+          # same way, so this also proves the repository is public.
+          if ! curl -fsSL --retry 3 -o tarball.tar.gz "$url"; then
+            echo "::error::cannot download $url without a login; the repository has to be public for the formula to work"
+            exit 1
+          fi
+          sha=$(sha256sum tarball.tar.gz | cut -d' ' -f1)
+          echo "v${VERSION}: $url sha256 $sha"
+          mkdir -p rendered
+          packaging/homebrew/render.sh "$VERSION" "$sha" "$GITHUB_REPOSITORY" > rendered/ssf.rb
+          grep -Fq "  url \"$url\"" rendered/ssf.rb
+          grep -Fq "  sha256 \"$sha\"" rendered/ssf.rb
+          ruby -c rendered/ssf.rb
+          cat rendered/ssf.rb
+
+      - name: Upload the rendered formula
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssf.rb
+          path: rendered/ssf.rb
+
+      - name: Push the formula to the tap
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; the formula was rendered but not pushed to the tap ${HOMEBREW_TAP} (it is the ssf.rb artifact of this run)"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${HOMEBREW_TAP}.git" tap
+          cd tap
+          # A tap repository that has no commits yet gets its first one here.
+          git rev-parse --verify HEAD >/dev/null 2>&1 || git checkout -b main
+          mkdir -p Formula
+          cp ../rendered/ssf.rb Formula/ssf.rb
+          git add Formula/ssf.rb
+          if git diff --cached --quiet; then
+            echo "${HOMEBREW_TAP} already has ssf v${VERSION}"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "ssf v${VERSION}" \
+                     -m "Rendered from packaging/homebrew/ssf.rb at ${GITHUB_REPOSITORY}@v${VERSION} by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          git push origin HEAD

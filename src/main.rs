@@ -266,9 +266,11 @@ enum Command {
         #[arg(long, hide = true)]
         report: bool,
     },
-    /// Run the whole factory (daemon, herdr, sessions) inside a Firecracker
-    /// microVM instead of on this machine: build the image, start, stop
-    /// and reach the guest.
+    /// Run the whole factory (daemon, herdr, sessions) inside a VM instead
+    /// of on this machine: build the guest, start, stop and reach it.
+    /// `[vm] backend` picks what runs it: a Firecracker microVM (the
+    /// default on Linux) or a lima instance (the default on macOS, and
+    /// Linux with qemu).
     Vm {
         #[command(subcommand)]
         command: VmCommand,
@@ -297,17 +299,21 @@ enum Command {
 
 #[derive(Subcommand)]
 enum VmCommand {
-    /// Size the VM from this machine, then download Firecracker, gvproxy
-    /// and a guest kernel, make the root image from the Arch bootstrap
-    /// tarball and provision it (git, gh, herdr, the harness CLIs). No
-    /// root needed.
+    /// Size the VM from this machine, then make the guest and provision
+    /// it (git, gh, herdr, the harness CLIs). Firecracker (`[vm] backend`,
+    /// the default on Linux): downloads Firecracker, gvproxy and a guest
+    /// kernel and makes the root image from the Arch bootstrap tarball.
+    /// lima (the default on macOS): creates the `ssf-<name>` instance and
+    /// its data disk from a cloud image and boots it once. No root needed.
     ///
     /// Every `[vm]` size key left unset is chosen from the host, printed
     /// and written to config.toml: `vcpus` is the CPUs minus one (at least
     /// 2), `mem_mib` half the RAM (at least 4096), `data_gib` half the
-    /// free space of the filesystem holding `vm.dir` (at least 20; the
-    /// disk is sparse, so this reserves nothing). A key already in `[vm]`
-    /// is kept; a flag below writes a value of your own.
+    /// free space of the filesystem the data disk lands on (at least 20;
+    /// the disk is sparse, so this reserves nothing) -- `[vm] dir` under
+    /// Firecracker, lima's own disk directory under lima, and the line
+    /// printed says which was measured. A key already in `[vm]` is kept;
+    /// a flag below writes a value of your own.
     Build {
         /// Make a new image even if one exists.
         #[arg(long)]
@@ -326,9 +332,10 @@ enum VmCommand {
     /// must be stopped).
     ///
     /// Grows to the size given, or to the rule for today's free space
-    /// (half of it, at least 20 GiB): `e2fsck -f`, a longer file,
-    /// `resize2fs`, then `[vm] data_gib` is updated. Never shrinks; a
-    /// smaller disk means a new VM.
+    /// (half of it, at least 20 GiB): Firecracker runs `e2fsck -f`,
+    /// lengthens the file and `resize2fs`; lima runs `limactl disk resize`
+    /// and the guest grows the filesystem at its next boot. Then `[vm]
+    /// data_gib` is updated. Never shrinks; a smaller disk means a new VM.
     Grow {
         /// The new size in GiB (at least the current size).
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -384,10 +391,13 @@ enum VmCommand {
     },
     /// An `~/.ssh/config` entry for the guest (`herdr --remote ssf-<name>`).
     SshConfig,
-    /// Remake the root disk from the image at the next start; state,
-    /// clones and worktrees on the data disk stay.
+    /// A fresh root at the next start (Firecracker: the root disk remade
+    /// from the image; lima: the instance re-created, provisioned again
+    /// on its first boot); state, clones and worktrees on the data disk
+    /// stay.
     Reset,
-    /// Remove the VM and all its disks.
+    /// Remove the VM and all its disks (lima: the instance and its data
+    /// disk too).
     Destroy {
         #[arg(long, short = 'y')]
         yes: bool,
@@ -579,7 +589,7 @@ enum UiCommand {
     },
     /// Remove the bar widget and menu entries.
     Uninstall,
-    /// Control the background service (`ssf.service` user unit).
+    /// Control the background service (the `ssf.service` user unit on Linux, the Homebrew service on macOS).
     Service {
         #[command(subcommand)]
         command: ServiceCommand,
@@ -652,10 +662,25 @@ async fn main() -> Result<()> {
                     );
                     return Ok(());
                 }
-                _ => bail!(
-                    "the factory runs in VM {}, which is not running; `ssf vm start` first",
-                    cfg.vm.name
-                ),
+                // A host that cannot start the VM at all is told why here:
+                // the tooling check is the same one `ssf vm status` and
+                // `ssf doctor` print, and this is the message a person hits
+                // first on a machine where the backend is not installed.
+                _ => {
+                    let tooling = vm.tooling();
+                    if tooling.ok {
+                        bail!(
+                            "the factory runs in VM {}, which is not running; `ssf vm start` first",
+                            cfg.vm.name
+                        )
+                    }
+                    bail!(
+                        "the factory runs in VM {}, which is not running, and {} cannot start it: {}",
+                        cfg.vm.name,
+                        vm.backend(),
+                        tooling.detail
+                    )
+                }
             }
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
@@ -1515,11 +1540,40 @@ fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>> {
     }
 }
 
+/// This machine's name, for the label on the bot's GitHub key. Linux has
+/// `/etc/hostname`; macOS does not, and answers `scutil --get
+/// ComputerName` (the name a person gave the Mac) or `hostname`.
 fn hostname() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .ok()
-        .filter(|s| !s.is_empty())
+    let ran = |program: &str, args: &[&str]| {
+        std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+    };
+    pick_hostname(
+        std::fs::read_to_string("/etc/hostname").ok(),
+        || ran("scutil", &["--get", "ComputerName"]),
+        || ran("hostname", &[]),
+    )
+}
+
+/// The first of `/etc/hostname`, `scutil --get ComputerName` and
+/// `hostname` that answers with something, trimmed; "localhost" when none
+/// does. The file comes first, so a Linux host keeps the name it had.
+fn pick_hostname(
+    file: Option<String>,
+    computer_name: impl Fn() -> Option<String>,
+    hostname: impl Fn() -> Option<String>,
+) -> String {
+    let clean = |s: String| {
+        let s = s.trim().to_string();
+        (!s.is_empty()).then_some(s)
+    };
+    file.and_then(clean)
+        .or_else(|| computer_name().and_then(clean))
+        .or_else(|| hostname().and_then(clean))
         .unwrap_or_else(|| "localhost".to_string())
 }
 
@@ -2097,7 +2151,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
         } => {
             let mut cfg = cfg;
             size_vm(&mut cfg, &vm.base, [vcpus, mem_mib, data_gib])?;
-            vm::Vm::new(&cfg).build(force).await
+            vm::Vm::new(&cfg).build(&cfg, force).await
         }
         VmCommand::Grow { data_gib } => {
             if let Some(n) = vm.grow(data_gib)? {
@@ -2141,18 +2195,41 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                         "  [vm] enabled = false"
                     }
                 );
-                println!(
-                    "image:    {}",
-                    if st.image {
-                        "built"
-                    } else {
-                        "missing (ssf vm build)"
-                    }
-                );
+                println!("backend:  {}", st.backend);
+                if let Some(t) = &st.tooling {
+                    println!("tooling:  {}", t.detail);
+                }
+                match &st.instance {
+                    // A `limactl list` that failed is not "no such
+                    // instance": saying "missing (ssf vm build)" over a
+                    // VM lima could not be asked about sends people to
+                    // rebuild one that is already there.
+                    Some(inst) => println!(
+                        "instance: {inst}{}",
+                        match (&st.probe_error, &st.lima_dir, st.image) {
+                            (Some(e), ..) => format!(" unknown: {e}"),
+                            (None, Some(d), _) => format!(" ({d})"),
+                            (None, None, false) => " missing (ssf vm build)".to_string(),
+                            (None, None, true) => String::new(),
+                        }
+                    ),
+                    None => println!(
+                        "image:    {}",
+                        if st.image {
+                            "built"
+                        } else {
+                            "missing (ssf vm build)"
+                        }
+                    ),
+                }
                 println!(
                     "state:    {}",
-                    match (st.running, st.firecracker_pid) {
-                        (true, Some(p)) => format!("running (firecracker pid {p})"),
+                    match (&st.probe_error, st.running, st.firecracker_pid) {
+                        // Same again: `running` is false because nothing
+                        // could be asked, not because the VM is stopped.
+                        (Some(_), ..) => "unknown (lima did not answer)".to_string(),
+                        (None, true, Some(p)) => format!("running (firecracker pid {p})"),
+                        (None, true, None) => "running".to_string(),
                         _ => "stopped".to_string(),
                     }
                 );
@@ -2224,7 +2301,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
         VmCommand::Sync => vm.sync(&cfg),
         VmCommand::Logs { follow, lines } => exit_with(vm.logs(follow, lines)?),
         VmCommand::Console { follow } => {
-            let log = vm.console_log();
+            let log = vm.console_path()?;
             let mut cmd = std::process::Command::new("tail");
             cmd.arg("-n").arg("200");
             if follow {
@@ -2240,8 +2317,16 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
         VmCommand::Destroy { yes } => {
             if !yes {
                 bail!(
-                    "this removes {} and everything in it; pass --yes",
-                    vm.dir.display()
+                    "this removes {} and everything in it{}; pass --yes",
+                    vm.dir.display(),
+                    match vm.backend() {
+                        vm::BackendKind::Lima => format!(
+                            ", the lima instance {} and its disk {}",
+                            vm.lima_name(),
+                            vm.lima_disk_name()
+                        ),
+                        vm::BackendKind::Firecracker => String::new(),
+                    }
                 );
             }
             vm.destroy().await
@@ -2256,16 +2341,25 @@ fn exit_with(st: std::process::ExitStatus) -> Result<()> {
 /// `ssf vm build`'s sizing: a `--vcpus/--mem-mib/--data-gib` flag is
 /// written to `[vm]`; a key set there stays; a key set nowhere gets the
 /// rule for this machine and is written too. The choice is printed with
-/// where each value came from.
+/// where each value came from. `[vm] backend` is settled the same way
+/// (the platform's default, written once).
 fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()> {
-    let facts = vm::HostFacts::probe(base)?;
-    let chosen = vm::choose_sizes(&mut cfg.vm, flags, vm::sizes_for(&facts));
+    let (backend, backend_from, backend_changed) =
+        vm::choose_backend(&mut cfg.vm, vm::BackendKind::platform_default());
+    println!("VM backend: {backend} ({backend_from})");
+    // The backend decides which filesystem the data disk will fill, so it
+    // has to be settled before the machine is measured.
+    let (dir, what) = vm::sizing_dir(backend, base);
+    let facts = vm::HostFacts::probe(&dir)?;
+    let mut chosen = vm::choose_sizes(&mut cfg.vm, flags, vm::sizes_for(&facts));
+    chosen.changed |= backend_changed;
     println!(
-        "this machine: {} CPUs, {} MiB RAM, {} GiB free on {} (where [vm] dir is)",
+        "this machine: {} CPUs, {} MiB RAM, {} GiB free on {} (measured at {}, {what})",
         facts.cpus,
         facts.mem_mib,
         facts.free_bytes >> 30,
-        facts.mount
+        facts.mount,
+        dir.display(),
     );
     println!(
         "VM size: {} vCPUs ({}), {} MiB RAM ({}), {} GiB data disk ({}; sparse, so it takes host space only as the guest writes)",
@@ -2279,7 +2373,7 @@ fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()>
     if chosen.changed {
         cfg.save()?;
         println!(
-            "written to {} under [vm] (vcpus, mem_mib, data_gib); edit them there. The data disk itself is made by `ssf vm start` and only enlarged by `ssf vm grow`",
+            "written to {} under [vm] (backend, vcpus, mem_mib, data_gib); edit them there. The data disk itself is made once and only enlarged by `ssf vm grow`",
             config::config_path().display()
         );
     }
@@ -3028,6 +3122,22 @@ fn ui_cmd(command: UiCommand) -> Result<()> {
     }
 }
 
+/// Does this doctor report the VM backend's host tooling?
+///
+/// Only a host doctor does, and only as a note. `doctor` is a forwarded
+/// command ([`forwarded_name`]), so with `[vm] enabled` and the VM
+/// running it is the guest that answers -- and the guest has no limactl
+/// or `/dev/kvm` of its own to report on -- while with the VM stopped
+/// `main` bails before doctor runs, naming the missing tooling itself
+/// ("... cannot start it: ..."). So a doctor that reaches this line is
+/// running the factory here, on this machine, where the backend's tooling
+/// is not in use: nothing is broken by its absence, it is what turning
+/// `[vm] enabled` on would need. The ok/FAIL judgement on it belongs to
+/// the two places that do depend on it, `ssf vm status` and that bail.
+fn reports_backend_tooling(in_guest: bool) -> bool {
+    !in_guest
+}
+
 async fn doctor() -> Result<()> {
     let mut problems = 0;
     let mut check = |ok: bool, msg: String| {
@@ -3202,9 +3312,15 @@ async fn doctor() -> Result<()> {
                     "data disk {}{}",
                     d.describe(),
                     if d.is_full() {
-                        "; grow it from the host: stop the VM (`systemctl --user stop ssf.service`, or `ssf vm stop` when it was started by hand), `ssf vm grow`, start it again"
+                        // This runs in the guest, which does not know the
+                        // host's OS: both hints.
+                        format!(
+                            "; grow it from the host: stop the VM (`{}`, `{}` on macOS, or `ssf vm stop` when it was started by hand), `ssf vm grow`, start it again",
+                            platform::service_hint_for("linux", "stop"),
+                            platform::service_hint_for("macos", "stop")
+                        )
                     } else {
-                        ""
+                        String::new()
                     }
                 ),
             ),
@@ -3279,6 +3395,9 @@ async fn doctor() -> Result<()> {
     for d in driver::Drivers::from_config(&cfg).iter() {
         open_workspaces.insert(d.kind(), d.ps().await);
     }
+    // Where a person starts their SSF.md from: the packages put it in
+    // /usr/share/ssf, Homebrew under its own prefix.
+    let example_notes = platform::share_file("SSF.example.md");
     for r in &cfg.repos {
         // Who may drive it: the configured list, or the collaborators with
         // push access fetched the way the daemon does.
@@ -3339,9 +3458,9 @@ async fn doctor() -> Result<()> {
                     r.name,
                     notes_path.display(),
                     if present {
-                        "present"
+                        "present".to_string()
                     } else {
-                        "missing; start from /usr/share/ssf/SSF.example.md"
+                        format!("missing; start from {}", example_notes.display())
                     }
                 ),
             );
@@ -3356,12 +3475,13 @@ async fn doctor() -> Result<()> {
                         Ok(false) => check(
                             false,
                             format!(
-                                "no {notes} in {}{}; start from /usr/share/ssf/SSF.example.md",
+                                "no {notes} in {}{}; start from {}",
                                 r.name,
                                 match &r.base_branch {
                                     Some(b) => format!(" on branch {b} (does the branch exist?)"),
                                     None => String::new(),
-                                }
+                                },
+                                example_notes.display()
                             ),
                         ),
                         Err(e) => check(
@@ -3657,7 +3777,7 @@ async fn doctor() -> Result<()> {
         ui::service_active(),
         format!(
             "{} running{}",
-            ui::SERVICE,
+            platform::service_name(),
             if ui::service_enabled() {
                 ""
             } else {
@@ -3665,6 +3785,23 @@ async fn doctor() -> Result<()> {
             }
         ),
     );
+    // The tooling the VM backend needs, on the host that would run it.
+    // Nothing here uses it (see `reports_backend_tooling`), so a missing
+    // limactl is not a failure: it is what to install before turning the
+    // VM on.
+    if reports_backend_tooling(vm::in_guest()) {
+        let vm = vm::Vm::new(&cfg);
+        println!(
+            "note {} backend: {}{}",
+            vm.backend(),
+            vm.tooling().detail,
+            if cfg.vm.enabled {
+                ""
+            } else {
+                "; [vm] enabled is false, so nothing here needs it until you turn the VM on"
+            }
+        );
+    }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.
     if vm::in_guest() {
@@ -3743,6 +3880,52 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_backend_tooling_is_a_note_on_the_host_and_nothing_in_the_guest() {
+        // Why it is only ever a note: `doctor` is forwarded, so a factory
+        // in a running VM answers doctor from the guest...
+        assert_eq!(forwarded_name(&Command::Doctor), Some("doctor"));
+        assert!(vm::forwards("doctor"));
+        assert!(!reports_backend_tooling(true));
+        // ...and a factory in a stopped VM never gets here at all: `main`
+        // bails on any forwarded command but `status`, and that bail is
+        // itself what names the tooling a host has not got. So the doctor
+        // that prints this line is one running the factory on this
+        // machine, where the backend is not in use and cannot fail.
+        assert!(reports_backend_tooling(false));
+    }
+
+    #[test]
+    fn the_machine_name_comes_from_whichever_source_this_os_has() {
+        // Linux: /etc/hostname, exactly as before.
+        assert_eq!(pick_hostname(Some("box\n".into()), || None, || None), "box");
+        // macOS has no /etc/hostname; the name a person gave the Mac
+        // comes first, `hostname` after it. Neither must be allowed to
+        // leave the key labelled "ssf on localhost".
+        assert_eq!(
+            pick_hostname(
+                None,
+                || Some("Mike's MacBook Pro\n".into()),
+                || Some("mikes-mbp.local\n".into())
+            ),
+            "Mike's MacBook Pro"
+        );
+        assert_eq!(
+            pick_hostname(None, || None, || Some("mikes-mbp.local\n".into())),
+            "mikes-mbp.local"
+        );
+        // Empty answers count as no answer.
+        assert_eq!(
+            pick_hostname(
+                Some("  \n".into()),
+                || Some("".into()),
+                || Some(" mac \n".into())
+            ),
+            "mac"
+        );
+        assert_eq!(pick_hostname(None, || None, || None), "localhost");
+    }
 
     #[test]
     fn item_refs_accept_numbers_and_sessions() {

@@ -1,27 +1,34 @@
-//! The factory inside a Firecracker microVM: the daemon, herdr and every
-//! agent session run in a guest, and the host keeps only what builds,
-//! starts, stops and reaches it (`ssf vm ...`). Nothing here needs root:
-//! Firecracker runs as the user given `/dev/kvm`, the guest's network is
-//! gvisor-tap-vsock (`gvproxy` on the host, a user-mode TCP/IP stack on the
-//! unix socket Firecracker maps to guest vsock port 1024; `gvforwarder` in
-//! the guest), and the images are made with `fakeroot` and `mkfs.ext4 -d`.
+//! The factory inside a VM: the daemon, herdr and every agent session run
+//! in a guest, and the host keeps only what builds, starts, stops and
+//! reaches it (`ssf vm ...`). Two backends (`[vm] backend`) run the guest:
 //!
-//! Files under `[vm] dir` (`~/.local/share/ssf/vm`): the downloaded
-//! `firecracker`, `gvproxy`, `gvforwarder` and `vmlinux`, the root image
-//! `rootfs.ext4` that `ssf vm build` provisions from the Arch bootstrap
-//! tarball, and one directory per VM with its persistent `root.ext4` (a
-//! copy-on-write copy of the image), `data.ext4` (ssf's state, the clones
-//! and worktrees, mounted at `/var/lib/ssf`), the `seed.ext4` written at
-//! every start (this binary, the config rewritten for the guest, the bot
-//! token, the ssh key, the `[vm] files`), Firecracker's config and sockets,
-//! PID files and the serial console log.
+//! * Firecracker (the default on Linux; this file). Nothing needs root:
+//!   Firecracker runs as the user given `/dev/kvm`, the guest's network is
+//!   gvisor-tap-vsock (`gvproxy` on the host, a user-mode TCP/IP stack on
+//!   the unix socket Firecracker maps to guest vsock port 1024;
+//!   `gvforwarder` in the guest), and the images are made with `fakeroot`
+//!   and `mkfs.ext4 -d`. Files under `[vm] dir` (`~/.local/share/ssf/vm`):
+//!   the downloaded `firecracker`, `gvproxy`, `gvforwarder` and `vmlinux`,
+//!   the root image `rootfs.ext4` that `ssf vm build` provisions from the
+//!   Arch bootstrap tarball, and one directory per VM with its persistent
+//!   `root.ext4` (a copy-on-write copy of the image), `data.ext4` (ssf's
+//!   state, the clones and worktrees, mounted at `/var/lib/ssf`), the
+//!   `seed.ext4` written at every start (this binary, the config rewritten
+//!   for the guest, the bot token, the ssh key, the `[vm] files`),
+//!   Firecracker's config and sockets, PID files and the serial console log.
+//! * lima (the default on macOS; `lima.rs`): a `limactl` instance from a
+//!   cloud image, provisioned by the same guest scripts on its first boot
+//!   and seeded from a read-only host directory at every boot.
 //!
-//! The guest is reached over ssh on `127.0.0.1:<ssh_port>` (gvproxy
-//! publishes the guest's sshd there) with a key made per VM. With `[vm]
-//! enabled = true` the daemon-facing commands are run inside the guest that
-//! way, so `ssf status --json` for the bar widget and `ssf tell` from a
-//! terminal work as before; `ssf run` on the host starts the VM and watches
-//! it, so the systemd unit is unchanged.
+//! What does not depend on the backend stays here: the seed tree, the
+//! sizing rule, the ssh layer, the harness logins, `sync`, `attach`, `logs`
+//! and the status. The guest is reached over ssh on `127.0.0.1:<ssh_port>`
+//! with a key made per VM. With `[vm] enabled = true` the daemon-facing
+//! commands are run inside the guest that way, so `ssf status --json` for
+//! the bar widget and `ssf tell` from a terminal work as before; `ssf run`
+//! on the host starts the VM and watches it, so the service is unchanged.
+
+mod lima;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -31,9 +38,11 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
+pub use crate::config::BackendKind;
 use crate::config::{
     Config, Credential, DriverKind, GitConfig, SigningKey, VmConfig, expand_tilde,
 };
+use crate::platform;
 
 pub const FIRECRACKER_VERSION: &str = "v1.16.1";
 pub const GVPROXY_VERSION: &str = "v0.8.9";
@@ -53,6 +62,11 @@ pub const GUEST_HERDR: &str = "/usr/local/bin/herdr";
 const GUEST_CID: u32 = 3;
 /// The vsock port gvforwarder dials; Firecracker turns it into `v.sock_1024`.
 const NET_PORT: u32 = 1024;
+/// What a whole-wait deadline adds to the limit the wait's own loop
+/// keeps: the loop's message is the one a person normally reads, and the
+/// outer deadline only catches a wait that has stopped making progress
+/// altogether. See [`Vm::wait_for_ssh`].
+const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
@@ -227,7 +241,10 @@ fn gvproxy_url(name: &str) -> String {
     )
 }
 
-/// One VM: its config and the directory its files live in.
+/// One VM: its config and the directory its files live in. The public
+/// operations (`build`, `start`, `stop`, `running`, `grow`, `reset`,
+/// `destroy`, `console_path`, `status`) switch on `backend()`; the
+/// Firecracker side is the `fc_*` methods here, the lima side `lima.rs`.
 #[derive(Clone)]
 pub struct Vm {
     pub cfg: VmConfig,
@@ -245,8 +262,16 @@ pub struct VmStatus {
     pub enabled: bool,
     pub name: String,
     pub dir: String,
+    /// `firecracker` or `lima`.
+    pub backend: String,
+    /// The lima instance (`ssf-<name>`); null under Firecracker.
+    pub instance: Option<String>,
+    /// lima's own directory for the instance, once it exists.
+    pub lima_dir: Option<String>,
+    /// Firecracker: the root image is built; lima: the instance exists.
     pub image: bool,
     pub running: bool,
+    /// Firecracker's and gvproxy's PIDs; null under lima.
     pub firecracker_pid: Option<u32>,
     pub gvproxy_pid: Option<u32>,
     pub ssh_port: u16,
@@ -263,6 +288,16 @@ pub struct VmStatus {
     pub data_gib: u32,
     /// The data disk as the guest sees it (`df`), when reachable.
     pub data: Option<DiskUse>,
+    /// The host tooling this backend needs (`limactl` and qemu, or
+    /// `/dev/kvm`). Null inside the guest, whose host owns the VM.
+    pub tooling: Option<Tooling>,
+    /// Why lima could not be asked about the instance, when it could not
+    /// be. Null when the answer below is an answer: `instance`,
+    /// `lima_dir`, `image` and `running` all read as "no instance, not
+    /// running" on a `limactl list` that failed, and reporting that as
+    /// fact is how a working VM came to be described as missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_error: Option<String>,
 }
 
 /// Where the data disk is mounted in the guest.
@@ -275,29 +310,47 @@ pub struct HostFacts {
     pub cpus: u32,
     /// RAM in MiB.
     pub mem_mib: u64,
-    /// Free space, in bytes, on the filesystem that holds `[vm] dir`.
+    /// Free space, in bytes, on the filesystem that holds the directory
+    /// [`HostFacts::probe`] was given (see [`sizing_dir`]: not the same
+    /// directory under both backends).
     pub free_bytes: u64,
     /// That filesystem's mount point, for the message.
     pub mount: String,
 }
 
 impl HostFacts {
-    /// Read this machine: the CPUs this process may use, `/proc/meminfo`,
-    /// and the free space where `dir` is (or would be: its nearest
-    /// existing ancestor).
+    /// Read this machine: the CPUs this process may use, `/proc/meminfo`
+    /// (`sysctl hw.memsize` on macOS), and the free space where `dir` is
+    /// (or would be: its nearest existing ancestor).
     // The statvfs field types differ between libc targets.
     #[allow(clippy::useless_conversion)]
     pub fn probe(dir: &Path) -> Result<Self> {
         let cpus = std::thread::available_parallelism()
             .map(|n| u32::try_from(n.get()).unwrap_or(u32::MAX))
             .unwrap_or(1);
-        let meminfo = std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
-        let mem = parse_meminfo(&meminfo).context("no MemTotal in /proc/meminfo")?;
+        let mem_mib = if platform::is_macos() {
+            let out = Command::new("sysctl")
+                .args(["-n", "hw.memsize"])
+                .output()
+                .context("running sysctl hw.memsize")?;
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse::<u64>()
+                .context("reading hw.memsize")?
+                >> 20
+        } else {
+            let meminfo =
+                std::fs::read_to_string("/proc/meminfo").context("reading /proc/meminfo")?;
+            parse_meminfo(&meminfo)
+                .context("no MemTotal in /proc/meminfo")?
+                .total_kib
+                / 1024
+        };
         let here = existing_ancestor(dir);
         let st = statvfs(&here)?;
         Ok(Self {
             cpus,
-            mem_mib: mem.total_kib / 1024,
+            mem_mib,
             free_bytes: u64::from(st.f_bavail) * u64::from(st.f_frsize),
             mount: mount_point_of(&here),
         })
@@ -333,6 +386,213 @@ pub fn sizes_for(facts: &HostFacts) -> Sizes {
         mem_mib: mem.max(Sizes::MIN.mem_mib),
         data_gib: data.max(Sizes::MIN.data_gib),
     }
+}
+
+/// Where the sizing rule and `ssf vm grow` measure free space, and how a
+/// message names it. Under Firecracker the VM's own directory: its disks
+/// are files under `[vm] dir`. Under lima the directory lima keeps its
+/// disks in (`$LIMA_HOME/_disks`, else `~/.lima/_disks`), which can be on
+/// another volume entirely — measuring `[vm] dir` there would size the
+/// data disk against a filesystem that never fills up. Falls back to the
+/// VM's directory when lima's home cannot be worked out.
+pub fn sizing_dir_for(
+    backend: BackendKind,
+    base: &Path,
+    lima_disks: Option<PathBuf>,
+) -> (PathBuf, &'static str) {
+    match (backend, lima_disks) {
+        (BackendKind::Lima, Some(d)) => (d, "lima's disk directory"),
+        _ => (base.to_path_buf(), "[vm] dir"),
+    }
+}
+
+/// [`sizing_dir_for`] on this machine.
+pub fn sizing_dir(backend: BackendKind, base: &Path) -> (PathBuf, &'static str) {
+    sizing_dir_for(backend, base, lima::disks_dir())
+}
+
+/// How often [`Vm::supervise`] asks whether the guest is still up.
+///
+/// Under Firecracker the question is a PID file and a `/proc` lookup, so
+/// five seconds costs nothing. Under lima it forks a ~60 MB Go binary
+/// (`limactl list --json`) and takes a lock in lima's home, which is too
+/// much to do every five seconds on a laptop for the whole time the
+/// factory runs -- and every one of those forks is a chance to fail and
+/// be misread. Half a minute is still far quicker than a person notices a
+/// dead VM, and `ssf status` answers the same question on demand.
+pub fn supervise_interval(backend: BackendKind) -> Duration {
+    match backend {
+        BackendKind::Firecracker => Duration::from_secs(5),
+        BackendKind::Lima => Duration::from_secs(30),
+    }
+}
+
+/// How many rounds in a row [`Vm::supervise`] may fail to get an answer
+/// out of the probe before it gives up. A probe that could not be made
+/// says nothing, so one of them must not end the supervision -- but a
+/// probe that can never be made says nothing for ever, and the loop that
+/// only warned left `ssf run` "supervising" a VM it had not heard about
+/// for hours while the service read active. Ten rounds is under a minute
+/// under Firecracker and five minutes under lima: long enough to sit out
+/// a busy laptop or a lima home someone else has locked, short enough
+/// that the daemon does not pretend all day.
+const MAX_UNANSWERED_PROBES: u32 = 10;
+
+/// What the supervisor says when the probe has stopped answering: the
+/// question, the tool that could not answer it, and how long it has been
+/// like that. The warnings from the probe itself are above it in the log.
+fn cannot_tell_error(backend: BackendKind, rounds: u32, every: Duration) -> anyhow::Error {
+    let tool = match backend {
+        BackendKind::Firecracker => "reading the VM's pid file",
+        BackendKind::Lima => "`limactl list --json`",
+    };
+    anyhow::anyhow!(
+        "cannot tell whether the VM is running: {tool} has not answered for {rounds} tries in a row ({}), and supervising a VM that cannot be asked about is not supervising anything. `ssf vm status` asks the same question by hand",
+        lima::human_duration(every * rounds)
+    )
+}
+
+/// A tool the host needs to run the VM under a backend, for `ssf doctor`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tool {
+    /// A program to find on PATH (or an absolute path from `[vm]
+    /// limactl`), or a device to open.
+    pub name: String,
+    /// Open it rather than look for it: `/dev/kvm` is there on every
+    /// Linux with the module loaded, and the question is whether this
+    /// user may use it.
+    pub device: bool,
+    /// What to do when it is not usable.
+    pub install: String,
+}
+
+/// Does lima drive this VM with qemu? On Linux always: qemu is lima's
+/// only driver there. On macOS only when `[vm] vm_type` asks for it --
+/// lima's own default is `vz`, the Virtualization framework, which needs
+/// no qemu at all. Keyed on what the VM will use, not on the operating
+/// system: a Mac with `vm_type = "qemu"` and no qemu installed used to
+/// pass every check ssf makes and then fail inside `limactl create`.
+pub fn lima_uses_qemu(os: &str, vm_type: Option<&str>) -> bool {
+    if os == "macos" {
+        vm_type == Some("qemu")
+    } else {
+        true
+    }
+}
+
+/// What to install when `qemu-system-<arch>` is missing.
+fn qemu_install_hint(os: &str, arch: &str) -> String {
+    if os == "macos" {
+        return "install qemu (`brew install qemu`), or unset [vm] vm_type to let lima use the Virtualization framework".to_string();
+    }
+    format!(
+        "install qemu (Arch: `qemu-full` or `qemu-base`; Debian/Ubuntu: `qemu-system-{}`; Fedora: `qemu-system-{}`)",
+        if arch == "x86_64" { "x86" } else { "arm" },
+        if arch == "x86_64" { "x86" } else { "aarch64" },
+    )
+}
+
+/// What a host running `os` on `arch` needs for `backend`: `limactl` and,
+/// whenever lima will drive the VM with qemu ([`lima_uses_qemu`]), qemu
+/// for the architecture; a usable `/dev/kvm` under Firecracker.
+/// `limactl` is `[vm] limactl` where that is set. Pure: [`probe_tools`]
+/// goes looking.
+pub fn backend_tools(
+    backend: BackendKind,
+    os: &str,
+    arch: &str,
+    limactl: Option<&str>,
+    vm_type: Option<&str>,
+) -> Vec<Tool> {
+    match backend {
+        BackendKind::Firecracker => vec![Tool {
+            name: "/dev/kvm".into(),
+            device: true,
+            install: "Firecracker runs the guest through KVM: on Debian and Ubuntu `sudo usermod -aG kvm $USER` and a new login, elsewhere check that the kvm module is loaded; a machine without KVM needs [vm] backend = \"lima\"".into(),
+        }],
+        BackendKind::Lima => {
+            let mut v = vec![Tool {
+                // `[vm] limactl` is a path, and `~/bin/limactl` is a path
+                // the run-time side expands (`Vm::limactl`) -- so it is
+                // expanded here too, or `ssf doctor` and `ssf vm status`
+                // would look a tilde up on PATH and report a limactl that
+                // works as "not installed".
+                name: limactl.map_or_else(
+                    || "limactl".to_string(),
+                    |p| expand_tilde(p).to_string_lossy().into_owned(),
+                ),
+                device: false,
+                install: "install lima (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it".into(),
+            }];
+            if lima_uses_qemu(os, vm_type) {
+                v.push(Tool {
+                    name: format!("qemu-system-{arch}"),
+                    device: false,
+                    install: qemu_install_hint(os, arch),
+                });
+            }
+            v
+        }
+    }
+}
+
+/// Where each tool is, or `None` when it is not usable here.
+pub fn probe_tools(tools: &[Tool]) -> Vec<Option<String>> {
+    tools
+        .iter()
+        .map(|t| {
+            if t.device {
+                // Firecracker opens it read-write; being able to do the
+                // same is the whole question.
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&t.name)
+                    .ok()
+                    .map(|_| t.name.clone())
+            } else {
+                which(&t.name).map(|p| p.display().to_string())
+            }
+        })
+        .collect()
+}
+
+/// What `ssf doctor` and `ssf vm status` say about a backend's host
+/// tooling: whether it is all there, and where each tool was found, or
+/// what to install for the ones that are missing. The backend is not
+/// named here: both callers have said it already.
+pub fn backend_tooling_line(tools: &[Tool], found: &[Option<String>]) -> (bool, String) {
+    let detail = |t: &Tool, f: &Option<String>| match (t.device, f) {
+        (true, Some(_)) => format!("{} usable", t.name),
+        (true, None) => format!("{} not usable by you", t.name),
+        (false, Some(p)) => format!("{} at {p}", t.name),
+        (false, None) => format!("{} not installed", t.name),
+    };
+    let pairs: Vec<(&Tool, &Option<String>)> = tools.iter().zip(found.iter()).collect();
+    let missing: Vec<_> = pairs.iter().filter(|(_, f)| f.is_none()).collect();
+    if missing.is_empty() {
+        let all = pairs
+            .iter()
+            .map(|(t, f)| detail(t, f))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return (true, all);
+    }
+    let bad = missing
+        .iter()
+        .map(|(t, f)| format!("{}; {}", detail(t, f), t.install))
+        .collect::<Vec<_>>()
+        .join("; ");
+    (false, bad)
+}
+
+/// The backend's host tooling as `ssf vm status` reports it.
+#[derive(Debug, Clone, Serialize)]
+pub struct Tooling {
+    /// Every tool the backend needs is here.
+    pub ok: bool,
+    /// Where each tool is, or what to install for the ones missing.
+    pub detail: String,
 }
 
 /// What `ssf vm build` settled on, and whether the file changed.
@@ -537,9 +797,23 @@ fn existing_ancestor(p: &Path) -> PathBuf {
 }
 
 /// The mount point of the filesystem holding `p` (the longest one in
-/// `/proc/self/mounts` that is a prefix of it), or `p` itself.
+/// `/proc/self/mounts` that is a prefix of it; on macOS, the highest
+/// ancestor on the same filesystem), or `p` itself.
 fn mount_point_of(p: &Path) -> String {
     let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    if platform::is_macos() {
+        let Ok(here) = statvfs(&p) else {
+            return p.to_string_lossy().to_string();
+        };
+        let mut top = p.clone();
+        while let Some(parent) = top.parent() {
+            match statvfs(parent) {
+                Ok(st) if st.f_fsid == here.f_fsid => top = parent.to_path_buf(),
+                _ => break,
+            }
+        }
+        return top.to_string_lossy().to_string();
+    }
     std::fs::read_to_string("/proc/self/mounts")
         .ok()
         .and_then(|m| {
@@ -590,6 +864,23 @@ impl Vm {
             base,
             dir,
             binary: None,
+        }
+    }
+
+    /// The backend in effect: `[vm] backend`, else Firecracker on Linux
+    /// and lima on macOS.
+    pub fn backend(&self) -> BackendKind {
+        self.cfg
+            .backend
+            .unwrap_or_else(BackendKind::platform_default)
+    }
+
+    /// The serial console log: Firecracker's `console.log` next to the
+    /// disks, or lima's `serial.log` in the instance directory.
+    pub fn console_path(&self) -> Result<PathBuf> {
+        match self.backend() {
+            BackendKind::Firecracker => Ok(self.console_log()),
+            BackendKind::Lima => self.lima_console_log(),
         }
     }
 
@@ -652,12 +943,18 @@ impl Vm {
 
     // ---- sizes ----
 
+    /// The directory whose free space this VM is sized against, and how
+    /// to name it: [`sizing_dir`] for this VM's backend.
+    pub fn sizing_dir(&self) -> (PathBuf, &'static str) {
+        sizing_dir(self.backend(), &self.base)
+    }
+
     /// The sizes this VM runs at: `[vm]` where set, the rule for this
     /// machine where not (the minimums when the machine cannot be read).
     pub fn sizes(&self) -> Sizes {
         let c = &self.cfg;
         let rule = if c.vcpus.is_none() || c.mem_mib.is_none() || c.data_gib.is_none() {
-            HostFacts::probe(&self.base)
+            HostFacts::probe(&self.sizing_dir().0)
                 .map(|f| sizes_for(&f))
                 .unwrap_or(Sizes::MIN)
         } else {
@@ -670,27 +967,39 @@ impl Vm {
         }
     }
 
-    /// The data disk's cap in GiB: the file's size once it exists, else
+    /// The data disk's cap in GiB: the disk's size once it exists, else
     /// what a start would make.
     pub fn data_cap_gib(&self) -> u32 {
-        match std::fs::metadata(self.data_disk()) {
-            Ok(m) => u32::try_from(m.len().div_ceil(1 << 30)).unwrap_or(u32::MAX),
-            Err(_) => self.sizes().data_gib,
+        match self.backend() {
+            BackendKind::Firecracker => match std::fs::metadata(self.data_disk()) {
+                Ok(m) => u32::try_from(m.len().div_ceil(1 << 30)).unwrap_or(u32::MAX),
+                Err(_) => self.sizes().data_gib,
+            },
+            BackendKind::Lima => self.lima_data_cap_gib(),
         }
     }
 
     /// Enlarge the data disk to `want` GiB, or to the rule for today's
-    /// free space, keeping what is on it: the VM stopped, the filesystem
-    /// checked, the file lengthened, the filesystem resized to fill it.
-    /// Never shrinks. Returns the new size, or `None` when there was
-    /// nothing to do.
+    /// free space, keeping what is on it, with the VM stopped. Never
+    /// shrinks. Returns the new size, or `None` when there was nothing to
+    /// do. Firecracker: the filesystem checked, the file lengthened, the
+    /// filesystem resized to fill it. lima: `limactl disk resize`; the
+    /// guest's seed script resizes the filesystem on the next boot.
     pub fn grow(&self, want: Option<u32>) -> Result<Option<u32>> {
         if self.running() {
             bail!(
-                "VM {} is running; stop it first (`systemctl --user stop ssf.service` when the service owns it, else `ssf vm stop`), grow, then start it again",
-                self.cfg.name
+                "VM {} is running; stop it first (`{}` when the service owns it, else `ssf vm stop`), grow, then start it again",
+                self.cfg.name,
+                platform::service_hint("stop")
             );
         }
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_grow(want),
+            BackendKind::Lima => self.lima_grow(want),
+        }
+    }
+
+    fn fc_grow(&self, want: Option<u32>) -> Result<Option<u32>> {
         let disk = self.data_disk();
         let meta = std::fs::metadata(&disk).with_context(|| {
             format!(
@@ -749,18 +1058,46 @@ impl Vm {
         self.pid_of(&self.gv_pid(), "gvproxy")
     }
 
+    /// Is the guest up? Firecracker: its PID file names a live
+    /// firecracker; lima: `limactl list` says `Running`. A probe that
+    /// could not be made counts as not running; use
+    /// [`Vm::running_state`] where that difference matters.
     pub fn running(&self) -> bool {
-        self.firecracker_pid().is_some()
+        self.running_state().unwrap_or(false)
+    }
+
+    /// [`Vm::running`], with "the question could not be asked" kept apart
+    /// from "no": `None` when the probe itself failed. Under Firecracker
+    /// the probe is a PID file read, which answers either way; under lima
+    /// it forks `limactl`, and one fork that fails is not the guest
+    /// exiting. The callers that act on "the VM is gone" -- the
+    /// supervisor and the ssh wait -- use this, so that a transient
+    /// `limactl` failure cannot end them with "the VM exited".
+    pub fn running_state(&self) -> Option<bool> {
+        match self.backend() {
+            BackendKind::Firecracker => Some(self.firecracker_pid().is_some()),
+            BackendKind::Lima => self.lima_running_state(),
+        }
     }
 
     // ---- build ----
 
-    /// Download what is missing, make the base image from the bootstrap
-    /// tarball and boot it once to provision it.
-    pub async fn build(&self, force: bool) -> Result<()> {
-        if std::env::consts::ARCH != "x86_64" {
+    /// Make the guest: Firecracker downloads what is missing, makes the
+    /// base image from the bootstrap tarball and boots it once to
+    /// provision it; lima creates the instance from a cloud image and
+    /// boots it once so the guest scripts provision it.
+    pub async fn build(&self, host: &Config, force: bool) -> Result<()> {
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_build(force).await,
+            BackendKind::Lima => self.lima_build(host, force).await,
+        }
+    }
+
+    async fn fc_build(&self, force: bool) -> Result<()> {
+        if std::env::consts::OS != "linux" || std::env::consts::ARCH != "x86_64" {
             bail!(
-                "the VM image is x86_64 only for now (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {}",
+                "the Firecracker backend is Linux x86_64 only (Firecracker, gvproxy and the guest kernel are downloaded for it); this machine is {} {}; use `ssf config set vm.backend lima`",
+                std::env::consts::OS,
                 std::env::consts::ARCH
             );
         }
@@ -998,13 +1335,57 @@ impl Vm {
         Ok(pid)
     }
 
-    /// Start the VM: make its disks if missing, write a fresh seed, start
-    /// gvproxy and Firecracker detached, and wait for ssh and the daemon.
+    /// Start the VM with a fresh seed and wait for ssh and the daemon.
     pub async fn start(&self, host: &Config) -> Result<()> {
         if self.running() {
             println!("VM {} is already running", self.cfg.name);
             return Ok(());
         }
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_start(host).await,
+            BackendKind::Lima => self.lima_start(host).await,
+        }
+    }
+
+    /// Stop the VM cleanly.
+    pub async fn stop(&self) -> Result<()> {
+        match self.backend() {
+            BackendKind::Firecracker => self.fc_stop().await,
+            BackendKind::Lima => self.lima_stop().await,
+        }
+    }
+
+    /// The per-VM ssh key, made on first use.
+    fn ensure_key(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        set_mode(&self.dir, 0o700)?;
+        if !self.key().exists() {
+            run_ok(
+                Command::new("ssh-keygen")
+                    .args(["-q", "-t", "ed25519", "-N", "", "-C", "ssf-vm", "-f"])
+                    .arg(self.key()),
+                "ssh-keygen",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Print how the guest came up, after `wait_for_daemon`.
+    fn report_up(&self, daemon: Option<&str>) {
+        println!(
+            "VM {} is up: ssh -p {} (ssf vm ssh), daemon {}",
+            self.cfg.name,
+            self.cfg.ssh_port,
+            daemon.unwrap_or("unknown")
+        );
+        if daemon != Some("active") {
+            eprintln!("the guest daemon is not active; `ssf vm logs` has its journal");
+        }
+    }
+
+    /// Firecracker: make the disks if missing, write the seed disk, start
+    /// gvproxy and Firecracker detached.
+    async fn fc_start(&self, host: &Config) -> Result<()> {
         for (what, path) in [
             ("Firecracker", self.firecracker()),
             ("gvproxy", self.gvproxy()),
@@ -1015,8 +1396,7 @@ impl Vm {
                 bail!("{what} is missing ({}); run `ssf vm build`", path.display());
             }
         }
-        std::fs::create_dir_all(&self.dir)?;
-        set_mode(&self.dir, 0o700)?;
+        self.ensure_key()?;
         if !self.root_disk().exists() {
             info!("making {} from the image", self.root_disk().display());
             let st = Command::new("cp")
@@ -1039,14 +1419,6 @@ impl Vm {
                     .args(["-q", "-L", "ssf-data"])
                     .arg(self.data_disk()),
                 "mkfs.ext4",
-            )?;
-        }
-        if !self.key().exists() {
-            run_ok(
-                Command::new("ssh-keygen")
-                    .args(["-q", "-t", "ed25519", "-N", "", "-C", "ssf-vm", "-f"])
-                    .arg(self.key()),
-                "ssh-keygen",
             )?;
         }
         self.write_seed(host)?;
@@ -1085,21 +1457,13 @@ impl Vm {
             bail!("{e:#}; the console is in {}", self.console_log().display());
         }
         let daemon = self.wait_for_daemon(Duration::from_secs(60)).await;
-        println!(
-            "VM {} is up: ssh -p {} (ssf vm ssh), daemon {}",
-            self.cfg.name,
-            self.cfg.ssh_port,
-            daemon.as_deref().unwrap_or("unknown")
-        );
-        if daemon.as_deref() != Some("active") {
-            eprintln!("the guest daemon is not active; `ssf vm logs` has its journal");
-        }
+        self.report_up(daemon.as_deref());
         Ok(())
     }
 
     /// Shut the guest down (Ctrl-Alt-Del through Firecracker's API, which
     /// systemd turns into a reboot that ends the VM), then gvproxy.
-    pub async fn stop(&self) -> Result<()> {
+    async fn fc_stop(&self) -> Result<()> {
         let Some(fc) = self.firecracker_pid() else {
             if let Some(gv) = self.gvproxy_pid() {
                 kill(gv, libc::SIGTERM);
@@ -1143,17 +1507,44 @@ impl Vm {
         self.start(host).await?;
         let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         let mut int = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+        let every = supervise_interval(self.backend());
+        let mut unanswered = 0u32;
         loop {
             tokio::select! {
                 _ = term.recv() => break,
                 _ = int.recv() => break,
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    if !self.running() {
-                        warn!("the VM exited");
-                        if let Some(gv) = self.gvproxy_pid() {
-                            kill(gv, libc::SIGTERM);
+                _ = tokio::time::sleep(every) => {
+                    // Only a definite "not running" ends the supervision.
+                    // A probe that could not be made says nothing (it has
+                    // logged itself); ending on one killed the daemon
+                    // with "the VM exited" over a live VM.
+                    match self.running_state() {
+                        Some(true) => unanswered = 0,
+                        None => {
+                            unanswered += 1;
+                            if unanswered >= MAX_UNANSWERED_PROBES {
+                                return Err(cannot_tell_error(
+                                    self.backend(),
+                                    unanswered,
+                                    every,
+                                ));
+                            }
+                            warn!(
+                                "could not tell whether the VM is running ({unanswered} probe(s) in a row); still supervising it"
+                            );
                         }
-                        bail!("the VM exited; see {}", self.console_log().display());
+                        Some(false) => {
+                            warn!("the VM exited");
+                            if let Some(gv) = self.gvproxy_pid() {
+                                kill(gv, libc::SIGTERM);
+                            }
+                            bail!(
+                                "the VM exited; see {}",
+                                self.console_path()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_else(|_| "`ssf vm console`".into())
+                            );
+                        }
                     }
                 }
             }
@@ -1164,15 +1555,45 @@ impl Vm {
 
     // ---- seed ----
 
-    /// Write the seed disk: this binary, the config rewritten for the
-    /// guest, the token, the bot's ssh key, our public key and the `[vm]
-    /// files`. Regenerated at every start so the guest follows the host.
+    /// Firecracker: the seed tree as an ext4 disk (`seed.ext4`), made with
+    /// `mkfs.ext4 -d` at every start.
     fn write_seed(&self, host: &Config) -> Result<()> {
         let tree = self.dir.join("seed");
+        self.seed_tree(host, &tree)?;
+        // The disk: what the tree takes plus room, at least 16 MiB.
+        let bytes = dir_size(&tree)?;
+        let size = (bytes + bytes / 4 + (8 << 20)).max(16 << 20);
+        let size = size.div_ceil(1 << 20) << 20;
+        let disk = self.seed_disk();
+        let _ = std::fs::remove_file(&disk);
+        let f = std::fs::File::create(&disk)?;
+        f.set_len(size)?;
+        drop(f);
+        set_mode(&disk, 0o600)?;
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-L", "ssf-seed", "-d"])
+                .arg(&tree)
+                .arg(&disk),
+            "mkfs.ext4 -d",
+        )?;
         let _ = std::fs::remove_dir_all(&tree);
+        Ok(())
+    }
+
+    /// Build the seed tree at `tree` (replacing what was there): the guest
+    /// `ssf` binary, the config rewritten for the guest, the token, the
+    /// bot's ssh key, our public key and the `[vm] files`. Regenerated at
+    /// every start so the guest follows the host; each backend then
+    /// publishes it its own way.
+    fn seed_tree(&self, host: &Config, tree: &Path) -> Result<()> {
+        let _ = std::fs::remove_dir_all(tree);
         std::fs::create_dir_all(tree.join("config"))?;
-        set_mode(&tree, 0o700)?;
-        std::fs::copy(self.binary()?, tree.join("ssf"))?;
+        set_mode(tree, 0o700)?;
+        let binary = self.guest_binary()?;
+        std::fs::copy(&binary, tree.join("ssf"))
+            .with_context(|| format!("copying {}", binary.display()))?;
+        make_executable(&tree.join("ssf"))?;
         let mut guest = guest_config(host);
         if let Some(key) = host
             .github
@@ -1237,30 +1658,66 @@ impl Vm {
             list.push('\n');
         }
         std::fs::write(tree.join("files.list"), list)?;
-        // The disk: what the tree takes plus room, at least 16 MiB.
-        let bytes = dir_size(&tree)?;
-        let size = (bytes + bytes / 4 + (8 << 20)).max(16 << 20);
-        let size = size.div_ceil(1 << 20) << 20;
-        let disk = self.seed_disk();
-        let _ = std::fs::remove_file(&disk);
-        let f = std::fs::File::create(&disk)?;
-        f.set_len(size)?;
-        drop(f);
-        set_mode(&disk, 0o600)?;
-        run_ok(
-            Command::new("mkfs.ext4")
-                .args(["-q", "-L", "ssf-seed", "-d"])
-                .arg(&tree)
-                .arg(&disk),
-            "mkfs.ext4 -d",
-        )?;
-        let _ = std::fs::remove_dir_all(&tree);
         Ok(())
+    }
+
+    /// The Linux `ssf` binary the guest runs: `[vm] guest_binary`, this
+    /// binary on a Linux host of the guest's architecture, else the
+    /// release asset for this version, downloaded once with `gh`.
+    fn guest_binary(&self) -> Result<PathBuf> {
+        match guest_binary_source(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            self.cfg.guest_binary.as_deref(),
+        ) {
+            GuestBinary::Configured(p) => {
+                let p = expand_tilde(&p);
+                if !p.is_file() {
+                    bail!("[vm] guest_binary {} does not exist", p.display());
+                }
+                Ok(p)
+            }
+            GuestBinary::Own => self.binary(),
+            GuestBinary::Download { asset } => {
+                let dir = self.dir.join("guest-bin");
+                let path = dir.join(&asset);
+                if path.is_file() {
+                    return Ok(path);
+                }
+                std::fs::create_dir_all(&dir)?;
+                info!(asset, "downloading the guest ssf binary with gh");
+                let out = Command::new("gh")
+                    .args([
+                        "release",
+                        "download",
+                        &format!("v{}", env!("CARGO_PKG_VERSION")),
+                    ])
+                    .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
+                    .arg(&dir)
+                    .stdin(Stdio::null())
+                    .output()
+                    .context("running gh (is the GitHub CLI installed?)")?;
+                if !out.status.success() || !path.is_file() {
+                    bail!(
+                        "no guest binary: `gh release download v{} -R {RELEASE_REPO} --pattern {asset}` failed ({}); build one for Linux and set [vm] guest_binary to it",
+                        env!("CARGO_PKG_VERSION"),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+                make_executable(&path)?;
+                Ok(path)
+            }
+        }
     }
 
     // ---- ssh ----
 
     /// The ssh options that reach the guest.
+    /// ssh's own options: the VM's key, port and hosts file, and the
+    /// limits that keep one attempt from lasting for ever. `batch` (every
+    /// probe and forwarded command; not an interactive session) adds the
+    /// keepalives, so an ssh whose connection has gone silent gives up
+    /// after a minute instead of holding the waits below open.
     pub fn ssh_args(&self, batch: bool) -> Vec<String> {
         let mut v = vec![
             "-i".to_string(),
@@ -1279,6 +1736,10 @@ impl Vm {
         if batch {
             v.push("-o".into());
             v.push("BatchMode=yes".into());
+            v.push("-o".into());
+            v.push("ServerAliveInterval=15".into());
+            v.push("-o".into());
+            v.push("ServerAliveCountMax=4".into());
         }
         v
     }
@@ -1324,11 +1785,34 @@ impl Vm {
         self.ssh_output(&["true"]).is_ok()
     }
 
+    /// Wait for the guest to answer as `ssf`, `timeout` at the most.
+    ///
+    /// The loop below watches its own deadline; this wraps the whole wait
+    /// in one too, because a loop can stop reaching its deadline check at
+    /// all: an `ssf vm build` was once found parked at an `.await` for
+    /// fifteen minutes with no child process, no output and no CPU. The
+    /// inner check is what a person normally sees, the outer one is the
+    /// backstop, and each attempt is bounded in turn by ssh's own
+    /// `ConnectTimeout` and keepalives ([`Vm::ssh_args`]).
     async fn wait_for_ssh(&self, timeout: Duration) -> Result<()> {
+        let waited = tokio::time::timeout(timeout + WAIT_BACKSTOP_MARGIN, self.ssh_loop(timeout));
+        match waited.await {
+            Ok(r) => r,
+            Err(_) => bail!(
+                "the guest did not answer on ssh in {}s, and the wait itself stopped making progress; `ssf vm console` has its console",
+                timeout.as_secs()
+            ),
+        }
+    }
+
+    async fn ssh_loop(&self, timeout: Duration) -> Result<()> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if !self.running() {
-                bail!("firecracker exited");
+            // Only a definite "not running" ends the wait: a probe that
+            // could not be made (under lima, a `limactl` that did not
+            // run) is not the guest exiting.
+            if self.running_state() == Some(false) {
+                bail!("the VM exited");
             }
             if self.ssh_ok() {
                 return Ok(());
@@ -1338,8 +1822,21 @@ impl Vm {
         bail!("the guest did not answer on ssh in {}s", timeout.as_secs())
     }
 
-    /// `systemctl is-active ssf` in the guest once it stops `activating`.
+    /// `systemctl is-active ssf` in the guest once it stops `activating`,
+    /// with the same backstop around the whole wait as [`Vm::wait_for_ssh`].
     async fn wait_for_daemon(&self, timeout: Duration) -> Option<String> {
+        let waited =
+            tokio::time::timeout(timeout + WAIT_BACKSTOP_MARGIN, self.daemon_loop(timeout));
+        waited.await.unwrap_or_else(|_| {
+            warn!(
+                "waiting for the daemon in the guest stopped making progress after {}s; `ssf vm ssh -- systemctl status ssf` says where it is",
+                (timeout + WAIT_BACKSTOP_MARGIN).as_secs()
+            );
+            None
+        })
+    }
+
+    async fn daemon_loop(&self, timeout: Duration) -> Option<String> {
         let deadline = Instant::now() + timeout;
         loop {
             let state = self.daemon_state();
@@ -1491,7 +1988,23 @@ impl Vm {
     }
 
     pub async fn status(&self) -> VmStatus {
-        let running = self.running();
+        let backend = self.backend();
+        // One `limactl list` for everything lima knows -- and, when it
+        // did not answer, that fact rather than `.ok().flatten()`. Read
+        // as "no such instance" it printed `instance: ssf-<name> missing
+        // (ssf vm build)` over a VM that exists, which is the same
+        // conflation `lima_stop` was fixed for.
+        let (inst, probe_error) = match backend {
+            BackendKind::Lima => match self.lima_instance() {
+                Ok(i) => (i, None),
+                Err(e) => (None, Some(format!("{e:#}"))),
+            },
+            BackendKind::Firecracker => (None, None),
+        };
+        let running = match backend {
+            BackendKind::Firecracker => self.running(),
+            BackendKind::Lima => inst.as_ref().is_some_and(|i| i.is_running()),
+        };
         let ssh = running && self.ssh_ok();
         let sizes = self.sizes();
         VmStatus {
@@ -1506,10 +2019,25 @@ impl Vm {
             enabled: self.cfg.enabled,
             name: self.cfg.name.clone(),
             dir: self.dir.to_string_lossy().to_string(),
-            image: self.rootfs().exists(),
+            backend: backend.to_string(),
+            instance: match backend {
+                BackendKind::Lima => Some(self.lima_name()),
+                BackendKind::Firecracker => None,
+            },
+            lima_dir: inst.as_ref().map(|i| i.dir.clone()),
+            image: match backend {
+                BackendKind::Firecracker => self.rootfs().exists(),
+                BackendKind::Lima => inst.is_some(),
+            },
             running,
-            firecracker_pid: self.firecracker_pid(),
-            gvproxy_pid: self.gvproxy_pid(),
+            firecracker_pid: match backend {
+                BackendKind::Firecracker => self.firecracker_pid(),
+                BackendKind::Lima => None,
+            },
+            gvproxy_pid: match backend {
+                BackendKind::Firecracker => self.gvproxy_pid(),
+                BackendKind::Lima => None,
+            },
             ssh_port: self.cfg.ssh_port,
             ssh,
             daemon: if ssh { self.daemon_state() } else { None },
@@ -1518,12 +2046,38 @@ impl Vm {
             } else {
                 Vec::new()
             },
+            tooling: (!in_guest()).then(|| self.tooling()),
+            probe_error,
         }
+    }
+
+    /// Look for the tooling this VM's backend needs on the machine this
+    /// runs on: what `ssf doctor` and `ssf vm status` report.
+    pub fn tooling(&self) -> Tooling {
+        let backend = self.backend();
+        let tools = backend_tools(
+            backend,
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            self.cfg.limactl.as_deref(),
+            self.cfg.vm_type.as_deref(),
+        );
+        let (ok, detail) = backend_tooling_line(&tools, &probe_tools(&tools));
+        Tooling { ok, detail }
     }
 
     // ---- harness logins ----
 
     /// Every harness's login state in the guest, in one ssh round trip.
+    ///
+    /// What the script found is in its output, not in its status: every
+    /// test in it fails for a harness that is not installed or not logged
+    /// in, which is the ordinary case. [`Vm::ssh_output`] throws stdout
+    /// away when the status is not zero, so a script ending in a failed
+    /// test would come back as an error with the answer discarded. The
+    /// closing `exit 0` is what keeps that from happening -- nothing may
+    /// be appended after it, and a test appended before it must not be
+    /// the last command of the script.
     pub fn logins(&self) -> Result<Vec<LoginState>> {
         let script: String = LOGINS
             .iter()
@@ -1534,6 +2088,7 @@ impl Vm {
                     check = l.check()
                 )
             })
+            .chain(std::iter::once("exit 0".to_string()))
             .collect();
         let out = self.ssh_output(&["sh", "-c", &script])?;
         Ok(parse_login_states(&out))
@@ -1597,17 +2152,22 @@ impl Vm {
         Ok(ok)
     }
 
-    /// Remake the root disk from the image at the next start; the data
-    /// disk (state, clones, worktrees) stays.
+    /// A fresh root at the next start (Firecracker: the root disk remade
+    /// from the image; lima: the instance re-created from its template);
+    /// the data disk (state, clones, worktrees) stays.
     pub async fn reset(&self) -> Result<()> {
         if self.running() {
             self.stop().await?;
         }
-        for f in [self.root_disk(), self.known_hosts()] {
-            let _ = std::fs::remove_file(f);
+        let _ = std::fs::remove_file(self.known_hosts());
+        match self.backend() {
+            BackendKind::Firecracker => {
+                let _ = std::fs::remove_file(self.root_disk());
+                println!("root disk removed; `ssf vm start` makes a fresh one from the image");
+                Ok(())
+            }
+            BackendKind::Lima => self.lima_reset(),
         }
-        println!("root disk removed; `ssf vm start` makes a fresh one from the image");
-        Ok(())
     }
 
     /// Remove the VM and everything in it.
@@ -1615,12 +2175,58 @@ impl Vm {
         if self.running() {
             self.stop().await?;
         }
+        if self.backend() == BackendKind::Lima {
+            self.lima_destroy()?;
+        }
         if self.dir.exists() {
             std::fs::remove_dir_all(&self.dir)
                 .with_context(|| format!("removing {}", self.dir.display()))?;
         }
         println!("removed {}", self.dir.display());
         Ok(())
+    }
+}
+
+/// Where `gh release download` finds the guest binary.
+pub const RELEASE_REPO: &str = "mikekelly/simple-software-factory";
+
+/// Where the guest's `ssf` binary comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuestBinary {
+    /// `[vm] guest_binary`.
+    Configured(String),
+    /// This binary: a Linux host of the guest's architecture.
+    Own,
+    /// The release asset for this version and the guest's architecture.
+    Download { asset: String },
+}
+
+/// Which binary a host running `os` on `arch` (the guest's architecture
+/// too) seeds into the guest: what `[vm] guest_binary` names, else its own
+/// when it is Linux, else the release asset `ssf-<version>-linux-<arch>`.
+pub fn guest_binary_source(os: &str, arch: &str, configured: Option<&str>) -> GuestBinary {
+    match configured {
+        Some(p) => GuestBinary::Configured(p.to_string()),
+        None if os == "linux" => GuestBinary::Own,
+        None => GuestBinary::Download {
+            asset: format!("ssf-{}-linux-{arch}", env!("CARGO_PKG_VERSION")),
+        },
+    }
+}
+
+/// Settle `[vm] backend` for a build the way `choose_sizes` settles the
+/// sizes: a value in the file stays; none gets `default` and is written.
+/// Returns the backend, where it came from, and whether the file changed.
+pub fn choose_backend(
+    cfg: &mut VmConfig,
+    default: BackendKind,
+) -> (BackendKind, &'static str, bool) {
+    match cfg.backend {
+        Some(b) => (b, "set in config.toml", false),
+        None => {
+            cfg.backend = Some(default);
+            (default, "for this machine", true)
+        }
     }
 }
 
@@ -1842,8 +2448,9 @@ pub fn parse_file_spec(spec: &str, home: &Path) -> (PathBuf, String) {
     (src, dest)
 }
 
-/// Where the image scripts are: `SSF_VM_DIR`, the package's
-/// `/usr/share/ssf/vm`, or `vm/` next to a source build.
+/// Where the guest scripts are: `SSF_VM_DIR`, the package's
+/// `/usr/share/ssf/vm`, `share/ssf/vm` under the prefix this binary is
+/// installed in (Homebrew), or `vm/` next to a source build.
 pub fn scripts_dir() -> Result<PathBuf> {
     if let Ok(d) = std::env::var("SSF_VM_DIR") {
         return Ok(PathBuf::from(d));
@@ -1852,14 +2459,15 @@ pub fn scripts_dir() -> Result<PathBuf> {
     if let Ok(exe) = std::env::current_exe()
         && let Some(d) = exe.parent()
     {
+        candidates.push(d.join("../share/ssf/vm"));
         candidates.push(d.join("../../vm"));
     }
     candidates.push(PathBuf::from("vm"));
     candidates
         .into_iter()
-        .find(|p| p.join("make-base.sh").exists())
+        .find(|p| p.join("guest/provision.sh").exists())
         .map(|p| p.canonicalize().unwrap_or(p))
-        .context("the VM scripts (vm/make-base.sh) are not installed; set SSF_VM_DIR")
+        .context("the VM scripts (vm/guest/provision.sh) are not installed; set SSF_VM_DIR")
 }
 
 /// Is `pid` alive and running `program`?
@@ -2003,7 +2611,10 @@ pub fn stdin_is_tty() -> bool {
 
 fn which(name: &str) -> Option<PathBuf> {
     let p = Path::new(name);
-    if p.is_absolute() {
+    // Anything with a separator in it is a path, not a name to look up:
+    // `PATH` is searched for `limactl`, never for `~/bin/limactl` (which
+    // reaches here expanded) or `./limactl`.
+    if name.contains('/') {
         return p.exists().then(|| p.to_path_buf());
     }
     std::env::split_paths(&std::env::var_os("PATH")?)
@@ -2097,15 +2708,23 @@ impl UrlScanner {
     }
 }
 
-/// Whether a browser can open on this host.
+/// Whether a browser can open on this host (a macOS desktop always has one).
 fn host_has_display() -> bool {
+    if platform::is_macos() {
+        return true;
+    }
     (std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some())
         && which("xdg-open").is_some()
 }
 
 /// Open a URL in the host browser, detached; false when that failed.
 fn open_in_browser(url: &str) -> bool {
-    Command::new("xdg-open")
+    let opener = if platform::is_macos() {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    Command::new(opener)
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -2281,6 +2900,15 @@ mod tests {
         assert!(joined.contains("UserKnownHostsFile=/v/one/known_hosts"));
         assert!(joined.contains("BatchMode=yes"));
         assert!(!vm.ssh_args(false).join(" ").contains("BatchMode"));
+        // Every attempt is bounded: a connection that never comes up
+        // gives up after ConnectTimeout, and one that goes silent after
+        // the keepalives, so the waits that call ssh in a loop cannot be
+        // held open by a single attempt. An interactive session keeps the
+        // connect timeout but not the keepalives.
+        assert!(joined.contains("ConnectTimeout=5"));
+        assert!(joined.contains("ServerAliveInterval=15"));
+        assert!(joined.contains("ServerAliveCountMax=4"));
+        assert!(!vm.ssh_args(false).join(" ").contains("ServerAlive"));
         let cfg = vm.ssh_config();
         assert!(cfg.starts_with("Host ssf-one\n"));
         assert!(cfg.contains("Port 2222"));
@@ -2458,6 +3086,195 @@ mod tests {
     }
 
     #[test]
+    fn sizing_measures_the_filesystem_the_disks_are_on() {
+        let base = Path::new("/home/me/.local/share/ssf/vm");
+        let disks = PathBuf::from("/other/.lima/_disks");
+        // Firecracker's disks are files under `[vm] dir`.
+        assert_eq!(
+            sizing_dir_for(BackendKind::Firecracker, base, Some(disks.clone())),
+            (base.to_path_buf(), "[vm] dir")
+        );
+        // lima's are in lima's home, which can be another volume: the
+        // "half the free space" rule and grow's warning have to be about
+        // that one.
+        assert_eq!(
+            sizing_dir_for(BackendKind::Lima, base, Some(disks.clone())),
+            (disks, "lima's disk directory")
+        );
+        // No home, no lima directory: the VM's own is the honest answer.
+        assert_eq!(
+            sizing_dir_for(BackendKind::Lima, base, None),
+            (base.to_path_buf(), "[vm] dir")
+        );
+    }
+
+    #[test]
+    fn the_supervisor_polls_a_lima_vm_less_often_than_a_firecracker_one() {
+        // Firecracker's "is it up?" is a PID file and a /proc lookup;
+        // lima's forks a ~60 MB Go binary and takes a lock in lima's
+        // home. Doing that every five seconds for as long as the factory
+        // runs is more than the question is worth on a laptop, and every
+        // fork is another chance to fail and be misread as "the VM
+        // exited".
+        assert_eq!(
+            supervise_interval(BackendKind::Firecracker),
+            Duration::from_secs(5)
+        );
+        assert!(supervise_interval(BackendKind::Lima) >= Duration::from_secs(30));
+        assert!(
+            supervise_interval(BackendKind::Lima) > supervise_interval(BackendKind::Firecracker)
+        );
+        // Still well inside the wait a person would sit through before
+        // asking what happened.
+        assert!(supervise_interval(BackendKind::Lima) <= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn a_probe_that_can_never_be_made_ends_the_supervision() {
+        // A probe that could not be made says nothing, so one of them
+        // must not end the supervision -- but the loop that only ever
+        // warned left `ssf run` "supervising" a VM it had not heard about
+        // for hours, with the service reading active the whole time.
+        const { assert!(MAX_UNANSWERED_PROBES > 1) };
+        for backend in [BackendKind::Lima, BackendKind::Firecracker] {
+            let every = supervise_interval(backend);
+            // Long enough to sit out a busy laptop, short enough that the
+            // daemon does not pretend all day.
+            let gave_up_after = every * MAX_UNANSWERED_PROBES;
+            assert!(gave_up_after >= Duration::from_secs(30), "{backend:?}");
+            assert!(gave_up_after <= Duration::from_secs(15 * 60), "{backend:?}");
+            let err = cannot_tell_error(backend, MAX_UNANSWERED_PROBES, every).to_string();
+            assert!(
+                err.contains("cannot tell whether the VM is running"),
+                "{err}"
+            );
+            // It names the tool that stopped answering, so the next thing
+            // to look at is not a guess.
+            let tool = match backend {
+                BackendKind::Lima => "limactl",
+                BackendKind::Firecracker => "pid file",
+            };
+            assert!(err.contains(tool), "{err}");
+        }
+    }
+
+    #[test]
+    fn a_firecracker_vm_answers_the_running_question_either_way() {
+        // Under Firecracker the probe is a file read, so it always has an
+        // answer -- `None` (the probe could not be made) is lima's case,
+        // and it is what keeps a transient `limactl` failure from ending
+        // the supervisor and the ssh wait with "the VM exited".
+        let mut cfg = Config::default();
+        cfg.vm.dir = std::env::temp_dir().to_string_lossy().into_owned();
+        cfg.vm.name = "no-such-vm".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        let vm = Vm::new(&cfg);
+        assert_eq!(vm.running_state(), Some(false));
+        assert!(!vm.running());
+    }
+
+    #[test]
+    fn the_doctor_line_names_the_backend_tooling_and_what_to_install() {
+        // lima needs limactl, and qemu too on Linux (its only driver
+        // there); a Mac runs the Virtualization framework instead.
+        let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None, None);
+        assert_eq!(mac.len(), 1);
+        assert_eq!(mac[0].name, "limactl");
+        // ... unless the config asks for qemu, which is the driver that
+        // has to be installed. Keyed on the OS alone, a Mac with
+        // `[vm] vm_type = "qemu"` passed every check ssf makes and then
+        // failed inside `limactl create`.
+        let mac_qemu = backend_tools(BackendKind::Lima, "macos", "aarch64", None, Some("qemu"));
+        assert_eq!(mac_qemu.len(), 2);
+        assert_eq!(mac_qemu[1].name, "qemu-system-aarch64");
+        assert!(
+            mac_qemu[1].install.contains("brew install qemu"),
+            "{:?}",
+            mac_qemu[1]
+        );
+        assert!(mac_qemu[1].install.contains("vm_type"), "{:?}", mac_qemu[1]);
+        // `vz` is the Virtualization framework: no qemu.
+        assert_eq!(
+            backend_tools(BackendKind::Lima, "macos", "aarch64", None, Some("vz")).len(),
+            1
+        );
+        assert!(lima_uses_qemu("macos", Some("qemu")));
+        assert!(!lima_uses_qemu("macos", None));
+        assert!(!lima_uses_qemu("macos", Some("vz")));
+        // qemu is lima's only Linux driver, whatever the config says.
+        assert!(lima_uses_qemu("linux", None));
+        assert!(lima_uses_qemu("linux", Some("qemu")));
+        let linux = backend_tools(BackendKind::Lima, "linux", "x86_64", None, None);
+        assert_eq!(linux.len(), 2);
+        assert_eq!(linux[1].name, "qemu-system-x86_64");
+        assert!(
+            linux[1].install.contains("qemu-system-x86"),
+            "{:?}",
+            linux[1]
+        );
+        // `[vm] limactl` is what doctor looks for when it is set.
+        let set = backend_tools(
+            BackendKind::Lima,
+            "macos",
+            "aarch64",
+            Some("/opt/l/limactl"),
+            None,
+        );
+        assert_eq!(set[0].name, "/opt/l/limactl");
+        // And a `~` in it is expanded, as `Vm::limactl` expands it when
+        // it runs the thing: doctor and `ssf vm status` used to look
+        // "~/bin/limactl" up on PATH -- which `which` only searches for a
+        // bare name -- and report a limactl that works as not installed.
+        if let Some(home) = dirs::home_dir() {
+            let tilde = backend_tools(
+                BackendKind::Lima,
+                "macos",
+                "aarch64",
+                Some("~/bin/limactl"),
+                None,
+            );
+            assert_eq!(
+                tilde[0].name,
+                home.join("bin/limactl").to_string_lossy().to_string()
+            );
+        }
+        // A path is a path, whatever it starts with; a bare name is
+        // looked up on PATH.
+        assert_eq!(which("/nonexistent/limactl"), None);
+        assert_eq!(which("./nonexistent-limactl"), None);
+        assert!(which("sh").is_some());
+        assert_eq!(which("definitely-not-a-program-on-this-path"), None);
+        // Firecracker asks one question: may this user use KVM?
+        let fc = backend_tools(BackendKind::Firecracker, "linux", "x86_64", None, None);
+        assert_eq!(fc.len(), 1);
+        assert!(fc[0].device);
+        assert_eq!(fc[0].name, "/dev/kvm");
+        assert!(fc[0].install.contains("usermod -aG kvm"), "{:?}", fc[0]);
+
+        let found = vec![
+            Some("/usr/bin/limactl".to_string()),
+            Some("/usr/bin/qemu-system-x86_64".to_string()),
+        ];
+        let (ok, msg) = backend_tooling_line(&linux, &found);
+        assert!(ok);
+        assert_eq!(
+            msg,
+            "limactl at /usr/bin/limactl, qemu-system-x86_64 at /usr/bin/qemu-system-x86_64"
+        );
+        // Only what is missing is reported, with what to install.
+        let (ok, msg) = backend_tooling_line(&linux, &[Some("/usr/bin/limactl".to_string()), None]);
+        assert!(!ok);
+        assert!(msg.starts_with("qemu-system-x86_64 not installed; install qemu"));
+        assert!(!msg.contains("limactl at"), "{msg}");
+        let (ok, msg) = backend_tooling_line(&fc, &[None]);
+        assert!(!ok);
+        assert!(msg.starts_with("/dev/kvm not usable by you; "));
+        let (ok, msg) = backend_tooling_line(&fc, &[Some("/dev/kvm".into())]);
+        assert!(ok);
+        assert_eq!(msg, "/dev/kvm usable");
+    }
+
+    #[test]
     fn df_and_meminfo_parse() {
         let d = parse_df(
             "    Used    Avail    1B-blocks
@@ -2595,6 +3412,68 @@ mod tests {
         child.kill().unwrap();
         child.wait().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backend_is_the_platform_default_unless_configured() {
+        let vm = vm();
+        assert_eq!(vm.backend(), BackendKind::platform_default());
+        if std::env::consts::OS == "linux" {
+            assert_eq!(vm.backend(), BackendKind::Firecracker);
+        }
+        let mut cfg = Config::default();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        assert_eq!(Vm::new(&cfg).backend(), BackendKind::Lima);
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        assert_eq!(Vm::new(&cfg).backend(), BackendKind::Firecracker);
+        // A build writes the platform default once; a hand-set value wins.
+        let mut c = VmConfig::default();
+        assert_eq!(
+            choose_backend(&mut c, BackendKind::Lima),
+            (BackendKind::Lima, "for this machine", true)
+        );
+        assert_eq!(c.backend, Some(BackendKind::Lima));
+        assert_eq!(
+            choose_backend(&mut c, BackendKind::Firecracker),
+            (BackendKind::Lima, "set in config.toml", false)
+        );
+    }
+
+    #[test]
+    fn guest_binary_comes_from_the_config_the_host_or_the_release() {
+        assert_eq!(
+            guest_binary_source("macos", "aarch64", Some("~/dl/ssf")),
+            GuestBinary::Configured("~/dl/ssf".into())
+        );
+        assert_eq!(
+            guest_binary_source("linux", "x86_64", Some("/opt/ssf")),
+            GuestBinary::Configured("/opt/ssf".into())
+        );
+        assert_eq!(
+            guest_binary_source("linux", "x86_64", None),
+            GuestBinary::Own
+        );
+        assert_eq!(
+            guest_binary_source("linux", "aarch64", None),
+            GuestBinary::Own
+        );
+        assert_eq!(
+            guest_binary_source("macos", "aarch64", None),
+            GuestBinary::Download {
+                asset: format!("ssf-{}-linux-aarch64", env!("CARGO_PKG_VERSION"))
+            }
+        );
+        assert_eq!(
+            guest_binary_source("macos", "x86_64", None),
+            GuestBinary::Download {
+                asset: format!("ssf-{}-linux-x86_64", env!("CARGO_PKG_VERSION"))
+            }
+        );
+        // A configured path that is missing is an error naming the key.
+        let mut cfg = Config::default();
+        cfg.vm.guest_binary = Some("/nonexistent/ssf-linux".into());
+        let e = Vm::new(&cfg).guest_binary().unwrap_err().to_string();
+        assert!(e.contains("guest_binary"), "{e}");
     }
 
     #[test]

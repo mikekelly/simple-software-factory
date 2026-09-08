@@ -1,6 +1,6 @@
 ---
 name: ssf-setup
-description: Setup runbook for Simple Software Factory (ssf), the Linux daemon (Omarchy, Arch, Debian/Ubuntu, Fedora) that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the Firecracker microVM (ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (including its gauntlet rule), project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
+description: Setup runbook for Simple Software Factory (ssf), the daemon for Linux (Omarchy, Arch, Debian/Ubuntu, Fedora) and macOS that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (including its gauntlet rule), project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
@@ -9,17 +9,21 @@ metadata:
 # Setting up Simple Software Factory (ssf)
 
 The setup document is `docs/setup.md`: `/usr/share/doc/ssf/docs/setup.md`
-once the package is installed, or `docs/setup.md` in a checkout of the
-repository. Read it and follow it, top to bottom for a first install
-(its numbered steps, then its checklist), or the one step that matches
-what the person asked for on an installed factory. It has the
-prerequisites, the package, the bot account, the sign-in, who may drive
-the factory, the microVM (the default) and the host alternatives, the
+once the package is installed on Omarchy,
+`$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS, or
+`docs/setup.md` in a checkout of the repository. Read it and follow it,
+top to bottom for a first install (its numbered steps, then its
+checklist), or the one step that matches what the person asked for on an
+installed factory. It has the prerequisites, the package, the bot
+account, the sign-in, who may drive the factory, the VM (the default:
+Firecracker on Linux, lima on macOS) and the host alternatives, the
 harness login, the first repository, `SSF.md`, the first issue,
 upgrading, stopping and uninstalling, with what a healthy `ssf doctor`
-looks like after each step. There is no second copy of the steps here.
-The README next to it (`/usr/share/doc/ssf/README.md`) has the everyday
-commands, and the rest of `docs/` is the reference the document links to.
+looks like after each step and which commands differ on a Mac. There is
+no second copy of the steps here. The README next to it
+(`/usr/share/doc/ssf/README.md`, or `$(brew --prefix)/share/doc/ssf/README.md`)
+has the everyday commands, and the rest of `docs/` is the reference the
+document links to.
 
 ## Rules for an agent following it
 
@@ -46,12 +50,16 @@ commands, and the rest of `docs/` is the reference the document links to.
 5. **Never pass `--accept-anyone-risk`** on the person's behalf, and do
    not set `allowed_users` to `"*"` for them; say what it means and let
    them decide.
-6. **Take the default path** (the factory inside the microVM, herdr
-   inside it) unless the person asks for an alternative or the machine
-   cannot run the VM (no `/dev/kvm`, not x86_64); the document says
-   where the alternatives branch off. On Debian, Ubuntu and Fedora the
-   package does not bring herdr; install it as the document's step 1
-   says before expecting `ssf doctor`'s herdr line to pass.
+6. **Take the default path** (the factory inside the VM, herdr inside
+   it) unless the person asks for an alternative or the machine cannot
+   run the VM at all (on macOS the VM is lima and needs macOS 13.5 or
+   later). A Linux machine without a usable `/dev/kvm`, or one that is
+   not x86_64, cannot run the Firecracker backend, but it can still run
+   the VM: set `[vm] backend = "lima"`, which uses qemu there (slower,
+   and it needs `qemu-system-<arch>` installed). The document says where
+   the alternatives branch off. On Debian, Ubuntu and Fedora the package
+   does not bring herdr; install it as the document's step 1 says before
+   expecting `ssf doctor`'s herdr line to pass.
 7. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or
@@ -75,5 +83,6 @@ commands, and the rest of `docs/` is the reference the document links to.
    `--force` on the person's behalf: show them the report and let them
    settle the work or decide; `--data` (config, the bot's key, state)
    is also theirs to ask for. The package removal that follows (`sudo
-   pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`; the
+   pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or on
+   macOS `brew uninstall ssf` and then `brew untap mikekelly/ssf`; the
    command prints the one for the machine) is **you**.

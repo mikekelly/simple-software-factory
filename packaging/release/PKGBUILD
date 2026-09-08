@@ -69,14 +69,15 @@ package() {
   install -Dm644 omarchy-plugin/manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"
   install -Dm644 omarchy-plugin/Panel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/Panel.qml"
   install -Dm644 config.example.toml "$pkgdir/usr/share/ssf/config.example.toml"
-  install -Dm755 vm/make-base.sh "$pkgdir/usr/share/ssf/vm/make-base.sh"
-  install -Dm755 vm/guest/provision-init.sh "$pkgdir/usr/share/ssf/vm/guest/provision-init.sh"
-  install -Dm755 vm/guest/provision.sh "$pkgdir/usr/share/ssf/vm/guest/provision.sh"
-  install -Dm755 vm/guest/net-up.sh "$pkgdir/usr/share/ssf/vm/guest/net-up.sh"
-  install -Dm755 vm/guest/seed.sh "$pkgdir/usr/share/ssf/vm/guest/seed.sh"
-  install -Dm644 vm/guest/sudoers "$pkgdir/usr/share/ssf/vm/guest/sudoers"
-  install -d "$pkgdir/usr/share/ssf/vm/guest/units"
-  install -m644 vm/guest/units/*.service "$pkgdir/usr/share/ssf/vm/guest/units/"
+  # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the
+  # guest scripts, the units and their per-backend drop-ins. A loop, not a
+  # list, because `ssf vm build` reads whatever the guest scripts ask for
+  # and a file missed here breaks it on every packaged host. Modes come
+  # from the tree: scripts 755, units and sudoers 644.
+  while IFS= read -r -d '' f; do
+    if [ -x "$f" ]; then _m=755; else _m=644; fi
+    install -Dm$_m "$f" "$pkgdir/usr/share/ssf/$f"
+  done < <(find vm -type f -print0)
   install -Dm644 SSF.example.md "$pkgdir/usr/share/ssf/SSF.example.md"
   install -Dm644 README.md "$pkgdir/usr/share/doc/ssf/README.md"
   install -d "$pkgdir/usr/share/doc/ssf/docs"

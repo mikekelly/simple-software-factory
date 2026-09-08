@@ -95,6 +95,20 @@ Cutting a release:
    workflow artifacts, no release. Locally, `packaging/linux/build.sh`
    builds the .deb, .rpm and the bare binary into `packaging/linux/dist/`
    (it needs `nfpm` and the musl target, and says so).
+   The same tag runs `.github/workflows/homebrew.yml`, which renders
+   `packaging/homebrew/ssf.rb` (the formula's source of truth; the
+   `url` and `sha256` of the tag tarball go in, see
+   `packaging/homebrew/render.sh`) and pushes it to the tap
+   `mikekelly/homebrew-ssf` as `Formula/ssf.rb` when the
+   `HOMEBREW_TAP_TOKEN` secret is set, or only uploads the rendered
+   formula as the run's `ssf.rb` artifact when it is not
+   (`packaging/homebrew/README.md` has the tap setup and the formula
+   test). The lima backend downloads the release's bare binaries,
+   `ssf-X.Y.Z-linux-x86_64` and `ssf-X.Y.Z-linux-aarch64`, as the guest
+   binary on a Mac, so they must be attached with exactly those names:
+   `release.yml` does that, and when its best-effort aarch64 job failed,
+   `gh release upload vX.Y.Z ssf-X.Y.Z-linux-aarch64` adds the missing
+   one by hand.
 2. In `packaging/release/`: `pkgver=X.Y.Z`, `pkgrel=1`, `updpkgsums`
    (downloads the tag tarball and writes its sha256; it needs the
    repository to be public, or the tarball fetched with a token into
@@ -134,7 +148,8 @@ from the release either way.
 | `src/prompt.rs` | timeline rendering, prompt templates and `ssf guide` |
 | `src/config.rs`, `src/state.rs` | `config.toml` and `state.json` |
 | `src/driver.rs`, `src/orca.rs`, `src/herdr.rs` | the driver interface and the two drivers |
-| `src/vm.rs`, `vm/` | `ssf vm` and the guest image scripts and units |
+| `src/vm.rs`, `src/vm/lima.rs`, `vm/` | `ssf vm`: the Firecracker backend and what both backends share, the lima backend, and the guest scripts and units |
+| `src/platform.rs` | what differs per host OS: the systemd user unit on Linux, the Homebrew launchd service on macOS |
 | `src/sessions.rs` | agent session capture and resume |
 | `src/origin.rs`, `src/shim.rs` | bylines and origin tags; the `gh` wrapper |
 | `src/allow.rs` | the allow-list of GitHub users |
@@ -144,8 +159,9 @@ from the release either way.
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
 | `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
-| `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks |
+| `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
+| `.github/workflows/homebrew.yml` | the tap workflow: on the same tag, renders the Homebrew formula and pushes it to `mikekelly/homebrew-ssf` |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 

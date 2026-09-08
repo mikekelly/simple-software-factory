@@ -150,8 +150,11 @@ pub struct Facts {
     /// The VM's directory exists or it is running.
     pub vm_present: bool,
     pub vm_running: bool,
-    /// `<vm.dir>/<name>`: the disks and sockets, removed by destroy.
-    pub vm_dir: PathBuf,
+    /// What `ssf vm destroy` takes with it, in words: the VM's directory
+    /// under Firecracker, where its disks are; the lima instance and its
+    /// data disk (both in lima's own home, not under `[vm] dir`) as well
+    /// under lima.
+    pub vm_removed: String,
     /// `[vm] dir`: the image and downloads, left in place.
     pub vm_base: PathBuf,
     pub config_dir: PathBuf,
@@ -182,7 +185,17 @@ impl Facts {
             vm_name: cfg.vm.name.clone(),
             vm_present: vm.dir.exists() || vm_running,
             vm_running,
-            vm_dir: vm.dir.clone(),
+            vm_removed: match vm.backend() {
+                vm::BackendKind::Firecracker => {
+                    format!("its disks in {}", vm.dir.display())
+                }
+                vm::BackendKind::Lima => format!(
+                    "the lima instance {} and its data disk {} in lima's home, and {}",
+                    vm.lima_name(),
+                    vm.lima_disk_name(),
+                    vm.dir.display()
+                ),
+            },
             vm_base: vm.base.clone(),
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
@@ -234,7 +247,7 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     if facts.service_active || facts.service_enabled {
         stop.push(format!(
             "{} ({}, {})",
-            ui::SERVICE,
+            crate::platform::service_name(),
             if facts.service_active {
                 "running"
             } else {
@@ -273,9 +286,8 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     }
     if facts.vm_present {
         remove.push(format!(
-            "VM {} and its disks ({}); the clones and worktrees on its data disk go with it",
-            facts.vm_name,
-            facts.vm_dir.display()
+            "VM {} and {}; the clones and worktrees on its data disk go with it",
+            facts.vm_name, facts.vm_removed
         ));
     } else {
         remove.push("no VM".to_string());
@@ -544,12 +556,36 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         fail("purge", e);
     }
 
-    println!("==> stop and disable {}", ui::SERVICE);
+    println!("==> stop and disable {}", crate::platform::service_name());
     let was_off = !facts.service_active && !facts.service_enabled;
-    match ui::set_service_enabled(false) {
+    // The service command's own failure ends the uninstall here, and does
+    // not join the tally of steps that failed: every step below destroys
+    // something (the VM, the bot's login, and with --data the config and
+    // state directories), and doing any of that while a daemon may still
+    // be running is what this step exists to prevent. Counting it and
+    // carrying on would have reported the failure at the very end, over a
+    // factory that had been taken apart underneath it.
+    match ui::set_service_enabled_on_error(false, ui::OnServiceError::Fail) {
         Ok(()) if was_off => println!("already stopped and disabled"),
         Ok(()) => println!("service stopped and disabled"),
-        Err(e) => fail("service", e),
+        // Not "nothing has been destroyed": the purge above ran first,
+        // and it removes the workspaces it found clean and pushed and
+        // says `released` on their items. What this stop protects is
+        // everything below it.
+        Err(e) => bail!(
+            "{e:#}\nthe steps after this one destroy the VM, sign the bot out{} and none of them may run while the daemon may still be working, so none of them has run.{} Stop the daemon by hand (`{}`), then run this again",
+            if data {
+                " and remove the config and state directories,"
+            } else {
+                ","
+            },
+            if report.daemon {
+                " The purge above did run: workspaces that were clean and pushed are gone, and their items have a `released` comment."
+            } else {
+                ""
+            },
+            crate::platform::service_hint("stop"),
+        ),
     }
 
     println!("==> remove the bar widget and menu entries");
@@ -761,7 +797,7 @@ mod tests {
             vm_name: "factory".into(),
             vm_present: true,
             vm_running: true,
-            vm_dir: PathBuf::from("/vm/factory"),
+            vm_removed: "its disks in /vm/factory".into(),
             vm_base: PathBuf::from("/nonexistent/vm"),
             config_dir: PathBuf::from("/c"),
             state_dir: PathBuf::from("/s"),
@@ -784,7 +820,10 @@ mod tests {
         };
         let text = render(&facts(), &r, &Opts::default());
         assert!(
-            text.contains("stop:    ssf.service (running, enabled) and VM factory"),
+            text.contains(&format!(
+                "stop:    {} (running, enabled) and VM factory",
+                crate::platform::service_name()
+            )),
             "{text}"
         );
         assert!(
@@ -793,7 +832,7 @@ mod tests {
         );
         assert!(text.contains("clean and pushed (ssf purge)"), "{text}");
         assert!(
-            text.contains("VM factory and its disks (/vm/factory); the clones"),
+            text.contains("VM factory and its disks in /vm/factory; the clones"),
             "{text}"
         );
         assert!(
@@ -812,6 +851,23 @@ mod tests {
         );
         assert!(text.contains("- 1 uncommitted change"), "{text}");
         assert!(!text.contains("(none)"), "{text}");
+    }
+
+    #[test]
+    fn under_lima_the_report_names_the_instance_and_disk_not_the_vm_directory() {
+        // The lima disks are not under `[vm] dir`: they are lima's, in
+        // lima's own home, and `ssf vm destroy` names them.
+        let mut f = facts();
+        f.vm_removed =
+            "the lima instance ssf-factory and its data disk ssf-factory in lima's home, and /vm/factory"
+                .into();
+        let text = render(&f, &Report::default(), &Opts::default());
+        assert!(
+            text.contains(
+                "VM factory and the lima instance ssf-factory and its data disk ssf-factory in lima's home, and /vm/factory; the clones"
+            ),
+            "{text}"
+        );
     }
 
     #[test]

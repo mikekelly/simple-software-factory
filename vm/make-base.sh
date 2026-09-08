@@ -21,8 +21,13 @@ install -Dm755 "$guest/provision-init.sh" "$root/usr/local/lib/ssf/provision-ini
 install -Dm755 "$guest/provision.sh" "$root/usr/local/lib/ssf/provision.sh"
 install -Dm755 "$guest/net-up.sh" "$root/usr/local/lib/ssf/net-up.sh"
 install -Dm755 "$guest/seed.sh" "$root/usr/local/lib/ssf/seed.sh"
+install -Dm644 "$guest/seed-common.sh" "$root/usr/local/lib/ssf/seed-common.sh"
 install -d "$root/etc/systemd/system"
 install -m644 "$guest"/units/*.service "$root/etc/systemd/system/"
+# The Firecracker drop-ins travel in the image (there is no share here);
+# provision.sh installs them under /etc/systemd/system/<unit>.d/ inside it.
+install -d "$root/usr/local/lib/ssf/units/firecracker"
+install -m644 "$guest"/units/firecracker/*.conf "$root/usr/local/lib/ssf/units/firecracker/"
 install -Dm440 "$guest/sudoers" "$root/etc/sudoers.d/ssf"
 if [ -n "$gvforwarder" ]; then install -Dm755 "$gvforwarder" "$root/usr/local/bin/gvforwarder"; fi
 if [ -n "$herdr" ]; then install -Dm755 "$herdr" "$root/usr/local/bin/herdr"; fi

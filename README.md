@@ -14,7 +14,7 @@ nudge them at any time (see [Drivers](docs/drivers.md)). Nothing
 runs in the cloud: the daemon polls GitHub and drives the multiplexer, and
 the agents are the ones you already have installed (Claude Code, Codex,
 ...). If you would rather keep the agents off your machine altogether, the
-whole factory can run [inside a microVM](docs/vm.md).
+whole factory can run [inside a VM](docs/vm.md).
 
 ## One issue, start to finish
 
@@ -140,7 +140,7 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   in Orca (or herdr), and starts the agents you have installed, with the
   bot's credentials, so what the agents do on GitHub is done as the bot.
   On your own machine that is a default rather than a wall (the agents run
-  as you); the [microVM](docs/vm.md) is the wall.
+  as you); the [VM](docs/vm.md) is the wall.
 
 ## How it works
 
@@ -165,11 +165,12 @@ you set (see
 
 ## Install
 
-ssf is packaged for Omarchy, Arch, Debian/Ubuntu and Fedora (x86_64);
-every release on the Releases page carries the packages. Download the one
-for your machine and install it, then follow [Setup](docs/setup.md),
-yourself or with your coding agent (the `ssf-setup` skill in this
-repository points an agent at that document).
+ssf is packaged for Omarchy, Arch, Debian/Ubuntu and Fedora (x86_64), and
+is a Homebrew formula for macOS; every release on the Releases page carries
+the Linux packages. Download the one for your machine and install it (on a
+Mac, install it from the tap), then follow [Setup](docs/setup.md), yourself
+or with your coding agent (the `ssf-setup` skill in this repository points
+an agent at that document).
 
 - **Omarchy**: `ssf-<version>-1-x86_64.pkg.tar.zst`, `sudo pacman -U
   ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's
@@ -185,8 +186,13 @@ repository points an agent at that document).
   1](docs/setup.md#1-before-you-start)).
 - **Fedora**: `ssf-<version>-1.x86_64.rpm`, `sudo dnf install
   ./ssf-*.x86_64.rpm`; herdr by hand, as above.
+- **macOS**: `brew install mikekelly/ssf/ssf`; the formula pulls in `gh`
+  and `lima`. The factory runs inside a [lima](https://lima-vm.io) VM
+  (`ssf vm build`, then `brew services start ssf`); the formula installs
+  `ssf`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
+  documentation under `$(brew --prefix)/share/doc/ssf`.
 
-The package installs the same paths on every distribution:
+The Linux packages install the same paths on every distribution:
 
 | Path | What |
 |------|------|
@@ -225,10 +231,11 @@ upgrading, stopping and uninstalling. The short form of the default path:
    stores the token, enrolls a dedicated key on the bot account for
    pushes and commit signing, and switches gh back to your own account
    afterwards.
-2. **The microVM** (the default; the agents never see your home
+2. **The VM** (the default; the agents never see your home
    directory): `ssf vm build`, `ssf config set vm.enabled true`,
-   `systemctl --user restart ssf.service`, then `ssf vm login <harness>`
-   to sign your coding agent in inside the guest. The alternative is the
+   `systemctl --user restart ssf.service` (macOS: `brew services start
+   ssf`), then `ssf vm login <harness>` to sign your coding agent in
+   inside the guest. The alternative is the
    agents on this machine, in herdr (the default driver) or in Orca
    (`ssf config set driver orca`), with the harness signed in here.
 3. **A repository**: `ssf repo add owner/name --harness claude` (the
@@ -310,7 +317,7 @@ ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspace
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then the package manager's remove command is yours
-journalctl --user -fu ssf.service
+journalctl --user -fu ssf.service   # macOS: tail -f $(brew --prefix)/var/log/ssf.log
 ```
 
 Config changes are picked up on the next poll; no restart needed. Every
@@ -342,29 +349,32 @@ Things to know when operating it:
 
 **Stopping it.** The toggle in the bar widget (Omarchy), or `ssf ui service
 disable`, stops the service and keeps it from starting at the next login
-(`enable` turns it back on); `systemctl --user stop ssf.service` stops it
-until the next login. Running agents are left where they are: nothing
-reaches them while the daemon is down, and it delivers what they missed
-when it comes back. With the factory in a microVM, stopping the service
-shuts the guest down cleanly.
+(`enable` turns it back on); `systemctl --user stop ssf.service` (macOS:
+`brew services stop ssf`) stops it until the next login. Running agents
+are left where they are: nothing reaches them while the daemon is down,
+and it delivers what they missed when it comes back. With the factory in
+a VM, stopping the service shuts the guest down cleanly.
 
 **Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
 the package upgrade restarts the service (and, in the VM, the guest, whose
-sessions are resumed); `ssf uninstall` takes the machine back to just the
-package (it reports, asks once, and keeps your clones), then `sudo pacman -R
-ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf` is yours.
+sessions are resumed; on macOS `brew upgrade ssf` then `brew services
+restart ssf`); `ssf uninstall` takes the machine back to just the package
+(it reports, asks once, and keeps your clones), then `sudo pacman -R ssf`,
+`sudo apt remove ssf`, `sudo dnf remove ssf` or `brew uninstall ssf` is
+yours.
 
 ## The rest of the story
 
 The reference, one file per area. Each starts with a line saying what it
-covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
+covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`
+(`$(brew --prefix)/share/doc/ssf/docs/` on macOS).
 
 | Read | When you want to know |
 |------|-----------------------|
 | [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository, upgrading, uninstalling |
 | [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` prompt file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
 | [Drivers](docs/drivers.md) | Orca versus herdr, and what each one does with workspaces and terminals |
-| [Inside a microVM](docs/vm.md) | running the whole factory in a Firecracker VM: the image, what gets in, reaching it, what persists |
+| [Inside a VM](docs/vm.md) | running the whole factory in a VM, Firecracker on Linux or lima on macOS: the backends, the image, what gets in, reaching it, what persists |
 | [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and what is left to `SSF.md` |
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |
 | [Sessions](docs/sessions.md) | which session owns an item, second opinions, following and messaging other sessions, release and purge |

@@ -43,19 +43,24 @@
 # tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
 
 
-# The whole factory (daemon, herdr, sessions) inside a Firecracker microVM
-# instead of on this machine; see `ssf vm --help` and docs/vm.md. With
-# `enabled = true`, `ssf run` starts and watches the VM, and `ssf status`,
-# `tell`, `peers`, `sub`, `release`, `purge` and `doctor` run inside it.
+# The whole factory (daemon, herdr, sessions) inside a VM instead of on this
+# machine: a Firecracker microVM on Linux, a lima instance on macOS; see
+# `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf run` starts and
+# watches the VM, and `ssf status`, `tell`, `peers`, `sub`, `release`, `purge`
+# and `doctor` run inside it.
 [vm]
 # enabled = false
-# name = "default"                             # disks live in <dir>/<name>/
-# dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs
+# name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>; at most 7 characters under lima)
+# dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
+# backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it
 # vcpus = 7                                    # unset = chosen from the machine by `ssf vm build`: its CPUs minus one, at least 2
 # mem_mib = 16384                              # unset = chosen from the machine: half its RAM, at least 4096
 # data_gib = 250                               # persistent data disk: state, clones, worktrees; sparse, so a cap, not a reservation.
-#                                              # unset = chosen from the machine: half the free space under `dir`, at least 20; `ssf vm grow` enlarges it
-# root_gib = 8                                 # size of the root image `ssf vm build` makes
+#                                              # unset = chosen from the machine: half the free space where the disk will live, at least 20;
+#                                              # that is `dir` under Firecracker and lima's own disk directory ($LIMA_HOME/_disks, by
+#                                              # default ~/.lima/_disks) under lima; `ssf vm build` prints the path it measured, and
+#                                              # `ssf vm grow` enlarges the disk later
+# root_gib = 8                                 # size of the root image `ssf vm build` makes (lima: the instance's root disk, at least 20)
 # ssh_port = 2222                              # the guest's sshd on 127.0.0.1
 # files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start; `src:dest` to place them
 #                                              # (a copied login is the same session as yours: a guest logout signs you out here too; prefer `ssf vm login`)
@@ -63,6 +68,11 @@
 # gvproxy = "..."
 # kernel = "..."
 # rootfs = "..."
+# limactl = "limactl"                          # lima: the limactl binary, when not the one on PATH
+# image = "https://.../image.qcow2"            # lima: a cloud-init image (URL or path) instead of the default for the guest's architecture
+# vm_type = "vz"                               # lima: vz | qemu; unset = lima's default
+# guest_binary = "~/dl/ssf-linux"              # a Linux ssf binary for the guest; unset = this binary on Linux, else the release asset for this version via gh
+# herdr = "~/dl/herdr-linux"                   # lima: a Linux herdr binary for the guest; unset = the host's own on Linux, else the guest downloads herdr's release
 
 [daemon]
 # poll_interval_secs = 10

@@ -1,8 +1,12 @@
 [Unit]
-Description=Mount the data disk and take the host's ssf binary, config and keys from the seed disk
+Description=Mount the data disk and take the host's ssf binary, config and keys from the seed (disk or share)
+# Not before sshd here: under lima that ordering would loop through
+# multi-user.target (see units/lima/ssf-seed.service.conf), and the host retries
+# ssh until authorized_keys lands. Under Firecracker there is no such
+# cycle and units/firecracker/ssf-seed.service.conf adds Before=sshd.service.
 DefaultDependencies=no
 After=local-fs.target
-Before=sshd.service herdr-server.service ssf.service
+Before=herdr-server.service ssf.service
 
 [Service]
 Type=oneshot
