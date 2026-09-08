@@ -382,12 +382,6 @@ pub struct Survey {
     /// never the problem, while the one holding their clones went
     /// unnamed. The remedy has to carry the real name here too.
     pub unread: Vec<PathBuf>,
-    /// This VM's own directory holds a `data.ext4` its backend does not
-    /// use -- what switching `[vm] backend` from Firecracker to lima
-    /// leaves, with every clone of that VM in it. `ssf vm destroy`
-    /// removes that directory, so the work in it is work this command
-    /// would take, and nothing can mount it to look first.
-    pub stranded_disk: bool,
 }
 
 /// Something of ssf's shape that this configuration does not name: what
@@ -1389,9 +1383,8 @@ impl Vm {
                 // `Vm::destroy` removes it, and a line calling it
                 // "untouched, `--force` included" would be false on the
                 // one path where being wrong costs the clones. What a
-                // backend switch stranded *inside* it is `stranded_disk`
-                // below, which is a different question with a different
-                // answer.
+                // backend switch strands *inside* it is a question of
+                // its own (#176), and not one this reports on.
                 !self.is_own_dir(p)
                     && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
                     && p.join("data.ext4").exists()
@@ -1442,7 +1435,6 @@ impl Vm {
                     data: Some(self.data_disk().exists()),
                     strays,
                     unread,
-                    stranded_disk: false,
                 }
             }
             BackendKind::Lima => {
@@ -1452,16 +1444,6 @@ impl Vm {
                 // is a `[vm] dir` nobody could read.
                 let (strays, unread) = self.fc_dir_contents();
                 survey.strays.splice(0..0, strays);
-                // A `data.ext4` in this VM's own directory is not lima's
-                // -- lima keeps its disk in its own home -- so it is
-                // what a switch away from Firecracker stranded there.
-                // `destroy` removes that directory, so the clones in it
-                // are work this command takes, and `data` is how the
-                // report and the refusal learn there is work at all.
-                survey.stranded_disk = self.data_disk().exists();
-                if survey.stranded_disk {
-                    survey.data = Some(true);
-                }
                 // Either directory being unreadable is enough to make
                 // what is here unknown -- assigning would have thrown
                 // away lima's own answer about its home.
@@ -3324,7 +3306,6 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
                 unread: Vec::new(),
-                stranded_disk: false,
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -3339,7 +3320,6 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
                 unread: Vec::new(),
-                stranded_disk: false,
             }
         );
     }
