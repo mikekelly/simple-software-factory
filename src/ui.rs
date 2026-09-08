@@ -486,6 +486,8 @@ pub fn uninstall_all() -> Result<()> {
 mod tests {
     use super::*;
 
+    // ssf-ui is Linux desktop glue and is not shipped by the macOS package.
+    #[cfg(target_os = "linux")]
     #[test]
     fn workspace_attachment_accepts_an_unknown_vm_state_but_not_a_stopped_one() {
         let root = std::env::temp_dir().join(format!(

@@ -294,10 +294,9 @@ pub struct VmStatus {
     /// `/dev/kvm`). Null inside the guest, whose host owns the VM.
     pub tooling: Option<Tooling>,
     /// Why lima could not be asked about the instance, when it could not
-    /// be. Null when the answer below is an answer: `instance`,
-    /// `lima_dir`, `image` and `running` all read as "no instance, not
-    /// running" on a `limactl list` that failed, and reporting that as
-    /// fact is how a working VM came to be described as missing.
+    /// be. Absent after a successful probe. On failure, `running` is
+    /// null; `instance`, `lima_dir` and `image` must not be read as proof
+    /// that the instance is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_error: Option<String>,
 }
