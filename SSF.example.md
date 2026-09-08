@@ -73,14 +73,11 @@ stripped before the file reaches an agent.
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
 - Check a claim rather than reasoning your way to one: read the source, or
-  run the thing. Reading to find out is usually free. Running is not, when
-  the command you are asking about is one that acts — it may post, merge,
-  delete, or start an agent that does — so run those the way this project
-  runs anything else it does not want to be real. Where you have not
-  checked, say so. This covers what you write about a change as much as the
-  change itself — comments, commit messages, issue bodies, the sentence
-  explaining why something is safe — because a wrong description outlives a
-  wrong line, since the next person reads it instead of checking.
+  try it where trying it is safe. Where you have not checked, say so. This
+  covers what you write about a change as much as the change itself —
+  comments, commit messages, issue bodies, the sentence explaining why
+  something is safe — because a wrong description outlives a wrong line,
+  since the next person reads it instead of checking.
 - The gauntlet is a final adversarial review that tries to break your change.
   Choose its depth by blast radius, not diff size. State the class and why on
   the issue: data loss, a factory unable to start, a broken package
