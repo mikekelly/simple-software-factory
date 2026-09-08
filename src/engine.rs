@@ -3308,28 +3308,31 @@ deliveries resume"
             // The expensive part is the timeline walk, so that is what the
             // hold paces. Everything above is read from the item already
             // in hand, and a closed item never reaches here at all.
+            // Inside the window nothing is read, so there is no fresh
+            // evidence to report and nothing to count either way.
             if self.held_recently(repo, issue.number) {
-                return StillOurs::Paced;
+                return StillOurs::Unproven;
             }
             match self.gh.timeline(owner, name, issue.number).await {
                 Ok(tl) => {
-                    let found = mentions_bot(issue, &tl, &self.login);
+                    let found = mention_kind(issue, &tl, &self.login);
                     *timeline = Some(tl);
-                    if found {
-                        return StillOurs::Paced;
+                    match found {
+                        Some(Mention::Listable) => return StillOurs::Mentioned,
+                        Some(Mention::Unlistable) => return StillOurs::OverMatched,
+                        None => {}
                     }
                 }
                 // Without the timeline there is no evidence either way. A
                 // retirement is the destructive reading, so the item keeps
-                // the benefit of the doubt until a pass can read it, and
-                // the same bound applies so it cannot keep it for ever.
+                // the benefit of the doubt until a pass can read it.
                 Err(e) => {
                     warn!(
                         repo = repo.name,
                         issue = issue.number,
                         "could not re-check the mention before retiring: {e:#}"
                     );
-                    return StillOurs::Paced;
+                    return StillOurs::Unproven;
                 }
             }
         }
@@ -3346,7 +3349,7 @@ deliveries resume"
                         issue = issue.number,
                         "could not re-check the review request before retiring: {e:#}"
                     );
-                    return StillOurs::Paced;
+                    return StillOurs::Unproven;
                 }
             }
         }
@@ -3359,13 +3362,17 @@ deliveries resume"
         let e = self.entry(repo, number);
         e.retirement_held_at = None;
         e.retirement_holds = 0;
+        e.retirement_announced = false;
     }
 
     /// Record a hold that rests on the paced re-check and say whether to
-    /// keep holding. Past `MAX_RETIREMENT_HOLDS` re-checks the listings
-    /// have disagreed with the item for long enough that they are the
-    /// likelier truth, and the item retires.
-    fn note_paced_hold(&mut self, repo: &RepoConfig, number: u64) -> bool {
+    /// keep holding. `bounded` is for the one reading that can be wrong
+    /// for ever: a mention the matcher sees and GitHub's listing never
+    /// will. Past `MAX_RETIREMENT_HOLDS` of those the matcher is the
+    /// likelier mistake, and the item retires. A mention GitHub could
+    /// have listed, or a re-check nobody managed to make, is held without
+    /// being counted: there the listing is what is in doubt.
+    fn note_paced_hold(&mut self, repo: &RepoConfig, number: u64, bounded: bool) -> bool {
         if self.held_recently(repo, number) {
             debug!(
                 repo = repo.name,
@@ -3375,20 +3382,28 @@ deliveries resume"
             return true;
         }
         let e = self.entry(repo, number);
-        e.retirement_holds += 1;
+        if bounded {
+            e.retirement_holds += 1;
+        }
         let holds = e.retirement_holds;
-        if holds > MAX_RETIREMENT_HOLDS {
+        if bounded && holds > MAX_RETIREMENT_HOLDS {
             warn!(
                 repo = repo.name,
                 issue = number,
                 holds,
-                "the listings have dropped this item for every re-check; retiring on the listings"
+                "this item reads as the bot's only where GitHub cannot list it; retiring on the listings"
             );
-            self.clear_hold(repo, number);
             return false;
         }
         e.retirement_held_at = Some(now_iso());
-        if holds == 1 {
+        if e.retirement_announced {
+            debug!(
+                repo = repo.name,
+                issue = number,
+                "retirement held again: the listings still disagree with the item"
+            );
+        } else {
+            e.retirement_announced = true;
             // A listing disagreeing with an item is worth seeing once.
             info!(
                 repo = repo.name,
@@ -3443,12 +3458,14 @@ deliveries resume"
                 );
                 true
             }
-            StillOurs::Paced => self.note_paced_hold(repo, number),
+            // The listing is the thing that is wrong, which is the whole
+            // of this bug, so this hold is paced but never given up on.
+            StillOurs::Mentioned | StillOurs::Unproven => self.note_paced_hold(repo, number, false),
+            StillOurs::OverMatched => self.note_paced_hold(repo, number, true),
         };
         if hold {
             return Ok(());
         }
-        self.clear_hold(repo, number);
         let merged = closed
             && issue.is_pull_request()
             && match self.gh.pull(owner, name, number).await {
@@ -3536,6 +3553,9 @@ deliveries resume"
         // purge` deals with the rest.
         let e = self.entry(repo, number);
         e.active = false;
+        e.retirement_held_at = None;
+        e.retirement_holds = 0;
+        e.retirement_announced = false;
         e.title = issue.title.clone();
         e.github_state = Some(github_state(&issue, st.pr.as_ref(), merged));
         e.updated_at = Some(issue.updated_at.clone());
@@ -5229,10 +5249,80 @@ enum StillOurs {
     /// an assignment, its author, or a live review request. Cheap to ask
     /// and as authoritative as the listing derived from it.
     Certain,
-    /// A mention says so, or the re-check could not be made. The walk is
-    /// expensive, so it is paced, and the matcher over-matches GitHub on
-    /// purpose, so it is bounded.
-    Paced,
+    /// A mention GitHub could have listed says so. The walk is expensive,
+    /// so it is paced, but the disagreement is the listing's, which is
+    /// the whole of issue #137, so it is never given up on.
+    Mentioned,
+    /// A mention only somewhere GitHub's own listing cannot see it: inside
+    /// code, or in a pull request's review comments. The matcher
+    /// over-matches on purpose, so this is the reading that is bounded.
+    OverMatched,
+    /// The re-check could not be made. No evidence either way, so the item
+    /// keeps the benefit of the doubt, and nothing is counted against it
+    /// for a question nobody managed to ask.
+    Unproven,
+}
+
+/// Where a mention was found, which decides whether GitHub's `mentioned`
+/// listing could have seen it.
+#[derive(Debug, PartialEq, Eq)]
+enum Mention {
+    /// In the item's body or a plain comment, outside code: GitHub indexes
+    /// this, so a listing that drops the item is the thing that is wrong.
+    Listable,
+    /// Only where GitHub does not look: inside a code span or fence, or in
+    /// a batch of review comments.
+    Unlistable,
+}
+
+/// The text with fenced blocks and inline code spans dropped, which is
+/// roughly what GitHub's mention filter sees: it runs over rendered HTML
+/// and never looks inside `pre` or `code`.
+fn without_code(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut fenced = false;
+    for line in text.lines() {
+        let start = line.trim_start();
+        if start.starts_with("```") || start.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        // Backticks alternate between outside a span and inside one. A
+        // stray backtick misreads the rest of the line, which only moves a
+        // mention between two readings that both hold the session.
+        for (i, part) in line.split('`').enumerate() {
+            if i % 2 == 0 {
+                out.push_str(part);
+                out.push(' ');
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Whether an item still mentions the bot, and whether GitHub could have
+/// listed the mention. `allow::askers` decides what counts as a mention,
+/// so the gate that lets a session on and the check that keeps it on
+/// agree; this only adds where the mention was.
+fn mention_kind(issue: &Issue, timeline: &[Value], login: &str) -> Option<Mention> {
+    let listable = |b: &str| crate::allow::mentions(&without_code(b), login);
+    if issue.body.as_deref().is_some_and(listable) {
+        return Some(Mention::Listable);
+    }
+    for ev in timeline {
+        let commented = matches!(
+            crate::github::value_str(ev, &["event"]),
+            Some("commented" | "reviewed")
+        );
+        if commented && crate::github::value_str(ev, &["body"]).is_some_and(listable) {
+            return Some(Mention::Listable);
+        }
+    }
+    mentions_bot(issue, timeline, login).then_some(Mention::Unlistable)
 }
 
 fn github_state(issue: &Issue, pr: Option<&PrInfo>, merged: bool) -> String {
@@ -10440,7 +10530,31 @@ mod tests {
             e.tick_repo(&r).await.unwrap();
             assert!(e.entry(&r, 5).active, "gave up after {n} of the re-checks");
             assert_eq!(e.entry(&r, 5).retirement_holds, n);
+            // A pass inside the window is free: the bound counts
+            // re-checks, not passes, so it is an hour rather than a
+            // minute of disagreement.
+            e.tick_repo(&r).await.unwrap();
+            assert_eq!(
+                e.entry(&r, 5).retirement_holds,
+                n,
+                "a pass inside the hold was counted against the item"
+            );
         }
+
+        // Nor may a pass inside the window refresh the stamp: a hold that
+        // rolled forward would never expire, so the walk that advances
+        // the bound would never happen again.
+        // Inside the ten-minute window, but old enough that a refresh
+        // would be visible: `now_iso` has one-second resolution.
+        let stamp = (chrono::Utc::now() - chrono::Duration::minutes(5))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        e.entry(&r, 5).retirement_held_at = Some(stamp.clone());
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(
+            e.entry(&r, 5).retirement_held_at.as_deref(),
+            Some(stamp.as_str()),
+            "the hold rolled forward instead of expiring"
+        );
 
         // One more, and the listings win.
         e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
@@ -10450,6 +10564,151 @@ mod tests {
             "held past the bound on a mention GitHub does not list"
         );
         assert_eq!(e.entry(&r, 5).retirement_holds, 0, "the count outlived it");
+    }
+
+    /// The bound is only for the reading that can be wrong for ever. A
+    /// mention GitHub does index is the listing's mistake, which is this
+    /// whole bug, so it is held for as long as it stands; and a re-check
+    /// nobody could make is not counted against the item either.
+    #[tokio::test]
+    async fn a_mention_github_can_list_is_never_given_up_on() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.triggers = vec!["mentioned".into()];
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.terminal_handle = Some("t5".into());
+        }
+        d.seed("w5", "t5", READY_SCREEN);
+        stub.set_issue(
+            5,
+            json!({
+                "number": 5, "title": "t", "body": "@bot what do you think?",
+                "html_url": "https://gh/5", "state": "open", "user": {"login": "alice"},
+                "created_at": "x", "updated_at": "u1"
+            }),
+        );
+        stub.set_timeline(5, vec![]);
+        for _ in 0..(MAX_RETIREMENT_HOLDS + 3) {
+            e.entry(&r, 5).retirement_held_at = Some(EXPIRED.into());
+            e.tick_repo(&r).await.unwrap();
+        }
+        assert!(
+            e.entry(&r, 5).active,
+            "gave up on a mention GitHub indexes, which is the reported bug"
+        );
+        assert_eq!(
+            e.entry(&r, 5).retirement_holds,
+            0,
+            "an indexable mention was counted against the item"
+        );
+
+        // The same for a re-check nobody could make: item 6 is a pull
+        // request whose review request cannot be read, because the stub
+        // answers 500 for a pull it was never given.
+        seeded(&mut e, 6, Some("bot/issue-6"), true);
+        {
+            let st = e.entry(&r, 6);
+            st.triggers = vec!["review_requested".into()];
+            st.worktree_id = Some("w6".into());
+            st.worktree_path = Some("/w/6".into());
+            st.terminal_handle = Some("t6".into());
+        }
+        d.seed("w6", "t6", READY_SCREEN);
+        stub.set_issue(
+            6,
+            json!({
+                "number": 6, "title": "t", "body": "nothing here",
+                "html_url": "https://gh/6", "state": "open", "user": {"login": "alice"},
+                "pull_request": {"url": "https://gh/pulls/6"},
+                "created_at": "x", "updated_at": "u1"
+            }),
+        );
+        for _ in 0..(MAX_RETIREMENT_HOLDS + 3) {
+            e.entry(&r, 6).retirement_held_at = Some(EXPIRED.into());
+            e.tick_repo(&r).await.unwrap();
+        }
+        assert!(
+            e.entry(&r, 6).active,
+            "retired on a question nobody managed to ask"
+        );
+        assert_eq!(e.entry(&r, 6).retirement_holds, 0);
+        assert!(
+            e.entry(&r, 6).retirement_held_at.is_some(),
+            "an unanswerable re-check was treated as an answer"
+        );
+    }
+
+    /// Only the paced arm keeps the bookkeeping. An item held on something
+    /// read straight off it clears the hold, so an assignment cannot
+    /// suppress a mention re-check that has never run.
+    #[tokio::test]
+    async fn a_hold_on_the_item_itself_leaves_no_pacing_behind() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 5, Some("bot/issue-5"), true);
+        {
+            let st = e.entry(&r, 5);
+            st.triggers = vec!["assigned".into(), "mentioned".into()];
+            st.worktree_id = Some("w5".into());
+            st.worktree_path = Some("/w/5".into());
+            st.terminal_handle = Some("t5".into());
+            // A hold left by an earlier pass.
+            st.retirement_held_at = Some(now_iso());
+            st.retirement_holds = 3;
+        }
+        d.seed("w5", "t5", READY_SCREEN);
+        // Still assigned, so the item itself answers and no walk is paced.
+        stub.set_issue(
+            5,
+            json!({
+                "number": 5, "title": "t", "body": "no mention here",
+                "html_url": "https://gh/5", "state": "open", "user": {"login": "alice"},
+                "assignees": [{"login": "bot"}],
+                "created_at": "x", "updated_at": "u1"
+            }),
+        );
+        stub.set_timeline(5, vec![]);
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.entry(&r, 5).active, "an assigned item was retired");
+        assert!(
+            e.entry(&r, 5).retirement_held_at.is_none(),
+            "an assignment left a stamp pacing a walk it never made"
+        );
+        assert_eq!(e.entry(&r, 5).retirement_holds, 0);
+
+        // So the moment the assignment goes, the mention is re-checked at
+        // once rather than waiting out a stamp it never earned.
+        stub.set_issue(
+            5,
+            json!({
+                "number": 5, "title": "t", "body": "no mention here",
+                "html_url": "https://gh/5", "state": "open", "user": {"login": "alice"},
+                "created_at": "x", "updated_at": "u1"
+            }),
+        );
+        stub.hits();
+        e.tick_repo(&r).await.unwrap();
+        let paths = stub.hits();
+        assert!(
+            paths.iter().any(|p| p.contains("/issues/5/timeline")),
+            "the mention was not re-checked once the assignment went: {paths:?}"
+        );
+        assert!(
+            !e.entry(&r, 5).active,
+            "nothing named the bot, so it retires"
+        );
     }
 
     /// A hold paces the timeline walk and nothing else. A close is still
@@ -10533,8 +10792,11 @@ mod tests {
             st.worktree_id = Some("w5".into());
             st.worktree_path = Some("/w/5".into());
             st.terminal_handle = Some("t5".into());
-            st.updated_at = Some("u1".into());
+            // The same `updated_at` the listing reports, so the pass has
+            // no reason to look at the item: the hold must still clear.
+            st.updated_at = Some("u2".into());
             st.retirement_held_at = Some(now_iso());
+            st.retirement_holds = 4;
         }
         d.seed("w5", "t5", READY_SCREEN);
         stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
@@ -10543,6 +10805,11 @@ mod tests {
         assert!(
             e.entry(&r, 5).retirement_held_at.is_none(),
             "the hold survived the item coming back onto a listing"
+        );
+        assert_eq!(
+            e.entry(&r, 5).retirement_holds,
+            0,
+            "the count survived the item coming back onto a listing"
         );
     }
 

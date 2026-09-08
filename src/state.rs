@@ -184,6 +184,11 @@ pub struct IssueState {
     /// likelier truth and the item retires anyway.
     #[serde(default)]
     pub retirement_holds: u32,
+    /// Whether the log has already said that the listings and the item
+    /// disagree about this one, so that a hold announces itself once per
+    /// incident rather than once in the item's life.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retirement_announced: bool,
     /// `updated_at` of the issue when the timeline was last reconciled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,

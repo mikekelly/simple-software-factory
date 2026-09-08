@@ -357,10 +357,12 @@ mod tests {
         assert!(mentions("v1.@bot", "bot"));
         assert!(mentions("a@@bot", "bot"));
         assert!(!mentions("someone@bot", "bot"));
-        // GitHub renders these as emphasis around a real mention, so the
-        // `_` must not read as part of a word before the `@`.
+        // GitHub renders these two as emphasis around a real mention, so
+        // the `_` must not read as part of a word before the `@`.
         assert!(mentions("_@bot_ please look", "bot"));
         assert!(mentions("__@bot__ please", "bot"));
+        // This one is a plain over-match: a lone `_` mid-word is not
+        // emphasis, so GitHub sees no mention and this does.
         assert!(mentions("under_@bot", "bot"));
         // A team, not this user.
         assert!(!mentions("@bot/reviewers", "bot"));
