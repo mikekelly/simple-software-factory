@@ -93,13 +93,21 @@ if [ "$backend" = firecracker ]; then
     sed -i '/^PermitRootLogin no$/a AllowUsers ssf' /etc/ssh/sshd_config.d/ssf.conf
 fi
 # Per-backend unit drop-ins, installed as /etc/systemd/system/<unit>.d/
-# <backend>.conf. Under Firecracker they came in the image (make-base.sh
-# put them next to the scripts).
+# <backend>.conf. A drop-in file names the unit in full, type included
+# (ssf-seed.service.conf), so the directory it goes to is read off the name
+# rather than guessed: a drop-in for a .timer or a .target would otherwise
+# be installed for a service of that name and quietly do nothing. Under
+# Firecracker they came in the image (make-base.sh put them next to the
+# scripts).
 if [ "$backend" = firecracker ]; then
     for f in /usr/local/lib/ssf/units/firecracker/*.conf; do
         [ -e "$f" ] || continue
         u=$(basename "$f" .conf)
-        install -Dm644 "$f" "/etc/systemd/system/$u.service.d/firecracker.conf"
+        case "$u" in
+            *.service|*.socket|*.timer|*.target|*.path|*.mount) ;;
+            *) echo "provision: drop-in $f does not name a unit type (expected <unit>.<type>.conf)" >&2; exit 1 ;;
+        esac
+        install -Dm644 "$f" "/etc/systemd/system/$u.d/firecracker.conf"
     done
 fi
 # Under lima there is no image-build step: the guest files come from the
@@ -112,9 +120,9 @@ if [ "$backend" = lima ]; then
     install -d /etc/systemd/system
     for u in ssf-seed.service herdr-server.service ssf.service; do
         install -m644 "$share/guest/units/$u" /etc/systemd/system/$u
-    done
-    for u in ssf-seed herdr-server ssf; do
-        install -Dm644 "$share/guest/units/lima/$u.conf" /etc/systemd/system/$u.service.d/lima.conf
+        # <unit>.conf, the unit named in full: $u.d is the drop-in
+        # directory whatever type the unit is.
+        install -Dm644 "$share/guest/units/lima/$u.conf" /etc/systemd/system/$u.d/lima.conf
     done
     # lima hands the guest a new cloud-init instance-id at every start, and
     # cloud-init then treats the boot as a first one: without this it would
