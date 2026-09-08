@@ -2518,7 +2518,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
         // stripped with everything after it, silently gutting the rule.
         for kept in [
             "sub-issues for the parts of this work",
-            "the item stops being routed",
+            "carrying an `ssf: origin=` tag",
             "name the model you start each kind of subagent with",
         ] {
             assert!(example.contains(kept), "{kept} missing from {example}");

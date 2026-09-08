@@ -689,8 +689,8 @@ you, ask: which subscriptions or plans are already paid for and can be
 signed in as in step 7, whether there are API keys and whether metered
 spend is acceptable, and what the factory must not exhaust — a plan
 shared with the person's own interactive use will be. What is already
-paid for and what is metered are constrained
-differently — a plan by its allowance, a key by the bill — and neither
+paid for and what is metered are constrained differently — a plan by its
+allowance, a key by the bill — and neither
 is free at the margin; which one you are on changes how to read the
 chart below.
 

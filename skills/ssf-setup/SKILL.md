@@ -48,8 +48,10 @@ document links to.
    defaults.** Follow [Choosing the harness and the
    model](../../docs/setup.md#choosing-the-harness-and-the-model): it
    has the commands that say what the machine can run, what to ask the
-   person (which subscriptions or keys, what must not be exhausted —
-   the machine shows only what is *installed*), the chart to read
+   person (the machine says which harnesses are installed and signed
+   in; only they can say which subscriptions or keys are behind them,
+   what metered spend is acceptable and what must not be exhausted),
+   the chart to read
    instead of answering from memory, and the three tiers. Propose a
    model and effort per repository and say why; the session's is `ssf
    repo add`/`ssf repo set --model --effort`, the tiers below it are the
