@@ -987,7 +987,7 @@ are resumed on the first pass that finds it: {err:#}"
         // brought back) before anything is delivered this pass.
         self.check_logins(repo).await;
         if self.refetch.remove(&repo.name) {
-            self.forget_etags(repo);
+            self.clear_etags(repo);
         }
         let rs = self.state.repo_mut(&repo.name).clone();
 
@@ -1986,14 +1986,23 @@ deliveries resume"
     /// Make the next listings full ones, so every item involving the bot
     /// is looked at again whatever the ETags said: now, and (since a pass
     /// that is under way stores the ETags it read at its end) once more
-    /// at the start of the next pass.
+    /// at the start of the next pass. That second one is all that is owed:
+    /// the pass which spends the flag clears the ETags without arming it
+    /// again, so the pass after that is back to conditional requests.
     fn forget_etags(&mut self, repo: &RepoConfig) {
+        self.clear_etags(repo);
+        self.refetch.insert(repo.name.clone());
+    }
+
+    /// Drop the repository's cached listing ETags, so the listings this
+    /// pass reads are full ones. Nothing beyond this pass is owed: the
+    /// ETags it reads are stored at its end and used again next time.
+    fn clear_etags(&mut self, repo: &RepoConfig) {
         let rs = self.state.repo_mut(&repo.name);
         rs.issues_etag = None;
         rs.mentioned_etag = None;
         rs.pulls_etag = None;
         rs.created_etag = None;
-        self.refetch.insert(repo.name.clone());
     }
 
     /// Count a failure against an item; at `MAX_DELIVERY_FAILURES` in a
@@ -5423,6 +5432,10 @@ mod tests {
         /// Bumped to give the creator listing a new ETag: the next request
         /// gets a full listing, whatever it carries.
         created_etag: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        /// How many times the creator listing has been served in full (a
+        /// request with no `If-None-Match`, or one whose ETag has moved
+        /// on), rather than answered 304.
+        created_fulls: std::sync::Arc<std::sync::atomic::AtomicU32>,
         /// Open items assigned to the bot, as the assignee listing reports
         /// them (a fresh ETag every time: always a full listing).
         assigned: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
@@ -5451,6 +5464,7 @@ mod tests {
             let hits: Arc<Mutex<Vec<String>>> = Arc::default();
             let created: Arc<Mutex<Vec<Value>>> = Arc::default();
             let created_etag = Arc::new(AtomicU32::new(1));
+            let created_fulls = Arc::new(AtomicU32::new(0));
             let assigned: Arc<Mutex<Vec<Value>>> = Arc::default();
             let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
             let issues: Arc<Mutex<BTreeMap<u64, Value>>> = Arc::default();
@@ -5459,6 +5473,7 @@ mod tests {
             let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
             let p = posts.clone();
             let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
+            let cf = created_fulls.clone();
             let (a, t, k, kv) = (
                 assigned.clone(),
                 timelines.clone(),
@@ -5531,6 +5546,7 @@ mod tests {
                         if if_none_match.as_deref() == Some(etag.as_str()) {
                             ("304 Not Modified", etag, String::new())
                         } else {
+                            cf.fetch_add(1, Ordering::SeqCst);
                             let items = Value::Array(c.lock().unwrap().clone());
                             ("200 OK", etag, items.to_string())
                         }
@@ -5593,6 +5609,7 @@ mod tests {
                 hits,
                 created,
                 created_etag,
+                created_fulls,
                 assigned,
                 timelines,
                 issues,
@@ -5634,6 +5651,11 @@ mod tests {
         /// The request paths since the last call.
         fn hits(&self) -> Vec<String> {
             std::mem::take(&mut *self.hits.lock().unwrap())
+        }
+
+        /// How many full creator listings have been served so far.
+        fn created_fulls(&self) -> u32 {
+            self.created_fulls.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         fn bump_created_etag(&self) {
@@ -5761,6 +5783,71 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![18]
         );
+    }
+
+    /// Replays issue #141: `forget_etags` armed the `refetch` flag and
+    /// `tick_repo` spent the flag by calling `forget_etags` again, which
+    /// armed it afresh, so one `unblock` made the repository fetch all
+    /// four listings in full on every pass for the life of the daemon.
+    /// One unblock owes exactly one full fetch, and the pass after it is
+    /// back to conditional requests.
+    #[tokio::test]
+    async fn one_unblock_owes_exactly_one_full_fetch() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let created = vec!["created".to_string()];
+        *stub.created.lock().unwrap() = vec![json!({
+            "number": 18, "title": "t", "body": null, "html_url": "https://gh/18",
+            "state": "open", "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+        })];
+        let mut e = engine_at(&stub.base);
+        // The one listed item is already ignored as created-only, so these
+        // passes fetch nothing by number and onboard nothing.
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(18, Ignored::new(&issue(18, "bot", None), &created));
+
+        // Pass 1: no ETags yet, so a full creator listing.
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(stub.created_fulls(), 1);
+
+        // Pass 2: the ETag it stored is sent back and answered 304.
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(stub.created_fulls(), 1, "pass 2 was conditional");
+
+        // A session comes back. The pass it comes back on has read its
+        // listings already (and stores the ETags it read at its end), so
+        // the full fetch it is owed falls to the next pass.
+        let b = Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired".into(),
+            since: now_iso(),
+            reported: false,
+            credential: None,
+            retried_at: None,
+            retries: 0,
+            told_at: None,
+            tell_failures: 0,
+        };
+        e.unblock(&r, 18, &b, Conversation::Kept).await;
+        assert!(e.refetch.contains(&r.name));
+        assert!(e.state.repos[&r.name].created_etag.is_none());
+
+        // Pass 3 spends the flag: one full listing, so what was held is seen.
+        e.tick_repo(&r).await.unwrap();
+        assert_eq!(stub.created_fulls(), 2, "pass 3 fetched in full");
+        assert!(e.refetch.is_empty(), "the flag is spent, not re-armed");
+
+        // Pass 4, and every pass after it, is back to conditional requests.
+        for _ in 0..3 {
+            e.tick_repo(&r).await.unwrap();
+        }
+        assert_eq!(stub.created_fulls(), 2, "one unblock, one full fetch");
+        assert!(e.refetch.is_empty());
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert!(stub.post_bodies().is_empty());
     }
 
     #[test]
