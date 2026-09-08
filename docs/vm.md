@@ -66,8 +66,12 @@ on. With the VM enabled and running, `doctor` is forwarded into the
 guest, which has no backend tooling of its own; with the VM enabled and
 stopped, the host command refuses to run and its error names what is
 missing (`the factory runs in VM default, which is not running, and
-lima cannot start it: limactl not installed; install lima ...`). So on
-a VM-enabled machine, `ssf vm status` is where you look.
+lima cannot start it: qemu-system-x86_64 not installed; install qemu
+...`). That refusal needs a VM known to be stopped, which needs a
+`limactl` that runs: a host that has not got one at all cannot be asked
+the question, so there the same detail comes on stderr as part of the
+note below and the command is still tried. So on a VM-enabled machine,
+`ssf vm status` is where you look.
 
 A Firecracker build on anything but Linux x86_64 refuses and says to set
 `vm.backend` to `lima`. Either way, `[vm] dir`
@@ -504,4 +508,34 @@ start`) outlives that shell and any later `ssf` command. The service
 stopping or restarting the service shuts the guest down cleanly, and a
 crash of the host daemon ends it with the service's cgroup on Linux.
 With the VM stopped, `ssf status` says so instead of forwarding (the bar
-widget shows the service as stopped).
+widget shows the service as stopped), and the other forwarded commands
+refuse with `the factory runs in VM <name>, which is not running`. Only a
+definite answer does that. The liveness question forks `limactl` under
+lima, and a `limactl` that fails, or does not answer within fifteen
+seconds, leaves ssf unable to tell. It then says so on stderr -- the
+reason it could not ask, whatever backend tooling this host is missing,
+and that it is sending the command anyway -- and forwards the command,
+which the guest answers if the VM is in fact up and which fails as an
+ssh error if it is not; the note carries the same `ssf vm start` advice
+the refusal would have given, since an ssh error carries none.
+
+`status --json` always answers, whatever the guest does, so nothing
+parsing it is left with no document at all. Where the guest answers,
+that answer is passed through untouched and with its exit status. Where
+it does not, the host writes one of its own and exits 0, the way it does
+for a VM it knows is stopped: it carries what the host could see (`vm`
+is `running`, `stopped` or `unknown`, and the service line is this
+machine's) and no sessions or repositories, which are the guest's to
+know. That covers the window after `limactl start` when lima says
+`Running` before the guest's sshd does, as well as a probe that could
+not be made at all. The bar widget shows the same panel either way --
+it reads sessions, not `vm` -- but its service toggle reads the truth
+rather than the empty object it falls back to, and a `jq` over the
+command gets a field rather than a parse error.
+
+A probe that could not be made is never read as a stopped factory:
+reading it that way refused `tell`, `release`, `purge` and `doctor` over
+a running VM and showed the widget an idle one. The supervisor inside
+`ssf run` asks the same question on its own loop, where a slow answer is
+waited out rather than cut short at fifteen seconds, since it gives up on
+a VM only after ten rounds with no answer at all.

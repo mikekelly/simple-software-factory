@@ -644,17 +644,24 @@ async fn main() -> Result<()> {
         && cfg.vm.enabled
     {
         let vm = vm::Vm::new(&cfg);
-        if !vm.running() {
-            match cli.command {
+        // Is the guest up? "No" and "could not ask" are different
+        // answers: under lima the question forks `limactl`, and a fork
+        // that fails is not a factory that has stopped.
+        let probe = vm.running_now().map_err(|e| format!("{e:#}"));
+        // What the backend needs and this host has not got, when the
+        // answer is anything but "it is running". The check is PATH and
+        // file lookups, no fork of its own; it is the same one `ssf vm
+        // status` and `ssf doctor` print, and this is where a person on
+        // a machine without the backend installed meets it first.
+        let missing = (probe != Ok(true))
+            .then(|| vm.tooling())
+            .filter(|t| !t.ok)
+            .map(|t| t.detail);
+        let backend = vm.backend().to_string();
+        match forwarding_gate(&probe, &cfg.vm.name, &backend, name, missing.as_deref()) {
+            Gate::Refuse(why) => match cli.command {
                 Command::Status { json: true } => {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "vm": "stopped", "service_active": false,
-                            "service_enabled": ui::service_enabled(),
-                            "sessions": [], "repos": [],
-                        })
-                    );
+                    println!("{}", vm_status_for_guest(probe_word(&probe)));
                     return Ok(());
                 }
                 Command::Status { json: false } => {
@@ -664,32 +671,58 @@ async fn main() -> Result<()> {
                     );
                     return Ok(());
                 }
-                // A host that cannot start the VM at all is told why here:
-                // the tooling check is the same one `ssf vm status` and
-                // `ssf doctor` print, and this is the message a person hits
-                // first on a machine where the backend is not installed.
-                _ => {
-                    let tooling = vm.tooling();
-                    if tooling.ok {
-                        bail!(
-                            "the factory runs in VM {}, which is not running; `ssf vm start` first",
-                            cfg.vm.name
-                        )
-                    }
-                    bail!(
-                        "the factory runs in VM {}, which is not running, and {} cannot start it: {}",
-                        cfg.vm.name,
-                        vm.backend(),
-                        tooling.detail
-                    )
+                _ => bail!(why),
+            },
+            Gate::Send(note) => {
+                if let Some(note) = note {
+                    eprintln!("{note}");
                 }
+                let args: Vec<String> = std::env::args().skip(1).collect();
+                // `status --json` is answered even when the guest does
+                // not answer it: an ssh that fails -- the VM down behind
+                // an unanswerable probe, or the window after `limactl
+                // start` where lima says Running before sshd does --
+                // would otherwise print nothing at all. What that buys
+                // is a document to parse, whose `service_enabled` and
+                // `vm` are read from this host and true: the bar widget
+                // coerces anything it cannot parse to an empty object,
+                // where its own service toggle reads as disabled, and a
+                // `jq` over this command gets a field rather than a
+                // parse error. The guest's own answer is passed through
+                // untouched, with its exit status; silence is what gets
+                // a document made for it, saying what the probe saw of
+                // the VM, nothing of the sessions it could not ask
+                // after, and exiting 0 the way a stopped VM's answer
+                // above does.
+                if matches!(cli.command, Command::Status { json: true }) {
+                    let out = vm.capture_ssf(&args);
+                    if let Err(e) = &out {
+                        eprintln!("running `ssf {name}` in the VM: {e:#}");
+                    }
+                    let answer = out
+                        .as_ref()
+                        .ok()
+                        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                        .filter(|s| !s.trim().is_empty());
+                    match answer {
+                        Some(answer) => {
+                            print!("{answer}");
+                            std::process::exit(
+                                out.map(|o| o.status.code().unwrap_or(1)).unwrap_or(1),
+                            );
+                        }
+                        None => {
+                            println!("{}", vm_status_for_guest(probe_word(&probe)));
+                            return Ok(());
+                        }
+                    }
+                }
+                let st = vm
+                    .exec_ssf(&args)
+                    .with_context(|| format!("running `ssf {name}` in the VM"))?;
+                std::process::exit(st.code().unwrap_or(1));
             }
         }
-        let args: Vec<String> = std::env::args().skip(1).collect();
-        let st = vm
-            .exec_ssf(&args)
-            .with_context(|| format!("running `ssf {name}` in the VM"))?;
-        std::process::exit(st.code().unwrap_or(1));
     }
 
     match cli.command {
@@ -2120,6 +2153,86 @@ fn parse_toml_scalar(value: &str) -> toml::Value {
         return x.clone();
     }
     toml::Value::String(value.to_string())
+}
+
+/// What the gate in front of a forwarded command does with it.
+#[derive(Debug, PartialEq)]
+enum Gate {
+    /// Send it to the guest; `Some` is what to say on stderr first, when
+    /// the answer was that there is no answer.
+    Send(Option<String>),
+    /// The VM is not running: this is why the command cannot run.
+    Refuse(String),
+}
+
+/// The gate every command the host forwards into the guest goes through.
+/// `probe` is [`vm::Vm::running_now`]'s answer or the reason there is
+/// none, and `missing` what the backend needs and this host has not got.
+///
+/// Only a definite "not running" refuses. "Could not ask" is not an
+/// answer to guess from: under lima the probe forks `limactl`, and one
+/// fork that failed refused `tell`, `release`, `purge` and `doctor` over
+/// a factory that was up, and had `status --json` -- the bar widget's
+/// source -- report an idle one. The command goes to the guest instead,
+/// to succeed or fail on its own terms, having said first why ssf cannot
+/// tell and what the host is missing: otherwise a person whose `limactl`
+/// is not installed at all would get nothing but an ssh error.
+fn forwarding_gate(
+    probe: &Result<bool, String>,
+    vm_name: &str,
+    backend: &str,
+    cmd: &str,
+    missing: Option<&str>,
+) -> Gate {
+    match probe {
+        Ok(true) => Gate::Send(None),
+        Ok(false) => Gate::Refuse(match missing {
+            None => format!(
+                "the factory runs in VM {vm_name}, which is not running; `ssf vm start` first"
+            ),
+            Some(detail) => format!(
+                "the factory runs in VM {vm_name}, which is not running, and {backend} cannot start it: {detail}"
+            ),
+        }),
+        Err(why) => {
+            let mut note = format!("could not tell whether VM {vm_name} is running: {why}");
+            if let Some(detail) = missing {
+                note.push_str(&format!(
+                    "\nand if it is down, {backend} cannot start it: {detail}"
+                ));
+            }
+            // The refusal this replaces said what to do about a VM that
+            // is down. An ssh failure says nothing of the sort, so the
+            // advice comes here instead, before the command that may be
+            // about to hit one.
+            note.push_str(&format!(
+                "\nsending `ssf {cmd}` to it anyway; if that fails on ssh the VM is down: `ssf vm start` starts it, `ssf vm status` says what the host can see"
+            ));
+            Gate::Send(Some(note))
+        }
+    }
+}
+
+/// The VM's state as the host knows it, for a `status --json` the guest
+/// did not answer: what the probe said, including that it said nothing.
+fn probe_word(probe: &Result<bool, String>) -> &'static str {
+    match probe {
+        Ok(true) => "running",
+        Ok(false) => "stopped",
+        Err(_) => "unknown",
+    }
+}
+
+/// What `status --json` says for a guest the host could not reach. The
+/// bar widget parses this and has no other source, so it is answered
+/// rather than left empty; `vm` is the one field the host can still fill
+/// in, and the sessions and repositories it could not ask after are
+/// empty rather than invented.
+fn vm_status_for_guest(vm: &str) -> serde_json::Value {
+    serde_json::json!({
+        "vm": vm, "service_active": false, "service_enabled": ui::service_enabled(),
+        "sessions": [], "repos": [],
+    })
 }
 
 /// The name of a command that runs in the guest when the factory is in a VM.
@@ -3927,6 +4040,99 @@ mod tests {
             "mac"
         );
         assert_eq!(pick_hostname(None, || None, || None), "localhost");
+    }
+
+    #[test]
+    fn only_a_definite_no_keeps_a_command_out_of_the_guest() {
+        // A guest that is up takes the command, with nothing said.
+        assert_eq!(
+            forwarding_gate(&Ok(true), "default", "lima", "tell", None),
+            Gate::Send(None)
+        );
+        // A guest that is down does not, and the refusal names what the
+        // host has not got when that is why it cannot be started.
+        assert_eq!(
+            forwarding_gate(&Ok(false), "default", "lima", "tell", None),
+            Gate::Refuse(
+                "the factory runs in VM default, which is not running; `ssf vm start` first".into()
+            )
+        );
+        let Gate::Refuse(why) = forwarding_gate(
+            &Ok(false),
+            "default",
+            "lima",
+            "doctor",
+            Some("limactl not installed; install lima"),
+        ) else {
+            panic!("a stopped VM refuses a command that needs it")
+        };
+        assert!(
+            why.contains("lima cannot start it: limactl not installed"),
+            "{why}"
+        );
+
+        // "The probe could not be made" is neither answer. Under lima it
+        // forks `limactl`, and one fork that fails -- or is cut off by
+        // LIVENESS_LIMIT -- must not refuse every forwarded command over
+        // a factory that is running, nor report a stopped VM to the bar
+        // widget. The command goes to the guest, and says why first: the
+        // reason is not in the log at every log level.
+        let probe = Err("asking lima whether ssf-default is running: fork/exec: \
+resource temporarily unavailable"
+            .to_string());
+        let Gate::Send(Some(note)) = forwarding_gate(&probe, "default", "lima", "tell", None)
+        else {
+            panic!("an unanswered probe forwards the command")
+        };
+        assert!(
+            note.starts_with("could not tell whether VM default is running: asking lima"),
+            "{note}"
+        );
+        assert!(note.contains("sending `ssf tell` to it anyway"), "{note}");
+        assert!(!note.contains("is not running,"), "{note}");
+        // A host with no `limactl` at all cannot answer the probe, so
+        // the refusal that names the missing tooling is never reached:
+        // the note carries it instead, or the person sees nothing but
+        // ssh refusing a connection.
+        let Gate::Send(Some(note)) = forwarding_gate(
+            &probe,
+            "default",
+            "lima",
+            "status",
+            Some("limactl not installed; install lima"),
+        ) else {
+            panic!("an unanswered probe forwards the command")
+        };
+        assert!(
+            note.contains("if it is down, lima cannot start it: limactl not installed"),
+            "{note}"
+        );
+        // And the note carries the advice the refusal used to give: the
+        // ssh failure that may follow it says nothing about ssf.
+        assert!(note.contains("`ssf vm start` starts it"), "{note}");
+    }
+
+    #[test]
+    fn the_widget_gets_an_answer_for_a_guest_that_did_not_give_one() {
+        // The document names the host service, which is read from the
+        // state directory: a test's must be its own (#140).
+        let _sandbox = crate::config::test_support::sandbox();
+        // The host cannot fill in what only the guest knows, so the
+        // sessions and repositories are empty rather than invented; what
+        // it can fill in is the VM, and each of the three answers the
+        // probe can give reaches the document as itself. An ssh failure
+        // with nothing put in its place is the case this exists to stop:
+        // the widget parses that as a factory with nothing in it.
+        assert_eq!(probe_word(&Ok(true)), "running");
+        assert_eq!(probe_word(&Ok(false)), "stopped");
+        assert_eq!(probe_word(&Err("no answer".into())), "unknown");
+        for state in ["running", "stopped", "unknown"] {
+            let v = vm_status_for_guest(state);
+            assert_eq!(v["vm"], state);
+            assert_eq!(v["service_active"], false);
+            assert_eq!(v["sessions"], serde_json::json!([]));
+            assert_eq!(v["repos"], serde_json::json!([]));
+        }
     }
 
     #[test]

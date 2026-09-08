@@ -84,6 +84,17 @@ const SEED_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const PROBE_LIMIT: Duration = Duration::from_secs(60);
 /// `limactl list`, `disk` and `edit`: local bookkeeping.
 const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
+/// The liveness question as the forwarding gate asks it
+/// ([`Vm::running_now`]): once in front of every command the host sends
+/// into the guest, with a person waiting on the answer and the bar
+/// widget asking a few times a minute. It reads local bookkeeping, so
+/// seconds are already generous, and the gate treats "could not ask" as
+/// "cannot tell" and forwards anyway -- so cutting a pathologically slow
+/// answer short costs nothing but the answer. The supervisor's own
+/// polling keeps [`QUICK_LIMIT`]: it gives up after ten unanswered
+/// probes in a row, so a slow answer there must be waited for rather
+/// than turned into a "cannot tell".
+pub(super) const LIVENESS_LIMIT: Duration = Duration::from_secs(15);
 /// `limactl create`, which downloads the base image the first time.
 const CREATE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// `limactl stop`: lima gives the guest minutes to shut down first.
@@ -740,8 +751,14 @@ impl Vm {
 
     /// The instance, when lima has it.
     pub(super) fn lima_instance(&self) -> Result<Option<Instance>> {
+        self.lima_instance_within(QUICK_LIMIT)
+    }
+
+    /// [`Vm::lima_instance`] with a bound of its own, for the liveness
+    /// question that is asked on a waiting path.
+    fn lima_instance_within(&self, limit: Duration) -> Result<Option<Instance>> {
         let name = self.lima_name();
-        let out = self.limactl_output(&["list", "--json"])?;
+        let out = self.limactl_output_within(&["list", "--json"], limit)?;
         Ok(parse_instances(&out).into_iter().find(|i| i.name == name))
     }
 
@@ -752,20 +769,26 @@ impl Vm {
         Ok(parse_disks(&out).into_iter().find(|d| d.name == name))
     }
 
-    /// Is the instance running? `None` when the question could not be
-    /// asked -- the probe forks a ~60 MB Go binary, so a fired resource
-    /// limit or a fork that failed under load is a plausible answer, and
-    /// it is not the same answer as "stopped". `Vm::supervise` polls
-    /// this, and a probe failure read as "stopped" once ended the
-    /// supervisor with "the VM exited" over a VM that was running.
+    /// Is the instance running, or why could that not be asked? The
+    /// probe forks a ~60 MB Go binary, so a fired resource limit or a
+    /// fork that failed under load is a plausible answer, and it is not
+    /// the same answer as "stopped".
+    pub(super) fn lima_running_probe(&self, limit: Duration) -> Result<bool> {
+        self.lima_instance_within(limit)
+            .map(|inst| inst.is_some_and(|i| i.is_running()))
+            .with_context(|| format!("asking lima whether {} is running", self.lima_name()))
+    }
+
+    /// [`Vm::lima_running_probe`] for the callers that only want the
+    /// answer, with "could not ask" as `None` and a warning in the log.
+    /// `Vm::supervise` polls this, and a probe failure read as "stopped"
+    /// once ended the supervisor with "the VM exited" over a VM that was
+    /// running.
     pub(super) fn lima_running_state(&self) -> Option<bool> {
-        match self.lima_instance() {
-            Ok(inst) => Some(inst.is_some_and(|i| i.is_running())),
+        match self.lima_running_probe(QUICK_LIMIT) {
+            Ok(running) => Some(running),
             Err(e) => {
-                warn!(
-                    "could not ask lima whether {} is running: {e:#}",
-                    self.lima_name()
-                );
+                warn!("{e:#}");
                 None
             }
         }
@@ -1829,6 +1852,14 @@ mod tests {
         assert!(CREATE_LIMIT > QUICK_LIMIT);
         assert!(PROBE_LIMIT < QUICK_LIMIT);
         assert!(STOP_LIMIT > QUICK_LIMIT);
+        // The gate's liveness question is the shortest of all: it is
+        // asked in front of every forwarded command, so its bound is
+        // what a person waits out when limactl has stopped answering,
+        // and being cut short only costs the gate an answer it is
+        // willing to do without. The supervisor's polling of the same
+        // question keeps the listing's own bound, since it gives up
+        // after MAX_UNANSWERED_PROBES rounds with no answer.
+        assert!(LIVENESS_LIMIT < QUICK_LIMIT);
     }
 
     #[test]
@@ -2370,6 +2401,19 @@ mod tests {
         Fails,
     }
 
+    /// Whether the fake answers `limactl list --json` -- the liveness
+    /// question every caller of [`Vm::running_state`] and
+    /// [`Vm::running_now`] asks. A fork that failed under load, a lima
+    /// home under someone else's lock and a limactl that has stopped
+    /// returning are all things a laptop does; none of them is the VM
+    /// having exited.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Listing {
+        Answers,
+        Fails,
+        Hangs,
+    }
+
     impl Drop for Fake {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.dir);
@@ -2382,6 +2426,15 @@ mod tests {
         }
 
         fn with(status: &str, edit: Edit, disks: DiskList) -> Self {
+            Self::with_all(status, edit, disks, Listing::Answers)
+        }
+
+        /// A running instance whose listing behaves like this.
+        fn listing(listing: Listing) -> Self {
+            Self::with_all("Running", Edit::Applies, DiskList::Answers, listing)
+        }
+
+        fn with_all(status: &str, edit: Edit, disks: DiskList, listing: Listing) -> Self {
             let dir = std::env::temp_dir().join(format!(
                 "ssf-lima-fake-{}-{}",
                 std::process::id(),
@@ -2406,6 +2459,19 @@ mod tests {
                 }
             };
             // lima's own `--set` rewrites the instance's copy in place.
+            let list_arm = match listing {
+                Listing::Answers => format!("echo '{json}'"),
+                Listing::Fails => {
+                    r#"echo 'FATAL[0000] failed to lock the lima home' >&2; exit 1"#.to_string()
+                }
+                // Long enough that no bound this test asks for expires
+                // on its own. `exec` so that the fake shell *is* the
+                // sleep: what the probe kills is its direct child, and a
+                // `sleep` forked under that shell would outlive the test
+                // by two minutes, once per run and again under
+                // `makepkg`'s check().
+                Listing::Hangs => "exec sleep 120".to_string(),
+            };
             let edit_arm = match edit {
                 Edit::Applies => format!(
                     "sed 's/format: true/format: false/' {y} > {y}.new && mv {y}.new {y}",
@@ -2425,7 +2491,7 @@ shift
 printf '%s\n' "$*" >> {log}
 case "$*" in
   'disk list --json') {disk_arm} ;;
-  'list --json') echo '{json}' ;;
+  'list --json') {list_arm} ;;
   edit*--set*) {edit_arm} ;;
   shell*) echo 'instance "ssf-one" is stopped, run `limactl start ssf-one`' >&2; exit 1 ;;
 esac
@@ -2473,6 +2539,57 @@ exit 0
         fn ran(&self, verb: &str) -> bool {
             self.commands().iter().any(|c| c.starts_with(verb))
         }
+    }
+
+    #[test]
+    fn a_liveness_probe_that_could_not_be_made_is_not_a_stopped_vm() {
+        // The listing is a fork of a ~60 MB Go binary against a lima
+        // home someone else may hold the lock on. When it fails, the one
+        // thing that must not happen is the answer "the VM is not
+        // running": the gate in front of every forwarded command refuses
+        // on that, and the supervisor ends the daemon on it.
+        let t = Fake::listing(Listing::Fails);
+        let err =
+            t.vm.running_now()
+                .expect_err("a failed listing is not an answer");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("asking lima whether ssf-one is running"),
+            "{text}"
+        );
+        assert!(text.contains("failed to lock the lima home"), "{text}");
+        assert_eq!(t.vm.running_state(), None);
+        // And the lossy form is exactly what neither may use: it says
+        // the instance is stopped, over an instance the fake reports as
+        // Running.
+        assert!(!t.vm.running());
+        assert!(t.vm.running_now().is_err());
+        // A listing that answers is unchanged by any of this.
+        let up = Fake::listing(Listing::Answers);
+        assert!(up.vm.running_now().unwrap());
+        assert_eq!(up.vm.running_state(), Some(true));
+    }
+
+    #[test]
+    fn a_liveness_probe_that_never_returns_is_cut_off_rather_than_waited_out() {
+        // The gate asks this in front of every forwarded command, with a
+        // person waiting on it, so a limactl that has stopped returning
+        // is given a bound and its silence becomes "cannot tell" -- the
+        // answer the gate is willing to carry on without. The bound
+        // itself is LIVENESS_LIMIT; this holds the mechanism to a
+        // fraction of it so the suite does not sit out fifteen seconds.
+        let t = Fake::listing(Listing::Hangs);
+        let started = Instant::now();
+        let err =
+            t.vm.lima_running_probe(Duration::from_millis(300))
+                .expect_err("a listing that never returns is not an answer");
+        let text = format!("{err:#}");
+        assert!(text.contains("did not finish within"), "{text}");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
