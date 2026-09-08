@@ -275,13 +275,14 @@ What the commands do under lima:
 Changing `[vm] name` renames nothing that already exists: the old
 `ssf-<old name>` instance and disk stay in lima's home, and under
 Firecracker the old `<[vm] dir>/<old name>/` stays with its data disk in
-it -- and `[vm] dir` is shared by the backends, so a directory left
-there is reported under lima too. `ssf vm status` and `ssf uninstall`
-each name what this configuration does not, with the command that
-removes it, and `ssf doctor` does on a host that is not running the
-factory in a VM (in VM mode it is forwarded into the guest, which cannot
-see the host's `[vm] dir`). None of them removes it for you: nothing can
-tell a VM you renamed away to keep from one you abandoned.
+it. Both are looked for under either backend: `[vm] dir` is shared by
+them, and lima's home outlives a change of `[vm] backend` as much as a
+change of `[vm] name`. `ssf vm status` and `ssf uninstall` each name
+what this configuration does not, with the command that removes it, and
+`ssf doctor` does on a host that is not running the factory in a VM (in
+VM mode it is forwarded into the guest, which cannot see the host's
+`[vm] dir`). None of them removes it for you: nothing can tell a VM you
+renamed away to keep from one you abandoned.
 
 Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,
 `run`, `ssh-config`) goes over ssh and works the same under both.
