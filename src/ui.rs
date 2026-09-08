@@ -501,7 +501,7 @@ mod tests {
         let log = root.join("terminal.log");
         let ssf = bin.join("ssf");
         let terminal = bin.join("omarchy-launch-terminal");
-        let xdg_open = bin.join("xdg-open");
+        let browser = bin.join("omarchy-launch-browser");
         std::fs::write(
             &terminal,
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSF_UI_TEST_LOG\"\n",
@@ -512,11 +512,11 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&terminal, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
-        std::fs::write(&xdg_open, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&browser, "#!/bin/sh\nexit 0\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&xdg_open, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
 
         let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/ssf-ui");
