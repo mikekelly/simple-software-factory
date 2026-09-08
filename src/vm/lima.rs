@@ -780,27 +780,32 @@ impl Vm {
         })
     }
 
-    /// What a build needs: limactl that runs, and on Linux qemu for the
-    /// architecture (lima's only Linux driver), naming what to install.
+    /// What a build needs: limactl that runs, and qemu for the
+    /// architecture wherever lima will drive the VM with it -- always on
+    /// Linux (its only driver there), and on macOS when `[vm] vm_type`
+    /// asks for qemu. Keying that on the operating system alone let a Mac
+    /// with `vm_type = "qemu"` and no qemu through preflight, to fail
+    /// inside `limactl create` instead.
     fn lima_preflight(&self) -> Result<()> {
         check_name(&self.cfg.name)?;
         let arch = self.lima_arch()?;
+        let os = std::env::consts::OS;
+        let vm_type = self.cfg.vm_type.as_deref();
         if let Err(e) = self.limactl_output_within(&["--version"], PROBE_LIMIT) {
             bail!(
                 "limactl does not run ({}): {e:#}; install lima (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
                 self.limactl_hint()
             );
         }
-        if !platform::is_macos() {
-            if self.cfg.vm_type.as_deref() == Some("vz") {
-                bail!("[vm] vm_type = \"vz\" is macOS only; unset it or use \"qemu\" here");
-            }
+        if !platform::is_macos() && vm_type == Some("vz") {
+            bail!("[vm] vm_type = \"vz\" is macOS only; unset it or use \"qemu\" here");
+        }
+        if super::lima_uses_qemu(os, vm_type) {
             let qemu = format!("qemu-system-{arch}");
             if which(&qemu).is_none() {
                 bail!(
-                    "{qemu} is not on PATH; install qemu (Arch: `qemu-full` or `qemu-base`; Debian/Ubuntu: `qemu-system-{}`; Fedora: `qemu-system-{}`)",
-                    if arch == "x86_64" { "x86" } else { "arm" },
-                    if arch == "x86_64" { "x86" } else { "aarch64" },
+                    "{qemu} is not on PATH; {}",
+                    super::qemu_install_hint(os, arch)
                 );
             }
         }

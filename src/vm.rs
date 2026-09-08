@@ -459,15 +459,43 @@ pub struct Tool {
     pub install: String,
 }
 
+/// Does lima drive this VM with qemu? On Linux always: qemu is lima's
+/// only driver there. On macOS only when `[vm] vm_type` asks for it --
+/// lima's own default is `vz`, the Virtualization framework, which needs
+/// no qemu at all. Keyed on what the VM will use, not on the operating
+/// system: a Mac with `vm_type = "qemu"` and no qemu installed used to
+/// pass every check ssf makes and then fail inside `limactl create`.
+pub fn lima_uses_qemu(os: &str, vm_type: Option<&str>) -> bool {
+    if os == "macos" {
+        vm_type == Some("qemu")
+    } else {
+        true
+    }
+}
+
+/// What to install when `qemu-system-<arch>` is missing.
+fn qemu_install_hint(os: &str, arch: &str) -> String {
+    if os == "macos" {
+        return "install qemu (`brew install qemu`), or unset [vm] vm_type to let lima use the Virtualization framework".to_string();
+    }
+    format!(
+        "install qemu (Arch: `qemu-full` or `qemu-base`; Debian/Ubuntu: `qemu-system-{}`; Fedora: `qemu-system-{}`)",
+        if arch == "x86_64" { "x86" } else { "arm" },
+        if arch == "x86_64" { "x86" } else { "aarch64" },
+    )
+}
+
 /// What a host running `os` on `arch` needs for `backend`: `limactl` and,
-/// on Linux, qemu for the architecture (lima's only Linux driver) under
-/// lima; a usable `/dev/kvm` under Firecracker. `limactl` is `[vm]
-/// limactl` where that is set. Pure: [`probe_tools`] goes looking.
+/// whenever lima will drive the VM with qemu ([`lima_uses_qemu`]), qemu
+/// for the architecture; a usable `/dev/kvm` under Firecracker.
+/// `limactl` is `[vm] limactl` where that is set. Pure: [`probe_tools`]
+/// goes looking.
 pub fn backend_tools(
     backend: BackendKind,
     os: &str,
     arch: &str,
     limactl: Option<&str>,
+    vm_type: Option<&str>,
 ) -> Vec<Tool> {
     match backend {
         BackendKind::Firecracker => vec![Tool {
@@ -489,15 +517,11 @@ pub fn backend_tools(
                 device: false,
                 install: "install lima (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it".into(),
             }];
-            if os != "macos" {
+            if lima_uses_qemu(os, vm_type) {
                 v.push(Tool {
                     name: format!("qemu-system-{arch}"),
                     device: false,
-                    install: format!(
-                        "install qemu (Arch: `qemu-full` or `qemu-base`; Debian/Ubuntu: `qemu-system-{}`; Fedora: `qemu-system-{}`)",
-                        if arch == "x86_64" { "x86" } else { "arm" },
-                        if arch == "x86_64" { "x86" } else { "aarch64" },
-                    ),
+                    install: qemu_install_hint(os, arch),
                 });
             }
             v
@@ -2021,6 +2045,7 @@ impl Vm {
             std::env::consts::OS,
             std::env::consts::ARCH,
             self.cfg.limactl.as_deref(),
+            self.cfg.vm_type.as_deref(),
         );
         let (ok, detail) = backend_tooling_line(&tools, &probe_tools(&tools));
         Tooling { ok, detail }
@@ -3137,10 +3162,34 @@ mod tests {
     fn the_doctor_line_names_the_backend_tooling_and_what_to_install() {
         // lima needs limactl, and qemu too on Linux (its only driver
         // there); a Mac runs the Virtualization framework instead.
-        let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None);
+        let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None, None);
         assert_eq!(mac.len(), 1);
         assert_eq!(mac[0].name, "limactl");
-        let linux = backend_tools(BackendKind::Lima, "linux", "x86_64", None);
+        // ... unless the config asks for qemu, which is then the driver
+        // that has to be installed. Keyed on the OS alone, a Mac with
+        // `[vm] vm_type = "qemu"` passed every check ssf makes and then
+        // failed inside `limactl create`.
+        let mac_qemu = backend_tools(BackendKind::Lima, "macos", "aarch64", None, Some("qemu"));
+        assert_eq!(mac_qemu.len(), 2);
+        assert_eq!(mac_qemu[1].name, "qemu-system-aarch64");
+        assert!(
+            mac_qemu[1].install.contains("brew install qemu"),
+            "{:?}",
+            mac_qemu[1]
+        );
+        assert!(mac_qemu[1].install.contains("vm_type"), "{:?}", mac_qemu[1]);
+        // `vz` is the Virtualization framework: no qemu.
+        assert_eq!(
+            backend_tools(BackendKind::Lima, "macos", "aarch64", None, Some("vz")).len(),
+            1
+        );
+        assert!(lima_uses_qemu("macos", Some("qemu")));
+        assert!(!lima_uses_qemu("macos", None));
+        assert!(!lima_uses_qemu("macos", Some("vz")));
+        // qemu is lima's only Linux driver, whatever the config says.
+        assert!(lima_uses_qemu("linux", None));
+        assert!(lima_uses_qemu("linux", Some("qemu")));
+        let linux = backend_tools(BackendKind::Lima, "linux", "x86_64", None, None);
         assert_eq!(linux.len(), 2);
         assert_eq!(linux[1].name, "qemu-system-x86_64");
         assert!(
@@ -3154,6 +3203,7 @@ mod tests {
             "macos",
             "aarch64",
             Some("/opt/l/limactl"),
+            None,
         );
         assert_eq!(set[0].name, "/opt/l/limactl");
         // And a `~` in it is expanded, as `Vm::limactl` expands it when
@@ -3161,7 +3211,13 @@ mod tests {
         // "~/bin/limactl" up on PATH -- which `which` only searches for a
         // bare name -- and report a limactl that works as not installed.
         if let Some(home) = dirs::home_dir() {
-            let tilde = backend_tools(BackendKind::Lima, "macos", "aarch64", Some("~/bin/limactl"));
+            let tilde = backend_tools(
+                BackendKind::Lima,
+                "macos",
+                "aarch64",
+                Some("~/bin/limactl"),
+                None,
+            );
             assert_eq!(
                 tilde[0].name,
                 home.join("bin/limactl").to_string_lossy().to_string()
@@ -3174,7 +3230,7 @@ mod tests {
         assert!(which("sh").is_some());
         assert_eq!(which("definitely-not-a-program-on-this-path"), None);
         // Firecracker asks one question: may this user use KVM?
-        let fc = backend_tools(BackendKind::Firecracker, "linux", "x86_64", None);
+        let fc = backend_tools(BackendKind::Firecracker, "linux", "x86_64", None, None);
         assert_eq!(fc.len(), 1);
         assert!(fc[0].device);
         assert_eq!(fc[0].name, "/dev/kvm");
