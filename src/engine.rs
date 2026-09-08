@@ -124,7 +124,10 @@ pub struct Engine {
     /// however many sessions are blocked.
     probes: BTreeMap<String, Probe>,
     /// Repositories whose next pass fetches every listing in full (a
-    /// session came back mid-pass and its held activity is owed).
+    /// session came back mid-pass and its held activity is owed). Unlike
+    /// `probes` above it, this is not per-pass state: the whole point is
+    /// that it survives from the pass that arms it to the one that spends
+    /// it, so it must never be cleared at the top of a pass.
     refetch: BTreeSet<String>,
     /// The startup pass (`resume_interrupted`) is under way: a harness
     /// started again now is `resumed` after a restart, not a lost terminal.
@@ -6596,6 +6599,10 @@ mod tests {
             fulls_before + 1,
             "and no more after it"
         );
+        // A failing item would clear all four ETags for its own reasons and
+        // make the count above misleading; a quiet pass also posts nothing.
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert!(stub.post_bodies().is_empty());
     }
 
     #[tokio::test]
