@@ -804,13 +804,16 @@ impl Orca {
         self.run(&["terminal", "close", "--terminal", handle])
             .await
             .context("closing the resumed terminal, so no fresh one is started beside it")?;
-        if self.live_handle(worktree_id, Some(handle)).await?.is_some() {
-            bail!(
-                "an agent is still live in worktree {worktree_id} after closing {handle}; \
-                 not starting another beside it"
-            );
+        for _ in 0..6 {
+            if self.live_handle(worktree_id, Some(handle)).await?.is_none() {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        Ok(())
+        bail!(
+            "an agent is still live in worktree {worktree_id} after closing {handle}; \
+             not starting another beside it"
+        )
     }
 
     /// Locate (or relaunch) the harness terminal in a worktree and deliver a
@@ -871,6 +874,18 @@ impl Orca {
                         "harness could not resume its session; starting fresh"
                     );
                     self.close_failed_resume(worktree_id, &h).await?;
+                }
+                // The wait ran out with the agent alive in its terminal:
+                // it is the resumed conversation all the same, and is
+                // kept (#133).
+                Err(e) if self.live_handle(worktree_id, Some(&h)).await?.is_some() => {
+                    warn!(
+                        worktree_id,
+                        "resumed harness did not settle ({e:#}) but its agent is alive; \
+keeping it"
+                    );
+                    resumed = true;
+                    handle = Some(h);
                 }
                 Err(e) => {
                     warn!(

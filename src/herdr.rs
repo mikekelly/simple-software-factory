@@ -270,6 +270,46 @@ pub fn settle_wait_args<'a>(pane_id: &'a str, timeout_ms: &'a str) -> Vec<&'a st
     args
 }
 
+/// What a resume came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeVerdict {
+    /// The resumed agent is in the pane: the state herdr settled on, or
+    /// `unsettled` when the wait ran out with the agent alive all the
+    /// same (#133).
+    Resumed(String),
+    /// Nothing is running the resumed conversation, for this reason.
+    Failed(String),
+}
+
+/// The decision [`Herdr::deliver`] makes after a resume: from how the
+/// settle wait ended, whether herdr reports an agent in the pane once it
+/// has, and -- only when it does not -- what the pane shows. An agent in
+/// the pane is the resumed conversation whatever the wait said: the wait
+/// times out on a state herdr cannot name, and the screen of a live agent
+/// is its own output, which may well quote a harness's "no conversation
+/// found" (this repository's agents do). With no agent there, the screen
+/// says whether the harness could not find the session, and otherwise the
+/// wait's own failure is the reason.
+pub fn resume_verdict(
+    wait: &Result<String, String>,
+    agent_present: bool,
+    screen: &[String],
+) -> ResumeVerdict {
+    if agent_present {
+        return ResumeVerdict::Resumed(match wait {
+            Ok(state) => state.clone(),
+            Err(_) => "unsettled".into(),
+        });
+    }
+    if crate::sessions::resume_failed(screen) {
+        return ResumeVerdict::Failed("the harness could not find its session".into());
+    }
+    ResumeVerdict::Failed(match wait {
+        Ok(_) => "the harness exited after the wait".into(),
+        Err(e) => e.clone(),
+    })
+}
+
 /// Why `herdr agent prompt` refused or gave up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptFailure {
@@ -705,6 +745,7 @@ impl Herdr {
         if !detected {
             bail!("herdr did not detect {harness} in pane {pane_id} in time");
         }
+        let mut state = String::new();
         for _ in 0..4 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -712,7 +753,7 @@ impl Herdr {
             }
             let t = left.as_millis().to_string();
             let v = self.run(&settle_wait_args(pane_id, &t)).await?;
-            let state = v
+            state = v
                 .get("agent_status")
                 .or_else(|| v.pointer("/agent/agent_status"))
                 .and_then(Value::as_str)
@@ -741,7 +782,7 @@ impl Herdr {
             pane_id,
             "{harness} still shows a first-run dialog after four answers; going on anyway"
         );
-        Ok(String::new())
+        Ok(state)
     }
 
     /// Answer a trust dialog in the pane with the keys it takes.
@@ -778,13 +819,11 @@ impl Herdr {
         Ok(pane)
     }
 
-    /// Does herdr report an agent in the pane, whatever its state?
-    async fn agent_in(&self, pane_id: &str) -> bool {
-        self.agents()
-            .await
-            .unwrap_or_default()
-            .iter()
-            .any(|a| a.pane_id == pane_id)
+    /// Does herdr report an agent in the pane, whatever its state? A
+    /// listing that fails is an error, not "no agent": what follows a "no"
+    /// here is a Ctrl-C into the pane or a fresh harness.
+    async fn agent_in(&self, pane_id: &str) -> Result<bool> {
+        Ok(self.agents().await?.iter().any(|a| a.pane_id == pane_id))
     }
 
     /// Leave nothing of a resume the daemon has given up on running before
@@ -798,7 +837,7 @@ impl Herdr {
     /// beside it.
     async fn clear_failed_resume(&self, id: &str, pane_id: &str) -> Result<()> {
         let (ws, _) = split_id(id);
-        if self.agent_in(pane_id).await {
+        if self.agent_in(pane_id).await? {
             warn!(
                 pane_id,
                 "the resumed harness is still running; stopping it before starting fresh"
@@ -992,45 +1031,39 @@ delivered"
             // A pane the resume has been run in is known from here on, so
             // whatever the wait says, what is in it can be dealt with.
             let pane = self.run_harness(workspace_id, cmd).await?;
-            let verdict = match self.settle_harness(&pane, relaunch.harness).await {
-                Ok(state) => {
-                    // An agent at work shows its own output, not the
-                    // harness's; the screen decides only short of that.
-                    let screen = self.screen(&pane).await.unwrap_or_default();
-                    if state != "working" && crate::sessions::resume_failed(&screen) {
-                        Err(anyhow!("the harness could not find its session"))
-                    } else {
-                        Ok(state)
-                    }
-                }
-                // The wait ran out, or herdr never said what the agent
-                // was doing; an agent alive in the pane all the same is
-                // the resumed conversation, however herdr narrates it,
-                // and is kept rather than replaced (#133).
-                Err(e) if self.agent_in(&pane).await => {
-                    warn!(
-                        workspace_id,
-                        pane,
-                        "the resumed harness did not settle ({e:#}) but its agent is alive; \
-keeping it"
-                    );
-                    Ok("unsettled".into())
-                }
-                Err(e) => Err(e),
+            let wait = self
+                .settle_harness(&pane, relaunch.harness)
+                .await
+                .map_err(|e| format!("{e:#}"));
+            let present = self.agent_in(&pane).await?;
+            // The screen is the harness's only when no agent is in the
+            // pane; with one there it is the agent's own output.
+            let screen = if present {
+                Vec::new()
+            } else {
+                self.screen(&pane).await.unwrap_or_default()
             };
-            match verdict {
-                Ok(state) => {
+            match resume_verdict(&wait, present, &screen) {
+                ResumeVerdict::Resumed(state) => {
+                    if let Err(e) = &wait {
+                        warn!(
+                            workspace_id,
+                            pane,
+                            "the resumed harness did not settle ({e}) but its agent is alive; \
+keeping it"
+                        );
+                    }
                     info!(workspace_id, pane, state, "harness resumed its session");
                     let _ = self.run(&["pane", "rename", &pane, relaunch.title]).await;
-                    at_work = matches!(state.as_str(), "working" | "unsettled");
+                    at_work = state == "working";
                     resumed = true;
                     handle = Some(pane);
                 }
-                Err(why) => {
+                ResumeVerdict::Failed(why) => {
                     warn!(
                         workspace_id,
                         pane,
-                        "giving up on the resume ({why:#}); starting fresh once the pane is clear"
+                        "giving up on the resume ({why}); starting fresh once the pane is clear"
                     );
                     self.clear_failed_resume(workspace_id, &pane).await?;
                 }
@@ -1060,7 +1093,9 @@ keeping it"
         // The harness was launched just above, so this is its first
         // prompt: confirm it landed rather than paste and hope. A resumed
         // one already at work is steered instead (#133): herdr does not
-        // track turns, so waiting for `working` there says nothing.
+        // track turns, so waiting for `working` there says nothing. One
+        // herdr reported no state for goes the confirmed way, since it
+        // may as well be sitting on a dialog.
         if at_work {
             self.send_prompt(&handle, body).await?;
         } else {
@@ -1466,6 +1501,51 @@ start working within 5000ms"
         assert_eq!(
             settle_step("working", "No conversation found with session ID"),
             Settle::Ready
+        );
+    }
+
+    /// #131/#133: an agent in the pane is the resumed conversation
+    /// whatever the wait said or the screen shows; only an empty pane
+    /// fails the resume, and the screen names the reason there.
+    #[test]
+    fn a_resume_is_judged_by_the_agent_in_the_pane() {
+        let not_found = vec!["Error: No conversation found with session ID abc".to_string()];
+        let shell = vec!["$ ".to_string()];
+        let timed_out = Err("[timeout] timed out waiting for agent status".to_string());
+        // The three shapes seen live: at work at once, idle, alive past the wait.
+        assert_eq!(
+            resume_verdict(&Ok("working".into()), true, &[]),
+            ResumeVerdict::Resumed("working".into())
+        );
+        assert_eq!(
+            resume_verdict(&Ok("idle".into()), true, &[]),
+            ResumeVerdict::Resumed("idle".into())
+        );
+        assert_eq!(
+            resume_verdict(&timed_out, true, &[]),
+            ResumeVerdict::Resumed("unsettled".into())
+        );
+        // A live agent quoting the failure text in its own output is kept.
+        assert_eq!(
+            resume_verdict(&Ok("idle".into()), true, &not_found),
+            ResumeVerdict::Resumed("idle".into())
+        );
+        // No agent: the screen says why, or the wait does.
+        assert_eq!(
+            resume_verdict(&timed_out, false, &not_found),
+            ResumeVerdict::Failed("the harness could not find its session".into())
+        );
+        assert_eq!(
+            resume_verdict(&Ok("done".into()), false, &not_found),
+            ResumeVerdict::Failed("the harness could not find its session".into())
+        );
+        assert_eq!(
+            resume_verdict(&timed_out, false, &shell),
+            ResumeVerdict::Failed("[timeout] timed out waiting for agent status".into())
+        );
+        assert_eq!(
+            resume_verdict(&Ok("idle".into()), false, &shell),
+            ResumeVerdict::Failed("the harness exited after the wait".into())
         );
     }
 

@@ -39,16 +39,14 @@ The details behind the README's [How it works](../README.md#how-it-works).
   even when the new worktree has a different path. A resume has failed
   only when the harness says it could not find the session or when no
   agent is running in its pane once the driver's wait is over: a resumed
-  agent that is idle, blocked on a dialog ssf answers, or already at work
-  on the messages queued in its conversation (a Claude Code with a
-  backlog starts on it at once and reports `working`, never `idle`) has
-  settled, and one still alive when the wait runs out without a state is
-  kept as the resumed conversation all the same; the delivery goes to it.
-  Before ssf starts a fresh harness after a failed resume it makes sure
-  nothing of the resume is still running -- a harness still reported in
-  the pane is stopped, and a stop that does not take is an error rather
-  than a second agent -- so a workspace never holds two agents (#131,
-  #133). The `resumed` event on the item says which it was:
+  agent that is idle, at a question, or already at work on the messages
+  queued in its conversation (a Claude Code with a backlog starts on it
+  at once and reports `working`, never `idle`) has settled, and one still
+  alive when the wait runs out without a state is kept as the resumed
+  conversation all the same; the delivery goes to it, as a steering
+  message when it is at work. A fresh harness is started only once
+  nothing of the resume is running, so a workspace never holds two
+  agents (#131, #133). The `resumed` event on the item says which it was:
   `conversation: resumed` or `fresh`.
 - **First-run dialogs.** Claude Code and Codex ask whether to trust a new
   folder, Claude Code once per machine whether to accept its bypass

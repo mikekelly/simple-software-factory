@@ -7231,7 +7231,6 @@ mod tests {
         d.with(|s| {
             s.live.clear();
             s.resume = crate::driver::StubResume::Settles;
-            s.working.insert("w5".into());
             s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
         });
         let delivered = e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
