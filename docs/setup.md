@@ -595,25 +595,37 @@ reaches them while the daemon is down, and it delivers what they missed
 when it comes back. With the factory in the VM, stopping the service
 shuts the guest down cleanly and its sessions come back with it.
 
-**Uninstalling**, in this order, since `purge` needs the running daemon
-and the service must be down before the VM goes:
+**Uninstalling** is one command and one step for you:
 
-1. `ssf purge --dry-run` lists the workspaces of closed items and whether
-   each is clean and pushed; `ssf status` shows the open ones. Settle
-   anything unpushed first.
-2. `ssf ui service disable`: stops the service and, with `vm.enabled`,
-   the guest.
-3. `ssf ui uninstall`: the bar widget and menu entries.
-4. `ssf auth logout`: revokes the bot's keys on GitHub and forgets it.
-5. `ssf vm destroy --yes`: the VM and its disks.
-6. `sudo pacman -R ssf` (**you**: sudo).
+1. `ssf uninstall`: reports what it will stop, remove and revoke, lists
+   the items and the state of their workspaces, and asks once. Then, in
+   the order the pieces depend on each other: `purge` of the clean and
+   pushed workspaces of closed items (needs the running daemon; skipped
+   when it is down), `ui service disable` (with `vm.enabled` that shuts
+   the guest down), `ui uninstall`, `auth logout` (revokes the bot's keys
+   on GitHub and forgets it), `vm destroy`. Each step tolerates the thing
+   being gone already, so a second run, or a run on a half-uninstalled
+   machine, is fine. With the factory in the VM the report and the purge
+   come from the guest, before it goes.
+2. `sudo pacman -R ssf` (**you**: sudo; nothing in ssf runs it). The
+   command prints this line last.
 
-Left for you to remove by hand once you have checked them:
-`~/.config/ssf` (config and the bot's key), `~/.local/state/ssf` (state,
-and the marker that keeps a disabled service off, so a reinstall stays
-stopped until `ssf ui service enable`), and the clones and worktrees
-under `~/ssf/projects` (or Orca's projects) on the host, which may hold
-unpushed work. The bot GitHub account itself is not touched.
+What stops it: a workspace with uncommitted or unpushed work, or a VM
+that is stopped so the clones on its data disk cannot be checked. Push
+or discard the work (`ssf vm start` to check a stopped VM), or pass
+`--force` to go ahead: on the host the work stays where it is; a
+`--force` on a stopped VM destroys its disks unchecked. `--yes` skips the
+question for scripted use.
+
+What it keeps, and lists at the end: the clones and worktrees under
+`~/ssf/projects` (or Orca's projects; may hold unpushed work), the
+`[vm] dir` (the image and downloads, safe to remove), and, unless you
+pass `--data`, `~/.config/ssf` (config and the bot's key) and
+`~/.local/state/ssf` (state, and the marker that keeps a disabled
+service off, so a reinstall stays stopped until `ssf ui service enable`;
+with `--data` gone, a reinstall starts the service). The bot GitHub
+account itself is not touched. `ssf status` afterwards reads as on a
+fresh machine.
 
 ## Checklist
 
@@ -634,3 +646,5 @@ unpushed work. The bot GitHub account itself is not touched.
 8. `SSF.md` at the repository root.
 9. Assign an issue to the bot; a workspace appears and the agent
    comments.
+10. To undo all of it later: `ssf uninstall` (add `--data` to drop
+    config and state too), then `sudo pacman -R ssf` (**you**).

@@ -1,6 +1,6 @@
 ---
 name: ssf-setup
-description: Setup runbook for Simple Software Factory (ssf), the Omarchy daemon that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the Firecracker microVM (ssf vm build, vm.enabled, ssf vm login) or on the host with herdr or Orca, when writing or changing ~/.config/ssf/config.toml ([github], [git], [[repo]], [daemon], [vm]), writing a repository's SSF.md (including its gauntlet rule, the second pair of eyes ssf leaves to the agent), project board conventions, upgrading or uninstalling ssf, or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
+description: Setup runbook for Simple Software Factory (ssf), the Omarchy daemon that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf" (the package, the service), when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, committing as the bot or as the person), when running the factory inside the Firecracker microVM (ssf vm build, vm.enabled, ssf vm login) or on the host with herdr or Orca, when writing or changing ~/.config/ssf/config.toml ([github], [git], [[repo]], [daemon], [vm]), writing a repository's SSF.md (including its gauntlet rule, the second pair of eyes ssf leaves to the agent), project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a running factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the fenced `ssf` blocks the daemon posts on an issue (daemon.event_comments).
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
@@ -56,3 +56,10 @@ commands, and the rest of `docs/` is the reference the document links to.
    `--data-gib` only when they ask for a size. When `ssf doctor` says the
    data disk is full, `ssf vm grow` (VM stopped) enlarges it without
    losing anything; see [Size](../../docs/vm.md#size).
+8. **Uninstall with `ssf uninstall`**, never by hand: it reports and
+   asks once, and it refuses while a workspace holds unpushed work or
+   the VM is stopped so its clones cannot be checked. Do not add
+   `--force` on the person's behalf: show them the report and let them
+   settle the work or decide; `--data` (config, the bot's key, state)
+   is also theirs to ask for. The package removal that follows (`sudo
+   pacman -R ssf`) is **you**.
