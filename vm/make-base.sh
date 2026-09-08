@@ -21,6 +21,7 @@ install -Dm755 "$guest/provision-init.sh" "$root/usr/local/lib/ssf/provision-ini
 install -Dm755 "$guest/provision.sh" "$root/usr/local/lib/ssf/provision.sh"
 install -Dm755 "$guest/net-up.sh" "$root/usr/local/lib/ssf/net-up.sh"
 install -Dm755 "$guest/seed.sh" "$root/usr/local/lib/ssf/seed.sh"
+install -Dm644 "$guest/seed-common.sh" "$root/usr/local/lib/ssf/seed-common.sh"
 install -d "$root/etc/systemd/system"
 install -m644 "$guest"/units/*.service "$root/etc/systemd/system/"
 install -Dm440 "$guest/sudoers" "$root/etc/sudoers.d/ssf"

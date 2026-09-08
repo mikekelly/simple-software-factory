@@ -1,8 +1,8 @@
 [Unit]
-Description=Mount the data disk and take the host's ssf binary, config and keys from the seed disk
+Description=Mount the data disk and take the host's ssf binary, config and keys from the seed (disk or share)
 DefaultDependencies=no
 After=local-fs.target
-Before=sshd.service herdr-server.service ssf.service
+Before=sshd.service ssh.service herdr-server.service ssf.service
 
 [Service]
 Type=oneshot
