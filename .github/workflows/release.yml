@@ -9,6 +9,7 @@ name: release
 on:
   push:
     tags: ['v*']
+    branches: ['bot/issue-127-**']  # TEMPORARY: test run on the issue branch, removed before merge
   workflow_dispatch:
 
 permissions:
