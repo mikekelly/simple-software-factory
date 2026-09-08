@@ -160,7 +160,13 @@ line) and runs the real gh with everything else untouched. To pick the
 byline's form it works out the repository posted to the way gh does:
 `--repo`/`-R`, an item given as a URL, `GH_REPO`, else the checkout's
 `origin` remote (`git config --get remote.origin.url`); when none of those
-says, the long form is used, which links from anywhere. Beyond that the
+says, the long form is used, which links from anywhere. The URL has to
+be the item's own: the values of `--parent`, `--blocked-by` and
+`--blocking` (the flags `gh issue create` documents as taking numbers or
+URLs) are not read as one, since that answer outranks `GH_REPO`, and a
+post landing elsewhere with the short `#N` would link to that
+repository's issue N. An item after `--` still counts, as it does for
+gh. Beyond that the
 wrapper reads only its environment, writes nothing and leaves stdin and the
 terminal alone, so it works inside read-only sandboxes and does not break
 gh's interactive flows. Outside a session (no `SSF_ISSUE`) it is a plain
