@@ -103,7 +103,9 @@ if [ "$backend" = lima ]; then
     for u in ssf-seed.service herdr-server.service ssf.service; do
         install -m644 "$share/guest/units/$u" /etc/systemd/system/$u
     done
-    install -Dm644 "$share/guest/units/ssf-seed-lima.conf" /etc/systemd/system/ssf-seed.service.d/lima.conf
+    for u in ssf-seed herdr-server ssf; do
+        install -Dm644 "$share/guest/units/lima/$u.conf" /etc/systemd/system/$u.service.d/lima.conf
+    done
     if [ -f "$share/herdr" ]; then
         install -m755 "$share/herdr" /usr/local/bin/herdr
     else
