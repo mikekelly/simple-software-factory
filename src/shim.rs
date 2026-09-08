@@ -5,7 +5,8 @@
 //! The same directory carries an `ssf` link to the same binary, so the `ssf`
 //! commands the prompts name run the daemon's build.
 //!
-//! Only `issue create|comment` and `pr create|comment|review` are touched;
+//! Only `issue create|comment` and `pr create|comment|review` are touched
+//! (with `new`, gh's own alias for `create` on both);
 //! every other invocation is passed on untouched. An `issue create` or `pr
 //! create` that assigns the bot itself is a hand-off, and its tag says so
 //! (`mode=delegate`) so the daemon gives the new item a session of its own.
@@ -263,7 +264,11 @@ fn repo_in_args(args: &[String]) -> Option<String> {
         if let Some(v) = a.strip_prefix("--repo=") {
             return repo_of(v);
         }
-        if let Some(v) = a.strip_prefix("-R").filter(|v| !v.is_empty()) {
+        if let Some(v) = a
+            .strip_prefix("-R")
+            .map(|v| v.trim_start_matches('='))
+            .filter(|v| !v.is_empty())
+        {
             return repo_of(v);
         }
         if NOT_THE_ITEM.contains(&a) {
@@ -300,25 +305,89 @@ pub struct Shim<'a> {
     pub checkout: &'a dyn Fn() -> Option<String>,
 }
 
-/// Position of the command and subcommand words in a gh command line.
-fn command_words(args: &[String]) -> Option<(usize, usize)> {
-    let mut words = args
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| !a.starts_with('-'))
-        .map(|(i, _)| i);
-    Some((words.next()?, words.next()?))
+/// The commands whose posts are tagged, and the subcommands of each.
+const TAGGED: [(&str, &[&str]); 2] = [
+    // `new` is gh's own alias for `create` on both, so it posts the same
+    // way and has to be tagged the same way.
+    ("issue", &["create", "new", "comment"]),
+    ("pr", &["create", "new", "comment", "review"]),
+];
+
+/// Is this subcommand word one that opens an item, under either of the
+/// names gh takes for it?
+fn creates(sub: &str) -> bool {
+    matches!(sub, "create" | "new")
 }
 
-fn is_tagged(cmd: &str, sub: &str) -> bool {
-    matches!(
-        (cmd, sub),
-        ("issue", "create")
-            | ("issue", "comment")
-            | ("pr", "create")
-            | ("pr", "comment")
-            | ("pr", "review")
-    )
+/// Could this argument swallow the next word, the way cobra does when it
+/// looks for the command? Only a `--long` or a two-character `-x`, and
+/// only without an `=`: `--repo=o/r`, `-Ro/r` and `-R=o/r` carry their
+/// own value, so the word after them is the next argument proper. Cobra
+/// makes an exception for a flag it already knows to be boolean, which
+/// at this level is only `--help` and `--version`; neither posts, so the
+/// difference cannot reach a tagged command. `--` needs no case here:
+/// the caller stops at one before asking.
+fn may_take_a_value(a: &str) -> bool {
+    !a.contains('=') && a.starts_with('-') && (a.starts_with("--") || a.len() == 2)
+}
+
+/// Position of the command and subcommand words in a gh command line:
+/// the first two arguments left once the flags are taken out, the way
+/// cobra does it when it looks for the command.
+///
+/// Position alone cannot tell a command from a flag's value. gh lets a
+/// subcommand's flags come *before* the subcommand — `gh -R o/r issue
+/// comment 3 ...`, `gh --limit 1 issue list`, both accepted — and in the
+/// separated spellings the value is a bare word, so taking the first two
+/// bare words made `("o/r", "issue")` the command: not a tagged pair, so
+/// the line went through untouched and the post carried no byline and no
+/// origin tag, read afterwards as a person's rather than the session's.
+///
+/// Naming the flags that take a value does not work either: gh has no
+/// global ones to enumerate, every subcommand's own flags may float
+/// forward, and a list that misses one leaves the defect open for it.
+/// Skipping flags the way cobra does and then insisting the two words
+/// that remain are a tagged pair is what holds: nothing further down the
+/// line can promote itself to the command, so a `pr` or an `issue`
+/// sitting in a value — or a `pr merge` whose branch is called `review`
+/// — is never mistaken for one of ours.
+///
+/// Not handled: pflag's clustered shorthands, exactly as before this
+/// change. `gh pr review -ab hi` posts an approving review with a body,
+/// and the shim reads neither the `-b` nor the `-a` inside the cluster,
+/// so it goes out with no byline and no tag. Where a separate action
+/// flag makes the approval branch add a `--body` next to a clustered
+/// `-F` (`gh pr review --approve -aF notes.md`), gh refuses the line
+/// instead.
+fn command_words(args: &[String]) -> Option<(usize, usize)> {
+    let mut words = Vec::with_capacity(2);
+    let mut i = 0;
+    while i < args.len() && words.len() < 2 {
+        let a = args[i].as_str();
+        if a == "--" {
+            break;
+        }
+        if a.starts_with('-') {
+            // Not past a `--`: it ends the flags for gh whatever sits
+            // before it, and stepping over it would find command words
+            // in the positionals beyond, where a stamped `--body` is
+            // just another argument and gh refuses the count.
+            let swallows = may_take_a_value(a) && args.get(i + 1).is_some_and(|v| v != "--");
+            i += if swallows { 2 } else { 1 };
+            continue;
+        }
+        // An empty argument is not a word to cobra either, and
+        // `gh "" pr review --approve` posts.
+        if a.is_empty() {
+            i += 1;
+            continue;
+        }
+        words.push(i);
+        i += 1;
+    }
+    let (c, s) = (*words.first()?, *words.get(1)?);
+    let subs = TAGGED.iter().find(|(t, _)| *t == args[c])?.1;
+    subs.contains(&args[s].as_str()).then_some((c, s))
 }
 
 /// Does an `issue create` / `pr create` command line assign the bot (`bot`)
@@ -357,21 +426,32 @@ impl Shim<'_> {
     /// The gh arguments with the byline and origin tag prepended to the
     /// body, where there is one.
     pub fn rewrite(&self, args: Vec<String>) -> Vec<String> {
+        // `command_words` only ever names a pair from `TAGGED`, so
+        // finding one is the whole of the test.
         let Some((c, s)) = command_words(&args) else {
             return args;
         };
-        if !is_tagged(&args[c], &args[s]) {
-            return args;
-        }
         let origin = self.origin;
-        let delegate = args[s] == "create" && assigns_bot(&args[s + 1..], self.bot);
-        let on_repo = repo_in_args(&args[s + 1..])
+        // Both scans read the whole line, not just what follows the
+        // subcommand: gh lets a subcommand's flags float before it, so a
+        // `--repo` or an `--assignee` can sit ahead of the command words
+        // and must still count. The command words themselves are bare
+        // vocabulary, never a repository or a login, so including them
+        // changes no answer.
+        let delegate = creates(&args[s]) && assigns_bot(&args, self.bot);
+        let on_repo = repo_in_args(&args)
             .or_else(|| self.gh_repo.and_then(repo_of))
             .or_else(|| (self.checkout)());
         let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate);
-        let mut out: Vec<String> = args[..=s].to_vec();
+        // The body flag floats like any other, so the whole line is
+        // walked rather than what follows the subcommand. Leaving one
+        // ahead of the command words unstamped would post it untagged,
+        // and worse, `pr review` below would then add a second `--body`:
+        // gh takes the last, so the agent's text would be dropped, and a
+        // `--body-file` alongside it is refused outright.
+        let mut out: Vec<String> = Vec::with_capacity(args.len());
         let mut stamped = false;
-        let mut i = s + 1;
+        let mut i = 0;
         while i < args.len() {
             let a = args[i].as_str();
             if a == "--" {
@@ -428,12 +508,23 @@ impl Shim<'_> {
         // An approval needs no body, but should still say where it came from.
         // Without an action flag gh would prompt (or reject --body), so those
         // are left alone.
-        let has_action = args[s + 1..].iter().any(|a| {
+        // The whole line again: a boolean flag floats too, wherever
+        // there is a spare positional for cobra to feed the word it
+        // swallows during command lookup (`gh --approve 3 pr review`
+        // parses; `gh --approve pr review 3` does not). Reading only the
+        // subcommand's own flags left that approval unstamped, which is
+        // the tag loss this whole change is about. `-a`, `-c` and `-r`
+        // have no other meaning here, since this is only consulted for a
+        // `review`.
+        let has_action = args.iter().any(|a| {
             matches!(
                 a.as_str(),
                 "--approve" | "-a" | "--request-changes" | "-r" | "--comment" | "-c"
             )
         });
+        // Nothing was rewritten when `stamped` is false -- every branch
+        // above sets it -- so `out` still matches `args` position for
+        // position and `s + 1` is where the subcommand's flags begin.
         if !stamped && args[c] == "pr" && args[s] == "review" && has_action {
             out.insert(s + 1, stamp(""));
             out.insert(s + 1, "--body".to_string());
@@ -504,6 +595,357 @@ mod tests {
             assert_eq!(out.len(), a.len(), "{a:?}");
             let joined = out.join("\x00");
             assert!(joined.contains(&expect), "{out:?}");
+        }
+    }
+
+    #[test]
+    fn a_flag_before_the_subcommand_still_leaves_a_tagged_command() {
+        // gh takes the repository flag on either side of the subcommand.
+        // In its separated spellings the value is a bare word, so reading
+        // position alone made it the command: the pair was not tagged,
+        // the line went through untouched, and the post carried no byline
+        // and no origin tag at all -- read afterwards as a person's.
+        //
+        // The tag is what is at stake: without it the post reads as a
+        // person's. The byline's form follows the repository posted to,
+        // which for the `acme/other` rows is the long one.
+        let tag = o().tag();
+        for a in [
+            args(&[
+                "--repo",
+                "acme/other",
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hello",
+            ]),
+            args(&[
+                "-R",
+                "acme/other",
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hello",
+            ]),
+            // The inline spellings are one argument starting with `-`, so
+            // they were never affected; pinned so a fix for the two above
+            // cannot regress them.
+            args(&[
+                "--repo=acme/other",
+                "issue",
+                "comment",
+                "3",
+                "--body",
+                "hello",
+            ]),
+            args(&["-Racme/other", "issue", "comment", "3", "--body", "hello"]),
+            // Every tagged subcommand, not just `issue comment`.
+            args(&[
+                "-R",
+                "acme/other",
+                "issue",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "hello",
+            ]),
+            args(&[
+                "-R",
+                "acme/other",
+                "pr",
+                "create",
+                "--title",
+                "t",
+                "--body",
+                "hello",
+            ]),
+            args(&["-R", "acme/other", "pr", "comment", "3", "--body", "hello"]),
+            args(&[
+                "-R",
+                "acme/other",
+                "pr",
+                "review",
+                "--approve",
+                "--body",
+                "hello",
+            ]),
+        ] {
+            let out = rewrite(a.clone());
+            let joined = out.join("\x00");
+            assert!(joined.contains(&tag), "no origin tag: {a:?} -> {out:?}");
+            assert!(joined.contains("says: "), "no byline: {a:?} -> {out:?}");
+            assert!(joined.contains("hello"), "body lost: {a:?} -> {out:?}");
+        }
+        // A repository flag floating before the subcommand still decides
+        // the byline's form: it is not in `args[s + 1..]`, so both scans
+        // read the whole line.
+        let long = format!("🤖acme/widgets#12 says: {tag}");
+        let short = format!("🤖#12 says: {tag}");
+        let out = rewrite(args(&[
+            "--repo",
+            "acme/other",
+            "issue",
+            "comment",
+            "3",
+            "--body",
+            "hello",
+        ]));
+        assert!(out.join("\x00").contains(&long), "floating --repo: {out:?}");
+        let out = rewrite(args(&[
+            "-R",
+            "acme/widgets",
+            "issue",
+            "comment",
+            "3",
+            "--body",
+            "hello",
+        ]));
+        assert!(
+            out.join("\x00").contains(&short),
+            "floating -R, own repo: {out:?}"
+        );
+        // A body flag floats like any other. Left unstamped it posts
+        // untagged, and on `pr review` the approval branch below would
+        // then add a *second* `--body`: gh takes the last, so the
+        // agent's own text would be silently dropped, and a
+        // `--body-file` alongside it is refused outright.
+        for a in [
+            args(&["--body", "hello", "issue", "comment", "3"]),
+            args(&["-b", "hello", "issue", "comment", "3"]),
+            args(&["--body=hello", "issue", "comment", "3"]),
+            args(&["-bhello", "issue", "comment", "3"]),
+            args(&["--body", "hello", "pr", "review", "--approve"]),
+        ] {
+            let out = rewrite(a.clone());
+            let joined = out.join("\x00");
+            assert!(joined.contains(&tag), "no origin tag: {a:?} -> {out:?}");
+            assert!(joined.contains("hello"), "body lost: {a:?} -> {out:?}");
+            // Exactly one body reaches gh: a second would win and drop
+            // the agent's text, and `--body` beside `--body-file` is an
+            // error.
+            assert_eq!(
+                joined.matches("says: ").count(),
+                1,
+                "one stamped body only: {a:?} -> {out:?}"
+            );
+        }
+        // The subcommand need not follow the command word: flags float
+        // between them too, in every spelling. The inline ones carry
+        // their own value, so gh reads the word after them as the
+        // subcommand; treating them as value-taking loses the tag.
+        for between in [
+            vec!["--repo", "acme/other"],
+            vec!["--repo=acme/other"],
+            vec!["-Racme/other"],
+            vec!["-R=acme/other"],
+        ] {
+            let mut a = vec!["issue".to_string()];
+            a.extend(between.iter().map(|s| s.to_string()));
+            a.extend(args(&["comment", "3", "--body", "hello"]));
+            let out = rewrite(a.clone());
+            assert!(
+                out.join("\x00").contains(&tag),
+                "flag between the words: {a:?} -> {out:?}"
+            );
+        }
+        // The *command* word can be a flag's value too, not just the
+        // subcommand: cobra has `--label` swallow `pr` here, so this is
+        // an `issue create` and must be tagged as one.
+        let out = rewrite(args(&[
+            "--label", "pr", "issue", "create", "--title", "t", "--body", "hello",
+        ]));
+        assert!(
+            out.join("\x00").contains(&tag),
+            "a command word in a flag's value: {out:?}"
+        );
+        // A flag-shaped value does not derail the scan either way.
+        let out = rewrite(args(&["pr", "-b", "-a", "review", "--repo=acme/widgets"]));
+        assert!(
+            out.join("\x00").contains(&tag),
+            "a flag-shaped value: {out:?}"
+        );
+        // An empty argument is not a word to cobra, and gh posts this:
+        // `pr review` with no selector reviews the current branch.
+        let out = rewrite(args(&["", "pr", "review", "--approve"]));
+        assert!(
+            out.join("\x00").contains(&tag),
+            "an empty argument is not a command word: {out:?}"
+        );
+        // A floating body *file* is the one whose double-`--body`
+        // collision gh refuses outright, so it gets its own shim.
+        let origin = o();
+        let mut s = shim(&origin);
+        let from_file = |_: &str| -> std::io::Result<String> { Ok("hello\n".into()) };
+        s.read = &from_file;
+        let out = s.rewrite(args(&[
+            "--body-file",
+            "notes.md",
+            "pr",
+            "review",
+            "--approve",
+        ]));
+        let joined = out.join("\x00");
+        assert!(joined.contains(&tag), "floating --body-file: {out:?}");
+        assert!(joined.contains("hello"), "file body lost: {out:?}");
+        assert_eq!(
+            joined.matches("says: ").count(),
+            1,
+            "one stamped body only: {out:?}"
+        );
+        // A boolean action flag floats too, wherever there is a spare
+        // positional: `gh --approve 3 pr review` parses. Read only after
+        // the subcommand it went unseen, and the approving review posted
+        // with no byline and no tag at all.
+        let out = rewrite(args(&["--approve", "3", "pr", "review"]));
+        let joined = out.join("\x00");
+        assert!(joined.contains(&tag), "floating --approve: {out:?}");
+        // ... and the inserted body lands after the subcommand even when
+        // flags float ahead of the command words.
+        let out = rewrite(args(&[
+            "-R",
+            "acme/other",
+            "pr",
+            "review",
+            "7",
+            "--approve",
+        ]));
+        let at = out.iter().position(|a| a == "--body").expect("a body");
+        assert_eq!(
+            &out[at - 2..at],
+            &["pr".to_string(), "review".to_string()],
+            "the body goes after the subcommand: {out:?}"
+        );
+        // A floating assignee still makes a create a hand-off.
+        let origin = o();
+        let mut s = shim(&origin);
+        s.bot = Some("acme-bot");
+        let out = s.rewrite(args(&[
+            "--assignee",
+            "acme-bot",
+            "issue",
+            "create",
+            "-t",
+            "t",
+            "-b",
+            "hello",
+        ]));
+        assert!(
+            out.join("\x00").contains("mode=delegate"),
+            "floating --assignee is still a hand-off: {out:?}"
+        );
+    }
+
+    #[test]
+    fn new_is_gh_s_own_name_for_create() {
+        let origin = o();
+        let mut s = shim(&origin);
+        s.bot = Some("acme-bot");
+        for a in [
+            args(&["issue", "new", "-t", "t", "-b", "hello", "-a", "acme-bot"]),
+            args(&[
+                "pr", "new", "--title", "t", "--body", "hello", "-a", "acme-bot",
+            ]),
+        ] {
+            let out = s.rewrite(a.clone());
+            let joined = out.join("\x00");
+            // A hand-off's tag carries `mode=delegate`, so match the
+            // origin rather than the plain tag.
+            assert!(
+                joined.contains("ssf: origin=acme/widgets#12"),
+                "`new` is a create: {a:?} -> {out:?}"
+            );
+            assert!(
+                joined.contains("mode=delegate"),
+                "`new` hands off too: {a:?} -> {out:?}"
+            );
+        }
+    }
+
+    /// Lines that are not one of ours, or not a post, and must come back
+    /// exactly as they went in.
+    #[test]
+    fn a_command_that_is_not_ours_is_left_alone() {
+        // A command that is not tagged still passes through untouched,
+        // repository flag or not: matching gh's vocabulary must not tag
+        // more than position did.
+        for a in [
+            args(&["issue", "list", "--body", "hello"]),
+            args(&["-R", "acme/other", "issue", "list", "--body", "hello"]),
+            args(&["-R", "acme/other", "issue", "edit", "3", "--body", "hello"]),
+            args(&["repo", "view", "--body", "hello"]),
+            // A subcommand word as a flag's *value* after a positional
+            // is not the subcommand: `list` stops the search first.
+            args(&["issue", "list", "--label", "comment", "--body", "hello"]),
+            args(&[
+                "issue",
+                "edit",
+                "3",
+                "--add-label",
+                "comment",
+                "--body",
+                "hello",
+            ]),
+            // The search ends for good at the first positional, so a
+            // later `issue`/`pr` sitting in a flag's value cannot start
+            // a fresh match. `gh issue edit --body` replaces an item's
+            // body, and stamping it would write an origin tag into one,
+            // where `find_owner` reads it.
+            args(&[
+                "issue",
+                "edit",
+                "3",
+                "--add-label",
+                "pr",
+                "--add-label",
+                "review",
+                "--body",
+                "hello",
+            ]),
+            args(&["secret", "set", "pr", "-b", "review"]),
+            // A subcommand word that is a flag's value is not the
+            // subcommand: this is a merge, and stamping it would put a
+            // byline in the merge commit's message.
+            args(&["pr", "--subject", "review", "merge", "3", "-r"]),
+            // Nothing further down the line can promote itself to the
+            // command: without that, `pr` and `review` here would be
+            // read as the pair.
+            args(&["secret", "set", "pr", "review", "-b", "hello"]),
+            // An inline flag before the second word must not let the
+            // search run past it. These are other `pr` subcommands whose
+            // selector or branch happens to read as one of ours, and gh
+            // accepts every one: stamping them would write an origin tag
+            // into a pull request's body, into a merge commit's message,
+            // or over the branch name `-b` means on a checkout.
+            args(&["pr", "-Racme/other", "edit", "review", "--body", "hello"]),
+            args(&["pr", "-R=acme/other", "merge", "review", "--body", "hello"]),
+            args(&["pr", "-Racme/other", "merge", "review", "-r"]),
+            args(&["pr", "-Racme/other", "checkout", "new", "-b", "mybranch"]),
+            // `--` ends the flags for gh whatever precedes it, so the
+            // words beyond are positionals, not a command: stepping over
+            // it would put a `--body` among them and gh would refuse the
+            // count. `gh pr -a -- review` posts on master untouched.
+            args(&["pr", "-a", "--", "review"]),
+            // A tagged word in a flag's value, on a command of its
+            // own: `pr edit` replaces a pull request's body.
+            args(&[
+                "pr",
+                "edit",
+                "3",
+                "--add-label",
+                "issue",
+                "--add-label",
+                "comment",
+                "--body",
+                "hello",
+            ]),
+            // A command word with no subcommand after it at all.
+            args(&["issue", "--repo"]),
+            args(&["pr"]),
+        ] {
+            assert_eq!(rewrite(a.clone()), a, "left alone: {a:?}");
         }
     }
 
@@ -651,6 +1093,17 @@ mod tests {
         s.gh_repo = Some("ACME/OTHER");
         let out = s.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
         assert!(out.contains(&long), "{out:?}");
+        // `-R=o/r` is a spelling pflag takes, and the `=` is not part of
+        // the repository: read as one it would give the long form here.
+        let out = s.rewrite(args(&[
+            "issue",
+            "comment",
+            "3",
+            "--body",
+            "hi",
+            "-R=acme/widgets",
+        ]));
+        assert!(out.contains(&short), "-R= is a repository: {out:?}");
         // A URL that is one of NOT_THE_ITEM's values is not the item.
         // gh documents the URL form for all three of `issue create`'s
         // number-or-URL flags; reading one as the item beats GH_REPO and

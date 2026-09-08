@@ -154,10 +154,12 @@ binary, so the `ssf` commands the prompts name run the daemon's own build
 rather than an older package on the shell's `PATH`; `ssf doctor` says
 when the two differ). Invoked as `gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
-`pr comment` and `pr review` (whether given as `--body`, `--body=`, `-b`,
-`--body-file` or `-F -`; a review without a body gets one that is only the
-line) and runs the real gh with everything else untouched. To pick the
-byline's form it works out the repository posted to the way gh does:
+`pr comment` and `pr review` (and `issue new` and `pr new`, gh's own
+names for the same two creates), whether the body is given as `--body`,
+`--body=`, `-b`, `--body-file` or `-F -` (a review without a body gets
+one that is only the line), and runs the real gh with everything else
+untouched. To pick the byline's form it works out the repository posted
+to the way gh does:
 `--repo`/`-R`, an item given as a URL, `GH_REPO`, else the checkout's
 `origin` remote (`git config --get remote.origin.url`); when none of those
 says, the long form is used, which links from anywhere. The URL has to
@@ -233,9 +235,9 @@ final comment). `daemon.event_comments = false` stops the daemon posting
 them.
 
 The tag can carry more fields. Two are defined: `mode=delegate`, which
-the wrapper adds when an `issue create` or `pr create` assigns the bot
-itself (`--assignee <bot>` or `@me`): the item is a hand-off rather than the
-session's own (see [Ownership](sessions.md#ownership-one-session-per-item));
+the wrapper adds when an `issue create` or `pr create` (under either
+name) assigns the bot itself (`--assignee <bot>` or `@me`): the item is
+a hand-off rather than the session's own (see [Ownership](sessions.md#ownership-one-session-per-item));
 and `event=<name>`, which only the daemon writes (above).
 Posts made before #115 by a reviewer session carry `role=reviewer`; the
 field is read and ignored, so such a post counts as the item's session's.

@@ -1337,7 +1337,7 @@ session posts starts with one line that is both a byline for people and a tag fo
 `🤖#N says: <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N says:` when the post is on another \
 repository; `mode=delegate` on a hand-off), then a blank line. GitHub links the byline to the session's item. The `gh` on the \
 session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
-or `pr create|comment|review`; any other way of posting (`gh api`, `gh pr create --fill`, \
+or `pr create|comment|review` (`new` counts as `create`); any other way of posting (`gh api`, `gh pr create --fill`, \
 `gh pr edit --body`, ...) needs it added by hand, as the first line of the body. A tag \
 anywhere else, in a code block or a quote, is content and is ignored. A post by \
 @{bot} without the line was typed by a person using the bot account; it reaches you marked \
