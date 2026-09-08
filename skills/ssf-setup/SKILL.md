@@ -103,3 +103,8 @@ document links to.
     pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or on
     macOS `brew uninstall ssf` and then `brew untap mikekelly/ssf`; the
     command prints the one for the machine) is **you**.
+11. **Calibrate the project's gauntlet by blast radius** when writing
+    `SSF.md`: use the [boilerplate](../../SSF.example.md) and
+    [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
+    for review classes and stopping rules. Keep required verification in
+    every class, including changes that need only self-review.

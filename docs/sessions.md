@@ -78,24 +78,28 @@ them, remove them by hand); reviewer records in an old `state.json` are
 dropped on load with one log line; the old config keys still load and
 `ssf doctor` says they do nothing.
 
-The second pair of eyes is the session's own to arrange, and the
-repository's notes say when it is required: the boilerplate
-[`SSF.example.md`](../SSF.example.md) carries a **gauntlet** rule, for
-the agent that did the work. Before calling it done, hand the diff, the
-item and your claim of what the change does to a fresh agent that has not
-seen your reasoning, ask it to break the work (correctness first, then
-whether it does what the issue asked, then tests, docs and conventions),
-fix what it finds and run the gauntlet again until it finds nothing that
-matters; then say on the item what it found and what changed. A subagent
-of the session's own harness is the default; for complex, risky or
-important work, a different agent and model through herdr, with the
-invocation `ssf guide` prints (a workspace on the session's own worktree,
-an agent started in its pane, one prompt, the answer read from the pane,
-the workspace closed). Nobody re-reviews after the gauntlet; who merges
-is the notes' autonomy line (the boilerplate ships "a person reviews and
-merges"). `ssf doctor`
-reports a repository with no project notes at all, since without them no
-rule asks for a gauntlet.
+The session arranges its own review according to the repository's notes.
+[`SSF.example.md`](../SSF.example.md) classifies the gauntlet by what a change
+can break: documentation, comments, configuration examples and tests get
+self-review; ordinary daemon behaviour gets one fresh-agent round, a second
+only after a must-fix; data loss, startup failure, broken packages and workspace
+destruction get rounds until two consecutive ones find no must-fix. Mixed
+changes take the highest class. Cosmetic tidies neither count as must-fixes
+nor justify another round; the second clean deep round may inspect the same
+substantive diff. Required tests, formatting, linting and package builds still
+apply to every class.
+
+Give each reviewer the diff, issue and claimed outcome, and ask it to break
+correctness, requirements, tests, docs and conventions. The author decides
+what to act on: accept feedback, decline it with a sentence explaining why,
+or debate it with the same reviewer. Reviewers propose; they do not instruct.
+A round with only declined suggestions is clean. Fix confirmed must-fixes
+before continuing; a discussion is not a fresh round. Use an in-harness
+subagent by default; for deep review prefer a strong reviewer on a different
+model through herdr from round one (`ssf guide` gives the invocation). Report
+the class, findings and fixes on the item. Who merges is the notes' autonomy
+line (the boilerplate ships "a person reviews and merges"). `ssf doctor`
+reports a repository with no project notes at all.
 
 A PR the bot did not write (a human's PR the bot is asked to review, or
 one assigned to it without a session of its own on the branch) is
