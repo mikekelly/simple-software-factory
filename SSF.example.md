@@ -71,8 +71,9 @@ stripped before the file reaches an agent.
 - Work on the item's branch. When the work is done, push it and open a pull
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
-- The gauntlet is a final review that tries to break your change. Choose its
-  depth by blast radius, not diff size. State the class and why on the issue: data loss, a factory unable to start, a broken package
+- The gauntlet is a final adversarial review that tries to break your change.
+  Choose its depth by blast radius, not diff size. State the class and why on
+  the issue: data loss, a factory unable to start, a broken package
   or a destroyed workspace require deep review until two consecutive rounds
   find no must-fix; ordinary daemon behaviour visible to sessions or people
   gets one round, and a second only if the first found a must-fix. Changes

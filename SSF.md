@@ -14,8 +14,9 @@
 - A change to setup, configuration, commands or operating behaviour also updates `skills/ssf-setup/SKILL.md` in the same PR; the skill is what a coding agent follows to set ssf up, so a PR that leaves it stale is not done.
 - Rebuild the package with `cd packaging && makepkg -fd` before calling something done; commit the `pkgver` bump makepkg makes to `packaging/PKGBUILD`.
 - The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live.
-- The gauntlet is a final review that tries to break your change. Choose its
-  depth by blast radius, not diff size. State the class and why on the issue: data loss, a factory unable to start, a broken package
+- The gauntlet is a final adversarial review that tries to break your change.
+  Choose its depth by blast radius, not diff size. State the class and why on
+  the issue: data loss, a factory unable to start, a broken package
   or a destroyed workspace require deep review until two consecutive rounds
   find no must-fix; ordinary daemon behaviour visible to sessions or people
   gets one round, and a second only if the first found a must-fix. Changes
