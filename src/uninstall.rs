@@ -568,12 +568,21 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     match ui::set_service_enabled_on_error(false, ui::OnServiceError::Fail) {
         Ok(()) if was_off => println!("already stopped and disabled"),
         Ok(()) => println!("service stopped and disabled"),
+        // Not "nothing has been destroyed": the purge above ran first,
+        // and it removes the workspaces it found clean and pushed and
+        // says `released` on their items. What this stop protects is
+        // everything below it.
         Err(e) => bail!(
-            "{e:#}\nnothing has been destroyed: the steps after this one destroy the VM, sign the bot out{} and none of them may run while the daemon may still be working. Stop it by hand (`{}`), then run this again",
+            "{e:#}\nthe steps after this one destroy the VM, sign the bot out{} and none of them may run while the daemon may still be working, so none of them has run.{} Stop the daemon by hand (`{}`), then run this again",
             if data {
                 " and remove the config and state directories,"
             } else {
                 ","
+            },
+            if report.daemon {
+                " The purge above did run: workspaces that were clean and pushed are gone, and their items have a `released` comment."
+            } else {
+                ""
             },
             crate::platform::service_hint("stop"),
         ),
@@ -811,7 +820,10 @@ mod tests {
         };
         let text = render(&facts(), &r, &Opts::default());
         assert!(
-            text.contains("stop:    ssf.service (running, enabled) and VM factory"),
+            text.contains(&format!(
+                "stop:    {} (running, enabled) and VM factory",
+                crate::platform::service_name()
+            )),
             "{text}"
         );
         assert!(
