@@ -186,7 +186,10 @@ pub struct Facts {
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
     /// under lima.
     pub vm_removed: String,
-    /// `[vm] dir`: the image and downloads, left in place.
+    /// `[vm] dir`: the image and downloads, left in place -- and, after
+    /// a changed `[vm] name` under Firecracker, the old VM's directory
+    /// with its data disk, which is why the line about it is not always
+    /// "safe to remove".
     pub vm_base: PathBuf,
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -424,50 +427,7 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     };
     section(&mut out, "revoke:", &[revoke]);
 
-    // keep
-    let mut keep = Vec::new();
-    for p in &facts.projects {
-        keep.push(format!(
-            "{} (clones and worktrees; may hold unpushed work)",
-            p.display()
-        ));
-    }
-    if facts.vm_base.exists() {
-        // "safe to remove" is only true of the images and downloads. A
-        // VM directory a changed `[vm] name` orphaned sits in here too,
-        // with its data disk, and is listed on its own below.
-        let holds_work = facts.vm_strays.iter().any(|s| s.holds_work());
-        keep.push(format!(
-            "{} (VM image and downloads{})",
-            facts.vm_base.display(),
-            if holds_work {
-                "; safe to remove except for what is listed below"
-            } else {
-                "; safe to remove"
-            }
-        ));
-    }
-    if !opts.data {
-        keep.push(format!(
-            "{} and {} (remove with --data)",
-            facts.config_dir.display(),
-            facts.state_dir.display()
-        ));
-    }
-    for stray in &facts.vm_strays {
-        keep.push(format!(
-            "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
-            stray.what(),
-            stray.name,
-            if stray.holds_work() {
-                " (its clones and worktrees are in it)"
-            } else {
-                ""
-            },
-            stray.remove,
-            stray.caveat()
-        ));
-    }
+    let mut keep = kept(facts, opts.data);
     keep.push(format!(
         "the package: {} (yours: ssf never runs sudo)",
         package_removal_command()
@@ -592,6 +552,65 @@ pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Op
         ));
     }
     None
+}
+
+/// What `ssf uninstall` leaves behind, in words.
+///
+/// One list, because there are two places that print it -- the report
+/// before the question and the epilogue after the last step -- and the
+/// second is the one the person is still looking at. Twice now a
+/// sentence has been made honest in the report and left as it was a few
+/// lines of output later, so the two no longer have the chance.
+pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
+    let mut keep = Vec::new();
+    for p in &facts.projects {
+        keep.push(format!(
+            "{} (clones and worktrees; may hold unpushed work)",
+            p.display()
+        ));
+    }
+    if facts.vm_base.exists() {
+        // "safe to remove" is true of the images and downloads. It is
+        // not true of a VM directory a changed `[vm] name` orphaned,
+        // which sits in here with its data disk -- and telling a person
+        // their own clones are safe to delete is worse than deleting
+        // them, because they run the command themselves and it works.
+        let holds_work = facts
+            .vm_strays
+            .iter()
+            .any(|s| s.kind == vm::StrayKind::Directory);
+        keep.push(format!(
+            "{} (VM image and downloads{})",
+            facts.vm_base.display(),
+            if holds_work {
+                "; safe to remove except for what is listed below"
+            } else {
+                "; safe to remove"
+            }
+        ));
+    }
+    if !data {
+        keep.push(format!(
+            "{} and {} (remove with `ssf uninstall --data`, or by hand)",
+            facts.config_dir.display(),
+            facts.state_dir.display()
+        ));
+    }
+    for stray in &facts.vm_strays {
+        keep.push(format!(
+            "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
+            stray.what(),
+            stray.name,
+            if stray.holds_work() {
+                " (its clones and worktrees are in it)"
+            } else {
+                ""
+            },
+            stray.remove,
+            stray.caveat()
+        ));
+    }
+    keep
 }
 
 /// "There is nothing to destroy", said so that it stays true. A bare
@@ -904,24 +923,8 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     }
 
     println!("left in place:");
-    for p in &facts.projects {
-        println!(
-            "  {} (clones and worktrees; may hold unpushed work)",
-            p.display()
-        );
-    }
-    if facts.vm_base.exists() {
-        println!(
-            "  {} (VM image and downloads; safe to remove)",
-            facts.vm_base.display()
-        );
-    }
-    if !data {
-        println!(
-            "  {} and {} (remove with `ssf uninstall --data`, or by hand)",
-            facts.config_dir.display(),
-            facts.state_dir.display()
-        );
+    for line in kept(&facts, data) {
+        println!("  {line}");
     }
     println!("the one step that is yours: {}", package_removal_command());
     if failed > 0 {
@@ -1106,7 +1109,10 @@ mod tests {
             text.contains("/p (clones and worktrees; may hold unpushed work)"),
             "{text}"
         );
-        assert!(text.contains("/c and /s (remove with --data)"), "{text}");
+        assert!(
+            text.contains("/c and /s (remove with `ssf uninstall --data`, or by hand)"),
+            "{text}"
+        );
         assert!(!text.contains("(--data)"), "{text}");
         assert!(
             text.contains("closed  o/r#9 \"a title\"  [dirty]  /p/w"),

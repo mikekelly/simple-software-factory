@@ -1035,9 +1035,9 @@ Anything this configuration does not name -- what changing `[vm] name`
 leaves behind, since renaming it in the config renames nothing on the
 machine -- is listed under **keep**, with the command that removes it:
 a lima instance or data disk still in lima's home, or, under Firecracker,
-the old VM's directory under `[vm] dir` with its data disk inside. Note
-that the `[vm] dir` line calls itself safe to remove only when there is
-no such directory in it. `ssf uninstall` never removes one and `--force`
+the old VM's directory under `[vm] dir` with its data disk inside. The `[vm] dir` line calls itself safe to remove
+only when no such directory is in it, in the report and in the list
+printed at the end alike. `ssf uninstall` never removes one and `--force`
 does not reach it: ssf cannot tell a VM you renamed away to keep from one
 you abandoned, and only one of those is safe to delete. `ssf doctor` and
 `ssf vm status` name them too.
