@@ -288,10 +288,11 @@ pub struct HeldReport {
 /// the last fetch does not count as unmerged; a failed fetch is reported,
 /// not fatal.
 pub async fn held_work(root: &str, base: Option<&str>) -> Result<HeldReport> {
-    let root = std::path::Path::new(root)
-        .canonicalize()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| root.to_string());
+    // Kept as spelled: git lists a worktree by the path it was added
+    // with, and the daemon adds them under the root as configured, so a
+    // root reached through a symlink still matches below (both sides are
+    // resolved for the comparison).
+    let root = root.to_string();
     let fetch_error = git(&root, &["fetch", "--quiet", "origin"])
         .await
         .err()
@@ -316,10 +317,19 @@ pub async fn held_work(root: &str, base: Option<&str>) -> Result<HeldReport> {
         .await
         .with_context(|| format!("base branch {short} not found in {root}"))?;
     let dir = crate::driver::worktrees_dir(&root);
+    // Also next to the checkout as the filesystem spells it, for
+    // worktrees added through the other spelling.
+    let dir_real = std::path::Path::new(&root)
+        .canonicalize()
+        .map(|p| crate::driver::worktrees_dir(&p.to_string_lossy()))
+        .unwrap_or_else(|_| dir.clone());
     let mut worktrees = Vec::new();
     for w in crate::driver::local_worktrees(&root).await? {
         let p = std::path::Path::new(&w.path);
-        if p.parent() != Some(dir.as_path()) {
+        if !p
+            .parent()
+            .is_some_and(|parent| same_dir(parent, &dir) || same_dir(parent, &dir_real))
+        {
             continue;
         }
         let mut held = Held {
@@ -391,6 +401,11 @@ async fn look_at(
             .count();
     }
     Ok(())
+}
+
+/// The same directory, whichever way each side spells it.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
 }
 
 async fn count(path: &str, args: &[&str]) -> Result<u64> {
@@ -611,6 +626,27 @@ mod tests {
         assert!(f.error.is_none());
         assert_eq!((f.ahead, f.lost, f.dirty), (0, 0, 1));
         assert_eq!(f.describe("main"), "1 uncommitted change");
+        // The checkout reached through a symlink: git lists the worktrees
+        // by the spelling they were added with, and they are still its.
+        let link = s.dir.join("link");
+        std::os::unix::fs::symlink(&s.work, &link).unwrap();
+        let link_s = link.to_string_lossy().to_string();
+        let (via_link, _) = crate::driver::add_local_worktree(&link_s, "issue-4-link", None)
+            .await
+            .unwrap();
+        assert!(
+            via_link.starts_with(&format!("{link_s}.worktrees/")),
+            "{via_link}"
+        );
+        // (Adding one pruned the removed directory's entry, as `git
+        // worktree prune` does; that is git's listing, not this check's.)
+        let r = held_work(&link_s, None).await.unwrap();
+        let mut names: Vec<&str> = r.worktrees.iter().map(|h| h.name.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["issue-2-broken", "issue-3-fine", "issue-4-link"]
+        );
     }
 
     #[tokio::test]

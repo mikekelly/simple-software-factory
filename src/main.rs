@@ -3392,7 +3392,13 @@ async fn doctor() -> Result<()> {
         // on no other branch and not on origin, when no agent is on it: a
         // workspace closed by hand leaves the checkout behind, and nothing
         // else says that removing it would lose work.
+        // A configured path that is missing was flagged just above.
+        let configured_missing = r
+            .path
+            .as_deref()
+            .is_some_and(|p| !config::expand_tilde(p).join(".git").exists());
         match checkout_root(&cfg, r, &state) {
+            None if configured_missing => {}
             None => check(
                 true,
                 format!(
@@ -3477,7 +3483,7 @@ async fn doctor() -> Result<()> {
                         );
                     } else {
                         println!(
-                            "WARN {}: {} of {total} worktree{} under {} hold{} work that is on no other branch and not on origin, with no agent on it{stale}:",
+                            "WARN {}: {} of {total} worktree{} under {} hold{} work only it has (commits on no other branch and not on origin, uncommitted changes, a stash), with no agent on it{stale}:",
                             r.name,
                             stranded.len(),
                             plural(total),
@@ -3498,11 +3504,11 @@ async fn doctor() -> Result<()> {
                         }
                         if stranded.iter().any(|(_, active)| !*active) {
                             println!(
-                                "              a retired item, or none: push the branch by hand (`git -C <path> push -u origin <branch>`), or look and decide"
+                                "              a retired item, or none: push the branch by hand (`git -C <checkout> push -u origin <branch>`), or look and decide"
                             );
                         }
                         println!(
-                            "              `ssf purge --force` or removing the directory loses the uncommitted changes and leaves the commits on a local branch nothing lists"
+                            "              `ssf purge --force` or removing the directory loses the uncommitted changes and leaves the commits on a local branch nothing lists (a detached HEAD's go too)"
                         );
                     }
                 }

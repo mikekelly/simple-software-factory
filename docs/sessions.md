@@ -575,7 +575,7 @@ comment, and then, only if everything is on origin, run `ssf release`.
   origin`), whether its workspace is open, and whether its item is active
   on the record. For an active item `ssf tell <item> "..."` brings the
   session back in that checkout; a retired item refuses a tell, so its
-  branch is pushed by hand (`git -C <path> push -u origin <branch>`).
+  branch is pushed by hand (`git -C <checkout> push -u origin <branch>`).
   `ssf purge --force` or removing the directory loses the uncommitted
   changes and leaves the commits on a local branch nothing lists.
   Worktrees with an agent on them, and ones whose work is on origin or
