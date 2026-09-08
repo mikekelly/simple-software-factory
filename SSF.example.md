@@ -72,19 +72,19 @@ stripped before the file reaches an agent.
 - Work on the item's branch. When the work is done, push it and open a pull
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
-- Check a claim rather than reasoning your way to one. How a tool parses its
-  arguments, what a library does at boot, which path a command takes: read
-  that source, or run it somewhere nothing depends on the result — a scratch
-  copy, a throwaway repository, a dry run — never against real work, since
-  the command you are asking about may be the one that posts, merges or
-  deletes. Where you have not checked, say so. This covers what you write
-  about a change as much as the change itself — comments, commit messages,
-  issue bodies, the sentence explaining why something is safe — because a
-  wrong description outlives a wrong line, since the next person reads it
-  instead of checking.
+- Check a claim rather than reasoning your way to one: read the source, or
+  run the thing. Reading real state to find out costs nothing and is the
+  usual answer. A command that writes, posts, merges or deletes is not that:
+  run it against a scratch copy, a throwaway item, a dry run, or whatever
+  this project isolates a run with, never against real work. Where you have
+  not checked, say so. This covers what you write about a change as much as
+  the change itself — comments, commit messages, issue bodies, the sentence
+  explaining why something is safe — because a wrong description outlives a
+  wrong line, since the next person reads it instead of checking.
 - A line added after the round that reviewed the diff has been reviewed by
-  nobody. A tidy is trivially safe and needs nothing; anything that could
-  change behaviour earns a look before you finish.
+  nobody. Judge it by what it could do rather than by how small it looks:
+  the text this file feeds to an agent is behaviour too. Give it a look
+  before you finish unless it could not matter.
 - The gauntlet is a final adversarial review that tries to break your change.
   Choose its depth by blast radius, not diff size. State the class and why on
   the issue: data loss, a factory unable to start, a broken package

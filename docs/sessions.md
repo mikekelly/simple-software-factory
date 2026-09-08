@@ -101,9 +101,11 @@ Two habits sit beside the classes, and both are about what a round can see. A cl
 behaves is checked against the thing rather than reasoned about, and that
 covers what a session writes about a change as much as the change: a wrong
 sentence in a comment or a commit message outlives a wrong line, because the
-next reader takes it instead of checking. And a line added after the round
-that reviewed the diff has been reviewed by nobody, so it is either trivially
-safe or it earns a look of its own.
+next reader takes it instead of checking; reading real state to find out is
+free, while running something that writes belongs in a scratch copy. And a
+line added after the round that reviewed the diff has been reviewed by
+nobody, judged by what it could do rather than by how small it looks — the
+text these files feed to an agent is behaviour too.
 
 Give each reviewer the diff, issue and claimed outcome, and ask it to break
 correctness, requirements, tests, docs and conventions. The author decides
