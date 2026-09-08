@@ -36,7 +36,19 @@ The details behind the README's [How it works](../README.md#how-it-works).
   relaunch was activity on an item it owns). If the workspace itself is
   gone, ssf re-creates it from the old branch (local or `origin/`) and does
   the same. Claude Code resumes a session from any directory, so this works
-  even when the new worktree has a different path.
+  even when the new worktree has a different path. A resume has failed
+  only when no agent is running in its pane once the driver's wait is
+  over (the screen then says whether the harness could not find the
+  session): a resumed
+  agent that is idle, at a question, or already at work on the messages
+  queued in its conversation (a Claude Code with a backlog starts on it
+  at once and reports `working`, never `idle`) has settled, and one still
+  alive when the wait runs out without a state is kept as the resumed
+  conversation all the same; the delivery goes to it, as a steering
+  message when it is at work. A fresh harness is started only once
+  nothing of the resume is running, so a workspace never holds two
+  agents (#131, #133). The `resumed` event on the item says which it was:
+  `conversation: resumed` or `fresh`.
 - **First-run dialogs.** Claude Code and Codex ask whether to trust a new
   folder, Claude Code once per machine whether to accept its bypass
   permissions mode, and Gemini and Pi ask about trust when started without

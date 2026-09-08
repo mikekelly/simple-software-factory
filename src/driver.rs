@@ -668,9 +668,29 @@ pub struct StubDriver {
     inner: std::sync::Arc<std::sync::Mutex<StubState>>,
 }
 
+/// What a stub resume does when a delivery finds no live agent and has a
+/// `resume_command`: the three shapes the herdr driver tells apart (#131).
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StubResume {
+    /// The resumed agent settles: idle, or at work on its queued messages
+    /// for longer than the wait, which is settled too.
+    #[default]
+    Settles,
+    /// The harness exits at once (it could not find the session): nothing
+    /// is left to stop, and a fresh harness follows in the same pane.
+    Exits,
+    /// The resumed agent is alive but the wait ran out without herdr
+    /// saying what it was doing: it is kept, as the resumed conversation
+    /// (#133); no fresh harness is started.
+    Unsettled,
+}
+
 #[cfg(test)]
 #[derive(Default)]
 pub struct StubState {
+    /// What the next resume does.
+    pub resume: StubResume,
     pub worktrees: std::collections::BTreeSet<String>,
     /// worktree id -> handle of its live agent.
     pub live: std::collections::BTreeMap<String, String>,
@@ -678,7 +698,10 @@ pub struct StubState {
     pub screens: std::collections::BTreeMap<String, Vec<String>>,
     /// The screen a harness started again shows (a login prompt, say).
     pub relaunch_screen: Vec<String>,
-    /// `stop:<handle>`, `deliver:<worktree>:<first line>`, `relaunch:<worktree>:<resumed>`.
+    /// `stop:<handle>`, `deliver:<worktree>:<first line>`,
+    /// `relaunch:<worktree>:<resumed>`; a resume given up on logs
+    /// `resume-exited:<worktree>` before the fresh `relaunch:<worktree>:false`,
+    /// and one kept past the wait `resume-unsettled:<worktree>`.
     pub log: Vec<String>,
     /// Every harness started, as `<harness>:<command>`: what a start or a
     /// relaunch would run, for the tests about per-item overrides.
@@ -841,12 +864,22 @@ impl StubDriver {
                     resumed: false,
                 });
             }
-            let resumed = relaunch.resume_command.is_some();
-            s.launches.push(format!(
-                "{}:{}",
-                relaunch.harness,
-                relaunch.resume_command.unwrap_or(relaunch.command)
-            ));
+            let mut resumed = false;
+            if let Some(cmd) = relaunch.resume_command {
+                s.launches.push(format!("{}:{cmd}", relaunch.harness));
+                match s.resume {
+                    StubResume::Settles => resumed = true,
+                    StubResume::Exits => s.log.push(format!("resume-exited:{worktree_id}")),
+                    StubResume::Unsettled => {
+                        s.log.push(format!("resume-unsettled:{worktree_id}"));
+                        resumed = true;
+                    }
+                }
+            }
+            if !resumed {
+                s.launches
+                    .push(format!("{}:{}", relaunch.harness, relaunch.command));
+            }
             let h = Self::new_handle(s, worktree_id);
             s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
             let body = match relaunch.text {
