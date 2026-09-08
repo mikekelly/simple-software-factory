@@ -178,6 +178,12 @@ pub struct IssueState {
     /// pass buys nothing; this paces the re-check instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement_held_at: Option<String>,
+    /// How many times the paced re-check has held this retirement. The
+    /// mention matcher deliberately over-matches GitHub, so a hold that
+    /// never ends is possible; past a few re-checks the listings are the
+    /// likelier truth and the item retires anyway.
+    #[serde(default)]
+    pub retirement_holds: u32,
     /// `updated_at` of the issue when the timeline was last reconciled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,

@@ -119,17 +119,22 @@ impl AllowList {
     }
 }
 
-/// Whether `body` mentions `@login`, the way GitHub's `mentioned` listing
-/// counts it: case-insensitive, opened by anything that is not a letter,
-/// digit or underscore, and not run on into a longer login. So `@bot` and
-/// `path/@bot` mention `bot`, while `@bot-2`, the team `@bot/reviewers`
-/// and the address in `someone@bot` do not. `@bot_2` does, because a
-/// GitHub login cannot contain an underscore, so the login ends there.
+/// Whether `body` mentions `@login`: case-insensitive, opened by anything
+/// that is not a letter or a digit, and not run on into a longer login.
+/// So `@bot` and `path/@bot` mention `bot`, while `@bot-2`, the team
+/// `@bot/reviewers` and the address in `someone@bot` do not.
 ///
-/// One deliberate difference from GitHub: a mention inside a code span or
-/// fence counts here and does not there. Reproducing that means parsing
-/// Markdown, and being too generous only lets a session on, or holds one
-/// that already exists, which is the safe direction for both callers.
+/// This deliberately over-matches GitHub rather than reproducing it.
+/// GitHub runs its filter on rendered HTML and ends a login before `_` or
+/// `.`, so it does not linkify `@bot_2` or `@bot.foo`, and it does not see
+/// mentions inside code spans and fences at all; all of those count here.
+/// Matching it exactly would mean rendering Markdown. Over-matching is the
+/// safe direction for the gate, which would otherwise refuse a session
+/// nobody can see was asked for, and the retirement re-check is bounded
+/// (`MAX_RETIREMENT_HOLDS`) so that over-matching cannot hold a session
+/// open for ever. Under-matching has no such backstop, which is why `_`
+/// is not treated as a word character before the `@`: GitHub renders
+/// `_@bot_` as emphasis around a real mention.
 pub fn mentions(body: &str, login: &str) -> bool {
     if login.is_empty() {
         return false;
@@ -155,9 +160,11 @@ pub fn mentions(body: &str, login: &str) -> bool {
     false
 }
 
-/// A letter, digit or underscore: GitHub's `\W` boundary before an `@`.
+/// What makes an `@` part of a word rather than the start of a mention:
+/// a letter or a digit, as in an address. Underscore is not one, because
+/// GitHub renders `_@bot_` as emphasis around a mention.
 fn is_word_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
+    b.is_ascii_alphanumeric()
 }
 
 /// Whether a byte after a login means the mention named something else: a
@@ -350,12 +357,20 @@ mod tests {
         assert!(mentions("v1.@bot", "bot"));
         assert!(mentions("a@@bot", "bot"));
         assert!(!mentions("someone@bot", "bot"));
-        assert!(!mentions("under_@bot", "bot"));
-        // A login cannot contain `_`, so the login ends before it and this
-        // is a mention of `bot`; `/` after one names a team instead.
-        assert!(mentions("@bot_2 please", "bot"));
+        // GitHub renders these as emphasis around a real mention, so the
+        // `_` must not read as part of a word before the `@`.
+        assert!(mentions("_@bot_ please look", "bot"));
+        assert!(mentions("__@bot__ please", "bot"));
+        assert!(mentions("under_@bot", "bot"));
+        // A team, not this user.
         assert!(!mentions("@bot/reviewers", "bot"));
+        // Deliberate over-matches: GitHub ends a login before `_` and `.`
+        // and ignores code spans, so it counts none of these.
+        assert!(mentions("@bot_2 please", "bot"));
+        assert!(mentions("`@bot`", "bot"));
+        // An empty login never matches, whatever follows the `@`.
         assert!(!mentions("@bot", ""));
+        assert!(!mentions("@ ", ""));
     }
 
     fn issue(author: &str, body: &str) -> Issue {

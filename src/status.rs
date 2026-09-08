@@ -94,9 +94,9 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retired_at: Option<String>,
     /// When a retirement was last held because the item still carried one
-    /// of its triggers while the listings had dropped it. Present on an
-    /// item that `ssf release` will refuse for a reason nothing else in
-    /// this report explains.
+    /// of its triggers while the listings had dropped it. Present while
+    /// the listings and the item disagree, which is why such an item is
+    /// still active and `ssf release` still refuses it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retirement_held_at: Option<String>,
     /// When `ssf release` or `ssf purge` removed the workspace.
@@ -947,6 +947,24 @@ mod tests {
             agents: agent.into_iter().collect(),
             ..Default::default()
         }
+    }
+
+    /// An item whose retirement is held reports it, so an operator who
+    /// meets a refusal from `ssf release` has something that explains it.
+    #[test]
+    fn a_held_retirement_is_reported() {
+        let mut held = item(1, Some("r1::/w/one"));
+        held.retirement_held_at = Some("2026-09-08T14:30:55Z".into());
+        let st = state_with(vec![held, item(2, Some("r1::/w/two"))]);
+        let s = sessions(&cfg(), &st, None);
+        assert_eq!(
+            s[0].retirement_held_at.as_deref(),
+            Some("2026-09-08T14:30:55Z")
+        );
+        assert!(s[1].retirement_held_at.is_none());
+        // It is omitted from the JSON entirely when there is no hold.
+        let json = serde_json::to_string(&s[1]).unwrap();
+        assert!(!json.contains("retirement_held_at"), "{json}");
     }
 
     #[test]

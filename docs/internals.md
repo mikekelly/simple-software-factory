@@ -92,7 +92,11 @@ The details behind the README's [How it works](../README.md#how-it-works).
   the walk is the expensive part. Only that walk is paced. The item itself
   is still read every pass, so an item that closes is still noticed at
   once, and the hold is cleared as soon as a listing carries the item
-  again. Removal is the agent's (`ssf release`) or a person's (`ssf
+  again. The hold is also bounded: the mention matcher over-matches GitHub
+  deliberately (it counts mentions in code spans, which GitHub does not),
+  so after six re-checks that all disagree with the listings the listings
+  are believed and the item retires. Without that a session could be held
+  by a mention GitHub will never list, and no person could release it. Removal is the agent's (`ssf release`) or a person's (`ssf
   purge`) to ask for, and is refused whenever the worktree holds anything
   that is not on origin (see [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge)).
