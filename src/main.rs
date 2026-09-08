@@ -2200,12 +2200,17 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                     println!("tooling:  {}", t.detail);
                 }
                 match &st.instance {
+                    // A `limactl list` that failed is not "no such
+                    // instance": saying "missing (ssf vm build)" over a
+                    // VM lima could not be asked about sends people to
+                    // rebuild one that is already there.
                     Some(inst) => println!(
                         "instance: {inst}{}",
-                        match (&st.lima_dir, st.image) {
-                            (Some(d), _) => format!(" ({d})"),
-                            (None, false) => " missing (ssf vm build)".to_string(),
-                            (None, true) => String::new(),
+                        match (&st.probe_error, &st.lima_dir, st.image) {
+                            (Some(e), ..) => format!(" unknown: {e}"),
+                            (None, Some(d), _) => format!(" ({d})"),
+                            (None, None, false) => " missing (ssf vm build)".to_string(),
+                            (None, None, true) => String::new(),
                         }
                     ),
                     None => println!(
@@ -2219,9 +2224,12 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                 }
                 println!(
                     "state:    {}",
-                    match (st.running, st.firecracker_pid) {
-                        (true, Some(p)) => format!("running (firecracker pid {p})"),
-                        (true, None) => "running".to_string(),
+                    match (&st.probe_error, st.running, st.firecracker_pid) {
+                        // Same again: `running` is false because nothing
+                        // could be asked, not because the VM is stopped.
+                        (Some(_), ..) => "unknown (lima did not answer)".to_string(),
+                        (None, true, Some(p)) => format!("running (firecracker pid {p})"),
+                        (None, true, None) => "running".to_string(),
                         _ => "stopped".to_string(),
                     }
                 );

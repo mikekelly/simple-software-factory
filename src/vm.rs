@@ -291,6 +291,13 @@ pub struct VmStatus {
     /// The host tooling this backend needs (`limactl` and qemu, or
     /// `/dev/kvm`). Null inside the guest, whose host owns the VM.
     pub tooling: Option<Tooling>,
+    /// Why lima could not be asked about the instance, when it could not
+    /// be. Null when the answer below is an answer: `instance`,
+    /// `lima_dir`, `image` and `running` all read as "no instance, not
+    /// running" on a `limactl list` that failed, and reporting that as
+    /// fact is how a working VM came to be described as missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_error: Option<String>,
 }
 
 /// Where the data disk is mounted in the guest.
@@ -1982,10 +1989,17 @@ impl Vm {
 
     pub async fn status(&self) -> VmStatus {
         let backend = self.backend();
-        // One `limactl list` for everything lima knows.
-        let inst = match backend {
-            BackendKind::Lima => self.lima_instance().ok().flatten(),
-            BackendKind::Firecracker => None,
+        // One `limactl list` for everything lima knows -- and, when it
+        // did not answer, that fact rather than `.ok().flatten()`. Read
+        // as "no such instance" it printed `instance: ssf-<name> missing
+        // (ssf vm build)` over a VM that exists, which is the same
+        // conflation `lima_stop` was fixed for.
+        let (inst, probe_error) = match backend {
+            BackendKind::Lima => match self.lima_instance() {
+                Ok(i) => (i, None),
+                Err(e) => (None, Some(format!("{e:#}"))),
+            },
+            BackendKind::Firecracker => (None, None),
         };
         let running = match backend {
             BackendKind::Firecracker => self.running(),
@@ -2033,6 +2047,7 @@ impl Vm {
                 Vec::new()
             },
             tooling: (!in_guest()).then(|| self.tooling()),
+            probe_error,
         }
     }
 
@@ -3165,8 +3180,8 @@ mod tests {
         let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None, None);
         assert_eq!(mac.len(), 1);
         assert_eq!(mac[0].name, "limactl");
-        // ... unless the config asks for qemu, which is then the driver
-        // that has to be installed. Keyed on the OS alone, a Mac with
+        // ... unless the config asks for qemu, which is the driver that
+        // has to be installed. Keyed on the OS alone, a Mac with
         // `[vm] vm_type = "qemu"` passed every check ssf makes and then
         // failed inside `limactl create`.
         let mac_qemu = backend_tools(BackendKind::Lima, "macos", "aarch64", None, Some("qemu"));

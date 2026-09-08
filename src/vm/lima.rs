@@ -771,13 +771,21 @@ impl Vm {
             )
         })?;
         let dir = PathBuf::from(inst.dir);
-        let serial = dir.join("serial.log");
-        let virtio = dir.join("serialv.log");
-        Ok(if !serial.exists() && virtio.exists() {
-            virtio
-        } else {
-            serial
-        })
+        let name = self.lima_name();
+        // Whichever lima wrote, and only if it is there: returning a path
+        // to a file that does not exist left `ssf vm console` showing
+        // `tail: cannot open ...serial.log`, which reads as a broken
+        // command rather than as "this instance has never been booted".
+        for log in ["serial.log", "serialv.log"] {
+            let p = dir.join(log);
+            if p.exists() {
+                return Ok(p);
+            }
+        }
+        bail!(
+            "lima instance {name} has no console log yet ({}); lima writes serial.log (serialv.log with a virtio console) at the first `ssf vm start`",
+            dir.display()
+        )
     }
 
     /// What a build needs: limactl that runs, and qemu for the
@@ -900,7 +908,7 @@ impl Vm {
         // one some build signed off on, so it is never deleted here.
         if !make_disk && force && self.unproven_disk().exists() {
             info!(
-                "the data disk {disk} was made by a build that never reached the guest, so nothing has put a filesystem on it; deleting it and making a fresh one"
+                "the data disk {disk} was made by a build that never got a guest up on it; deleting it, and whatever it holds, and making a fresh one"
             );
             self.limactl_run(&["disk", "delete", &disk])?;
             let _ = std::fs::remove_file(self.unproven_disk());
@@ -1022,7 +1030,7 @@ impl Vm {
         if let Err(e) = std::fs::write(
             &path,
             format!(
-                "This build created the lima disk {}, and no guest has put a filesystem\non it yet. `ssf vm build --force` deletes that disk and makes a fresh one\nwhile this file is here; ssf removes it as soon as a guest has used the\ndisk, and from then on no build deletes it.\n",
+                "This build created the lima disk {}, and ssf never saw a guest come\nup on it. `ssf vm build --force` deletes that disk, and whatever is on it,\nand makes a fresh one while this file is here; ssf removes this file as soon\nas a guest has answered on the disk, and from then on no build deletes it.\n",
                 self.lima_disk_name()
             ),
         ) {
@@ -1039,7 +1047,7 @@ impl Vm {
             return e;
         }
         anyhow::anyhow!(
-            "{e:#}\n\nthis build created the data disk {disk} and no guest got as far as using it, so the disk is blank and no later build, `ssf vm start` or `ssf vm reset` will format it (only the build that creates a disk lets lima do that). `ssf vm build --force` deletes it and makes a fresh one; it deletes no disk a finished build has used.",
+            "{e:#}\n\nthis build created the data disk {disk} and never saw a guest come up on it. ssf removes this mark the moment one does, so as far as ssf knows nothing has been put on that disk -- but it cannot see inside it, and a build interrupted after lima's boot script ran may have left a filesystem and a seeded factory there. No later build, `ssf vm start` or `ssf vm reset` will format it (only the build that creates a disk lets lima do that), so a disk that never got a filesystem stays unusable. `ssf vm build --force` deletes {disk} and everything on it and makes a fresh one; it deletes no disk a build ever saw a guest use.",
             disk = self.lima_disk_name()
         )
     }
@@ -1518,8 +1526,15 @@ impl Vm {
         // The template is what the new instance inherits, so a stale
         // `format: true` in it has to go before the create, not after:
         // the instance that is about to be deleted is not worth fixing,
-        // which is why no instance is passed and nothing can come back.
-        let _ = self.repair_stale_format(None, Why::FoundStale);
+        // which is why no instance is passed. What can still come back is
+        // ssf's own template, when the rewrite of it failed -- and
+        // creating an instance from a template that says `format: true`
+        // is exactly the boot this whole path exists to stop, over a disk
+        // that by now holds the factory. So the reset refuses, as every
+        // other caller does.
+        if let Some(yaml) = self.repair_stale_format(None, Why::FoundStale) {
+            return Err(self.stale_format_error(&yaml));
+        }
         if self.lima_instance()?.is_some() {
             self.limactl_run(&["delete", "-f", &name])?;
         }
@@ -2099,6 +2114,55 @@ mod tests {
         assert!(err.contains("could not rewrite"), "{err}");
         // The cure is not `limactl edit`: nothing here is lima's.
         assert!(!err.contains("limactl edit"), "{err}");
+    }
+
+    #[test]
+    fn a_reset_refuses_a_template_that_would_let_lima_format_the_disk() {
+        // `ssf vm reset` creates the next instance from ssf's own
+        // template, so a `format: true` still in it is a boot over a disk
+        // that holds the factory -- the one thing this path exists to
+        // stop. The repair's answer used to be dropped with a comment
+        // saying nothing could come back; a rewrite that fails hands back
+        // the template, and the reset now refuses on it.
+        let t = Fake::new("Stopped");
+        let path = t.vm.template_path();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let err =
+            t.vm.lima_reset()
+                .expect_err(
+                    "a reset must not create an instance from a template that says format: true",
+                )
+                .to_string();
+        assert!(
+            err.contains("still lets lima format the data disk"),
+            "{err}"
+        );
+        assert!(err.contains("could not rewrite"), "{err}");
+        // And it stopped before it touched the instance.
+        assert!(!t.ran("delete") && !t.ran("create"), "{:?}", t.commands());
+    }
+
+    #[test]
+    fn the_console_names_the_instance_when_there_is_no_log_to_show() {
+        // `lima_console_log` picked `serial.log` whenever `serialv.log`
+        // was missing -- including when neither was there -- so
+        // `ssf vm console` on an instance that has never booted ran
+        // `tail` on a path that did not exist and showed `tail: cannot
+        // open`, which reads as a broken command.
+        let t = Fake::new("Stopped");
+        let dir = PathBuf::from(&t.instance.dir);
+        let err =
+            t.vm.lima_console_log()
+                .expect_err("no log has been written yet")
+                .to_string();
+        assert!(err.contains("ssf-one"), "{err}");
+        assert!(err.contains("no console log yet"), "{err}");
+        // Whichever lima wrote is the one that comes back.
+        std::fs::write(dir.join("serialv.log"), "virtio\n").unwrap();
+        assert_eq!(t.vm.lima_console_log().unwrap(), dir.join("serialv.log"));
+        std::fs::write(dir.join("serial.log"), "serial\n").unwrap();
+        assert_eq!(t.vm.lima_console_log().unwrap(), dir.join("serial.log"));
     }
 
     #[test]
