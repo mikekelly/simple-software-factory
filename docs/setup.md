@@ -808,7 +808,13 @@ come back with it.
    `ssf-default` too, on whichever OS you run it). Each step tolerates
    the thing being gone already, so a second run, or a run on a
    half-uninstalled machine, is fine. With the factory in the VM the
-   report and the purge come from the guest, before it goes.
+   report and the purge come from the guest, before it goes. The one
+   step that can end the run early is `ui service disable`: everything
+   after it destroys something, and none of it may happen while the
+   daemon might still be working, so a service that would not stop
+   leaves the machine as it was and tells you to stop it by hand
+   (`systemctl --user stop ssf.service`, or `brew services stop ssf`)
+   and run `ssf uninstall` again.
 2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`
    (**you**: sudo; nothing in ssf runs it); on macOS `brew uninstall
    ssf`, then `brew untap mikekelly/ssf` (`gh` and `lima` stay unless

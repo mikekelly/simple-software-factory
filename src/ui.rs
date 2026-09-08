@@ -362,18 +362,18 @@ pub fn service_enabled() -> bool {
 }
 
 /// What to do with a service command (`systemctl`, `brew services`) that
-/// failed. The marker is written either way, so the enable or disable
-/// itself always holds; this is only about the daemon that was meant to
-/// start or stop with it.
+/// failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnServiceError {
-    /// Print it and carry on: `ssf ui service enable|disable` reports the
-    /// marker, and `ssf ui service status` shows what came of the daemon.
+    /// Print it and carry on: the marker stands (the daemon is meant to
+    /// stay off), `ssf ui service enable|disable` reports it, and `ssf ui
+    /// service status` shows what came of the daemon.
     Warn,
-    /// Return it: `ssf uninstall` goes on to destroy the VM and remove
-    /// the state after this step, so a `brew services stop` that failed
-    /// must not be reported as "service stopped and disabled" -- that
-    /// would leave a live daemon working on files being deleted.
+    /// Return it, and undo a disable's marker: `ssf uninstall` stops on
+    /// this step rather than destroying the VM and removing the state
+    /// under a daemon that may still be running, so nothing is meant to
+    /// have changed when it fails -- least of all a marker that says the
+    /// service is disabled when it is still up.
     Fail,
 }
 
@@ -396,6 +396,16 @@ pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> 
         std::fs::write(&marker, "created by `ssf ui service disable`\n")?;
         (crate::platform::service_stop(), "stop")
     };
+    // The marker is written before the service command because it records
+    // what was asked for, and `ssf ui service disable` means it even when
+    // the stop went wrong (the daemon is meant to stay off, and the next
+    // start is what clears it). A caller that treats the failure as fatal
+    // is not asking for that: its run stops here, nothing else changes,
+    // and a marker saying "disabled" over a service that is still running
+    // would be the one lasting trace of a command that did nothing.
+    if !enabled && result.is_err() && on_error == OnServiceError::Fail {
+        let _ = std::fs::remove_file(&marker);
+    }
     report_service(result, what, on_error)
 }
 

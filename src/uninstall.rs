@@ -558,14 +558,25 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
 
     println!("==> stop and disable {}", crate::platform::service_name());
     let was_off = !facts.service_active && !facts.service_enabled;
-    // The service command's own failure is the finding here, not a
-    // warning on the way to "service stopped and disabled": the VM is
-    // destroyed and the state removed a few steps below, and doing that
-    // under a daemon still running is what this step exists to prevent.
+    // The service command's own failure ends the uninstall here, and does
+    // not join the tally of steps that failed: every step below destroys
+    // something (the VM, the bot's login, and with --data the config and
+    // state directories), and doing any of that while a daemon may still
+    // be running is what this step exists to prevent. Counting it and
+    // carrying on would have reported the failure at the very end, over a
+    // factory that had been taken apart underneath it.
     match ui::set_service_enabled_on_error(false, ui::OnServiceError::Fail) {
         Ok(()) if was_off => println!("already stopped and disabled"),
         Ok(()) => println!("service stopped and disabled"),
-        Err(e) => fail("service", e),
+        Err(e) => bail!(
+            "{e:#}\nnothing has been destroyed: the steps after this one destroy the VM, sign the bot out{} and none of them may run while the daemon may still be working. Stop it by hand (`{}`), then run this again",
+            if data {
+                " and remove the config and state directories,"
+            } else {
+                ","
+            },
+            crate::platform::service_hint("stop"),
+        ),
     }
 
     println!("==> remove the bar widget and menu entries");
