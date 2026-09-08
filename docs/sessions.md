@@ -562,10 +562,12 @@ mentioned item rather than to unassign one that has no assignee.
   "release given up, workspace kept" (in `ssf status`, `ssf peers --all`
   and `ssf purge --dry-run`) for a person to deal with; only the daemon's
   own refusals count, not the ones `ssf release` prints straight away.
-  A release is also refused while the item is still open and assigned, or
-  while the session still owns open items (a pull request bound to it,
-  say), and one already accepted is dropped if the item comes back to life
-  before the pass.
+  A release is also refused while the item is still the bot's, or while the
+  session still owns open items (a pull request bound to it, say), and one
+  already accepted is dropped if the item comes back to life before the
+  pass. Neither refusal yields to `--force`, which covers the worktree
+  checks only: an item that is still the bot's has to stop being the bot's
+  first.
 - **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
   for what agents left behind: every workspace whose item is closed and
   whose session has no running agent, listed with its state (`clean and

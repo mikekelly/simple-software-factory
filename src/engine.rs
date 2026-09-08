@@ -65,6 +65,11 @@ const ABSENT_LOOKS_PER_PASS: usize = 20;
 /// when the login check cannot tell whether the login is back (or claims
 /// it is while the harness disagrees); doubled after every restart that
 /// comes back to the prompt, up to `LOGIN_RETRY_MAX`.
+/// How long a retirement held by the item itself stays held before the
+/// item is read again. The listing that dropped it is wrong, and will
+/// stay wrong for a while, so re-reading it every poll only pays for a
+/// walk of the item's whole timeline.
+const RETIREMENT_RECHECK: Duration = Duration::from_secs(600);
 const LOGIN_RETRY: Duration = Duration::from_secs(600);
 const LOGIN_RETRY_MAX: Duration = Duration::from_secs(3600);
 
@@ -1205,6 +1210,11 @@ are resumed on the first pass that finds it: {err:#}"
                     issue = number,
                     "retirement held: the session is blocked"
                 );
+                continue;
+            }
+            // A retirement already held because the item itself still
+            // carries a trigger is not re-read on every pass.
+            if self.held_recently(repo, number) {
                 continue;
             }
             match self.retire_issue(repo, owner, name, number).await {
@@ -2814,6 +2824,7 @@ deliveries resume"
         e.seen = diff.seen;
         e.seeded = true;
         e.active = true;
+        e.retirement_held_at = None;
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
@@ -2865,6 +2876,7 @@ deliveries resume"
         e.seen = diff.seen;
         e.seeded = true;
         e.active = true;
+        e.retirement_held_at = None;
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
@@ -3217,6 +3229,7 @@ deliveries resume"
         e.github_state = Some(github_state(issue, st.pr.as_ref(), false));
         e.seen = diff.seen;
         e.active = true;
+        e.retirement_held_at = None;
         e.cleanup_pending = false;
         // A release the agent asked for before the item came back is off:
         // the session is live again in this workspace.
@@ -3229,6 +3242,25 @@ deliveries resume"
         self.fan_out(repo, issue, &diff.rendered, Fyi::Tracked, false, &[])
             .await;
         Ok(())
+    }
+
+    /// Whether a retirement for this item was held recently enough that
+    /// the item does not need reading again yet.
+    fn held_recently(&self, repo: &RepoConfig, number: u64) -> bool {
+        let Some(st) = self
+            .state
+            .repos
+            .get(&repo.name)
+            .and_then(|r| r.issues.get(&number))
+        else {
+            return false;
+        };
+        let Some(at) = st.retirement_held_at.as_deref() else {
+            return false;
+        };
+        chrono::DateTime::parse_from_rfc3339(at)
+            .map(|t| chrono::Utc::now().signed_duration_since(t.with_timezone(&chrono::Utc)))
+            .is_ok_and(|age| age < chrono::Duration::from_std(RETIREMENT_RECHECK).unwrap())
     }
 
     /// Whether an open item still carries any of the triggers it was
@@ -3323,13 +3355,27 @@ deliveries resume"
                 .still_ours(repo, owner, name, &issue, &st.triggers, &mut timeline)
                 .await;
         if still_ours {
-            debug!(
-                repo = repo.name,
-                issue = number,
-                "retirement held: the item still carries a trigger for the bot"
-            );
+            let e = self.entry(repo, number);
+            let first = e.retirement_held_at.is_none();
+            e.retirement_held_at = Some(now_iso());
+            // The first hold says a listing disagreed with the item, which
+            // is worth seeing; the repeats are not.
+            if first {
+                info!(
+                    repo = repo.name,
+                    issue = number,
+                    "retirement held: the listings dropped the item but it still carries a trigger"
+                );
+            } else {
+                debug!(
+                    repo = repo.name,
+                    issue = number,
+                    "retirement still held: the item carries a trigger"
+                );
+            }
             return Ok(());
         }
+        self.entry(repo, number).retirement_held_at = None;
         let merged = closed
             && issue.is_pull_request()
             && match self.gh.pull(owner, name, number).await {
@@ -4648,9 +4694,7 @@ deliveries resume"
         let st = self.entry(&repo, number).clone();
         if st.active {
             let (why, fix) = why_active(&st.triggers);
-            anyhow::bail!(
-                "{id} {why}; its workspace is in use. {fix} first, or `ssf release --as {id} --force` from a shell if the workspace should go anyway"
-            );
+            anyhow::bail!("{id} {why}; its workspace is in use. {fix} first");
         }
         if let Some(h) = st.handover.as_ref() {
             anyhow::bail!("{id}: a handover to {} is pending", h.harness);
@@ -5079,7 +5123,7 @@ fn why_active(triggers: &[String]) -> (&'static str, &'static str) {
     } else if has("review_requested") {
         (
             "still asks the bot for a review",
-            "Close the pull request, or withdraw the review request,",
+            "Close the pull request, or withdraw the review request",
         )
     } else if has("mentioned") {
         (
@@ -5105,7 +5149,20 @@ fn mentions_bot(issue: &Issue, timeline: &[Value], login: &str) -> bool {
         return true;
     }
     timeline.iter().any(|ev| {
-        crate::github::value_str(ev, &["body"]).is_some_and(|b| crate::github::mentions(b, login))
+        let hit = |b: &str| crate::github::mentions(b, login);
+        if crate::github::value_str(ev, &["body"]).is_some_and(hit) {
+            return true;
+        }
+        // A batch of review comments keeps its bodies one level down, the
+        // way `line-commented` and `commit-commented` events are read
+        // everywhere else. A mention of the bot in an inline review
+        // comment is the whole reason many sessions exist.
+        ev.get("comments")
+            .and_then(Value::as_array)
+            .is_some_and(|cs| {
+                cs.iter()
+                    .any(|c| crate::github::value_str(c, &["body"]).is_some_and(hit))
+            })
     })
 }
 
@@ -5770,6 +5827,10 @@ mod tests {
         /// Items served by number (`/repos/o/r/issues/N`), for the paths
         /// that read one item rather than a listing (a session's story).
         issues: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Value>>>,
+        /// Pull requests served by number (`/repos/o/r/pulls/N`). A number
+        /// that is not here answers 500, which is how a test says the
+        /// fetch failed.
+        pulls: std::sync::Arc<std::sync::Mutex<BTreeMap<u64, Value>>>,
         /// The collaborators endpoint: `None` answers 403 (no access), a
         /// list is served with an ETag that changes when it is set.
         collaborators: std::sync::Arc<std::sync::Mutex<Option<Vec<Value>>>>,
@@ -5794,6 +5855,7 @@ mod tests {
             let assigned: Arc<Mutex<Vec<Value>>> = Arc::default();
             let timelines: Arc<Mutex<BTreeMap<u64, Vec<Value>>>> = Arc::default();
             let issues: Arc<Mutex<BTreeMap<u64, Value>>> = Arc::default();
+            let pulls: Arc<Mutex<BTreeMap<u64, Value>>> = Arc::default();
             let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
             let collab_version = Arc::new(AtomicU32::new(1));
             let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
@@ -5807,6 +5869,7 @@ mod tests {
                 collab_version.clone(),
             );
             let i = issues.clone();
+            let pl = pulls.clone();
             tokio::spawn(async move {
                 let other_etags = AtomicU32::new(1);
                 loop {
@@ -5897,6 +5960,12 @@ mod tests {
                                 }
                                 Some(list) => ("200 OK", etag, Value::Array(list).to_string()),
                             }
+                    } else if let Some(pull) = path
+                        .strip_prefix("/repos/o/r/pulls/")
+                        .and_then(|n| n.parse::<u64>().ok())
+                        .and_then(|n| pl.lock().unwrap().get(&n).cloned())
+                    {
+                        ("200 OK", "\"pr\"".to_string(), pull.to_string())
                     } else if let Some(item) = path
                         .strip_prefix("/repos/o/r/issues/")
                         .and_then(|n| n.parse::<u64>().ok())
@@ -5948,6 +6017,7 @@ mod tests {
                 assigned,
                 timelines,
                 issues,
+                pulls,
                 collaborators,
                 collab_version,
                 posts,
@@ -5979,6 +6049,12 @@ mod tests {
         /// deleted, or that this token may not read any more.
         fn set_missing(&self, number: u64) {
             self.issues.lock().unwrap().insert(number, Value::Null);
+        }
+
+        /// Serve one pull request by number. A number never set answers
+        /// 500, so a test can say the fetch failed.
+        fn set_pull(&self, number: u64, pull: Value) {
+            self.pulls.lock().unwrap().insert(number, pull);
         }
 
         fn set_timeline(&self, number: u64, events: Vec<Value>) {
@@ -10199,21 +10275,118 @@ mod tests {
             "retired although the body still mentions the bot"
         );
 
-        // The mention is in a comment instead: the session still stays.
+        assert!(
+            e.entry(&r, 5).retirement_held_at.is_some(),
+            "the hold was not recorded"
+        );
+
+        // While that hold is fresh the item is not read again: the listing
+        // is wrong and stays wrong, and each read walks a whole timeline.
+        stub.hits();
+        e.tick_repo(&r).await.unwrap();
+        let paths: Vec<String> = stub.hits();
+        assert!(
+            !paths.iter().any(|p| p.starts_with("/repos/o/r/issues/5")),
+            "the item was read again inside the hold: {paths:?}"
+        );
+
+        // Once the interval has passed the item is read again. This time
+        // the mention is in a review comment, one level down in the
+        // timeline the way GitHub reports a batch of them.
+        e.entry(&r, 5).retirement_held_at = None;
         stub.set_issue(5, item("nothing to see"));
-        stub.set_timeline(5, vec![comment("@bot what do you think?")]);
+        stub.set_timeline(
+            5,
+            vec![json!({
+                "event": "line-commented",
+                "comments": [{"body": "@bot what do you think?", "user": {"login": "alice"}}]
+            })],
+        );
         e.tick_repo(&r).await.unwrap();
         assert!(
             e.entry(&r, 5).active,
-            "retired although a comment still mentions the bot"
+            "retired although a review comment still mentions the bot"
         );
 
         // A near miss is not a mention, so this one does retire.
+        e.entry(&r, 5).retirement_held_at = None;
         stub.set_timeline(5, vec![comment("ask @bot-2, not this one")]);
         e.tick_repo(&r).await.unwrap();
         assert!(
             !e.entry(&r, 5).active,
             "kept although nothing mentions the bot any more"
+        );
+        assert!(
+            e.entry(&r, 5).retirement_held_at.is_none(),
+            "the hold outlived the retirement"
+        );
+    }
+
+    /// The review-request arm of the same guard, and what a failed
+    /// re-check does: a fetch that says nothing holds the retirement,
+    /// because retiring is the destructive reading of missing evidence.
+    #[tokio::test]
+    async fn a_review_request_still_on_the_pull_request_holds_the_session() {
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        stub.set_issue(
+            7,
+            json!({
+                "number": 7, "title": "t", "body": "no mention here",
+                "html_url": "https://gh/7", "state": "open", "user": {"login": "alice"},
+                "pull_request": {"url": "https://gh/pulls/7"},
+                "created_at": "x", "updated_at": "u1"
+            }),
+        );
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 7, Some("bot/issue-7"), true);
+        {
+            let st = e.entry(&r, 7);
+            st.triggers = vec!["review_requested".into()];
+            st.worktree_id = Some("w7".into());
+            st.worktree_path = Some("/w/7".into());
+            st.terminal_handle = Some("t7".into());
+        }
+        d.seed("w7", "t7", READY_SCREEN);
+
+        // The pull request was never registered, so fetching it fails.
+        // Nothing is known either way, so the session is kept.
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            e.entry(&r, 7).active,
+            "retired on a re-check that could not be made"
+        );
+
+        // It still asks the bot for a review: kept, and for a good reason.
+        e.entry(&r, 7).retirement_held_at = None;
+        stub.set_pull(
+            7,
+            json!({
+                "head": {"ref": "b", "repo": {"full_name": "o/r"}},
+                "base": {"ref": "main"},
+                "requested_reviewers": [{"login": "Bot"}]
+            }),
+        );
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.entry(&r, 7).active, "retired although the review stands");
+
+        // The request has been withdrawn: now it retires.
+        e.entry(&r, 7).retirement_held_at = None;
+        stub.set_pull(
+            7,
+            json!({
+                "head": {"ref": "b", "repo": {"full_name": "o/r"}},
+                "base": {"ref": "main"},
+                "requested_reviewers": []
+            }),
+        );
+        e.tick_repo(&r).await.unwrap();
+        assert!(
+            !e.entry(&r, 7).active,
+            "kept although the review request is gone"
         );
     }
 

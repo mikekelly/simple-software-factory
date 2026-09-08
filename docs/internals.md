@@ -85,7 +85,10 @@ The details behind the README's [How it works](../README.md#how-it-works).
   exists is still in the item. One consequence is that an item the bot was
   only ever mentioned on stays the bot's until it closes, since a mention
   cannot be withdrawn; `ssf release` says that rather than suggesting an
-  unassignment that would do nothing. Removal is the agent's (`ssf
+  unassignment that would do nothing. A retirement held this way is
+  recorded on the item (`retirement_held_at`) and the item is not read
+  again for ten minutes: the listing that dropped it is wrong and stays
+  wrong for a while, and each re-read walks the item's whole timeline. Removal is the agent's (`ssf
   release`) or a person's (`ssf purge`) to ask for, and is refused whenever
   the worktree holds anything that is not on origin (see [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge)).

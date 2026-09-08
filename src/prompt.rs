@@ -1173,6 +1173,13 @@ pub fn unassigned_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext
         && !ctx.triggers.iter().any(|t| t == "assigned")
     {
         format!("[ssf] The review request for @{bot} on {item} has been fulfilled or withdrawn.")
+    } else if ctx.triggers.iter().any(|t| t == "mentioned")
+        && !ctx.triggers.iter().any(|t| t == "assigned")
+    {
+        // The login is written without its `@`: an agent that quotes this
+        // line back into a comment would otherwise mention the bot on the
+        // item and start the session it was just told to end.
+        format!("[ssf] The mention of {bot} that started this session on {item} is gone.")
     } else {
         format!("[ssf] @{bot} is no longer assigned to or requested on {item}.")
     };
