@@ -1845,7 +1845,31 @@ mod tests {
             cfg.vm.backend = Some(vm::BackendKind::Firecracker);
             cfg.vm.dir = base.to_string_lossy().into_owned();
             let vm = vm::Vm::new(&cfg);
-            let readable = Facts::gather(&cfg, &vm).vm_base_unread;
+            // The headline behaviour of the whole change, through the
+            // one function that carries it from the backend to the
+            // page: dropping `vm_strays` here left every hand-built
+            // `Facts` test green.
+            std::fs::create_dir_all(base.join("old")).unwrap();
+            std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+            let gathered = Facts::gather(&cfg, &vm);
+            assert_eq!(
+                gathered
+                    .vm_strays
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["old"],
+                "the VM a rename left behind must reach the report"
+            );
+            assert!(gathered.vm_base_exists, "and so must the snapshot");
+            // ... and the snapshot has to be a snapshot: a `[vm] dir`
+            // that is not there must not be reported as one that is,
+            // since the report's whole `keep:` line for it hangs on this.
+            let mut gone = cfg.clone();
+            gone.vm.dir = base.join("nowhere").to_string_lossy().into_owned();
+            let gone_vm = vm::Vm::new(&gone);
+            assert!(!Facts::gather(&gone, &gone_vm).vm_base_exists);
+            let readable = gathered.vm_base_unread;
             set_mode(&base, 0o000);
             let unread = Facts::gather(&cfg, &vm).vm_base_unread;
             set_mode(&base, 0o755);

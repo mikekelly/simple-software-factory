@@ -1293,12 +1293,8 @@ impl Vm {
     ///
     /// Only directories holding a `data.ext4` count. The images and
     /// downloads share `[vm] dir` with them and are genuinely safe.
-    fn fc_strays(&self) -> Vec<Stray> {
-        self.fc_dir_contents().0
-    }
-
-    /// [`Vm::fc_strays`], and whether the directory could be read at
-    /// all. A `read_dir` that failed is "nobody looked", which the
+    /// The VM directories under `[vm] dir` that this configuration does
+    /// not name, and whether the directory could be read at all. A `read_dir` that failed is "nobody looked", which the
     /// report must not print as "nothing there": a `[vm] dir` left
     /// root-owned by an earlier `sudo`, or on a volume returning `EIO`,
     /// would otherwise get `no VM` over `safe to remove` -- the two
@@ -1330,7 +1326,12 @@ impl Vm {
                 .components()
                 .any(|c| c == std::path::Component::ParentDir);
         if !inside {
-            return (Vec::new(), false);
+            // There is a directory here and nobody looked in it. Saying
+            // `false` made the report confident about contents it had
+            // just declined to read -- `safe to remove` and `no VM` over
+            // a data disk of clones, from the guard added to prevent
+            // exactly that.
+            return (Vec::new(), base.exists());
         }
         let entries = match std::fs::read_dir(&base) {
             Ok(e) => e,
@@ -1366,16 +1367,15 @@ impl Vm {
     /// lima. For the caller that has no tooling to ask with -- which is
     /// exactly when the person cannot run `limactl list` either, so
     /// going quiet then would take the report away at its most useful.
-    pub fn strays_on_filesystem(&self) -> Vec<Stray> {
-        match self.backend() {
-            BackendKind::Firecracker => self.fc_strays(),
-            BackendKind::Lima => {
-                let mut strays = self.fc_strays();
-                strays.extend(self.strays_on_disk());
-                lima::sort_strays(&mut strays);
-                strays
-            }
+    pub fn strays_on_filesystem(&self) -> (Vec<Stray>, bool) {
+        let (mut strays, mut unread) = self.fc_dir_contents();
+        if self.backend() == BackendKind::Lima {
+            let (lima, lima_unread) = self.strays_on_disk_read();
+            strays.extend(lima);
+            unread |= lima_unread;
         }
+        lima::sort_strays(&mut strays);
+        (strays, unread)
     }
 
     /// What is here of this VM, asked of the backend in one pass:
