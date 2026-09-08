@@ -2402,6 +2402,29 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
     }
 }
 
+/// `ssf doctor`'s lines about what this configuration does not name.
+///
+/// A function for the reason `render_vm_status` is one: `main` is not
+/// reachable from a test, and the twin of these three lines in
+/// `ssf vm status` hid a must-fix in three consecutive rounds. This copy
+/// then hid the same one -- naming `[vm] dir` for a fact about lima's
+/// home -- because only the other copy had been extracted.
+pub fn stray_notes(strays: &[vm::Stray], unread: &[PathBuf]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for stray in strays {
+        let _ = writeln!(out, "note {}", stray.describe());
+    }
+    if !unread.is_empty() {
+        // The same sentence `ssf vm status` and `ssf uninstall` print,
+        // from the same function: a directory nobody could read may hold
+        // a VM a rename left behind, and this is the command a person
+        // runs to find out what is wrong.
+        let _ = writeln!(out, "note {}", uninstall::unread_note(unread));
+    }
+    out
+}
+
 /// `ssf vm status` as a person reads it.
 ///
 /// A function, because `main` is not reachable from a test and this
@@ -3996,16 +4019,7 @@ async fn doctor() -> Result<()> {
         } else {
             vm.strays_on_filesystem()
         };
-        for stray in strays {
-            println!("note {}", stray.describe());
-        }
-        if !unread.is_empty() {
-            // The same sentence `ssf vm status` and `ssf uninstall`
-            // print, from the same function: a directory nobody could
-            // read may hold a VM a rename left behind, and this is the
-            // command a person runs to find out what is wrong.
-            println!("note {}", uninstall::unread_note(&unread));
-        }
+        print!("{}", stray_notes(&strays, &unread));
     }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.
@@ -4168,6 +4182,25 @@ mod tests {
         );
         assert!(forwarded_failure_note(&once, "factory", true).is_none());
         assert!(forwarded_failure_note(&Command::Doctor, "factory", false).is_none());
+    }
+
+    #[test]
+    fn doctor_notes_name_the_stray_and_the_directory_it_could_not_read() {
+        // The twin of `render_vm_status`'s lines. Only that copy was
+        // extracted last round, so this one went on naming `[vm] dir`
+        // for a fact about lima's home with nothing to catch it.
+        let text = stray_notes(
+            &[vm::Stray::lima_disk("ssf-old".into())],
+            &[PathBuf::from("/home/me/.lima/_disks")],
+        );
+        assert!(text.contains("ssf leaves it alone"), "{text}");
+        assert!(text.contains("limactl disk delete ssf-old"), "{text}");
+        assert!(
+            text.contains("/home/me/.lima/_disks could not be read"),
+            "{text}"
+        );
+        assert!(!text.contains("/v "), "not [vm] dir: {text}");
+        assert_eq!(stray_notes(&[], &[]), "");
     }
 
     #[test]

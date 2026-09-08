@@ -1059,7 +1059,14 @@ impl Vm {
             cfg: cfg.vm.clone(),
             base,
             dir,
-            lima_home: lima::lima_home(),
+            // Never the developer's own `~/.lima` from a test. This
+            // directory is scanned on both backends now, so a machine
+            // with an `ssf-*` instance in it -- a Mac running the
+            // factory, which is the machine this backend exists for --
+            // would fail the suite on a fixture it never created. Tests
+            // that want a lima home set one, which is #140's rule a
+            // directory further out.
+            lima_home: if cfg!(test) { None } else { lima::lima_home() },
             binary: None,
         }
     }
@@ -1312,6 +1319,12 @@ impl Vm {
     ///
     /// Only directories holding a `data.ext4` count. The images and
     /// downloads share `[vm] dir` with them and are genuinely safe.
+    /// Is this path this VM's own directory, however `[vm] dir` was
+    /// spelled?
+    fn is_own_dir(&self, p: &Path) -> bool {
+        *p == self.dir || Some(p) == std::path::absolute(&self.dir).ok().as_deref()
+    }
+
     /// The VM directories under `[vm] dir` that this configuration does
     /// not name, and whether the directory could be read at all. A `read_dir` that failed is "nobody looked", which the
     /// report must not print as "nothing there": a `[vm] dir` left
@@ -1370,8 +1383,14 @@ impl Vm {
             // removes the link and leaves what it pointed at, so a
             // remedy over one would not be a remedy.
             .filter(|p| {
-                *p != self.dir
-                    && Some(p.as_path()) != std::path::absolute(&self.dir).ok().as_deref()
+                // Under lima this VM's own directory holds a template,
+                // an ssh key and a share -- never a `data.ext4`. One
+                // there is what a machine that switched `[vm] backend`
+                // away from Firecracker and kept its `[vm] name` left,
+                // with every clone in it, and excluding it let
+                // `ssf uninstall` remove the directory with no refusal
+                // and no mention of what was in it.
+                (self.backend() == BackendKind::Lima || !self.is_own_dir(p))
                     && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
                     && p.join("data.ext4").exists()
             })
@@ -3366,6 +3385,53 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vm_status_reads_limas_home_on_both_backends() {
+        // `ssf vm status`, `ssf doctor` and `ssf uninstall` have to
+        // agree about one machine. `status` gathers lima's home in a
+        // branch of its own, so "read under both backends" was pinned
+        // for `survey`/`strays_on_filesystem` and not for the command a
+        // person is most likely to run first.
+        let root = std::env::temp_dir().join(format!(
+            "ssf-status-lima-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = root.join("lima");
+        std::fs::create_dir_all(home.join("ssf-old")).unwrap();
+        std::fs::create_dir_all(root.join("vm")).unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = root.join("vm").to_string_lossy().into_owned();
+        let mut vm = Vm::new(&cfg);
+        vm.lima_home = Some(home.clone());
+        let st = vm.status().await;
+        // ... and a lima home nobody can read is named here too.
+        set_mode(&home, 0o000);
+        let hidden = std::fs::read_dir(&home).is_err();
+        let unread = vm.status().await.unread;
+        set_mode(&home, 0o755);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            st.strays
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["ssf-old"],
+            "a lima instance a backend change left behind"
+        );
+        assert!(st.unread.is_empty(), "readable while readable");
+        // Root reads it regardless; then there is nothing to assert.
+        if hidden {
+            assert_eq!(unread, std::slice::from_ref(&home));
+        }
+    }
+
     #[tokio::test]
     async fn vm_status_lists_each_stray_once() {
         // `[vm] dir`'s strays are gathered for both backends in one
@@ -3583,6 +3649,22 @@ mod tests {
         if let Some(unread) = unread {
             assert_eq!(unread, std::slice::from_ref(&home));
         }
+    }
+
+    #[test]
+    fn a_test_never_reaches_the_real_lima_home() {
+        // Lima's home is scanned on both backends, so a `Vm` built in a
+        // test would otherwise read the developer's own `~/.lima` -- and
+        // on a Mac with an `ssf-*` instance in it, which is the machine
+        // this backend exists for, nine tests failed on a fixture they
+        // never created. #140's rule, one directory further out: a test
+        // that wants a lima home says so.
+        let mut cfg = Config::default();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        assert_eq!(Vm::new(&cfg).lima_home, None);
+        // The real one is still what the resolver answers, so the
+        // guard is about `Vm::new` and not about losing the lookup.
+        assert!(lima::lima_home().is_some() || dirs::home_dir().is_none());
     }
 
     #[test]
