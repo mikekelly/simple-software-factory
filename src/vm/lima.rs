@@ -34,7 +34,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::{HostFacts, Sizes, Vm, make_executable, plan_grow, scripts_dir, sizes_for, which};
 use crate::config::{Config, HerdrConfig, expand_tilde};
@@ -274,8 +274,14 @@ pub fn check_name(name: &str) -> Result<()> {
 /// would hang for the whole timeout instead of printing its log.
 /// `[l]ima-boot[.]sh` matches the running script but not this string.
 fn provision_probe() -> String {
+    // `exit 0` is load-bearing: what the probe found is in its output, not
+    // in its status, and every one of these tests fails in the ordinary
+    // case (no marker yet, or nothing running any more). Without it the
+    // last test decides the status, the run counts as a failed limactl
+    // call, and its output is thrown away -- which is how a build once sat
+    // waiting for a marker the probe had already seen.
     format!(
-        "test -f {PROVISION_MARKER} && echo done; test -s {PROVISION_LOG} && echo log; pgrep -f '{PROVISION_PGREP}' >/dev/null 2>&1 && echo running"
+        "test -f {PROVISION_MARKER} && echo done; test -s {PROVISION_LOG} && echo log; pgrep -f '{PROVISION_PGREP}' >/dev/null 2>&1 && echo running; exit 0"
     )
 }
 
@@ -520,9 +526,13 @@ impl Vm {
         // full pipe would look exactly like a hang, and be killed for it.
         let out = drain(child.stdout.take().expect("piped"));
         let err = drain(child.stderr.take().expect("piped"));
+        let started = Instant::now();
+        debug!(command = %label, "running limactl");
         let status = wait_within(&mut child, &label, limit)?;
+        debug!(command = %label, ?status, elapsed = ?started.elapsed(), "limactl exited; draining its output");
         let stdout = out.join().unwrap_or_default();
         let stderr = err.join().unwrap_or_default();
+        debug!(command = %label, elapsed = ?started.elapsed(), "limactl output drained");
         if !status.success() {
             bail!(
                 "`{label}` failed ({status}): {}",
@@ -547,7 +557,10 @@ impl Vm {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("running {}", self.limactl_hint()))?;
+        let started = Instant::now();
+        debug!(command = %label, "running limactl");
         let st = wait_within(&mut child, &label, limit)?;
+        debug!(command = %label, status = ?st, elapsed = ?started.elapsed(), "limactl exited");
         if !st.success() {
             bail!("`{label}` failed ({st})");
         }
@@ -864,10 +877,22 @@ impl Vm {
         let deadline = Instant::now() + PROVISION_TIMEOUT;
         let mut idle = 0;
         loop {
-            let out = self
+            // A probe that cannot run at all (the instance went away, ssh
+            // is not answering yet) is a round with nothing seen, not a
+            // failure: the wait's own deadline ends it. Said out loud so
+            // it is not silent.
+            let out = match self
                 .limactl_output_within(&["shell", &name, "sh", "-c", &probe], PROBE_LIMIT)
-                .unwrap_or_default();
-            match provision_step(parse_probe(&out), idle) {
+            {
+                Ok(out) => out,
+                Err(e) => {
+                    debug!(error = format!("{e:#}"), "provisioning probe did not run");
+                    String::new()
+                }
+            };
+            let probed = parse_probe(&out);
+            debug!(?probed, idle, "provisioning probe");
+            match provision_step(probed, idle) {
                 Step::Provisioned => return Ok(()),
                 Step::Failed => {
                     let tail = self
@@ -1301,6 +1326,32 @@ mod tests {
         assert!(says_format_true("  - format: true\n"));
         assert!(!says_format_true("# format: true is what a build writes\n"));
         assert!(!says_format_true(""));
+    }
+
+    #[test]
+    fn the_probe_says_what_it_found_in_its_output_not_its_status() {
+        // Every test in the probe fails in the ordinary case, so the script
+        // must end by forcing a zero status; otherwise the call counts as
+        // failed and its output is discarded.
+        let probe = provision_probe();
+        assert!(probe.trim_end().ends_with("exit 0"), "{probe}");
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(
+                probe
+                    .replace(PROVISION_MARKER, "/nonexistent/marker")
+                    .replace(PROVISION_LOG, "/nonexistent/log"),
+            )
+            .output()
+            .expect("sh runs");
+        assert!(
+            out.status.success(),
+            "a probe that finds nothing still exits 0"
+        );
+        assert_eq!(
+            parse_probe(&String::from_utf8_lossy(&out.stdout)),
+            Probe::default()
+        );
     }
 
     #[test]
