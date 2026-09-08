@@ -220,8 +220,9 @@ the service from a dev build, is in [Development](docs/development.md).
 
 [Setup](docs/setup.md) is the document, top to bottom: prerequisites,
 the bot account, the sign-in, who may drive the factory, where the
-agents run, the harness login, the first repository, the first issue,
-upgrading, stopping and uninstalling. The short form of the default path:
+agents run, the harness login, the first repository and the harness and
+model it runs on, the first issue, upgrading, stopping and
+uninstalling. The short form of the default path:
 
 1. **The bot account.** The bot is a GitHub account of its own, created
    for the factory rather than yours (every agent post is made as it,
@@ -238,10 +239,13 @@ upgrading, stopping and uninstalling. The short form of the default path:
    inside the guest. The alternative is the
    agents on this machine, in herdr (the default driver) or in Orca
    (`ssf config set driver orca`), with the harness signed in here.
-3. **A repository**: `ssf repo add owner/name --harness claude` (the
-   *harness* is the agent program: `claude`, `codex`, `gemini`, ...;
-   `ssf agents` lists them), and an `SSF.md` at its root telling agents
-   how you want work done, starting from [`SSF.example.md`](SSF.example.md).
+3. **A repository**: `ssf repo add owner/name --harness claude --model
+   fable --effort medium` (the *harness* is the agent program: `claude`,
+   `codex`, `gemini`, ...; `ssf agents` lists them, and the model and
+   effort are worth choosing rather than leaving to the harness — not
+   every harness has both), and an `SSF.md` at its root telling agents
+   how you want work done, starting from
+   [`SSF.example.md`](SSF.example.md).
 
 `ssf doctor` after each step says what is still missing; the document
 shows what a healthy one looks like. Then assign an issue or pull request
@@ -295,7 +299,7 @@ can reconfigure the factory:
 ```sh
 ssf repo list --json
 ssf repo add acme/widgets --harness codex --instructions "Run make test before opening a PR."
-ssf repo set acme/widgets --model opus --effort high    # ssf models <agent> lists the ids
+ssf repo set acme/widgets --model opus --effort high    # ids: ssf models <agent>; choosing: docs/setup.md
 ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
 ssf repo set acme/widgets --clear model --clear effort
 ssf repo set acme/widgets --allowed-users alice,bob     # who may drive this repository
@@ -371,7 +375,7 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`
 
 | Read | When you want to know |
 |------|-----------------------|
-| [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository, upgrading, uninstalling |
+| [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository and the harness and model it runs on, upgrading, uninstalling |
 | [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` prompt file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
 | [Drivers](docs/drivers.md) | Orca versus herdr, and what each one does with workspaces and terminals |
 | [Inside a VM](docs/vm.md) | running the whole factory in a VM, Firecracker on Linux or lima on macOS: the backends, the image, what gets in, reaching it, what persists |

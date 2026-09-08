@@ -1,6 +1,6 @@
 # Setup
 
-From a fresh Linux machine (Omarchy, Arch, Debian or Ubuntu, Fedora) or Mac to the first issue worked by an agent: prerequisites, the package, the bot account, where the agents run, the first repository, upgrading, stopping and uninstalling. For whoever installs ssf, or the coding agent they ask to; read it top to bottom the first time. Once the bot is signed in, the later steps stand on their own for changing a factory.
+From a fresh Linux machine (Omarchy, Arch, Debian or Ubuntu, Fedora) or Mac to the first issue worked by an agent: prerequisites, the package, the bot account, where the agents run, the first repository and the harness and model it runs on, upgrading, stopping and uninstalling. For whoever installs ssf, or the coding agent they ask to; read it top to bottom the first time. Once the bot is signed in, the later steps stand on their own for changing a factory.
 
 Installed, this file is `/usr/share/doc/ssf/docs/setup.md` on Omarchy
 and `$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS, next to the
@@ -564,20 +564,31 @@ repository (step 3b). `ssf agents` lists the harness ids and which are
 installed.
 
 ```sh
-ssf repo add acme/widgets --harness claude
-ssf repo set acme/widgets --model opus --effort high    # optional; ssf models claude lists the ids
+ssf repo add acme/widgets --harness claude --model fable --effort medium
 ssf repo list --json
 ```
+
+The model and effort are optional and worth choosing rather than
+leaving: [Choosing the harness and the
+model](#choosing-the-harness-and-the-model), below, is how.
 
 Decisions, per repository:
 
 - **`harness`** (required): the agent program signed in in step 7.
-- **`model`, `effort`**: optional. Claude, Codex, Gemini and Grok take
-  Orca's model ids (`opus`, `sonnet`, `gpt-5.5`, ...) and effort levels;
-  Pi, Oh My Pi, OpenCode and Copilot take their own `provider/model` ids.
-  `ssf models <harness>` prints the choices. Changing the harness resets
-  both. See [Models and effort
-  levels](configuration.md#models-and-effort-levels).
+- **`model`, `effort`**: optional, and worth setting. Claude, Codex,
+  Gemini and Grok take Orca's model ids (`opus`, `sonnet`, `gpt-5.5`,
+  ...); Pi, Oh My Pi and OpenCode take their own `provider/model` ids,
+  and Copilot `auto` or a model name. Not every harness has effort
+  levels: Gemini and OpenCode have none, and Crush takes neither (ssf
+  refuses a model for it), so an `--effort` they do not accept is
+  refused when the config loads. `ssf models <harness>` prints the model
+  ids and `ssf agents --json` the effort levels each one takes. Changing
+  the harness resets both. Left unset, the session runs on whatever the
+  harness defaults to, which was chosen for a person at a keyboard
+  rather than for an unattended factory: [Choosing the harness and the
+  model](#choosing-the-harness-and-the-model) below is how to decide,
+  and [Models and effort
+  levels](configuration.md#models-and-effort-levels) is the reference.
 - **`command`**: unless set, every harness starts with its
   permission-free command (`ssf agents --json` shows it as
   `launch_command`, e.g. `claude --dangerously-skip-permissions
@@ -649,6 +660,161 @@ The links line clears itself when the first agent starts. Everything
 else `ok` means the chain is complete: token, key, driver, harness signed
 in where the agents run, the repository and who commits on it.
 
+### Choosing the harness and the model
+
+`model` and `effort` are worth a deliberate choice rather than the
+harness's defaults, and so, before them, is the harness itself. A
+factory is not one person at a keyboard: it runs sessions unattended,
+several at once, for as long as there are issues, and every one of them
+spends a subscription or a bill. The question to answer per repository
+is how much intelligence you can buy for what a task there costs — a
+repository of small, well-specified changes and one of design work do
+not want the same answer.
+
+If you are a coding agent following this document, this is yours to
+raise rather than the person's to remember. Work the choice out, propose
+it with the reasoning, and let them decide what to spend.
+
+**What you can actually run.** In the VM, `ssf vm status`'s `logins:`
+line names the harnesses installed in the guest and says which are
+signed in; it needs the VM running, and prints nothing at all when the
+guest cannot be reached. `ssf agents` and `ssf models` are not forwarded
+into the VM, so on the host they answer for the host; `ssf vm run --
+agents` and `ssf vm run -- models <harness>` ask the guest, which is the
+answer that matters — and for `pi`, `omp` and `opencode` it is the only
+one that works, since ssf gets their lists by running the binary itself,
+and the binary is in the guest. (With the factory on the host, both
+commands already ask the right machine.) What the machine cannot tell
+you, ask: which subscriptions or plans are already paid for and can be
+signed in as in step 7, whether there are API keys and whether metered
+spend is acceptable, and what the factory must not exhaust — a plan
+shared with the person's own interactive use will be. What is already
+paid for and what is metered are constrained differently — a plan by its
+allowance, a key by the bill — and neither
+is free at the margin; which one you are on changes how to read the
+chart below.
+
+Harnesses differ in what they can reach. `claude`, `codex`, `gemini` and
+`grok` take Orca's model ids for their own vendor's models; `copilot`
+takes `auto` or a model name; `pi`, `omp` and `opencode` take a
+`provider/model` id and so reach whatever their providers carry,
+OpenRouter among them, much the widest choice; and `crush` has no model
+flag for its terminal interface, so ssf refuses a `model` for it and
+whatever choice it offers is made in its own configuration instead.
+Effort levels are not universal either: Gemini and OpenCode have none.
+See [Models and effort
+levels](configuration.md#models-and-effort-levels).
+
+**Which model.** Do not answer this from memory: your training data is
+older than the models you can run today, and prices move. Look it up.
+Artificial Analysis publishes the chart that answers it directly —
+[Intelligence Index vs. Cost per Intelligence Index
+Task](https://artificialanalysis.ai/models#intelligence-comparison-tabs) —
+plotting each model's Artificial Analysis Intelligence Index against the
+weighted cost of one Index task on it, with a Pareto line through the
+models nothing else beats on both counts. Read that frontier, filtered
+to the models your harnesses can reach, and compare cost per task rather
+than price per token: what a task costs is the price per token times the
+tokens spent getting to the answer, and those two pull against each
+other. Effort level is part of the same choice, not a detail after it —
+the chart plots a model's reasoning levels as separate points because
+they land in different places on it.
+
+It is an interactive chart, so fetching the page may give you its frame
+and not its numbers. If you cannot read it, say so rather than falling
+back on memory: ask the person to open it and tell you where the models
+in question sit, or leave `model` and `effort` unset with a note of what
+you would have looked up. A guess dressed up as a recommendation is
+worse than the default.
+
+The chart's cost axis is an API price, and the default path here is a
+subscription, where the binding constraint is not the bill but the
+plan: how much of it a session eats and how soon the factory is rate
+limited out of the day, sharing the allowance with the person's own
+interactive use. The intelligence axis still ranks the models; the cost
+axis becomes how much of the plan a task spends, which the chart cannot
+tell you and the person can — ask what the plan allows and what it must
+leave them. On a subscription, a cheaper model on the tier that spends
+most of the tokens buys hours of factory rather than pennies. Where
+spend is metered, read the chart's cost axis as it stands.
+
+**Three tiers.** A session is an orchestrator: it reads the item, plans,
+delegates to subagents and reviews what comes back (that is what
+`SSF.md` tells it to do, step 9). So there are three model choices to
+make, and ssf makes only the first.
+
+| Tier | What runs there | Where it is set |
+|------|-----------------|-----------------|
+| The session | Reading the item, planning, delegating, reviewing, writing on GitHub; the only context that sees the whole item | `repo.model` and `repo.effort`, which ssf appends to the harness's command |
+| Subagents that think | Planning, diagnosis, the gauntlet | The harness's own configuration, and what `SSF.md` tells the session to spawn them on |
+| Subagents that do the work | Implementing a planned change, tests, mechanical edits — most of the tokens spent | The same |
+
+ssf starts one session per item, so `repo.model` and `repo.effort` are
+that session's. What that session spawns underneath itself is between it
+and its harness, and harnesses differ: on some a subagent inherits the
+session's model unless the session or an agent definition names another,
+so leaving the last two rows unsaid does not make them cheap — it makes
+them the session's model. Read how the harness picks a subagent's model
+before you fix the session's, and write what you want into the
+repository's `SSF.md` (step 9), bearing in mind what that line is: a
+rule in a prompt, not configuration. It works where the harness lets a
+session choose a model as it spawns one, and it is advice a session can
+get wrong.
+
+**An example**, the maintainer's, from the chart in September 2026 — the
+shape the answer takes, not ids to copy:
+
+- **Claude Code** — Fable 5.1 at `medium` for the session and for the
+  thinking subagents, Opus 5 at `medium` for the work.
+- **Codex** — GPT-6 Astra at `low` for the session and the thinking
+  subagents, GPT-5.6 Luna at `xhigh` for the work.
+- **Oh My Pi** — GLM-5.3-Flash for the session and the thinking
+  subagents, DeepSeek V4 Pro at `max` for the work.
+
+What the three have in common is the split, not a ranking: one model for
+the two tiers whose tokens are few and whose mistakes are expensive, and
+another for the tier that spends most of them, which wants the most work
+per unit of cost and can be run at a high effort level to get it. Which
+model belongs on which side, and at what effort, is the chart's answer
+rather than a rule of thumb — in one row above the session runs on a
+small fast model and in another on a frontier one.
+
+Writing it down, with the session's model in the same command that adds
+the repository (`ssf repo set <owner/name> --model <id> --effort
+<level>` changes it later, and `--clear model --clear effort` puts it
+back to the harness's own defaults):
+
+```sh
+ssf repo add acme/widgets --harness claude --model fable --effort medium
+```
+
+`fable` there is the family alias Claude Code takes; ids are passed
+through as given, so where you want the exact model the chart names
+rather than whichever the family currently points at, pass its full id,
+and a model newer than ssf's catalogue works as long as the harness
+knows it (`ssf models <harness>` lists what it knows of, asking the
+harness itself where it has to). An effort level the harness does not
+accept is refused when the config loads. Keep both out of
+`repo.command`: ssf appends the harness's own model and effort flags to
+whatever `command` is, so a `command` that names a model itself leaves
+the agent with the flag twice and which one it honours is its own
+business.
+
+A change applies to the next session started on the repository, a
+resumed one included, and an item already running keeps what it started
+with until then. The exception is an item that has been handed over: a
+handover's model and effort are kept on the item and win over the
+repository's until its workspace is released (see [Per-item
+overrides](configuration.md#per-item-overrides)). `ssf handover` is also
+how one item is moved on its own, but it is not a flag change: it needs
+a `--harness` and a summary, and it ends the session that is there on
+the daemon's next pass and starts a new one, which reads the item and
+the summary rather than the conversation it replaces.
+
+Come back to the choice when a harness ships a new model, when sessions
+start needing more correction, or when the bill or the rate limit moves:
+the chart is different every few weeks.
+
 ## 9. Project notes and boards
 
 **`SSF.md`.** ssf's own prompts carry only what ssf owns (which bot the
@@ -658,13 +824,22 @@ root, appended to every initial prompt: comment when starting, when a
 decision is needed and when done; ask on the item rather than guess (the
 agent is woken when someone answers); branch and PR conventions (work on
 the item's branch, `Closes #N`, do not merge or close, who merges);
-what to run before a PR; what the board columns mean; the gauntlet.
-Start from `/usr/share/ssf/SSF.example.md` (macOS:
-`$(brew --prefix)/share/ssf/SSF.example.md`). `CLAUDE.md` and `AGENTS.md`
-stay for what every user of the repository wants; `SSF.md` is for what
-only ssf agents need. `ssf doctor` reports a repository without the file
-(`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`),
-read through the GitHub API, so the check needs no clone. Details: [The
+what to run before a PR; what the board columns mean; the gauntlet;
+which models the session should spawn subagents on (the second and third
+rows of [Choosing the harness and the
+model](#choosing-the-harness-and-the-model), the ones `repo.model` does
+not reach, with the effort level where the harness has one); that the
+session is responsible for the item being one cohesive piece of work,
+splitting it into sub-issues and sibling issues when it is not, so the
+work can be followed from the issue tree; and that the plan goes into
+the body of the item before execution starts and is kept up to date
+there. Start from `/usr/share/ssf/SSF.example.md` (macOS:
+`$(brew --prefix)/share/ssf/SSF.example.md`). `CLAUDE.md` and
+`AGENTS.md` stay for what every user of the repository wants; `SSF.md`
+is for what only ssf agents need. `ssf doctor` reports a repository
+without the file (`FAIL no SSF.md in owner/name; start from
+/usr/share/ssf/SSF.example.md`), read through the GitHub API, so the
+check needs no clone. Details: [The
 per-project prompt file](configuration.md#the-per-project-prompt-file).
 
 **The gauntlet.** ssf runs one session per item and starts no reviewer
@@ -869,8 +1044,11 @@ config's `vm.enabled` is cleared, so `status` does not go looking for it.
    running, or Orca with `driver = "orca"`.)
 6. `ssf vm login <harness>` (**you**, at the terminal), or the harness's
    own login on the host; `logged in` on `ssf vm status`.
-7. `ssf repo add owner/name --harness <id>`; `ssf doctor` clean but for
-   the links line.
+7. `ssf repo add owner/name --harness <id>`, with a `--model` (and an
+   `--effort`, where the harness has them) you chose ([Choosing the
+   harness and the model](#choosing-the-harness-and-the-model)) rather
+   than the harness's defaults; `ssf doctor` clean but for the links
+   line.
 8. `SSF.md` at the repository root.
 9. Assign an issue to the bot; a workspace appears and the agent
    comments.
