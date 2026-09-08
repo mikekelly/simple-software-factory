@@ -3967,14 +3967,7 @@ async fn doctor() -> Result<()> {
             vm.strays_on_filesystem()
         };
         for stray in strays {
-            println!(
-                "note {} {}, which this config does not name ([vm] name = {}); ssf leaves it alone -- `{}` removes it{}",
-                stray.what(),
-                stray.name,
-                cfg.vm.name,
-                stray.remove,
-                stray.caveat()
-            );
+            println!("note {}", stray.describe());
         }
     }
     // The widget lives on the host; inside the guest there is no Omarchy
