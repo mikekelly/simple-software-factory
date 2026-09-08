@@ -4,17 +4,18 @@
 //! `ssf-<name>`, and the same guest scripts and units as the
 //! Firecracker image. The flow:
 //!
-//! * `ssf vm build`: preflight (`limactl`, and qemu on Linux), the
-//!   template `<vm.dir>/<name>/lima.yaml` from `[vm]` (a cloud image lima
-//!   maintains per architecture, or `vm.image`; the sizes; the share
-//!   mount; the data disk; the ssh port), `share/` written, the data disk
-//!   created, `limactl create` and a first `limactl start`. That first
-//!   boot provisions the guest once: the template's provision script runs
-//!   `/mnt/ssf/guest/lima-boot.sh` as root at every boot, which runs
-//!   `provision.sh` when `/etc/ssf-image-built` is missing (packages, the
-//!   `ssf` user, herdr, the harness CLIs, the units) and writes the marker
-//!   on success. The host waits for the marker over `limactl shell`, then
-//!   for ssh as `ssf`, and stops the instance.
+//! * `ssf vm build`: preflight (`limactl` at [`MIN_LIMA`] or newer, and
+//!   qemu on Linux), the template `<vm.dir>/<name>/lima.yaml` from `[vm]`
+//!   (a cloud image lima maintains per architecture, or `vm.image`; the
+//!   sizes; the share mount; the data disk; the ssh port), `share/`
+//!   written, the data disk created, `limactl create` and a first
+//!   `limactl start`. That first boot provisions the guest once: the
+//!   template's provision script runs `/mnt/ssf/guest/lima-boot.sh` as
+//!   root at every boot, which runs `provision.sh` when
+//!   `/etc/ssf-image-built` is missing (packages, the `ssf` user, herdr,
+//!   the harness CLIs, the units) and writes the marker on success. The
+//!   host waits for the marker over `limactl shell`, then for ssh as
+//!   `ssf`, and stops the instance.
 //! * `ssf vm start`: `share/` written fresh (the guest scripts, the seed
 //!   tree, `lima.env`, a herdr binary when the host has one for the
 //!   guest), `limactl start`, the marker checked (a reset instance
@@ -110,6 +111,67 @@ const WAIT_POLL: Duration = Duration::from_millis(100);
 /// `format` off once the disk exists (`limactl help yq-restrictions`).
 const FORMAT_OFF: &str = ".additionalDisks[0].format = false";
 
+/// The oldest lima ssf drives. Three things in this file are pinned to a
+/// lima version, and this is the highest of them:
+///
+/// * The template names its base image `template:_images/archlinux`. That
+///   opaque form of the locator is lima 2.0's ("Template locator
+///   `template://...` should be written `template:...` since Lima v2.0",
+///   lima says on the older spelling); a 1.x lima parses it as an empty
+///   filename and dies with `filename "" is invalid`.
+/// * The `_images/` templates themselves arrived in lima 1.1 -- and lima
+///   2.0.0's release *tarball* ships that directory empty (its Makefile
+///   left `TEMPLATE_IMAGES` out of the artifact), so
+///   `template:_images/archlinux` is "not found" on the binaries lima
+///   published for it, however it is spelled. A 2.0.0 built from source,
+///   which is what Homebrew does, has the templates and would work; the
+///   floor excludes it anyway rather than admitting a version whose
+///   official binaries do not run ssf, and 2.0.1 came four hours later
+///   the same day.
+/// * The share the guest provisions itself from is mounted before the
+///   provision scripts run, which is what leaving `mountType` out of the
+///   template buys (see [`render_template`]): 9p for qemu is lima's
+///   default only from 1.0, and reverse-sshfs before that, which the
+///   host agent mounts around the time the hook starts waiting for it
+///   rather than ahead of it (see [`boot_hook`]).
+///
+/// ssf is tested against 2.2.0.
+pub const MIN_LIMA: LimaVersion = LimaVersion(2, 0, 1);
+
+/// A lima version, compared as major, then minor, then patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LimaVersion(pub u32, pub u32, pub u32);
+
+impl std::fmt::Display for LimaVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
+/// The version out of `limactl --version` (`limactl version 2.2.0`), or
+/// `None` when the line does not carry one -- a lima built without its
+/// version stamped in prints `<unknown>`, and preflight lets that
+/// through rather than refusing a lima it merely failed to read.
+///
+/// Only the numeric core is compared: a build from git describes itself
+/// as `2.2.0-15-g1234567`, which is *newer* than 2.2.0, so reading the
+/// suffix as semver's pre-release would turn a newer lima into an older
+/// one and refuse it. The cost is that `2.0.1-rc.0` passes as 2.0.1,
+/// which is the direction to err in.
+fn parse_lima_version(out: &str) -> Option<LimaVersion> {
+    let word = out
+        .lines()
+        .find(|l| !l.trim().is_empty())?
+        .split_whitespace()
+        .last()?;
+    let core = word.trim_start_matches('v').split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some(LimaVersion(major, minor, patch))
+}
+
 /// lima's name for a host architecture (the guest's too).
 pub fn lima_arch(arch: &str) -> Result<&'static str> {
     match arch {
@@ -149,7 +211,13 @@ pub struct Template<'a> {
 
 /// The lima template for a VM. `mountType` is left to lima (9p on qemu,
 /// virtiofs on vz: both are mounted before the provision scripts run;
-/// reverse-sshfs would not be).
+/// reverse-sshfs would not be). That default is what [`MIN_LIMA`] holds
+/// the floor for, rather than the type being written here: naming one
+/// would have to name the right one per `vmType`, and would override
+/// lima's own fallback for a guest whose kernel cannot do 9p. It leaves
+/// one case the floor cannot reach -- a `mountType` set for every
+/// instance in lima's `~/.lima/_config` -- which is why [`boot_hook`]'s
+/// failure names `mountType` rather than only the mount point.
 pub fn render_template(t: &Template) -> String {
     let mut y = String::from(
         "# written by ssf; edit config.toml [vm] and run `ssf vm build --force` instead\n",
@@ -209,6 +277,20 @@ pub const SHARE_WAIT_SECS: u32 = 120;
 /// [`PROVISION_TIMEOUT`] with nothing to show. So the one failure the
 /// guest cannot delegate is handled here, in the log the host reads.
 ///
+/// What it says when the share never arrives names `mountType`, because
+/// that decides *when* the share is there and it is not ssf's to decide
+/// alone. 9p and virtiofs are mounted from cloud-init's fstab and
+/// lima's own boot scripts, both before this hook runs. reverse-sshfs
+/// is mounted by the host agent instead, once the guest's boot scripts
+/// have satisfied its essential requirements -- which is about when
+/// this hook starts, so it races [`SHARE_WAIT_SECS`] rather than
+/// beating it, and usually wins. [`MIN_LIMA`] settles lima's default
+/// (9p for qemu since lima 1.0, virtiofs for vz), but the person's own
+/// `_config/default.yaml` and `_config/override.yaml` in lima's home
+/// set it too, the latter over any template, and no version floor
+/// reaches those. So the message says where to look rather than what to
+/// conclude.
+///
 /// The log is truncated in the first line of the hook, before that wait,
 /// and not in `lima-boot.sh`: the host's rule is that a log with none of
 /// the guest scripts running means *this* boot's attempt died, and while
@@ -235,7 +317,7 @@ for ((i = 0; i < {SHARE_WAIT_SECS}; i++)); do
     sleep 1
 done
 if [ ! -f "$boot" ]; then
-    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s; is the {GUEST_MOUNT} mount in place?\n' "$boot" | tee -a "$log"
+    printf 'ssf-provision: FAILED: %s is not there after {SHARE_WAIT_SECS}s: the {GUEST_MOUNT} share never arrived. Check mountType on the host -- 9p and virtiofs are mounted before this runs, reverse-sshfs while it waits -- in the template and in _config/default.yaml and _config/override.yaml under lima home (~/.lima, or $LIMA_HOME).\n' "$boot" | tee -a "$log"
     exit 1
 fi
 exec bash "$boot"
@@ -749,6 +831,19 @@ impl Vm {
         }
     }
 
+    /// Which limactl ran, for a message about a limactl that *did* run:
+    /// [`Vm::limactl_hint`] is written for one that could not be found,
+    /// and reads as a question rather than an answer next to a version.
+    fn limactl_where(&self) -> String {
+        match &self.cfg.limactl {
+            Some(p) => format!("[vm] limactl = {p}"),
+            None => which("limactl").map_or_else(
+                || "limactl on PATH".to_string(),
+                |p| p.display().to_string(),
+            ),
+        }
+    }
+
     /// The instance, when lima has it.
     pub(super) fn lima_instance(&self) -> Result<Option<Instance>> {
         self.lima_instance_within(QUICK_LIMIT)
@@ -840,11 +935,27 @@ impl Vm {
         let arch = self.lima_arch()?;
         let os = std::env::consts::OS;
         let vm_type = self.cfg.vm_type.as_deref();
-        if let Err(e) = self.limactl_output_within(&["--version"], PROBE_LIMIT) {
-            bail!(
-                "limactl does not run ({}): {e:#}; install lima (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
+        let version = match self.limactl_output_within(&["--version"], PROBE_LIMIT) {
+            Ok(out) => out,
+            Err(e) => bail!(
+                "limactl does not run ({}): {e:#}; install lima {MIN_LIMA} or newer (`brew install lima` on macOS, the `lima` package on Linux) or set [vm] limactl to it",
                 self.limactl_hint()
-            );
+            ),
+        };
+        // The version was fetched anyway to see that limactl runs, so it
+        // is read: an older lima does not fail here, it fails inside
+        // `limactl create` on a base image it could not resolve, which
+        // does not name the reason.
+        match parse_lima_version(&version) {
+            Some(v) if v < MIN_LIMA => bail!(
+                "this is lima {v} ({}), and ssf needs {MIN_LIMA} or newer: the VM template names its base image the way lima 2.0 spells a template locator, and leaves the share's mount type to lima, whose default for qemu is 9p -- mounted before the guest provisions itself -- only from lima 1.0. Upgrade lima (`brew upgrade lima` on macOS, your distribution's package or lima's release tarball on Linux), or point [vm] limactl at a newer one",
+                self.limactl_where()
+            ),
+            Some(_) => {}
+            None => warn!(
+                "no version in `limactl --version` ({}); ssf needs lima {MIN_LIMA} or newer",
+                version.trim()
+            ),
         }
         if !platform::is_macos() && vm_type == Some("vz") {
             bail!("[vm] vm_type = \"vz\" is macOS only; unset it or use \"qemu\" here");
@@ -1683,6 +1794,113 @@ mod tests {
     }
 
     #[test]
+    fn the_lima_version_is_read_out_of_what_limactl_prints() {
+        // What a release prints.
+        assert_eq!(
+            parse_lima_version("limactl version 2.2.0\n"),
+            Some(LimaVersion(2, 2, 0))
+        );
+        // A `v` prefix, and a build from git: newer than the release it
+        // names, so the suffix is dropped rather than read as semver's
+        // pre-release, which would make it older.
+        assert_eq!(
+            parse_lima_version("limactl version v2.2.0-15-g1234567"),
+            Some(LimaVersion(2, 2, 0))
+        );
+        assert_eq!(
+            parse_lima_version("limactl version 2.3.0-beta.0"),
+            Some(LimaVersion(2, 3, 0))
+        );
+        // Two components are a version; a lima with none is not read as
+        // one, so that preflight lets it through instead of refusing it.
+        assert_eq!(
+            parse_lima_version("limactl version 2.1"),
+            Some(LimaVersion(2, 1, 0))
+        );
+        assert_eq!(parse_lima_version("limactl version <unknown>"), None);
+        assert_eq!(parse_lima_version("limactl version HEAD"), None);
+        assert_eq!(parse_lima_version(""), None);
+    }
+
+    /// What `lima_preflight` says with a `limactl` that prints
+    /// `line` for `--version` and answers nothing else.
+    fn preflight_against(line: &str) -> Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-lima-ver-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let limactl = dir.join("limactl");
+        std::fs::write(&limactl, format!("#!/bin/sh\nprintf '%s\\n' '{line}'\n")).unwrap();
+        make_executable(&limactl).unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.dir = dir.join("vm").to_string_lossy().into_owned();
+        cfg.vm.name = "one".into();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        cfg.vm.limactl = Some(limactl.to_string_lossy().into_owned());
+        let out = Vm::new(&cfg).lima_preflight();
+        let _ = std::fs::remove_dir_all(&dir);
+        out
+    }
+
+    #[test]
+    fn a_lima_under_the_floor_is_refused_with_its_version_named() {
+        // The version limactl was asked for anyway is read: an older
+        // lima used to get all the way to a first boot and fail there,
+        // over a base image it could not resolve or a share that was
+        // mounted too late, saying neither.
+        let e = format!(
+            "{:#}",
+            preflight_against("limactl version 1.2.1").unwrap_err()
+        );
+        assert!(e.contains("lima 1.2.1"), "{e}");
+        assert!(e.contains("2.0.1 or newer"), "{e}");
+        assert!(e.contains("Upgrade lima"), "{e}");
+        // The version gate is passed on a new enough lima, and on one
+        // whose version cannot be read at all -- a lima built without it
+        // stamped in prints `<unknown>`, and refusing that would be
+        // refusing a lima that was never asked about. Whatever preflight
+        // goes on to say about qemu on this machine is not this gate's.
+        for line in ["limactl version 2.2.0", "limactl version <unknown>"] {
+            let after = preflight_against(line).err().map(|e| format!("{e:#}"));
+            assert!(
+                !after.as_deref().unwrap_or_default().contains("or newer"),
+                "{after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_floor_is_the_oldest_lima_that_resolves_the_templates_base() {
+        // 2.0.1, not 2.0.0: the opaque locator the template writes is
+        // how lima 2.0 spells one, and 2.0.0's release tarball ships
+        // `templates/_images/` empty. Held here so the constant and the
+        // reason cannot drift apart.
+        // The versions the floor was settled against by running them:
+        // 1.2.1 and 2.0.0 fail `limactl template validate` on the
+        // template ssf renders, 2.0.1 and 2.2.0 pass it.
+        assert_eq!(MIN_LIMA.to_string(), "2.0.1");
+        assert!(LimaVersion(1, 2, 1) < MIN_LIMA);
+        assert!(LimaVersion(2, 0, 0) < MIN_LIMA);
+        assert!(LimaVersion(2, 0, 1) >= MIN_LIMA);
+        assert!(LimaVersion(2, 2, 0) >= MIN_LIMA);
+        // Both bases are named in the opaque form the floor is chosen
+        // for -- `template://...`, which every 1.x takes, would mean a
+        // different floor.
+        for arch in ["x86_64", "aarch64"] {
+            let base = base_template(arch);
+            assert!(
+                base.starts_with("template:_images/"),
+                "{base}: the base locator moved; MIN_LIMA is chosen for it"
+            );
+        }
+    }
+
+    #[test]
     fn template_has_the_base_per_arch_the_sizes_the_mount_and_the_disk() {
         let vm = vm();
         let t = Template {
@@ -1701,7 +1919,14 @@ mod tests {
         assert!(y.contains("base:\n  - template:_images/archlinux\n"), "{y}");
         assert!(!y.contains("images:"), "{y}");
         assert!(!y.contains("vmType"), "{y}");
-        assert!(!y.contains("mountType"), "{y}");
+        // No `mountType` field: the type is lima's to pick (see
+        // `render_template`). The word itself does occur, in the boot
+        // hook's failure message, so this looks for the key rather than
+        // the string.
+        assert!(
+            !y.lines().any(|l| l.trim_start().starts_with("mountType")),
+            "{y}"
+        );
         assert!(y.contains("arch: x86_64\n"), "{y}");
         assert!(y.contains("cpus: 3\n"), "{y}");
         assert!(y.contains("memory: \"8192MiB\"\n"), "{y}");
@@ -1877,6 +2102,14 @@ mod tests {
             "{hook}"
         );
         assert!(hook.contains(&format!("i < {SHARE_WAIT_SECS}")), "{hook}");
+        // And what it says when the wait runs out names the one thing the
+        // version floor cannot settle: a `mountType` in lima's own
+        // `_config` that mounts the share only once the guest is up.
+        assert!(hook.contains("mountType"), "{hook}");
+        assert!(hook.contains("_config/override.yaml"), "{hook}");
+        // lima's home is not always `~/.lima`, and the message is read
+        // by someone looking for a file.
+        assert!(hook.contains("$LIMA_HOME"), "{hook}");
         // The log is emptied before that wait, not after it and not in
         // lima-boot.sh: the host reads "a log and none of the guest
         // scripts running" as this attempt having died, and while the

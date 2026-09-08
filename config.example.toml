@@ -68,7 +68,7 @@
 # gvproxy = "..."
 # kernel = "..."
 # rootfs = "..."
-# limactl = "limactl"                          # lima: the limactl binary, when not the one on PATH
+# limactl = "limactl"                          # lima: the limactl binary, when not the one on PATH; lima 2.0.1 or newer either way
 # image = "https://.../image.qcow2"            # lima: a cloud-init image (URL or path) instead of the default for the guest's architecture
 # vm_type = "vz"                               # lima: vz | qemu; unset = lima's default
 # guest_binary = "~/dl/ssf-linux"              # a Linux ssf binary for the guest; unset = this binary on Linux, else the release asset for this version via gh

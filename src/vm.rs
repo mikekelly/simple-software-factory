@@ -522,7 +522,10 @@ pub fn backend_tools(
                     |p| expand_tilde(p).to_string_lossy().into_owned(),
                 ),
                 device: false,
-                install: "install lima (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it".into(),
+                install: format!(
+                    "install lima {} or newer (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it",
+                    lima::MIN_LIMA
+                ),
             }];
             if lima_uses_qemu(os, vm_type) {
                 v.push(Tool {
@@ -3214,6 +3217,16 @@ mod tests {
         let mac = backend_tools(BackendKind::Lima, "macos", "aarch64", None, None);
         assert_eq!(mac.len(), 1);
         assert_eq!(mac[0].name, "limactl");
+        // The floor is in what it says to install. That string is only
+        // rendered for a tool that is missing, so it is what someone
+        // with no lima at all is told to get -- the version of a lima
+        // that *is* installed is `ssf vm build`'s to check, not this
+        // line's.
+        assert!(
+            mac[0].install.contains(&lima::MIN_LIMA.to_string()),
+            "{:?}",
+            mac[0]
+        );
         // ... unless the config asks for qemu, which is the driver that
         // has to be installed. Keyed on the OS alone, a Mac with
         // `[vm] vm_type = "qemu"` passed every check ssf makes and then

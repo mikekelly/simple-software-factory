@@ -114,19 +114,45 @@ virtualisation is not needed); on Linux it uses qemu, so it is the way
 to run the VM on a machine without `/dev/kvm` or on aarch64, slower than
 Firecracker. Nothing runs as root.
 
-The host needs `limactl` (`brew install lima` on macOS, which the
-Homebrew `ssf` formula pulls in; the `lima` package or lima's release
-tarball on Linux, or `[vm] limactl` pointing at one elsewhere), `gh`
-(the GitHub CLI, to fetch the guest's `ssf` binary on a Mac; see below),
-`openssh`, and `qemu-system-x86_64` or `qemu-system-aarch64` for the
-machine's architecture wherever qemu is the driver (Arch: `qemu-full` or
-`qemu-base`; Debian and Ubuntu: `qemu-system-x86` or `qemu-system-arm`;
-Fedora: `qemu-system-x86` or `qemu-system-aarch64`; macOS: `brew install
-qemu`). That is every Linux host, and a Mac only when `[vm] vm_type` is
-`"qemu"` -- lima's own default there is `vz`, the Virtualization
-framework, which needs no qemu at all.
-`ssf vm build` checks for them first and names what is missing, as does
-the `tooling:` line of `ssf vm status`.
+The host needs `limactl`, **lima 2.0.1 or newer** (`brew install lima`
+on macOS, which the Homebrew `ssf` formula pulls in; the `lima` package
+or lima's release tarball on Linux, or `[vm] limactl` pointing at one
+elsewhere), `gh` (the GitHub CLI, to fetch the guest's `ssf` binary on a
+Mac; see below), `openssh`, and `qemu-system-x86_64` or
+`qemu-system-aarch64` for the machine's architecture wherever qemu is
+the driver (Arch: `qemu-full` or `qemu-base`; Debian and Ubuntu:
+`qemu-system-x86` or `qemu-system-arm`; Fedora: `qemu-system-x86` or
+`qemu-system-aarch64`; macOS: `brew install qemu`). That is every Linux
+host, and a Mac only when `[vm] vm_type` is `"qemu"` -- lima's own
+default there is `vz`, the Virtualization framework, which needs no qemu
+at all. `ssf vm build` checks for them first and names what is missing,
+as does the `tooling:` line of `ssf vm status`.
+
+The build also reads what `limactl --version` prints and refuses an
+older lima by name, rather than letting it fail at the first boot. Three
+things want 2.0.1. The template names its base image the way lima 2.0
+spells a template locator, and a 1.x lima dies on that with `filename ""
+is invalid`. lima 2.0.0's release tarball ships the `_images` templates
+it points at as an empty directory, so the base is not found there
+either (a 2.0.0 built from source, which is what Homebrew does, has
+them; the floor excludes it anyway, and 2.0.1 came the same day). And
+the template leaves the share's mount type to lima, whose default for
+qemu is 9p -- mounted before the guest provisions itself -- only from
+lima 1.0; reverse-sshfs, the default before that, is mounted by the host
+agent instead, around the time the guest starts waiting for the share
+rather than ahead of it. A
+`limactl` whose version cannot be read (a build with none stamped in
+prints `<unknown>`) is let through with a warning. ssf is tested against
+lima 2.2.0.
+
+The version check is `ssf vm build`'s: the `tooling:` line reports where
+`limactl` was found, not what version it is, so an old lima shows there
+as installed and is refused by the build. And the floor settles lima's
+*default* mount type, not the person's: `_config/default.yaml` in lima's
+home sets it where the template is silent, and `_config/override.yaml`
+sets it over any template. Which is why the guest's own failure, when
+the share never arrives, names `mountType` and those two files rather
+than only the mount point.
 
 Two places hold a lima VM. The instance itself is lima's, named
 `ssf-<vm.name>` (`ssf-default`) in lima's own home (`~/.lima`, or
