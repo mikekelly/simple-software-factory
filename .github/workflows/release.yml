@@ -4,11 +4,13 @@
 # of that tag, creating it if it does not exist yet. On a manual run
 # (workflow_dispatch) everything is built the same way and uploaded as
 # workflow artifacts only, with the version from Cargo.toml; no release.
+# Only plain vX.Y.Z tags: a pre-release tag such as v0.2.0-rc1 would make
+# nfpm write 0.2.0~rc1 and makepkg refuse a pkgver with a hyphen.
 name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
     branches: ['bot/issue-127-**']  # TEMPORARY: test run on the issue branch, removed before merge
   workflow_dispatch:
 
@@ -127,10 +129,12 @@ jobs:
           if-no-files-found: error
 
   # One job publishes, after the builds: no race on `gh release create`, and
-  # a release is only made once every package exists (the aarch64 binary is
-  # uploaded when its job succeeded, skipped otherwise). Tags only.
+  # a release is only made once every package exists. The condition spells
+  # that out: always() so a failed aarch64 job does not skip this one, then
+  # the two package jobs must have succeeded (the aarch64 binary is uploaded
+  # when its job succeeded, skipped otherwise). Tags only.
   release:
-    if: github.ref_type == 'tag'
+    if: always() && github.ref_type == 'tag' && needs.linux-packages.result == 'success' && needs.arch-package.result == 'success'
     needs: [linux-packages, arch-package, linux-aarch64-binary]
     runs-on: ubuntu-latest
     steps:

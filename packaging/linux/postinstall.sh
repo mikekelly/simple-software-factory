@@ -1,7 +1,9 @@
 #!/bin/sh
 # Post-install script of the ssf .deb and .rpm (nfpm embeds it as postinst /
 # %post). A port of post_install/post_upgrade in ../ssf.install.
-#   deb: `configure [old-version]`   old-version present  => upgrade
+#   deb: `configure [old-version]`   old-version present  => upgrade;
+#        `abort-upgrade`, `abort-remove`, `abort-deconfigure` (dpkg rolling
+#        back a failed operation; the old version stays) => upgrade
 #   rpm: `1` install, `2` upgrade
 # Nothing here may fail the package operation: every systemctl/loginctl call
 # is tolerated and the script exits 0.
@@ -9,6 +11,7 @@ set -u
 
 case "${1:-}" in
   configure) if [ -n "${2:-}" ]; then op=upgrade; else op=install; fi ;;
+  abort-*) op=upgrade ;;
   2) op=upgrade ;;
   *) op=install ;;
 esac

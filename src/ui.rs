@@ -151,7 +151,8 @@ pub fn desktop_present() -> bool {
     widget || menu
 }
 
-pub fn uninstall_plugin() -> Result<()> {
+/// Removes the bar widget; `Ok(true)` when there was one to remove.
+pub fn uninstall_plugin() -> Result<bool> {
     if platform::is_omarchy()
         && widget_enabled()?
         && let Err(e) = run_quiet("omarchy-plugin-disable", &[PLUGIN_ID])
@@ -162,11 +163,13 @@ pub fn uninstall_plugin() -> Result<()> {
     if let Ok(meta) = std::fs::symlink_metadata(&dst) {
         if meta.file_type().is_symlink() {
             std::fs::remove_file(&dst)?;
+            return Ok(true);
         } else if meta.is_dir() {
             std::fs::remove_dir_all(&dst)?;
+            return Ok(true);
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 /// The Factory submenu: what shows state and the one control. Nothing here
@@ -317,16 +320,17 @@ pub fn merge_menu_text(existing: &str, block: &str) -> Result<String> {
     Ok(s)
 }
 
-pub fn uninstall_menu() -> Result<()> {
+/// Removes the menu entries; `Ok(true)` when there were some to remove.
+pub fn uninstall_menu() -> Result<bool> {
     let path = menu_extension_path();
     let Ok(existing) = std::fs::read_to_string(&path) else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(updated) = remove_menu_text(&existing) else {
-        return Ok(());
+        return Ok(false);
     };
     crate::config::write_atomic(&path, updated.as_bytes(), 0o644)?;
-    Ok(())
+    Ok(true)
 }
 
 /// The menu extension text without the managed block, or `None` when there
@@ -419,9 +423,13 @@ pub fn install_all(quiet: bool) -> Result<()> {
 }
 
 pub fn uninstall_all() -> Result<()> {
-    uninstall_plugin()?;
-    uninstall_menu()?;
-    println!("removed the Factory bar widget and menu entries");
+    let widget = uninstall_plugin()?;
+    let menu = uninstall_menu()?;
+    if !widget && !menu && !platform::is_omarchy() {
+        println!("not on Omarchy: no bar widget or menu to remove");
+    } else {
+        println!("removed the Factory bar widget and menu entries");
+    }
     Ok(())
 }
 

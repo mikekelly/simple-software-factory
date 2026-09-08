@@ -79,7 +79,10 @@ unauthenticated: the repository has to be public for the build to work.
 Cutting a release:
 
 1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
-   commit, tag `vX.Y.Z` and push the tag. The tag runs
+   commit, tag `vX.Y.Z` and push the tag. The tag must be plain `vX.Y.Z`
+   (no `-rc1` or the like: the workflow only runs on those, nfpm would
+   write `0.2.0~rc1` and makepkg refuses a hyphen in `pkgver`) and its
+   X.Y.Z must equal `Cargo.toml`'s `version`, or `build.sh` stops. The tag runs
    `.github/workflows/release.yml`, which makes the GitHub release if
    there is none and attaches `ssf_X.Y.Z-1_amd64.deb`,
    `ssf-X.Y.Z-1.x86_64.rpm` and the bare static binary

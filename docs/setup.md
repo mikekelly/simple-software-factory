@@ -26,9 +26,10 @@ same steps, marked as such.
   and the **Factory** menu are Omarchy's; elsewhere the CLI and the
   service are the whole of it. macOS is not supported yet.
 - **`/dev/kvm`** usable by your user for the microVM: world-writable on
-  Omarchy; on Arch, Debian, Ubuntu and Fedora add yourself to the `kvm`
-  group (`sudo usermod -aG kvm $USER`, then log in again) (**you**).
-  Without it, the factory runs on the host (step 6).
+  Omarchy and Fedora. On Debian, Ubuntu and Arch a user logged in at the
+  machine's seat gets access through udev, and a user who only comes in
+  over ssh needs the `kvm` group (`sudo usermod -aG kvm $USER`, then log
+  in again) (**you**). Without it, the factory runs on the host (step 6).
 - **About 30 GB free** under `~/.local/share/ssf/vm` for the microVM: an
   8 GB root image plus a copy of it per VM, a 20 GB data disk (sparse,
   grows with use), the guest kernel and the Firecracker and gvproxy
@@ -51,7 +52,6 @@ same steps, marked as such.
   ```sh
   sudo curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-x86_64 && sudo chmod +x /usr/local/bin/herdr
   curl -fsSL https://herdr.dev/install.sh | sh     # herdr's own installer, into ~/.local/bin; ssf finds it there
-  mise use -g herdr
   ```
 
   While it is missing, `ssf doctor` prints ``FAIL herdr driver: CLI

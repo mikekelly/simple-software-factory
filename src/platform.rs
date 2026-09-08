@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::enum_variant_names)]
+#[allow(clippy::enum_variant_names)] // MacOs ends in Os, and that is its name
 pub enum Os {
     Linux,
     MacOs,
@@ -42,14 +42,6 @@ impl Platform {
 
     pub fn is_arch_like(&self) -> bool {
         self.is_like(&["arch"])
-    }
-
-    pub fn is_debian_like(&self) -> bool {
-        self.is_like(&["debian", "ubuntu"])
-    }
-
-    pub fn is_fedora_like(&self) -> bool {
-        self.id == "centos" || self.is_like(&["fedora", "rhel"])
     }
 
     /// What to run to install herdr here: the command only.
@@ -140,16 +132,6 @@ pub fn is_arch_like() -> bool {
     detect().is_arch_like()
 }
 
-#[allow(dead_code)]
-pub fn is_debian_like() -> bool {
-    detect().is_debian_like()
-}
-
-#[allow(dead_code)]
-pub fn is_fedora_like() -> bool {
-    detect().is_fedora_like()
-}
-
 pub fn herdr_install_hint() -> String {
     detect().herdr_install_hint()
 }
@@ -214,27 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn like_predicates_follow_id_and_id_like() {
-        let omarchy = linux("omarchy", &["arch"], true);
-        assert!(omarchy.is_arch_like());
-        assert!(!omarchy.is_debian_like());
-        assert!(!omarchy.is_fedora_like());
-        let arch = linux("arch", &[], false);
-        assert!(arch.is_arch_like());
-        let ubuntu = linux("ubuntu", &["debian"], false);
-        assert!(ubuntu.is_debian_like());
-        assert!(!ubuntu.is_arch_like());
-        let mint = linux("linuxmint", &["ubuntu", "debian"], false);
-        assert!(mint.is_debian_like());
-        let fedora = linux("fedora", &[], false);
-        assert!(fedora.is_fedora_like());
-        let rocky = linux("rocky", &["rhel", "centos", "fedora"], false);
-        assert!(rocky.is_fedora_like());
-        assert!(!rocky.is_debian_like());
-        let centos = linux("centos", &[], false);
-        assert!(centos.is_fedora_like());
-        let plain = linux("linux", &[], false);
-        assert!(!plain.is_arch_like() && !plain.is_debian_like() && !plain.is_fedora_like());
+    fn arch_like_follows_id_and_id_like() {
+        assert!(linux("omarchy", &["arch"], true).is_arch_like());
+        assert!(linux("arch", &[], false).is_arch_like());
+        assert!(linux("manjaro", &["arch"], false).is_arch_like());
+        assert!(!linux("ubuntu", &["debian"], false).is_arch_like());
+        assert!(!linux("fedora", &[], false).is_arch_like());
+        assert!(!linux("linux", &[], false).is_arch_like());
     }
 
     #[test]

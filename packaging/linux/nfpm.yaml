@@ -38,6 +38,8 @@ overrides:
       - jq
       - systemd
     recommends:
+      # A minimal Debian has no `systemctl --user` without it.
+      - libpam-systemd
       - fakeroot
       - libarchive-tools
       - e2fsprogs

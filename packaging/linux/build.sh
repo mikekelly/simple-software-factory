@@ -30,7 +30,12 @@ target=x86_64-unknown-linux-musl
 nfpm="${NFPM:-nfpm}"
 command -v "$nfpm" >/dev/null || { echo "build.sh: nfpm not found (set NFPM or put nfpm on PATH)" >&2; exit 1; }
 
-VERSION="${1:-${VERSION:-$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)}}"
+cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+VERSION="${1:-${VERSION:-$cargo_version}}"
+if [[ "$VERSION" != "$cargo_version" ]]; then
+  echo "build.sh: VERSION $VERSION does not match Cargo.toml's $cargo_version; bump Cargo.toml (and Cargo.lock) before tagging" >&2
+  exit 1
+fi
 export VERSION
 
 if ! rustup target list --installed | grep -qx "$target"; then
@@ -48,10 +53,18 @@ CARGO_PROFILE_RELEASE_STRIP=true cargo build --locked --release --target "$targe
 
 outdir=packaging/linux/dist
 mkdir -p "$outdir"
+built=()
 for fmt in deb rpm; do
   echo "==> nfpm package -p $fmt"
-  "$nfpm" package -f packaging/linux/nfpm.yaml -p "$fmt" -t "$outdir"
+  # nfpm prints "created package: PATH" for the file it wrote; that path,
+  # not a name built here, is what gets checked at the end.
+  out="$("$nfpm" package -f packaging/linux/nfpm.yaml -p "$fmt" -t "$outdir")"
+  echo "$out"
+  pkg="$(sed -n 's/^created package: *//p' <<<"$out" | tail -1)"
+  [[ -n "$pkg" ]] || { echo "build.sh: nfpm did not report a created package for $fmt" >&2; exit 1; }
+  built+=("$pkg")
 done
 install -m755 "target/$target/release/ssf" "$outdir/ssf-$VERSION-linux-x86_64"
+built+=("$outdir/ssf-$VERSION-linux-x86_64")
 echo "==> packages in $outdir:"
-ls -1 "$outdir"/ssf_"$VERSION"-1_amd64.deb "$outdir"/ssf-"$VERSION"-1.x86_64.rpm "$outdir/ssf-$VERSION-linux-x86_64"
+ls -1 "${built[@]}"
