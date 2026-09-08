@@ -6,33 +6,41 @@ Building ssf from source, running a scratch factory, running a dev build as the 
 cargo build && cargo test
 cargo fmt && cargo clippy
 export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token)
-./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects
+./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
 ./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
 ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # or the rest of this shell talks to the scratch factory
-SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # writes the REAL ~/.config/omarchy
+SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
 omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
-**The one rule that matters: point the scratch factory at a repository the
-real one does not watch.** `SSF_CONFIG_DIR` and `SSF_STATE_DIR` isolate
-ssf's own files -- its config, its state, the socket its commands talk to,
-the bot token and keys, and the `gh` directory its agents get. They isolate
-nothing else, and the driver is the reason that rule is not optional:
+**The rule that matters: give the scratch factory its own checkout.** Point
+it at a repository the real one does not watch *and* set `projects_dir`,
+because the clone path is the repository's **bare name** — a fork, or a
+sandbox with the same name, lands on the real checkout while satisfying
+"a different repository" exactly.
 
-- **The driver's server is shared.** There is no per-factory herdr socket or
-  Orca host, so a scratch pass creates workspaces, panes and agents in the
-  same server the real factory drives. Worse, `Herdr::open` adopts a
-  workspace already open on a path, so if the two factories reach the same
-  checkout the scratch one takes over a live session's workspace and types
-  into that agent's pane, and a later release removes the worktree.
-- **The clones.** `orca.projects_dir` and `herdr.projects_dir` default to
-  fixed paths under the home directory. Setting the key, as above, helps
-  only where ssf clones the repository itself: a `[[repo]] path`, a
-  `repo add --path`, or an Orca project that already exists for that
-  repository all win over it, which is exactly the case where the two
-  factories would collide.
+`SSF_CONFIG_DIR` and `SSF_STATE_DIR` isolate ssf's own files: its config,
+its state, the socket its commands talk to, the bot token and keys, and the
+`gh` directory its agents get. They isolate nothing else, and the driver is
+why the checkout rule is not optional:
+
+- **The driver's server is shared.** There is no per-factory herdr socket,
+  and no second Orca instance to aim at, so a scratch pass creates
+  workspaces, panes and agents in the same server the real factory drives.
+  `Herdr::open` adopts a workspace already open on a path, so two factories
+  on one checkout share a workspace: deliveries fall back to any live agent
+  in it, so the scratch factory's messages reach the real session's agent,
+  and `remove_worktree` interrupts every agent pane before deleting the
+  checkout.
+- **The clones.** `orca.projects_dir` (and `herdr.projects_dir`) default to
+  fixed paths under the home directory, so set the key for the driver you
+  are using. It is what keeps a fresh scratch factory off the real
+  checkout, and three things defeat it: a `[[repo]] path`, a
+  `repo add --path`, and an Orca project that already exists for that
+  repository, each of which decides the path before `projects_dir` is
+  consulted.
 - **GitHub.** The token above is real, and it is *yours*, not the bot's, so
   a pass posts, moves cards and launches agents as you.
 - **The harness's own home.** Nothing sets `CLAUDE_CONFIG_DIR`, `CODEX_HOME`
@@ -40,8 +48,9 @@ nothing else, and the driver is the reason that rule is not optional:
   write the real `~/.codex/config.toml`.
 - **The VM and the widget.** `vm.dir` is `~/.local/share/ssf/vm`, so any
   `ssf vm` command from a scratch factory acts on the real VM, `destroy`
-  included; `ssf ui install` rewrites the real `~/.config/omarchy`, which is
-  what the bar is showing.
+  included; on Omarchy, `ssf ui install` rewrites the real
+  `~/.config/omarchy`, which is what the bar is showing, and re-running the
+  packaged `ssf ui install` puts it back.
 
 `ssf run --once` does a single pass, startup pass included, and exits. The
 installed service runs the last package installed, so a change is verified
