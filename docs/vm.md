@@ -275,7 +275,8 @@ What the commands do under lima:
 Changing `[vm] name` renames nothing that already exists: the old
 `ssf-<old name>` instance and disk stay in lima's home, and under
 Firecracker the old `<[vm] dir>/<old name>/` stays with its data disk in
-it. `ssf vm status`, `ssf doctor` and `ssf uninstall` each name what this
+it -- and `[vm] dir` is shared by the backends, so a directory left there
+is reported under lima too. `ssf vm status`, `ssf doctor` and `ssf uninstall` each name what this
 configuration does not, with the command that removes it, and none of
 them removes it for you: nothing can tell a VM you renamed away to keep
 from one you abandoned.
