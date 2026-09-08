@@ -2016,6 +2016,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_start_repairs_the_flag_before_the_boot_and_refuses_what_it_cannot_repair() {
+        // The start writes the share tree, which seeds the guest from the
+        // bot token and so resolves the config directory (#140).
+        let _sandbox = crate::config::test_support::sandbox();
         // `ssf vm start` is the boot that a `format: true` left by a
         // failed build would reach, and by then the data disk holds the
         // factory. A stopped instance is repaired in place and the start
