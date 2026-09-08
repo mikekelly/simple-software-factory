@@ -680,9 +680,10 @@ pub enum StubResume {
     /// The harness exits at once (it could not find the session): nothing
     /// is left to stop, and a fresh harness follows in the same pane.
     Exits,
-    /// The resumed agent is alive but never settles: it is stopped, and a
-    /// fresh harness follows only once it is gone.
-    Hangs,
+    /// The resumed agent is alive but the wait ran out without herdr
+    /// saying what it was doing: it is kept, as the resumed conversation
+    /// (#133); no fresh harness is started.
+    Unsettled,
 }
 
 #[cfg(test)]
@@ -699,8 +700,8 @@ pub struct StubState {
     pub relaunch_screen: Vec<String>,
     /// `stop:<handle>`, `deliver:<worktree>:<first line>`,
     /// `relaunch:<worktree>:<resumed>`; a resume given up on logs
-    /// `resume-exited:<worktree>` or `resume-hung:<worktree>` then
-    /// `stop:<handle>` before the fresh `relaunch:<worktree>:false`.
+    /// `resume-exited:<worktree>` before the fresh `relaunch:<worktree>:false`,
+    /// and one kept past the wait `resume-unsettled:<worktree>`.
     pub log: Vec<String>,
     /// Every harness started, as `<harness>:<command>`: what a start or a
     /// relaunch would run, for the tests about per-item overrides.
@@ -869,14 +870,9 @@ impl StubDriver {
                 match s.resume {
                     StubResume::Settles => resumed = true,
                     StubResume::Exits => s.log.push(format!("resume-exited:{worktree_id}")),
-                    StubResume::Hangs => {
-                        // The resumed agent is alive and has to go first;
-                        // the stub's stop always takes.
-                        let h = Self::new_handle(s, worktree_id);
-                        s.log.push(format!("resume-hung:{worktree_id}"));
-                        s.live.remove(worktree_id);
-                        s.working.remove(worktree_id);
-                        s.log.push(format!("stop:{h}"));
+                    StubResume::Unsettled => {
+                        s.log.push(format!("resume-unsettled:{worktree_id}"));
+                        resumed = true;
                     }
                 }
             }

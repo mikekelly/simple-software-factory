@@ -91,9 +91,11 @@ every state but `unknown` (`idle`, `working`, `blocked`, `done`): without
 `--until` herdr returns on `idle`, `done` or `blocked` alone, and a
 resumed Claude Code with queued messages is `working` from its first
 second, so every such resume timed out and a fresh agent was started
-beside the one already at work (#131). A resume ssf gives up on (the
-harness could not find the session, or nothing settled in
-`herdr.tui_idle_timeout_ms`) has its pane cleared first: an agent herdr
+beside the one already at work (#131). A resumed agent herdr still
+reports in the pane when `herdr.tui_idle_timeout_ms` runs out without a
+state is kept as the resumed conversation (#133). A resume ssf does give
+up on (the harness could not find the session, or the pane has no agent
+by the end of the wait) has its pane cleared first: a harness herdr
 still reports there is stopped as `ssf release` would stop it, and the
 fresh launch is refused while any agent is live in the workspace.
 

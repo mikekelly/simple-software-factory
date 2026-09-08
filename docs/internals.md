@@ -37,17 +37,19 @@ The details behind the README's [How it works](../README.md#how-it-works).
   gone, ssf re-creates it from the old branch (local or `origin/`) and does
   the same. Claude Code resumes a session from any directory, so this works
   even when the new worktree has a different path. A resume has failed
-  only when the harness says it could not find the session, when its
-  process is gone, or when it never settles within the driver's wait: a
-  resumed agent that is idle, blocked on a dialog ssf answers, or already
-  at work on the messages queued in its conversation (a Claude Code with
-  a backlog starts on it at once and reports `working`, never `idle`) has
-  settled, and the delivery goes to it. Before ssf starts a fresh harness
-  after a failed resume it makes sure nothing of the resume is still
-  running -- an agent still in the pane is stopped, and a stop that does
-  not take is an error rather than a second agent -- so a workspace
-  never holds two agents (#131). The `resumed` event on the item says
-  which it was: `conversation: resumed` or `fresh`.
+  only when the harness says it could not find the session or when no
+  agent is running in its pane once the driver's wait is over: a resumed
+  agent that is idle, blocked on a dialog ssf answers, or already at work
+  on the messages queued in its conversation (a Claude Code with a
+  backlog starts on it at once and reports `working`, never `idle`) has
+  settled, and one still alive when the wait runs out without a state is
+  kept as the resumed conversation all the same; the delivery goes to it.
+  Before ssf starts a fresh harness after a failed resume it makes sure
+  nothing of the resume is still running -- a harness still reported in
+  the pane is stopped, and a stop that does not take is an error rather
+  than a second agent -- so a workspace never holds two agents (#131,
+  #133). The `resumed` event on the item says which it was:
+  `conversation: resumed` or `fresh`.
 - **First-run dialogs.** Claude Code and Codex ask whether to trust a new
   folder, Claude Code once per machine whether to accept its bypass
   permissions mode, and Gemini and Pi ask about trust when started without

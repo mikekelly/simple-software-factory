@@ -7283,36 +7283,35 @@ mod tests {
         assert_eq!(posts[0].1, resumed_block("fresh"));
     }
 
-    /// A resumed agent that is alive but never settles is stopped before
-    /// any fresh harness goes in: one workspace, one agent, and the state
-    /// points at the survivor.
+    /// The wait ran out with the resumed agent alive in its pane (#133):
+    /// it is the resumed conversation whatever herdr made of its state,
+    /// so it is kept -- one handle, no second launch, `resumed`.
     #[tokio::test]
-    async fn a_resume_that_hangs_is_stopped_before_a_fresh_harness() {
+    async fn a_resume_alive_past_the_wait_is_kept_not_replaced() {
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
         d.with(|s| {
             s.live.clear();
-            s.resume = crate::driver::StubResume::Hangs;
+            s.resume = crate::driver::StubResume::Unsettled;
             s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
         });
         let delivered = e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
-        assert!(delivered.relaunched && !delivered.resumed);
+        assert!(delivered.relaunched && delivered.resumed);
         assert_eq!(
             d.log(),
             vec![
-                "resume-hung:w5",
-                "stop:t1",
-                "relaunch:w5:false",
+                "resume-unsettled:w5",
+                "relaunch:w5:true",
                 "deliver:w5:[ssf] hello"
             ]
         );
-        assert_eq!(d.launches().len(), 2);
+        assert_eq!(d.launches().len(), 1, "no second launch");
         let st = e.entry(&repo(), 5).clone();
-        assert_eq!(st.terminal_handle.as_deref(), Some("t2"), "the fresh one");
-        assert_eq!(st.agent_session_id, None);
+        assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+        assert_eq!(st.agent_session_id.as_deref(), Some("sess-5"), "kept");
         let posts = stub.post_bodies();
         assert_eq!(posts.len(), 1, "{posts:?}");
-        assert_eq!(posts[0].1, resumed_block("fresh"));
+        assert_eq!(posts[0].1, resumed_block("resumed"));
     }
 
     /// The startup pass says `after: restart`; a relaunch at delivery

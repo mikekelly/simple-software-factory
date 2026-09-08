@@ -778,19 +778,30 @@ impl Herdr {
         Ok(pane)
     }
 
+    /// Does herdr report an agent in the pane, whatever its state?
+    async fn agent_in(&self, pane_id: &str) -> bool {
+        self.agents()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|a| a.pane_id == pane_id)
+    }
+
     /// Leave nothing of a resume the daemon has given up on running before
     /// a fresh harness goes into the workspace, so one workspace never
-    /// holds two agents (#131). A resumed agent herdr still reports is
-    /// stopped, and a stop that does not take is an error rather than a
-    /// fresh launch beside it. One that has already gone (Claude Code
-    /// exits when it cannot find the session) has left the pane at its
-    /// shell, which the fresh launch reuses.
+    /// holds two agents (#131). The daemon gives up only on a harness that
+    /// said it could not find the session or whose pane has no agent, so
+    /// there is normally nothing to stop: Claude Code exits when it cannot
+    /// find the session and leaves the pane at its shell, which the fresh
+    /// launch reuses. A harness herdr still reports there is stopped, and
+    /// a stop that does not take is an error rather than a fresh launch
+    /// beside it.
     async fn clear_failed_resume(&self, id: &str, pane_id: &str) -> Result<()> {
         let (ws, _) = split_id(id);
-        if self.agents().await?.iter().any(|a| a.pane_id == pane_id) {
+        if self.agent_in(pane_id).await {
             warn!(
                 pane_id,
-                "the resumed agent is still running; stopping it before starting fresh"
+                "the resumed harness is still running; stopping it before starting fresh"
             );
             self.stop_agent(id, pane_id)
                 .await
@@ -968,6 +979,10 @@ delivered"
         }
         let mut resumed = false;
         let mut handle = None;
+        // A resumed agent already at work takes the message as a steering
+        // prompt, queued behind its turn, rather than a confirmed first
+        // prompt: it has its instructions, and is not at an empty composer.
+        let mut at_work = false;
         if let Some(cmd) = relaunch.resume_command {
             warn!(
                 workspace_id,
@@ -988,12 +1003,26 @@ delivered"
                         Ok(state)
                     }
                 }
+                // The wait ran out, or herdr never said what the agent
+                // was doing; an agent alive in the pane all the same is
+                // the resumed conversation, however herdr narrates it,
+                // and is kept rather than replaced (#133).
+                Err(e) if self.agent_in(&pane).await => {
+                    warn!(
+                        workspace_id,
+                        pane,
+                        "the resumed harness did not settle ({e:#}) but its agent is alive; \
+keeping it"
+                    );
+                    Ok("unsettled".into())
+                }
                 Err(e) => Err(e),
             };
             match verdict {
                 Ok(state) => {
                     info!(workspace_id, pane, state, "harness resumed its session");
                     let _ = self.run(&["pane", "rename", &pane, relaunch.title]).await;
+                    at_work = matches!(state.as_str(), "working" | "unsettled");
                     resumed = true;
                     handle = Some(pane);
                 }
@@ -1030,8 +1059,13 @@ delivered"
         };
         // The harness was launched just above, so this is its first
         // prompt: confirm it landed rather than paste and hope. A resumed
-        // one may be at work already; the prompt queues behind its turn.
-        self.send_first_prompt(&handle, body).await?;
+        // one already at work is steered instead (#133): herdr does not
+        // track turns, so waiting for `working` there says nothing.
+        if at_work {
+            self.send_prompt(&handle, body).await?;
+        } else {
+            self.send_first_prompt(&handle, body).await?;
+        }
         Ok(Delivery {
             handle,
             relaunched: true,
