@@ -92,6 +92,16 @@ SSHD
 if [ "$backend" = firecracker ]; then
     sed -i '/^PermitRootLogin no$/a AllowUsers ssf' /etc/ssh/sshd_config.d/ssf.conf
 fi
+# Per-backend unit drop-ins, installed as /etc/systemd/system/<unit>.d/
+# <backend>.conf. Under Firecracker they came in the image (make-base.sh
+# put them next to the scripts).
+if [ "$backend" = firecracker ]; then
+    for f in /usr/local/lib/ssf/units/firecracker/*.conf; do
+        [ -e "$f" ] || continue
+        u=$(basename "$f" .conf)
+        install -Dm644 "$f" "/etc/systemd/system/$u.service.d/firecracker.conf"
+    done
+fi
 # Under lima there is no image-build step: the guest files come from the
 # share (what make-base.sh puts into the Firecracker image), and herdr from
 # the share when the host could supply a Linux binary, else from its release.

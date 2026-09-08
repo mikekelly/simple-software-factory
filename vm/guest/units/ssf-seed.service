@@ -1,7 +1,9 @@
 [Unit]
 Description=Mount the data disk and take the host's ssf binary, config and keys from the seed (disk or share)
-# Not before sshd: the host retries ssh until authorized_keys lands, and
-# under lima an ordering on sshd would loop through multi-user.target.
+# Not before sshd here: under lima that ordering would loop through
+# multi-user.target (see units/lima/ssf-seed.conf), and the host retries
+# ssh until authorized_keys lands. Under Firecracker there is no such
+# cycle and units/firecracker/ssf-seed.conf adds Before=sshd.service.
 DefaultDependencies=no
 After=local-fs.target
 Before=herdr-server.service ssf.service
