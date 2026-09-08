@@ -500,15 +500,6 @@ struct Repair {
     blocked: bool,
 }
 
-/// The decision behind [`Vm::repair_stale_format`], kept separate from
-/// the file and process work so it can be held to the rules:
-///
-/// * with no data disk there is nothing to protect -- the build that
-///   creates the disk is the one build that may hand lima `format: true`;
-/// * ssf's own template is rewritten whenever it is stale, because it is
-///   what `ssf vm reset` creates the next instance from;
-/// * the instance's copy is edited only while the instance is stopped,
-///   and a running instance is reported, never quietly skipped.
 /// Why a `format: false` is being written: the build that created the
 /// disk finishing its job, or a later command finding a flag an
 /// unfinished build left behind. Only the second is worth a warning.
@@ -518,6 +509,15 @@ enum Why {
     FoundStale,
 }
 
+/// The decision behind [`Vm::repair_stale_format`], kept separate from
+/// the file and process work so it can be held to the rules:
+///
+/// * with no data disk there is nothing to protect -- the build that
+///   creates the disk is the one build that may hand lima `format: true`;
+/// * ssf's own template is rewritten whenever it is stale, because it is
+///   what `ssf vm reset` creates the next instance from;
+/// * the instance's copy is edited only while the instance is stopped,
+///   and a running instance is reported, never quietly skipped.
 fn plan_repair(
     disk_exists: bool,
     template_stale: bool,
