@@ -618,6 +618,19 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
             facts.state_dir.display()
         ));
     }
+    for dir in &facts.vm_unread {
+        // Every directory nobody could read, on every path -- the
+        // sentence used to reach the report only through `no_vm_line`,
+        // which fires only when there is no VM at all, so an unreadable
+        // `~/.lima/_disks` beside a VM that exists went unmentioned in
+        // the one command whose output is a delete list.
+        if *dir != facts.vm_base {
+            keep.push(format!(
+                "{} (untouched; ssf could not read it, so what is in it is unknown)",
+                dir.display()
+            ));
+        }
+    }
     for stray in &facts.vm_strays {
         keep.push(format!(
             "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
@@ -673,9 +686,23 @@ pub fn unread_note(unread: &[PathBuf]) -> String {
     let names: Vec<String> = unread.iter().map(|p| p.display().to_string()).collect();
     format!(
         "{} could not be read, so what else is in {} is unknown",
-        names.join(" and "),
+        // All of them, in the list style the rest of the report uses.
+        // Naming one and dropping the others is the failure this whole
+        // change is about, one level down.
+        join_and(&names),
         if names.len() > 1 { "them" } else { "it" }
     )
+}
+
+/// "a", "a and b", "a, b, and c" -- the report's list style, in one
+/// place, since three sentences in it need one.
+fn join_and(parts: &[String]) -> String {
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, [one])) => format!("{one} and {last}"),
+        Some((last, rest)) => format!("{}, and {last}", rest.join(", ")),
+    }
 }
 
 /// Would going ahead destroy work nobody has looked at? Only a data disk
@@ -712,12 +739,7 @@ fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Sur
     }
     // "a and b and c" is a hard sentence to read in the one line a
     // person scans before saying yes to destroying it all.
-    match parts.split_last() {
-        None => String::new(),
-        Some((last, [])) => last.clone(),
-        Some((last, [one])) => format!("{one} and {last}"),
-        Some((last, rest)) => format!("{}, and {last}", rest.join(", ")),
-    }
+    join_and(&parts)
 }
 
 /// Why the VM's workspaces could not be looked at, and what to do about
@@ -1864,14 +1886,40 @@ mod tests {
         assert!(line.contains("/home/me/.lima"), "{line}");
         assert!(!line.contains("/v could not"), "{line}");
         // ... and a `[vm] dir` that was readable keeps its own true
-        // sentence even while somewhere else could not be read.
+        // sentence even while somewhere else could not be read -- but
+        // the other directory still gets named, on every path. It used
+        // to reach the report only through `no_vm_line`, so a VM that
+        // existed beside an unreadable `~/.lima/_disks` was reported
+        // with no mention of it at all.
+        let other = kept(&elsewhere, false);
         assert!(
-            kept(&elsewhere, false)
-                .iter()
-                .any(|l| l.contains("safe to remove)")),
-            "{:?}",
-            kept(&elsewhere, false)
+            other.iter().any(|l| l.contains("safe to remove)")),
+            "{other:?}"
         );
+        assert!(
+            other
+                .iter()
+                .any(|l| l.contains("/home/me/.lima (untouched;")),
+            "the other directory is named too: {other:?}"
+        );
+        let present = Facts {
+            vm_present: Some(true),
+            vm_data: None,
+            vm_unread: vec![PathBuf::from("/home/me/.lima/_disks")],
+            ..elsewhere.clone()
+        };
+        assert!(
+            kept(&present, false)
+                .iter()
+                .any(|l| l.contains("/home/me/.lima/_disks")),
+            "named beside a VM that exists too: {:?}",
+            kept(&present, false)
+        );
+        // Every one of them, not the first: naming one and dropping the
+        // rest is this change's own failure one level down.
+        let both = unread_note(&[PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert!(both.contains("/a") && both.contains("/b"), "{both}");
+        assert!(both.contains("them"), "{both}");
         assert!(
             !lines.iter().any(|l| l.contains("safe to remove")),
             "safety nobody verified: {lines:?}"

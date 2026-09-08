@@ -1061,13 +1061,15 @@ which is listed on its own), and, unless you pass `--data`,
 stays stopped until `ssf ui service enable`; with `--data` gone, a
 reinstall starts the service). Under lima the instance and the data disk
 go out of lima's own home with `vm destroy`, but `~/.lima` itself stays,
-holding lima's cache of downloaded images; the report does not name it,
-so remove it by hand once nothing else of yours uses lima. The bot
-GitHub account itself is not touched, nor its gh sign-in. `ssf status`
-afterwards says not signed in and stopped; the watched repositories and
-the records of past items still show until `--data` (or a reinstall from
-scratch) clears them. With the VM gone the config's `vm.enabled` is
-cleared, so `status` does not go looking for it.
+holding lima's cache of downloaded images and anything else of lima's
+you use; remove it by hand once nothing does. The report names it only
+when something in it is yours -- an `ssf-*` this configuration does not
+name, or a directory that could not be read. The bot GitHub account
+itself is not touched, nor its gh sign-in. `ssf status` afterwards says
+not signed in and stopped; the watched repositories and the records of
+past items still show until `--data` (or a reinstall from scratch)
+clears them. With the VM gone the config's `vm.enabled` is cleared, so
+`status` does not go looking for it.
 
 ## Checklist
 

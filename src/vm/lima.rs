@@ -1149,7 +1149,7 @@ impl Vm {
     /// [`Vm::instance_strays_on_disk`], and whether lima's home could be
     /// read at all.
     fn instance_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
-        let (names, unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), &self.lima_name());
+        let (names, unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima());
         (
             names.into_iter().map(Stray::lima_instance).collect(),
             unread,
@@ -1168,7 +1168,7 @@ impl Vm {
     fn disk_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         let (names, unread) = Self::ssf_dirs_in(
             self.lima_home.as_ref().map(|h| h.join("_disks")).as_deref(),
-            &self.lima_disk_name(),
+            self.ours_in_lima_disks(),
         );
         (names.into_iter().map(Stray::lima_disk).collect(), unread)
     }
@@ -1182,7 +1182,23 @@ impl Vm {
     /// place, so the two arrive together -- and reading it as empty
     /// printed `no VM` over `safe to remove` about a home holding an
     /// instance and a disk of clones.
-    fn ssf_dirs_in(dir: Option<&Path>, ours: &str) -> (Vec<String>, Vec<PathBuf>) {
+    /// The name in lima's home this configuration calls its own -- and
+    /// nothing, under Firecracker. A machine that switched `[vm]
+    /// backend` from lima and kept its `[vm] name` has an `ssf-<name>`
+    /// instance in lima's home that nothing will ever start again, and
+    /// excluding it as "ours" made `ssf uninstall` print a bare `no VM`
+    /// over a lima instance -- the one sentence this change exists to
+    /// abolish.
+    fn ours_in_lima(&self) -> Option<String> {
+        (self.backend() == crate::config::BackendKind::Lima).then(|| self.lima_name())
+    }
+
+    /// [`Vm::ours_in_lima`] for the data disks.
+    fn ours_in_lima_disks(&self) -> Option<String> {
+        (self.backend() == crate::config::BackendKind::Lima).then(|| self.lima_disk_name())
+    }
+
+    fn ssf_dirs_in(dir: Option<&Path>, ours: Option<String>) -> (Vec<String>, Vec<PathBuf>) {
         let Some(dir) = dir else {
             return (Vec::new(), Vec::new());
         };
@@ -1196,7 +1212,7 @@ impl Vm {
             // rule `[vm] dir`'s scan uses.
             .filter(|e| std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir()))
             .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-            .filter(|name| name != ours && is_ssf_name(name))
+            .filter(|name| Some(name) != ours.as_ref() && is_ssf_name(name))
             .collect();
         (names, Vec::new())
     }
@@ -2921,6 +2937,28 @@ mod tests {
         assert_eq!(s.data, Some(false));
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn vm_status_names_an_unreadable_lima_home_under_lima_too() {
+        // `status` gathers lima's home in a branch of its own, so the
+        // Firecracker half being pinned said nothing about this one --
+        // and the three commands have to agree about one machine.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        let home = t.vm.lima_home.clone().unwrap();
+        assert!(
+            t.vm.status().await.unread.is_empty(),
+            "readable while readable"
+        );
+        set_mode(&home, 0o000);
+        let hidden = std::fs::read_dir(&home).is_err();
+        let unread = t.vm.status().await.unread;
+        set_mode(&home, 0o755);
+        // Root reads it regardless; then there is nothing to assert.
+        if hidden {
+            assert_eq!(unread, std::slice::from_ref(&home));
+        }
+    }
+
     #[tokio::test]
     async fn vm_status_names_every_stray_once_when_limactl_will_not_list() {
         // Through `status()`, under lima, on the path where `limactl`
@@ -3224,6 +3262,68 @@ mod tests {
         assert_eq!(
             Stray::lima_disk("ssf-a b".into()).remove,
             "limactl disk delete 'ssf-a b'"
+        );
+    }
+
+    #[test]
+    fn a_backend_change_that_kept_the_name_is_still_seen() {
+        // The other half of #158. `ssf-<[vm] name>` is "ours" only while
+        // the backend is lima: after a switch to Firecracker nothing
+        // will ever start that instance again, and excluding it by name
+        // printed a bare `no VM` over an instance and a data disk of
+        // clones lima was holding.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("_disks").join(t.vm.lima_disk_name())).unwrap();
+        // Under lima, this configuration's own: not a stray.
+        assert!(
+            t.vm.strays_on_filesystem()
+                .0
+                .iter()
+                .all(|s| s.name != t.vm.lima_disk_name()),
+            "its own disk is not a stray under lima"
+        );
+        let mut cfg = Config::default();
+        cfg.vm.name = t.vm.cfg.name.clone();
+        cfg.vm.dir = t.vm.base.to_string_lossy().into_owned();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        let mut moved = Vm::new(&cfg);
+        moved.lima_home = Some(home.clone());
+        let found: Vec<_> = moved
+            .survey()
+            .strays
+            .iter()
+            .map(|s| (s.kind, s.name.clone()))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (StrayKind::LimaInstance, t.vm.lima_name()),
+                (StrayKind::LimaDisk, t.vm.lima_disk_name()),
+            ],
+            "the same names are strays once the backend moved away"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_data_disk_left_in_vm_dir_by_a_backend_change_stops_the_destroy() {
+        // The other direction, and this one deletes. `<[vm] dir>/<name>`
+        // is this VM's own directory under Firecracker; under lima it
+        // holds a template, an ssh key and a share and never a
+        // `data.ext4`. One there is what a switch to lima left, with
+        // every clone in it -- and `Vm::destroy` removes that directory.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        std::fs::write(t.vm.dir.join("data.ext4"), b"clones").unwrap();
+        let s = t.vm.survey();
+        assert_eq!(
+            s.strays.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
+            [t.vm.cfg.name.as_str()],
+            "the Firecracker VM this configuration left behind"
+        );
+        assert!(
+            s.strays[0].holds_work(),
+            "and the report says the clones are in it"
         );
     }
 
