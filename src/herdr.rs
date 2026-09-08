@@ -749,7 +749,7 @@ impl Herdr {
         for _ in 0..4 {
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                bail!("{harness} in {pane_id} did not become idle in time");
+                bail!("{harness} in {pane_id} did not settle in time");
             }
             let t = left.as_millis().to_string();
             let v = self.run(&settle_wait_args(pane_id, &t)).await?;
@@ -826,34 +826,38 @@ impl Herdr {
         Ok(self.agents().await?.iter().any(|a| a.pane_id == pane_id))
     }
 
-    /// Leave nothing of a resume the daemon has given up on running before
-    /// a fresh harness goes into the workspace, so one workspace never
-    /// holds two agents (#131). The daemon gives up only on a harness that
-    /// said it could not find the session or whose pane has no agent, so
-    /// there is normally nothing to stop: Claude Code exits when it cannot
-    /// find the session and leaves the pane at its shell, which the fresh
-    /// launch reuses. A harness herdr still reports there is stopped, and
-    /// a stop that does not take is an error rather than a fresh launch
-    /// beside it.
-    async fn clear_failed_resume(&self, id: &str, pane_id: &str) -> Result<()> {
+    /// Make sure nothing of a resume the daemon has given up on is running
+    /// before a fresh harness goes into the workspace, so one workspace
+    /// never holds two agents (#131). The daemon gives up only on a pane
+    /// herdr reports no agent in, so there is normally nothing to stop:
+    /// Claude Code exits when it cannot find the session and leaves the
+    /// pane at its shell, which the fresh launch reuses. An agent that
+    /// turns up in the pane after all -- herdr noticing a slow-starting
+    /// harness late -- is the resumed conversation, not a thing to stop,
+    /// and is returned as the handle. A live agent elsewhere in the
+    /// workspace is an error rather than a fresh launch beside it.
+    async fn clear_failed_resume(&self, id: &str, pane_id: &str) -> Result<Option<String>> {
         let (ws, _) = split_id(id);
+        // herdr notices a harness a second or so after it starts; a few
+        // seconds' grace before anything is typed into the pane.
+        for _ in 0..6 {
+            if self.agent_in(pane_id).await? {
+                return Ok(Some(pane_id.to_string()));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        // Whatever the harness left in the pane, back to its shell. One
+        // Ctrl-C ends no harness, so an agent that shows itself now is
+        // still the resumed conversation.
+        let _ = self.run(&["pane", "send-keys", pane_id, "ctrl+c"]).await;
+        tokio::time::sleep(Duration::from_millis(1000)).await;
         if self.agent_in(pane_id).await? {
-            warn!(
-                pane_id,
-                "the resumed harness is still running; stopping it before starting fresh"
-            );
-            self.stop_agent(id, pane_id)
-                .await
-                .context("stopping the resumed agent, so no fresh one is started beside it")?;
-        } else {
-            // Whatever the harness left in the pane, back to its shell.
-            let _ = self.run(&["pane", "send-keys", pane_id, "ctrl+c"]).await;
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+            return Ok(Some(pane_id.to_string()));
         }
         if let Some(h) = self.live_handle(id, None).await? {
             bail!("an agent is live in pane {h} of workspace {ws}; not starting another beside it");
         }
-        Ok(())
+        Ok(None)
     }
 
     /// The live agent pane a delivery would go to: `preferred` if it is
@@ -1065,7 +1069,16 @@ keeping it"
                         pane,
                         "giving up on the resume ({why}); starting fresh once the pane is clear"
                     );
-                    self.clear_failed_resume(workspace_id, &pane).await?;
+                    if let Some(p) = self.clear_failed_resume(workspace_id, &pane).await? {
+                        warn!(
+                            workspace_id,
+                            pane = p,
+                            "an agent turned up in the resumed pane after all; keeping it"
+                        );
+                        let _ = self.run(&["pane", "rename", &p, relaunch.title]).await;
+                        resumed = true;
+                        handle = Some(p);
+                    }
                 }
             }
         }

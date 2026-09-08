@@ -97,8 +97,9 @@ agent herdr reports there is the resumed conversation, kept even when
 `herdr.tui_idle_timeout_ms` ran out with no state for it (#133), and a
 pane with no agent has failed the resume, with its screen saying whether
 the harness could not find the session. Only then is a fresh harness
-started, in that pane, and the fresh launch is refused while any agent
-is live in the workspace.
+started, after a few seconds' grace for an agent herdr noticed late
+(which is kept), and the fresh launch is refused while any agent is live
+in the workspace.
 
 herdr keeps no link between a workspace and an issue, so ssf finds a
 workspace it lost track of by the worktree's name (`issue-N-...`), and

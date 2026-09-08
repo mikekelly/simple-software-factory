@@ -801,19 +801,9 @@ impl Orca {
     /// sure it is gone before a fresh harness is started: a workspace never
     /// holds two agents (#131). A close that does not take is an error.
     async fn close_failed_resume(&self, worktree_id: &str, handle: &str) -> Result<()> {
-        self.run(&["terminal", "close", "--terminal", handle])
+        self.stop_agent(worktree_id, handle)
             .await
-            .context("closing the resumed terminal, so no fresh one is started beside it")?;
-        for _ in 0..6 {
-            if self.live_handle(worktree_id, Some(handle)).await?.is_none() {
-                return Ok(());
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        bail!(
-            "an agent is still live in worktree {worktree_id} after closing {handle}; \
-             not starting another beside it"
-        )
+            .context("closing the resumed terminal, so no fresh one is started beside it")
     }
 
     /// Locate (or relaunch) the harness terminal in a worktree and deliver a
@@ -856,8 +846,16 @@ impl Orca {
                 "no live agent terminal; resuming harness session"
             );
             let h = self.create_terminal(worktree_id, cmd, title).await?;
-            match self.settle_harness(&h, harness).await {
-                Ok(()) if !crate::sessions::resume_failed(&self.screen(&h).await?) => {
+            let wait = self.settle_harness(&h, harness).await;
+            // A live agent's screen is its own output, which may quote a
+            // harness's "no conversation found"; only a dead terminal's
+            // screen says the resume failed.
+            let alive = self.live_handle(worktree_id, Some(&h)).await?.is_some();
+            let not_found = wait.is_ok()
+                && !alive
+                && crate::sessions::resume_failed(&self.screen(&h).await.unwrap_or_default());
+            match wait {
+                Ok(()) if !not_found => {
                     for t in &terminals {
                         if t.agent_identity.is_none() {
                             let _ = self
@@ -878,7 +876,7 @@ impl Orca {
                 // The wait ran out with the agent alive in its terminal:
                 // it is the resumed conversation all the same, and is
                 // kept (#133).
-                Err(e) if self.live_handle(worktree_id, Some(&h)).await?.is_some() => {
+                Err(e) if alive => {
                     warn!(
                         worktree_id,
                         "resumed harness did not settle ({e:#}) but its agent is alive; \

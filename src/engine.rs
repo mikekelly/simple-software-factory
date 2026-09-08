@@ -7218,12 +7218,10 @@ mod tests {
         )
     }
 
-    /// Replays #131: a resumed Claude Code with queued messages was at
-    /// work at once and never reported idle, the driver took its wait
-    /// timing out for a failed resume and started a fresh harness beside
-    /// it. A resume that settles -- idle, or at work for longer than the
-    /// wait -- is the one launch there is: the delivery goes to it, the
-    /// conversation id is kept, and the block says `resumed`.
+    /// The engine's side of #131 (the driver's decision itself is
+    /// `herdr::resume_verdict`, tested there): a delivery the driver
+    /// reports as resumed is the one launch there is, the conversation id
+    /// is kept, and the block says `resumed`.
     #[tokio::test]
     async fn a_resumed_agent_at_work_is_settled_and_not_doubled() {
         let stub = GitHubStub::start().await;
@@ -7247,10 +7245,9 @@ mod tests {
         assert_eq!(posts[0].1, resumed_block("resumed"));
     }
 
-    /// The harness could not find the session and exited: nothing is left
-    /// to stop, a fresh harness follows in the same workspace with the
-    /// whole story, and the block says `fresh` because that is what
-    /// happened.
+    /// A delivery the driver reports as fresh after a resume it gave up
+    /// on: the conversation id goes, the fresh harness gets the whole
+    /// story, and the block says `fresh` because that is what happened.
     #[tokio::test]
     async fn a_resume_whose_harness_exits_is_followed_by_one_fresh_harness() {
         let stub = GitHubStub::start().await;
@@ -7265,7 +7262,6 @@ mod tests {
         let log = d.log();
         assert_eq!(log[0], "resume-exited:w5");
         assert_eq!(log[1], "relaunch:w5:false");
-        assert!(!log.iter().any(|l| l.starts_with("stop:")), "{log:?}");
         let launches = d.launches();
         assert_eq!(
             launches.len(),
@@ -7282,9 +7278,11 @@ mod tests {
         assert_eq!(posts[0].1, resumed_block("fresh"));
     }
 
-    /// The wait ran out with the resumed agent alive in its pane (#133):
-    /// it is the resumed conversation whatever herdr made of its state,
-    /// so it is kept -- one handle, no second launch, `resumed`.
+    /// The shape #133 asks a test for: the driver kept an agent that was
+    /// alive when the wait ran out, and the engine ends with one handle,
+    /// `resumed`, the conversation id kept and no second launch. (The
+    /// stub's `Unsettled` and `Settles` reach the engine as the same
+    /// delivery; the difference is the driver's, in `resume_verdict`.)
     #[tokio::test]
     async fn a_resume_alive_past_the_wait_is_kept_not_replaced() {
         let stub = GitHubStub::start().await;

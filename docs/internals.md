@@ -37,8 +37,9 @@ The details behind the README's [How it works](../README.md#how-it-works).
   gone, ssf re-creates it from the old branch (local or `origin/`) and does
   the same. Claude Code resumes a session from any directory, so this works
   even when the new worktree has a different path. A resume has failed
-  only when the harness says it could not find the session or when no
-  agent is running in its pane once the driver's wait is over: a resumed
+  only when no agent is running in its pane once the driver's wait is
+  over (the screen then says whether the harness could not find the
+  session): a resumed
   agent that is idle, at a question, or already at work on the messages
   queued in its conversation (a Claude Code with a backlog starts on it
   at once and reports `working`, never `idle`) has settled, and one still
