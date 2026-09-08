@@ -20,6 +20,33 @@ pass included, and exits. The installed service runs the last package
 installed, so a change is verified with unit tests and scratch runs rather
 than by expecting to see it live.
 
+## Tests write nowhere but a temporary directory
+
+A test must not write outside a temporary directory it made itself:
+`cargo test` runs on machines with a live factory, and it used to
+overwrite `~/.local/state/ssf/state.json` with a fixture. Nothing was
+lost while the daemon kept running, but a restart in that window started
+it from the fixture and every repository binding and every session's
+workspace went with it. `makepkg`'s `check()` runs the suite too, so a
+source build did it to whoever built the package.
+
+So the test build has no real directories to write to: `config_dir()`
+and `state_dir()` ignore `SSF_CONFIG_DIR`/`SSF_STATE_DIR` and the
+platform's own answer under `cfg(test)`, and panic unless the calling
+thread holds a sandbox. A test that writes takes one:
+
+```rust
+let _sandbox = crate::config::test_support::sandbox();
+```
+
+which points both directories at a fresh temporary directory for that
+thread and deletes it when the guard is dropped. Tests run one per
+thread, so two running in parallel cannot see each other's `state.json`.
+`sandbox.config_dir()`, `sandbox.state_dir()` and `sandbox.root()` are
+the paths, for a test that wants to lay a fixture down first. Everything
+else a test writes goes under `std::env::temp_dir()` and is removed at
+the end.
+
 ## A dev build as the service
 
 `packaging/dev-install.sh` builds `target/release/ssf`, writes the
