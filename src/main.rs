@@ -2373,12 +2373,12 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                     }
                 );
                 for stray in &st.strays {
+                    println!("stray:    {}", stray.describe());
+                }
+                if st.base_unread {
                     println!(
-                        "stray:    {} {}, which this config does not name; `{}` removes it{}",
-                        stray.what(),
-                        stray.name,
-                        stray.remove,
-                        stray.caveat()
+                        "stray:    {} could not be read, so what else is in it is unknown",
+                        st.dir
                     );
                 }
                 println!(
@@ -3961,13 +3961,24 @@ async fn doctor() -> Result<()> {
         // lima's home is exactly what a person who cannot run `limactl
         // list` needs told, so the answer is found the other way rather
         // than not at all. Firecracker's strays never need tooling.
-        let strays = if tooling.ok {
-            vm.survey().strays
+        let (strays, base_unread) = if tooling.ok {
+            let s = vm.survey();
+            (s.strays, s.base_unread)
         } else {
             vm.strays_on_filesystem()
         };
         for stray in strays {
             println!("note {}", stray.describe());
+        }
+        if base_unread {
+            // The same fact `ssf vm status` and `ssf uninstall` report.
+            // A directory nobody could read may hold a VM a rename left
+            // behind, and this is the command a person runs to find out
+            // what is wrong.
+            println!(
+                "note {} could not be read, so what else is in it is unknown",
+                vm.base.display()
+            );
         }
     }
     // The widget lives on the host; inside the guest there is no Omarchy

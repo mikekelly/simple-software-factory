@@ -1128,12 +1128,9 @@ impl Vm {
     /// configuration does not name, read off the filesystem for when
     /// `limactl` will not list them. Reported, never removed -- so
     /// naming a directory lima might disown costs a line, not a VM.
-    pub(super) fn strays_on_disk(&self) -> Vec<Stray> {
-        self.strays_on_disk_read().0
-    }
-
-    /// [`Vm::strays_on_disk`], and whether either of lima's directories
-    /// could not be read.
+    /// Every `ssf-*` instance and disk in lima's own home that this
+    /// configuration does not name, and whether either of lima's
+    /// directories could not be read.
     pub(super) fn strays_on_disk_read(&self) -> (Vec<Stray>, bool) {
         let (mut strays, a) = self.instance_strays_read();
         let (disks, b) = self.disk_strays_read();
@@ -2950,7 +2947,7 @@ mod tests {
                 .collect();
         assert_eq!(named, [(StrayKind::Directory, "old".to_string())]);
         // And the filesystem-only path doctor falls back to sees it too.
-        assert_eq!(t.vm.strays_on_filesystem().len(), 1);
+        assert_eq!(t.vm.strays_on_filesystem().0.len(), 1);
     }
 
     #[cfg(unix)]
@@ -2973,19 +2970,15 @@ mod tests {
         std::fs::create_dir_all(home.join("ssf-old")).unwrap();
         std::fs::create_dir_all(home.join("_disks").join("ssf-old")).unwrap();
         assert_eq!(t.vm.survey().strays.len(), 2, "readable while readable");
-        set_mode(&home, 0o000);
-        let s = t.vm.survey();
-        set_mode(&home, 0o755);
-        // Running as root reads it anyway, and then there is nothing to
-        // assert about not having been able to.
-        if s.strays.is_empty() {
-            assert!(s.base_unread, "unreadable is unknown, not empty");
-            assert_ne!(
-                s.present,
-                Some(false),
-                "`no VM` over a home nobody looked in"
-            );
-        }
+        let Some(s) = while_unreadable(&home, || t.vm.survey()) else {
+            return; // running as root, which reads it anyway
+        };
+        assert!(s.base_unread, "unreadable is unknown, not empty");
+        assert_ne!(
+            s.present,
+            Some(false),
+            "`no VM` over a home nobody looked in"
+        );
     }
 
     #[test]
@@ -3014,6 +3007,20 @@ mod tests {
             cfg.vm.dir = base.to_string_lossy().into_owned();
             Vm::new(&cfg).survey().strays.len()
         };
+        let unread = |name: &str| {
+            let mut cfg = Config::default();
+            cfg.vm.name = name.into();
+            cfg.vm.backend = Some(BackendKind::Firecracker);
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            Vm::new(&cfg).survey().base_unread
+        };
+        // A directory the guard declined to look in is unknown, not
+        // empty: saying "empty" made the report confident about contents
+        // it had just refused to read -- `safe to remove` and `no VM`
+        // over a data disk of clones, from the guard added to prevent
+        // exactly that.
+        let refused_is_unknown = unread("..") && unread("") && unread("/etc");
+        let looked = !unread("new");
         let (escapes, nested, ordinary) = (
             [survey(""), survey("."), survey(".."), survey("/etc")],
             survey("a/b"),
@@ -3027,6 +3034,132 @@ mod tests {
         // reported -- the guard must not over-fire.
         assert_eq!(nested, 1, "a/b is inside [vm] dir");
         assert_eq!(ordinary, 1);
+        assert!(
+            refused_is_unknown,
+            "a directory nobody looked in is not an empty one"
+        );
+        assert!(looked, "and one that was read is not unknown");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn each_of_limas_two_directories_can_be_the_unreadable_one() {
+        // The other test chmods lima's home, which hides `_disks` behind
+        // it -- so the `_disks`-only case, which a `sudo limactl disk
+        // create` leaves, was uncovered, and dropping its half of the
+        // answer changed nothing.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Empty);
+        let disks = t.vm.lima_home.clone().unwrap().join("_disks");
+        std::fs::create_dir_all(&disks).unwrap();
+        assert!(!t.vm.survey().base_unread, "readable while readable");
+        let Some(unread) = while_unreadable(&disks, || t.vm.survey().base_unread) else {
+            return; // running as root, which reads it anyway
+        };
+        assert!(unread, "`_disks` alone being unreadable is still unknown");
+
+        // The same, one layer up: with the *instance* listing failing
+        // too, the answer comes from `strays_on_disk_read`, which ORs
+        // the two directories. Dropping the disk half there changed
+        // nothing until this case existed -- the other tests make lima's
+        // home unreadable, which hides `_disks` behind it and makes the
+        // instance half true on its own.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Fails);
+        let disks = t.vm.lima_home.clone().unwrap().join("_disks");
+        std::fs::create_dir_all(&disks).unwrap();
+        assert!(!t.vm.survey().base_unread, "readable while readable");
+        let Some(unread) = while_unreadable(&disks, || t.vm.survey().base_unread) else {
+            return;
+        };
+        assert!(unread, "the disk half of the pair still counts");
+    }
+
+    /// Run `f` with `path` unreadable, or `None` when this user reads it
+    /// regardless -- which root does, and which would otherwise make
+    /// every assertion inside vacuously true.
+    #[cfg(unix)]
+    fn while_unreadable<T>(path: &Path, f: impl FnOnce() -> T) -> Option<T> {
+        set_mode(path, 0o000);
+        let readable = std::fs::read_dir(path).is_ok();
+        let out = f();
+        set_mode(path, 0o755);
+        (!readable).then_some(out)
+    }
+
+    #[test]
+    fn the_filesystem_fallback_reports_both_of_limas_directories() {
+        // What `ssf doctor` falls back to when there is no `limactl` to
+        // run: the half in lima's home is the one a person cannot find
+        // for themselves, since `limactl list` is what is missing.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("ssf-zzz")).unwrap();
+        // A disk whose name sorts first, so "disks last" is not
+        // satisfied by the names happening to fall that way.
+        std::fs::create_dir_all(home.join("_disks").join("ssf-aaa")).unwrap();
+        // Somebody else's, which is none of ssf's business to name.
+        std::fs::create_dir_all(home.join("ssf")).unwrap();
+        std::fs::create_dir_all(home.join("other")).unwrap();
+        // A symlink is not an instance directory, and `limactl delete`
+        // would not find one behind it.
+        std::os::unix::fs::symlink(home.join("ssf-zzz"), home.join("ssf-linked")).unwrap();
+        let dir_stray = t.vm.base.join("older");
+        std::fs::create_dir_all(&dir_stray).unwrap();
+        std::fs::write(dir_stray.join("data.ext4"), b"disk").unwrap();
+        let (strays, _) = t.vm.strays_on_filesystem();
+        let names: Vec<_> = strays.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["older", "ssf-zzz", "ssf-aaa"],
+            "somebody else's, and a symlink, are not ssf's to name"
+        );
+        let kinds: Vec<_> = strays.iter().map(|s| s.kind).collect();
+        assert_eq!(kinds.len(), 3, "both of lima's, and [vm] dir's: {kinds:?}");
+        assert!(kinds.contains(&StrayKind::LimaInstance), "{kinds:?}");
+        assert!(kinds.contains(&StrayKind::Directory), "{kinds:?}");
+        // Disks last, and that is the whole of the ordering rule:
+        // `limactl disk delete` refuses a disk still attached to its
+        // instance, so a person working down the list in order can.
+        let first_disk = kinds
+            .iter()
+            .position(|k| *k == StrayKind::LimaDisk)
+            .expect("a disk");
+        assert!(
+            kinds[first_disk..]
+                .iter()
+                .all(|k| *k == StrayKind::LimaDisk),
+            "a non-disk after a disk: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn a_disk_lima_lists_that_is_not_ours_is_not_named() {
+        // `split_disks` has the same rule as `split_instances`, and
+        // taking anyone's would print `limactl disk delete` beside
+        // somebody else's lima disk -- a wrong deletion the report
+        // would be instructing.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Strays, Listing::Empty);
+        std::fs::remove_dir_all(&t.vm.dir).unwrap();
+        let names: Vec<_> =
+            t.vm.survey()
+                .strays
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+        assert_eq!(names, ["ssf-aaa"], "someone-else is not ssf's to name");
+    }
+
+    #[test]
+    fn a_lima_name_with_a_space_in_it_is_quoted_like_the_rm() {
+        // These names come off a `read_dir` of lima's home, which ssf
+        // did not create: unquoted, a pasted remedy runs a different
+        // command. The `rm -rf` was fixed for this; the other two are
+        // the same string in the same report.
+        let odd = Stray::lima_instance("ssf-a b".into());
+        assert_eq!(odd.remove, "limactl delete 'ssf-a b'");
+        assert_eq!(
+            Stray::lima_disk("ssf-a b".into()).remove,
+            "limactl disk delete 'ssf-a b'"
+        );
     }
 
     #[test]
@@ -3421,6 +3554,9 @@ mod tests {
         Answers,
         Empty,
         Fails,
+        /// An `ssf-*` disk this configuration does not name, sorting
+        /// before the instance's name, beside somebody else's.
+        Strays,
     }
 
     /// What the fake's `limactl list --json` does. It is both the
@@ -3483,6 +3619,10 @@ mod tests {
             let yaml = inst_dir.join("lima.yaml");
             let disk_arm = match disks {
                 DiskList::Answers => r#"echo '{"name":"ssf-one","size":21474836480,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
+                // A disk whose name sorts before the instance's, so the
+                // ordering rule is not satisfied by luck, and one that
+                // is somebody else's.
+                DiskList::Strays => r#"echo '{"name":"ssf-aaa","size":1,"dir":"/d","mountPoint":"/m"}'; echo '{"name":"someone-else","size":1,"dir":"/d","mountPoint":"/m"}'"#.to_string(),
                 DiskList::Empty => ":".to_string(),
                 DiskList::Fails => {
                     r#"echo 'FATAL[0000] failed to lock the lima home' >&2; exit 1"#.to_string()
@@ -3503,8 +3643,12 @@ mod tests {
                 // `makepkg`'s check().
                 Listing::Hangs => "exec sleep 120".to_string(),
                 Listing::Strays => format!(
-                    "echo '{json}'; echo '{}'",
-                    json.replace("ssf-one", "ssf-old")
+                    "echo '{json}'; echo '{}'; echo '{}'",
+                    json.replace("ssf-one", "ssf-old"),
+                    // Somebody else's lima instance, which is none of
+                    // ssf's business to name or offer a `limactl delete`
+                    // for.
+                    json.replace("ssf-one", "someone-else")
                 ),
             };
             let edit_arm = match edit {
