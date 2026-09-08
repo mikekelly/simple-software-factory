@@ -58,7 +58,18 @@ commands, and the rest of `docs/` is the reference the document links to.
    `--data-gib` only when they ask for a size. When `ssf doctor` says the
    data disk is full, `ssf vm grow` (VM stopped) enlarges it without
    losing anything; see [Size](../../docs/vm.md#size).
-8. **Uninstall with `ssf uninstall`**, never by hand: it reports and
+8. **Never delete a worktree directory or `ssf purge --force` on the
+   person's behalf.** A workspace closed by hand leaves its git checkout
+   under `<checkout>.worktrees/`; `ssf doctor` prints a `WARN` line per
+   repository naming each such checkout holding commits on no other
+   branch and not on origin (or uncommitted changes) with no agent on
+   it. For an active item the fix is `ssf tell <item> "..."`, which
+   brings the session back in that checkout; a retired item refuses a
+   tell, and its branch is pushed by hand. `ssf purge` says `(workspace
+   gone, checkout still on disk)` for one whose item is closed and
+   removes it only when clean and pushed. Show the person the line and
+   let them decide about anything else.
+9. **Uninstall with `ssf uninstall`**, never by hand: it reports and
    asks once, and it refuses while a workspace holds unpushed work or
    the VM is stopped so its clones cannot be checked. Do not add
    `--force` on the person's behalf: show them the report and let them

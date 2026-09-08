@@ -2947,12 +2947,18 @@ async fn purge(dry_run: bool, older_than: Option<u64>, force: bool, json: bool) 
             .get("release_given_up")
             .and_then(|b| b.as_bool())
             .unwrap_or(false);
+        let workspace_gone = s("workspace") == "gone";
         println!(
-            "{:<13} {} \"{}\"  [{}]{}  {}",
+            "{:<13} {} \"{}\"  [{}]{}{}  {}",
             verb,
             s("session"),
             status::one_line(&title, 50),
             s("state"),
+            if workspace_gone {
+                " (workspace gone, checkout still on disk)"
+            } else {
+                ""
+            },
             if given_up { " (release given up)" } else { "" },
             s("path")
         );
@@ -3263,6 +3269,16 @@ async fn doctor() -> Result<()> {
             ),
         );
     }
+    // What each driver has open, once, for the worktree lines below: a
+    // worktree with no agent in its workspace (or no workspace at all)
+    // is what those report.
+    let mut open_workspaces: std::collections::BTreeMap<
+        config::DriverKind,
+        Result<Vec<orca::WorkspaceInfo>>,
+    > = Default::default();
+    for d in driver::Drivers::from_config(&cfg).iter() {
+        open_workspaces.insert(d.kind(), d.ps().await);
+    }
     for r in &cfg.repos {
         // Who may drive it: the configured list, or the collaborators with
         // push access fetched the way the daemon does.
@@ -3366,11 +3382,135 @@ async fn doctor() -> Result<()> {
                 ),
             }
         }
+        // The configured checkout, `~` expanded as the daemon expands it.
+        let configured_missing = r
+            .path
+            .as_deref()
+            .is_some_and(|p| !config::expand_tilde(p).join(".git").exists());
         if let Some(p) = &r.path {
-            check(
-                std::path::Path::new(p).join(".git").exists(),
-                format!("{}: checkout at {p}", r.name),
-            );
+            check(!configured_missing, format!("{}: checkout at {p}", r.name));
+        }
+        // The worktrees its sessions work in, and what each holds that is
+        // on no other branch and not on origin, when no agent is on it: a
+        // workspace closed by hand leaves the checkout behind, and nothing
+        // else says that removing it would lose work.
+        // A configured path that is missing was flagged just above.
+        match checkout_root(&cfg, r, &state) {
+            None if configured_missing => {}
+            None => check(
+                true,
+                format!(
+                    "{}: no checkout yet (the first session clones it under {})",
+                    r.name,
+                    cfg.projects_dir(cfg.driver_for(r)).display()
+                ),
+            ),
+            Some(root) => match release::held_work(&root, r.base_branch.as_deref()).await {
+                Err(e) => println!(
+                    "note {}: worktrees of {} could not be checked: {e:#}",
+                    r.name, root
+                ),
+                Ok(report) => {
+                    let stale = match &report.fetch_error {
+                        Some(e) => format!(
+                            " (origin not fetched, so the counts may be stale: {})",
+                            status::one_line(e, 80)
+                        ),
+                        None => String::new(),
+                    };
+                    // Every driver's workspaces, not only this repository's
+                    // driver's: after a driver switch the old driver may
+                    // still have an agent on a worktree here.
+                    let rows: Vec<&orca::WorkspaceInfo> = open_workspaces
+                        .values()
+                        .filter_map(|r| r.as_ref().ok())
+                        .flatten()
+                        .collect();
+                    let driver_down = open_workspaces.values().any(|r| r.is_err());
+                    // (line, item is active)
+                    let stranded: Vec<(String, bool)> = report
+                        .worktrees
+                        .iter()
+                        .filter(|h| h.at_risk())
+                        .filter_map(|h| {
+                            let ws = match rows.iter().find(|w| same_path(&w.path, &h.path)) {
+                                Some(w) if !w.agents.is_empty() => return None,
+                                Some(_) => "workspace open, no agent in it",
+                                None if driver_down => {
+                                    "cannot tell whether an agent is on it (a driver is not answering)"
+                                }
+                                None => "no workspace",
+                            };
+                            let record = driver::number_of_name(&h.name).map(|n| {
+                                (
+                                    n,
+                                    state
+                                        .repos
+                                        .get(&r.name)
+                                        .and_then(|rs| rs.issues.get(&n))
+                                        .map(|it| it.active),
+                                )
+                            });
+                            let item = match record {
+                                Some((n, Some(true))) => format!("#{n} active"),
+                                Some((n, Some(false))) => format!("#{n} retired"),
+                                Some((n, None)) => format!("#{n} not on record"),
+                                None => "no item".to_string(),
+                            };
+                            Some((
+                                format!("{}: {}; {ws}; {item}", h.name, h.describe(&report.base)),
+                                matches!(record, Some((_, Some(true)))),
+                            ))
+                        })
+                        .collect();
+                    let total = report.worktrees.len();
+                    let plural = |n: usize| if n == 1 { "" } else { "s" };
+                    if stranded.is_empty() {
+                        check(
+                            true,
+                            if total == 0 {
+                                format!("{}: no worktrees under {}{stale}", r.name, report.dir)
+                            } else {
+                                format!(
+                                    "{}: {total} worktree{} under {}; none holds work that is only there without an agent on it{stale}",
+                                    r.name,
+                                    plural(total),
+                                    report.dir
+                                )
+                            },
+                        );
+                    } else {
+                        println!(
+                            "WARN {}: {} of {total} worktree{} under {} hold{} work only it has (commits on no other branch and not on origin, uncommitted changes, a stash), with no agent on it{stale}:",
+                            r.name,
+                            stranded.len(),
+                            plural(total),
+                            report.dir,
+                            if stranded.len() == 1 { "s" } else { "" }
+                        );
+                        for (line, _) in &stranded {
+                            println!("              - {line}");
+                        }
+                        // What to do depends on the item: a tell reaches an
+                        // active one and brings its session back in the
+                        // checkout; a retired one refuses a tell, so its
+                        // branch is pushed by hand.
+                        if stranded.iter().any(|(_, active)| *active) {
+                            println!(
+                                "              an active item: `ssf tell <item> \"...\"` brings its session back in that checkout"
+                            );
+                        }
+                        if stranded.iter().any(|(_, active)| !*active) {
+                            println!(
+                                "              a retired item, or none: push the branch by hand (`git -C <checkout> push -u origin <branch>`), or look and decide"
+                            );
+                        }
+                        println!(
+                            "              `ssf purge --force` or removing the directory loses the uncommitted changes and leaves the commits on a local branch nothing lists (a detached HEAD's go too)"
+                        );
+                    }
+                }
+            },
         }
         // The git identity its agents commit and push with, and whether
         // what it needs (a key, a token) is here where the agents run.
@@ -3549,6 +3689,44 @@ async fn doctor() -> Result<()> {
     }
     println!("all good");
     Ok(())
+}
+
+/// The checkout `ssf doctor` looks for a repository's worktrees next to:
+/// the configured path, else what the state remembers of its sessions
+/// (herdr's repo id is the checkout; any driver's worktree path sits
+/// under `<checkout>.worktrees/`), else where the driver would clone it.
+fn checkout_root(cfg: &Config, r: &RepoConfig, state: &state::State) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(p) = &r.path {
+        candidates.push(config::expand_tilde(p));
+    }
+    if let Some(rs) = state.repos.get(&r.name) {
+        for it in rs.issues.values() {
+            if let Some(p) = &it.worktree_path
+                && let Some(root) = driver::checkout_of_worktree(p)
+            {
+                candidates.push(root);
+            }
+            if let Some(id) = &it.repo_id
+                && id.starts_with('/')
+            {
+                candidates.push(PathBuf::from(id));
+            }
+        }
+    }
+    if let Ok((_, name)) = r.split() {
+        candidates.push(cfg.projects_dir(cfg.driver_for(r)).join(name));
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.join(".git").exists())
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// The same directory, whichever way each side spells it.
+fn same_path(a: &str, b: &str) -> bool {
+    let canon = |p: &str| std::fs::canonicalize(p).unwrap_or_else(|_| PathBuf::from(p));
+    a == b || canon(a) == canon(b)
 }
 
 fn which(bin: &str) -> Option<std::path::PathBuf> {

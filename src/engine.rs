@@ -4526,7 +4526,16 @@ deliveries resume"
                     "removed": false,
                     "release_given_up": st.release_refusals >= MAX_RELEASE_REFUSALS,
                 });
-                if !self.driver(&repo).worktree_exists(&id).await? {
+                let workspace_gone = !self.driver(&repo).worktree_exists(&id).await?;
+                // The driver's workspace can be gone while the git checkout
+                // is not (a workspace closed by hand leaves it behind), and
+                // the checkout is what holds the work: it is judged like
+                // any other, and removed with git rather than the driver.
+                let checkout = st
+                    .worktree_path
+                    .as_deref()
+                    .filter(|p| Path::new(p).join(".git").exists());
+                if workspace_gone && checkout.is_none() {
                     row["state"] = "already gone".into();
                     if !dry_run {
                         self.mark_released(&repo, st.number);
@@ -4535,31 +4544,30 @@ deliveries resume"
                     rows.push(row);
                     continue;
                 }
-                if self.driver(&repo).has_live_agent(&id).await.unwrap_or(true) {
+                if workspace_gone {
+                    row["workspace"] = "gone".into();
+                } else if self.driver(&repo).has_live_agent(&id).await.unwrap_or(true) {
                     row["state"] = "agent running".into();
                     rows.push(row);
                     continue;
                 }
-                let (state, safe, problems) = match st.worktree_path.as_deref() {
-                    Some(path) => match release::inspect(path).await {
-                        Ok(c) => (c.state(), c.safe(), c.problems()),
-                        Err(e) => ("unknown".into(), false, vec![format!("{e:#}")]),
-                    },
-                    None => (
-                        "unknown".into(),
-                        false,
-                        vec!["no workspace path recorded".into()],
-                    ),
-                };
+                let (state, safe, problems) = checkout_state(st.worktree_path.as_deref()).await;
                 row["state"] = state.into();
                 row["problems"] = problems.into();
                 if !dry_run && (safe || force) {
-                    match self.driver(&repo).remove_worktree(&id).await {
+                    let removed = match checkout {
+                        Some(path) if workspace_gone => {
+                            crate::driver::remove_stray_worktree(path).await
+                        }
+                        _ => self.driver(&repo).remove_worktree(&id).await,
+                    };
+                    match removed {
                         Ok(()) => {
                             info!(
                                 session,
                                 worktree = id,
                                 forced = !safe,
+                                workspace_gone,
                                 "purged the workspace"
                             );
                             self.mark_released(&repo, st.number);
@@ -4585,6 +4593,22 @@ deliveries resume"
             }
         }
         Ok(serde_json::json!({ "dry_run": dry_run, "force": force, "workspaces": rows }))
+    }
+}
+
+/// What `ssf release` and `ssf purge` say of a checkout: its short state,
+/// whether removing it loses nothing, and the reasons when it would.
+async fn checkout_state(path: Option<&str>) -> (String, bool, Vec<String>) {
+    match path {
+        Some(path) => match release::inspect(path).await {
+            Ok(c) => (c.state(), c.safe(), c.problems()),
+            Err(e) => ("unknown".into(), false, vec![format!("{e:#}")]),
+        },
+        None => (
+            "unknown".into(),
+            false,
+            vec!["no workspace path recorded".into()],
+        ),
     }
 }
 
@@ -5778,6 +5802,92 @@ mod tests {
                 None
             )
             .is_empty()
+        );
+    }
+
+    /// A workspace closed by hand leaves its checkout on disk. Purge used
+    /// to call that "already gone" and forget the record, leaving the
+    /// directory, and whatever only it held, for nobody to find.
+    #[tokio::test]
+    async fn purge_judges_a_checkout_whose_workspace_is_gone_by_the_checkout() {
+        use crate::release::testkit::{scratch, sh};
+        let s = scratch("purge-stray").await;
+        let (path, _) = crate::driver::add_local_worktree(&s.work, "issue-1-x", None)
+            .await
+            .unwrap();
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.driver = Some(DriverKind::Herdr);
+        e.cfg.repos = vec![repo()];
+        let r = repo();
+        for (n, p) in [(1, path.clone()), (2, "/nonexistent/w/2".to_string())] {
+            seeded(&mut e, n, Some(&format!("bot/issue-{n}-x")), false);
+            let st = e.entry(&r, n);
+            // Neither workspace is one the driver knows.
+            st.worktree_id = Some(format!("w{n}@{p}"));
+            st.worktree_path = Some(p);
+            st.github_state = Some("closed".into());
+            st.retired_at = Some("2026-01-01T00:00:00Z".into());
+        }
+        let rows = |v: Value| {
+            v["workspaces"]
+                .as_array()
+                .cloned()
+                .unwrap()
+                .into_iter()
+                .map(|r| {
+                    (
+                        r["session"].as_str().unwrap().to_string(),
+                        r["state"].as_str().unwrap().to_string(),
+                        r["workspace"].as_str().map(str::to_string),
+                        r["removed"].as_bool().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        // Dry run: the checkout on disk is judged (its branch was never
+        // pushed), the one that is not is already gone.
+        let v = e.purge(true, None, false).await.unwrap();
+        assert_eq!(
+            rows(v),
+            vec![
+                (
+                    "o/r#1".to_string(),
+                    "unpushed commits".to_string(),
+                    Some("gone".to_string()),
+                    false
+                ),
+                ("o/r#2".to_string(), "already gone".to_string(), None, false),
+            ]
+        );
+        assert!(Path::new(&path).is_dir());
+        // For real: the unpushed one is kept, the other forgotten.
+        let v = e.purge(false, None, false).await.unwrap();
+        assert!(!rows(v)[0].3);
+        assert!(Path::new(&path).is_dir());
+        assert!(e.peek(&r, 1).unwrap().worktree_id.is_some());
+        assert!(e.peek(&r, 2).unwrap().worktree_id.is_none());
+        // Pushed: clean and pushed, so it goes, with git since no driver
+        // has it.
+        sh(&path, &["push", "-q", "-u", "origin", "bot/issue-1-x"]).await;
+        let v = e.purge(false, None, false).await.unwrap();
+        assert_eq!(
+            rows(v),
+            vec![(
+                "o/r#1".to_string(),
+                "clean and pushed".to_string(),
+                Some("gone".to_string()),
+                true
+            )]
+        );
+        assert!(!Path::new(&path).exists());
+        assert!(e.peek(&r, 1).unwrap().worktree_id.is_none());
+        assert!(
+            d.log().iter().all(|l| !l.starts_with("remove:")),
+            "{:?}",
+            d.log()
         );
     }
 

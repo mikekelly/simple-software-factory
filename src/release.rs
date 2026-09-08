@@ -16,6 +16,9 @@ pub async fn git(path: &str, args: &[&str]) -> Result<String> {
         .arg("-C")
         .arg(path)
         .args(args)
+        // Never wait on a terminal for credentials (`ssf doctor` has one):
+        // a fetch that needs them fails and is reported instead.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .await
         .context("running git")?;
@@ -181,15 +184,250 @@ pub async fn inspect(path: &str) -> Result<Check> {
     Ok(check)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// A worktree ssf made under `<checkout>.worktrees/`, and what it holds
+/// that exists nowhere else. `ssf doctor` reports the ones no agent is on:
+/// a workspace closed by hand leaves the checkout behind, and removing
+/// that directory (or a purge of it) would lose what is only there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Held {
+    pub path: String,
+    /// The directory name (`issue-12-...`).
+    pub name: String,
+    /// Checked-out branch, short; `None` on a detached head.
+    pub branch: Option<String>,
+    /// Commits not reachable from the base branch.
+    pub ahead: u64,
+    /// Commits reachable from neither the base branch nor any
+    /// remote-tracking branch: this checkout is the only place they are.
+    pub lost: u64,
+    /// Modified, staged and untracked files.
+    pub dirty: usize,
+    /// Stash entries made on the branch.
+    pub stashes: usize,
+    /// The directory is still there. Git lists a worktree whose directory
+    /// was removed by hand (as prunable) until `git worktree prune`; its
+    /// branch, and what only the branch holds, are still worth naming.
+    pub on_disk: bool,
+    /// Git could not answer for this one (a `.git` file pointing nowhere,
+    /// a branch that was deleted under it); the rest are unaffected.
+    pub error: Option<String>,
+}
 
-    /// A scratch repository: a bare origin and a clone of it on `main`
-    /// with one pushed commit. Removed when dropped.
-    struct Scratch {
-        dir: std::path::PathBuf,
-        work: String,
+impl Held {
+    /// Removing the checkout would lose something, or nobody can tell.
+    pub fn at_risk(&self) -> bool {
+        self.lost > 0 || self.dirty > 0 || self.stashes > 0 || self.error.is_some()
+    }
+
+    /// `6 commits ahead of master, not on origin; 2 uncommitted changes`.
+    pub fn describe(&self, base: &str) -> String {
+        if let Some(e) = &self.error {
+            return format!("could not be checked: {e}");
+        }
+        let mut parts = Vec::new();
+        if !self.on_disk {
+            parts.push(match &self.branch {
+                Some(b) => format!("directory gone, branch {b} still there"),
+                None => "directory gone".to_string(),
+            });
+        }
+        if self.branch.is_none() {
+            parts.push("detached HEAD".to_string());
+        }
+        if self.ahead > 0 {
+            let commits = format!(
+                "{} commit{} ahead of {base}",
+                self.ahead,
+                if self.ahead == 1 { "" } else { "s" }
+            );
+            parts.push(if self.lost == self.ahead {
+                format!("{commits}, not on origin")
+            } else if self.lost > 0 {
+                format!("{commits}, {} of them not on origin", self.lost)
+            } else {
+                format!("{commits}, all on origin")
+            });
+        }
+        if self.dirty > 0 {
+            parts.push(format!(
+                "{} uncommitted change{}",
+                self.dirty,
+                if self.dirty == 1 { "" } else { "s" }
+            ));
+        }
+        if self.stashes > 0 {
+            parts.push(format!(
+                "{} stash entr{}",
+                self.stashes,
+                if self.stashes == 1 { "y" } else { "ies" }
+            ));
+        }
+        if parts.is_empty() {
+            format!("nothing beyond {base}")
+        } else {
+            parts.join("; ")
+        }
+    }
+}
+
+/// What [`held_work`] found under one checkout.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeldReport {
+    /// The base branch compared against, short (`master`).
+    pub base: String,
+    /// Origin could not be fetched first, so the counts may be stale.
+    pub fetch_error: Option<String>,
+    /// The directory the worktrees were looked for in.
+    pub dir: String,
+    pub worktrees: Vec<Held>,
+}
+
+/// Look at every worktree under `<root>.worktrees/`: what each holds
+/// beyond the base branch (`base`, else the checkout's default base) and
+/// beyond origin. Origin is fetched once first, so a branch merged since
+/// the last fetch does not count as unmerged; a failed fetch is reported,
+/// not fatal.
+pub async fn held_work(root: &str, base: Option<&str>) -> Result<HeldReport> {
+    // Kept as spelled: git lists a worktree by the path it was added
+    // with, and the daemon adds them under the root as configured, so a
+    // root reached through a symlink still matches below (both sides are
+    // resolved for the comparison).
+    let root = root.to_string();
+    let fetch_error = git(&root, &["fetch", "--quiet", "origin"])
+        .await
+        .err()
+        .map(|e| e.to_string());
+    let base = match base {
+        Some(b) => b.to_string(),
+        None => crate::driver::default_base(&root).await?,
+    };
+    let short = base.strip_prefix("origin/").unwrap_or(&base).to_string();
+    // Origin's copy of the base is where merges land; the local one only
+    // when there is no such copy.
+    let remote = format!("refs/remotes/origin/{short}");
+    let base_ref = if git(&root, &["rev-parse", "--verify", "--quiet", &remote])
+        .await
+        .is_ok()
+    {
+        remote
+    } else {
+        format!("refs/heads/{short}")
+    };
+    git(&root, &["rev-parse", "--verify", "--quiet", &base_ref])
+        .await
+        .with_context(|| format!("base branch {short} not found in {root}"))?;
+    let dir = crate::driver::worktrees_dir(&root);
+    // Also next to the checkout as the filesystem spells it, for
+    // worktrees added through the other spelling.
+    let dir_real = std::path::Path::new(&root)
+        .canonicalize()
+        .map(|p| crate::driver::worktrees_dir(&p.to_string_lossy()))
+        .unwrap_or_else(|_| dir.clone());
+    let mut worktrees = Vec::new();
+    for w in crate::driver::local_worktrees(&root).await? {
+        let p = std::path::Path::new(&w.path);
+        if !p
+            .parent()
+            .is_some_and(|parent| same_dir(parent, &dir) || same_dir(parent, &dir_real))
+        {
+            continue;
+        }
+        let mut held = Held {
+            path: w.path.clone(),
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            branch: w
+                .branch
+                .as_deref()
+                .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b).to_string()),
+            on_disk: p.is_dir(),
+            ..Default::default()
+        };
+        // One worktree git cannot answer for does not hide the others.
+        if let Err(e) = look_at(&root, &base_ref, &w, &mut held).await {
+            held.error = Some(format!("{e:#}"));
+        }
+        worktrees.push(held);
+    }
+    Ok(HeldReport {
+        base: short,
+        fetch_error,
+        dir: dir.to_string_lossy().to_string(),
+        worktrees,
+    })
+}
+
+/// Fill in what one worktree holds. A worktree whose directory is gone
+/// is asked about from the checkout, by its branch (or the commit git
+/// remembers it on): its files are gone, its commits may not be.
+async fn look_at(
+    root: &str,
+    base_ref: &str,
+    w: &crate::driver::LocalWorktree,
+    held: &mut Held,
+) -> Result<()> {
+    let (at, rev): (&str, String) = if held.on_disk {
+        (&w.path, "HEAD".to_string())
+    } else {
+        let rev = w
+            .branch
+            .clone()
+            .or_else(|| w.head.clone())
+            .context("git lists neither a branch nor a commit for it")?;
+        (root, rev)
+    };
+    if held.on_disk {
+        held.dirty = git(at, &["status", "--porcelain", "--untracked-files=all"])
+            .await?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+    }
+    held.ahead = count(at, &["rev-list", "--count", &rev, "--not", base_ref]).await?;
+    held.lost = count(
+        at,
+        &["rev-list", "--count", &rev, "--not", base_ref, "--remotes"],
+    )
+    .await?;
+    if let Some(b) = &held.branch {
+        let needle = format!("on {}:", b.to_lowercase());
+        held.stashes = git(at, &["stash", "list", "--format=%gs"])
+            .await
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.to_lowercase().contains(&needle))
+            .count();
+    }
+    Ok(())
+}
+
+/// The same directory, whichever way each side spells it.
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
+}
+
+async fn count(path: &str, args: &[&str]) -> Result<u64> {
+    let n = git(path, args).await?;
+    n.trim()
+        .parse()
+        .with_context(|| format!("git {}: not a count: {n:?}", args.join(" ")))
+}
+
+/// A scratch repository for tests: a bare origin and a clone of it on
+/// `main` with one pushed commit. Removed when dropped.
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::git;
+
+    pub struct Scratch {
+        pub dir: std::path::PathBuf,
+        pub work: String,
     }
 
     impl Drop for Scratch {
@@ -198,7 +436,8 @@ mod tests {
         }
     }
 
-    async fn sh(path: &str, args: &[&str]) -> String {
+    /// Run git in `path` with a fixed identity and no signing.
+    pub async fn sh(path: &str, args: &[&str]) -> String {
         let mut full = vec![
             "-c",
             "user.name=t",
@@ -213,7 +452,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("git {args:?}: {e:#}"))
     }
 
-    async fn scratch(name: &str) -> Scratch {
+    pub async fn scratch(name: &str) -> Scratch {
         let dir = std::env::temp_dir().join(format!("ssf-release-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -232,6 +471,186 @@ mod tests {
         sh(&work_s, &["commit", "-q", "-m", "one"]).await;
         sh(&work_s, &["push", "-q", "-u", "origin", "main"]).await;
         Scratch { dir, work: work_s }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testkit::*;
+    use super::*;
+
+    /// A worktree of the scratch checkout under `work.worktrees/<name>`,
+    /// on branch `bot/<name>` from `main`.
+    async fn worktree(s: &Scratch, name: &str) -> String {
+        let (path, _) = crate::driver::add_local_worktree(&s.work, name, None)
+            .await
+            .unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn held_work_counts_what_only_the_worktree_has() {
+        let s = scratch("held").await;
+        // Nothing beyond main yet: nothing at risk.
+        let w = worktree(&s, "issue-5-fix").await;
+        let r = held_work(&s.work, None).await.unwrap();
+        assert_eq!(r.base, "main");
+        assert!(r.fetch_error.is_none(), "{:?}", r.fetch_error);
+        assert_eq!(r.worktrees.len(), 1);
+        let h = &r.worktrees[0];
+        assert_eq!(h.name, "issue-5-fix");
+        assert_eq!(h.branch.as_deref(), Some("bot/issue-5-fix"));
+        assert_eq!((h.ahead, h.lost, h.dirty, h.stashes), (0, 0, 0, 0));
+        assert!(!h.at_risk());
+        assert_eq!(h.describe(&r.base), "nothing beyond main");
+        // Two commits nobody else has.
+        std::fs::write(std::path::Path::new(&w).join("b.txt"), "b\n").unwrap();
+        sh(&w, &["add", "."]).await;
+        sh(&w, &["commit", "-q", "-m", "two"]).await;
+        std::fs::write(std::path::Path::new(&w).join("c.txt"), "c\n").unwrap();
+        sh(&w, &["add", "."]).await;
+        sh(&w, &["commit", "-q", "-m", "three"]).await;
+        let h = held_work(&s.work, None).await.unwrap().worktrees.remove(0);
+        assert_eq!((h.ahead, h.lost), (2, 2));
+        assert!(h.at_risk());
+        assert_eq!(h.describe("main"), "2 commits ahead of main, not on origin");
+        // Pushed: still ahead of main, but origin has them.
+        sh(&w, &["push", "-q", "-u", "origin", "bot/issue-5-fix"]).await;
+        let h = held_work(&s.work, None).await.unwrap().worktrees.remove(0);
+        assert_eq!((h.ahead, h.lost), (2, 0));
+        assert!(!h.at_risk());
+        assert_eq!(h.describe("main"), "2 commits ahead of main, all on origin");
+        // One more commit on top, plus a dirty file and a stash.
+        std::fs::write(std::path::Path::new(&w).join("d.txt"), "d\n").unwrap();
+        sh(&w, &["add", "."]).await;
+        sh(&w, &["commit", "-q", "-m", "four"]).await;
+        std::fs::write(std::path::Path::new(&w).join("a.txt"), "stashed\n").unwrap();
+        sh(&w, &["stash", "push", "-q", "-m", "keep"]).await;
+        std::fs::write(std::path::Path::new(&w).join("e.txt"), "e\n").unwrap();
+        let h = held_work(&s.work, None).await.unwrap().worktrees.remove(0);
+        assert_eq!((h.ahead, h.lost, h.dirty, h.stashes), (3, 1, 1, 1));
+        assert_eq!(
+            h.describe("main"),
+            "3 commits ahead of main, 1 of them not on origin; 1 uncommitted change; 1 stash entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn held_work_follows_origin_for_merges_and_skips_other_worktrees() {
+        let s = scratch("held-merge").await;
+        let w = worktree(&s, "issue-6-x").await;
+        std::fs::write(std::path::Path::new(&w).join("b.txt"), "b\n").unwrap();
+        sh(&w, &["add", "."]).await;
+        sh(&w, &["commit", "-q", "-m", "two"]).await;
+        assert_eq!(held_work(&s.work, None).await.unwrap().worktrees[0].lost, 1);
+        // Merged into main on origin by someone else (a second clone):
+        // the fetch sees it and the commit is no longer only here.
+        let other = s.dir.join("other");
+        let other_s = other.to_string_lossy().to_string();
+        let origin = s.dir.join("origin.git").to_string_lossy().to_string();
+        sh(
+            &s.dir.to_string_lossy(),
+            &["clone", "-q", &origin, &other_s],
+        )
+        .await;
+        sh(&w, &["push", "-q", "origin", "bot/issue-6-x"]).await;
+        sh(&other_s, &["fetch", "-q", "origin"]).await;
+        sh(
+            &other_s,
+            &["merge", "-q", "--ff-only", "origin/bot/issue-6-x"],
+        )
+        .await;
+        sh(&other_s, &["push", "-q", "origin", "main"]).await;
+        sh(&origin, &["branch", "-D", "bot/issue-6-x"]).await;
+        let r = held_work(&s.work, None).await.unwrap();
+        let h = &r.worktrees[0];
+        assert_eq!((h.ahead, h.lost), (0, 0), "{h:?}");
+        assert_eq!(h.describe(&r.base), "nothing beyond main");
+        // A worktree somewhere else is not ssf's to report; a detached
+        // one under the directory is, with its commits on no branch.
+        let elsewhere = s.dir.join("elsewhere").to_string_lossy().to_string();
+        sh(&s.work, &["worktree", "add", "-q", "--detach", &elsewhere]).await;
+        let detached = std::path::Path::new(&r.dir).join("pr-9");
+        let detached_s = detached.to_string_lossy().to_string();
+        sh(&s.work, &["worktree", "add", "-q", "--detach", &detached_s]).await;
+        std::fs::write(detached.join("z.txt"), "z\n").unwrap();
+        sh(&detached_s, &["add", "."]).await;
+        sh(&detached_s, &["commit", "-q", "-m", "loose"]).await;
+        let r = held_work(&s.work, Some("main")).await.unwrap();
+        let names: Vec<&str> = r.worktrees.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(names, vec!["issue-6-x", "pr-9"]);
+        let d = &r.worktrees[1];
+        assert!(d.branch.is_none());
+        assert!(d.at_risk());
+        assert_eq!(
+            d.describe("main"),
+            "detached HEAD; 1 commit ahead of main, not on origin"
+        );
+        // An unknown base is an error, not a silent zero.
+        assert!(held_work(&s.work, Some("nope")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn held_work_names_a_removed_directory_and_survives_a_broken_worktree() {
+        let s = scratch("held-broken").await;
+        let gone = worktree(&s, "issue-1-gone").await;
+        std::fs::write(std::path::Path::new(&gone).join("g.txt"), "g\n").unwrap();
+        sh(&gone, &["add", "."]).await;
+        sh(&gone, &["commit", "-q", "-m", "only here"]).await;
+        let broken = worktree(&s, "issue-2-broken").await;
+        let fine = worktree(&s, "issue-3-fine").await;
+        std::fs::write(std::path::Path::new(&fine).join("f.txt"), "f\n").unwrap();
+        // The directory removed by hand; the `.git` file of another
+        // pointing nowhere.
+        std::fs::remove_dir_all(&gone).unwrap();
+        std::fs::write(
+            std::path::Path::new(&broken).join(".git"),
+            "gitdir: /nonexistent/x\n",
+        )
+        .unwrap();
+        let r = held_work(&s.work, None).await.unwrap();
+        let names: Vec<&str> = r.worktrees.iter().map(|h| h.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["issue-1-gone", "issue-2-broken", "issue-3-fine"]
+        );
+        let g = &r.worktrees[0];
+        assert!(!g.on_disk);
+        assert_eq!((g.ahead, g.lost, g.dirty), (1, 1, 0));
+        assert!(g.at_risk());
+        assert_eq!(
+            g.describe("main"),
+            "directory gone, branch bot/issue-1-gone still there; 1 commit ahead of main, not on origin"
+        );
+        let b = &r.worktrees[1];
+        assert!(b.error.is_some(), "{b:?}");
+        assert!(b.at_risk());
+        assert!(b.describe("main").starts_with("could not be checked: "));
+        let f = &r.worktrees[2];
+        assert!(f.error.is_none());
+        assert_eq!((f.ahead, f.lost, f.dirty), (0, 0, 1));
+        assert_eq!(f.describe("main"), "1 uncommitted change");
+        // The checkout reached through a symlink: git lists the worktrees
+        // by the spelling they were added with, and they are still its.
+        let link = s.dir.join("link");
+        std::os::unix::fs::symlink(&s.work, &link).unwrap();
+        let link_s = link.to_string_lossy().to_string();
+        let (via_link, _) = crate::driver::add_local_worktree(&link_s, "issue-4-link", None)
+            .await
+            .unwrap();
+        assert!(
+            via_link.starts_with(&format!("{link_s}.worktrees/")),
+            "{via_link}"
+        );
+        // (Adding one pruned the removed directory's entry, as `git
+        // worktree prune` does; that is git's listing, not this check's.)
+        let r = held_work(&link_s, None).await.unwrap();
+        let mut names: Vec<&str> = r.worktrees.iter().map(|h| h.name.as_str()).collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["issue-2-broken", "issue-3-fine", "issue-4-link"]
+        );
     }
 
     #[tokio::test]

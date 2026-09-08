@@ -532,6 +532,7 @@ ok   daemon answering on /run/user/1000/ssf-....sock as @acme-bot
 ok   1 repository configured
 ok   acme/widgets: allowed users: @ann, @acme-bot (collaborators with push access)
 ok   acme/widgets: harness `claude` installed
+ok   acme/widgets: no checkout yet (the first session clones it under /var/lib/ssf/projects)
 ok   acme/widgets: commits as acme-bot <12345678+acme-bot@users.noreply.github.com> (the bot), signed with /home/ssf/.config/ssf/keys/acme-bot_ed25519, pushes as @acme-bot (the bot)
 ok   acme/widgets: signing key /home/ssf/.config/ssf/keys/acme-bot_ed25519 present
 ok   GitHub CLI at /usr/bin/gh
@@ -631,6 +632,17 @@ GitHub (@mentioning it, or a review request, works too).
   ssf.service` (in the VM, `ssf vm logs` for the guest daemon). An issue
   assigned by an account without Write is logged once and ignored (step
   5).
+- **A workspace was closed by hand** (a herdr tab, an Orca worktree):
+  the git checkout under `<checkout>.worktrees/` survives, and so does
+  whatever it holds. `ssf doctor` prints a `WARN` line per repository
+  naming every such checkout with commits on no other branch and not on
+  origin, or uncommitted changes, and no agent on it. For an active
+  item `ssf tell <item> "..."` brings the session back in that checkout;
+  a retired item's branch is pushed by hand. Do not delete the directory
+  or `ssf purge --force` first: that loses the uncommitted changes and
+  leaves the commits on a local branch nothing lists. See
+  [Workspaces after
+  close](sessions.md#workspaces-after-close-release-and-purge).
 - **A session shows as blocked** when its harness login expired or was
   revoked under it. `ssf status` prints a `BLOCKED:` line naming the
   harness and the fix, the item gets one `blocked` post from the daemon

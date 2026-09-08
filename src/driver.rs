@@ -924,6 +924,16 @@ pub fn worktrees_dir(repo_root: &str) -> PathBuf {
         .join(format!("{name}.worktrees"))
 }
 
+/// The checkout a worktree path belongs to, by ssf's layout: the
+/// `<root>` of `<root>.worktrees/<name>`. `None` for a path elsewhere.
+pub fn checkout_of_worktree(path: &str) -> Option<PathBuf> {
+    let p = Path::new(path);
+    let dir = p.parent()?;
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    let base = dir.parent()?;
+    name.strip_suffix(".worktrees").map(|n| base.join(n))
+}
+
 /// Branch a workspace named `name` works on.
 pub fn branch_for(name: &str) -> String {
     format!("bot/{name}")
@@ -1089,12 +1099,31 @@ pub async fn remove_local_worktree(repo_root: &str, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove a linked worktree no driver has a workspace on any more, asking
+/// git which checkout it belongs to (its branch stays).
+pub async fn remove_stray_worktree(path: &str) -> Result<()> {
+    // Relative on older gits (`--path-format=absolute` needs 2.31), and
+    // then relative to the worktree.
+    let common = git(path, &["rev-parse", "--git-common-dir"])
+        .await
+        .with_context(|| format!("{path}: not a git worktree"))?;
+    let common = Path::new(path).join(common);
+    let root = common
+        .parent()
+        .with_context(|| format!("{path}: odd git dir {}", common.display()))?
+        .to_string_lossy()
+        .to_string();
+    remove_local_worktree(&root, path).await
+}
+
 /// A worktree of the checkout, as `git worktree list` reports it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalWorktree {
     pub path: String,
     /// Full ref (`refs/heads/...`), or `None` when detached.
     pub branch: Option<String>,
+    /// The commit checked out.
+    pub head: Option<String>,
 }
 
 /// Parse `git worktree list --porcelain`.
@@ -1109,11 +1138,16 @@ pub fn parse_worktree_list(text: &str) -> Vec<LocalWorktree> {
             cur = Some(LocalWorktree {
                 path: p.to_string(),
                 branch: None,
+                head: None,
             });
         } else if let Some(b) = line.strip_prefix("branch ")
             && let Some(c) = cur.as_mut()
         {
             c.branch = Some(b.to_string());
+        } else if let Some(h) = line.strip_prefix("HEAD ")
+            && let Some(c) = cur.as_mut()
+        {
+            c.head = Some(h.to_string());
         }
     }
     if let Some(c) = cur {

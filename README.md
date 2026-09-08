@@ -269,7 +269,7 @@ ssf vm login claude               # sign the harness in inside the guest
 ssf config set driver orca        # on the host: sessions in Orca instead of herdr (the default)
 ssf status
 ssf peers                         # the agent sessions and what each is doing
-ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket
+ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket, worktrees holding work with no agent on them
 ```
 
 If the commits should carry your own name rather than the bot's, a
@@ -306,7 +306,7 @@ ssf handover --harness codex --model gpt-5.5 --summary "..."   # inside a sessio
 ssf handover 12 --harness pi --no-summary          # or from your shell, like tell (owner/name#12, or --as)
 ssf handover 12 --cancel                           # drop a handover the daemon has not carried out yet
 ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspace once its work is on origin
-ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest
+ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest, a checkout whose workspace was closed by hand included
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then the package manager's remove command is yours
@@ -321,6 +321,14 @@ Things to know when operating it:
 - ssf never removes a workspace on its own. Closing an item tells the agent
   to push, comment and run `ssf release`; `ssf purge` is your sweep for what
   was left. Both refuse when anything is not on origin unless `--force`.
+- A workspace closed by hand (a herdr tab, an Orca worktree) leaves its git
+  checkout behind. `ssf doctor` warns, per repository, about every such
+  checkout holding commits that are on no other branch and not on origin, or
+  uncommitted changes, with no agent on it. `ssf tell` to an active item
+  brings the session back in that checkout; a retired item's branch is
+  pushed by hand. Removing the directory loses the uncommitted changes and
+  leaves the commits on a local branch nothing lists (see [Workspaces after
+  close](docs/sessions.md#workspaces-after-close-release-and-purge)).
 - `tell` is not mirrored to GitHub; decisions go on the item as comments,
   which the agent receives like any other activity.
 - A daemon restart is invisible to agents; a reboot triggers the startup
