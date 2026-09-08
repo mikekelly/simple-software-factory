@@ -319,7 +319,7 @@ pub const GUEST_DATA_DIR: &str = "/var/lib/ssf";
 /// `[vm] dir` had since been changed, skip the destroy step, and leave
 /// the instance and its data disk -- the clones and worktrees with them
 /// -- for the person to find with `limactl list`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Survey {
     /// Is there anything [`Vm::destroy`] would take? `None` when the
     /// backend could not be asked -- which is not "no", and must not be
@@ -339,6 +339,48 @@ pub struct Survey {
     /// but `Some(false)`; the leftovers in `[vm] dir` are ssf's own and
     /// hold nothing of anyone's work.
     pub data: Option<bool>,
+    /// Instances and disks of ssf's that this configuration does not
+    /// name: what a changed `[vm] name` leaves behind. Reported, never
+    /// removed, and deliberately not part of [`Survey::present`] --
+    /// `ssf uninstall` destroys the VM it is configured for, and a stray
+    /// that reached that decision would be a VM deleted because someone
+    /// edited a name.
+    pub strays: Vec<Stray>,
+}
+
+/// One lima instance or data disk named `ssf-*` that is not this
+/// configuration's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stray {
+    /// `ssf-<some other [vm] name>`.
+    pub name: String,
+    pub kind: StrayKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrayKind {
+    Instance,
+    Disk,
+}
+
+impl Stray {
+    /// What removes it, for the person to run. The name is in it: a
+    /// remedy whose argument has to be worked out is not a remedy, and
+    /// the name here is precisely the one they no longer have in their
+    /// config.
+    pub fn remove_command(&self) -> String {
+        match self.kind {
+            StrayKind::Instance => format!("limactl delete {}", self.name),
+            StrayKind::Disk => format!("limactl disk delete {}", self.name),
+        }
+    }
+
+    pub fn what(&self) -> &'static str {
+        match self.kind {
+            StrayKind::Instance => "lima instance",
+            StrayKind::Disk => "lima data disk",
+        }
+    }
 }
 
 /// What the sizing rule reads off this machine.
@@ -1149,6 +1191,10 @@ impl Vm {
                     running: Some(running),
                     startable: dir,
                     data: Some(self.data_disk().exists()),
+                    // Firecracker keeps nothing outside `[vm] dir`, so a
+                    // changed `[vm] name` leaves its old VM in plain
+                    // sight next to the new one.
+                    strays: Vec::new(),
                 }
             }
             BackendKind::Lima => self.lima_survey(),
@@ -2965,6 +3011,7 @@ mod tests {
                 running: Some(false),
                 startable: false,
                 data: Some(false),
+                strays: Vec::new(),
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -2977,6 +3024,7 @@ mod tests {
                 running: Some(false),
                 startable: true,
                 data: Some(false),
+                strays: Vec::new(),
             }
         );
     }

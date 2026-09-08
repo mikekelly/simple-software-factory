@@ -3940,6 +3940,19 @@ async fn doctor() -> Result<()> {
                 "; [vm] enabled is false, so nothing here needs it until you turn the VM on"
             }
         );
+        // Instances and disks a changed `[vm] name` left behind. Nothing
+        // ssf runs will remove them -- it cannot tell one kept on
+        // purpose from one abandoned -- so the only way they stop being
+        // invisible is by being named here, with the command.
+        for stray in vm.survey().strays {
+            println!(
+                "note {} {}: not named by this config ([vm] name = {}); remove it with `{}` if you are done with it",
+                stray.what(),
+                stray.name,
+                cfg.vm.name,
+                stray.remove_command()
+            );
+        }
     }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.

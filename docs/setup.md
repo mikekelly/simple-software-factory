@@ -1031,6 +1031,14 @@ each of the other cases, and it is never `ssf vm start`), or pass
 the clones live on its data disk and are destroyed with it, checked or
 not. `--yes` skips the question for scripted use.
 
+A lima instance or data disk that this configuration does not name --
+what changing `[vm] name` leaves behind, since renaming it in the config
+renames nothing in lima's home -- is listed under **keep**, with the
+`limactl delete` or `limactl disk delete` that removes it. `ssf uninstall`
+never removes one and `--force` does not reach it: ssf cannot tell a VM
+you renamed away to keep from one you abandoned, and only one of those
+is safe to delete. `ssf doctor` names them too.
+
 What it keeps, and lists at the end: the clones and worktrees under
 `~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
 dir` (the image and downloads, safe to remove), and, unless you pass
