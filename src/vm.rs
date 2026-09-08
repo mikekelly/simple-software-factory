@@ -303,6 +303,12 @@ pub struct VmStatus {
     /// that the instance is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub probe_error: Option<String>,
+    /// Instances, disks and VM directories that this configuration does
+    /// not name -- what a changed `[vm] name` leaves behind. Reported
+    /// here because `instance: ssf-new missing` over a machine still
+    /// holding `ssf-old` is the other half of the same silence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strays: Vec<Stray>,
 }
 
 /// Where the data disk is mounted in the guest.
@@ -348,37 +354,90 @@ pub struct Survey {
     pub strays: Vec<Stray>,
 }
 
-/// One lima instance or data disk named `ssf-*` that is not this
-/// configuration's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Something of ssf's shape that this configuration does not name: what
+/// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
+/// instance or data disk in lima's home; under Firecracker a sibling
+/// directory under `[vm] dir` holding its own `data.ext4`.
+///
+/// The wording throughout describes what was observed rather than
+/// claiming it: ssf did not necessarily create it, and does not need to
+/// have, because nothing here removes one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Stray {
-    /// `ssf-<some other [vm] name>`.
+    /// What it is called: `ssf-<some other [vm] name>` under lima, the
+    /// directory's name under Firecracker.
     pub name: String,
     pub kind: StrayKind,
+    /// The command that removes it, for the person to run. The name is
+    /// in it: a remedy whose argument has to be worked out is not a
+    /// remedy, and this name is precisely the one they no longer have in
+    /// their config.
+    pub remove: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StrayKind {
-    Instance,
-    Disk,
+    LimaInstance,
+    LimaDisk,
+    /// A VM directory under `[vm] dir`, whose `data.ext4` is where the
+    /// clones and worktrees of that VM were.
+    Directory,
 }
 
 impl Stray {
-    /// What removes it, for the person to run. The name is in it: a
-    /// remedy whose argument has to be worked out is not a remedy, and
-    /// the name here is precisely the one they no longer have in their
-    /// config.
-    pub fn remove_command(&self) -> String {
-        match self.kind {
-            StrayKind::Instance => format!("limactl delete {}", self.name),
-            StrayKind::Disk => format!("limactl disk delete {}", self.name),
+    pub fn lima_instance(name: String) -> Self {
+        let remove = format!("limactl delete {name}");
+        Stray {
+            name,
+            kind: StrayKind::LimaInstance,
+            remove,
         }
     }
 
+    pub fn lima_disk(name: String) -> Self {
+        // Lima refuses to delete a disk still attached to an instance,
+        // and `sort_strays` puts instances first for that reason -- but
+        // a person reads one line, not an order.
+        let remove = format!("limactl disk delete {name}");
+        Stray {
+            name,
+            kind: StrayKind::LimaDisk,
+            remove,
+        }
+    }
+
+    pub fn directory(path: &Path) -> Self {
+        Stray {
+            name: path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            kind: StrayKind::Directory,
+            remove: format!("rm -rf {}", path.display()),
+        }
+    }
+
+    /// How the report describes it, as an observation.
     pub fn what(&self) -> &'static str {
         match self.kind {
-            StrayKind::Instance => "lima instance",
-            StrayKind::Disk => "lima data disk",
+            StrayKind::LimaInstance => "lima also holds the instance",
+            StrayKind::LimaDisk => "lima also holds the data disk",
+            StrayKind::Directory => "[vm] dir also holds the VM directory",
+        }
+    }
+
+    /// What is at stake in it, when anything is.
+    pub fn holds_work(&self) -> bool {
+        matches!(self.kind, StrayKind::LimaDisk | StrayKind::Directory)
+    }
+
+    /// The half-clause that keeps a person from pasting the commands in
+    /// the wrong order.
+    pub fn caveat(&self) -> &'static str {
+        match self.kind {
+            StrayKind::LimaDisk => " (after its instance, if it still has one)",
+            _ => "",
         }
     }
 }
@@ -1178,6 +1237,33 @@ impl Vm {
         }
     }
 
+    /// VM directories under `[vm] dir` that this configuration does not
+    /// name, each holding a `data.ext4` of its own.
+    ///
+    /// A changed `[vm] name` orphans one under Firecracker exactly as it
+    /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
+    /// and the data disk is inside it, so the clones and worktrees of
+    /// the old VM are still there under the old name. Nothing named
+    /// them, and `ssf uninstall` calls `[vm] dir` "safe to remove" --
+    /// which over one of these would be the report telling a person to
+    /// delete their own work.
+    ///
+    /// Only directories holding a `data.ext4` count. The images and
+    /// downloads share `[vm] dir` with them and are genuinely safe.
+    fn fc_strays(&self) -> Vec<Stray> {
+        let Ok(entries) = std::fs::read_dir(&self.base) else {
+            return Vec::new();
+        };
+        let mut strays: Vec<Stray> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| *p != self.dir && p.join("data.ext4").exists())
+            .map(|p| Stray::directory(&p))
+            .collect();
+        strays.sort_by(|a, b| a.name.cmp(&b.name));
+        strays
+    }
+
     /// What is here of this VM, asked of the backend in one pass:
     /// `ssf uninstall` needs every answer and each one costs a `limactl`
     /// fork under lima, so they are taken together.
@@ -1191,10 +1277,7 @@ impl Vm {
                     running: Some(running),
                     startable: dir,
                     data: Some(self.data_disk().exists()),
-                    // Firecracker keeps nothing outside `[vm] dir`, so a
-                    // changed `[vm] name` leaves its old VM in plain
-                    // sight next to the new one.
-                    strays: Vec::new(),
+                    strays: self.fc_strays(),
                 }
             }
             BackendKind::Lima => self.lima_survey(),
@@ -2135,13 +2218,25 @@ impl Vm {
         // as "no such instance" it printed `instance: ssf-<name> missing
         // (ssf vm build)` over a VM that exists, which is the same
         // conflation `lima_stop` was fixed for.
-        let (inst, probe_error) = match backend {
-            BackendKind::Lima => match self.lima_instance() {
-                Ok(i) => (i, None),
-                Err(e) => (None, Some(format!("{e:#}"))),
+        let (inst, probe_error, mut strays) = match backend {
+            BackendKind::Lima => match self.lima_instances() {
+                Ok(all) => {
+                    let (mine, others) = self.split_instances(all);
+                    (mine, None, others)
+                }
+                // The listing is also the only way to see the strays, so
+                // when it fails they come off lima's filesystem, on the
+                // rule the survey uses.
+                Err(e) => (None, Some(format!("{e:#}")), self.strays_on_disk()),
             },
-            BackendKind::Firecracker => (None, None),
+            BackendKind::Firecracker => (None, None, self.fc_strays()),
         };
+        if backend == BackendKind::Lima {
+            // The disks are a second listing and this command does not
+            // need it for anything else, so the filesystem answers.
+            strays.extend(self.disk_strays_on_disk());
+            lima::sort_strays(&mut strays);
+        }
         let running = match backend {
             BackendKind::Firecracker => Some(self.running()),
             BackendKind::Lima => probe_error
@@ -2191,6 +2286,10 @@ impl Vm {
             },
             tooling: (!in_guest()).then(|| self.tooling()),
             probe_error,
+            // The listing above already has them; throwing them away
+            // here is what let `instance: ssf-new missing (ssf vm
+            // build)` stand over a machine still holding ssf-old.
+            strays,
         }
     }
 
@@ -3026,6 +3125,44 @@ mod tests {
                 data: Some(false),
                 strays: Vec::new(),
             }
+        );
+    }
+
+    #[test]
+    fn a_firecracker_vm_directory_a_rename_left_behind_is_named() {
+        // `Vm::dir` is `<[vm] dir>/<name>` and the data disk is inside
+        // it, so a changed `[vm] name` orphans the old VM's clones just
+        // as lima orphans an `ssf-*`. Nothing named it, and the report
+        // calls `[vm] dir` "safe to remove" -- which over one of these
+        // is the report telling a person to delete their own work.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-fc-strays-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        std::fs::create_dir_all(vm.dir.join("x")).unwrap();
+        // The old VM, with the disk that holds the clones.
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        // A directory of ssf's own that holds nobody's work.
+        std::fs::create_dir_all(base.join("dl")).unwrap();
+        let strays = vm.survey().strays;
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(strays.len(), 1, "{strays:?}");
+        assert_eq!(strays[0].name, "old");
+        assert!(strays[0].holds_work());
+        assert!(
+            strays[0].remove.ends_with("old"),
+            "the path is in it: {}",
+            strays[0].remove
         );
     }
 

@@ -270,7 +270,14 @@ What the commands do under lima:
 | `ssf vm grow` | `limactl disk resize` on the data disk, with the VM stopped; the guest grows the filesystem at its next boot (see [Size](#size)) |
 | `ssf vm reset` | `limactl delete` and `limactl create` from the template; the data disk stays, and the next start provisions the fresh root again (a few minutes) |
 | `ssf vm destroy --yes` | the instance, the data disk and `<vm.dir>/<name>/`; the confirmation names all three |
-| | Changing `[vm] name` renames nothing in lima's home: the old `ssf-<name>` instance and disk stay, and `ssf doctor` and `ssf uninstall` name them as things neither will remove |
+
+Changing `vm.name` renames nothing that already exists: the old
+`ssf-<old name>` instance and disk stay in lima's home (and under
+Firecracker the old `<vm.dir>/<old name>/`, with its data disk). `ssf vm
+status`, `ssf doctor` and `ssf uninstall` all name what this
+configuration does not, with the command that removes it, and none of
+them removes it for you -- nothing can tell a VM you renamed away to keep
+from one you abandoned.
 | `ssf vm console` | the instance's serial console log (`serial.log`, or `serialv.log`, in lima's instance directory); fails naming the instance when it has not been booted yet and neither is there |
 
 Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,

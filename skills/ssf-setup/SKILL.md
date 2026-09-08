@@ -120,11 +120,12 @@ document links to.
     has gone or `[vm] dir` has changed. The refusal names its own
     remedy: `ssf vm start` only where there is an instance to start, and
     never for a data disk that outlived its instance or for a lima that
-    would not say whether the VM is running. A lima instance or disk this
-    configuration does not name -- what a changed `[vm] name` leaves --
-    is listed under `keep:` with the `limactl` command that removes it,
-    and is never removed by ssf or reached by `--force`; leave that
-    decision to the person. Do not add `--force` on the
+    would not say whether the VM is running. Anything this configuration does not
+    name -- what a changed `[vm] name` leaves: a lima instance or disk,
+    or the old VM's directory under `[vm] dir` -- is listed under
+    `keep:` with the command that removes it, and is never removed by
+    ssf or reached by `--force`; leave that decision to the person.
+    `ssf doctor` and `ssf vm status` name them too. Do not add `--force` on the
     person's behalf: show them the report and let them settle the work
     or decide; `--data` (config, the bot's key, state) is also theirs to
     ask for. The package removal that follows (`sudo pacman -R ssf`,
