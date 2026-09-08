@@ -998,7 +998,6 @@ fn dir_from(env: Option<&str>, base: Option<PathBuf>, fallback: &str) -> PathBuf
     base.unwrap_or_else(|| PathBuf::from(fallback)).join("ssf")
 }
 
-#[cfg(not(test))]
 fn real_config_dir() -> PathBuf {
     dir_from(
         std::env::var("SSF_CONFIG_DIR").ok().as_deref(),
@@ -1011,6 +1010,9 @@ fn real_config_dir() -> PathBuf {
     )
 }
 
+/// Not compiled into the test build. `real_config_dir` is, because the
+/// `#[ignore]`d `vm_live` has to name the real token file to seed its
+/// guest; nothing needs the real state directory, so nothing gets it.
 #[cfg(not(test))]
 fn real_state_dir() -> PathBuf {
     dir_from(
@@ -1152,6 +1154,16 @@ pub mod test_support {
     /// and removes the Omarchy widget under `~/.config/omarchy`).
     pub(crate) fn home() -> PathBuf {
         require("home")
+    }
+
+    /// Where the machine's own config directory really is. Only for the
+    /// `#[ignore]`d live tests, which are run by hand and are meant to
+    /// work against the factory installed here: `vm_live` seeds the guest
+    /// from `~/.config/ssf/token`, and a sandbox would give it an empty
+    /// directory and a VM with no credentials. Nothing `cargo test` runs
+    /// on its own may call this, and nothing may write through it.
+    pub(crate) fn real_config_dir() -> PathBuf {
+        super::real_config_dir()
     }
 
     /// The sandbox's `which` subdirectory for the calling thread, or a
@@ -2413,6 +2425,25 @@ harness = "claude"
     /// The point of the guard: a test that would have written to the live
     /// daemon's state file fails where it would have written, and the
     /// message says what to do about it.
+    /// A token in the config is answered without going near the token
+    /// file, which is what lets the `#[ignore]`d `vm_live` seed its guest
+    /// with the real one while holding no sandbox: reaching `token_path()`
+    /// there would panic.
+    #[test]
+    fn a_configured_token_is_answered_without_reading_the_token_file() {
+        let mut cfg = Config::default();
+        cfg.github.token = Some("  gho_from_the_config  ".into());
+        // `SSF_GITHUB_TOKEN` is looked at first and an agent session has
+        // one, so say what wins rather than assuming; what is being
+        // asserted is that neither answer reaches `token_path()`.
+        let want = std::env::var("SSF_GITHUB_TOKEN")
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| "gho_from_the_config".to_string());
+        assert_eq!(cfg.github_token().unwrap(), want);
+    }
+
     #[test]
     #[should_panic(expected = "reached the real state directory")]
     fn without_a_sandbox_the_state_directory_is_refused() {

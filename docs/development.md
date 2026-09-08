@@ -30,10 +30,10 @@ it from the fixture and every repository binding and every session's
 workspace went with it. `makepkg`'s `check()` runs the suite too, so a
 source build did it to whoever built the package.
 
-So the test build has no real directories to write to: `config_dir()`
-and `state_dir()` ignore `SSF_CONFIG_DIR`/`SSF_STATE_DIR` and the
-platform's own answer under `cfg(test)`, and panic unless the calling
-thread holds a sandbox. A test that writes takes one:
+So the test build has no real directory to reach: `config_dir()` and
+`state_dir()` ignore `SSF_CONFIG_DIR`/`SSF_STATE_DIR` and the platform's
+own answer under `cfg(test)`, and panic unless the calling thread holds a
+sandbox. A test that writes takes one:
 
 ```rust
 let _sandbox = crate::config::test_support::sandbox();
@@ -47,12 +47,27 @@ thread, so two running in parallel cannot see each other's `state.json`.
 down first. `ui::home()` is guarded the same way and answers
 `sandbox.home()`, since the Omarchy widget's install and uninstall write
 and delete under `~/.config/omarchy`, which is nobody's temporary
-directory either. The guard is the calling thread's: work a test hands
-to another thread (`spawn_blocking`, a multi-threaded runtime) does not
-inherit it and panics the same way.
+directory either.
+
+The guard is the calling thread's, and nothing carries it: resolve a
+directory on a thread the test handed work to (`spawn_blocking`, a
+multi-threaded runtime) and it panics there instead. That is not always
+loud — `Engine::probe_harness` turns a panicked `spawn_blocking` into an
+`Unknown` login probe and carries on — so keep the resolution on the
+test's own thread rather than relying on the panic to find it for you.
 
 Everything else a test writes goes under `std::env::temp_dir()`, in a
-directory named after the test and the process.
+directory named after its module and the process (`ssf-state-<pid>`,
+`ssf-engine-events-<pid>`); most remove it at the end, some do not.
+
+The `#[ignore]`d live tests are the exception to all of this and are
+meant to be: they are run by hand, against this machine. `vm_live` boots
+a VM under `~/.local/share/ssf/vm` and seeds its guest from the real
+`~/.config/ssf/token`, which it names through
+`test_support::real_config_dir()` because the guard hides it;
+`herdr_live_first_prompt` leaves a `trust_level` entry in the real
+`~/.codex/config.toml`. Nothing `cargo test` runs on its own may do
+either.
 
 ## A dev build as the service
 

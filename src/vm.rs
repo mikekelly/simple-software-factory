@@ -3494,6 +3494,15 @@ mod tests {
         cfg.vm.ssh_port = 2299;
         cfg.vm.data_gib = Some(2);
         cfg.github.login = Some("test-bot".into());
+        // Seeding the guest reads the bot token, and the test build has no
+        // real config directory to read it from (#140). This one is run by
+        // hand against the factory installed here, so name the file: a
+        // sandbox would hand the guest no credentials at all.
+        cfg.github.token =
+            std::fs::read_to_string(crate::config::test_support::real_config_dir().join("token"))
+                .ok()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty());
         let mut vm = Vm::new(&cfg);
         // Under `cargo test` this process is the test harness, not ssf.
         let exe = std::env::current_exe().unwrap();
