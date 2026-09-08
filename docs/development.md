@@ -5,20 +5,32 @@ Building ssf from source, running a scratch factory, running a dev build as the 
 ```sh
 cargo build && cargo test
 cargo fmt && cargo clippy
-SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
-  ./target/debug/ssf repo add you/sandbox --harness claude
-SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
-  ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
+export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token)
+./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
+./target/debug/ssf repo add you/sandbox --harness claude   # a repository of its own; see below
+./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
 SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # live-test the widget
 omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
-A scratch factory with its own `SSF_CONFIG_DIR`/`SSF_STATE_DIR` touches
-nothing of the real one; `ssf run --once` does a single pass, startup
-pass included, and exits. The installed service runs the last package
-installed, so a change is verified with unit tests and scratch runs rather
-than by expecting to see it live.
+`SSF_CONFIG_DIR` and `SSF_STATE_DIR` isolate ssf's own files: its config,
+its state and the socket its commands talk to. They isolate nothing else,
+and two of the things they do not cover matter:
+
+- **GitHub.** `SSF_GITHUB_TOKEN` above is a real token with write access, so
+  `ssf run --once` posts comments, moves board cards and launches agents on
+  whatever repository the scratch factory watches. Point it at a repository
+  of your own that nobody is working; `you/sandbox` is a placeholder, not a
+  safe default.
+- **The clones.** `orca.projects_dir` and `herdr.projects_dir` default to
+  fixed paths under your home, so a scratch factory watching a repository
+  the real one also watches computes the same worktree path and can write
+  over a live session's checkout. Set the key, as the recipe does.
+
+`ssf run --once` does a single pass, startup pass included, and exits. The
+installed service runs the last package installed, so a change is verified
+with unit tests and scratch runs rather than by expecting to see it live.
 
 ## Tests write nowhere but a temporary directory
 
