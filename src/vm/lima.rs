@@ -84,15 +84,17 @@ const SEED_TIMEOUT: Duration = Duration::from_secs(8 * 60);
 const PROBE_LIMIT: Duration = Duration::from_secs(60);
 /// `limactl list`, `disk` and `edit`: local bookkeeping.
 const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
-/// The liveness question alone (`limactl list --json` behind
-/// [`Vm::running_state`]), which is asked on a path a person is waiting
-/// on: before every command the host forwards into the guest, and around
-/// each turn of the supervisor's and the ssh wait's loops. It reads
-/// local bookkeeping, so seconds are already generous; and every caller
-/// of it treats "could not ask" as "cannot tell" and carries on, so
-/// cutting a pathologically slow answer short costs nothing but the
-/// answer.
-const LIVENESS_LIMIT: Duration = Duration::from_secs(15);
+/// The liveness question as the forwarding gate asks it
+/// ([`Vm::running_now`]): once in front of every command the host sends
+/// into the guest, with a person waiting on the answer and the bar
+/// widget asking a few times a minute. It reads local bookkeeping, so
+/// seconds are already generous, and the gate treats "could not ask" as
+/// "cannot tell" and forwards anyway -- so cutting a pathologically slow
+/// answer short costs nothing but the answer. The supervisor's own
+/// polling keeps [`QUICK_LIMIT`]: it gives up after ten unanswered
+/// probes in a row, so a slow answer there must be waited for rather
+/// than turned into a "cannot tell".
+pub(super) const LIVENESS_LIMIT: Duration = Duration::from_secs(15);
 /// `limactl create`, which downloads the base image the first time.
 const CREATE_LIMIT: Duration = Duration::from_secs(30 * 60);
 /// `limactl stop`: lima gives the guest minutes to shut down first.
@@ -767,23 +769,26 @@ impl Vm {
         Ok(parse_disks(&out).into_iter().find(|d| d.name == name))
     }
 
-    /// Is the instance running? `None` when the question could not be
-    /// asked -- the probe forks a ~60 MB Go binary, so a fired resource
-    /// limit or a fork that failed under load is a plausible answer, and
-    /// it is not the same answer as "stopped". `Vm::supervise` polls
-    /// this, and a probe failure read as "stopped" once ended the
-    /// supervisor with "the VM exited" over a VM that was running; the
-    /// gate on every forwarded command asks it too, which is why it is
-    /// bounded by [`LIVENESS_LIMIT`] rather than by the listing's own
-    /// [`QUICK_LIMIT`].
+    /// Is the instance running, or why could that not be asked? The
+    /// probe forks a ~60 MB Go binary, so a fired resource limit or a
+    /// fork that failed under load is a plausible answer, and it is not
+    /// the same answer as "stopped".
+    pub(super) fn lima_running_probe(&self, limit: Duration) -> Result<bool> {
+        self.lima_instance_within(limit)
+            .map(|inst| inst.is_some_and(|i| i.is_running()))
+            .with_context(|| format!("asking lima whether {} is running", self.lima_name()))
+    }
+
+    /// [`Vm::lima_running_probe`] for the callers that only want the
+    /// answer, with "could not ask" as `None` and a warning in the log.
+    /// `Vm::supervise` polls this, and a probe failure read as "stopped"
+    /// once ended the supervisor with "the VM exited" over a VM that was
+    /// running.
     pub(super) fn lima_running_state(&self) -> Option<bool> {
-        match self.lima_instance_within(LIVENESS_LIMIT) {
-            Ok(inst) => Some(inst.is_some_and(|i| i.is_running())),
+        match self.lima_running_probe(QUICK_LIMIT) {
+            Ok(running) => Some(running),
             Err(e) => {
-                warn!(
-                    "could not ask lima whether {} is running: {e:#}",
-                    self.lima_name()
-                );
+                warn!("{e:#}");
                 None
             }
         }
@@ -1847,10 +1852,14 @@ mod tests {
         assert!(CREATE_LIMIT > QUICK_LIMIT);
         assert!(PROBE_LIMIT < QUICK_LIMIT);
         assert!(STOP_LIMIT > QUICK_LIMIT);
-        // The liveness question is the shortest of all: it is asked
-        // before every forwarded command, so its bound is what a person
-        // waits out when limactl has stopped answering.
-        assert!(LIVENESS_LIMIT < PROBE_LIMIT);
+        // The gate's liveness question is the shortest of all: it is
+        // asked in front of every forwarded command, so its bound is
+        // what a person waits out when limactl has stopped answering,
+        // and being cut short only costs the gate an answer it is
+        // willing to do without. The supervisor's polling of the same
+        // question keeps the listing's own bound, since it gives up
+        // after MAX_UNANSWERED_PROBES rounds with no answer.
+        assert!(LIVENESS_LIMIT < QUICK_LIMIT);
     }
 
     #[test]

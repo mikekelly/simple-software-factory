@@ -1071,14 +1071,26 @@ impl Vm {
     /// the probe is a PID file read, which answers either way; under lima
     /// it forks `limactl`, and one fork that fails is not the guest
     /// exiting. The callers that act on "the VM is gone" -- the
-    /// supervisor, the ssh wait, and the gate every command the host
-    /// forwards into the guest goes through -- use this, so that a
-    /// transient `limactl` failure cannot end them with "the VM exited"
-    /// or refuse a command over a factory that is up.
+    /// supervisor and the ssh wait -- use this, so that a transient
+    /// `limactl` failure cannot end them with "the VM exited".
     pub fn running_state(&self) -> Option<bool> {
         match self.backend() {
             BackendKind::Firecracker => Some(self.firecracker_pid().is_some()),
             BackendKind::Lima => self.lima_running_state(),
+        }
+    }
+
+    /// The same question as [`Vm::running_state`], asked the way the gate
+    /// in front of every forwarded command needs it: the reason comes
+    /// back with a failure, so the command can say why it cannot tell
+    /// rather than leaving it in the log, and the lima probe is held to
+    /// [`lima::LIVENESS_LIMIT`] rather than the listing's own bound,
+    /// because a person is waiting on this one and an answer it does not
+    /// get is one it carries on without.
+    pub fn running_now(&self) -> Result<bool> {
+        match self.backend() {
+            BackendKind::Firecracker => Ok(self.firecracker_pid().is_some()),
+            BackendKind::Lima => self.lima_running_probe(lima::LIVENESS_LIMIT),
         }
     }
 
@@ -1872,6 +1884,20 @@ impl Vm {
             .status()
             .context("running ssh (is the VM up? `ssf vm status`)")?;
         Ok(st)
+    }
+
+    /// [`Vm::exec_ssf`] with the guest's stdout captured, its stderr left
+    /// on this terminal. For the caller that has to answer even when the
+    /// guest does not: `status --json`, which the bar widget parses.
+    pub fn capture_ssf(&self, args: &[String]) -> Result<std::process::Output> {
+        let mut remote = vec![format!("{GUEST_ENV}=1"), "ssf".to_string()];
+        remote.extend(args.iter().cloned());
+        self.ssh(&remote, false)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .output()
+            .context("running ssh (is the VM up? `ssf vm status`)")
     }
 
     /// A shell, or a command line passed to the guest's shell as given

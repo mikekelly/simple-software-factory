@@ -66,8 +66,11 @@ on. With the VM enabled and running, `doctor` is forwarded into the
 guest, which has no backend tooling of its own; with the VM enabled and
 stopped, the host command refuses to run and its error names what is
 missing (`the factory runs in VM default, which is not running, and
-lima cannot start it: limactl not installed; install lima ...`). So on
-a VM-enabled machine, `ssf vm status` is where you look.
+lima cannot start it: limactl not installed; install lima ...`). A host
+with no `limactl` at all cannot be asked whether the VM is running
+either, so there the same detail comes on stderr as part of the note
+below and the command is still tried. So on a VM-enabled machine, `ssf
+vm status` is where you look.
 
 A Firecracker build on anything but Linux x86_64 refuses and says to set
 `vm.backend` to `lima`. Either way, `[vm] dir`
@@ -508,10 +511,17 @@ widget shows the service as stopped), and the other forwarded commands
 refuse with `the factory runs in VM <name>, which is not running`. Only a
 definite answer does that. The liveness question forks `limactl` under
 lima, and a `limactl` that fails, or does not answer within fifteen
-seconds, leaves ssf unable to tell: it says so on stderr -- could not
-tell whether the VM is running, so the command goes to it anyway -- and
-sends the command to the guest, which answers it if the VM is in fact up
-and fails as an ssh error if it is not. A probe that could not be made is
-never read as a stopped factory: reading it that way refused `tell`,
-`release`, `purge` and `doctor` over a running VM, and showed the bar
-widget an idle one.
+seconds, leaves ssf unable to tell. It then says so on stderr -- the
+reason it could not ask, whatever backend tooling this host is missing,
+and that it is sending the command anyway -- and forwards the command,
+which the guest answers if the VM is in fact up and which fails as an
+ssh error if it is not. `status --json` answers either way, so the bar
+widget is never left parsing an empty document: `vm` is `unknown` where
+the probe could not be made and the guest did not answer either.
+
+A probe that could not be made is never read as a stopped factory:
+reading it that way refused `tell`, `release`, `purge` and `doctor` over
+a running VM and showed the widget an idle one. The supervisor inside
+`ssf run` asks the same question on its own loop, where a slow answer is
+waited out rather than cut short at fifteen seconds, since it gives up on
+a VM only after ten rounds with no answer at all.
