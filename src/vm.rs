@@ -307,7 +307,7 @@ pub struct VmStatus {
     /// not name -- what a changed `[vm] name` leaves behind. Reported
     /// here because `instance: ssf-new missing` over a machine still
     /// holding `ssf-old` is the other half of the same silence.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub strays: Vec<Stray>,
 }
 
@@ -1268,6 +1268,11 @@ impl Vm {
     /// Only directories holding a `data.ext4` count. The images and
     /// downloads share `[vm] dir` with them and are genuinely safe.
     fn fc_strays(&self) -> Vec<Stray> {
+        // Absolute, because the remedy is an `rm -rf` a person pastes:
+        // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
+        // means a different directory from every other working
+        // directory. `expand_tilde` only expands a leading `~/`.
+        let base = std::path::absolute(&self.base).unwrap_or_else(|_| self.base.clone());
         // A `[vm] name` that makes this VM's own directory the whole of
         // `[vm] dir` -- empty, or `.` -- would make every sibling a
         // child of it, and the report would call the very directory the
@@ -1276,17 +1281,23 @@ impl Vm {
         if self.dir == self.base {
             return Vec::new();
         }
-        let Ok(entries) = std::fs::read_dir(&self.base) else {
+        let Ok(entries) = std::fs::read_dir(&base) else {
             return Vec::new();
         };
         let mut strays: Vec<Stray> = entries
             .flatten()
+            // A name that is not UTF-8 would be printed with
+            // replacement characters, in a command that then matches
+            // nothing: a remedy the person cannot act on is worse than
+            // the line it occupies.
+            .filter(|e| e.file_name().to_str().is_some())
             .map(|e| e.path())
             // A real directory, not a symlink to one: `rm -rf` on a link
             // removes the link and leaves what it pointed at, so a
             // remedy over one would not be a remedy.
             .filter(|p| {
                 *p != self.dir
+                    && Some(p.as_path()) != std::path::absolute(&self.dir).ok().as_deref()
                     && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
                     && p.join("data.ext4").exists()
             })
@@ -2286,7 +2297,11 @@ impl Vm {
                 // instances: the disks are added below either way.
                 Err(e) => (None, Some(format!("{e:#}")), self.instance_strays_on_disk()),
             },
-            BackendKind::Firecracker => (None, None, self.fc_strays()),
+            // `[vm] dir` is asked about below, for both backends at
+            // once. Seeding it here as well listed every directory
+            // twice, and two of a thing whose remedy is a path sends a
+            // person looking for a second one that is not there.
+            BackendKind::Firecracker => (None, None, Vec::new()),
         };
         if backend == BackendKind::Lima {
             // The disks are a second listing, and lima's answer is
@@ -3247,13 +3262,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn vm_status_lists_each_stray_once() {
-        // The instance strays and the disk strays are found by two
-        // different calls, and adding the whole of one to the other put
-        // every disk in twice -- in the text and in the JSON any
-        // consumer reads.
-        let home = std::env::temp_dir().join(format!(
+    #[tokio::test]
+    async fn vm_status_lists_each_stray_once() {
+        // `[vm] dir`'s strays are gathered for both backends in one
+        // place, so seeding them in a backend arm as well listed every
+        // directory twice -- and two of a thing whose remedy is a path
+        // sends a person looking for a second one that is not there.
+        // Through `status()` itself, since the bug was in `status()`.
+        let base = std::env::temp_dir().join(format!(
             "ssf-status-strays-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
@@ -3261,22 +3277,25 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(home.join("ssf-old")).unwrap();
-        std::fs::create_dir_all(home.join("_disks").join("ssf-old")).unwrap();
         let mut cfg = Config::default();
         cfg.vm.name = "new".into();
-        cfg.vm.backend = Some(BackendKind::Lima);
-        cfg.vm.dir = home.join("vm").to_string_lossy().into_owned();
-        // A limactl that cannot run, so both listings fail and the
-        // filesystem answers -- the path where the duplication was.
-        cfg.vm.limactl = Some("/nonexistent/limactl".into());
-        let mut vm = Vm::new(&cfg);
-        vm.lima_home = Some(home.clone());
-        let strays = vm.strays_on_filesystem();
-        std::fs::remove_dir_all(&home).unwrap();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        let st = Vm::new(&cfg).status().await;
+        std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(
-            strays.iter().map(|s| s.remove.as_str()).collect::<Vec<_>>(),
-            ["limactl delete ssf-old", "limactl disk delete ssf-old"]
+            st.strays
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["old"]
+        );
+        assert!(
+            st.strays[0].remove.starts_with("rm -rf /"),
+            "the remedy is an absolute path: {}",
+            st.strays[0].remove
         );
     }
 
