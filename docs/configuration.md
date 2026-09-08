@@ -66,7 +66,7 @@ instructions = "Run `make test` before opening a PR."
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
 | `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
 | `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Firecracker only: use binaries or images of your own instead of the downloaded ones |
-| `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with |
+| `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with; lima 2.0.1 or newer, which `ssf vm build` checks and says why (see [Backends](vm.md#backends)) |
 | `vm.image` | Arch's cloud image on x86_64, Ubuntu LTS on aarch64 | lima only: a cloud-init image (URL or path; Arch or Debian/Ubuntu) to boot instead of the default for the guest's architecture |
 | `vm.vm_type` | lima's default | lima only: `vz` or `qemu`, passed through to lima (`vz` is macOS only) |
 | `vm.guest_binary` | this binary on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` binary to seed into the guest, for a dev build or a version without a release asset |

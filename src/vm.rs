@@ -522,7 +522,10 @@ pub fn backend_tools(
                     |p| expand_tilde(p).to_string_lossy().into_owned(),
                 ),
                 device: false,
-                install: "install lima (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it".into(),
+                install: format!(
+                    "install lima {} or newer (`brew install lima` on macOS, the `lima` package or lima's release tarball on Linux) or set [vm] limactl to it",
+                    lima::MIN_LIMA
+                ),
             }];
             if lima_uses_qemu(os, vm_type) {
                 v.push(Tool {
