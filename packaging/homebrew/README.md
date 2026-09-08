@@ -8,7 +8,9 @@ placeholder) and pushes the result to the tap repository
 [mikekelly/homebrew-ssf](https://github.com/mikekelly/homebrew-ssf) as
 `Formula/ssf.rb`, which is what `brew install` reads.
 
-The formula is for macOS. On Linux `brew services` would write a
+The formula is for macOS, and says so to Homebrew with `depends_on
+:macos`, so Linuxbrew refuses it rather than installing something that
+does not work. On Linux `brew services` would write a
 `homebrew.ssf.service` unit of its own while ssf drives its own
 `ssf.service` through `ssf ui service enable|disable`, so the two would
 not line up; a Linux host installs the `.deb`, `.rpm` or Arch package

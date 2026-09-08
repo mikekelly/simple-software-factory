@@ -4,11 +4,13 @@
 # render.sh) and pushes the result to the tap mikekelly/homebrew-ssf as
 # Formula/ssf.rb, where `brew install mikekelly/ssf/ssf` finds it.
 #
-# Not for Linuxbrew: on Linux `brew services` writes a service of its own,
-# homebrew.ssf.service, while ssf drives its own systemd unit (ssf.service,
-# through `ssf ui service enable|disable`), so the two would not line up. A
-# Linux host installs the .deb, .rpm or Arch package instead (packaging/linux
-# and packaging/release, built by .github/workflows/release.yml).
+# Not for Linuxbrew, and `depends_on :macos` below turns that away rather
+# than leaving it to the comment: on Linux `brew services` writes a service
+# of its own, homebrew.ssf.service, while ssf drives its own systemd unit
+# (ssf.service, through `ssf ui service enable|disable`), so the two would
+# not line up. A Linux host installs the .deb, .rpm or Arch package instead
+# (packaging/linux and packaging/release, built by
+# .github/workflows/release.yml).
 #
 # Differences from the Arch package (packaging/release/PKGBUILD): no ssf-ui
 # and no Omarchy bar widget (both Omarchy-only), no systemd unit (the
@@ -28,6 +30,8 @@ class Ssf < Formula
     strategy :github_latest
   end
 
+  # macOS only, for the `brew services` clash described above.
+  depends_on :macos
   depends_on "rust" => :build
   depends_on "gh"
   depends_on "lima"
