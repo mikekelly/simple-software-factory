@@ -55,14 +55,20 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
-| `vm.enabled` | `false` | Run the whole factory inside a Firecracker microVM (see [Inside a microVM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
-| `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's disks live (`<dir>/<name>/`) |
+| `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
+| `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends)); unset, `ssf vm build` writes the platform's default here |
+| `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's files live (`<dir>/<name>/`); under lima the instance is `ssf-<name>` and its data disk `ssf-<name>-data` in lima's home |
 | `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
 | `vm.data_gib` | chosen from the machine | The persistent data disk (state, clones, worktrees) in GiB, sparse; unset, `ssf vm build` writes half the free space of the filesystem holding `vm.dir` (at least 20) here; `ssf vm grow` enlarges it later |
-| `vm.root_gib` | `8` | The root image `ssf vm build` makes |
+| `vm.root_gib` | `8` | The root image `ssf vm build` makes; under lima the instance's root disk, at least 20 whatever is set |
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
 | `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
-| `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Use binaries or images of your own instead of the downloaded ones |
+| `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Firecracker only: use binaries or images of your own instead of the downloaded ones |
+| `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with |
+| `vm.image` | Arch's cloud image on x86_64, Ubuntu LTS on aarch64 | lima only: a cloud-init image (URL or path; Arch or Debian/Ubuntu) to boot instead of the default for the guest's architecture |
+| `vm.vm_type` | lima's default | lima only: `vz` or `qemu`, passed through to lima (`vz` is macOS only) |
+| `vm.guest_binary` | this binary on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` binary to seed into the guest, for a dev build or a version without a release asset |
+| `vm.herdr` | the host's own `herdr` on a Linux host, else herdr's latest Linux release downloaded by the guest while provisioning | lima only: a Linux herdr binary for the guest; installed when the guest is provisioned, so a change needs `ssf vm reset` |
 | `repo.name` | | `owner/name` on GitHub (required) |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |

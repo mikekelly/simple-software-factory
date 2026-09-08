@@ -50,7 +50,7 @@
 [vm]
 # enabled = false
 # name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>-data)
-# dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs
+# dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
 # backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it
 # vcpus = 7                                    # unset = chosen from the machine by `ssf vm build`: its CPUs minus one, at least 2
 # mem_mib = 16384                              # unset = chosen from the machine: half its RAM, at least 4096
