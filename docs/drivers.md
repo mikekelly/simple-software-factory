@@ -86,6 +86,17 @@ narrate every harness it recognises: one it has no state manifest for
 (Oh My Pi, say) is reported `idle` whatever it is doing, so waiting for
 `working` there would never come true.
 
+After a launch ssf waits for the agent with `herdr agent wait --until` for
+every state but `unknown` (`idle`, `working`, `blocked`, `done`): without
+`--until` herdr returns on `idle`, `done` or `blocked` alone, and a
+resumed Claude Code with queued messages is `working` from its first
+second, so every such resume timed out and a fresh agent was started
+beside the one already at work (#131). A resume ssf gives up on (the
+harness could not find the session, or nothing settled in
+`herdr.tui_idle_timeout_ms`) has its pane cleared first: an agent herdr
+still reports there is stopped as `ssf release` would stop it, and the
+fresh launch is refused while any agent is live in the workspace.
+
 herdr keeps no link between a workspace and an issue, so ssf finds a
 workspace it lost track of by the worktree's name (`issue-N-...`), and
 remembers a workspace as herdr's id plus the checkout it was opened on

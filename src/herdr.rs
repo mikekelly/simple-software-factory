@@ -253,6 +253,23 @@ pub fn settle_step(state: &str, screen: &str) -> Settle {
     }
 }
 
+/// The agent states [`Herdr::settle_harness`] waits for: every one but
+/// `unknown`. `working` is among them because a harness that is at work
+/// is settled by any measure, and a resumed Claude Code with queued
+/// messages is at work at once (#131); `herdr agent wait` without
+/// `--until` would wait for `idle`, `done` or `blocked` alone.
+pub const SETTLED_STATES: [&str; 4] = ["idle", "working", "blocked", "done"];
+
+/// The `herdr agent wait` invocation that settles a pane within `timeout`
+/// milliseconds.
+pub fn settle_wait_args<'a>(pane_id: &'a str, timeout_ms: &'a str) -> Vec<&'a str> {
+    let mut args = vec!["agent", "wait", pane_id, "--timeout", timeout_ms];
+    for state in SETTLED_STATES {
+        args.extend(["--until", state]);
+    }
+    args
+}
+
 /// Why `herdr agent prompt` refused or gave up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromptFailure {
@@ -656,9 +673,17 @@ impl Herdr {
         Ok(text.lines().map(str::to_string).collect())
     }
 
-    /// Wait until herdr sees an agent in the pane and it is ready for input,
-    /// answering the folder-trust dialog Claude Code and Codex show on a new
-    /// worktree.
+    /// Wait until herdr sees an agent in the pane and it is ready for input
+    /// or already at work, answering the folder-trust dialog Claude Code and
+    /// Codex show on a new worktree. Returns the state herdr reported when
+    /// the harness settled.
+    ///
+    /// The wait names every state but `unknown` ([`SETTLED_STATES`]):
+    /// without `--until`, `herdr agent wait` returns on `idle`, `done` or
+    /// `blocked` and never on `working`, and a resumed Claude Code with
+    /// queued messages is `working` from its first second, so the wait
+    /// timed out on every such resume and the daemon took the timeout for
+    /// a failed resume (#131).
     ///
     /// The screen is read after every wait whatever state herdr reports,
     /// because the reported state does not say whether a dialog is up:
@@ -667,7 +692,7 @@ impl Herdr {
     /// (#121). A prompt pasted into that dialog is swallowed by it -- the
     /// Enter answers the question and the text is gone -- so the dialog is
     /// answered and the harness waited for again.
-    pub async fn settle_harness(&self, pane_id: &str, harness: &str) -> Result<()> {
+    pub async fn settle_harness(&self, pane_id: &str, harness: &str) -> Result<String> {
         let deadline = Instant::now() + Duration::from_millis(self.cfg.tui_idle_timeout_ms);
         let mut detected = false;
         while Instant::now() < deadline {
@@ -686,9 +711,7 @@ impl Herdr {
                 bail!("{harness} in {pane_id} did not become idle in time");
             }
             let t = left.as_millis().to_string();
-            let v = self
-                .run(&["agent", "wait", pane_id, "--timeout", &t])
-                .await?;
+            let v = self.run(&settle_wait_args(pane_id, &t)).await?;
             let state = v
                 .get("agent_status")
                 .or_else(|| v.pointer("/agent/agent_status"))
@@ -707,9 +730,9 @@ impl Herdr {
                     // Some other question: the prompt goes in anyway, as
                     // with Orca.
                     warn!(pane_id, "{harness} is at a question ssf does not know");
-                    return Ok(());
+                    return Ok(state);
                 }
-                Settle::Ready => return Ok(()),
+                Settle::Ready => return Ok(state),
             }
         }
         // Only four answered dialogs in a row get here, so one is still on
@@ -718,7 +741,7 @@ impl Herdr {
             pane_id,
             "{harness} still shows a first-run dialog after four answers; going on anyway"
         );
-        Ok(())
+        Ok(String::new())
     }
 
     /// Answer a trust dialog in the pane with the keys it takes.
@@ -740,12 +763,47 @@ impl Herdr {
         title: &str,
         harness: &str,
     ) -> Result<String> {
-        let (workspace_id, _) = split_id(id);
-        let pane = self.shell_pane(workspace_id).await?;
-        self.run(&["pane", "run", &pane, command]).await?;
+        let pane = self.run_harness(id, command).await?;
         self.settle_harness(&pane, harness).await?;
         let _ = self.run(&["pane", "rename", &pane, title]).await;
         Ok(pane)
+    }
+
+    /// Run the harness in a shell pane of the workspace, without waiting
+    /// for it: the pane is known to the caller even when the wait fails.
+    async fn run_harness(&self, id: &str, command: &str) -> Result<String> {
+        let (workspace_id, _) = split_id(id);
+        let pane = self.shell_pane(workspace_id).await?;
+        self.run(&["pane", "run", &pane, command]).await?;
+        Ok(pane)
+    }
+
+    /// Leave nothing of a resume the daemon has given up on running before
+    /// a fresh harness goes into the workspace, so one workspace never
+    /// holds two agents (#131). A resumed agent herdr still reports is
+    /// stopped, and a stop that does not take is an error rather than a
+    /// fresh launch beside it. One that has already gone (Claude Code
+    /// exits when it cannot find the session) has left the pane at its
+    /// shell, which the fresh launch reuses.
+    async fn clear_failed_resume(&self, id: &str, pane_id: &str) -> Result<()> {
+        let (ws, _) = split_id(id);
+        if self.agents().await?.iter().any(|a| a.pane_id == pane_id) {
+            warn!(
+                pane_id,
+                "the resumed agent is still running; stopping it before starting fresh"
+            );
+            self.stop_agent(id, pane_id)
+                .await
+                .context("stopping the resumed agent, so no fresh one is started beside it")?;
+        } else {
+            // Whatever the harness left in the pane, back to its shell.
+            let _ = self.run(&["pane", "send-keys", pane_id, "ctrl+c"]).await;
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+        if let Some(h) = self.live_handle(id, None).await? {
+            bail!("an agent is live in pane {h} of workspace {ws}; not starting another beside it");
+        }
+        Ok(())
     }
 
     /// The live agent pane a delivery would go to: `preferred` if it is
@@ -916,28 +974,36 @@ delivered"
                 cmd = driver::redacted(cmd),
                 "no live agent; resuming harness session"
             );
-            match self
-                .launch(workspace_id, cmd, relaunch.title, relaunch.harness)
-                .await
-            {
-                Ok(h) => {
-                    if crate::sessions::resume_failed(&self.screen(&h).await.unwrap_or_default()) {
-                        warn!(
-                            workspace_id,
-                            "harness could not resume its session; starting fresh"
-                        );
-                        let _ = self.run(&["pane", "send-keys", &h, "ctrl+c"]).await;
-                        tokio::time::sleep(Duration::from_millis(1000)).await;
+            // A pane the resume has been run in is known from here on, so
+            // whatever the wait says, what is in it can be dealt with.
+            let pane = self.run_harness(workspace_id, cmd).await?;
+            let verdict = match self.settle_harness(&pane, relaunch.harness).await {
+                Ok(state) => {
+                    // An agent at work shows its own output, not the
+                    // harness's; the screen decides only short of that.
+                    let screen = self.screen(&pane).await.unwrap_or_default();
+                    if state != "working" && crate::sessions::resume_failed(&screen) {
+                        Err(anyhow!("the harness could not find its session"))
                     } else {
-                        resumed = true;
-                        handle = Some(h);
+                        Ok(state)
                     }
                 }
-                Err(e) => {
+                Err(e) => Err(e),
+            };
+            match verdict {
+                Ok(state) => {
+                    info!(workspace_id, pane, state, "harness resumed its session");
+                    let _ = self.run(&["pane", "rename", &pane, relaunch.title]).await;
+                    resumed = true;
+                    handle = Some(pane);
+                }
+                Err(why) => {
                     warn!(
                         workspace_id,
-                        "resumed harness did not settle ({e:#}); starting fresh"
+                        pane,
+                        "giving up on the resume ({why:#}); starting fresh once the pane is clear"
                     );
+                    self.clear_failed_resume(workspace_id, &pane).await?;
                 }
             }
         }
@@ -963,7 +1029,8 @@ delivered"
             _ => text,
         };
         // The harness was launched just above, so this is its first
-        // prompt: confirm it landed rather than paste and hope.
+        // prompt: confirm it landed rather than paste and hope. A resumed
+        // one may be at work already; the prompt queues behind its turn.
         self.send_first_prompt(&handle, body).await?;
         Ok(Delivery {
             handle,
@@ -1345,6 +1412,27 @@ start working within 5000ms"
         assert_eq!(workspace_on(&v, "/p/widgets.worktrees/issue-4-y"), None);
         assert_eq!(workspace_on(&v, "/elsewhere"), None);
         assert_eq!(bound_worktree(&json!({"worktrees": []}), "wX"), None);
+    }
+
+    /// #131: a resumed Claude Code with queued messages is `working` at
+    /// once, and `herdr agent wait` without `--until` never returns on
+    /// `working`, so the wait names every state but `unknown`.
+    #[test]
+    fn settle_waits_for_working_as_well_as_idle() {
+        let args = settle_wait_args("w2:p1", "88988");
+        assert_eq!(&args[..5], ["agent", "wait", "w2:p1", "--timeout", "88988"]);
+        let until: Vec<&str> = args
+            .windows(2)
+            .filter(|w| w[0] == "--until")
+            .map(|w| w[1])
+            .collect();
+        assert_eq!(until, ["idle", "working", "blocked", "done"]);
+        assert!(!until.contains(&"unknown"));
+        // And `working` on its own is settled, whatever the screen shows.
+        assert_eq!(
+            settle_step("working", "No conversation found with session ID"),
+            Settle::Ready
+        );
     }
 
     #[test]

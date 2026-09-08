@@ -797,6 +797,22 @@ impl Orca {
         Ok(())
     }
 
+    /// Close the terminal of a resume the daemon has given up on, and make
+    /// sure it is gone before a fresh harness is started: a workspace never
+    /// holds two agents (#131). A close that does not take is an error.
+    async fn close_failed_resume(&self, worktree_id: &str, handle: &str) -> Result<()> {
+        self.run(&["terminal", "close", "--terminal", handle])
+            .await
+            .context("closing the resumed terminal, so no fresh one is started beside it")?;
+        if self.live_handle(worktree_id, Some(handle)).await?.is_some() {
+            bail!(
+                "an agent is still live in worktree {worktree_id} after closing {handle}; \
+                 not starting another beside it"
+            );
+        }
+        Ok(())
+    }
+
     /// Locate (or relaunch) the harness terminal in a worktree and deliver a
     /// prompt. When the harness has to be started again and `resume_command`
     /// is given, that is tried first so the agent keeps its memory; if the
@@ -854,14 +870,14 @@ impl Orca {
                         worktree_id,
                         "harness could not resume its session; starting fresh"
                     );
-                    let _ = self.run(&["terminal", "close", "--terminal", &h]).await;
+                    self.close_failed_resume(worktree_id, &h).await?;
                 }
                 Err(e) => {
                     warn!(
                         worktree_id,
                         "resumed harness did not settle ({e:#}); starting fresh"
                     );
-                    let _ = self.run(&["terminal", "close", "--terminal", &h]).await;
+                    self.close_failed_resume(worktree_id, &h).await?;
                 }
             }
         }

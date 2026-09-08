@@ -7204,6 +7204,117 @@ mod tests {
         );
     }
 
+    // ---- the resume path (#131) -------------------------------------------
+
+    fn resumed_block(conversation: &str) -> String {
+        format!(
+            "🤖 ssf <!-- ssf: origin=o/r#5 event=resumed -->\n\n\
+             ```ssf\n\
+             ssf resuming agent on issue:\n\
+             harness: Claude Code\n\
+             conversation: {conversation}\n\
+             after: lost terminal\n\
+             ```"
+        )
+    }
+
+    /// Replays #131: a resumed Claude Code with queued messages was at
+    /// work at once and never reported idle, the driver took its wait
+    /// timing out for a failed resume and started a fresh harness beside
+    /// it. A resume that settles -- idle, or at work for longer than the
+    /// wait -- is the one launch there is: the delivery goes to it, the
+    /// conversation id is kept, and the block says `resumed`.
+    #[tokio::test]
+    async fn a_resumed_agent_at_work_is_settled_and_not_doubled() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+        d.with(|s| {
+            s.live.clear();
+            s.resume = crate::driver::StubResume::Settles;
+            s.working.insert("w5".into());
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        let delivered = e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
+        assert!(delivered.relaunched && delivered.resumed);
+        assert_eq!(d.log(), vec!["relaunch:w5:true", "deliver:w5:[ssf] hello"]);
+        let launches = d.launches();
+        assert_eq!(launches.len(), 1, "one launch, the resume: {launches:?}");
+        assert!(launches[0].contains("--resume sess-5"), "{launches:?}");
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.agent_session_id.as_deref(), Some("sess-5"), "kept");
+        assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].1, resumed_block("resumed"));
+    }
+
+    /// The harness could not find the session and exited: nothing is left
+    /// to stop, a fresh harness follows in the same workspace with the
+    /// whole story, and the block says `fresh` because that is what
+    /// happened.
+    #[tokio::test]
+    async fn a_resume_whose_harness_exits_is_followed_by_one_fresh_harness() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+        d.with(|s| {
+            s.live.clear();
+            s.resume = crate::driver::StubResume::Exits;
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        let delivered = e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
+        assert!(delivered.relaunched && !delivered.resumed);
+        let log = d.log();
+        assert_eq!(log[0], "resume-exited:w5");
+        assert_eq!(log[1], "relaunch:w5:false");
+        assert!(!log.iter().any(|l| l.starts_with("stop:")), "{log:?}");
+        let launches = d.launches();
+        assert_eq!(
+            launches.len(),
+            2,
+            "the resume, then the fresh start: {launches:?}"
+        );
+        assert!(launches[0].contains("--resume sess-5"), "{launches:?}");
+        assert!(!launches[1].contains("--resume"), "{launches:?}");
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.agent_session_id, None, "a fresh conversation");
+        assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].1, resumed_block("fresh"));
+    }
+
+    /// A resumed agent that is alive but never settles is stopped before
+    /// any fresh harness goes in: one workspace, one agent, and the state
+    /// points at the survivor.
+    #[tokio::test]
+    async fn a_resume_that_hangs_is_stopped_before_a_fresh_harness() {
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+        d.with(|s| {
+            s.live.clear();
+            s.resume = crate::driver::StubResume::Hangs;
+            s.relaunch_screen = READY_SCREEN.iter().map(|l| l.to_string()).collect();
+        });
+        let delivered = e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
+        assert!(delivered.relaunched && !delivered.resumed);
+        assert_eq!(
+            d.log(),
+            vec![
+                "resume-hung:w5",
+                "stop:t1",
+                "relaunch:w5:false",
+                "deliver:w5:[ssf] hello"
+            ]
+        );
+        assert_eq!(d.launches().len(), 2);
+        let st = e.entry(&repo(), 5).clone();
+        assert_eq!(st.terminal_handle.as_deref(), Some("t2"), "the fresh one");
+        assert_eq!(st.agent_session_id, None);
+        let posts = stub.post_bodies();
+        assert_eq!(posts.len(), 1, "{posts:?}");
+        assert_eq!(posts[0].1, resumed_block("fresh"));
+    }
+
     /// The startup pass says `after: restart`; a relaunch at delivery
     /// time says `after: lost terminal`.
     #[tokio::test]
