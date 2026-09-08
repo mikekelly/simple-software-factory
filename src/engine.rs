@@ -817,6 +817,8 @@ are resumed on the first pass that finds it: {err:#}"
     pub async fn tick(&mut self) {
         self.reload_config();
         self.state.last_poll_at = Some(now_iso());
+        // Per-pass state only. `refetch` is deliberately not reset here: it
+        // has to outlive the pass that armed it (issue #141).
         self.probes.clear();
         if self.cfg.repos.is_empty() {
             warn!("no repos configured; nothing to do (see `ssf repo add`)");
@@ -5855,6 +5857,34 @@ mod tests {
         assert!(e.refetch.is_empty());
         assert!(e.failures.is_empty(), "{:?}", e.failures);
         assert!(stub.post_bodies().is_empty());
+    }
+
+    /// Nothing here drives `tick` (it reloads the config from a path the
+    /// whole process shares, and rebuilds the drivers from what it finds),
+    /// so the one thing `tick` must not do to the `refetch` flag is pinned
+    /// by reading the source instead: reset it with the per-pass state
+    /// beside it and a session that came back after a pass had read its
+    /// listings loses the full one it is owed, which is issue #141 with
+    /// the sign flipped.
+    #[test]
+    fn tick_does_not_reset_the_refetch_flag() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let src = std::fs::read_to_string(root.join("src/engine.rs")).unwrap();
+        let body = src
+            .split_once("pub async fn tick(&mut self) {")
+            .expect("tick is still called that")
+            .1
+            .split_once("\n    }\n")
+            .expect("tick still ends at the outer indent")
+            .0;
+        assert!(
+            body.contains("self.probes.clear();"),
+            "the per-pass reset moved out of tick; check the flag beside it"
+        );
+        assert!(
+            !body.contains("self.refetch"),
+            "tick touches the refetch flag; it must outlive the pass that armed it (issue #141)"
+        );
     }
 
     /// The case the `refetch` flag exists for, and the one the test above
