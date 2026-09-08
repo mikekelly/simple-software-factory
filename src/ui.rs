@@ -3,6 +3,7 @@
 //! logs) and the background service toggle. Setup is not done from here:
 //! `ssf auth` and `ssf repo` are the CLI for that.
 
+use crate::platform;
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
@@ -48,18 +49,7 @@ pub fn disabled_marker() -> PathBuf {
     crate::config::state_dir().join("disabled")
 }
 
-fn omarchy_available() -> bool {
-    which("omarchy-plugin-enable").is_some()
-}
-
-/// The first `bin` on PATH.
-pub fn which(bin: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join(bin))
-            .find(|p| p.is_file())
-    })
-}
+pub use crate::platform::which;
 
 fn run_quiet(cmd: &str, args: &[&str]) -> Result<String> {
     let out = Command::new(cmd)
@@ -78,19 +68,23 @@ fn run_quiet(cmd: &str, args: &[&str]) -> Result<String> {
 
 /// Copy the packaged plugin into the user's plugin directory (the shell
 /// refuses symlinked plugins) and add the widget to the bar. Idempotent: files
-/// are rewritten only when the packaged copy differs.
+/// are rewritten only when the packaged copy differs. Off Omarchy there is
+/// no bar: nothing is written.
 pub fn install_plugin() -> Result<bool> {
+    if !platform::is_omarchy() {
+        return Ok(false);
+    }
     let src = plugin_source_dir();
     if !src.join("manifest.json").exists() {
         bail!("plugin sources not found at {}", src.display());
     }
     let dst = plugin_target_dir();
     let mut changed = false;
-    if let Ok(meta) = std::fs::symlink_metadata(&dst) {
-        if meta.file_type().is_symlink() {
-            std::fs::remove_file(&dst)?;
-            changed = true;
-        }
+    if let Ok(meta) = std::fs::symlink_metadata(&dst)
+        && meta.file_type().is_symlink()
+    {
+        std::fs::remove_file(&dst)?;
+        changed = true;
     }
     std::fs::create_dir_all(&dst).with_context(|| format!("creating {}", dst.display()))?;
     for entry in std::fs::read_dir(&src).with_context(|| format!("reading {}", src.display()))? {
@@ -109,7 +103,7 @@ pub fn install_plugin() -> Result<bool> {
     if changed {
         info!(path = %dst.display(), "installed bar widget files");
     }
-    if !omarchy_available() {
+    if platform::which("omarchy-plugin-enable").is_none() {
         warn!(
             "omarchy shell commands not found; widget files installed but not enabled in the bar"
         );
@@ -158,10 +152,11 @@ pub fn desktop_present() -> bool {
 }
 
 pub fn uninstall_plugin() -> Result<()> {
-    if omarchy_available() && widget_enabled()? {
-        if let Err(e) = run_quiet("omarchy-plugin-disable", &[PLUGIN_ID]) {
-            warn!("could not disable bar widget: {e:#}");
-        }
+    if platform::is_omarchy()
+        && widget_enabled()?
+        && let Err(e) = run_quiet("omarchy-plugin-disable", &[PLUGIN_ID])
+    {
+        warn!("could not disable bar widget: {e:#}");
     }
     let dst = plugin_target_dir();
     if let Ok(meta) = std::fs::symlink_metadata(&dst) {
@@ -257,7 +252,11 @@ fn last_significant_char(text: &str) -> Option<(usize, char)> {
 }
 
 /// Insert or refresh the managed block inside the user's menu extension file.
+/// Off Omarchy there is no menu: nothing is written.
 pub fn install_menu() -> Result<bool> {
+    if !platform::is_omarchy() {
+        return Ok(false);
+    }
     let path = menu_extension_path();
     let existing = std::fs::read_to_string(&path).unwrap_or_else(|_| "{\n}\n".to_string());
     let block = menu_block();
@@ -343,14 +342,14 @@ pub fn remove_menu_text(existing: &str) -> Option<String> {
     s.push_str(&existing[end..]);
     // Drop a comma we added if it is now dangling before the closing brace.
     let trimmed = s.trim_end();
-    if let Some(stripped) = trimmed.strip_suffix('}') {
-        if let Some((idx, ',')) = last_significant_char(stripped) {
-            let mut chars: Vec<char> = stripped.chars().collect();
-            chars.remove(idx);
-            let mut rebuilt: String = chars.into_iter().collect();
-            rebuilt.push_str("}\n");
-            s = rebuilt;
-        }
+    if let Some(stripped) = trimmed.strip_suffix('}')
+        && let Some((idx, ',')) = last_significant_char(stripped)
+    {
+        let mut chars: Vec<char> = stripped.chars().collect();
+        chars.remove(idx);
+        let mut rebuilt: String = chars.into_iter().collect();
+        rebuilt.push_str("}\n");
+        s = rebuilt;
     }
     Some(s)
 }
@@ -393,6 +392,13 @@ pub fn service_active() -> bool {
 }
 
 pub fn install_all(quiet: bool) -> Result<()> {
+    if !platform::is_omarchy() {
+        // Nothing under ~/.config/omarchy is made on another desktop.
+        if !quiet {
+            println!("not on Omarchy: no bar widget or menu to install");
+        }
+        return Ok(());
+    }
     let mut notes = Vec::new();
     match install_plugin() {
         Ok(true) => notes.push("bar widget installed".to_string()),

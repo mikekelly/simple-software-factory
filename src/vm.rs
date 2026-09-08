@@ -775,11 +775,12 @@ impl Vm {
             );
             return Ok(());
         }
-        let herdr = which(&crate::config::HerdrConfig::default().command)
-            .or_else(|| which("herdr"))
-            .context(
-                "herdr is not installed on this machine; the image takes its binary from here",
-            )?;
+        let herdr = which(
+            &crate::config::herdr_command_path(&crate::config::HerdrConfig::default().command)
+                .to_string_lossy(),
+        )
+        .or_else(|| which(&crate::config::herdr_command_path("herdr").to_string_lossy()))
+        .context("herdr is not installed on this machine; the image takes its binary from here")?;
         let build = self.base.join("build");
         std::fs::create_dir_all(&build)?;
         let base = build.join("base.ext4");
