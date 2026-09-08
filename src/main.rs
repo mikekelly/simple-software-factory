@@ -297,10 +297,12 @@ enum Command {
 
 #[derive(Subcommand)]
 enum VmCommand {
-    /// Size the VM from this machine, then download Firecracker, gvproxy
-    /// and a guest kernel, make the root image from the Arch bootstrap
-    /// tarball and provision it (git, gh, herdr, the harness CLIs). No
-    /// root needed.
+    /// Size the VM from this machine, then make the guest and provision
+    /// it (git, gh, herdr, the harness CLIs). Firecracker (`[vm] backend`,
+    /// the default on Linux): downloads Firecracker, gvproxy and a guest
+    /// kernel and makes the root image from the Arch bootstrap tarball.
+    /// lima (the default on macOS): creates the `ssf-<name>` instance and
+    /// its data disk from a cloud image and boots it once. No root needed.
     ///
     /// Every `[vm]` size key left unset is chosen from the host, printed
     /// and written to config.toml: `vcpus` is the CPUs minus one (at least
@@ -326,9 +328,10 @@ enum VmCommand {
     /// must be stopped).
     ///
     /// Grows to the size given, or to the rule for today's free space
-    /// (half of it, at least 20 GiB): `e2fsck -f`, a longer file,
-    /// `resize2fs`, then `[vm] data_gib` is updated. Never shrinks; a
-    /// smaller disk means a new VM.
+    /// (half of it, at least 20 GiB): Firecracker runs `e2fsck -f`,
+    /// lengthens the file and `resize2fs`; lima runs `limactl disk resize`
+    /// and the guest grows the filesystem at its next boot. Then `[vm]
+    /// data_gib` is updated. Never shrinks; a smaller disk means a new VM.
     Grow {
         /// The new size in GiB (at least the current size).
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
@@ -384,10 +387,13 @@ enum VmCommand {
     },
     /// An `~/.ssh/config` entry for the guest (`herdr --remote ssf-<name>`).
     SshConfig,
-    /// Remake the root disk from the image at the next start; state,
-    /// clones and worktrees on the data disk stay.
+    /// A fresh root at the next start (Firecracker: the root disk remade
+    /// from the image; lima: the instance re-created, provisioned again
+    /// on its first boot); state, clones and worktrees on the data disk
+    /// stay.
     Reset,
-    /// Remove the VM and all its disks.
+    /// Remove the VM and all its disks (lima: the instance and its data
+    /// disk too).
     Destroy {
         #[arg(long, short = 'y')]
         yes: bool,
