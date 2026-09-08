@@ -176,7 +176,8 @@ repository points an agent at that document).
   repositories (until ssf is in Omarchy's own package repository, then
   `sudo pacman -S ssf`).
 - **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
-  `herdr` or `herdr-bin` (AUR), which it depends on.
+  `herdr` or `herdr-bin` (AUR), which it depends on. Without a Wayland
+  session (X11, a server), see [Setup](docs/setup.md) step 2.
 - **Debian 12+, Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
   install ./ssf_*_amd64.deb`; `gh`, `git` and `jq` come from the
   repositories (Debian 12 needs GitHub's apt repository for a new enough

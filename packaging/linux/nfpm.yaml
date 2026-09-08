@@ -37,6 +37,8 @@ overrides:
       - git
       - jq
       - systemd
+      # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
+      - openssh-client
     recommends:
       # A minimal Debian has no `systemctl --user` without it.
       - libpam-systemd
@@ -44,19 +46,19 @@ overrides:
       - libarchive-tools
       - e2fsprogs
       - curl
-      - openssh-client
   rpm:
     depends:
       - gh >= 2.40
       - git
       - jq
       - systemd
+      # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
+      - openssh-clients
     recommends:
       - fakeroot
       - bsdtar
       - e2fsprogs
       - curl
-      - openssh-clients
 
 contents:
   # Directories, so the rpm owns and removes them (dpkg does so on its own;

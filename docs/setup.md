@@ -60,14 +60,15 @@ same steps, marked as such.
   `herdr` not found; install it: ...`` with the command for this machine.
   Orca (`orca-ide-bin`) is only for the host alternative in step 6 and is
   installed by hand.
-- The microVM image is built with `fakeroot`, `bsdtar` (libarchive),
-  `mkfs.ext4` (e2fsprogs), `curl` and `ssh` (openssh), all present on a
-  stock Omarchy and recommended by the .deb and .rpm, so apt and dnf
-  install them with the package. If `ssf vm build` says one is missing:
-  `sudo pacman -S --needed fakeroot libarchive e2fsprogs openssh curl`,
-  `sudo apt install fakeroot libarchive-tools e2fsprogs curl
-  openssh-client` or `sudo dnf install fakeroot bsdtar e2fsprogs curl
-  openssh-clients`.
+- `ssh` (openssh) is a dependency of every package: `ssf auth login`
+  makes the bot's key with `ssh-keygen` and the bot pushes over ssh. The
+  microVM image is built with `fakeroot`, `bsdtar` (libarchive),
+  `mkfs.ext4` (e2fsprogs) and `curl`, all present on a stock Omarchy and
+  recommended by the .deb and .rpm, so apt and dnf install them with the
+  package. If `ssf vm build` says one is missing: `sudo pacman -S
+  --needed fakeroot libarchive e2fsprogs curl`, `sudo apt install
+  fakeroot libarchive-tools e2fsprogs curl` or `sudo dnf install fakeroot
+  bsdtar e2fsprogs curl`.
 
 ## 2. Install the package
 
@@ -103,8 +104,25 @@ ship a unit that starts with your systemd user manager at first login
 server, `loginctl enable-linger $USER` (**you**: sudo may be needed)
 keeps the user manager, and so the factory, running with no session at
 all; that is the .deb and .rpm unit only, the Arch and Omarchy package's
-unit needs a Wayland login and never runs on a headless machine. When the
-hook finds no running session it says so; `systemctl
+unit needs a Wayland login and never runs on a headless machine.
+
+*Arch without a Wayland session* (an X11 desktop, a server reached over
+ssh): the unit's `ConditionEnvironment=WAYLAND_DISPLAY` is never met, so
+give it a drop-in that clears the condition and pull it into
+`default.target`, the way the .deb and .rpm unit starts:
+
+```sh
+mkdir -p ~/.config/systemd/user/ssf.service.d
+printf '[Unit]\nConditionEnvironment=\nConditionPathExists=!%%h/.local/state/ssf/disabled\n' > ~/.config/systemd/user/ssf.service.d/no-wayland.conf
+systemctl --user daemon-reload && systemctl --user add-wants default.target ssf.service && systemctl --user start ssf.service
+```
+
+An empty `ConditionEnvironment=` resets every condition of the unit, so
+the drop-in puts back the one for the disabled marker, and `ssf ui
+service enable|disable` (the toggle) keeps working. `add-wants` makes the
+symlink under `~/.config/systemd/user/default.target.wants/`, and from
+then on `loginctl enable-linger $USER` applies to this machine too. When
+the hook finds no running session it says so; `systemctl
 --user daemon-reload && systemctl --user start ssf.service` starts it
 now.
 

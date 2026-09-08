@@ -22,12 +22,12 @@ plus Firecracker's seccomp filter.
 
 The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
 (libarchive), `mkfs.ext4`, `e2fsck` and `resize2fs` (e2fsprogs), `curl`,
-`openssh`, and its own `herdr` binary, which is copied into the image.
-All of that is on a stock Omarchy; elsewhere `sudo pacman -S --needed
-fakeroot libarchive e2fsprogs curl openssh`, `sudo apt install fakeroot
-libarchive-tools e2fsprogs curl openssh-client` or `sudo dnf install
-fakeroot bsdtar e2fsprogs curl openssh-clients` (the .deb and .rpm
-recommend them, so apt and dnf bring them with the package).
+`ssh` (openssh, a dependency of the ssf package), and its own `herdr`
+binary, which is copied into the image. All of that is on a stock
+Omarchy; elsewhere `sudo pacman -S --needed fakeroot libarchive
+e2fsprogs curl`, `sudo apt install fakeroot libarchive-tools e2fsprogs
+curl` or `sudo dnf install fakeroot bsdtar e2fsprogs curl` (the .deb and
+.rpm recommend them, so apt and dnf bring them with the package).
 
 ```sh
 ssf vm build              # once: downloads Firecracker, gvproxy and a guest kernel, makes and provisions the image (a few minutes)

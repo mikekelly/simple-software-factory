@@ -474,9 +474,11 @@ fn default_herdr_command() -> String {
 }
 
 /// The herdr CLI to run for the configured command. A bare name that is not
-/// on PATH falls back to `~/.local/bin/<name>` when that file exists: the
-/// herdr.dev installer puts the binary there, and the systemd user
-/// manager's PATH does not include it. Anything else is returned as given.
+/// on PATH falls back to `~/.local/bin/<name>` when that is an executable
+/// file: the herdr.dev installer puts the binary there, and the systemd
+/// user manager's PATH does not include it. Only an executable regular
+/// file counts, on PATH too (a placeholder named `herdr` that cannot run
+/// does not stop the fallback). Anything else is returned as given.
 pub fn herdr_command_path(configured: &str) -> PathBuf {
     herdr_command_path_in(
         configured,
@@ -497,16 +499,24 @@ fn herdr_command_path_in(
     let on_path = path.is_some_and(|p| {
         std::env::split_paths(p)
             .map(|d| d.join(configured))
-            .any(|c| c.is_file())
+            .any(|c| is_executable_file(&c))
     });
     if on_path {
         return given;
     }
     match home.map(|h| h.join(".local/bin").join(configured)) {
-        Some(local) if local.is_file() => local,
+        Some(local) if is_executable_file(&local) => local,
         _ => given,
     }
 }
+
+/// A regular file with an execute bit set, which is what PATH lookup
+/// accepts.
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
 fn default_ssf_projects_dir() -> String {
     "~/ssf/projects".to_string()
 }
@@ -1995,8 +2005,19 @@ harness = "claude"
             herdr_command_path_in("herdr", Some(&empty_path), Some(&home)),
             PathBuf::from("herdr")
         );
+        // A file that cannot run is not the CLI: still the name as given.
+        let write = |path: &Path, mode: u32| {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::write(path, b"#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        write(&bin.join("herdr"), 0o644);
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&empty_path), Some(&home)),
+            PathBuf::from("herdr")
+        );
         // The installer's default location.
-        std::fs::write(bin.join("herdr"), b"#!/bin/sh\n").unwrap();
+        write(&bin.join("herdr"), 0o755);
         assert_eq!(
             herdr_command_path_in("herdr", Some(&empty_path), Some(&home)),
             bin.join("herdr")
@@ -2006,6 +2027,15 @@ harness = "claude"
         assert_eq!(
             herdr_command_path_in("herdr", Some(&on_path), Some(&home)),
             PathBuf::from("herdr")
+        );
+        // A non-executable placeholder on PATH does not stop the fallback.
+        let stub_dir = home.join("stubs");
+        std::fs::create_dir_all(&stub_dir).unwrap();
+        write(&stub_dir.join("herdr"), 0o644);
+        let stub_path = std::ffi::OsString::from(&stub_dir);
+        assert_eq!(
+            herdr_command_path_in("herdr", Some(&stub_path), Some(&home)),
+            bin.join("herdr")
         );
         // A path is never rewritten.
         assert_eq!(
