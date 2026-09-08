@@ -350,8 +350,13 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
         out.push_str(&format!("  {e}\n"));
     }
     if opts.vm_unchecked {
+        let (what, first) = if facts.vm_running {
+            ("gave no report", "`ssf vm restart` first")
+        } else {
+            ("is not running", "`ssf vm start` first")
+        };
         out.push_str(&format!(
-            "  VM {} is not running: its workspaces (the clones on its data disk) cannot be checked; `ssf vm start` first, or --force destroys them unchecked\n",
+            "  VM {} {what}: its workspaces (the clones on its data disk) cannot be checked; {first}, or --force destroys them unchecked\n",
             facts.vm_name
         ));
     } else if report.items.is_empty() {
@@ -445,7 +450,7 @@ pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Op
     if !unpushed.is_empty() {
         let n = unpushed.len();
         return Some(format!(
-            "{n} workspace{} hold{} uncommitted or unpushed work (listed above); push or discard it first, or pass --force to {}",
+            "{n} workspace{} hold{} uncommitted or unpushed work, or could not be checked (listed above); push or discard it first, or pass --force to {}",
             if n == 1 { "" } else { "s" },
             if n == 1 { "s" } else { "" },
             if facts.vm_mode {
@@ -495,6 +500,12 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             }
         } else {
             opts.vm_unchecked = facts.vm_present;
+            if facts.vm_running {
+                opts.report_error = Some(format!(
+                    "VM {} is running but does not answer on ssh",
+                    facts.vm_name
+                ));
+            }
             Report::default()
         }
     } else {
@@ -869,8 +880,13 @@ mod tests {
 
     #[test]
     fn render_with_the_vm_unchecked_says_so_instead_of_none() {
+        // The VM's disks are there but it is not running.
+        let stopped = Facts {
+            vm_running: false,
+            ..facts()
+        };
         let text = render(
-            &facts(),
+            &stopped,
             &Report::default(),
             &Opts {
                 vm_unchecked: true,
@@ -880,7 +896,8 @@ mod tests {
         );
         assert!(text.contains("could not get the report"), "{text}");
         assert!(
-            text.contains("VM factory is not running: its workspaces"),
+            text.contains("VM factory is not running: its workspaces")
+                && text.contains("`ssf vm start` first"),
             "{text}"
         );
         assert!(!text.contains("(none)"), "{text}");
@@ -949,6 +966,30 @@ mod tests {
         );
         assert!(hard_stop(&running, &Report::default(), &unchecked, true).is_none());
         assert!(hard_stop(&running, &Report::default(), &Opts::default(), false).is_none());
+    }
+
+    #[test]
+    fn render_with_a_silent_running_vm_points_at_restart() {
+        let facts = Facts {
+            vm_mode: true,
+            vm_name: "factory".into(),
+            vm_present: true,
+            vm_running: true,
+            ..Facts::default()
+        };
+        let opts = Opts {
+            vm_unchecked: true,
+            report_error: Some("VM factory is running but does not answer on ssh".into()),
+            ..Opts::default()
+        };
+        let text = render(&facts, &Report::default(), &opts);
+        assert!(text.contains("does not answer on ssh"), "{text}");
+        assert!(
+            text.contains("VM factory gave no report: its workspaces")
+                && text.contains("`ssf vm restart` first"),
+            "{text}"
+        );
+        assert!(!text.contains("factory is not running"), "{text}");
     }
 
     #[test]
