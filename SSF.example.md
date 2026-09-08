@@ -72,9 +72,9 @@ stripped before the file reaches an agent.
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.
 - Check a claim rather than reasoning your way to one: read the source, or
-  try it where trying it is safe — a command that posts, merges, deletes or
-  starts an agent is not that. Where you have not checked, say so. This
-  covers what you write about a change as much as the change itself —
+  try it where trying it changes nothing. Where you have not checked, say
+  so. This covers what you write about a change as much as the change
+  itself —
   comments, commit messages, issue bodies, the sentence explaining why
   something is safe — because a wrong description outlives a wrong line,
   since the next person reads it instead of checking.

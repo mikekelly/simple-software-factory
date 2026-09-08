@@ -127,5 +127,6 @@ document links to.
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
     for review classes and stopping rules. Keep required verification in
     every class, including changes that need only self-review. Keep the
-    line the boilerplate carries beside those rules: check a claim against the thing rather
-    than reasoning your way to it, and say where you have not.
+    line the boilerplate carries beside those rules: check a claim by reading the source
+    or trying it where trying it changes nothing, rather than reasoning
+    your way to an answer, and say where you have not.
