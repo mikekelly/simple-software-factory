@@ -34,8 +34,19 @@ pub fn plugin_source_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/usr/share/ssf/omarchy-plugin"))
 }
 
+/// The home directory the Omarchy integration writes into
+/// (`~/.config/omarchy/...`). Guarded like `config::state_dir()`: the test
+/// build has no real home to install a plugin into or delete one from, and
+/// answers out of the calling thread's sandbox instead (#140).
 fn home() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
+    #[cfg(test)]
+    {
+        crate::config::test_support::home()
+    }
+    #[cfg(not(test))]
+    {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
+    }
 }
 
 pub fn plugin_target_dir() -> PathBuf {
@@ -637,5 +648,22 @@ mod tests {
         .unwrap();
         assert!(out.contains("\"new\""));
         assert!(!out.contains("\"old\""));
+    }
+
+    /// The widget's install and uninstall write and delete under
+    /// `~/.config/omarchy`; in a test they must land in the sandbox
+    /// instead, and without one they are refused (#140).
+    #[test]
+    fn the_omarchy_paths_hang_off_the_sandbox() {
+        let sb = crate::config::test_support::sandbox();
+        assert!(plugin_target_dir().starts_with(sb.home()));
+        assert!(menu_extension_path().starts_with(sb.home()));
+        assert_eq!(disabled_marker(), sb.state_dir().join("disabled"));
+    }
+
+    #[test]
+    #[should_panic(expected = "reached the real home directory")]
+    fn without_a_sandbox_the_home_directory_is_refused() {
+        let _ = plugin_target_dir();
     }
 }

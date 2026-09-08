@@ -6485,6 +6485,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
         probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
@@ -6548,6 +6549,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blocked_session_is_started_again_once_the_login_is_back() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
         let since = (chrono::Utc::now() - chrono::Duration::minutes(12))
@@ -6637,6 +6639,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_harness_started_again_onto_the_login_prompt_stays_blocked_quietly() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
         let since = (chrono::Utc::now() - chrono::Duration::minutes(30))
@@ -6682,6 +6685,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_person_signing_in_at_the_terminal_lifts_the_block_without_a_restart() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
         e.entry(&repo(), 5).blocked = Some(Blocked {
@@ -6732,6 +6736,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_relaunch_that_lands_on_a_login_prompt_blocks_the_session() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
         // The agent is gone (a reboot); the machine is not signed in.
@@ -6771,6 +6776,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blocked_harness_that_is_gone_is_judged_by_its_restart() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
         let since = (chrono::Utc::now() - chrono::Duration::minutes(30))
@@ -6874,6 +6880,7 @@ mod tests {
     /// finds the item as it was.
     #[tokio::test]
     async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let mut e = engine_at(&stub.base);
         let d = crate::driver::StubDriver::new(DriverKind::Orca);
@@ -6951,6 +6958,7 @@ mod tests {
     /// An item bound to another item's session hears which one took it.
     #[tokio::test]
     async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let mut e = engine_at(&stub.base);
         let d = crate::driver::StubDriver::new(DriverKind::Orca);
@@ -7051,6 +7059,7 @@ mod tests {
     /// nothing and changes nothing else.
     #[tokio::test]
     async fn event_comments_can_be_switched_off() {
+        let _sandbox = crate::config::test_support::sandbox();
         // The instance says no: onboarding posts nothing, but happens.
         let stub = GitHubStub::start().await;
         let mut e = engine_at(&stub.base);
@@ -7630,6 +7639,7 @@ mod tests {
     /// time says `after: lost terminal`.
     #[tokio::test]
     async fn a_relaunch_posts_resumed_with_why() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
         // The terminal is gone; a delivery starts the harness again.
@@ -7932,6 +7942,7 @@ mod tests {
     /// with the two posts and the overrides left on the item.
     #[tokio::test]
     async fn a_handover_replaces_the_session_in_the_same_workspace() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         let v = e
@@ -8048,6 +8059,7 @@ mod tests {
     /// says both, and the new session is told to read the item.
     #[tokio::test]
     async fn a_handover_without_a_summary_says_so() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         e.handover("o/r#5", "codex", None, None, None, None)
@@ -8090,6 +8102,7 @@ mod tests {
     /// not delivered to it a second time by the pass that follows.
     #[tokio::test]
     async fn the_story_the_new_session_is_told_counts_as_delivered() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         e.handover("o/r#5", "pi", None, None, Some("half done"), None)
@@ -8128,6 +8141,7 @@ mod tests {
     /// re-created workspace, and the startup pass.
     #[tokio::test]
     async fn the_overrides_outlive_the_handover_pass() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         e.handover("o/r#5", "codex", None, None, None, None)
@@ -8169,6 +8183,7 @@ mod tests {
     /// `the command's` in the model line refers to nothing).
     #[tokio::test]
     async fn a_model_only_handover_keeps_the_repository_command() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         let r = RepoConfig {
@@ -8239,6 +8254,7 @@ mod tests {
     /// it, and the bound item shows what its owner runs.
     #[tokio::test]
     async fn a_handover_on_a_bound_item_is_the_owning_session_s() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         seeded(&mut e, 6, Some("bot/issue-5"), true);
@@ -8405,6 +8421,7 @@ mod tests {
     /// says so, and the agent that asked is told to carry on.
     #[tokio::test]
     async fn a_handover_the_pass_cannot_carry_out_is_refused_on_the_item() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         e.handover(
@@ -8450,6 +8467,7 @@ mod tests {
     /// nothing: the pending handover is in the state file.
     #[tokio::test]
     async fn a_pending_handover_survives_a_restart() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         e.handover("o/r#5", "pi", None, None, Some("half done"), None)
@@ -8482,6 +8500,7 @@ mod tests {
     /// blocked as any other, and the old one is not brought back.
     #[tokio::test]
     async fn a_new_harness_at_its_sign_in_prompt_blocks_the_new_session() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| {
@@ -8520,6 +8539,7 @@ mod tests {
     /// `attached` claims a session that is not there.
     #[tokio::test]
     async fn a_new_harness_that_will_not_start_blocks_the_item() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| {
@@ -8638,6 +8658,7 @@ mod tests {
     /// no longer there.
     #[tokio::test]
     async fn a_handover_closes_an_outstanding_hold_on_the_item() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         e.entry(&repo(), 5).blocked = Some(Blocked {
@@ -8685,6 +8706,7 @@ mod tests {
     /// the thing to fix, and the recovery from #85 is the one that fits.
     #[tokio::test]
     async fn a_harness_that_will_not_start_and_is_signed_out_is_a_login_block() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi exited at once".into()));
@@ -8729,6 +8751,7 @@ mod tests {
     /// session has read it, and the restart carries it.
     #[tokio::test]
     async fn the_summary_outlives_a_harness_that_would_not_start() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi exited at once".into()));
@@ -8804,6 +8827,7 @@ mod tests {
     /// the screen alone, the session is given what it was never told.
     #[tokio::test]
     async fn a_started_harness_behind_a_start_block_is_told_before_the_block_lifts() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
@@ -8851,6 +8875,7 @@ mod tests {
     /// block on its own -- the session still has to be told.
     #[tokio::test]
     async fn a_handover_blocked_at_the_sign_in_prompt_is_told_when_a_person_signs_in() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.relaunch_screen = PI_LOGIN_SCREEN.iter().map(|l| l.to_string()).collect());
@@ -8904,6 +8929,7 @@ mod tests {
     /// and the next one waits for the backoff.
     #[tokio::test]
     async fn a_started_harness_is_told_once_per_backoff() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
@@ -8944,6 +8970,7 @@ mod tests {
     /// that person is answered on the next pass.
     #[tokio::test]
     async fn a_failed_restart_does_not_hold_up_telling_a_running_harness() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
@@ -8977,6 +9004,7 @@ mod tests {
     /// held from when it began, with both backoffs where they were.
     #[tokio::test]
     async fn a_message_that_lands_in_a_sign_in_screen_keeps_the_hold_it_had() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi did not become idle in time".into()));
@@ -9019,6 +9047,7 @@ mod tests {
     /// of where the item stands), which is what the test above shows.
     #[tokio::test]
     async fn a_second_handover_without_a_summary_keeps_the_one_still_owed() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi exited at once".into()));
@@ -9063,6 +9092,7 @@ mod tests {
     /// not the harness that failed to come up.
     #[tokio::test]
     async fn a_second_handover_names_the_session_that_did_the_work() {
+        let _sandbox = crate::config::test_support::sandbox();
         let stub = GitHubStub::start().await;
         let (mut e, d) = handover_setup(&stub);
         d.with(|s| s.start_error = Some("pi exited at once".into()));

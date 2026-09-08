@@ -3494,6 +3494,12 @@ mod tests {
         cfg.vm.ssh_port = 2299;
         cfg.vm.data_gib = Some(2);
         cfg.github.login = Some("test-bot".into());
+        // Seeding the guest resolves the bot token out of the config
+        // directory, which the test build otherwise refuses (#140). This
+        // test is run by hand against the factory installed here, so it
+        // says so: whatever this machine's factory signs in as is what
+        // the guest gets, a token file or the gh keyring behind it.
+        let _machine = crate::config::test_support::the_machine_itself();
         let mut vm = Vm::new(&cfg);
         // Under `cargo test` this process is the test harness, not ssf.
         let exe = std::env::current_exe().unwrap();

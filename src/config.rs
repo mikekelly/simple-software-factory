@@ -986,33 +986,252 @@ pub fn split_repo_name(name: &str) -> Result<(&str, &str)> {
     }
 }
 
+/// Where a directory lives, given the environment override and the
+/// platform's own answer. Split out of `config_dir` and `state_dir` so the
+/// rules can be asserted directly: under `cfg(test)` neither of those two
+/// reads the environment at all (see `test_support`), so there is nothing
+/// left to assert them through.
+fn dir_from(env: Option<&str>, base: Option<PathBuf>, fallback: &str) -> PathBuf {
+    if let Some(dir) = env {
+        return PathBuf::from(dir);
+    }
+    base.unwrap_or_else(|| PathBuf::from(fallback)).join("ssf")
+}
+
+/// The platform's own answer for each directory. macOS is told rather
+/// than asked, so a test can assert the branch it is not running on: ssf
+/// keeps the XDG places under `~` there, not `~/Library/Application
+/// Support`, so the paths in the documentation and in the guest hold
+/// everywhere.
+fn platform_config_base(macos: bool) -> Option<PathBuf> {
+    if macos {
+        Some(expand_tilde("~/.config"))
+    } else {
+        dirs::config_dir()
+    }
+}
+
+fn platform_state_base(macos: bool) -> Option<PathBuf> {
+    if macos {
+        Some(expand_tilde("~/.local/state"))
+    } else {
+        dirs::state_dir().or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
+    }
+}
+
+fn real_config_dir() -> PathBuf {
+    dir_from(
+        std::env::var("SSF_CONFIG_DIR").ok().as_deref(),
+        platform_config_base(crate::platform::is_macos()),
+        "~/.config",
+    )
+}
+
+fn real_state_dir() -> PathBuf {
+    dir_from(
+        std::env::var("SSF_STATE_DIR").ok().as_deref(),
+        platform_state_base(crate::platform::is_macos()),
+        "~/.local/state",
+    )
+}
+
 /// `$SSF_CONFIG_DIR`, else `~/.config/ssf` (on macOS too: the XDG place,
 /// not `~/Library/Application Support`, so the paths in the documentation
 /// and the guest hold everywhere).
 pub fn config_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("SSF_CONFIG_DIR") {
-        return PathBuf::from(dir);
+    #[cfg(test)]
+    {
+        test_support::require("config")
     }
-    if crate::platform::is_macos() {
-        return expand_tilde("~/.config").join("ssf");
+    #[cfg(not(test))]
+    {
+        real_config_dir()
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ssf")
 }
 
 /// `$SSF_STATE_DIR`, else `~/.local/state/ssf` (on macOS too).
 pub fn state_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("SSF_STATE_DIR") {
-        return PathBuf::from(dir);
+    #[cfg(test)]
+    {
+        test_support::require("state")
     }
-    if crate::platform::is_macos() {
-        return expand_tilde("~/.local/state").join("ssf");
+    #[cfg(not(test))]
+    {
+        real_state_dir()
     }
-    dirs::state_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local/state")))
-        .unwrap_or_else(|| PathBuf::from("~/.local/state"))
-        .join("ssf")
+}
+
+/// The test build must never touch the real config or state directory. The
+/// suite used to overwrite the live `~/.local/state/ssf/state.json` with a
+/// fixture, and a daemon restart inside that window started from the
+/// fixture: every repository binding, every session's workspace and
+/// terminal handle, every ignore record, gone (#140). `makepkg`'s `check()`
+/// runs the suite too, so building the package from source did it to
+/// whoever built it.
+///
+/// So under `cfg(test)` `config_dir()` and `state_dir()` ignore
+/// `SSF_CONFIG_DIR`/`SSF_STATE_DIR` and every platform directory, and
+/// answer only out of a [`Sandbox`] the calling thread holds. A test that
+/// reaches either without one panics where it would have written.
+#[cfg(test)]
+pub mod test_support {
+    use std::cell::RefCell;
+    use std::marker::PhantomData;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    thread_local! {
+        /// A stack, so a nested guard puts the outer one back on drop.
+        static ACTIVE: RefCell<Vec<Dirs>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// What the guard on top of the stack points the three directories at.
+    enum Dirs {
+        /// A temporary root with `config`, `state` and `home` under it.
+        Sandbox(PathBuf),
+        /// The machine's own, for the live tests.
+        Machine,
+    }
+
+    /// A temporary config and state directory, in force for the thread that
+    /// made it until the guard is dropped, and deleted with it. The test
+    /// harness gives each test its own thread, so this is per-test
+    /// isolation: two tests running in parallel cannot see each other's
+    /// `state.json`.
+    #[must_use = "the sandbox only holds while the guard is alive"]
+    pub struct Sandbox {
+        root: PathBuf,
+        /// Not `Send`: dropping the guard on another thread would delete
+        /// the directory without taking it off the stack of the thread
+        /// that made it, which would go on resolving to a path that is
+        /// gone.
+        _thread_bound: PhantomData<*const ()>,
+    }
+
+    /// Point `config_dir()` and `state_dir()` at a fresh temporary
+    /// directory for this thread. Both exist by the time this returns, so a
+    /// test can lay a fixture down before ssf writes.
+    pub fn sandbox() -> Sandbox {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "ssf-test-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        for sub in ["config", "state", "home"] {
+            std::fs::create_dir_all(root.join(sub))
+                .unwrap_or_else(|e| panic!("creating test sandbox {}: {e}", root.display()));
+        }
+        ACTIVE.with(|s| s.borrow_mut().push(Dirs::Sandbox(root.clone())));
+        Sandbox {
+            root,
+            _thread_bound: PhantomData,
+        }
+    }
+
+    impl Sandbox {
+        /// The directory holding both, for a test that wants to put
+        /// something beside them.
+        pub fn root(&self) -> &Path {
+            &self.root
+        }
+
+        /// What `config::config_dir()` answers while this guard is alive.
+        pub fn config_dir(&self) -> PathBuf {
+            self.root.join("config")
+        }
+
+        /// What `config::state_dir()` answers while this guard is alive.
+        pub fn state_dir(&self) -> PathBuf {
+            self.root.join("state")
+        }
+
+        /// What the daemon takes for `$HOME` while this guard is alive
+        /// (`crate::ui`'s Omarchy paths hang off it).
+        pub fn home(&self) -> PathBuf {
+            self.root.join("home")
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            ACTIVE.with(|s| {
+                let mut stack = s.borrow_mut();
+                if let Some(at) = stack
+                    .iter()
+                    .rposition(|d| matches!(d, Dirs::Sandbox(p) if p == &self.root))
+                {
+                    stack.remove(at);
+                }
+            });
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// The machine's own config, state and home directories, for the
+    /// `#[ignore]`d live tests: they are run by hand against the factory
+    /// installed here, and `vm_live` cannot seed its guest without
+    /// resolving the config directory the way the daemon does. The guard
+    /// itself creates nothing and deletes nothing, but it hands out real
+    /// paths, so nothing `cargo test` runs on its own may *write* through
+    /// one — that is #140 again, with no panic left to catch it. The one
+    /// test below that holds one only compares paths.
+    #[must_use = "the directories are only the machine's while the guard is alive"]
+    pub struct TheMachineItself {
+        _thread_bound: PhantomData<*const ()>,
+    }
+
+    /// Answer the three directories from the machine itself for as long as
+    /// the guard is alive. See [`TheMachineItself`].
+    pub fn the_machine_itself() -> TheMachineItself {
+        ACTIVE.with(|s| s.borrow_mut().push(Dirs::Machine));
+        TheMachineItself {
+            _thread_bound: PhantomData,
+        }
+    }
+
+    impl Drop for TheMachineItself {
+        fn drop(&mut self) {
+            ACTIVE.with(|s| {
+                let mut stack = s.borrow_mut();
+                if let Some(at) = stack.iter().rposition(|d| matches!(d, Dirs::Machine)) {
+                    stack.remove(at);
+                }
+            });
+        }
+    }
+
+    /// The sandbox's stand-in for `$HOME`, for the paths outside ssf's own
+    /// directories that the daemon writes to (`crate::ui`, which installs
+    /// and removes the Omarchy widget under `~/.config/omarchy`).
+    pub(crate) fn home() -> PathBuf {
+        require("home")
+    }
+
+    /// The sandbox's `which` subdirectory for the calling thread, or a
+    /// panic naming what the test has to do about it.
+    pub(super) fn require(which: &str) -> PathBuf {
+        ACTIVE.with(|s| match s.borrow().last() {
+            Some(Dirs::Sandbox(root)) => root.join(which),
+            Some(Dirs::Machine) => match which {
+                "config" => super::real_config_dir(),
+                "state" => super::real_state_dir(),
+                "home" => dirs::home_dir().unwrap_or_else(|| PathBuf::from("~")),
+                _ => panic!("no machine directory for {which:?}"),
+            },
+            None => panic!(
+                "this test reached the real {which} directory. Tests must \
+                 not write outside a temporary directory of their own: \
+                 hold a \
+                 `let _sandbox = crate::config::test_support::sandbox();` \
+                 guard for as long as the test needs one (#140). A test \
+                 that holds one and still sees this is resolving the \
+                 directory on some other thread than its own, which the \
+                 guard does not reach."
+            ),
+        })
+    }
 }
 
 pub fn config_path() -> PathBuf {
@@ -2190,5 +2409,121 @@ harness = "claude"
             PathBuf::from("herdr")
         );
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// The resolution rules behind `config_dir`/`state_dir`, which the test
+    /// build never runs for real: the environment wins outright, otherwise
+    /// the platform's directory gets `ssf` on the end, and a platform that
+    /// answers nothing falls back to the literal path.
+    #[test]
+    fn a_directory_follows_the_environment_then_the_platform_then_the_fallback() {
+        assert_eq!(
+            dir_from(
+                Some("/scratch/ssf"),
+                Some(PathBuf::from("/home/u/.config")),
+                "~/.config"
+            ),
+            PathBuf::from("/scratch/ssf")
+        );
+        assert_eq!(
+            dir_from(
+                None,
+                Some(PathBuf::from("/home/u/.local/state")),
+                "~/.local/state"
+            ),
+            PathBuf::from("/home/u/.local/state/ssf")
+        );
+        assert_eq!(
+            dir_from(None, None, "~/.local/state"),
+            PathBuf::from("~/.local/state/ssf")
+        );
+    }
+
+    /// While a sandbox is held, every path the daemon writes to is inside
+    /// it, whatever `SSF_CONFIG_DIR`/`SSF_STATE_DIR` say (#140).
+    #[test]
+    fn a_sandbox_takes_over_both_directories_and_goes_away_with_the_guard() {
+        let root = {
+            let sb = test_support::sandbox();
+            assert_eq!(config_dir(), sb.config_dir());
+            assert_eq!(state_dir(), sb.state_dir());
+            assert_eq!(config_path(), sb.config_dir().join("config.toml"));
+            assert_eq!(token_path(), sb.config_dir().join("token"));
+            assert_eq!(
+                crate::state::state_path(),
+                sb.state_dir().join("state.json")
+            );
+            assert!(sb.root().is_dir());
+            sb.root().to_path_buf()
+        };
+        assert!(!root.exists(), "the sandbox outlived its guard");
+    }
+
+    /// A nested sandbox is in force until it is dropped, and the outer one
+    /// comes back after it.
+    #[test]
+    fn a_nested_sandbox_puts_the_outer_one_back() {
+        let outer = test_support::sandbox();
+        {
+            let inner = test_support::sandbox();
+            assert_eq!(state_dir(), inner.state_dir());
+        }
+        assert_eq!(state_dir(), outer.state_dir());
+    }
+
+    /// macOS keeps ssf's directories in the XDG places under `~`, never
+    /// `~/Library/Application Support`, so a guest and its host name the
+    /// same paths. Asserted for both platforms from here, since the suite
+    /// only ever runs on one of them.
+    #[test]
+    fn macos_keeps_the_xdg_places_under_the_home_directory() {
+        let home = dirs::home_dir().expect("a home directory");
+        assert_eq!(platform_config_base(true), Some(home.join(".config")));
+        assert_eq!(platform_state_base(true), Some(home.join(".local/state")));
+        assert_eq!(
+            dir_from(None, platform_config_base(true), "~/.config"),
+            home.join(".config/ssf")
+        );
+        assert_eq!(
+            dir_from(None, platform_state_base(true), "~/.local/state"),
+            home.join(".local/state/ssf")
+        );
+        // The environment still wins on either platform.
+        for macos in [true, false] {
+            assert_eq!(
+                dir_from(Some("/scratch"), platform_config_base(macos), "~/.config"),
+                PathBuf::from("/scratch")
+            );
+        }
+    }
+
+    /// The escape the `#[ignore]`d live tests take: the machine's own
+    /// directories, answered without creating or deleting anything. This
+    /// one only compares paths — nothing `cargo test` runs on its own may
+    /// write through that guard.
+    #[test]
+    fn the_live_test_guard_answers_the_machine_s_own_directories() {
+        let _machine = test_support::the_machine_itself();
+        assert_eq!(config_dir(), real_config_dir());
+        assert_eq!(state_dir(), real_state_dir());
+        assert_eq!(
+            crate::state::state_path(),
+            real_state_dir().join("state.json")
+        );
+    }
+
+    /// The point of the guard: a test that would have written to the live
+    /// daemon's state file fails where it would have written, and the
+    /// message says what to do about it.
+    #[test]
+    #[should_panic(expected = "reached the real state directory")]
+    fn without_a_sandbox_the_state_directory_is_refused() {
+        let _ = state_dir();
+    }
+
+    #[test]
+    #[should_panic(expected = "reached the real config directory")]
+    fn without_a_sandbox_the_config_directory_is_refused() {
+        let _ = config_dir();
     }
 }

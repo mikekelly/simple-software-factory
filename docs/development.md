@@ -20,6 +20,67 @@ pass included, and exits. The installed service runs the last package
 installed, so a change is verified with unit tests and scratch runs rather
 than by expecting to see it live.
 
+## Tests write nowhere but a temporary directory
+
+A test must not write outside a temporary directory it made itself:
+`cargo test` runs on machines with a live factory, and it used to
+overwrite `~/.local/state/ssf/state.json` with a fixture. Nothing was
+lost while the daemon kept running, but a restart in that window started
+it from the fixture and every repository binding and every session's
+workspace went with it. `makepkg`'s `check()` runs the suite too, so a
+source build did it to whoever built the package.
+
+So the test build reaches no real directory by accident: `config_dir()`
+and `state_dir()` ignore `SSF_CONFIG_DIR`/`SSF_STATE_DIR` and the
+platform's own answer under `cfg(test)`, and panic unless the calling
+thread holds a guard saying which directories it means. A test that
+writes takes the sandbox:
+
+```rust
+let _sandbox = crate::config::test_support::sandbox();
+```
+
+which points both directories at a fresh temporary directory for that
+thread and deletes it when the guard is dropped. Tests run one per
+thread, so two running in parallel cannot see each other's `state.json`.
+`sandbox.config_dir()`, `sandbox.state_dir()`, `sandbox.home()` and
+`sandbox.root()` are the paths, for a test that wants to lay a fixture
+down first. `ui::home()` is guarded the same way and answers
+`sandbox.home()`, since the Omarchy widget's install and uninstall write
+and delete under `~/.config/omarchy`, which is nobody's temporary
+directory either.
+
+`cfg(test)` is what makes any of this hold, and that in turn rests on
+`ssf` having no `[lib]` target: the tests are all inline, so they are the
+only thing that compiles `config.rs`. `tests/packaging.rs` cannot reach
+`crate::config` at all for the same reason. Give the crate a library and
+anything under `tests/` links it built *without* `cfg(test)`, with the
+real directories back — so a `[lib]` target comes with moving the guard
+somewhere it does not depend on how the file was compiled.
+
+The guard is the calling thread's, and nothing carries it: resolve a
+directory on a thread the test handed work to (`spawn_blocking`, a
+multi-threaded runtime) and it panics there instead. That is not always
+loud — `Engine::probe_harness` turns a panicked `spawn_blocking` into an
+`Unknown` login probe and carries on — so keep the resolution on the
+test's own thread rather than relying on the panic to find it for you.
+
+Everything else a test writes goes under `std::env::temp_dir()`, in a
+directory named after its module and the process (`ssf-state-<pid>`,
+`ssf-engine-events-<pid>`); most remove it at the end, some do not.
+
+The `#[ignore]`d live tests are the exception to all of this and are
+meant to be: they are run by hand, against this machine. `vm_live` boots
+a VM under `~/.local/share/ssf/vm` and seeds its guest with the bot
+token, wherever the real config directory keeps it — a file, or the gh
+keyring — so it holds `test_support::the_machine_itself()` instead of a
+sandbox: the same stack, pointing the three directories at the machine's
+own, creating and deleting nothing. `herdr_live` starts a real harness
+and leaves session files under `~/.claude`, and
+`herdr_live_first_prompt` a `trust_level` entry in `~/.codex/config.toml`.
+That guard is the only way to a real directory from the test build, and
+nothing `cargo test` runs on its own may hold one.
+
 ## A dev build as the service
 
 `packaging/dev-install.sh` builds `target/release/ssf`, writes the

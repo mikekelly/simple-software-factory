@@ -1021,6 +1021,7 @@ mod tests {
 
     #[test]
     fn json_keeps_the_old_issue_fields() {
+        let _sandbox = crate::config::test_support::sandbox();
         let mut cfg = cfg();
         cfg.driver = Some(DriverKind::Orca);
         let snap = Snapshot {
@@ -1094,6 +1095,7 @@ mod tests {
 
     #[test]
     fn a_blocked_session_is_flagged_everywhere() {
+        let _sandbox = crate::config::test_support::sandbox();
         let mut it = item(1, Some("r1::/w/one"));
         it.blocked = Some(Blocked {
             reason: "login".into(),
@@ -1169,6 +1171,7 @@ mod tests {
 
     #[test]
     fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
+        let _sandbox = crate::config::test_support::sandbox();
         // #1 has been handed over to Pi; #2 shares its workspace, so it
         // runs the same harness; #3 has a handover waiting for the pass.
         let mut one = item(1, Some("r1::/w/one"));
