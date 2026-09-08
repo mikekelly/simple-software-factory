@@ -3382,21 +3382,19 @@ async fn doctor() -> Result<()> {
                 ),
             }
         }
+        // The configured checkout, `~` expanded as the daemon expands it.
+        let configured_missing = r
+            .path
+            .as_deref()
+            .is_some_and(|p| !config::expand_tilde(p).join(".git").exists());
         if let Some(p) = &r.path {
-            check(
-                std::path::Path::new(p).join(".git").exists(),
-                format!("{}: checkout at {p}", r.name),
-            );
+            check(!configured_missing, format!("{}: checkout at {p}", r.name));
         }
         // The worktrees its sessions work in, and what each holds that is
         // on no other branch and not on origin, when no agent is on it: a
         // workspace closed by hand leaves the checkout behind, and nothing
         // else says that removing it would lose work.
         // A configured path that is missing was flagged just above.
-        let configured_missing = r
-            .path
-            .as_deref()
-            .is_some_and(|p| !config::expand_tilde(p).join(".git").exists());
         match checkout_root(&cfg, r, &state) {
             None if configured_missing => {}
             None => check(

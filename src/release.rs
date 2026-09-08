@@ -405,7 +405,11 @@ async fn look_at(
 
 /// The same directory, whichever way each side spells it.
 fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
-    a == b || std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok()
+    a == b
+        || matches!(
+            (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+            (Ok(x), Ok(y)) if x == y
+        )
 }
 
 async fn count(path: &str, args: &[&str]) -> Result<u64> {
