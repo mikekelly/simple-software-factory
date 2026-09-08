@@ -509,6 +509,24 @@ enum Why {
     FoundStale,
 }
 
+/// What the write of a `format: false` says on its way past: `disk` is
+/// the data disk, `which` the copy of the template being changed. The
+/// build that made the disk is the one build allowed to let lima format
+/// it, so that build turning the flag off is stating a fact, not putting
+/// anything right; every other caller has found a flag an unfinished
+/// build left behind, which is a warning. Kept out of the logging so the
+/// difference can be held to in a test.
+fn format_off_note(why: Why, disk: &str, which: &str) -> String {
+    match why {
+        Why::FinishingBuild => {
+            format!("the data disk {disk} carries the factory now; turning `format` off in {which}")
+        }
+        Why::FoundStale => format!(
+            "the data disk {disk} exists, but {which} still lets lima format it (a build that did not finish); putting `format: false` back"
+        ),
+    }
+}
+
 /// The decision behind [`Vm::repair_stale_format`], kept separate from
 /// the file and process work so it can be held to the rules:
 ///
@@ -896,31 +914,11 @@ impl Vm {
         }
         self.ensure_key()?;
         let _ = std::fs::remove_file(self.known_hosts());
-        // Only the build that makes the data disk lets lima format it.
-        let disk = self.lima_disk_name();
-        let mut make_disk = self.lima_disk()?.is_none();
-        // A disk an earlier build created but never got a filesystem onto
-        // is blank for good: lima's boot script is the only thing that
-        // formats it, and only the build that creates the disk hands lima
-        // `format: true`. Such a disk is marked ([`Vm::unproven_disk`]),
-        // and `--force` -- the flag that already means "make this
-        // instance again" -- re-creates it. A disk no marker points at is
-        // one some build signed off on, so it is never deleted here.
-        if !make_disk && force && self.unproven_disk().exists() {
-            info!(
-                "the data disk {disk} was made by a build that never got a guest up on it; deleting it, and whatever it holds, and making a fresh one"
-            );
-            self.limactl_run(&["disk", "delete", &disk])?;
-            let _ = std::fs::remove_file(self.unproven_disk());
-            make_disk = true;
-        }
+        let make_disk = self.take_data_disk(force)?;
         self.write_template(make_disk)?;
         self.write_share(host)?;
         if make_disk {
-            let gib = self.sizes().data_gib;
-            info!("creating lima disk {disk} ({gib} GiB)");
-            self.limactl_run(&["disk", "create", &disk, "--size", &format!("{gib}GiB")])?;
-            self.mark_disk_unproven();
+            self.create_data_disk()?;
         }
         self.lima_create()?;
         // From here the instance exists and boots with `format: true`
@@ -935,6 +933,50 @@ impl Vm {
             return Err(self.blank_disk_hint(e));
         }
         println!("built lima instance {name}; `ssf vm start` boots it");
+        Ok(())
+    }
+
+    /// The data disk this build will run on, and whether the build has to
+    /// make it -- which is the same as whether it may hand lima
+    /// `format: true`, since only the build that creates a disk lets lima
+    /// format it.
+    ///
+    /// A disk an earlier build created but never got a guest up on is
+    /// marked ([`Vm::unproven_disk`]), and `--force` -- the flag that
+    /// already means "make this instance again" -- deletes it and makes a
+    /// fresh one. Without that, such a disk is unusable for good: lima's
+    /// boot script is the only thing that formats it, no later build
+    /// hands lima the flag, and every start waits its two minutes for a
+    /// mount that will never come. A disk no marker points at is one some
+    /// build saw a guest come up on, so nothing here deletes it.
+    ///
+    /// This is the one path in ssf that destroys the factory's data disk,
+    /// which is why it is a step of its own rather than four lines in the
+    /// middle of a build.
+    fn take_data_disk(&self, force: bool) -> Result<bool> {
+        if self.lima_disk()?.is_none() {
+            return Ok(true);
+        }
+        if !force || !self.unproven_disk().exists() {
+            return Ok(false);
+        }
+        let disk = self.lima_disk_name();
+        info!(
+            "the data disk {disk} was made by a build that never got a guest up on it; deleting it, and whatever it holds, and making a fresh one"
+        );
+        self.limactl_run(&["disk", "delete", &disk])?;
+        let _ = std::fs::remove_file(self.unproven_disk());
+        Ok(true)
+    }
+
+    /// Create the data disk, and mark it as one no guest has come up on
+    /// yet ([`Vm::unproven_disk`]).
+    fn create_data_disk(&self) -> Result<()> {
+        let disk = self.lima_disk_name();
+        let gib = self.sizes().data_gib;
+        info!("creating lima disk {disk} ({gib} GiB)");
+        self.limactl_run(&["disk", "create", &disk, "--size", &format!("{gib}GiB")])?;
+        self.mark_disk_unproven();
         Ok(())
     }
 
@@ -1128,18 +1170,10 @@ impl Vm {
         } else {
             format!("lima's copy of {}", path.display())
         };
+        let note = format_off_note(why, &self.lima_disk_name(), &which);
         match why {
-            // The build that made the disk is the one build allowed to
-            // let lima format it, and this is that build finishing: the
-            // flag comes off as a matter of course, not as a repair.
-            Why::FinishingBuild => info!(
-                "the data disk {} carries the factory now; turning `format` off in {which}",
-                self.lima_disk_name()
-            ),
-            Why::FoundStale => warn!(
-                "the data disk {} exists, but {which} still lets lima format it (a build that did not finish); putting `format: false` back",
-                self.lima_disk_name()
-            ),
+            Why::FinishingBuild => info!("{note}"),
+            Why::FoundStale => warn!("{note}"),
         }
         // What is still stale when this returns. ssf's own template is
         // the lesser of the two (lima boots from its own copy), so lima's
@@ -2114,6 +2148,105 @@ mod tests {
         assert!(err.contains("could not rewrite"), "{err}");
         // The cure is not `limactl edit`: nothing here is lima's.
         assert!(!err.contains("limactl edit"), "{err}");
+    }
+
+    #[test]
+    fn only_force_over_a_disk_no_guest_was_ever_seen_on_deletes_it() {
+        // The one path in ssf that destroys the factory's data disk, and
+        // until now the only one with no test. A disk exists (the fake
+        // answers `disk list`), so a plain build keeps it; `--force`
+        // alone keeps it too, because a disk with no marker is one a
+        // build saw a guest come up on. Only `--force` over the marker
+        // deletes it -- and then the build makes a fresh one, marks that
+        // one unproven in turn, and is the one build that may hand lima
+        // `format: true`.
+        for (force, marked, deleted) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let t = Fake::new("Stopped");
+            if marked {
+                t.vm.mark_disk_unproven();
+            }
+            let make_disk =
+                t.vm.take_data_disk(force)
+                    .unwrap_or_else(|e| panic!("force={force} marked={marked}: {e:#}"));
+            assert_eq!(make_disk, deleted, "force={force} marked={marked}");
+            assert_eq!(
+                t.ran("disk delete"),
+                deleted,
+                "force={force} marked={marked}: limactl ran {:?}",
+                t.commands()
+            );
+            if deleted {
+                assert!(
+                    t.commands().iter().any(|c| c == "disk delete ssf-one"),
+                    "{:?}",
+                    t.commands()
+                );
+                // The marker goes with the disk it pointed at; the fresh
+                // disk gets its own.
+                assert!(!t.vm.unproven_disk().exists());
+                t.vm.create_data_disk().unwrap();
+                assert!(
+                    t.commands()
+                        .iter()
+                        .any(|c| c.starts_with("disk create ssf-one --size")),
+                    "{:?}",
+                    t.commands()
+                );
+                assert!(t.vm.unproven_disk().exists());
+            } else {
+                // Nothing was destroyed, and the marker (where there was
+                // one) still points at the same disk.
+                assert_eq!(t.vm.unproven_disk().exists(), marked);
+            }
+        }
+    }
+
+    #[test]
+    fn a_finishing_build_states_a_fact_and_every_other_caller_reports_a_repair() {
+        // The build that made the data disk is the one build allowed to
+        // let lima format it, so that build turning the flag off at the
+        // end is not a repair: every first build used to warn that a
+        // build had not finished. The two readings differ only in what
+        // they say, which is why the saying is a function.
+        let finishing = format_off_note(Why::FinishingBuild, "ssf-one", "lima's copy");
+        assert!(finishing.contains("carries the factory now"), "{finishing}");
+        assert!(
+            !finishing.contains("a build that did not finish"),
+            "{finishing}"
+        );
+        let stale = format_off_note(Why::FoundStale, "ssf-one", "lima's copy");
+        assert!(stale.contains("a build that did not finish"), "{stale}");
+        assert!(stale.contains("putting `format: false` back"), "{stale}");
+
+        // And it is only the wording: a finishing build repairs a stopped
+        // instance in place ...
+        let t = Fake::new("Stopped");
+        assert_eq!(
+            t.vm.repair_stale_format(Some(&t.instance), Why::FinishingBuild),
+            None
+        );
+        assert!(
+            t.commands()
+                .iter()
+                .any(|c| c == &format!("edit ssf-one --set {FORMAT_OFF}")),
+            "{:?}",
+            t.commands()
+        );
+        assert!(!says_format_true(
+            &std::fs::read_to_string(t.instance_yaml()).unwrap()
+        ));
+        // ... and hands back what it could not repair just the same, so
+        // `lima_first_boot` fails rather than leaving the flag behind.
+        let t = Fake::with("Stopped", Edit::Ignored, DiskList::Answers);
+        assert_eq!(
+            t.vm.repair_stale_format(Some(&t.instance), Why::FinishingBuild),
+            Some(t.instance_yaml())
+        );
     }
 
     #[test]
