@@ -3873,6 +3873,18 @@ mod tests {
         std::fs::create_dir_all(root.join("vm/new/nested")).unwrap();
         std::fs::write(root.join("vm/new/data.ext4"), b"old").unwrap();
         std::fs::write(root.join("vm/new/nested/data.ext4"), b"live").unwrap();
+        // A stray that is *not* the live VM's ancestor, which is what
+        // separates the two candidate fixes. Falling back to a relative
+        // `own` also excludes the ancestor correctly -- so with only
+        // `new` here, "offers nothing" holds for both. It would still
+        // print `rm -rf ../vm/older`, a path that names a different
+        // directory in whatever shell it is pasted into, which is why
+        // the fallback was rejected. Without this entry the commit
+        // message argues for a choice the test cannot see.
+        std::fs::create_dir_all(root.join("vm/older")).unwrap();
+        std::fs::write(root.join("vm/older/data.ext4"), b"stray").unwrap();
+        std::fs::create_dir_all(root.join("lima/ssf-old")).unwrap();
+        std::fs::create_dir_all(root.join("lima/_disks/ssf-old")).unwrap();
         let mut cfg = crate::config::Config::default();
         cfg.vm.backend = Some(BackendKind::Firecracker);
         cfg.vm.dir = "../vm".into();
@@ -3882,6 +3894,14 @@ mod tests {
         std::fs::remove_dir(root.join("cwd")).unwrap();
         let gone = std::env::current_dir().is_err();
         let strays = vm.fc_dir_contents();
+        // The same question on lima's side. A relative `$LIMA_HOME`
+        // cannot be absolutised either, and a remedy carrying a
+        // relative home is "a no-op at best, and at worst a same-named
+        // instance in the default home" -- `LimaCommand`'s own words.
+        // So there is no remedy and no stray to hang one on.
+        let mut lima = Vm::new(&cfg);
+        lima.lima_home = Some(PathBuf::from("../lima"));
+        let lima_strays = lima.strays_on_disk_read();
         std::env::set_current_dir(&root).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         // Root can still resolve it on some systems; then there is
@@ -3891,6 +3911,10 @@ mod tests {
             assert!(
                 strays.is_empty(),
                 "a command over the live VM's own parent: {strays:?}"
+            );
+            assert!(
+                lima_strays.is_empty(),
+                "a remedy carrying a relative lima home: {lima_strays:?}"
             );
         }
         println!("{DONE}");
