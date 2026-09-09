@@ -1339,49 +1339,6 @@ impl Vm {
         }
     }
 
-    /// Is this path this VM's own directory -- however `[vm] dir` was
-    /// spelled -- or a directory holding it?
-    ///
-    /// The first test looks dead: `p` always comes from reading the
-    /// absolutised base, so the second subsumes it. It is kept because
-    /// if `absolute()` ever failed the second would be `None`, and this
-    /// VM's own directory would become a stray with an `rm -rf` printed
-    /// over it -- the one wrong answer here that costs a live VM's
-    /// clones.
-    ///
-    /// That reasoning is **unproven**. `absolute()` fails only when the
-    /// working directory cannot be read, and nothing in the suite makes
-    /// that happen, so the branch has never been shown to fire and a
-    /// guard that cannot be shown to fire is indistinguishable from a
-    /// line that does nothing. Keeping it and deleting it were argued
-    /// from the same absence of evidence. The fixture that would settle
-    /// it -- a deleted working directory -- belongs with #192, which
-    /// rewrites this function.
-    fn is_own_or_ancestor(&self, p: &Path) -> bool {
-        if *p == self.dir {
-            return true;
-        }
-        // Or anything holding it. A nested `[vm] name` -- `new/nested`
-        // -- puts the live VM at `<base>/new/nested`, and if a previous
-        // `[vm] name = "new"` left a `data.ext4` at `<base>/new`, that
-        // directory looks exactly like a stray: not equal to `self.dir`,
-        // a real directory, holding its own disk. Reporting it offers
-        // `rm -rf <base>/new`, which takes the live VM's data disk with
-        // it -- the report handing over the one command that destroys
-        // the thing it exists to protect.
-        //
-        // The old disk in it is real and goes unreported, and after the
-        // destroy step `[vm] dir` is then called plainly "safe to
-        // remove" over it. That is #193: naming it needs a remedy that
-        // is not a directory delete, and a sentence to match, which is
-        // three renderers' worth of wording rather than a comparison.
-        // Not offering a lethal command is this change's half; naming
-        // what it cannot offer to remove is that one's.
-        std::path::absolute(&self.dir)
-            .ok()
-            .is_some_and(|own| own.starts_with(p))
-    }
-
     /// The VM directories under `[vm] dir` that this configuration does
     /// not name, each holding a `data.ext4` of its own.
     ///
@@ -1439,6 +1396,26 @@ impl Vm {
         if !inside {
             return Vec::new();
         }
+        // Where this VM's own directory is, resolved once. Without it
+        // there is no telling which of the candidates below *contains*
+        // the live VM, and offering `rm -rf` over one that does is the
+        // worst thing this report can do.
+        //
+        // It fails when the working directory has been deleted:
+        // `absolute` needs `getcwd` for a relative `[vm] dir`, while
+        // `read_dir` on the same relative path still succeeds through
+        // the open handle -- so the scan would run, find the live VM's
+        // parent under a nested `[vm] name`, and print a command that
+        // removes the running VM. Found by #192's reviewer against this
+        // change, reproduced through `ssf vm status`.
+        //
+        // Nothing is offered when it cannot be established. Saying *why*
+        // -- that the directory was not inspected rather than found
+        // empty -- is #192's, which owns that rule for every reader at
+        // once.
+        let Ok(own) = std::path::absolute(&self.dir) else {
+            return Vec::new();
+        };
         // A directory that will not open reports nothing here, which is
         // the same answer as an empty one. Telling those apart, in every
         // reader at once, is #192.
@@ -1469,7 +1446,7 @@ impl Vm {
                 // A real directory, not a symlink to one: `rm -rf` on a
                 // link removes the link and leaves what it pointed at,
                 // so a remedy over one would not be a remedy.
-                !self.is_own_or_ancestor(p)
+                !own.starts_with(p)
                     && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
                     && p.join("data.ext4").exists()
             })
@@ -3837,6 +3814,77 @@ mod tests {
             ["older"],
             "the live VM's parent is not a stray, and the real one still is"
         );
+    }
+
+    #[test]
+    fn a_deleted_working_directory_offers_nothing_at_all() {
+        // `absolute` needs `getcwd`, so a deleted working directory
+        // makes it fail for a relative `[vm] dir` -- while `read_dir` on
+        // that same relative path still works through the open handle.
+        // The scan therefore ran with no way to tell which candidate
+        // *contained* the live VM, and with `[vm] name = "new/nested"`
+        // it printed `rm -rf ../vm/new` over the running VM's own
+        // parent. Found by #192's reviewer against `193074d`, and
+        // reproduced through `ssf vm status` before this was written.
+        //
+        // In a child, because deleting the working directory is a
+        // property of the process and this suite runs in parallel. The
+        // child re-enters this same test with the variable set; the
+        // sentinel line is what proves it ran, since a filter that
+        // matched nothing would otherwise exit 0 and look like a pass.
+        const RUN: &str = "SSF_TEST_DELETED_CWD";
+        const DONE: &str = "deleted-cwd child ran";
+        if std::env::var_os(RUN).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "vm::tests::a_deleted_working_directory_offers_nothing_at_all",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(RUN, "1")
+                .output()
+                .expect("spawn the child");
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            assert!(out.status.success(), "{text}");
+            assert!(text.contains(DONE), "the child ran no test:\n{text}");
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!(
+            "ssf-nocwd-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("cwd")).unwrap();
+        std::fs::create_dir_all(root.join("vm/new/nested")).unwrap();
+        std::fs::write(root.join("vm/new/data.ext4"), b"old").unwrap();
+        std::fs::write(root.join("vm/new/nested/data.ext4"), b"live").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = "../vm".into();
+        cfg.vm.name = "new/nested".into();
+        let vm = Vm::new(&cfg);
+        std::env::set_current_dir(root.join("cwd")).unwrap();
+        std::fs::remove_dir(root.join("cwd")).unwrap();
+        let gone = std::env::current_dir().is_err();
+        let strays = vm.fc_dir_contents();
+        std::env::set_current_dir(&root).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+        // Root can still resolve it on some systems; then there is
+        // nothing to assert, and the sentinel says the child ran either
+        // way rather than leaving a silent skip.
+        if gone {
+            assert!(
+                strays.is_empty(),
+                "a command over the live VM's own parent: {strays:?}"
+            );
+        }
+        println!("{DONE}");
     }
 
     #[test]
