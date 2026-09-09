@@ -46,7 +46,9 @@ document links to.
    `ssf auth login`) over editing `config.toml` by hand: it validates
    harness, model and effort ids, and the daemon picks changes up on its
    next poll without a restart. Never write `github.token` into the
-   file; `ssf config set` refuses it on purpose.
+   file; `ssf config set` refuses it on purpose. `ssf auth login` and
+   `ssf auth logout` change credentials and config only; do not edit the
+   daemon's live `state.json` for bot identity.
 4. **Raise the harness and the model; do not silently take the
    defaults.** Follow [Choosing the harness and the
    model](../../docs/setup.md#choosing-the-harness-and-the-model): it
