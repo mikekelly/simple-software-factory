@@ -330,7 +330,9 @@ fn one_each(paths: &mut Vec<PathBuf>) {
 /// and would not open is unknown.
 fn unread_if_there(dir: &Path) -> Vec<PathBuf> {
     if dir.exists() {
-        vec![dir.to_path_buf()]
+        // Absolute, so the sentence naming it and the remedy beside it
+        // do not print one place two ways.
+        vec![std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())]
     } else {
         Vec::new()
     }
@@ -426,9 +428,20 @@ impl LimaCommand {
         // too. Unquoted, a path with a space runs a different program
         // and the remedy for a disk of clones silently does nothing.
         out.push_str(&match &self.limactl {
-            Some(p) => shell_join(std::slice::from_ref(
-                &crate::config::expand_tilde(p).display().to_string(),
-            )),
+            Some(p) => {
+                let p = crate::config::expand_tilde(p);
+                // Absolute, for the reason the home and `[vm] dir` are:
+                // a relative path resolves against the pasting shell's
+                // directory, not the daemon's. A bare name has to stay
+                // bare, or PATH lookup -- which is how `Vm::limactl`
+                // finds it -- stops happening.
+                let p = if p.components().count() > 1 {
+                    std::path::absolute(&p).unwrap_or(p)
+                } else {
+                    p
+                };
+                shell_join(std::slice::from_ref(&p.display().to_string()))
+            }
             None => "limactl".to_string(),
         });
         out.push(' ');
@@ -530,12 +543,27 @@ impl Stray {
     /// test.
     pub fn describe(&self) -> String {
         format!(
-            "{} {}, which this configuration does not name; ssf leaves it alone -- `{}` removes it{}",
+            "{} {}, which this configuration does not name{}; ssf leaves it alone -- `{}` removes it{}",
             self.what(),
             self.name,
+            // The stakes, in the two commands that hand out the delete.
+            // `ssf uninstall` printed this and these did not, so a
+            // person who ran `ssf doctor` to find out where their VM
+            // went read "ssf leaves it alone" as "this is debris", and
+            // pasted the command that removes their clones.
+            self.holds_work_note(),
             self.remove,
             self.caveat()
         )
+    }
+
+    /// What is in it, when what is in it is someone's work.
+    pub fn holds_work_note(&self) -> &'static str {
+        if self.holds_work() {
+            " (its clones and worktrees are in it)"
+        } else {
+            ""
+        }
     }
 
     /// The half-clause that keeps a person from pasting the commands in
@@ -1399,12 +1427,17 @@ impl Vm {
         // A `..` anywhere is the thing to refuse, and being a strict
         // descendant is the thing to require -- which a nested name like
         // `a/b` satisfies, so its siblings are still reported.
-        let inside = self.dir.starts_with(&self.base)
-            && self.dir != self.base
-            && !self
-                .dir
-                .components()
-                .any(|c| c == std::path::Component::ParentDir);
+        // Only the components `[vm] name` contributes: a `..` in
+        // `[vm] dir` itself is the person's own path, and reading it
+        // here tripped a guard written for the name -- hiding every
+        // stray in that directory and reporting it as unreadable when it
+        // reads perfectly well.
+        let inside = self.dir.strip_prefix(&self.base).is_ok_and(|name| {
+            name.components().next().is_some()
+                && !name
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+        });
         if !inside {
             // There is a directory here and nobody looked in it. Saying
             // `false` made the report confident about contents it had
@@ -3747,6 +3780,80 @@ mod tests {
             LimaCommand::default().command("delete", "ssf-old"),
             "limactl delete ssf-old"
         );
+        // A relative path resolves against the pasting shell, not the
+        // daemon -- the rule the home and `[vm] dir` already follow.
+        let rel = LimaCommand {
+            home: None,
+            limactl: Some("bin/limactl".into()),
+        };
+        let out = rel.command("delete", "ssf-old");
+        assert!(out.starts_with('/'), "{out}");
+        assert!(out.ends_with("bin/limactl delete ssf-old"), "{out}");
+        // ... but a bare name stays bare, or PATH lookup stops.
+        let bare = LimaCommand {
+            home: None,
+            limactl: Some("limactl".into()),
+        };
+        assert_eq!(bare.command("delete", "ssf-old"), "limactl delete ssf-old");
+    }
+
+    #[test]
+    fn a_dot_dot_in_vm_dir_is_the_persons_own_path_not_an_escape() {
+        // The guard is about what `[vm] name` adds. Reading the whole of
+        // `self.dir` tripped it on a `..` the person wrote in `[vm] dir`
+        // -- hiding every stray in that directory and reporting it as
+        // unreadable when it reads perfectly well.
+        let root = std::env::temp_dir().join(format!(
+            "ssf-dotdot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(root.join("g/x")).unwrap();
+        std::fs::create_dir_all(root.join("g/vm/old")).unwrap();
+        std::fs::write(root.join("g/vm/old/data.ext4"), b"clones").unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = root.join("g/x/../vm").to_string_lossy().into_owned();
+        let survey = Vm::new(&cfg).survey();
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(
+            survey
+                .strays
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["old"],
+            "the stray is there and readable"
+        );
+        assert!(survey.unread.is_empty(), "and not falsely unknown");
+    }
+
+    #[test]
+    fn an_unread_directory_is_named_absolutely() {
+        // The report prints this path in one sentence and an absolute
+        // path in the remedy beside it; relative, they are one place
+        // written two ways. A `temp_dir()` fixture cannot show this --
+        // it is already absolute -- so the input has to be relative.
+        let rel = format!(
+            "target/ssf-unread-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::fs::create_dir_all(&rel).unwrap();
+        let named = unread_if_there(Path::new(&rel));
+        std::fs::remove_dir_all(&rel).unwrap();
+        assert_eq!(named.len(), 1);
+        assert!(named[0].is_absolute(), "{:?}", named[0]);
+        assert!(named[0].ends_with(&rel), "{:?}", named[0]);
+        // A directory that is not there is genuinely empty, not unknown.
+        assert!(unread_if_there(Path::new("/nonexistent/ssf")).is_empty());
     }
 
     #[test]
@@ -3811,6 +3918,34 @@ mod tests {
         assert!(!i.contains("after its instance"), "{i}");
         let p = Stray::directory(Path::new("/v/old")).describe();
         assert!(p.contains("`rm -rf /v/old`"), "{p}");
+
+        // The stakes, in the two commands that hand out the delete.
+        // `ssf uninstall` printed this clause and these did not, so
+        // someone running `ssf doctor` to find where their VM went read
+        // "ssf leaves it alone" as "this is debris" and pasted the
+        // command that removes their clones.
+        for holds in [
+            Stray::lima_disk("ssf-old".into(), &Default::default()),
+            Stray::directory(Path::new("/v/old")),
+        ] {
+            assert!(holds.holds_work(), "{}", holds.name);
+            assert!(
+                holds
+                    .describe()
+                    .contains("its clones and worktrees are in it"),
+                "{}",
+                holds.describe()
+            );
+        }
+        // An instance directory holds lima's own files, not anyone's
+        // work, and must not claim otherwise.
+        let inst = Stray::lima_instance("ssf-old".into(), &Default::default());
+        assert!(!inst.holds_work());
+        assert!(
+            !inst.describe().contains("clones and worktrees"),
+            "{}",
+            inst.describe()
+        );
     }
 
     #[test]
