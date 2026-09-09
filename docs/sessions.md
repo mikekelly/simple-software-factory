@@ -257,6 +257,38 @@ daemon restart reposts nothing.
 a blocked session included. Every event is also in the journal, as
 before.
 
+## Branch conflicts
+
+ssf checks whether an active session's committed branch would conflict
+with the repository's base on origin. A clean merge produces no message,
+even when the branch is far behind. A conflict produces a `[ssf]` message
+in the session, naming the base commit and the conflicting files.
+
+If a final review round has started or finished, rebase onto the named
+base, resolve the conflicts, and rerun the round. If the round has not
+started, do nothing now; resolve the conflict before starting the final
+round. ssf never rebases for the session.
+
+The default interval is five minutes (`daemon.conflict_check_interval_secs
+= 300`). Set it to `0` to turn checks off, or set
+`conflict_check_interval_secs` on a `[[repo]]` to override it for that
+repository. These terminal notices are independent of `event_comments`,
+which controls posts on GitHub.
+
+Each interval fetches the base once per repository with eligible sessions.
+The base is `repo.base_branch`, or origin's default branch when unset.
+Local Git checks compare committed branch tips, including unpushed commits;
+uncommitted edits are outside this check. The merge simulation leaves the
+working tree and index alone. Only changed branch/base commit pairs need
+another simulation. A successfully delivered notice is remembered across
+daemon restarts, so an unchanged divergence is not announced every pass.
+Git or delivery failures remain retryable.
+
+Retired or released sessions receive nothing. Items sharing a session do
+not produce duplicate notices, and blocked sessions or sessions awaiting
+handover are skipped. The advisory does not start an agent that is no
+longer running.
+
 ## A harness that is not signed in
 
 A harness login can go away under a running session: the token expires,

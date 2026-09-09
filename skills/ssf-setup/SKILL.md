@@ -131,3 +131,12 @@ document links to.
     reading the source or trying it where trying it changes nothing,
     rather than reasoning your way to an answer; say where you have not,
     and apply the same to what you write about a change.
+
+12. **Conflict notices concern committed branches.** Follow
+    [Branch conflicts](../../docs/sessions.md#branch-conflicts) when an
+    operator asks about them: `daemon.conflict_check_interval_secs`
+    defaults to 300 seconds, a repository can override it, and `0`
+    disables checks. `event_comments` does not control these terminal
+    notices. Do not rebase merely because a branch is behind: a notice
+    calls for rebasing and rerunning an already-started final round;
+    before the round starts, no immediate action is needed.
