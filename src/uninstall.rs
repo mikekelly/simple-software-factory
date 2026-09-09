@@ -621,12 +621,15 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         // not safety.
         // Not `Stray::holds_work()`, which is true of a lima disk too:
         // this asks the narrower question of whether one of these is a
-        // VM directory *inside `[vm] dir`*, since that is the only kind
-        // the sentence about `[vm] dir` has to carve out.
-        let holds_a_vm_directory = facts
-            .vm_strays
-            .iter()
-            .any(|s| s.kind == vm::StrayKind::Directory);
+        // VM directory or protected disk *inside `[vm] dir`*, since
+        // those are the kinds the sentence about `[vm] dir` has to
+        // carve out.
+        let holds_a_vm_directory_or_protected_disk = facts.vm_strays.iter().any(|s| {
+            matches!(
+                s.kind,
+                vm::StrayKind::Directory | vm::StrayKind::ProtectedDataDisk
+            )
+        });
         let base_incomplete = facts
             .vm_unread
             .iter()
@@ -638,7 +641,11 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         keep.push(format!(
             "{} (VM image and downloads{})",
             facts.vm_base.display(),
-            match (base_incomplete, unread_ancestor, holds_a_vm_directory) {
+            match (
+                base_incomplete,
+                unread_ancestor,
+                holds_a_vm_directory_or_protected_disk,
+            ) {
                 (true, _, _) => "; ssf could not finish inspecting it, so what is in it is unknown",
                 (false, true, _) =>
                     "; an ancestor could not be inspected; check the unread paths below",
@@ -669,10 +676,12 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
     }
     for stray in &facts.vm_strays {
         keep.push(format!(
-            "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
+            "{} {}{}{} -- untouched, `--force` included{}; `{}` removes it{}",
             stray.what(),
             stray.name,
+            stray.configuration_note(),
             stray.holds_work_note(),
+            stray.protection_note(),
             stray.remove,
             stray.caveat()
         ));
@@ -2103,6 +2112,15 @@ mod tests {
             ..facts()
         };
         let text = render(&orphan, &Report::default(), &Opts::default());
+        // The configured VM used to be `new` and is now
+        // `new/nested`; after destroy, only the old parent disk is left.
+        // It still prevents the base from being called plainly safe.
+        let protected_disk = base.join("new/data.ext4");
+        let protected = Facts {
+            vm_strays: vec![vm::Stray::protected_data_disk(&protected_disk)],
+            ..orphan.clone()
+        };
+        let protected_text = render(&protected, &Report::default(), &Opts::default());
         let clean = Facts {
             vm_strays: Vec::new(),
             ..orphan.clone()
@@ -2140,6 +2158,27 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("rm -rf"), "{text}");
+        assert!(
+            protected_text.contains("safe to remove except for what is listed below"),
+            "{protected_text}"
+        );
+        assert!(protected_text.contains("rm -f"), "{protected_text}");
+        assert!(!protected_text.contains("rm -rf"), "{protected_text}");
+        assert!(
+            protected_text.contains("directory is part of the configured VM path"),
+            "{protected_text}"
+        );
+        let protected_line = format!(
+            "[vm] dir also holds the data disk {}, which the configured VM does not use \
+(its clones and worktrees are in it) -- untouched, `--force` included; its directory is part \
+of the configured VM path, so ssf does not offer to remove that directory; `rm -f {}` removes it",
+            protected_disk.display(),
+            protected_disk.display()
+        );
+        assert!(
+            kept(&protected, false).contains(&protected_line),
+            "the complete protected-disk uninstall sentence: {protected_text}"
+        );
         // Every line the epilogue prints after the last step is a line
         // the report printed before the question. That sentence has
         // drifted between the two twice, which is why they share a list
@@ -2156,6 +2195,14 @@ mod tests {
             );
         }
         assert!(printed.starts_with("left in place:\n"), "{printed}");
+        let protected_printed = left_in_place(&protected, false);
+        for line in kept(&protected, false) {
+            assert!(protected_text.contains(&line), "report omitted: {line}");
+            assert!(
+                protected_printed.contains(&line),
+                "post-destroy epilogue omitted: {line}"
+            );
+        }
         // `--data` removed the config and state directories, so the
         // epilogue must not go on offering them: passing the flag
         // through is what makes the two lists the same list.

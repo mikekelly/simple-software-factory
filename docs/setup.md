@@ -1042,9 +1042,9 @@ change of `[vm] name`. Not reported as a stray: a `data.ext4` a switch
 from Firecracker to lima left in the VM's *own* directory, which `vm destroy`
 removes with that directory (issue #176) -- check it by hand if you have
 changed `[vm] backend` and kept the name. A directory containing the
-configured VM is never offered for deletion. An older VM disk in that
-ancestor is not yet reported; issue #193 tracks its disk-specific warning
-and remedy.
+configured VM is never offered for deletion. An older VM's `data.ext4`
+stranded in that ancestor is listed on its own with an `rm -f` remedy,
+before and after the nested VM is destroyed.
 
 The `[vm] dir` line distinguishes a completed inspection from an
 incomplete one. It says "safe to remove" only when the scan completed
