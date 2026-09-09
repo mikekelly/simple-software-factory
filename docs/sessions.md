@@ -588,8 +588,8 @@ mentioned item rather than to unassign one that has no assignee.
   fails it prints what would be lost and refuses; nothing is removed.
   A person who has looked can pass `--force` (from a shell, not inside the
   session). The daemon removes the workspace, and its terminal, on its next
-  pass, running the checks once more first. If that re-check finds work
-  (the tree changed after the agent asked, or a push did not land) the
+  pass, running the checks once more first unless forced. If that re-check
+  finds work (the tree changed after the agent asked, or a push did not land) the
   release is dropped and the agent gets one `[ssf] Release ... refused`
   message naming what would be lost, so it can fix that and ask again.
   After three such refusals on the same item the daemon stops telling the
@@ -600,9 +600,14 @@ mentioned item rather than to unassign one that has no assignee.
   A release is also refused while the item is still the bot's, or while the
   session still owns open items (a pull request bound to it, say), and one
   already accepted is dropped if the item comes back to life before the
-  pass. Neither refusal yields to `--force`, which covers the worktree
-  checks only: an item that is still the bot's has to stop being the bot's
-  first.
+  pass. A person can use `ssf release --as owner/repo#12 --force` to
+  release a retired session's workspace even when it owns open follow-ups.
+  This also skips the worktree checks, so unpushed work can be lost. The
+  follow-ups stay open and retain their ownership and provenance; later
+  activity can recreate the session's workspace, using its old branch if
+  available. An item that is itself still the bot's must stop being the
+  bot's first, even
+  with `--force`; a pending handover also blocks release.
 - **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
   for what agents left behind: every workspace whose item is closed and
   whose session has no running agent, listed with its state (`clean and

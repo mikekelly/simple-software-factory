@@ -4167,7 +4167,7 @@ deliveries resume"
             self.drop_release(repo, st.number);
             return;
         }
-        if !self.active_dependents(repo, st.number).is_empty() {
+        if !st.release_forced && !self.active_dependents(repo, st.number).is_empty() {
             warn!(
                 session,
                 "release dropped: the session owns open items again"
@@ -4818,7 +4818,8 @@ deliveries resume"
 
     /// `ssf release`: the session's workspace goes on the next pass if the
     /// checks pass now (and again then); `force` skips them, for a person
-    /// who has looked. Refused while the session still owns open items.
+    /// who has looked, including the check for open items bound to the
+    /// session.
     async fn release(&mut self, session: &str, force: bool) -> Result<Value> {
         let (repo, number, id) = self.known_session(session)?;
         let st = self.entry(&repo, number).clone();
@@ -4830,10 +4831,10 @@ deliveries resume"
             anyhow::bail!("{id}: a handover to {} is pending", h.harness);
         }
         let deps = self.active_dependents(&repo, number);
-        if !deps.is_empty() {
+        if !deps.is_empty() && !force {
             let deps: Vec<String> = deps.iter().map(|n| format!("#{n}")).collect();
             anyhow::bail!(
-                "{id} still owns open items ({}); the workspace stays until they close",
+                "{id} still owns open items ({}); close them first, or a person can release the workspace with `ssf release --as {id} --force` (work in it may be lost)",
                 deps.join(", ")
             );
         }
@@ -4891,10 +4892,10 @@ deliveries resume"
         if force {
             e.release_refusals = 0;
         }
-        info!(session = id, forced = !safe, "release accepted");
+        info!(session = id, forced = force, "release accepted");
         Ok(serde_json::json!({
             "session": id, "title": st.title, "path": path, "released": true,
-            "forced": !safe, "pending": true, "check": check,
+            "forced": force, "pending": true, "check": check,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
         }))
     }
@@ -7092,7 +7093,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn release_is_refused_for_unknown_and_owning_sessions() {
+    async fn release_is_refused_for_unknown_active_and_non_forced_dependent_sessions() {
         let mut e = engine();
         let r = repo();
         e.cfg.repos.push(r.clone());
@@ -7105,8 +7106,8 @@ mod tests {
             .await;
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("not an agent session"));
-        // An owner with an open item bound to it keeps its workspace, even
-        // when asked through that item and even with --force.
+        // An owner with an open item bound to it keeps its workspace until
+        // someone explicitly overrides that protection.
         seeded(&mut e, 3, Some("b3"), false);
         e.entry(&r, 3).worktree_id = Some("repo::/w/3".into());
         seeded(&mut e, 4, Some("b3"), true);
@@ -7114,12 +7115,25 @@ mod tests {
         let resp = e
             .handle_request(Request::Release {
                 session: "o/r#4".into(),
-                force: true,
+                force: false,
             })
             .await;
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("#4"));
         assert!(!e.entry(&r, 3).release_pending);
+        // --force is still never allowed to remove a live owner's workspace.
+        seeded(&mut e, 6, Some("b6"), true);
+        e.entry(&r, 6).triggers = vec!["assigned".into()];
+        e.entry(&r, 6).worktree_id = Some("repo::/w/6".into());
+        let resp = e
+            .handle_request(Request::Release {
+                session: "o/r#6".into(),
+                force: true,
+            })
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains("still open and assigned"));
+        assert!(!e.entry(&r, 6).release_pending);
         // Nothing to release once it is gone.
         seeded(&mut e, 5, Some("b5"), false);
         e.entry(&r, 5).released_at = Some("t".into());
@@ -7131,6 +7145,97 @@ mod tests {
             .await;
         assert!(!resp.ok);
         assert!(resp.error.unwrap().contains("already released"));
+    }
+
+    #[tokio::test]
+    async fn forced_release_removes_a_workspace_with_open_bound_items() {
+        use crate::release::testkit::scratch;
+
+        let clean = scratch("force-bound-release").await;
+        let stub = GitHubStub::start().await;
+        let mut e = engine_at(&stub.base);
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        let r = repo();
+        e.cfg.repos = vec![r.clone()];
+        seeded(&mut e, 3, Some("bot/issue-3"), false);
+        {
+            let st = e.entry(&r, 3);
+            st.title = "Original work".into();
+            st.html_url = "https://gh/3".into();
+            st.worktree_id = Some("w3".into());
+            st.worktree_path = Some(clean.work.clone());
+        }
+        d.seed("w3", "t3", READY_SCREEN);
+        seeded(&mut e, 4, Some("bot/issue-3"), true);
+        {
+            let st = e.entry(&r, 4);
+            st.shares_workspace_of = Some(3);
+            st.worktree_id = Some("w3".into());
+            st.worktree_path = Some(clean.work.clone());
+            st.terminal_handle = Some("t3".into());
+        }
+
+        // The ordinary request preserves the open follow-up's workspace.
+        let refused = e
+            .handle_request(Request::Release {
+                session: "o/r#4".into(),
+                force: false,
+            })
+            .await;
+        assert!(!refused.ok);
+        assert!(refused.error.unwrap().contains("#4"));
+
+        // A person who uses --force may release the owning session through
+        // the bound item's identity. The response and the daemon pass both
+        // record it as forced.
+        let accepted = e
+            .handle_request(Request::Release {
+                session: "o/r#4".into(),
+                force: true,
+            })
+            .await;
+        assert!(accepted.ok, "{:?}", accepted.error);
+        assert_eq!(accepted.data["session"], "o/r#3");
+        assert_eq!(accepted.data["forced"], true);
+        assert_eq!(accepted.data["pending"], true);
+        assert_eq!(accepted.data["check"]["safe"], true);
+        assert!(e.entry(&r, 3).release_pending);
+        assert!(e.entry(&r, 3).release_forced);
+
+        e.run_cleanups(&r).await;
+        assert_eq!(d.log(), vec!["remove:w3"]);
+        for n in [3, 4] {
+            let st = e.entry(&r, n).clone();
+            assert!(st.worktree_id.is_none(), "#{n}");
+            assert!(st.worktree_path.is_none(), "#{n}");
+            assert!(st.terminal_handle.is_none(), "#{n}");
+            assert!(st.released_at.is_some(), "#{n}");
+        }
+        assert!(e.entry(&r, 4).active, "the follow-up stays open");
+        assert_eq!(e.entry(&r, 4).shares_workspace_of, Some(3));
+
+        // Removing the workspace does not make a fresh one on its own. A
+        // later delivery to the follow-up re-creates its owner's workspace
+        // and mirrors the new binding back onto the follow-up.
+        stub.set_issue(
+            3,
+            json!({
+                "number": 3, "title": "Original work", "body": "work",
+                "html_url": "https://gh/3", "state": "closed",
+                "user": {"login": "alice"}, "created_at": "x", "updated_at": "x"
+            }),
+        );
+        stub.set_timeline(3, vec![]);
+        e.deliver_to(&r, 4, "later activity", None).await.unwrap();
+        let owner = e.entry(&r, 3).clone();
+        let dependent = e.entry(&r, 4).clone();
+        assert!(owner.worktree_id.is_some());
+        assert_eq!(dependent.worktree_id, owner.worktree_id);
+        assert_eq!(dependent.worktree_path, owner.worktree_path);
+        assert!(owner.released_at.is_none());
+        assert!(dependent.released_at.is_none());
+        assert_eq!(dependent.shares_workspace_of, Some(3));
     }
 
     #[test]

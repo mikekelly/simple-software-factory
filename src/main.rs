@@ -162,8 +162,9 @@ enum Command {
         /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
         #[arg(long = "as", value_name = "SESSION")]
         r#as: Option<String>,
-        /// Remove it even if the checks fail; work in it is lost. Refused
-        /// inside a session unless --as names the session.
+        /// Remove it even if the checks fail or the retired session owns open
+        /// follow-ups; work in it is lost. An active owner or pending handover
+        /// still blocks release. Refused inside a session unless --as names it.
         #[arg(long)]
         force: bool,
         #[arg(long)]
@@ -2893,7 +2894,10 @@ async fn release(item: Option<&str>, as_: Option<&str>, force: bool, json: bool)
         .and_then(|n| n.as_u64())
         .unwrap_or(10);
     if v.get("forced").and_then(|b| b.as_bool()) == Some(true) {
-        println!("{session}: release forced despite:");
+        println!("{session}: release forced.");
+        if !problems.is_empty() {
+            println!("Worktree checks bypassed:");
+        }
         for p in &problems {
             println!("  - {p}");
         }

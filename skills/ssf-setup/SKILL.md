@@ -106,9 +106,13 @@ document links to.
    gone, checkout still on disk)` for one whose item is closed and
    removes it only when clean and pushed. Show the person the line and
    let them decide about anything else. `ssf release` refuses while an
-   item is still the bot's, and `--force` does not lift that (it covers
-   the worktree checks only): the item has to stop being the bot's
-   first. An item the bot was only ever mentioned on stays the bot's
+   item is still the bot's, and `--force` does not lift that: the item
+   has to stop being the bot's first. For a retired session pinned by
+   open follow-ups, a person can use `ssf release --as owner/repo#N
+   --force`; this bypasses both the follow-up guard and worktree checks.
+   Follow-ups retain ownership and provenance, and later activity can
+   recreate the workspace. A pending handover still blocks release. An
+   item the bot was only ever mentioned on stays the bot's
    until it closes, since nobody can withdraw a mention, so its
    workspace is not releasable while the item is open. `ssf status
    --json` marks such an item with `retirement_held_at`.

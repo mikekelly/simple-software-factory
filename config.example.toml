@@ -87,6 +87,8 @@
 # instructions = """
 # House rules appended to every initial prompt.
 # """
+# A person can release a retired session pinned by open follow-ups with
+# `ssf release --as owner/repo#N --force`; this also skips worktree safety checks.
 # cleanup_on_close = true                      # no longer used: item workspaces are never removed on close (the agent runs `ssf release`; `ssf purge` sweeps the rest)
 # review_label = "review"                      # no longer used: the label started a reviewer session until #115; ssf runs one session per item (the SSF.md gauntlet rule replaces it); `ssf doctor` says so while the line stays
 # cleanup_grace_secs = 900                     # no longer used (it timed those reviewer sessions out); still accepted so old files load
