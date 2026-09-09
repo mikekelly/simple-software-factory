@@ -15,32 +15,39 @@ omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
-**Assume everything except ssf's own config and state is the real thing.**
-`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's config file, its state file
-and the socket its commands talk to. They move nothing else. The driver's
-server, the checkouts, GitHub, the harness's own sessions, the microVM and
-the bar widget are all the ones you are already using, so a scratch factory
-is a second factory sharing them, not a sandbox.
+**A scratch factory is a second factory, not a sandbox.**
+`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's own files and only those:
+the config file, the state file, the socket its commands talk to, the bot
+token, the SSH keys, the `bin` shim directory an agent gets on its `PATH`,
+the `gh` configuration those agents use, and the widget's disabled marker.
+Everything the factory then reaches is the one you are already using — the
+driver's server, the checkouts, GitHub, the harness's own sessions, the
+microVM and the bar widget.
 
-What that costs, and the two that surprise people:
+Three of those surprise people:
 
 - **The checkout.** Two factories on one checkout share a herdr workspace:
   `Herdr::open` adopts whatever is already open on that path, deliveries
   fall back to any live agent in it, and removing the worktree interrupts
-  every agent pane before deleting the directory. Give the scratch factory
-  a checkout nothing else is using — which means both a repository the real
-  factory does not watch *and* a path of its own, since `[[repo]] path` and
-  `repo add --path` decide the checkout before `projects_dir` is consulted,
-  and the clone path is otherwise the repository's bare name, so a fork
-  lands on the real one.
-- **The token.** `gh auth token` returns whatever `gh` is signed in as, and
-  inside a session that is the **bot**, because `ssf launch` exports
-  `GH_TOKEN`. So a pass from an agent's shell posts, moves cards and
-  launches agents as the production bot. Check with `gh auth status` before
-  the recipe rather than assuming it is you.
-- **The VM.** With `vm.enabled` in the config you copied, `ssf run --once`
-  does not do one pass at all: it starts the real microVM and supervises it
-  until killed. The `--once` is never read on that path.
+  every agent pane before deleting the directory. So give the scratch
+  factory a checkout nothing else is using, which takes more than one
+  setting: `projects_dir` decides the path only when nothing else has, and
+  a `[[repo]] path`, a `repo add --path`, and — under Orca — a project the
+  server already has for that repository each decide it first. Failing all
+  of those the clone path is the repository's bare name, so a fork of the
+  watched repository lands on the real checkout.
+- **The identity.** `gh auth token` returns whatever `gh` is signed in as,
+  and inside a session that is the **bot**, because `ssf launch` exports
+  `GH_TOKEN`; run `gh auth status` before the recipe rather than assuming
+  it is you. Leaving `SSF_GITHUB_TOKEN` out does not make the factory
+  anonymous either: with a `github.login` in the config it asks the
+  machine's shared `gh` keyring, which these variables do not move.
+- **The VM.** With a config that has `vm.enabled`, `ssf run --once` does
+  not do one pass: it starts the real microVM and supervises it until
+  killed. The `--once` is never read on that path.
+
+Undoing the one thing on this page that writes outside all of it: re-run
+the packaged `ssf ui install` to put the real widget back.
 
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see

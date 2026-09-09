@@ -103,9 +103,9 @@ email = "ann@example.com" }'` sets both halves of an identity at once.
 Environment overrides: `SSF_GITHUB_TOKEN` (the token), `SSF_CONFIG_DIR`
 and `SSF_STATE_DIR` (where config and state live; a scratch factory uses
 its own, and [Development](development.md) says what a scratch factory
-still shares with the real one), `ORCA_CLI_COMMAND` and `HERDR_COMMAND` (the driver binaries),
-`SSF_VM_DIR` (the VM image scripts), `SSF_PLUGIN_DIR` (the bar widget's
-source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
+still shares with the real one), `ORCA_CLI_COMMAND` and `HERDR_COMMAND`
+(the driver binaries), `SSF_VM_DIR` (the VM image scripts),
+`SSF_PLUGIN_DIR` (the bar widget's source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
 `--log` reads).
 
 ## The per-project prompt file
