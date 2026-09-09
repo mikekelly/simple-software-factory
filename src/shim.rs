@@ -757,13 +757,14 @@ impl Shim<'_> {
         // An approval needs no body, but should still say where it came from.
         // Without an action flag gh would prompt (or reject --body), so those
         // are left alone.
-        // The whole line again: a boolean flag floats too, wherever
+        // The walk above reads the whole line and not just what follows
+        // the subcommand, because a boolean flag floats too, wherever
         // there is a spare positional for cobra to feed the word it
         // swallows during command lookup (`gh --approve 3 pr review`
         // parses; `gh --approve pr review 3` does not). Reading only the
         // subcommand's own flags left that approval unstamped, which is
         // the tag loss this whole change is about. `-a`, `-c` and `-r`
-        // have no other meaning here, since this is only consulted for a
+        // have no other meaning in it, since it is only asked on a
         // `review`.
         // Nothing was rewritten when `stamped` is false -- every branch
         // above sets it -- so `out` still matches `args` position for
