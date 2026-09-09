@@ -923,12 +923,17 @@ impl Vm {
     }
 
     /// Is either of them on disk? What is left to go on when `limactl`
-    /// will not answer. `None` when there is no lima home to look in --
-    /// no home directory at all -- which is not the same as "nothing
-    /// there".
+    /// will not answer. `None` when nobody could tell -- no lima home to
+    /// look in, or a `stat` that was refused -- which is not the same as
+    /// "nothing there", and `lima_destroy` reports `Some(false)` here as
+    /// a destroy that finished.
     fn lima_leftovers(&self) -> Option<bool> {
         let (instance, disk) = (self.lima_instance_dir()?, self.lima_disk_dir()?);
-        Some(instance.exists() || disk.exists())
+        match (super::there(&instance), super::there(&disk)) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        }
     }
 
     /// What lima holds of this VM. The data disk is asked about as well
@@ -1855,7 +1860,7 @@ impl Vm {
                 None => {
                     return Err(e).with_context(|| {
                         format!(
-                            "lima cannot be asked about {name}, and there is no home directory to find lima's own in instead"
+                            "lima cannot be asked about {name}, and its own home could not be read or is not there"
                         )
                     });
                 }
@@ -2788,42 +2793,57 @@ mod tests {
     #[test]
     fn a_destroy_does_not_declare_a_disk_absent_it_could_not_look_for() {
         // The step that declares the destroy finished falls back to
-        // lima's own filesystem when `limactl disk list` fails. A
-        // denied `stat` printed "its home holds no such disk" and
-        // reported a clean destroy over a disk nobody could look for.
+        // lima's own filesystem when `limactl` fails, and read it with
+        // `exists()`. A denied `stat` then reported a clean destroy
+        // over storage nobody could look for.
+        //
+        // Both of its fallbacks, because they are different code and
+        // the second says the more dangerous thing: with the *disk*
+        // listing failing, `lima_destroy` refuses the step over a disk
+        // it cannot account for; with the *instance* listing failing it
+        // consults `lima_leftovers`, whose `Some(false)` is a `return
+        // Ok(false)` -- a destroy reported as finished.
         use std::os::unix::fs::PermissionsExt;
-        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Answers);
-        let home = t.vm.lima_home.clone().unwrap();
-        std::fs::create_dir_all(home.join("_disks").join(t.vm.lima_disk_name())).unwrap();
+        for listing in [Listing::Answers, Listing::Fails] {
+            let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, listing);
+            let home = t.vm.lima_home.clone().unwrap();
+            std::fs::create_dir_all(home.join("_disks").join(t.vm.lima_disk_name())).unwrap();
 
-        let mut perm = std::fs::metadata(&home).unwrap().permissions();
-        perm.set_mode(0o000);
-        std::fs::set_permissions(&home, perm).unwrap();
-        let seen = std::fs::metadata(home.join("_disks").join(t.vm.lima_disk_name()))
-            .map_err(|e| e.kind());
-        // While the mode is still 0o000, for the same reason.
-        let readable_anyway = std::fs::read_dir(&home).is_ok();
-        let got = t.vm.lima_destroy().map_err(|e| format!("{e:#}"));
-        let mut perm = std::fs::metadata(&home).unwrap().permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&home, perm).unwrap();
+            let mut perm = std::fs::metadata(&home).unwrap().permissions();
+            perm.set_mode(0o000);
+            std::fs::set_permissions(&home, perm).unwrap();
+            let seen = std::fs::metadata(home.join("_disks").join(t.vm.lima_disk_name()))
+                .map_err(|e| e.kind());
+            // While the mode is still 0o000: afterwards it is true for
+            // everyone and says nothing.
+            let readable_anyway = std::fs::read_dir(&home).is_ok();
+            let got = t.vm.lima_destroy().map_err(|e| format!("{e:#}"));
+            let mut perm = std::fs::metadata(&home).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&home, perm).unwrap();
 
-        match seen {
-            Err(std::io::ErrorKind::NotFound) => {
-                panic!("the fixture is wrong: the disk directory is there")
+            match seen {
+                Err(std::io::ErrorKind::NotFound) => {
+                    panic!("the fixture is wrong: the disk directory is there")
+                }
+                Err(_) => {
+                    let err =
+                        got.expect_err("storage nobody could look for is not storage that is gone");
+                    let want = match listing {
+                        Listing::Answers => "may hold it",
+                        _ => "could not be read or is not there",
+                    };
+                    assert!(err.contains(want), "{listing:?}: {err}");
+                }
+                // euid 0 ignores the mode, so this case cannot be built
+                // here and this run proves nothing about it. The
+                // assertion is the narrow one that is true: the home
+                // really was readable.
+                Ok(_) => assert!(
+                    readable_anyway,
+                    "a stat succeeded through a directory nothing should have been able to read"
+                ),
             }
-            Err(_) => {
-                let err = got.expect_err("a disk nobody could look for is not a disk that is gone");
-                assert!(err.contains("may hold it"), "{err}");
-            }
-            // euid 0 ignores the mode, so this case cannot be built
-            // here and this run proves nothing about it. The assertion
-            // is the narrow one that is true: the home really was
-            // readable.
-            Ok(_) => assert!(
-                readable_anyway,
-                "a stat succeeded through a directory nothing should have been able to read"
-            ),
         }
     }
 
