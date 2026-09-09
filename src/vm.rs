@@ -1441,12 +1441,19 @@ impl Vm {
             .filter(|e| e.file_name().to_str().is_some())
             .map(|e| e.path())
             .filter(|p| {
-                // Never this VM's own directory, on either backend:
-                // `Vm::destroy` removes it, and a line calling it
-                // "untouched, `--force` included" would be false on the
-                // one path where being wrong costs the clones. What a
-                // backend switch strands *inside* it is a question of
-                // its own (#176), and not one this reports on.
+                // Never this VM's own directory **nor any directory
+                // holding it**, on either backend. `Vm::destroy` removes
+                // the first, so calling it "untouched, `--force`
+                // included" would be false on the one path where being
+                // wrong costs the clones; and an `rm -rf` over the
+                // second takes the live VM with it, which a nested
+                // `[vm] name` makes reachable.
+                //
+                // The old disk left in such a directory therefore goes
+                // unreported: naming it needs a remedy that is not a
+                // directory delete, which is #193. What a backend switch
+                // strands *inside* this VM's own directory is #176.
+                // Neither is a question this reports on.
                 // A directory that could not be read at all is not
                 // reported here: telling the two apart is #192, which
                 // takes every reader at once rather than a site at a
