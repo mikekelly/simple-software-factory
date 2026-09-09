@@ -23,7 +23,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CHILD_TEST: &str = "vm::observation_tests::permission_fixture_child";
 const CASE_ENV: &str = "SSF_OBSERVATION_PERMISSION_CASE";
 const ROOT_ENV: &str = "SSF_OBSERVATION_PERMISSION_ROOT";
-const DELETED_CWD_CHILD: &str = "vm::observation_tests::deleted_cwd_fixture_child";
 const DELETED_CWD_ROOT: &str = "SSF_OBSERVATION_DELETED_CWD_ROOT";
 
 #[derive(Clone, Copy)]
@@ -460,7 +459,7 @@ esac
     fs::set_permissions(&limactl, fs::Permissions::from_mode(0o755)).unwrap();
 
     let output = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", DELETED_CWD_CHILD, "--ignored", "--nocapture"])
+        .args(["--exact", CHILD_TEST, "--ignored", "--nocapture"])
         .env(DELETED_CWD_ROOT, &root)
         .output()
         .unwrap();
@@ -478,14 +477,10 @@ esac
     );
 }
 
-/// A subprocess because removing the process's working directory makes
-/// `current_dir()` fail permanently; no parallel test should inherit that.
-#[test]
-#[ignore = "deleted-cwd fixture child; invoked by the parent test"]
-fn deleted_cwd_fixture_child() {
-    let root = PathBuf::from(
-        std::env::var_os(DELETED_CWD_ROOT).expect("deleted-cwd fixture root supplied by parent"),
-    );
+/// Run inside the shared isolated fixture child because removing the
+/// process's working directory makes `current_dir()` fail permanently;
+/// no parallel test should inherit that process state.
+fn exercise_deleted_cwd(root: PathBuf) {
     let _sandbox = crate::config::test_support::sandbox();
     std::env::set_current_dir(root.join("cwd")).unwrap();
 
@@ -748,6 +743,10 @@ fn deleted_cwd_fixture_child() {
 #[test]
 #[ignore = "permission fixture child; invoked by the parent tests"]
 fn permission_fixture_child() {
+    if let Some(root) = std::env::var_os(DELETED_CWD_ROOT) {
+        exercise_deleted_cwd(PathBuf::from(root));
+        return;
+    }
     let case = Case::parse(&std::env::var(CASE_ENV).expect("permission case supplied by parent"));
     let root = PathBuf::from(std::env::var_os(ROOT_ENV).expect("fixture root supplied by parent"));
     drop_root_privileges();
