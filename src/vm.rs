@@ -1496,8 +1496,8 @@ impl Vm {
     /// This is what `ssf doctor` uses, always. Asking the backend
     /// instead would add two `limactl` forks to a command that has
     /// never waited on lima, each bounded at `SURVEY_LIMIT` -- two
-    /// minutes of silence for the person whose lima is wedged, who is
-    /// the person running `doctor`. The listing would buy only the suppression of
+    /// minutes of silence for the person whose lima is wedged, who
+    /// is the person running `doctor`. The listing would buy only the suppression of
     /// a directory lima has disowned, and naming one of those costs a
     /// line, not a VM.
     pub fn strays_on_filesystem(&self) -> Vec<Stray> {
@@ -1519,11 +1519,10 @@ impl Vm {
             BackendKind::Firecracker => {
                 let dir = self.dir.exists();
                 let running = self.firecracker_pid().is_some();
-                let mut strays = self.fc_dir_contents();
-                // Lima's home on this backend too: see
-                // `strays_on_filesystem`.
-                strays.extend(self.strays_on_disk_read());
-                lima::sort_strays(&mut strays);
+                // `[vm] dir` and lima's home, sorted -- which is
+                // exactly `strays_on_filesystem`, so it is called rather
+                // than written out again beside it.
+                let strays = self.strays_on_filesystem();
                 Survey {
                     present: Some(dir || running),
                     running: Some(running),
@@ -2472,16 +2471,16 @@ impl Vm {
 
     pub async fn status(&self) -> VmStatus {
         let backend = self.backend();
-        // One `limactl list` for everything lima knows -- and, when it
-        // did not answer, that fact rather than `.ok().flatten()`. Read
-        // as "no such instance" it printed `instance: ssf-<name> missing
-        // (ssf vm build)` over a VM that exists, which is the same
-        // conflation `lima_stop` was fixed for.
         // One `limactl disk list` for both the strays and this VM's own
         // size. They used to be two, which doubled the worst case on a
         // lima home that will not lock -- the machine most likely to
         // have `ssf vm status` run against it.
         let lima_disks = (backend == BackendKind::Lima).then(|| self.lima_disks());
+        // One `limactl list` for everything lima knows -- and, when it
+        // did not answer, that fact rather than `.ok().flatten()`. Read
+        // as "no such instance" it printed `instance: ssf-<name> missing
+        // (ssf vm build)` over a VM that exists, which is the same
+        // conflation `lima_stop` was fixed for.
         let (inst, probe_error, mut strays) = match backend {
             BackendKind::Lima => match self.lima_instances() {
                 Ok(all) => {

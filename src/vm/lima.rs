@@ -3020,12 +3020,23 @@ mod tests {
         // each one costs a fork.
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Strays, Listing::Strays);
         let _ = t.vm.status().await;
-        let asked = t
+        // Both listings, not just the disks: a second `list --json`
+        // would be the same regression on the other half, and the
+        // harness logs it either way. `disk list --json` contains
+        // `list --json`, so the instance count excludes it rather than
+        // matching a substring of it.
+        let disks = t
             .commands()
             .iter()
             .filter(|c| c.contains("disk list"))
             .count();
-        assert_eq!(asked, 1, "{:?}", t.commands());
+        assert_eq!(disks, 1, "disk list: {:?}", t.commands());
+        let instances = t
+            .commands()
+            .iter()
+            .filter(|c| c.contains("list --json") && !c.contains("disk list"))
+            .count();
+        assert_eq!(instances, 1, "list: {:?}", t.commands());
         // ... and it is *this* VM's disk whose size is read out of that
         // one listing. The lookup moved into a function of its own when
         // the two calls were merged, and matching the wrong name there
@@ -3033,16 +3044,23 @@ mod tests {
         //
         // `Crowded`, not `Answers`: a listing holding only our disk
         // cannot tell "found ours" from "took whichever lima named
-        // first". And 33 GiB is a size the `sizes()` fallback cannot
-        // produce, so a host with little free space cannot make this
-        // pass for the wrong reason.
+        // first".
+        //
+        // 7 GiB because the fallback on this path is `sizes().data_gib`,
+        // which is `max(20, free/2)` -- so it can produce *any* integer
+        // from 20 up, and only a number below that floor is one it
+        // cannot reach. An earlier version of this said 33 was
+        // unreachable; 33 is what 66 GiB of free space yields, so on a
+        // fuller disk the assertion would have started holding for the
+        // broken lookup too, with this comment telling the next reader
+        // it could not.
         let sized = Fake::with_all(
             "Stopped",
             Edit::Applies,
             DiskList::Crowded,
             Listing::Answers,
         );
-        assert_eq!(sized.vm.status().await.data_gib, 33);
+        assert_eq!(sized.vm.status().await.data_gib, 7);
     }
 
     #[tokio::test]
@@ -3752,7 +3770,7 @@ mod tests {
             let yaml = inst_dir.join("lima.yaml");
             let disk_arm = match disks {
                 DiskList::Answers => r#"echo '{"name":"ssf-one","size":21474836480,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
-                DiskList::Crowded => r#"echo '{"name":"other","size":106300440576,"dir":"/d","mountPoint":"/m"}'; echo '{"name":"ssf-one","size":35433480192,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
+                DiskList::Crowded => r#"echo '{"name":"other","size":106300440576,"dir":"/d","mountPoint":"/m"}'; echo '{"name":"ssf-one","size":7516192768,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
                 // A disk whose name sorts before the instance's, so the
                 // ordering rule is not satisfied by luck, and one that
                 // is somebody else's.
