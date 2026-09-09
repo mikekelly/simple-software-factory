@@ -164,20 +164,34 @@ after the command words:
 and any of those behind the value-less letters of a cluster, so a
 review's `-ab hi` and a create's `-eF notes.md` are stamped as much as
 `-b hi` is. Which letters are value-less depends on the command, since
-`-a` approves on a review and names an assignee on a create. A body
-flag *before* the command words is the exception: gh binds its value to
-the first word after the pair rather than to the word next to it, and
-the shim does not follow it there, so `gh -ab pr review hi` posts
-untagged. A body gh builds for itself -- `--fill`, `--editor`, `--web`,
-the interactive prompt -- carries no byline either, since there is no
-body argument to prepend to.
+`-a` approves on a review and names an assignee on a create. Flags before the command words are handled too: after locating
+those words, the shim binds separated values the way gh does, so
+`gh -ab pr review hi` stamps `hi`.
+
+The last repeated `--body-file` wins, as in gh; earlier files and stdin
+are not read. Mixing `--body` and `--body-file` is passed through for gh
+to reject. Invalid UTF-8 produces an explicit error rather than posting
+altered or untagged text. An ordinary unreadable file is left for gh to
+report; a stdin read error stops the shim because stdin may already have
+been consumed.
+
+Large stamped bodies travel through an inherited anonymous file instead
+of argv, avoiding operating-system argument limits. Linux uses a memory
+file; other Unix systems use a private temporary file that is immediately
+unlinked. Failure to prepare that file stops the command without posting.
+GitHub still enforces its body-size limit. A body gh builds for itself
+(`--fill`, `--fill-first`, `--fill-verbose`, `--editor`, `--web`, or the
+interactive prompt) currently carries no byline unless the agent supplies
+one itself; the shim does not replace commit-generated text with an empty
+byline-only body.
 
 An approving review needs no body of its own, so one that is only the
 line is added, in every spelling of the approval: `--approve`,
 `--approve=true`, `-a`, `-a=true` and the `-a` inside a cluster all
 count, while `--approve=false` does not, because gh does not read it as
-an approval either. A review that comments or requests changes is left
-alone, because gh refuses those without a body (`body cannot be blank
+an approval either. The shim rejects explicit empty or whitespace-only bodies on comment and
+request-changes reviews before posting. Missing bodies are left for gh to
+reject (`body cannot be blank
 for comment review`) and that refusal is the more useful answer: a
 review carrying nothing but a byline says nothing, and a request for
 changes carrying nothing but a byline blocks the pull request. So `gh pr
@@ -203,9 +217,10 @@ issue create` documents as taking numbers or URLs), since that answer
 outranks `GH_REPO` and a post landing elsewhere with the short `#N`
 would link to that repository's issue N. An item after `--` still
 counts, as it does for gh. Beyond that the
-wrapper reads only its environment, writes nothing and leaves stdin and the
-terminal alone, so it works inside read-only sandboxes and does not break
-gh's interactive flows. Outside a session (no `SSF_ISSUE`) it is a plain
+wrapper reads its environment and explicit body files or stdin. It leaves
+the terminal alone and does not break gh's interactive flows. Small bodies
+need no writable filesystem; large bodies use the anonymous-file transport
+described above. Outside a session (no `SSF_ISSUE`) it is a plain
 pass-through. Bodies that already start with the tag are not stamped
 twice, and `ssf guide` tells the agent to add the line itself
 whenever it posts some other way (`gh api`, `gh pr create --fill`, an
