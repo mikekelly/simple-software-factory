@@ -127,26 +127,24 @@ document links to.
     `sudo apt remove ssf`, `sudo dnf remove ssf`, or on macOS `brew
     uninstall ssf` and then `brew untap mikekelly/ssf`; the command
     prints the one for the machine) is **you**.
-11. **Calibrate the project's gauntlet by blast radius** when writing
+11. **Keep project review bounded** when writing
     `SSF.md`: use the [boilerplate](../../SSF.example.md) and
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
-    for review classes and stopping rules. Keep required verification in
-    every class, including changes that need only self-review. Keep the
-    line the boilerplate carries beside those rules: check a claim by
-    reading the source or trying it where trying it changes nothing,
-    rather than reasoning your way to an answer; say where you have not,
-    and apply the same to what you write about a change. Also keep the
-    accompanying commit habit: read `git diff --cached` before writing the
-    commit message, not after.
+    for one behavior review and at most one focused follow-up for substantive
+    fixes. Unresolved defects require simplification or a maintainer decision;
+    wording changes do not restart review. Match validation to the change,
+    with package builds for packaging/installation changes. Keep one outcome
+    per issue and implementation tasks within it. Use `Refs #N` for ongoing
+    management/tracking work; reserve `Closes #N` for complete delivery.
 
 12. **Conflict notices concern committed branches.** Follow
     [Branch conflicts](../../docs/sessions.md#branch-conflicts) when an
     operator asks about them: `daemon.conflict_check_interval_secs`
     defaults to 300 seconds, a repository can override it, and `0`
     disables checks. `event_comments` does not control these terminal
-    notices. Do not rebase merely because a branch is behind: a notice
-    calls for rebasing and rerunning an already-started final round;
-    before the round starts, no immediate action is needed.
+    notices. Resolve conflicts before delivery, preferably against stable
+    dependency heads. Test the integration and review behavior changes;
+    a notice alone does not require restarting review.
 
 13. **Name the base when reporting verification counts.** Follow the
     [development guidance](../../docs/development.md) for the JSON-based

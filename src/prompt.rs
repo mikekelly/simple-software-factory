@@ -1302,10 +1302,10 @@ Issues and pull requests you open stay with you: ssf recognises the origin tag o
 delivers their activity (comments, reviews, review requests, assignments, closure) here \
 instead of starting another session; `SSF_ISSUE` does not change. A pull request opened on \
 this workspace's branch is yours too, tag or no tag. An issue you opened that is later assigned \
-to @{bot} is still yours, and you are told so; nobody else is spawned for it. Referencing the \
-item in a pull request's body (`Closes #N`) links the two on GitHub, which then closes the \
-issue when the pull request is merged; the repository's own notes say how it wants pull \
-requests.\n\n\
+to @{bot} is still yours, and you are told so; nobody else is spawned for it. Use `Refs #N` \
+to link a pull request to ongoing management or tracking work. Use `Closes #N` only when \
+merging completes the entire issue: GitHub closes that issue on merge. The repository's \
+own notes say how it wants pull requests.\n\n\
 To hand a piece of work to a separate agent instead, create the issue (or pull request) with \
 `--assignee {bot}` in the same `gh ... create` command: the tag then carries `mode=delegate` \
 and the item gets a session of its own. You are subscribed to it automatically, so its \
@@ -2018,7 +2018,10 @@ nobody else is spawned for it.",
         assert!(g.starts_with("# ssf guide\n\n"));
         assert!(g.contains("`ssf peers` lists the agent sessions"));
         assert!(!g.contains("Leave their branches and workspaces alone"));
-        assert!(g.contains("Referencing the item in a pull request's body (`Closes #N`)"));
+        assert!(g.contains(
+            "Use `Refs #N` to link a pull request to ongoing management or tracking work."
+        ));
+        assert!(g.contains("Use `Closes #N` only when merging completes the entire issue"));
         assert!(g.contains("needs it added by hand, as the first line of the body"));
         assert!(
             g.contains("To speak to the agent on another item, comment on that item with `gh`")
@@ -2550,49 +2553,18 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             without_html_comments("plain\n\ntext\n"),
             ("plain\n\ntext".into(), None)
         );
-        // The shipped boilerplate keeps every bullet and loses its comments.
-        let (example, unclosed) = without_html_comments(include_str!("../SSF.example.md"));
+        let source = include_str!("../SSF.example.md");
+        let (heading, rest) = source.split_once("<!--").unwrap();
+        let (_, rules) = rest.split_once("-->").unwrap();
+        assert!(!heading.contains("- ") && !rules.contains("<!--"));
+        let expected = format!("{}\n\n{}", heading.trim(), rules.trim());
+        let (example, unclosed) = without_html_comments(source);
         assert!(unclosed.is_none());
-        let (notes, unclosed) = without_html_comments(include_str!("../SSF.md"));
+        assert_eq!(example, expected, "every shipped instruction must survive");
+        let source = include_str!("../SSF.md");
+        let (notes, unclosed) = without_html_comments(source);
         assert!(unclosed.is_none());
-        assert!(example.starts_with("# Notes for ssf agents\n\n- You are in charge"));
-        assert!(!example.contains("<!--") && !example.contains("-->"));
-        assert!(!example.contains("cautious end"), "{example}");
-        assert!(
-            !example.contains("write the ids into the line above"),
-            "{example}"
-        );
-        // Each bullet's own text survives: a stray `<!--` in one would be
-        // stripped with everything after it, silently gutting the rule.
-        for kept in [
-            "one independently",
-            "carrying an `ssf: origin=` tag",
-            "name the model you start each kind of subagent with",
-        ] {
-            assert!(example.contains(kept), "{kept} missing from {example}");
-        }
-        // Phrases catch a comment that swallows the phrase; they leave the
-        // spans between them open, which cost this rule three rounds. The
-        // rule added by #170 is asserted whole instead, unwrapped, so no
-        // span of it can go missing.
-        let unwrapped = example.replace("\n  ", " ");
-        assert!(
-            unwrapped.contains(
-                "- Check a claim rather than reasoning your way to one: read the source, \
-                 or try it where trying it changes nothing. Where you have not checked, \
-                 say so. This covers what you write about a change as much as the change \
-                 itself \u{2014} comments, commit messages, issue bodies, the sentence \
-                 explaining why something is safe \u{2014} because a wrong description \
-                 outlives a wrong line, since the next person reads it instead of \
-                 checking."
-            ),
-            "the checking rule is not intact in {unwrapped}"
-        );
-        let commit_message_rule = "- Commit as you go.\n  Read `git diff --cached` before writing the commit message, not after.";
-        assert!(example.contains(commit_message_rule), "{example}");
-        assert!(notes.contains(commit_message_rule), "{notes}");
-        assert!(example.contains("- Autonomy: a person approves everything."));
-        assert_eq!(example.matches("\n- ").count(), 12, "{example}");
+        assert_eq!(notes, source.trim());
     }
 
     #[test]

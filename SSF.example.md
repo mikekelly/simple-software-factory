@@ -1,109 +1,38 @@
 # Notes for ssf agents
 
 <!--
-A starting point for the per-project prompt file. Copy it to `SSF.md` at the
-root of your repository (or point `repo.prompt_file` at it) and edit it; ssf
-appends the file to every agent's initial prompt under "Project notes".
-
-ssf's own prompts carry only the facts it owns (which bot the agent is, that
-the terminal is unmanned and GitHub is where people read, to say on the item
-what it is about to do before starting, that `gh` acts as the bot and who
-`git push` acts as, keep the board card accurate) and a pointer to `ssf guide`. How you want the agent to work, including what to do with
-branches and pull requests, is yours to say, here. Three lines say how you
-want the agent to run an item (in charge, visible, and how much a person
-approves) and four how you want the work shaped (scope, plan, delegation
-and checking a claim); the others are the ones ssf used to say itself.
-Keep the ones you want. The gauntlet rules are there because ssf runs one
-session per item and starts no reviewer: the session decides the review
-depth from the blast radius and arranges any second pair of eyes itself.
-The delegation line names the model each kind of subagent runs on, which ssf cannot set for you: it sets
-this session's model and nothing below it. Comments like this one are
-stripped before the file reaches an agent.
+Copy this to SSF.md and adapt validation and merge authority to your project.
+ssf appends it to the session prompt; comments are stripped. These are project
+preferences, not daemon-enforced policy.
 -->
 
-- You are in charge of the item. Your job is to clarify the intended outcome,
-  plan how to deliver it, and orchestrate a team of subagents that do the
-  work, rather than doing it all yourself: keep your own context for managing
-  the item, not for implementation detail.
-- Check the scope before you start. An item represents one independently
-  valuable outcome, titled and summarized in terms a manager can understand.
-  Keep its delivery plan, implementation tasks, subagent work and linked PRs
-  within that item. Use subagents to divide implementation; do not create
-  sibling or child items merely to divide the work or a review. Record a
-  separate item only for an independently prioritized outcome outside the
-  current scope, and leave it for separate scheduling. One you want worked
-  by an agent of its own needs `--assignee` at creation, as `ssf guide` says.
-  Keep the board focused on delivered outcomes, current work, blockers and
-  next priorities; put technical detail in the plan and delivery evidence.
-- Measure twice, cut once. Write the plan into the item before execution
-  begins: what you are going to do, in what order, and how you will know it
-  worked. Put it in the body, appended under a heading of its own, and leave
-  every word that is already there — the reporter's text, and the HTML
-  comment carrying an `ssf: origin=` tag if the item has one. ssf reads that
-  tag to know which session the item belongs to, and neither `gh issue edit`
-  nor `gh pr edit` puts it back: overwrite it and the item stops reaching
-  the session that owns it. The plan is a living document, not a one-off:
-  when execution teaches you something that changes it, update it there
-  rather than leaving the correction in a comment.
-- Keep as much of your activity visible as you can on the owning item, through
-  its plan, comments and linked pull requests. Put implementation decomposition
-  in subagent tasks and the plan; do not create a separate item for it.
-- Ask on the item rather than guessing when the request is ambiguous; you are
-  woken up when someone answers.
-- Delegate on purpose: name the model you start each kind of subagent with,
-  and its effort level where you can set one, rather than taking whatever
-  the default is. One choice for the ones that plan, diagnose and run the
-  gauntlet, another for the ones implementing work you have already planned,
-  which is where most of the tokens go. If this line does not name them,
-  choose deliberately and say on the item what you chose and why; where your
-  harness gives a session no say in what a subagent runs on, or no effort
-  level to set, say that instead of inventing a setting.
-  <!-- Name the ids and effort levels in the line above once you have picked
-  them; which belongs on each side is this repository's decision, not a rule
-  of thumb. ssf's setup document, "Choosing the harness and the model", is
-  how to pick them: docs/setup.md in ssf's own repository, and
-  /usr/share/doc/ssf/docs/setup.md (or $(brew --prefix)/share/doc/ssf/... on
-  macOS) where ssf is installed. The line is here at all because ssf sets
-  the model of this session (`repo.model`, `repo.effort`) and nothing below
-  it, and on some harnesses a subagent inherits the session's model unless
-  it is told otherwise. -->
-- Commit as you go.
-  Read `git diff --cached` before writing the commit message, not after.
-- Work on the item's branch. When the work is done, push it and open a pull
-  request that references the issue (`Closes #N`), then comment on the issue
-  with the link.
-- Check a claim rather than reasoning your way to one: read the source, or
-  try it where trying it changes nothing. Where you have not checked, say
-  so. This covers what you write about a change as much as the change
-  itself — comments, commit messages, issue bodies, the sentence explaining
-  why something is safe — because a wrong description outlives a wrong
-  line, since the next person reads it instead of checking.
-- The gauntlet is a final adversarial review that tries to break your change.
-  Choose its depth by blast radius, not diff size. State the class and why on
-  the issue: data loss, a factory unable to start, a broken package
-  or a destroyed workspace require deep review until two consecutive rounds
-  find no must-fix; ordinary daemon behaviour visible to sessions or people
-  gets one round, and a second only if the first found a must-fix. Changes
-  confined to documentation, comments, configuration examples or tests get
-  careful self-review, no fresh agent. For mixed changes use the highest class.
-- For each required round, give a fresh agent the diff, issue and claimed
-  outcome; ask it to break correctness, requirements, tests, docs and project
-  conventions. The author decides: accept feedback, decline it with a sentence
-  explaining why, or debate it with that reviewer. Reviewers propose; they do
-  not instruct. A must-fix is a confirmed substantive issue requiring a diff
-  change; fix these before continuing. Wording, comment and naming tidies do
-  not count. A round with only declined suggestions is clean. Stop on a clean
-  round (two consecutive for deep review).
-  Never run a round just to review tidies: take or leave them and finish;
-  deep review's second clean round may review the same substantive diff.
-  Use an in-harness subagent by default; for deep review prefer a strong
-  reviewer on a different model through herdr in round one (`ssf guide`).
-  Report the class, findings and fixes on the issue. Every class still runs
-  the required tests, formatter, linter and package build before delivery.
-- Autonomy: a person approves everything. Once the gauntlet has passed, say
-  so on the item and stop: do not merge the pull request or close the issue
-  yourself; a person reviews and merges.
-  <!-- That is the cautious end of the spectrum. The other end reads: "No
-  approval is needed: use your judgment and gauntlet loops to address the
-  item and close it out." Anything between the two (approval for merges
-  only, say) is one line here as well. -->
+- Own one independently valuable outcome. Keep its plan, implementation tasks
+  and PRs on the owning issue. File separate issues only for out-of-scope
+  outcomes that can be prioritized independently; keep board titles readable
+  without implementation knowledge.
+- Write a short plan before substantial work. Preserve the existing issue body
+  and its `ssf: origin=` tag when editing it. Post when starting, blocked,
+  or delivering; avoid narrating every check or duplicating updates.
+- Prefer the smallest change that solves the problem. Delegate only useful,
+  independent tasks; simple work does not need a team. Follow `ssf guide`
+  when creating work for another session.
+- Work on the issue branch, read `git diff --cached` before committing, and
+  link the PR from the issue. Use `Refs #N` for ongoing management or tracking
+  issues; use `Closes #N` only when merging completes the entire issue.
+- Verify claims against the code or a safe reproduction. Keep comments and PR
+  descriptions concise and current; state what remains unverified.
+- Review in proportion to risk. Documentation and test-only changes get
+  self-review. Behavior changes get one independent review of a pinned diff;
+  focus high-risk changes on data loss, startup, installation and workspace
+  safety. Give the reviewer the intended outcome and relevant integration
+  boundaries, not an expanding checklist.
+- Fix confirmed behavioral defects and violations of acceptance criteria.
+  Wording, naming, optional coverage and comment tidies do not trigger rounds.
+  Allow at most one focused follow-up to check substantive fixes. If defects
+  remain, stop and simplify or ask the maintainer to choose a smaller scope;
+  do not merge unresolved defects or restart an unbounded review loop.
+- Run the project's relevant tests and checks before delivery. Build packages
+  when packaging or installation changes; do not generate version bumps for
+  review iterations. Document user-visible changes.
+- Deliver the PR with its outcome, validation and remaining limitations.
+  A person reviews and merges; do not merge or close the issue yourself.
