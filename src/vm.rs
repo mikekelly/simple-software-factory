@@ -4053,6 +4053,16 @@ mod tests {
     }
 
     #[test]
+    fn shown_paths_escape_report_controls() {
+        let path = Path::new("/tmp/line\n\u{202e}`");
+        let shown = shown_path(path);
+        assert!(!shown.contains('\n'));
+        assert!(shown.contains("\\u{a}"));
+        assert!(shown.contains("\\u{202e}"));
+        assert!(shown.contains("\\u{60}"));
+    }
+
+    #[test]
     fn only_not_found_is_missing() {
         let absent = observe::<()>(Err(std::io::Error::from(std::io::ErrorKind::NotFound)));
         let denied = observe::<()>(Err(std::io::Error::from(
