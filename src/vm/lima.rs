@@ -965,13 +965,13 @@ impl Vm {
     }
 
     /// Where lima keeps this instance: `<lima home>/<name>`.
-    fn lima_instance_dir(&self) -> Option<PathBuf> {
+    pub(super) fn lima_instance_dir(&self) -> Option<PathBuf> {
         self.lima_home.as_ref().map(|h| h.join(self.lima_name()))
     }
 
     /// Where lima keeps this VM's external data disk:
     /// `<lima home>/_disks/<disk>`.
-    fn lima_disk_dir(&self) -> Option<PathBuf> {
+    pub(super) fn lima_disk_dir(&self) -> Option<PathBuf> {
         self.lima_home
             .as_ref()
             .map(|h| h.join("_disks").join(self.lima_disk_name()))

@@ -301,6 +301,13 @@ and `ssf doctor` does on a host that is not running the factory in a VM
 `[vm] dir`). None of them removes it for you: nothing can tell a VM you
 renamed away to keep from one you abandoned.
 
+If Lima's home is itself below `[vm] dir`, this scan also protects the
+configured instance and external disk directories, their resolved aliases,
+and Lima's current and legacy root and data-disk file targets. A
+Firecracker `data.ext4` in one of their ancestors can receive a file-only
+`rm -f` remedy; that ancestor never receives `rm -rf` over the configured
+Lima storage.
+
 The scan never follows a directory symlink. Destroy removes a configured
 directory or data-disk link rather than its target, so those links remain
 incomplete even when readable; their resolved targets and ancestors never
