@@ -1050,10 +1050,18 @@ it. `--force` goes ahead as it does for any unchecked work, and the
 directory's line in `remove:` then says what is in it. The `[vm] dir` line says one
 of two things, in the report and in the list printed at the end alike:
 safe to remove, or safe to remove except for what is listed below. A
-directory ssf could not read is reported as though it were empty, so
-`safe to remove` can be said of one holding a VM nobody could look
-inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
-home by hand if either has permissions you did not set. A directory
+directory ssf could not read is still *listed* as though it were empty,
+so `safe to remove` can be said of one holding a VM nobody could look
+inside -- that is issue #192, and until it is fixed, check `[vm] dir`
+and lima's home by hand if either has permissions you did not set.
+What has changed is the decision rather than the list: only "not
+found" now counts as "there is no data disk". A read denied by a
+root-owned lima home -- itself one of the reasons `limactl` fails --
+or failing on a volume that has gone away is a question that was never
+answered, and `ssf uninstall` refuses over it rather than destroying
+workspaces nobody checked. `--force` still goes ahead. The cost of
+that refusal being wrong is one command; the cost of the old answer
+being wrong was the clones. A directory
 that *contains* the VM this configuration names is never offered,
 since the command would take the live VM with it -- so an older VM's
 disk stranded in one goes unmentioned, which is issue #193. ssf also

@@ -1020,7 +1020,7 @@ impl Vm {
                 // disk full of clones in exactly the case where
                 // `limactl disk list` is no use to the person either.
                 strays.extend(self.disk_strays_on_disk());
-                self.lima_disk_dir().map(|p| p.exists())
+                self.lima_disk_dir().and_then(|p| super::there(&p))
             }
         };
         sort_strays(&mut strays);
@@ -1109,21 +1109,21 @@ impl Vm {
     /// treat a disk full of workspaces as absent.
     fn lima_unanswered(&self, dir: bool, what: &str, name: &str, e: &anyhow::Error) -> Survey {
         warn!("could not ask lima about {what} {name}: {e:#}");
-        let instance = self.lima_instance_dir().map(|p| p.exists());
-        let disk = self.lima_disk_dir().map(|p| p.exists());
+        let instance = self.lima_instance_dir().and_then(|p| super::there(&p));
+        let disk = self.lima_disk_dir().and_then(|p| super::there(&p));
         // Same evidence, same rule: what lima's home holds is what there
         // is to go on. Without this a stray goes unmentioned exactly
         // when the person can least find it themselves -- `limactl list`
         // is the command that just failed.
         let strays = self.strays_on_disk_read();
         let here = instance == Some(true) || disk == Some(true);
-        // Master's rule, and it is not a safe one: `p.exists()` is
-        // `metadata().is_ok()`, so a denied `stat` on lima's home reads
-        // as a confident `false` about a directory nobody looked in, and
-        // `nothing` then makes `present` and `data` both `Some(false)`
-        // -- which takes the "workspaces could not be checked" sentence
-        // off the page above the confirmation. These two feed the
-        // refusal, so the fix is #176's, coordinated with #192.
+        // Both answers come through `there`, so a denied `stat` on
+        // lima's home is `None` and not a confident "nothing there".
+        // `nothing` is then false, `present` is `None` and `data` is
+        // `None`, and the command refuses instead of destroying
+        // workspaces on a disk nobody could look at -- which is what
+        // `exists()` here did, because it is `metadata().is_ok()`.
+        // Which directory it was is #192's to say.
         let nothing = instance == Some(false) && disk == Some(false);
         Survey {
             present: if here || dir {
@@ -2963,6 +2963,71 @@ mod tests {
     }
 
     #[test]
+    fn a_lima_home_nobody_could_look_in_is_not_a_lima_home_with_nothing_in_it() {
+        // Where `limactl` will not answer, lima's own filesystem is
+        // what is left to read -- and it was read with `exists()`,
+        // which is `metadata().is_ok()`. A `stat` denied by a lima home
+        // an earlier `sudo` left root-owned (itself one of the reasons
+        // `limactl` fails in the first place) then answered a confident
+        // "nothing here", `Survey::data` became `Some(false)`, and
+        // `Some(false)` is the one value that lets `ssf uninstall` past
+        // its refusal and on to destroying workspaces nobody checked.
+        //
+        // Both fallbacks, because they are different code: the disk
+        // listing failing on its own drops into an `Err` arm inside
+        // `lima_survey`, while the instance listing failing takes the
+        // whole survey to `lima_unanswered`, which reads both paths
+        // again for itself. Each was written with `exists()` and each
+        // had to be changed.
+        use std::os::unix::fs::PermissionsExt;
+        for listing in [Listing::Answers, Listing::Fails] {
+            let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, listing);
+            std::fs::remove_dir_all(&t.vm.dir).unwrap();
+            let home = t.vm.lima_home.clone().unwrap();
+            std::fs::create_dir_all(home.join("_disks").join(t.vm.lima_disk_name())).unwrap();
+            // Readable first, so what follows is about the denial and
+            // not about the fixture.
+            assert_eq!(t.vm.survey().data, Some(true), "{listing:?}");
+
+            let mut perm = std::fs::metadata(&home).unwrap().permissions();
+            perm.set_mode(0o000);
+            std::fs::set_permissions(&home, perm).unwrap();
+            let seen = std::fs::metadata(home.join("_disks").join(t.vm.lima_disk_name()))
+                .map_err(|e| e.kind());
+            let s = t.vm.survey();
+            // Restored before the assertions, so a failure still leaves
+            // the fixture's `Drop` able to remove it.
+            let mut perm = std::fs::metadata(&home).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&home, perm).unwrap();
+
+            match seen {
+                Err(std::io::ErrorKind::NotFound) => {
+                    panic!("the fixture is wrong: the disk directory is there")
+                }
+                Err(_) => assert_eq!(
+                    s.data, None,
+                    "a denied stat is a question that was never answered ({listing:?})"
+                ),
+                // euid 0 ignores the mode, so this case cannot be built
+                // here. Asserted rather than skipped in silence: this
+                // only passes if the home really was readable.
+                Ok(_) => assert!(
+                    std::fs::read_dir(&home).is_ok(),
+                    "a stat succeeded through a directory nothing should have been able to read"
+                ),
+            }
+            // The instance listing failing takes `present` with it:
+            // nothing was established about the VM either, and
+            // `Some(false)` there would send the destroy step down the
+            // "no VM" arm over a machine nobody could look at.
+            if listing == Listing::Fails && matches!(seen, Err(_)) {
+                assert_eq!(s.present, None, "and the same for the VM itself");
+            }
+        }
+    }
+
+    #[test]
     fn a_stray_alone_is_not_a_vm_to_destroy_when_limactl_will_not_answer_either() {
         // The same invariant on the other arm. `lima_unanswered` builds
         // its own `present`, and a stray reaching it there would have
@@ -3828,7 +3893,7 @@ mod tests {
     /// returning. A fork that failed under load, a lima home under
     /// someone else's lock and a limactl that hangs are all things a
     /// laptop does; none of them is the VM having exited.
-    #[derive(Clone, Copy, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     enum Listing {
         Answers,
         Empty,

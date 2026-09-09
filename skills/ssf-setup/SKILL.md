@@ -120,7 +120,11 @@ document links to.
     has gone or `[vm] dir` has changed. The refusal names its own
     remedy: `ssf vm start` only where there is an instance to start, and
     never for a data disk that outlived its instance or for a lima that
-    would not say whether the VM is running. Anything this configuration
+    would not say whether the VM is running. Two more refuse: a
+    `data.ext4` a switch of `[vm] backend` left in the VM's own
+    directory, whose remedy is to put `[vm] backend` back rather than
+    any lima command, and a directory whose permissions stopped ssf
+    reading it at all -- "nobody looked" is not "nothing there". Anything this configuration
     does not name -- what a changed `[vm] name` leaves: a lima instance
     or disk, or the old VM's directory under `[vm] dir` -- is listed
     under `keep:` with the command that removes it, and is never removed

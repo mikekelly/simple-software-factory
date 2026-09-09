@@ -314,6 +314,32 @@ pub struct VmStatus {
 /// Where the data disk is mounted in the guest.
 pub const GUEST_DATA_DIR: &str = "/var/lib/ssf";
 
+/// Is it there? `None` when nobody could tell.
+///
+/// [`Path::exists`] is `metadata().is_ok()`, so it answers a confident
+/// `false` about a directory a denied or failing `stat` never looked
+/// into. Only [`std::io::ErrorKind::NotFound`] actually means "not
+/// there"; a `PermissionDenied` (lima's home left root-owned by an
+/// earlier `sudo`, which is itself one of the reasons `limactl` fails),
+/// an `EIO` off a failing volume, or a mount that has gone away all
+/// mean "nobody looked".
+///
+/// The difference decides whether `ssf uninstall` refuses:
+/// `unchecked_workspaces` lets the command through on `Some(false)` and
+/// stops it on `None`, and being wrong in the first direction destroys
+/// clones and worktrees nobody verified. Being wrong in the second
+/// costs one `--force`.
+///
+/// `metadata` rather than `symlink_metadata`, because that is what
+/// `exists()` did and this is meant to change one thing.
+pub(crate) fn there(p: &Path) -> Option<bool> {
+    match std::fs::metadata(p) {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// What a backend holds of one VM, from [`Vm::survey`].
 ///
 /// Under Firecracker the VM *is* the files under `[vm] dir`, so that
@@ -1626,7 +1652,15 @@ impl Vm {
                     present: Some(dir || running),
                     running: Some(running),
                     startable: dir,
-                    data: Some(self.data_disk().exists()),
+                    // Not `exists()`: a `[vm] dir` that cannot be
+                    // read is not a VM without a data disk, and the
+                    // difference is whether the command refuses. The
+                    // `present` above keeps `exists()` on purpose --
+                    // `Some(false)` there skips the destroy rather than
+                    // running it, so a denied stat costs a wrong
+                    // sentence and not the clones, and the sentence is
+                    // #192's.
+                    data: there(&self.data_disk()),
                     strays,
                     // Under Firecracker the same file is simply this
                     // VM's own disk, and `data` above is what says so.
@@ -3507,8 +3541,8 @@ mod tests {
     fn under_firecracker_the_directory_is_the_vm() {
         // The disks are the VM, so the directory (or a guest running off
         // them) is the whole answer -- there is no bookkeeping of
-        // lima's kind to ask on top of it, and no question that could
-        // fail to be asked.
+        // lima's kind to ask on top of it. The question can still fail
+        // to be asked, though: see the test below.
         let mut cfg = Config::default();
         cfg.vm.name = "one".into();
         cfg.vm.backend = Some(BackendKind::Firecracker);
@@ -3554,6 +3588,76 @@ mod tests {
                 stranded_disk: None,
             }
         );
+    }
+
+    #[test]
+    fn a_directory_nobody_could_look_in_is_not_a_directory_with_nothing_in_it() {
+        // `Path::exists` is `metadata().is_ok()`, so a `stat` that was
+        // *denied* answered a confident "no data disk" about a
+        // directory nobody looked into -- and `Some(false)` is the one
+        // value that lets `ssf uninstall` past its refusal and on to
+        // destroying the clones and worktrees it never checked. Only
+        // `NotFound` means not there.
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!(
+            "ssf-unread-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut cfg = Config::default();
+        cfg.vm.name = "one".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        let disk = vm.dir.join("data.ext4");
+        std::fs::write(&disk, b"clones").unwrap();
+        // The two answers that are answers, so what follows is about
+        // the third and not about the fixture.
+        assert_eq!(there(&disk), Some(true));
+        assert_eq!(there(&vm.dir.join("nothing-here")), Some(false));
+        assert_eq!(vm.survey().data, Some(true));
+
+        let mut perm = std::fs::metadata(&vm.dir).unwrap().permissions();
+        perm.set_mode(0o000);
+        std::fs::set_permissions(&vm.dir, perm).unwrap();
+        let seen = std::fs::metadata(&disk).map_err(|e| e.kind());
+        // Both readings taken while the denial is in force: the cleanup
+        // below removes the directory, and a `there` called after it
+        // would answer `Some(false)` about a path that really is gone.
+        let denied = there(&disk);
+        let survey = vm.survey();
+        // Restored before the assertions, so a failure still leaves the
+        // temporary directory removable.
+        let mut perm = std::fs::metadata(&vm.dir).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&vm.dir, perm).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+
+        match seen {
+            Err(std::io::ErrorKind::NotFound) => {
+                panic!("the fixture is wrong: the disk was written above")
+            }
+            Err(_) => {
+                assert_eq!(denied, None, "a denied stat is not an answer");
+                assert_eq!(
+                    survey.data, None,
+                    "and the refusal has to see it as one that was never answered"
+                );
+            }
+            // euid 0 ignores the mode, and there is then no way to build
+            // this case here. Asserted rather than skipped in silence:
+            // this branch only passes if the directory really was
+            // readable, which is the one environment where the stat
+            // above is allowed to have succeeded.
+            Ok(_) => assert!(
+                std::fs::read_dir(&base).is_ok() || !base.exists(),
+                "a stat succeeded through a directory nothing should have been able to read"
+            ),
+        }
     }
 
     #[test]
