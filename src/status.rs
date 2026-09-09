@@ -375,6 +375,20 @@ impl Snapshot {
         sessions_with(&self.cfg, &self.state, &self.workspaces, &self.down)
     }
 
+    /// A configured credential makes the daemon's last authenticated login
+    /// meaningful. Before the daemon starts, use the configured account;
+    /// after logout, do not present a stale daemon cache as a sign-in.
+    fn bot_login(&self) -> Option<&str> {
+        (self.cfg.token_source() != "none")
+            .then(|| {
+                self.state
+                    .bot_login
+                    .as_deref()
+                    .or(self.cfg.github.login.as_deref())
+            })
+            .flatten()
+    }
+
     pub fn to_json(&self) -> Value {
         let sessions = self.sessions();
         let repos: Vec<Value> = self
@@ -396,7 +410,7 @@ impl Snapshot {
             })
             .collect();
         json!({
-            "bot_login": self.state.bot_login,
+            "bot_login": self.bot_login(),
             "token_configured": self.cfg.github_token().is_ok(),
             "service_enabled": crate::ui::service_enabled(),
             "service_active": crate::ui::service_active(),
@@ -748,7 +762,7 @@ pub fn render_status(snap: &Snapshot) -> String {
     let mut out = String::new();
     out.push_str(&format!(
         "bot:     {}\n",
-        st.bot_login.as_deref().unwrap_or("(not signed in)")
+        snap.bot_login().unwrap_or("(not signed in)")
     ));
     out.push_str(&format!(
         "service: {}{}\n",
@@ -1073,6 +1087,39 @@ mod tests {
         assert_eq!(v["sessions"][0]["agent_state"], "unknown");
         assert_eq!(v["sessions"][0]["subscribers"], json!([]));
         assert_eq!(v["sessions"][0]["untagged_posts"], 0);
+    }
+
+    #[test]
+    fn bot_identity_uses_config_before_start_and_cache_with_a_token() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let mut cfg = cfg();
+        cfg.github.login = Some("configured-bot".into());
+        cfg.github.token = Some("configured-token".into());
+        let mut state = State::default();
+        let snap = Snapshot {
+            cfg: cfg.clone(),
+            state: state.clone(),
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert_eq!(snap.bot_login(), Some("configured-bot"));
+        assert_eq!(snap.to_json()["bot_login"], "configured-bot");
+        assert!(render_status(&snap).contains("bot:     configured-bot"));
+
+        // A token-only setup has no configured login; retain the daemon's
+        // actual identity while its credential remains available.
+        cfg.github.login = None;
+        state.bot_login = Some("daemon-bot".into());
+        let snap = Snapshot {
+            cfg,
+            state,
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert_eq!(snap.bot_login(), Some("daemon-bot"));
+        assert_eq!(snap.to_json()["bot_login"], "daemon-bot");
     }
 
     #[test]

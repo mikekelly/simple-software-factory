@@ -22,6 +22,8 @@ Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
 outrank every config file, and only inside the agent's process tree. The
 initial prompt tells the agent that plain `gh` and `git push` act as the bot
 (or, with a person's credential, who `git push` acts as instead).
+The engine is the sole writer of `state.json`'s `bot_login`; auth commands
+write the credential and configuration, never the live daemon state.
 The bot's own commits and cross-references are filtered out of follow-up
 messages, and its comments are sorted per session by their byline, so
 an agent's own posts are not echoed back to it (`daemon.include_own_events`

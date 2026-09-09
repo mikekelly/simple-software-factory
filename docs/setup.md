@@ -320,9 +320,9 @@ leave the daemon's live session state alone.
 itself stays. `ssf token` prints the token for anything else that needs
 it. The service, which could not start in step 2, starts on its next
 retry now that there is a token (on a Mac it is not started until step
-6, so its line stays failed for now). A daemon that was already running
-continues with the account it authenticated as; `ssf status` names that
-account until the daemon restarts.
+6, so its line stays failed for now). `ssf status` names the configured
+account before the daemon first starts, then the account the daemon last
+authenticated as. Removing the credential makes status report not signed in.
 
 Check:
 

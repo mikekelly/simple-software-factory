@@ -4904,6 +4904,16 @@ command's effort), without a summary."
             after_daemon_save
         );
 
+        let status = status::Snapshot {
+            cfg: Config::load().unwrap(),
+            state: state::State::load().unwrap(),
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert!(status.to_json()["bot_login"].is_null());
+        assert!(status::render_status(&status).contains("bot:     (not signed in)"));
+
         let state = state::State::load().unwrap();
         let session = &state.repos["acme/widgets"].issues[&183];
         assert_eq!(session.terminal_handle.as_deref(), Some("live-terminal"));
