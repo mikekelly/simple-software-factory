@@ -6889,37 +6889,89 @@ mod tests {
         assert!(stub.post_bodies().is_empty());
     }
 
-    /// Nothing here drives `tick` (it reloads the config from a path the
-    /// whole process shares, and rebuilds the drivers from what it finds),
-    /// so the one thing `tick` must not do to the `refetch` flag is pinned
-    /// by reading the source instead: reset it with the per-pass state
-    /// beside it and a session that came back after a pass had read its
-    /// listings loses the full one it is owed, which is issue #141 with
-    /// the sign flipped.
-    #[test]
-    fn tick_does_not_reset_the_refetch_flag() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let src = std::fs::read_to_string(root.join("src/engine.rs")).unwrap();
-        let body = src
-            .split_once("pub async fn tick(&mut self) {")
-            .expect("tick is still called that")
-            .1
-            .split_once("\n    }\n")
-            .expect("tick still ends at the outer indent")
-            .0;
-        assert!(
-            body.contains("self.probes.clear();"),
-            "the per-pass reset moved out of tick; check the flag beside it"
+    /// Resetting the owed `refetch` with `tick`'s per-pass state loses the
+    /// full listing after a session comes back late in the preceding pass.
+    /// Exercise the public pass boundary with cached ETags restored: the
+    /// owed pass is full once, and the pass after it is conditional again.
+    #[tokio::test(flavor = "current_thread")]
+    async fn tick_preserves_one_owed_full_fetch_across_the_pass_boundary() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let stub = GitHubStub::start().await;
+        let r = repo();
+        let created = vec!["created".to_string()];
+        *stub.created.lock().unwrap() = vec![json!({
+            "number": 18, "title": "t", "body": null, "html_url": "https://gh/18",
+            "state": "open", "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+        })];
+        let mut e = engine_at(&stub.base);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(crate::driver::StubDriver::new(
+            DriverKind::Orca,
+        ))]);
+        e.cfg.github.api_url = stub.base.clone();
+        e.cfg.repos = vec![r.clone()];
+        e.cfg.daemon.conflict_check_interval_secs = 0;
+        e.cfg.save().unwrap();
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(18, Ignored::new(&issue(18, "bot", None), &created));
+
+        // Establish and then exercise the cached creator-listing ETag.
+        e.tick().await;
+        assert!(e.state.last_error.is_none(), "{:?}", e.state.last_error);
+        assert_eq!(stub.created_fulls(), 1, "the first pass was full");
+        e.tick().await;
+        assert!(e.state.last_error.is_none(), "{:?}", e.state.last_error);
+        assert_eq!(stub.created_fulls(), 1, "the second pass was conditional");
+
+        // A session comes back after its pass read the listings. That pass
+        // writes its cached ETag back, leaving only `refetch` to make the
+        // next outer tick fetch the listing in full.
+        let b = Blocked {
+            reason: "login".into(),
+            harness: "claude".into(),
+            detail: "Login expired".into(),
+            since: now_iso(),
+            reported: false,
+            credential: None,
+            retried_at: None,
+            retries: 0,
+            told_at: None,
+            tell_failures: 0,
+        };
+        let read_this_pass = e.state.repos[&r.name].created_etag.clone().unwrap();
+        e.unblock(&r, 18, &b, Conversation::Kept).await;
+        e.state.repo_mut(&r.name).created_etag = Some(read_this_pass);
+
+        e.tick().await;
+        assert!(e.state.last_error.is_none(), "{:?}", e.state.last_error);
+        assert_eq!(stub.created_fulls(), 2, "the owed pass was full");
+        assert!(e.refetch.is_empty(), "the owed fetch was spent once");
+
+        let _ = stub.hits();
+        e.tick().await;
+        assert!(e.state.last_error.is_none(), "{:?}", e.state.last_error);
+        let hits = stub.hits();
+        assert_eq!(
+            hits.iter()
+                .filter(|h| h.starts_with("/repos/o/r/issues?creator="))
+                .count(),
+            1,
+            "the final pass requested the creator listing: {hits:?}"
         );
-        assert!(
-            !body.contains("self.refetch"),
-            "tick touches the refetch flag; it must outlive the pass that armed it (issue #141)"
+        assert_eq!(
+            stub.created_fulls(),
+            2,
+            "the pass after the owed fetch was conditional"
         );
+        assert!(e.refetch.is_empty(), "the owed fetch was not re-armed");
+        assert!(e.failures.is_empty(), "{:?}", e.failures);
+        assert!(stub.post_bodies().is_empty());
     }
 
-    /// The case the `refetch` flag exists for, and the one the test above
-    /// cannot reach: a session that comes back after the pass has read its
-    /// listings (`reconcile_issue`, rather than `check_logins`). That pass
+    /// The case the `refetch` flag exists for at the repository-pass level:
+    /// a session that comes back after the pass has read its listings
+    /// (`reconcile_issue`, rather than `check_logins`). That pass
     /// stores the ETags it read at its end, putting back the ones the
     /// unblock cleared, so only the flag can make the next pass a full one
     /// — and only the next one.
