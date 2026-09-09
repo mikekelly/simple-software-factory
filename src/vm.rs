@@ -1823,6 +1823,44 @@ impl Vm {
         }
     }
 
+    /// A configured directory or data link is an ownership boundary, even
+    /// when its target is readable. Destroy removes the link itself rather
+    /// than the storage it names, so a report assembled before destroy must
+    /// retain that target as unknown afterwards. Ask this directly: a
+    /// resolved ancestor can make the walk skip the directory that contains
+    /// a nested configured link before it ever visits the link.
+    fn fc_configured_links(&self, unread: &mut Vec<PathBuf>) {
+        match observe(std::fs::symlink_metadata(&self.dir)) {
+            Observation::Present(metadata) if metadata.file_type().is_symlink() => {
+                match observe(std::fs::metadata(&self.dir)) {
+                    Observation::Present(target) if target.is_dir() => {
+                        unread.push(unread_path(&self.dir));
+                    }
+                    Observation::Present(_) | Observation::Missing => {}
+                    Observation::Unreadable => unread.push(unread_path(&self.dir)),
+                }
+            }
+            Observation::Present(_) | Observation::Missing => {}
+            Observation::Unreadable => unread.push(unread_path(&self.dir)),
+        }
+
+        let disk = self.data_disk();
+        match observe(std::fs::symlink_metadata(&disk)) {
+            Observation::Present(metadata) if metadata.file_type().is_symlink() => {
+                match observe(std::fs::metadata(&disk)) {
+                    // Destroy removes the configured link but cannot be
+                    // claimed to remove the storage it points to.
+                    Observation::Present(_) | Observation::Unreadable => {
+                        unread.push(unread_path(&disk));
+                    }
+                    Observation::Missing => {}
+                }
+            }
+            Observation::Present(_) | Observation::Missing => {}
+            Observation::Unreadable => unread.push(unread_path(&disk)),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn fc_scan_entries<I>(
         &self,
@@ -1867,25 +1905,17 @@ impl Vm {
                 }
             };
             if metadata.file_type().is_symlink() {
-                let target = observe(std::fs::metadata(&path));
-                if path == own_lexical {
-                    // A readable exact configured link is the known subtree
-                    // destroy owns. A failed target is still unknown.
-                    if matches!(target, Observation::Unreadable) {
+                match observe(std::fs::metadata(&path)) {
+                    // Never follow a directory link: destroy removes the
+                    // link, not its target, and the target may also escape
+                    // the bound or loop back into this tree.
+                    Observation::Present(metadata) if metadata.is_dir() => {
                         unread.push(unread_path(&path));
                     }
-                } else {
-                    match target {
-                        // Never follow a directory link: its target may be
-                        // outside the bound or loop back into this tree.
-                        Observation::Present(metadata) if metadata.is_dir() => {
-                            unread.push(unread_path(&path));
-                        }
-                        // A regular-file target or a missing target cannot
-                        // currently hide a VM directory.
-                        Observation::Present(_) | Observation::Missing => {}
-                        Observation::Unreadable => unread.push(unread_path(&path)),
-                    }
+                    // A regular-file target or a missing target cannot
+                    // currently hide a VM directory.
+                    Observation::Present(_) | Observation::Missing => {}
+                    Observation::Unreadable => unread.push(unread_path(&path)),
                 }
                 continue;
             }
@@ -1911,14 +1941,31 @@ impl Vm {
                     continue;
                 }
             };
-
             if path.starts_with(own_lexical) || identity.starts_with(configured_identity) {
                 // Destroy owns this subtree. It must never be described as
                 // untouched or receive a separate removal command.
                 continue;
             }
-            let is_ancestor =
+            let configured_path_ancestor =
                 own_lexical.starts_with(&path) || configured_identity.starts_with(&identity);
+            let configured_data_identity = match own_data_identity {
+                Observation::Present(identity) => Some(identity),
+                Observation::Missing => None,
+                // A lexical or resolved ancestor already cannot receive a
+                // recursive remedy, and walking it is how the exact failed
+                // configured path remains available in the report.
+                Observation::Unreadable if configured_path_ancestor => None,
+                Observation::Unreadable => {
+                    // A configured data link whose identity is unknown may
+                    // point into any other candidate subtree. Withhold every
+                    // recursive remedy until that ownership is known.
+                    unread.push(unread_path(&path));
+                    continue;
+                }
+            };
+            let is_ancestor = configured_path_ancestor
+                || configured_data_identity
+                    .is_some_and(|data_identity| data_identity.starts_with(&identity));
             let disk = path.join("data.ext4");
             let disk_observation = observe(std::fs::symlink_metadata(&disk));
             let found_disk = match disk_observation {
@@ -1979,6 +2026,7 @@ impl Vm {
     fn fc_inventory(&self) -> (Vec<Stray>, Vec<PathBuf>, Option<bool>, Option<bool>) {
         let mut unread = Vec::new();
         let dir = metadata_presence(&self.dir, &mut unread);
+        self.fc_configured_links(&mut unread);
         // `[vm] dir` is shared across backend changes. Even under Lima,
         // this configured path may be a Firecracker directory left from
         // before the switch; failing to inspect its data file must keep
@@ -4808,8 +4856,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn an_observed_configured_symlink_is_owned_while_other_directory_links_are_incomplete() {
+    #[tokio::test]
+    async fn configured_directory_links_and_targets_remain_incomplete_after_destroy() {
+        let _sandbox = crate::config::test_support::sandbox();
         let base = std::env::temp_dir().join(format!(
             "ssf-nested-exact-alias-{}-{}",
             std::process::id(),
@@ -4863,10 +4912,106 @@ mod tests {
             );
             assert_eq!(
                 survey.unread,
-                [unread_path(&base.join("linked-orphan"))],
-                "only the unrelated directory link remains incomplete under {backend:?}"
+                [
+                    unread_path(&base.join("factory")),
+                    unread_path(&base.join("linked-orphan")),
+                ],
+                "directory links remain incomplete under {backend:?}"
             );
         }
+
+        let mut cfg = Config::default();
+        cfg.vm.name = "factory".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        let facts = crate::uninstall::Facts::gather(&cfg, &vm);
+        assert!(
+            facts.vm_strays.iter().all(|stray| !stray
+                .remove
+                .contains(configured_target.to_string_lossy().as_ref())),
+            "no remedy may remove the configured link target: {:?}",
+            facts.vm_strays
+        );
+        let before = crate::uninstall::left_in_place(&facts, false);
+        assert!(!before.contains("downloads; safe to remove)"), "{before}");
+        vm.destroy().await.unwrap();
+        assert!(
+            configured_target.join("data.ext4").exists(),
+            "destroy removes the configured link, not its target"
+        );
+        assert_eq!(
+            crate::uninstall::left_in_place(&facts, false),
+            before,
+            "the frozen uninstall facts keep the surviving target incomplete"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn configured_data_link_protects_its_target_ancestors_after_destroy() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let base = std::env::temp_dir().join(format!(
+            "ssf-configured-data-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let own = base.join("live");
+        let target = base.join("other/deep/data.ext4");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, b"configured work").unwrap();
+        std::fs::write(base.join("other/data.ext4"), b"older work").unwrap();
+        std::fs::create_dir(&own).unwrap();
+        std::os::unix::fs::symlink(&target, own.join("data.ext4")).unwrap();
+
+        for backend in [BackendKind::Firecracker, BackendKind::Lima] {
+            let mut cfg = Config::default();
+            cfg.vm.name = "live".into();
+            cfg.vm.backend = Some(backend);
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
+            let survey = Vm::new(&cfg).survey();
+            assert_eq!(
+                survey.unread,
+                [unread_path(&own.join("data.ext4"))],
+                "the configured data link remains a destroy boundary under {backend:?}"
+            );
+            assert_eq!(survey.strays.len(), 1, "{backend:?}: {:?}", survey.strays);
+            assert_eq!(survey.strays[0].kind, StrayKind::ProtectedDataDisk);
+            assert_eq!(
+                survey.strays[0].name,
+                base.join("other/data.ext4").to_string_lossy()
+            );
+            assert!(
+                survey
+                    .strays
+                    .iter()
+                    .all(|stray| !stray.remove.starts_with("rm -rf")
+                        && !stray.remove.contains(target.to_string_lossy().as_ref())),
+                "no remedy may remove the configured target or an ancestor: {:?}",
+                survey.strays
+            );
+        }
+
+        let mut cfg = Config::default();
+        cfg.vm.name = "live".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        let facts = crate::uninstall::Facts::gather(&cfg, &vm);
+        let before = crate::uninstall::left_in_place(&facts, false);
+        assert!(!before.contains("downloads; safe to remove)"), "{before}");
+        vm.destroy().await.unwrap();
+        assert!(
+            target.exists(),
+            "destroy removes the link, not its disk target"
+        );
+        assert!(base.join("other/data.ext4").exists());
+        assert_eq!(crate::uninstall::left_in_place(&facts, false), before);
         std::fs::remove_dir_all(&base).unwrap();
     }
 
@@ -4930,8 +5075,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn a_protected_ancestor_aliasing_the_live_disk_is_not_a_stray() {
+    #[tokio::test]
+    async fn a_protected_ancestor_aliasing_the_live_disk_is_not_a_stray() {
+        let _sandbox = crate::config::test_support::sandbox();
         // With name `new/nested` and `new/nested -> new`, the apparent
         // ancestor disk and the configured Firecracker data disk are
         // one file. The lexical paths differ, so only comparing names
@@ -4953,14 +5099,31 @@ mod tests {
         cfg.vm.name = "new/nested".into();
         cfg.vm.backend = Some(BackendKind::Firecracker);
         cfg.vm.dir = base.to_string_lossy().into_owned();
-        let (strays, unread) = Vm::new(&cfg).strays_on_filesystem();
-        std::fs::remove_dir_all(&base).unwrap();
+        let vm = Vm::new(&cfg);
+        let (strays, unread) = vm.strays_on_filesystem();
         assert_eq!(
             strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             ["older"],
             "the live disk's canonical identity is protected"
         );
-        assert!(unread.is_empty(), "complete scan: {unread:?}");
+        assert_eq!(unread, [unread_path(&base.join("new/nested"))]);
+        let facts = crate::uninstall::Facts::gather(&cfg, &vm);
+        assert!(
+            facts.vm_strays.iter().all(|stray| !stray
+                .remove
+                .contains(base.join("new").to_string_lossy().as_ref())),
+            "no remedy may remove an ancestor of configured storage: {:?}",
+            facts.vm_strays
+        );
+        let before = crate::uninstall::left_in_place(&facts, false);
+        assert!(!before.contains("downloads; safe to remove)"), "{before}");
+        vm.destroy().await.unwrap();
+        assert!(
+            base.join("new/data.ext4").exists(),
+            "destroy removes the nested link, not its target disk"
+        );
+        assert_eq!(crate::uninstall::left_in_place(&facts, false), before);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

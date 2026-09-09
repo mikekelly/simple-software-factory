@@ -137,8 +137,10 @@ document links to.
     The first directory with a `data.ext4` on an unrelated branch represents
     that retained subtree. It never follows directory symlinks or offers a
     recursive remedy across the configured VM's lexical or resolved aliases.
-    A readable symlink exactly at the configured VM is its owned subtree and
-    is skipped; a link known to target a non-directory cannot hide a VM.
+    A configured directory or data-disk symlink remains incomplete even when
+    readable because destroy removes the link, not its target; resolved
+    targets and their ancestors receive no recursive remedy. Other links
+    known to target non-directories cannot hide a VM.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
     running the factory in a VM. All three name paths they could not
     inspect, including individual entries, symlinks and scan-limit boundaries

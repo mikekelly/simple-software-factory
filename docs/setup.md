@@ -1070,12 +1070,13 @@ Only a filesystem `NotFound` answer means a path is absent. Permission
 errors, failed directory entries and other I/O errors mean the contents
 could not be established. This applies to `[vm] dir`, lima's home and
 `_disks`, including their entries. Presence checks follow symlinks at
-configured VM paths. A readable symlink that is exactly the configured VM
-directory is therefore known to be in destroy's scope and does not make the
-scan incomplete. Stray scans do not descend through other directory
-symlinks or offer a removal command for their targets; those links and the
-exact boundary where a depth or entry limit stops the scan are retained as
-incomplete observations. A symlink whose target is known to be a
+configured VM paths, but destroy removes a configured directory or data-disk
+link rather than its target. Those links therefore remain incomplete even
+when the target is readable, and their resolved targets and ancestors never
+receive a recursive remedy. Stray scans do not descend through other
+directory symlinks or offer a removal command for their targets; those links
+and the exact boundary where a depth or entry limit stops the scan are
+retained as incomplete observations. A symlink whose target is known to be a
 non-directory cannot hide VM storage and does not make the scan incomplete;
 a target that cannot be inspected does.
 Fix access to the named path and inspect it again before deciding to

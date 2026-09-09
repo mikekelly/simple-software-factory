@@ -301,12 +301,14 @@ and `ssf doctor` does on a host that is not running the factory in a VM
 `[vm] dir`). None of them removes it for you: nothing can tell a VM you
 renamed away to keep from one you abandoned.
 
-The scan never follows a directory symlink. A readable symlink that is
-exactly the configured VM directory belongs to destroy's known scope and is
-skipped. Other directory symlinks, unreadable or unnameable paths, failed
-directory entries, and depth or entry cutoffs are listed as incomplete
-observations. A symlink known to target a non-directory cannot hide VM
-storage and is skipped; an unreadable target remains incomplete. These
+The scan never follows a directory symlink. Destroy removes a configured
+directory or data-disk link rather than its target, so those links remain
+incomplete even when readable; their resolved targets and ancestors never
+receive a recursive remedy. Other directory symlinks, unreadable or
+unnameable paths, failed directory entries, and depth or entry cutoffs are
+listed as incomplete observations. A non-configured symlink known to target
+a non-directory cannot hide VM storage and is skipped; an unreadable target
+remains incomplete. These
 unknowns withhold any recursive remedy whose ownership cannot be established
 and prevent `[vm] dir` from being called plainly safe to remove. Fix access
 or inspect the named boundary before removing anything by hand.
