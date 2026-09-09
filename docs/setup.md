@@ -1003,6 +1003,18 @@ each of the other cases, and it is never `ssf vm start`), or pass
 the clones live on its data disk and are destroyed with it, checked or
 not. `--yes` skips the question for scripted use.
 
+`[vm] dir` is shared by the two backends, and `data.ext4` is
+Firecracker's name for its disk. If you switch `[vm] backend` from
+`firecracker` to `lima` and keep `[vm] name`, the Firecracker VM's
+clones and worktrees stay in `<[vm] dir>/<name>` -- where lima knows
+nothing of them and the destroy would remove the directory with them in
+it. A healthy lima guest reports a clean machine, because that disk is
+on nothing lima mounted, so this is checked on the host: `ssf uninstall`
+refuses, names the file, and says to put `[vm] backend` back to
+`firecracker` and run it again to reach the work on it. A directory ssf
+could not read counts the same way, since it cannot rule the disk out.
+`--force` goes ahead.
+
 Only "not found" counts as "there is no data disk". A directory ssf
 could not read at all -- a lima home an earlier `sudo` left root-owned,
 which is itself one of the reasons `limactl` fails, or a volume that

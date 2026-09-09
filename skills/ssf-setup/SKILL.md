@@ -126,7 +126,10 @@ document links to.
     never for a data disk that outlived its instance or for a lima that
     would not say whether the VM is running. A directory ssf could not
     read at all is a question that was never answered, not an empty
-    one, and refuses too. Do not add `--force` on the
+    one, and refuses too. So does a `data.ext4` a switch of
+    `[vm] backend` left in the VM's own directory: it is checked on the
+    host, because a healthy lima guest cannot see it, and the remedy is
+    to put `[vm] backend` back rather than any lima command. Do not add `--force` on the
     person's behalf: show them the report and let them settle the work
     or decide; `--data` (config, the bot's key, state) is also theirs to
     ask for. The package removal that follows (`sudo pacman -R ssf`,

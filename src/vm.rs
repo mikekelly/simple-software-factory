@@ -971,6 +971,24 @@ impl Vm {
     fn root_disk(&self) -> PathBuf {
         self.dir.join("root.ext4")
     }
+    /// A Firecracker data disk left in the VM's own directory by a
+    /// change of backend, if there could be one.
+    ///
+    /// `[vm] dir` is shared by the two backends and `data.ext4` is
+    /// Firecracker's name for its disk, so switching `[vm] backend` to
+    /// lima with `[vm] name` kept leaves the Firecracker VM's clones and
+    /// worktrees in `<[vm] dir>/<name>` -- where lima knows nothing of
+    /// them and [`Vm::destroy`] removes the directory with them in it.
+    ///
+    /// `Some` when the file is there *or* when nobody could tell, since
+    /// both are reasons not to destroy the directory unasked. `None`
+    /// under Firecracker, where the same file is simply this VM's own
+    /// disk.
+    pub fn stranded_data_disk(&self) -> Option<PathBuf> {
+        (self.backend() == BackendKind::Lima && there(&self.data_disk()) != Some(false))
+            .then(|| self.data_disk())
+    }
+
     fn data_disk(&self) -> PathBuf {
         self.dir.join("data.ext4")
     }
@@ -3010,6 +3028,65 @@ mod tests {
             // this run proves nothing about it. The assertion is the
             // narrow one that is true: the directory really was
             // readable, so the stat above was allowed to succeed.
+            Ok(_) => assert!(
+                readable_anyway,
+                "a stat succeeded through a directory nothing should have been able to read"
+            ),
+        }
+    }
+
+    #[test]
+    fn a_stranded_disk_is_a_lima_question_and_an_unread_directory_answers_it_yes() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!(
+            "ssf-stranded-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let vm_for = |backend| {
+            let mut cfg = Config::default();
+            cfg.vm.name = "factory".into();
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            cfg.vm.backend = Some(backend);
+            Vm::new(&cfg)
+        };
+        let lima = vm_for(BackendKind::Lima);
+        std::fs::create_dir_all(&lima.dir).unwrap();
+        assert_eq!(lima.stranded_data_disk(), None, "no such file");
+
+        let disk = lima.dir.join("data.ext4");
+        std::fs::write(&disk, b"clones").unwrap();
+        assert_eq!(lima.stranded_data_disk().as_deref(), Some(disk.as_path()));
+        // Under Firecracker the same file is simply this VM's own disk,
+        // and `Survey::data` is what speaks for it.
+        assert_eq!(vm_for(BackendKind::Firecracker).stranded_data_disk(), None);
+
+        // A directory nobody could read answers "maybe", and maybe is a
+        // reason not to destroy it unasked.
+        let mut perm = std::fs::metadata(&lima.dir).unwrap().permissions();
+        perm.set_mode(0o000);
+        std::fs::set_permissions(&lima.dir, perm).unwrap();
+        let seen = std::fs::metadata(&disk).map_err(|e| e.kind());
+        // Both readings while the mode is still 0o000: afterwards they
+        // are true for everyone and say nothing.
+        let unknown = lima.stranded_data_disk();
+        let readable_anyway = std::fs::read_dir(&lima.dir).is_ok();
+        let mut perm = std::fs::metadata(&lima.dir).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&lima.dir, perm).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+
+        match seen {
+            Err(std::io::ErrorKind::NotFound) => {
+                panic!("the fixture is wrong: the disk was written above")
+            }
+            Err(_) => assert_eq!(unknown.as_deref(), Some(disk.as_path())),
+            // euid 0 ignores the mode, so this case cannot be built here
+            // and this run proves nothing about it. The assertion is the
+            // narrow one that is true: the directory really was readable.
             Ok(_) => assert!(
                 readable_anyway,
                 "a stat succeeded through a directory nothing should have been able to read"

@@ -187,6 +187,12 @@ pub struct Facts {
     /// The projects directory of every driver in use (clones and
     /// worktrees), never removed.
     pub projects: Vec<PathBuf>,
+    /// A Firecracker data disk a change of `[vm] backend` left in the
+    /// VM's own directory, or could have; see
+    /// [`vm::Vm::stranded_data_disk`]. Read on the host, so it does not
+    /// depend on the guest -- the lima guest cannot see this disk by
+    /// construction, and its report says nothing about the clones on it.
+    pub vm_stranded_disk: Option<PathBuf>,
 }
 
 impl Facts {
@@ -212,6 +218,7 @@ impl Facts {
             vm_running: survey.running,
             vm_startable: survey.startable,
             vm_data: survey.data,
+            vm_stranded_disk: vm.stranded_data_disk(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
                 vm::BackendKind::Firecracker => None,
@@ -548,6 +555,20 @@ pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Op
             } else {
                 "go ahead and leave it where it is"
             }
+        ));
+    }
+    // Before the `vm_unchecked` clause, and not part of it: that flag
+    // is set from the guest's report, and this is a disk the guest
+    // cannot see. On a healthy lima VM -- instance up, ssh answering,
+    // report parsed -- the flag stays false, and without this the
+    // destroy took the directory and the Firecracker clones in it, with
+    // no prompt at all under `--yes`.
+    if let Some(disk) = &facts.vm_stranded_disk {
+        return Some(format!(
+            "{} is a data disk a change of [vm] backend left behind, and the lima VM cannot mount it to look inside; \
+             put [vm] backend back to firecracker and run this again to reach the clones and worktrees on it, \
+             or pass --force to destroy them unchecked",
+            disk.display()
         ));
     }
     if opts.vm_unchecked {
@@ -1015,7 +1036,87 @@ mod tests {
             config_dir: PathBuf::from("/c"),
             state_dir: PathBuf::from("/s"),
             projects: vec![PathBuf::from("/p")],
+            vm_stranded_disk: None,
         }
+    }
+
+    #[test]
+    fn a_stranded_disk_stops_the_destroy_even_when_the_guest_answered() {
+        // A Firecracker `data.ext4` in `<[vm] dir>/<name>` is on no
+        // disk lima mounted, so a healthy lima guest reports a clean
+        // machine and knows nothing about the clones on it. `run` sets
+        // `opts.vm_unchecked` only where the report failed, so on that
+        // path the flag stays false -- and nothing else stood between
+        // those clones and `Vm::destroy`, with no prompt at all under
+        // `--yes`. Hence the check is its own clause in `hard_stop`,
+        // which every path reaches, rather than another input to that
+        // flag.
+        let mut f = facts();
+        f.vm_stranded_disk = Some(PathBuf::from("/g/vm/factory/data.ext4"));
+        // Exactly what `run` reaches `hard_stop` with when the guest
+        // answered: no `vm_unchecked`, and a report with nothing in it.
+        let healthy = Opts::default();
+        let why = hard_stop(&f, &Report::default(), &healthy, false)
+            .expect("a stranded disk stops the command");
+        assert!(why.contains("/g/vm/factory/data.ext4"), "{why}");
+        assert!(
+            why.contains("put [vm] backend back to firecracker"),
+            "{why}"
+        );
+        // Deliberately not asserted here: `hard_stop(.., true).is_none()`
+        // holds for every input, so it would say nothing about this
+        // clause. `--force`'s early return is above all of them.
+        //
+        // Without the disk the same facts go through, so the two
+        // assertions above are about the disk and not about the
+        // fixture.
+        f.vm_stranded_disk = None;
+        assert!(hard_stop(&f, &Report::default(), &healthy, false).is_none());
+    }
+
+    #[test]
+    fn the_stranded_disk_is_read_on_the_host_and_survives_the_guests_answer() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let base = std::env::temp_dir().join(format!(
+            "ssf-stranded-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.enabled = true;
+        cfg.vm.name = "factory".into();
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        cfg.vm.backend = Some(vm::BackendKind::Lima);
+        // A `limactl` that is not there, so this asks lima nothing and
+        // cannot reach the developer's own `~/.lima`.
+        cfg.vm.limactl = Some(base.join("no-limactl").to_string_lossy().into_owned());
+        let vmm = vm::Vm::new(&cfg);
+        std::fs::create_dir_all(&vmm.dir).unwrap();
+        let disk = vmm.dir.join("data.ext4");
+        std::fs::write(&disk, b"clones").unwrap();
+
+        let gathered = Facts::gather(&cfg, &vmm);
+        let mut answered = gathered.clone();
+        answered.ssh_answered(&vmm);
+        let without = {
+            std::fs::remove_file(&disk).unwrap();
+            let f = Facts::gather(&cfg, &vmm);
+            std::fs::write(&disk, b"clones").unwrap();
+            f
+        };
+        std::fs::remove_dir_all(&base).unwrap();
+
+        assert_eq!(gathered.vm_stranded_disk.as_deref(), Some(disk.as_path()));
+        // `ssh_answered` is the ordinary VM-mode path -- guest up,
+        // answering -- and it rebuilds several of these fields by hand.
+        // Dropping the disk there would take the refusal off exactly the
+        // machines that have one.
+        assert_eq!(answered.vm_stranded_disk.as_deref(), Some(disk.as_path()));
+        // And it is the file that decides, not the configuration.
+        assert_eq!(without.vm_stranded_disk, None);
     }
 
     #[test]
