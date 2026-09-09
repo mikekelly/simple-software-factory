@@ -2413,7 +2413,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
 /// What that pins is the text. The `print!` that puts it on a terminal
 /// is in `doctor` and is reachable by nothing: removing it makes
 /// `ssf doctor` silent about a stray it found, with the suite green.
-/// #188 is the seam for that, here and at the three sibling sites.
+/// #188 is the seam for that, here and at the four sibling sites.
 pub fn stray_notes(strays: &[vm::Stray], unread: &[PathBuf]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -4251,7 +4251,10 @@ mod tests {
             text.contains("/home/me/.lima/_disks could not be read"),
             "{text}"
         );
-        assert!(!text.contains("/v "), "not [vm] dir: {text}");
+        // (No `[vm] dir` assertion here, unlike the `render_vm_status`
+        // twin: that printer holds `st.dir` and could name it by
+        // mistake, and this one is handed only strays and unread paths,
+        // so an assertion about it would hold for every input.)
         assert_eq!(stray_notes(&[], &[]), "");
     }
 
