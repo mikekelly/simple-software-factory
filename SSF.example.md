@@ -68,6 +68,7 @@ stripped before the file reaches an agent.
   it, and on some harnesses a subagent inherits the session's model unless
   it is told otherwise. -->
 - Commit as you go.
+  Read `git diff --cached` before writing the commit message, not after.
 - Work on the item's branch. When the work is done, push it and open a pull
   request that references the issue (`Closes #N`), then comment on the issue
   with the link.

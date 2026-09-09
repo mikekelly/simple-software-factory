@@ -8,6 +8,7 @@
 - Ask on the issue rather than guessing when the request is ambiguous; you are woken up when someone answers.
 - Delegate on purpose: name the model you start each kind of subagent with, and its effort level where you can set one, rather than taking whatever the default is — one choice for the ones that plan, diagnose and run the gauntlet, another for the ones implementing work you have already planned, which is where most of the tokens go. Which belongs on each side is a decision to make from what the harness reaches and what a task costs there (`docs/setup.md`, "Choosing the harness and the model"), and where the harness gives a session no say in what a subagent runs on, or no effort level to set, say that on the issue instead of inventing a setting.
 - Commit as you go.
+  Read `git diff --cached` before writing the commit message, not after.
 - Work on the issue's branch and open a PR that references the issue (`Closes #N`), then comment on the issue with the link.
 - Keep `cargo test` green and run `cargo fmt` and `cargo clippy` before pushing.
 - Update `README.md` (or the right file under `docs/`) and `config.example.toml` for any user-visible behaviour.

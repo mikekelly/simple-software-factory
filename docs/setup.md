@@ -825,7 +825,8 @@ guide`). How the repository wants work done goes in an `SSF.md` at its
 root, appended to every initial prompt: comment when starting, when a
 decision is needed and when done; ask on the item rather than guess (the
 agent is woken when someone answers); branch and PR conventions (work on
-the item's branch, `Closes #N`, do not merge or close, who merges);
+the item's branch, read `git diff --cached` before writing the commit
+message, `Closes #N`, do not merge or close, who merges);
 what to run before a PR; what the board columns mean; the gauntlet;
 which models the session should spawn subagents on (the second and third
 rows of [Choosing the harness and the
