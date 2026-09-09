@@ -662,7 +662,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         // the one command whose output is a delete list.
         if *dir != facts.vm_base {
             keep.push(format!(
-                "{} (ssf could not read it; inspection is incomplete; anything belonging to the configured VM may be removed with it)",
+                "{} (ssf could not read or name it completely; inspection is incomplete; anything belonging to the configured VM may be removed with it)",
                 dir.display()
             ));
         }
@@ -2199,7 +2199,7 @@ mod tests {
                 .iter()
                 .find(|l| l.starts_with("/home/me/.lima "))
                 .unwrap(),
-            "/home/me/.lima (ssf could not read it; inspection is incomplete; anything belonging to the configured VM may be removed with it)"
+            "/home/me/.lima (ssf could not read or name it completely; inspection is incomplete; anything belonging to the configured VM may be removed with it)"
         );
         let present = Facts {
             vm_present: Some(true),

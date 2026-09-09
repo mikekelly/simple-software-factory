@@ -1055,7 +1055,9 @@ unreachable `data.ext4` is absent.
 Only a filesystem `NotFound` answer means a path is absent. Permission
 errors, failed directory entries and other I/O errors mean the contents
 could not be established. This applies to `[vm] dir`, lima's home and
-`_disks`, including their entries and paths reached through symlinks.
+`_disks`, including their entries. Presence checks follow symlinks at
+configured VM paths. Stray scans inspect a symlink itself but do not
+follow it or offer a removal command for its target.
 Fix access to the named path and inspect it again before deciding to
 remove anything by hand. A missing directory produces no retained-path
 line; a directory that could not be inspected still does.
@@ -1063,8 +1065,8 @@ line; a directory that could not be inspected still does.
 These observations appear in `ssf uninstall`, `ssf vm status` and the
 host's `ssf doctor`. In VM mode `ssf doctor` is forwarded into the guest,
 which cannot see the host's `[vm] dir` or lima's home. A path listed as
-unread is an observation failure, not a promise that `vm destroy` leaves
-it untouched: the configured VM's own directory is still in the destroy
+unread means inspection or exact naming was incomplete, not a promise
+that `vm destroy` leaves it untouched: the configured VM's own directory is still in the destroy
 scope. Instances and disks that this configuration does not name stay
 untouched, including with `--force`.
 
