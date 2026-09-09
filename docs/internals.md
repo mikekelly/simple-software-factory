@@ -24,6 +24,10 @@ The details behind the README's [How it works](../README.md#how-it-works).
   (Orca links the worktree to the issue number; herdr names it after
   it), so a lost state file re-attaches instead of creating a second
   workspace.
+- **One engine per state directory.** `state.lock` is an exclusive
+  process-held lock beside `state.json`; both `ssf run` and `ssf run --once`
+  take it before reading state. It is released when its owner exits. Do not
+  unlink it to clear a refusal while an engine may still be running.
 - **Delivery into the agent's terminal.** Messages are pasted with bracketed
   paste so multi-line text arrives as one message, then Enter. Claude Code
   queues it as a steering message while busy, or runs it when idle.

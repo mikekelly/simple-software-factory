@@ -41,7 +41,7 @@ document links to.
    step.
    A state directory has one engine owner: `ssf run --once` refuses while
    the daemon is running. With a VM it is the guest daemon and state that
-   matter, so let its next poll run or stop the guest service before a pass.
+   matter, so let its next poll run.
 3. **Prefer the CLI** (`ssf repo add`, `ssf repo set`, `ssf config set`,
    `ssf auth login`) over editing `config.toml` by hand: it validates
    harness, model and effort ids, and the daemon picks changes up on its

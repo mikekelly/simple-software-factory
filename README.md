@@ -361,8 +361,8 @@ a VM, stopping the service shuts the guest down cleanly.
 
 One state directory has one engine owner. `ssf run --once` refuses while its
 daemon is active, including when the command is forwarded to an active VM;
-in that case the guest's `ssf.service` owns the guest state, so let it run its
-next poll or stop that guest service before a one-off pass.
+in that case the guest's `ssf.service` owns the guest state, so let its next
+poll do the work.
 
 **Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
 the package upgrade restarts the service (and, in the VM, the guest, whose

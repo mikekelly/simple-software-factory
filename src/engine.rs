@@ -119,9 +119,6 @@ fn is_blocked(e: &anyhow::Error) -> bool {
 }
 
 pub struct Engine {
-    /// Held from construction through shutdown, before the state is ever
-    /// read. A one-shot engine uses the same guard as the daemon.
-    _state_lock: Option<StateLock>,
     cfg: Config,
     gh: GitHub,
     drivers: Drivers,
@@ -173,6 +170,10 @@ pub struct Engine {
     /// Merge simulations keyed by repository and branch, reused while the
     /// base and branch commit pair remains unchanged.
     conflict_pairs: BTreeMap<(String, String), ConflictPair>,
+    /// Held from construction through shutdown, before the state is ever
+    /// read. A one-shot engine uses the same guard as the daemon. Declared
+    /// last so it drops only after the rest of the engine.
+    _state_lock: Option<StateLock>,
 }
 
 /// The cached collaborator list of one repository.
@@ -391,7 +392,6 @@ impl Engine {
             Vec::new()
         };
         Ok(Self {
-            _state_lock: Some(state_lock),
             cfg,
             gh,
             drivers,
@@ -410,6 +410,7 @@ impl Engine {
             onboarding: None,
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
+            _state_lock: Some(state_lock),
         })
     }
 
@@ -5462,9 +5463,9 @@ fn bind_socket() -> Result<tokio::net::UnixListener> {
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     if path.exists() {
-        // Another daemon, or a leftover from one that died? This remains a
-        // defence for callers that bind the IPC socket directly; `StateLock`
-        // is the atomic engine ownership guard.
+        // A daemon from before `StateLock` could have bound between this
+        // engine's constructor check and this bind. Leave its socket alone;
+        // only replace one left by a process that died.
         refuse_live_daemon()?;
         let _ = std::fs::remove_file(&path);
     }
@@ -5655,7 +5656,6 @@ mod tests {
         // The stand-in driver below is Orca; herdr is the default now.
         cfg.driver = Some(DriverKind::Orca);
         Engine {
-            _state_lock: None,
             cfg,
             gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
             drivers: Drivers::from_list(vec![Driver::Orca(crate::orca::Orca::new(
@@ -5683,6 +5683,7 @@ mod tests {
             onboarding: None,
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
+            _state_lock: None,
         }
     }
 
@@ -6653,12 +6654,20 @@ mod tests {
         drop(second);
     }
 
-    #[test]
-    fn a_live_socket_from_an_older_daemon_still_refuses_an_engine() {
+    #[tokio::test]
+    async fn engine_constructor_refuses_a_live_socket_before_auth_or_state_access() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let _sandbox = crate::config::test_support::sandbox();
+        let stub = GitHubStub::start().await;
+        let mut cfg = Config::default();
+        cfg.github.api_url = stub.base.clone();
+        cfg.github.token = Some("test-token".into());
         let path = crate::ipc::socket_path();
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let err = refuse_live_daemon().unwrap_err();
+        let err = match Engine::new(cfg.clone()).await {
+            Ok(_) => panic!("an engine started beside a legacy daemon socket"),
+            Err(err) => err,
+        };
         assert_eq!(
             err.to_string(),
             format!(
@@ -6666,7 +6675,15 @@ mod tests {
                 path.display()
             )
         );
+        assert!(stub.hits().is_empty(), "the refused engine called GitHub");
+        assert!(
+            !crate::state::state_path().exists(),
+            "the refused engine created state"
+        );
         drop(listener);
+        let engine = Engine::new(cfg).await.unwrap();
+        assert_eq!(stub.hits(), vec!["/user"]);
+        drop(engine);
     }
 
     /// Every hit is one of the four listings: nothing was fetched by number.

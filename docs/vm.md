@@ -491,12 +491,13 @@ made per VM. With `vm.enabled` the commands that talk to the daemon
 connection, so the bar widget, `ssf status --json` and `ssf tell` work as
 before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 [-- cmd]` gives a shell. `ssf vm attach` attaches to herdr's session in
-the guest in your terminal;
-`ssf run --once` is therefore a guest command too: while the guest's
-`ssf.service` owns its state it refuses, and the host adds the VM name after
-the guest's refusal.
-`ssf vm ssh-config` prints an `~/.ssh/config` entry so `herdr --remote
-ssf-default` (herdr's thin client) and plain `ssh ssf-default` work too.
+the guest in your terminal; `ssf vm ssh-config` prints an `~/.ssh/config`
+entry so `herdr --remote ssf-default` (herdr's thin client) and plain `ssh
+ssf-default` work too.
+
+`ssf run --once` is a guest command too. While the guest's `ssf.service`
+owns its state it refuses; let its next poll do the work. The host adds the
+VM name after the guest's refusal.
 Clicking a session in the bar widget (Omarchy) opens a terminal attached
 to the guest. `ssf vm logs` follows the guest daemon's journal and `ssf
 vm console` shows the serial console. Under lima, `limactl shell
