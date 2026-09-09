@@ -476,16 +476,21 @@ fn valued_long(a: &str) -> bool {
         a,
         "--assignee"
             | "--base"
+            | "--blocked-by"
+            | "--blocking"
             | "--body"
             | "--body-file"
             | "--head"
             | "--label"
             | "--milestone"
+            | "--parent"
             | "--project"
+            | "--recover"
             | "--repo"
             | "--reviewer"
             | "--template"
             | "--title"
+            | "--type"
     )
 }
 
