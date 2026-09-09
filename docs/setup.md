@@ -1047,14 +1047,13 @@ safe to remove, or safe to remove except for what is listed below. A
 directory ssf could not read is reported as though it were empty, so
 `safe to remove` can be said of one holding a VM nobody could look
 inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
-home by hand if either has permissions you did not set.
-A directory that *contains* the VM this
-configuration names is never offered, since the command would take the
-live VM with it -- so an older VM's disk stranded in one goes
-unmentioned, which is issue #193. `ssf uninstall` never removes a stray
-and `--force` does not reach it:
-ssf cannot tell a VM you renamed away to keep from one you abandoned,
-and only one of those is safe to delete. `ssf vm status` names them too,
+home by hand if either has permissions you did not set. A directory
+that *contains* the VM this configuration names is never offered,
+since the command would take the live VM with it -- so an older VM's
+disk stranded in one goes unmentioned, which is issue #193. `ssf
+uninstall` never removes a stray and `--force` does not reach it: ssf
+cannot tell a VM you renamed away to keep from one you abandoned, and
+only one of those is safe to delete. `ssf vm status` names them too,
 and `ssf doctor` does when it runs on the host -- in VM mode `ssf
 doctor` is forwarded into the guest, which cannot see the host's `[vm]
 dir` or lima's home.
@@ -1067,20 +1066,20 @@ which is listed on its own), and, unless you pass `--data`,
 `~/.config/ssf` (config and the bot's key) and `~/.local/state/ssf`
 (state, and the marker that keeps a disabled service off, so a reinstall
 stays stopped until `ssf ui service enable`; with `--data` gone, a
-reinstall starts the service). Under lima the instance and the data disk
-go out of lima's own home with `vm destroy`, but `~/.lima` itself stays,
-holding lima's cache of downloaded images and anything else of lima's
-you use; remove it by hand once nothing does. An `ssf-*` in it that this
-configuration does not name gets a line of its own and the `limactl`
-command that removes it. The home's own path appears in that command
-only when `LIMA_HOME` points somewhere other than lima's default, since
-the remedy has to carry it then and in the default home it would be
-noise. The bot GitHub account
-itself is not touched, nor its gh sign-in. `ssf status` afterwards says
-not signed in and stopped; the watched repositories and the records of
-past items still show until `--data` (or a reinstall from scratch)
-clears them. With the VM gone the config's `vm.enabled` is cleared, so
-`status` does not go looking for it.
+reinstall starts the service). Under lima the instance and the data
+disk go out of lima's own home with `vm destroy`, but `~/.lima` itself
+stays, holding lima's cache of downloaded images and anything else of
+lima's you use; remove it by hand once nothing does. An `ssf-*` in it
+that this configuration does not name gets a line of its own and the
+`limactl` command that removes it. The home's own path appears in that
+command only when `LIMA_HOME` points somewhere other than lima's
+default, since the remedy has to carry it then and in the default home
+it would be noise. The bot GitHub account itself is not touched, nor
+its gh sign-in. `ssf status` afterwards says not signed in and
+stopped; the watched repositories and the records of past items still
+show until `--data` (or a reinstall from scratch) clears them. With
+the VM gone the config's `vm.enabled` is cleared, so `status` does not
+go looking for it.
 
 ## Checklist
 

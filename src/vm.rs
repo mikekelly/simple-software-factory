@@ -345,8 +345,8 @@ pub struct Survey {
     /// but `Some(false)`; the leftovers in `[vm] dir` are ssf's own and
     /// hold nothing of anyone's work.
     pub data: Option<bool>,
-    /// Instances and disks of ssf's that this configuration does not
-    /// name: what a changed `[vm] name` leaves behind. Reported, never
+    /// Instances, disks and VM directories that this configuration does
+    /// not name: what a changed `[vm] name` leaves behind. Reported, never
     /// removed, and deliberately not part of [`Survey::present`] --
     /// `ssf uninstall` destroys the VM it is configured for, and a stray
     /// that reached that decision would be a VM deleted because someone
@@ -1491,10 +1491,12 @@ impl Vm {
     /// anything: `[vm] dir` *and* lima's own home, both read on both
     /// backends -- `[vm] dir` is shared by them, and lima's home
     /// outlives a change of `[vm] backend`. Reading either as belonging
-    /// to one backend is the mistake this whole change corrects. For
-    /// the caller that has no tooling to ask with -- which is
-    /// exactly when the person cannot run `limactl list` either, so
-    /// going quiet then would take the report away at its most useful.
+    /// to one backend is the mistake this whole change corrects.
+    ///
+    /// This is what `ssf doctor` falls back to when there is no tooling
+    /// to ask with -- which is exactly when the person cannot run
+    /// `limactl list` either, so going quiet then would take the report
+    /// away at its most useful.
     pub fn strays_on_filesystem(&self) -> Vec<Stray> {
         let mut strays = self.fc_dir_contents();
         // Lima's home under both backends: reading it costs no

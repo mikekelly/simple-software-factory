@@ -175,8 +175,8 @@ pub struct Facts {
     /// where the disk is a file inside `[vm] dir` and no such refusal is
     /// reachable.
     pub vm_disk: Option<String>,
-    /// Instances and disks of ssf's that this configuration does not
-    /// name -- what a changed `[vm] name` leaves behind. Named in the
+    /// Instances, disks and VM directories that this configuration does
+    /// not name -- what a changed `[vm] name` leaves behind. Named in the
     /// report as things `ssf uninstall` will not touch, never removed by
     /// it: ssf cannot tell a VM someone renamed away to keep from one
     /// they abandoned, and only one of those is safe to delete.
@@ -1169,6 +1169,24 @@ mod tests {
             text.contains("limactl disk delete ssf-old"),
             "the disk is the one that holds the work: {text}"
         );
+        // The other direction of the snapshot, through the same join.
+        // `vm_base_exists: true` unconditionally left the suite green,
+        // and it is what stops `left in place:` naming a `[vm] dir` that
+        // has never existed -- on a machine that never ran
+        // `ssf vm build`, which is every machine that installed ssf and
+        // did not use the VM.
+        let mut gone = cfg.clone();
+        gone.vm.dir = format!("{rel}/nowhere");
+        let absent = Facts::gather(&gone, &vm::Vm::new(&gone));
+        assert!(
+            !absent.vm_base_exists,
+            "a [vm] dir that is not there was not there"
+        );
+        assert!(
+            !render(&absent, &Report::default(), &Opts::default())
+                .contains("VM image and downloads"),
+            "and gets no line at all"
+        );
         assert!(facts.vm_base_exists, "and so does the snapshot");
         assert!(
             facts.vm_base.is_absolute() && facts.vm_base.ends_with(&rel),
@@ -1875,9 +1893,14 @@ mod tests {
             "could not be asked goes through destroy, which says what it found"
         );
         // A stray is outside the thing being uninstalled, so nothing
-        // stops the command over it and no flag turns it into a target.
+        // stops the command over it.
+        //
+        // Only the `false` call says anything: `hard_stop` returns
+        // `None` on its first line when `force`, so asserting that with
+        // `true` holds for every input there is. What `--force` does is
+        // pinned where it can fail, in
+        // `hard_stop_names_unpushed_work_and_what_force_does_to_it`.
         assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
-        assert!(hard_stop(&stray, &Report::default(), &Opts::default(), true).is_none());
         assert!(!unchecked_workspaces(stray.vm_data));
         // With nothing of ssf's elsewhere in lima, the plain sentence
         // comes back.
