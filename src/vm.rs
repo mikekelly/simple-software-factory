@@ -4132,6 +4132,10 @@ mod tests {
             "a lima instance a backend change left behind"
         );
         assert_eq!(fallback.len(), 1, "and doctor's fallback sees it too");
+        // `Some(false)`, not merely "not `Some(true)`": the destroy
+        // step skips on `Some(false)` and goes through `destroy` on
+        // `None`, so the two are different instructions and an
+        // `assert_ne!` would accept either.
         assert_eq!(survey.present, Some(false), "it is still not this VM");
     }
 
