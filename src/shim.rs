@@ -451,6 +451,44 @@ fn boolean_shorthand(c: char, review: bool) -> bool {
     }
 }
 
+/// Shorthand letters that take a value on the commands this shim tags,
+/// listed from `gh <command> --help` rather than assumed. A letter
+/// missing from here is read the way it was before, which is the safe
+/// direction to be wrong; a value-less letter wrongly listed is the
+/// unsafe one, since the argument after it would be stepped over and a
+/// body sitting there would go out unstamped.
+fn valued_shorthand(c: char, review: bool) -> bool {
+    if review {
+        matches!(c, 'b' | 'F' | 'R')
+    } else {
+        matches!(
+            c,
+            'a' | 'B' | 'b' | 'F' | 'H' | 'l' | 'm' | 'p' | 'R' | 'r' | 'T' | 't'
+        )
+    }
+}
+
+/// The same for the long flags, and for the same reason. `--body` and
+/// `--body-file` are here for completeness: they are read before this
+/// question is asked.
+fn valued_long(a: &str) -> bool {
+    matches!(
+        a,
+        "--assignee"
+            | "--base"
+            | "--body"
+            | "--body-file"
+            | "--head"
+            | "--label"
+            | "--milestone"
+            | "--project"
+            | "--repo"
+            | "--reviewer"
+            | "--template"
+            | "--title"
+    )
+}
+
 /// A single-dash argument read the way pflag reads it: every letter is a
 /// flag of its own, and the first one that takes a value swallows the
 /// rest of the cluster, or the next argument when the cluster ends
@@ -505,7 +543,12 @@ fn flag_true(v: &str) -> bool {
 /// spellings than a bare word: `--approve`, `--approve=true`, `-a`,
 /// `-a=true`, and inside a cluster as `-ac` or the `-a` of `-ab hi`.
 /// `--approve=false` carries the flag but not the action, exactly as gh
-/// reads it, and a value gh would refuse is no action either.
+/// reads it, and a value gh would refuse is no action either. One thing
+/// it does not do is prefer the last of a repeated flag the way gh
+/// does, so `-aa=false` reads as an action here and not to gh. Nothing
+/// posts either way -- gh refuses that line for having no action, and
+/// refuses it again for carrying a body without one -- so the answer
+/// only changes which of the two complaints comes back.
 fn action_flag(a: &str) -> bool {
     for name in ["--approve", "--comment", "--request-changes"] {
         if a == name {
@@ -606,7 +649,11 @@ impl Shim<'_> {
             // Body from a file (or stdin): moved onto the command line so no
             // temporary file is needed. Any boolean letters clustered
             // ahead of the `-F` are kept, since the `--body` replacing it
-            // cannot carry them.
+            // cannot carry them -- and then the body has to be attached
+            // to it with an `=`, because those letters are a word of
+            // their own and cobra pairs `-a` with the word after it when
+            // it goes looking for the command. Split into three words a
+            // `gh -aF notes.md pr review 3` becomes `unknown command`.
             let file = if a == "--body-file" && i + 1 < args.len() {
                 Some(("", args[i + 1].as_str(), 2))
             } else if let Some(v) = a.strip_prefix("--body-file=") {
@@ -626,17 +673,34 @@ impl Shim<'_> {
                 if body.len() > MAX_INLINE_BODY {
                     return args;
                 }
-                if !bools.is_empty() {
+                if bools.is_empty() {
+                    out.push("--body".to_string());
+                    out.push(body);
+                } else {
                     out.push(format!("-{bools}"));
+                    out.push(format!("--body={body}"));
                 }
-                out.push("--body".to_string());
-                out.push(body);
                 stamped = true;
                 i += used;
                 continue;
             }
+            // The argument after a flag that takes a value is that
+            // value and not a flag of its own. Reading it as one is how
+            // a `--title -dbhello` came back with the title stamped as
+            // though the `-b` in it were a body.
+            let skips_value = match short {
+                Some((_, c, None)) => valued_shorthand(c, review),
+                _ => valued_long(a),
+            };
             out.push(a.to_string());
             i += 1;
+            // Not a `--`: that ends the flags rather than feeding one.
+            if skips_value {
+                if let Some(v) = args.get(i).filter(|v| v.as_str() != "--") {
+                    out.push(v.clone());
+                    i += 1;
+                }
+            }
         }
         // An approval needs no body, but should still say where it came from.
         // Without an action flag gh would prompt (or reject --body), so those
@@ -1428,10 +1492,13 @@ mod tests {
     }
 
     /// Every spelling gh accepts for an action flag, and every spelling
-    /// it refuses to treat as one. Each was run against the real gh
-    /// against a pull request number that does not exist: the accepted
-    /// ones reach the API and fail on the number, the refused ones are
-    /// turned away for having no action at all.
+    /// it refuses to treat as one. Each was run against the real gh on a
+    /// pull request number that does not exist, and what tells the two
+    /// groups apart is gh's own "--approve, --request-changes, or
+    /// --comment required": the accepted ones get past that line and
+    /// fail on something later -- the number, a blank body, or naming
+    /// two actions at once -- and the refused ones do not. Only some of
+    /// them reach the API, so reaching it is not the test.
     #[test]
     fn action_flags_are_seen_in_every_spelling() {
         for a in [
@@ -1539,29 +1606,90 @@ mod tests {
         let o = o();
         let mut shim = shim(&o);
         shim.read = &read;
-        // The letters ahead of the `-F` survive the move to `--body`.
+        let body = format!("--body={}\n\nread notes.md", line());
+        // The letters ahead of the `-F` survive the move to `--body`,
+        // and the body attaches to that flag with an `=` rather than
+        // standing as a word of its own: those letters are a word, and
+        // cobra pairs a two-character one with the word after it while
+        // it looks for the command. Three words and `gh -aF notes.md pr
+        // review 7` comes back `unknown command`, which was checked
+        // against the real gh.
         assert_eq!(
             shim.rewrite(args(&["pr", "review", "7", "-aF", "notes.md"])),
-            args(&[
-                "pr",
-                "review",
-                "7",
-                "-a",
-                "--body",
-                &format!("{}\n\nread notes.md", line()),
-            ])
+            args(&["pr", "review", "7", "-a", &body])
         );
         assert_eq!(
             shim.rewrite(args(&["pr", "comment", "7", "-eF", "notes.md"])),
+            args(&["pr", "comment", "7", "-e", &body])
+        );
+        // The shape that made it matter: gh takes a clustered body file
+        // ahead of the command words, so the rewrite has to leave the
+        // command findable. The value has to be attached for gh to take
+        // it there -- as its own word it is the word cobra reads as the
+        // command -- so this is the spelling that reaches the API, and
+        // `gh -aF/dev/null pr review 999999` was run to confirm it.
+        assert_eq!(
+            shim.rewrite(args(&["-aFnotes.md", "pr", "review", "7"])),
+            args(&["-a", &body, "pr", "review", "7"])
+        );
+        // With no letters to keep, the two-word form gh has always had
+        // is left as it is: cobra pairs `--body` with the word after it,
+        // so the command is still found.
+        assert_eq!(
+            shim.rewrite(args(&["-F", "notes.md", "pr", "review", "7"])),
             args(&[
-                "pr",
-                "comment",
-                "7",
-                "-e",
                 "--body",
                 &format!("{}\n\nread notes.md", line()),
+                "pr",
+                "review",
+                "7"
             ])
         );
+    }
+
+    /// The argument after a flag that takes a value is that value. Read
+    /// as a flag of its own it could be stamped, which would rewrite
+    /// somebody's title, and the body further along the line would be
+    /// the second `--body` on it.
+    #[test]
+    fn a_flags_value_is_not_read_as_a_flag() {
+        let expect = format!("{}\n\nhello", line());
+        for (a, want) in [
+            (
+                args(&["issue", "create", "--title", "-dbx", "--body", "hello"]),
+                args(&["issue", "create", "--title", "-dbx", "--body", &expect]),
+            ),
+            (
+                args(&["issue", "create", "-t", "-dbx", "-b", "hello"]),
+                args(&["issue", "create", "-t", "-dbx", "-b", &expect]),
+            ),
+            (
+                args(&["pr", "create", "--label", "-bx", "-t", "t", "-b", "hello"]),
+                args(&["pr", "create", "--label", "-bx", "-t", "t", "-b", &expect]),
+            ),
+            // A clustered flag takes the next argument the same way.
+            (
+                args(&["pr", "create", "-dt", "-bx", "-b", "hello"]),
+                args(&["pr", "create", "-dt", "-bx", "-b", &expect]),
+            ),
+            // The value belongs to the flag even where it reads as an
+            // action, so this review still has no body of its own.
+            (
+                args(&["pr", "review", "7", "-R", "-ac", "--approve"]),
+                args(&[
+                    "pr",
+                    "review",
+                    "--body",
+                    &line(),
+                    "7",
+                    "-R",
+                    "-ac",
+                    "--approve",
+                ]),
+            ),
+        ] {
+            assert_eq!(rewrite(a.clone()), want, "{a:?}");
+        }
     }
 
     #[test]
