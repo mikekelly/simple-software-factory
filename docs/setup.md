@@ -1038,8 +1038,8 @@ lima instance or data disk still in lima's home, or, under Firecracker,
 the old VM's directory under `[vm] dir` with its data disk inside. Both
 are looked for on either backend, since `[vm] dir` is shared by them and
 lima's home outlives a change of `[vm] backend` just as it outlives a
-change of `[vm] name`. Not looked for: a `data.ext4` a switch from
-Firecracker to lima left in the VM's *own* directory, which `vm destroy`
+change of `[vm] name`. Not reported as a stray: a `data.ext4` a switch
+from Firecracker to lima left in the VM's *own* directory, which `vm destroy`
 removes with that directory (issue #176) -- check it by hand if you have
 changed `[vm] backend` and kept the name.
 
