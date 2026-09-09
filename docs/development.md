@@ -260,6 +260,7 @@ from the release either way.
 |------|------|
 | `src/main.rs` | the CLI: every subcommand, `doctor`, VM forwarding |
 | `src/engine.rs` | the polling loop: listings, onboarding, delivery, the startup pass, retirement |
+| `src/engine/requests.rs` | daemon-side handling of CLI requests over the IPC socket |
 | `src/github.rs` | REST and GraphQL client (listings, timelines, boards, collaborators) |
 | `src/prompt.rs` | timeline rendering, prompt templates and `ssf guide` |
 | `src/config.rs`, `src/state.rs` | `config.toml` and `state.json` |
