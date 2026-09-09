@@ -280,9 +280,11 @@ impl Facts {
             running: Some(true),
             startable: true,
             data: self.vm_data,
-            // ssh says nothing about what else lima holds.
+            // ssh says nothing about what else lima holds, or about
+            // what could not be read: both are carried through
+            // unchanged rather than one kept and one dropped.
             strays: self.vm_strays.clone(),
-            unread: Vec::new(),
+            unread: self.vm_unread.clone(),
         };
         self.vm_present = survey.present;
         self.vm_running = survey.running;
@@ -636,11 +638,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
             "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
             stray.what(),
             stray.name,
-            if stray.holds_work() {
-                " (its clones and worktrees are in it)"
-            } else {
-                ""
-            },
+            stray.holds_work_note(),
             stray.remove,
             stray.caveat()
         ));
@@ -657,6 +655,17 @@ pub fn left_in_place(facts: &Facts, data: bool) -> String {
         out.push_str(&format!("  {line}\n"));
     }
     out
+}
+
+/// What the destroy step prints instead of destroying, when there is
+/// nothing named this to destroy -- or `None` when it should go ahead.
+///
+/// A function because `run` is not reachable from a test, and this print
+/// is the last word a person reads. Reverting it to a bare "no VM" --
+/// the exact sentence #158 was filed about -- left the suite green,
+/// under a test comment claiming it was covered.
+fn destroy_step(facts: &Facts) -> Option<String> {
+    (facts.vm_present == Some(false)).then(|| no_vm_line(facts))
 }
 
 /// "There is nothing to destroy", said so that it stays true. A bare
@@ -950,13 +959,16 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     // report disagree. Only a plain "there is none" skips it; an
     // unknown goes through `destroy`, which says what it found.
     let mut vm_gone = true;
-    if facts.vm_present == Some(false) {
+    match destroy_step(&facts) {
         // The same sentence the report is careful about: there is no VM
         // *named this*, which is not the same as nothing being here.
-        println!("{}", no_vm_line(&facts));
-    } else if let Err(e) = vm.destroy().await {
-        fail("vm", e);
-        vm_gone = false;
+        Some(line) => println!("{line}"),
+        None => {
+            if let Err(e) = vm.destroy().await {
+                fail("vm", e);
+                vm_gone = false;
+            }
+        }
     }
     // With the VM gone the factory is nowhere; a config still saying
     // `vm.enabled` would send `ssf status` looking for it. Read the file
@@ -1744,8 +1756,17 @@ mod tests {
         // person reads.
         assert!(text.contains("after its instance"), "{text}");
         // The step that runs after the confirmation says it the same
-        // way; a bare "no VM" there is the last word the person reads.
-        assert_eq!(no_vm_line(&stray), "no VM named new to remove");
+        // way, through the same function -- asserting the helper alone
+        // left the step itself free to print a bare "no VM".
+        assert_eq!(
+            destroy_step(&stray).as_deref(),
+            Some("no VM named new to remove")
+        );
+        let present = Facts {
+            vm_present: Some(true),
+            ..stray.clone()
+        };
+        assert_eq!(destroy_step(&present), None, "there is one; destroy it");
         // A stray is outside the thing being uninstalled, so nothing
         // stops the command over it and no flag turns it into a target.
         assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
