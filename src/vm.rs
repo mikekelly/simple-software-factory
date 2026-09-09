@@ -1490,8 +1490,7 @@ impl Vm {
     }
 
     /// The VM directories under `[vm] dir` that this configuration does
-    /// not name, each holding a `data.ext4` of its own, and whether the
-    /// directory could be read at all.
+    /// not name, each holding a `data.ext4` of its own.
     ///
     /// A changed `[vm] name` orphans one under Firecracker exactly as it
     /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
@@ -3907,8 +3906,8 @@ mod tests {
     fn a_dot_dot_in_vm_dir_is_the_persons_own_path_not_an_escape() {
         // The guard is about what `[vm] name` adds. Reading the whole of
         // `self.dir` tripped it on a `..` the person wrote in `[vm] dir`
-        // -- hiding every stray in that directory and reporting it as
-        // unreadable when it reads perfectly well.
+        // -- hiding every stray in a directory that reads perfectly
+        // well.
         let root = std::env::temp_dir().join(format!(
             "ssf-dotdot-{}-{}",
             std::process::id(),

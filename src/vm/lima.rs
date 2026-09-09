@@ -1072,8 +1072,13 @@ impl Vm {
         let mut mine = None;
         let mut strays = Vec::new();
         for i in all {
+            // The first match, as master's `find` took: lima names are
+            // unique so it cannot differ, and "cannot differ" is a
+            // weaker thing to have to argue than "does not".
             if i.name == name {
-                mine = Some(i);
+                if mine.is_none() {
+                    mine = Some(i);
+                }
             } else if is_ssf_name(&i.name) {
                 strays.push(Stray::lima_instance(i.name, &self.lima_command()));
             }
@@ -3131,10 +3136,11 @@ mod tests {
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Strays, Listing::Strays);
         let st = t.vm.status().await;
         let named: Vec<&str> = st.strays.iter().map(|s| s.name.as_str()).collect();
+        // Exactly these two: `someone-else` is in both listings and is
+        // none of ssf's business to name. Asserting the whole list is
+        // what says so -- a `!contains` beside it could not fail.
         assert_eq!(named, ["ssf-old", "ssf-aaa"], "{named:?}");
-        // Somebody else's, from both listings, is none of ssf's
-        // business -- and the remedies carry the real names.
-        assert!(!named.contains(&"someone-else"), "{named:?}");
+        // ... and the remedies carry the real names.
         let remedies: Vec<&str> = st.strays.iter().map(|s| s.remove.as_str()).collect();
         assert!(
             remedies[0].ends_with(" delete ssf-old")
@@ -3260,6 +3266,10 @@ mod tests {
             ["ssf-aaa-inst", "zzz-dir", "ssf-aaa"],
             "somebody else's, and a symlink, are not ssf's to name"
         );
+        // ... and this is what `ssf doctor` falls back to when there is
+        // no tooling to ask with, so both of lima's directories and
+        // `[vm] dir` have to reach it: a person who cannot run
+        // `limactl list` is the one who most needs the answer.
         let kinds: Vec<_> = strays.iter().map(|s| s.kind).collect();
         assert_eq!(kinds.len(), 3, "both of lima's, and [vm] dir's: {kinds:?}");
         assert!(kinds.contains(&StrayKind::LimaInstance), "{kinds:?}");
