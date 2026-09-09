@@ -602,14 +602,21 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         // Nor is it true of a directory nobody could read. "Could not
         // look" is not "nothing there", and safety nobody verified is
         // not safety.
-        let holds_work = facts
+        // Not `Stray::holds_work()`, which is true of a lima disk too:
+        // this asks the narrower question of whether one of these is a
+        // VM directory *inside `[vm] dir`*, since that is the only kind
+        // the sentence about `[vm] dir` has to carve out.
+        let holds_a_vm_directory = facts
             .vm_strays
             .iter()
             .any(|s| s.kind == vm::StrayKind::Directory);
         keep.push(format!(
             "{} (VM image and downloads{})",
             facts.vm_base.display(),
-            match (facts.vm_unread.contains(&facts.vm_base), holds_work) {
+            match (
+                facts.vm_unread.contains(&facts.vm_base),
+                holds_a_vm_directory,
+            ) {
                 (true, _) => "; ssf could not read it, so what is in it is unknown",
                 (false, true) => "; safe to remove except for what is listed below",
                 (false, false) => "; safe to remove",
@@ -1192,6 +1199,11 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("clean and pushed (ssf purge)"), "{text}");
+        // `vm_base_exists` is false in this fixture, so the line about
+        // `[vm] dir` must not be here at all. Listing a directory that
+        // is not there as "safe to remove" sends a person looking for
+        // it; the snapshot is what stops that.
+        assert!(!text.contains("VM image and downloads"), "{text}");
         assert!(
             text.contains("VM factory and its disks in /vm/factory; the clones"),
             "{text}"
@@ -1817,7 +1829,14 @@ mod tests {
         // remove" over that is the report telling a person to delete
         // their own work, which is worse than deleting it: they run the
         // command themselves and it succeeds.
-        let base = std::env::temp_dir().join(format!("ssf-keep-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!(
+            "ssf-keep-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         std::fs::create_dir_all(&base).unwrap();
         let orphan = Facts {
             vm_base: base.clone(),
