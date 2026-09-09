@@ -147,3 +147,9 @@ document links to.
     notices. Do not rebase merely because a branch is behind: a notice
     calls for rebasing and rerunning an already-started final round;
     before the round starts, no immediate action is needed.
+
+13. **Name the base when reporting verification counts.** Follow the
+    [development guidance](../../docs/development.md) for the JSON-based
+    Clippy warning count and comparisons against a named base commit.
+    Test totals need the base too; equal warning counts alone do not prove
+    that a change adds no warnings.
