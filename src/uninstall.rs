@@ -1809,6 +1809,32 @@ mod tests {
         for cmd in ["limactl delete ssf-old", "limactl disk delete ssf-old"] {
             assert!(text.contains(cmd), "{cmd} missing from:\n{text}");
         }
+        // The whole line, not the remedy alone. `kept()` is the one
+        // renderer that builds this sentence itself instead of calling
+        // `describe()`, so `what()` and the name were pinned at the
+        // builder and free here -- and this is the command #158 was
+        // filed against, printing it twice. A Firecracker host with no
+        // lima installed would read "lima also holds ..." over a
+        // directory beside its own VM, under a correct `rm -rf`.
+        for line in [
+            "lima also holds the instance ssf-old, which this configuration does not name",
+            "lima also holds the data disk ssf-old, which this configuration does not name",
+        ] {
+            assert!(text.contains(line), "{line} missing from:\n{text}");
+        }
+        let dir_stray = Facts {
+            vm_strays: vec![vm::Stray::directory(std::path::Path::new("/v/old"))],
+            ..stray.clone()
+        };
+        let dir_text = render(&dir_stray, &Report::default(), &Opts::default());
+        assert!(
+            dir_text.contains("[vm] dir also holds the VM directory old,"),
+            "the directory says where it is, not lima: {dir_text}"
+        );
+        // ... and no ordering caveat: there is no instance for it to
+        // come after, and one printed here is an instruction about a
+        // lima that may not exist.
+        assert!(!dir_text.contains("after its instance"), "{dir_text}");
         assert!(text.contains("`--force` included"), "{text}");
         // An observation, not a claim of ownership: ssf did not
         // necessarily create it and does not need to have, because
@@ -1899,8 +1925,7 @@ mod tests {
         };
         let clean_text = render(&clean, &Report::default(), &Opts::default());
         // A lima disk is not in `[vm] dir` at all, so it must not put a
-        // caveat on that line. Rendered while the directory still
-        // exists, since the line only appears when it does.
+        // caveat on that line.
         let lima = kept(
             &Facts {
                 vm_strays: vec![vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
