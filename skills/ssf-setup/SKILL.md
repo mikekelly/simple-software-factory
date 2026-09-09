@@ -130,7 +130,9 @@ document links to.
     line the boilerplate carries beside those rules: check a claim by
     reading the source or trying it where trying it changes nothing,
     rather than reasoning your way to an answer; say where you have not,
-    and apply the same to what you write about a change.
+    and apply the same to what you write about a change. Also keep the
+    accompanying commit habit: read `git diff --cached` before writing the
+    commit message, not after.
 
 12. **Conflict notices concern committed branches.** Follow
     [Branch conflicts](../../docs/sessions.md#branch-conflicts) when an

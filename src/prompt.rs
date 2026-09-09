@@ -2553,6 +2553,8 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
         // The shipped boilerplate keeps every bullet and loses its comments.
         let (example, unclosed) = without_html_comments(include_str!("../SSF.example.md"));
         assert!(unclosed.is_none());
+        let (notes, unclosed) = without_html_comments(include_str!("../SSF.md"));
+        assert!(unclosed.is_none());
         assert!(example.starts_with("# Notes for ssf agents\n\n- You are in charge"));
         assert!(!example.contains("<!--") && !example.contains("-->"));
         assert!(!example.contains("cautious end"), "{example}");
@@ -2586,6 +2588,9 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             ),
             "the checking rule is not intact in {unwrapped}"
         );
+        let commit_message_rule = "- Commit as you go.\n  Read `git diff --cached` before writing the commit message, not after.";
+        assert!(example.contains(commit_message_rule), "{example}");
+        assert!(notes.contains(commit_message_rule), "{notes}");
         assert!(example.contains("- Autonomy: a person approves everything."));
         assert_eq!(example.matches("\n- ").count(), 12, "{example}");
     }
