@@ -1180,6 +1180,19 @@ impl Vm {
             // Absolute, for the reason the `rm -rf` remedy is: a
             // relative `$LIMA_HOME` printed relative addresses a
             // different lima home from any other working directory.
+            //
+            // The `unwrap_or` keeps it relative when `absolute` fails,
+            // which happens only with the working directory deleted and
+            // `$LIMA_HOME` relative. The remedy is then wrong in a
+            // narrower way than the `[vm] dir` one was: it names a lima
+            // home that resolves elsewhere, so `limactl` finds no such
+            // instance and does nothing -- it cannot delete something
+            // else, because the name it carries exists only in the home
+            // it cannot reach. `fc_dir_contents` refuses to report at
+            // all in that state; this is left reporting because the
+            // names it prints stay correct and the command merely fails.
+            // Scope recorded for #192's combined incomplete-observation
+            // review, which owns saying that the answer is partial.
             home: (!default)
                 .then(|| self.lima_home.clone())
                 .flatten()

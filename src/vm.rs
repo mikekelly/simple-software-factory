@@ -396,6 +396,15 @@ impl LimaCommand {
                 // different program there -- or none. A bare name has to
                 // stay bare, or PATH lookup -- which is how
                 // `Vm::limactl` finds it -- stops happening.
+                //
+                // The `unwrap_or` keeps it relative when `absolute`
+                // fails -- deleted working directory, relative
+                // `[vm] limactl`. What that costs is a command that runs
+                // a different program or none, not one that removes the
+                // wrong thing, since the path is the tool rather than
+                // the target. `fc_dir_contents` refuses to report at all
+                // in that state because its path *is* the target. Scope
+                // recorded for #192's combined review.
                 let p = if p.components().count() > 1 {
                     std::path::absolute(&p).unwrap_or(p)
                 } else {
