@@ -157,20 +157,52 @@ rather than an older package on the shell's `PATH`; `ssf doctor` says
 when the two differ). Invoked as `gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
 `pr comment` and `pr review` (and `issue new` and `pr new`, gh's own
-names for the same two creates), whether the body is given as `--body`,
-`--body=`, `-b`, `--body-file` or `-F -` (a review without a body gets
-one that is only the line), and runs the real gh with everything else
-untouched. To pick the byline's form it works out the repository posted
-to the way gh does:
-`--repo`/`-R`, an item given as a URL, `GH_REPO`, else the checkout's
-`origin` remote (`git config --get remote.origin.url`); when none of those
-says, the long form is used, which links from anywhere. The URL has to
-be the item's own: the values of `--parent`, `--blocked-by` and
-`--blocking` (the flags `gh issue create` documents as taking numbers or
-URLs) are not read as one, since that answer outranks `GH_REPO`, and a
-post landing elsewhere with the short `#N` would link to that
-repository's issue N. An item after `--` still counts, as it does for
-gh. Beyond that the
+names for the same two creates), in every spelling gh takes the body in
+after the command words:
+`--body`, `--body=`, `-b`, `-b=`, `-bX`, `--body-file`, `--body-file=`,
+`-F`, `-F -`, `-F=` and `-FX`,
+and any of those behind the value-less letters of a cluster, so a
+review's `-ab hi` and a create's `-eF notes.md` are stamped as much as
+`-b hi` is. Which letters are value-less depends on the command, since
+`-a` approves on a review and names an assignee on a create. A body
+flag *before* the command words is the exception: gh binds its value to
+the first word after the pair rather than to the word next to it, and
+the shim does not follow it there, so `gh -ab pr review hi` posts
+untagged. A body gh builds for itself -- `--fill`, `--editor`, `--web`,
+the interactive prompt -- carries no byline either, since there is no
+body argument to prepend to.
+
+An approving review needs no body of its own, so one that is only the
+line is added, in every spelling of the approval: `--approve`,
+`--approve=true`, `-a`, `-a=true` and the `-a` inside a cluster all
+count, while `--approve=false` does not, because gh does not read it as
+an approval either. A review that comments or requests changes is left
+alone, because gh refuses those without a body (`body cannot be blank
+for comment review`) and that refusal is the more useful answer: a
+review carrying nothing but a byline says nothing, and a request for
+changes carrying nothing but a byline blocks the pull request. So `gh pr
+review 3 --comment` fails and asks for a body, where it once posted.
+
+It runs the real gh with everything else untouched. To pick the
+byline's form it works out the repository posted to: `--repo`
+or `-R` in any spelling, an item given as a URL, `GH_REPO`, else the
+checkout's `origin` remote (`git config --get remote.origin.url`); when
+none of those says, the long form is used, which links from anywhere.
+That is gh's own list, but not quite gh's reading of it: gh prefers the
+URL to `--repo`, and takes the last `--repo` where this takes the
+first, and a `--repo` that will not parse ends the search here rather
+than letting a URL further along answer. Each needs a line naming the
+repository twice over, or naming it unparseably, which is not a line an
+agent writes; the cost is the short form on a post landing elsewhere,
+never a lost tag.
+
+The URL has to be the item's own: a URL that is the value of a flag
+taking one is not read as the item, which matters
+most for `--parent`, `--blocked-by` and `--blocking` (the flags `gh
+issue create` documents as taking numbers or URLs), since that answer
+outranks `GH_REPO` and a post landing elsewhere with the short `#N`
+would link to that repository's issue N. An item after `--` still
+counts, as it does for gh. Beyond that the
 wrapper reads only its environment, writes nothing and leaves stdin and the
 terminal alone, so it works inside read-only sandboxes and does not break
 gh's interactive flows. Outside a session (no `SSF_ISSUE`) it is a plain
