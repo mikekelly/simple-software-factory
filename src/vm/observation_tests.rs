@@ -498,8 +498,9 @@ fn exercise(case: Case, root: &Path) {
         .into();
         cfg.vm.dir = base.to_string_lossy().into_owned();
         cfg.vm.backend = Some(backend);
-        // Force Lima through the on-disk fallback without consulting a
-        // developer's installed tooling or real Lima state.
+        // Keep survey, status and uninstall off a developer's installed
+        // tooling or real Lima state. Doctor always uses the filesystem
+        // reader below, regardless of whether limactl is available.
         cfg.vm.limactl = Some(root.join("missing-limactl").to_string_lossy().into_owned());
         if matches!(case, Case::InaccessibleParent) {
             cfg.herdr.projects_dir = base.to_string_lossy().into_owned();
@@ -533,18 +534,18 @@ fn exercise(case: Case, root: &Path) {
             "{backend} configured data presence"
         );
 
-        let (fallback_strays, fallback_unread) = vm.strays_on_filesystem();
+        let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
         assert_eq!(
-            fallback_unread, expected,
-            "{backend} doctor fallback failed paths"
+            doctor_unread, expected,
+            "{backend} doctor filesystem reader failed paths"
         );
         assert_eq!(
-            fallback_strays
+            doctor_strays
                 .iter()
                 .map(|stray| stray.name.as_str())
                 .collect::<Vec<_>>(),
             expected_strays,
-            "doctor fallback keeps readable discoveries"
+            "doctor filesystem reader keeps readable discoveries"
         );
 
         let status = tokio::runtime::Runtime::new()
@@ -607,7 +608,7 @@ fn exercise(case: Case, root: &Path) {
             );
         }
 
-        assert_renderers(&status, &fallback_strays, &fallback_unread, &expected);
+        assert_renderers(&status, &doctor_strays, &doctor_unread, &expected);
         assert_uninstall_lists(case, &facts, &base, &expected);
     }
 
@@ -752,9 +753,9 @@ fn exercise_lima_own_symlink(case: Case, root: &Path) {
     assert_eq!(survey.unread, expected);
     assert!(survey.strays.is_empty());
 
-    let (fallback_strays, fallback_unread) = vm.strays_on_filesystem();
-    assert_eq!(fallback_unread, expected);
-    assert!(fallback_strays.is_empty());
+    let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
+    assert_eq!(doctor_unread, expected);
+    assert!(doctor_strays.is_empty());
 
     let status = tokio::runtime::Runtime::new()
         .unwrap()
@@ -769,7 +770,7 @@ fn exercise_lima_own_symlink(case: Case, root: &Path) {
     );
     assert_eq!(facts.vm_unread, expected);
     assert!(facts.vm_strays.is_empty());
-    assert_renderers(&status, &fallback_strays, &fallback_unread, &expected);
+    assert_renderers(&status, &doctor_strays, &doctor_unread, &expected);
 
     let note = unread_note(&expected);
     let keep = kept(&facts, false);
@@ -779,7 +780,7 @@ fn exercise_lima_own_symlink(case: Case, root: &Path) {
         "{keep:?}"
     );
     assert_eq!(
-        crate::stray_notes(&fallback_strays, &fallback_unread),
+        crate::stray_notes(&doctor_strays, &doctor_unread),
         format!("note {note}\n")
     );
     assert!(left_in_place(&facts, false).contains(unread_path.to_string_lossy().as_ref()));

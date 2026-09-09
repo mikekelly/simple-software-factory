@@ -1091,20 +1091,23 @@ remove anything by hand. A missing directory produces no retained-path
 line; a directory that could not be inspected still does.
 
 These observations appear in `ssf uninstall`, `ssf vm status` and the
-host's `ssf doctor`. In VM mode `ssf doctor` is forwarded into the guest,
-which cannot see the host's `[vm] dir` or lima's home. A path listed as
-unread means inspection or exact naming was incomplete, not a promise
-that `vm destroy` leaves it untouched: the configured VM's own directory is still in the destroy
-scope. Instances and disks that this configuration does not name stay
-untouched, including with `--force`.
+host's `ssf doctor`. Doctor always discovers strays from the filesystem,
+without waiting for lima to answer. In VM mode `ssf doctor` is forwarded
+into the guest, which cannot see the host's `[vm] dir` or lima's home. A
+path listed as unread means inspection or exact naming was incomplete,
+not a promise that `vm destroy` leaves it untouched: the configured VM's
+own directory is still in the destroy scope. Instances and disks that
+this configuration does not name stay untouched, including with
+`--force`.
 
 Unread-path reporting alone does not add a refusal. However, when the
 configured VM or its data disk cannot be statted, its presence is unknown
 instead of absent. An unknown data-disk presence engages the existing
 refusal for workspaces whose safety could not be established, including
 after a failed lima query. The message describes what could not be
-established; it does not assert that a data disk exists. Further refusal policy and detection of a
-stranded disk after a backend change remain in issue #176.
+established; it does not assert that a data disk exists. Further refusal
+policy and detection of a stranded disk after a backend change remain in
+issue #176.
 
 What it keeps, and lists at the end (the same list both times): the
 clones and worktrees under `~/ssf/projects` (or Orca's projects; may
@@ -1116,20 +1119,20 @@ pass `--data`,
 `~/.config/ssf` (config and the bot's key) and `~/.local/state/ssf`
 (state, and the marker that keeps a disabled service off, so a reinstall
 stays stopped until `ssf ui service enable`; with `--data` gone, a
-reinstall starts the service). Under lima the instance and the data disk
-go out of lima's own home with `vm destroy`, but `~/.lima` itself stays,
-holding lima's cache of downloaded images and anything else of lima's
-you use; remove it by hand once nothing does. An `ssf-*` in it that this
-configuration does not name gets a line of its own and the `limactl`
-command that removes it. The home's own path appears in that command
-only when `LIMA_HOME` points somewhere other than lima's default, since
-the remedy has to carry it then and in the default home it would be
-noise. The bot GitHub account
-itself is not touched, nor its gh sign-in. `ssf status` afterwards says
-not signed in and stopped; the watched repositories and the records of
-past items still show until `--data` (or a reinstall from scratch)
-clears them. With the VM gone the config's `vm.enabled` is cleared, so
-`status` does not go looking for it.
+reinstall starts the service). Under lima the instance and the data
+disk go out of lima's own home with `vm destroy`, but `~/.lima` itself
+stays, holding lima's cache of downloaded images and anything else of
+lima's you use; remove it by hand once nothing does. An `ssf-*` in it
+that this configuration does not name gets a line of its own and the
+`limactl` command that removes it. The home's own path appears in that
+command only when `LIMA_HOME` points somewhere other than lima's
+default, since the remedy has to carry it then and in the default home
+it would be noise. The bot GitHub account itself is not touched, nor
+its gh sign-in. `ssf status` afterwards says not signed in and
+stopped; the watched repositories and the records of past items still
+show until `--data` (or a reinstall from scratch) clears them. With
+the VM gone the config's `vm.enabled` is cleared, so `status` does not
+go looking for it.
 
 ## Checklist
 

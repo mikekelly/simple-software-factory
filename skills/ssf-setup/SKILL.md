@@ -147,9 +147,10 @@ document links to.
     or file remedies. An independent ancestor `data.ext4` may receive only
     its own `rm -f` remedy.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
-    running the factory in a VM. All three name paths they could not
-    inspect, including individual entries, symlinks and scan-limit boundaries
-    inside a readable directory.
+    running the factory in a VM. Host doctor discovers these paths from
+    the filesystem without waiting for lima to answer. All three name paths
+    they could not inspect, including individual entries, symlinks and
+    scan-limit boundaries inside a readable directory.
     Only `NotFound` establishes absence; permission and I/O failures do
     not. An unread path prevents reassurance that its container is safe
     to remove. Fix access and inspect again before advising removal.
