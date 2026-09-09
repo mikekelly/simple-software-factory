@@ -1042,16 +1042,13 @@ change of `[vm] name`. Not looked for: a `data.ext4` a switch from
 Firecracker to lima left in the VM's *own* directory, which `vm destroy`
 removes with that directory (issue #176) -- check it by hand if you have
 changed `[vm] backend` and kept the name. The `[vm] dir` line says one
-of three things, in the report and in the list printed at the end alike:
-safe to remove, safe to remove except for what is listed below, or that
-ssf could not read the directory and so does not know what is in it.
-There is no line at all when the directory is not there -- and only when
-it is genuinely not there: a directory ssf could not so much as ask
-about, because a parent of it is unreadable, gets the third sentence
-rather than silence. Any
-directory that could not be read is named -- `[vm] dir`, lima's home, or
-lima's disk directory -- since which one it is decides what you would
-fix. `ssf uninstall` never removes one and `--force` does not reach it:
+of two things, in the report and in the list printed at the end alike:
+safe to remove, or safe to remove except for what is listed below. A
+directory ssf could not read is reported as though it were empty, so
+`safe to remove` can be said of one holding a VM nobody could look
+inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
+home by hand if either has permissions you did not set.
+`ssf uninstall` never removes a stray and `--force` does not reach it:
 ssf cannot tell a VM you renamed away to keep from one you abandoned,
 and only one of those is safe to delete. `ssf vm status` names them too,
 and `ssf doctor` does when it runs on the host -- in VM mode `ssf
