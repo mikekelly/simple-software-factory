@@ -3983,11 +3983,10 @@ async fn doctor() -> Result<()> {
     // VM on.
     if reports_backend_tooling(vm::in_guest()) {
         let vm = vm::Vm::new(&cfg);
-        let tooling = vm.tooling();
         println!(
             "note {} backend: {}{}",
             vm.backend(),
-            tooling.detail,
+            vm.tooling().detail,
             if cfg.vm.enabled {
                 ""
             } else {
