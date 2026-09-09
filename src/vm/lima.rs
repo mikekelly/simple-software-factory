@@ -1200,7 +1200,13 @@ impl Vm {
             .zip(dirs::home_dir())
             .is_some_and(|(h, home)| *h == home.join(".lima"));
         super::LimaCommand {
-            home: (!default).then(|| self.lima_home.clone()).flatten(),
+            // Absolute, for the reason the `rm -rf` remedy is: a
+            // relative `$LIMA_HOME` printed relative addresses a
+            // different lima home from any other working directory.
+            home: (!default)
+                .then(|| self.lima_home.clone())
+                .flatten()
+                .map(|h| std::path::absolute(&h).unwrap_or(h)),
             limactl: self.cfg.limactl.clone(),
         }
     }
@@ -3306,6 +3312,34 @@ mod tests {
                 .map(|s| s.name.clone())
                 .collect();
         assert_eq!(names, ["ssf-aaa"], "someone-else is not ssf's to name");
+    }
+
+    #[test]
+    fn the_remedy_names_a_lima_home_only_when_it_is_not_the_default() {
+        // `LIMA_HOME=~/.lima limactl delete ...` is noise on the line a
+        // person is meant to paste; anywhere else it is the difference
+        // between deleting their instance and deleting a same-named one
+        // in the default home. `Vm::new` forces `lima_home` to `None` in
+        // tests, so nothing else ever builds the default case.
+        let mut cfg = Config::default();
+        cfg.vm.backend = Some(BackendKind::Lima);
+        let mut vm = Vm::new(&cfg);
+
+        vm.lima_home = dirs::home_dir().map(|h| h.join(".lima"));
+        assert_eq!(vm.lima_command().home, None, "the default is not named");
+
+        vm.lima_home = Some(PathBuf::from("/elsewhere/lima"));
+        assert_eq!(
+            vm.lima_command().home,
+            Some(PathBuf::from("/elsewhere/lima")),
+            "any other one is"
+        );
+
+        // And absolute, for the reason the `rm -rf` remedy is.
+        vm.lima_home = Some(PathBuf::from("lima"));
+        let home = vm.lima_command().home.unwrap();
+        assert!(home.is_absolute(), "{}", home.display());
+        assert!(home.ends_with("lima"), "{}", home.display());
     }
 
     #[test]

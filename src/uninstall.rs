@@ -1921,6 +1921,25 @@ mod tests {
         assert!(both.contains("/a") && both.contains("/b"), "{both}");
         assert!(both.contains("them"), "{both}");
         assert!(
+            unread_note(&[PathBuf::from("/a")]).contains("in it is unknown"),
+            "one directory is 'it', not 'them'"
+        );
+        // ... and the list a person actually reads, not only the
+        // sentence under it: naming the first and dropping the rest is
+        // this change's own failure one layer up.
+        let two = Facts {
+            vm_base_exists: true,
+            vm_unread: vec![PathBuf::from("/x"), PathBuf::from("/y")],
+            ..unread.clone()
+        };
+        let both_named = kept(&two, false);
+        for named in ["/x", "/y"] {
+            assert!(
+                both_named.iter().any(|l| l.contains(named)),
+                "{named} missing from {both_named:?}"
+            );
+        }
+        assert!(
             !lines.iter().any(|l| l.contains("safe to remove")),
             "safety nobody verified: {lines:?}"
         );
