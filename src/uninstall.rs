@@ -1136,11 +1136,24 @@ mod tests {
         let base = PathBuf::from(&rel);
         std::fs::create_dir_all(base.join("old")).unwrap();
         std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        // Three of them, and the lima pair deliberately: `sort_strays`
+        // puts disks last, so a join that kept only the first would
+        // drop the data disk -- the one stray holding the person's
+        // work, and the only line carrying `limactl disk delete` and
+        // the clause saying what is in it. One stray in the fixture
+        // cannot tell "all of them" from "the first", which is the
+        // trap both printers were fixed for two rounds before this
+        // test was written with one.
+        let home = base.join("lima");
+        std::fs::create_dir_all(home.join("ssf-old")).unwrap();
+        std::fs::create_dir_all(home.join("_disks").join("ssf-old")).unwrap();
         let mut cfg = Config::default();
         cfg.vm.name = "new".into();
         cfg.vm.backend = Some(vm::BackendKind::Firecracker);
         cfg.vm.dir = rel.clone();
-        let facts = Facts::gather(&cfg, &vm::Vm::new(&cfg));
+        let mut vm = vm::Vm::new(&cfg);
+        vm.lima_home = Some(home.clone());
+        let facts = Facts::gather(&cfg, &vm);
         let text = render(&facts, &Report::default(), &Opts::default());
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(
@@ -1149,8 +1162,12 @@ mod tests {
                 .iter()
                 .map(|s| s.name.as_str())
                 .collect::<Vec<_>>(),
-            ["old"],
-            "the VM the rename left behind has to reach the report"
+            ["old", "ssf-old", "ssf-old"],
+            "every one the rename left behind, disk last"
+        );
+        assert!(
+            text.contains("limactl disk delete ssf-old"),
+            "the disk is the one that holds the work: {text}"
         );
         assert!(facts.vm_base_exists, "and so does the snapshot");
         assert!(
@@ -1856,6 +1873,9 @@ mod tests {
         // remove" over that is the report telling a person to delete
         // their own work, which is worse than deleting it: they run the
         // command themselves and it succeeds.
+        // A path, not a directory: `kept()` reads the hand-set
+        // `vm_base_exists` and never the filesystem, so creating one
+        // here would suggest a dependency this test does not have.
         let base = std::env::temp_dir().join(format!(
             "ssf-keep-{}-{}",
             std::process::id(),
@@ -1864,7 +1884,6 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        std::fs::create_dir_all(&base).unwrap();
         let orphan = Facts {
             vm_base: base.clone(),
             vm_base_exists: true,
@@ -1889,7 +1908,6 @@ mod tests {
             },
             false,
         );
-        std::fs::remove_dir_all(&base).unwrap();
         assert!(
             lima.iter()
                 .any(|l| l.contains("downloads; safe to remove)")),

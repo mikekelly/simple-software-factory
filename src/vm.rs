@@ -1339,17 +1339,47 @@ impl Vm {
         }
     }
 
-    /// Is this path this VM's own directory, however `[vm] dir` was
-    /// spelled?
+    /// Is this path this VM's own directory -- however `[vm] dir` was
+    /// spelled -- or a directory holding it?
     ///
-    /// The first test looks dead -- `p` always comes from reading the
-    /// absolutised base, so the second subsumes it -- and it is kept
-    /// deliberately. If `absolute()` ever fails, the second is `None`
-    /// and this VM's own directory becomes a stray with an `rm -rf`
-    /// printed over it, which is the one wrong answer here that costs a
-    /// live VM's clones. Being right twice is cheaper than that.
-    fn is_own_dir(&self, p: &Path) -> bool {
-        *p == self.dir || Some(p) == std::path::absolute(&self.dir).ok().as_deref()
+    /// The first test looks dead: `p` always comes from reading the
+    /// absolutised base, so the second subsumes it. It is kept because
+    /// if `absolute()` ever failed the second would be `None`, and this
+    /// VM's own directory would become a stray with an `rm -rf` printed
+    /// over it -- the one wrong answer here that costs a live VM's
+    /// clones.
+    ///
+    /// That reasoning is **unproven**. `absolute()` fails only when the
+    /// working directory cannot be read, and nothing in the suite makes
+    /// that happen, so the branch has never been shown to fire and a
+    /// guard that cannot be shown to fire is indistinguishable from a
+    /// line that does nothing. Keeping it and deleting it were argued
+    /// from the same absence of evidence. The fixture that would settle
+    /// it -- a deleted working directory -- belongs with #192, which
+    /// rewrites this function.
+    fn is_own_or_ancestor(&self, p: &Path) -> bool {
+        if *p == self.dir {
+            return true;
+        }
+        // Or anything holding it. A nested `[vm] name` -- `new/nested`
+        // -- puts the live VM at `<base>/new/nested`, and if a previous
+        // `[vm] name = "new"` left a `data.ext4` at `<base>/new`, that
+        // directory looks exactly like a stray: not equal to `self.dir`,
+        // a real directory, holding its own disk. Reporting it offers
+        // `rm -rf <base>/new`, which takes the live VM's data disk with
+        // it -- the report handing over the one command that destroys
+        // the thing it exists to protect.
+        //
+        // The old disk in it is real and goes unreported, and after the
+        // destroy step `[vm] dir` is then called plainly "safe to
+        // remove" over it. That is #193: naming it needs a remedy that
+        // is not a directory delete, and a sentence to match, which is
+        // three renderers' worth of wording rather than a comparison.
+        // Not offering a lethal command is this change's half; naming
+        // what it cannot offer to remove is that one's.
+        std::path::absolute(&self.dir)
+            .ok()
+            .is_some_and(|own| own.starts_with(p))
     }
 
     /// The VM directories under `[vm] dir` that this configuration does
@@ -1439,7 +1469,7 @@ impl Vm {
                 // A real directory, not a symlink to one: `rm -rf` on a
                 // link removes the link and leaves what it pointed at,
                 // so a remedy over one would not be a remedy.
-                !self.is_own_dir(p)
+                !self.is_own_or_ancestor(p)
                     && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
                     && p.join("data.ext4").exists()
             })
@@ -1458,8 +1488,11 @@ impl Vm {
     }
 
     /// The strays that can be found without asking the backend
-    /// anything: `[vm] dir` under Firecracker, lima's own home under
-    /// lima. For the caller that has no tooling to ask with -- which is
+    /// anything: `[vm] dir` *and* lima's own home, both read on both
+    /// backends -- `[vm] dir` is shared by them, and lima's home
+    /// outlives a change of `[vm] backend`. Reading either as belonging
+    /// to one backend is the mistake this whole change corrects. For
+    /// the caller that has no tooling to ask with -- which is
     /// exactly when the person cannot run `limactl list` either, so
     /// going quiet then would take the report away at its most useful.
     pub fn strays_on_filesystem(&self) -> Vec<Stray> {
@@ -3748,6 +3781,48 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_holding_the_live_vm_is_never_offered_for_deletion() {
+        // A nested `[vm] name` puts the VM at `<base>/new/nested`. If a
+        // previous `[vm] name = "new"` left a `data.ext4` at
+        // `<base>/new`, that directory looks exactly like a stray --
+        // not equal to `self.dir`, a real directory, holding its own
+        // disk -- and reporting it prints `rm -rf <base>/new`, which
+        // takes the live VM's data disk with it. The report handing
+        // over the one command that destroys what it exists to protect.
+        //
+        // Found by #192's reviewer against 674f846, in this half.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // The old VM, from before the name became nested.
+        std::fs::create_dir_all(base.join("new")).unwrap();
+        std::fs::write(base.join("new").join("data.ext4"), b"old disk").unwrap();
+        // The live one, inside it.
+        std::fs::create_dir_all(base.join("new/nested")).unwrap();
+        std::fs::write(base.join("new/nested").join("data.ext4"), b"live").unwrap();
+        // And a genuine stray beside them, so this cannot pass by
+        // reporting nothing at all.
+        std::fs::create_dir_all(base.join("older")).unwrap();
+        std::fs::write(base.join("older").join("data.ext4"), b"stray").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.name = "new/nested".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let strays = Vm::new(&cfg).survey().strays;
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["older"],
+            "the live VM's parent is not a stray, and the real one still is"
+        );
+    }
+
+    #[test]
     fn the_sentence_the_printing_commands_share() {
         // `ssf doctor` and `ssf vm status` only `println!`, which no
         // test reaches, so the words live here where one can.
@@ -3765,6 +3840,21 @@ mod tests {
         assert!(!i.contains("after its instance"), "{i}");
         let p = Stray::directory(Path::new("/v/old")).describe();
         assert!(p.contains("`rm -rf /v/old`"), "{p}");
+        // Each says *where the thing is*, and only the disk's opening
+        // was pinned -- so all three arms could collapse to one string
+        // with the suite green. On a Linux host with no lima installed,
+        // a directory beside the current VM under `[vm] dir` would be
+        // announced as something lima holds, next to an `rm -rf` that
+        // is correct: the right remedy under a sentence sending the
+        // person to a home that does not exist.
+        assert!(
+            i.starts_with("lima also holds the instance ssf-old,"),
+            "{i}"
+        );
+        assert!(
+            p.starts_with("[vm] dir also holds the VM directory old,"),
+            "{p}"
+        );
 
         // The stakes, in the two commands that hand out the delete.
         // `ssf uninstall` printed this clause and these did not, so
