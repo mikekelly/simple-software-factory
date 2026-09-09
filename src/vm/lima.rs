@@ -2985,7 +2985,10 @@ mod tests {
             s.strays.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
             ["ssf-old"]
         );
-        assert_ne!(s.present, Some(true), "a stray is not this VM");
+        // `Some(false)`, not merely "not `Some(true)`" -- `None` sends
+        // the destroy step down the other arm, so the two answers are
+        // not interchangeable here.
+        assert_eq!(s.present, Some(false), "a stray is not this VM");
         assert!(!s.startable);
     }
 

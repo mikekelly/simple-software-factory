@@ -3870,7 +3870,11 @@ mod tests {
             "a lima instance a backend change left behind"
         );
         assert_eq!(fallback.len(), 1, "and doctor's fallback sees it too");
-        assert_ne!(survey.present, Some(true), "it is still not this VM");
+        // `Some(false)`, not merely "not `Some(true)`": the destroy
+        // step skips on `Some(false)` and goes through `destroy` on
+        // `None`, so the two are different instructions and an
+        // `assert_ne!` would accept either.
+        assert_eq!(survey.present, Some(false), "it is still not this VM");
     }
 
     #[test]
@@ -4192,6 +4196,39 @@ mod tests {
             strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             ["older"],
             "the live VM's parent is not a stray, and the real one still is"
+        );
+    }
+
+    #[test]
+    fn a_name_the_live_one_merely_starts_with_is_still_a_stray() {
+        // The ancestor rule compares *paths*. Compare the strings and
+        // `<base>/factory` becomes "part of" `<base>/factory2`, so
+        // renaming `factory` to `factory2` -- appending to a name, the
+        // commonest rename there is -- would drop the old VM from the
+        // report entirely: #158's own silence, restored for its most
+        // likely input, with every other test still green.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-prefix-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("factory")).unwrap();
+        std::fs::write(base.join("factory").join("data.ext4"), b"old").unwrap();
+        std::fs::create_dir_all(base.join("factory2")).unwrap();
+        std::fs::write(base.join("factory2").join("data.ext4"), b"live").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.name = "factory2".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let strays = Vm::new(&cfg).survey().strays;
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["factory"],
+            "the VM the rename left behind is not part of the live one"
         );
     }
 
