@@ -399,18 +399,32 @@ fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
         if a == "--" {
             break;
         }
-        if (a == "--assignee" || a == "-a") && i + 1 < args.len() {
+        if a == "--assignee" && i + 1 < args.len() {
             names.push(args[i + 1].as_str());
             i += 2;
             continue;
         }
         if let Some(v) = a.strip_prefix("--assignee=") {
             names.push(v);
-        } else if let Some(v) = a
-            .strip_prefix("-a")
-            .filter(|v| !v.is_empty() && !a.starts_with("--"))
-        {
-            names.push(v);
+            i += 1;
+            continue;
+        }
+        // `-a` in every shorthand spelling gh takes, the value-less
+        // letters of a cluster included: `gh issue create -wa me`
+        // assigns as much as `-a me` does, and missing it would cost the
+        // new item its `mode=delegate` and its creator ownership. This
+        // is only ever asked about a create, where `-a` names an
+        // assignee, so the walk uses that command's letters.
+        if let Some(('a', attached)) = cluster(a, false).and_then(|cl| cl.valued) {
+            match attached {
+                Some(v) => names.push(v),
+                None => {
+                    if let Some(v) = args.get(i + 1) {
+                        names.push(v.as_str());
+                        i += 1;
+                    }
+                }
+            }
         }
         i += 1;
     }
@@ -1633,6 +1647,28 @@ mod tests {
                 "--assignee=alice,OverlayBot",
             ]),
             args(&["issue", "create", "-t", "t", "-b", "child", "-a@me"]),
+            // Behind a cluster's value-less letters, attached and not.
+            args(&[
+                "issue",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "child",
+                "-wa",
+                "OverlayBot",
+            ]),
+            args(&["issue", "create", "-t", "t", "-b", "child", "-wa@me"]),
+            args(&[
+                "pr",
+                "create",
+                "-t",
+                "t",
+                "-b",
+                "child",
+                "-da",
+                "OverlayBot",
+            ]),
             args(&[
                 "pr",
                 "create",
@@ -1698,6 +1734,40 @@ mod tests {
                     "-b",
                     "child",
                     "--assignee",
+                    "OverlayBot",
+                ]),
+                Some("OverlayBot"),
+            ),
+            // A letter that takes a value of its own ends the walk, so
+            // the `a` here is a label and not an assignee.
+            (
+                args(&[
+                    "issue",
+                    "create",
+                    "-t",
+                    "t",
+                    "-b",
+                    "child",
+                    "-la",
+                    "OverlayBot",
+                ]),
+                Some("OverlayBot"),
+            ),
+            // And the value another letter takes is not an assignee
+            // either, however much it reads like one.
+            (
+                args(&["issue", "create", "-t", "OverlayBot", "-b", "child"]),
+                Some("OverlayBot"),
+            ),
+            (
+                args(&[
+                    "issue",
+                    "create",
+                    "-t",
+                    "t",
+                    "-b",
+                    "child",
+                    "-l",
                     "OverlayBot",
                 ]),
                 Some("OverlayBot"),
