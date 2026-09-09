@@ -823,58 +823,30 @@ the chart is different every few weeks.
 
 ## 9. Project notes and boards
 
-**`SSF.md`.** ssf's own prompts carry only what ssf owns (which bot the
-agent is, that the terminal is unmanned, that `gh` acts as the bot, `ssf
-guide`). How the repository wants work done goes in an `SSF.md` at its
-root, appended to every initial prompt: comment when starting, when a
-decision is needed and when done; ask on the item rather than guess (the
-agent is woken when someone answers); branch and PR conventions (work on
-the item's branch, read `git diff --cached` before writing the commit
-message, `Closes #N`, do not merge or close, who merges);
-what to run before a PR; what the board columns mean; the gauntlet;
-which models the session should spawn subagents on (the second and third
-rows of [Choosing the harness and the
-model](#choosing-the-harness-and-the-model), the ones `repo.model` does
-not reach, with the effort level where the harness has one); that the
-session is responsible for the item being one cohesive piece of work,
-splitting it into sub-issues and sibling issues when it is not, so the
-work can be followed from the issue tree; and that the plan goes into
-the body of the item before execution starts and is kept up to date
-there. Start from `/usr/share/ssf/SSF.example.md` (macOS:
-`$(brew --prefix)/share/ssf/SSF.example.md`). `CLAUDE.md` and
-`AGENTS.md` stay for what every user of the repository wants; `SSF.md`
-is for what only ssf agents need. `ssf doctor` reports a repository
-without the file (`FAIL no SSF.md in owner/name; start from
-/usr/share/ssf/SSF.example.md`), read through the GitHub API, so the
-check needs no clone. Details: [The
-per-project prompt file](configuration.md#the-per-project-prompt-file).
+**`SSF.md`.** Project working preferences belong in this file at the
+repository root. ssf appends it to the initial prompt; keep it short.
+Describe one outcome per issue, where the plan lives, relevant validation,
+and who may merge. Keep implementation tasks on that issue. Use `Refs #N`
+for ongoing tracking and `Closes #N` only for complete delivery.
 
-**The gauntlet.** ssf runs one session per item and starts no reviewer
-for an agent's own pull request (it used to, on a `review` label; that
-went with #115). The boilerplate calibrates review by blast radius:
-self-review for documentation, comments, configuration examples and tests;
-one fresh-agent round for ordinary daemon behaviour, a second only after a
-must-fix; rounds until two consecutive ones find no must-fix for data loss,
-startup failure, broken packages or workspace destruction. Cosmetic tidies do
-not justify more rounds. State the class and result on the item, and keep
-running the required tests, formatting, linting and package build in every
-class. Keep the rule, or write your own; see [Second
-opinions](sessions.md#second-opinions-the-gauntlet) for the reviewer brief,
-stopping rules and when to prefer a different model through herdr.
+Start from `/usr/share/ssf/SSF.example.md` (macOS:
+`$(brew --prefix)/share/ssf/SSF.example.md`) and adapt it. `CLAUDE.md` and
+`AGENTS.md` remain the place for instructions shared by other repository
+users. `ssf doctor` reports missing project notes through the GitHub API;
+no clone is needed. See [The per-project prompt
+file](configuration.md#the-per-project-prompt-file).
 
-**Autonomy.** How far the agents go on their own is a line in `SSF.md`,
-and the choice is yours: at one end, everything is approved by a person
-(open the pull request, say the gauntlet passed, and stop; a person
-reviews and merges); at the other, no approval is needed (use your
-judgment and gauntlet loops to address the issue and close it out); in
-between, approval for merges only, say. The boilerplate ships the
-cautious end, with the other end in a comment next to it (comments are
-stripped before the notes reach an agent), so flipping it is an edit of
-that one line. The boilerplate also says whose issue it is:
-the agent is in charge of it, and its job is to clarify the intended
-outcome, plan the delivery and orchestrate subagents that do the work,
-keeping its own context for managing the issue rather than for
-implementation detail.
+**Review.** ssf does not start a separate reviewer session for an agent’s
+own PR. The template uses self-review for documentation/tests and one
+independent review for behavior changes, with at most one focused follow-up
+for substantive fixes. Unresolved defects require simplification or a hold,
+not an expanding loop. Validate the final change; package builds are for
+packaging or installation changes. See [Second
+opinions](sessions.md#second-opinions-the-gauntlet).
+
+**Autonomy.** The template leaves merging to a person. Change that instruction
+if your project delegates merge authority. Delegation is optional and useful
+only when an independent task warrants it.
 
 **Boards.** No setup: if the item is on a GitHub project (v2) board, the
 agent's prompt lists the board, the card's Status and the command that
