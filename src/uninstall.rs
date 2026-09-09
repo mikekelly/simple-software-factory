@@ -861,7 +861,8 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         opts.vm_unchecked = unchecked_workspaces(facts.vm_data);
         report().await
     };
-    // The third of `run`'s unpinned prints, and the one carrying the
+    // One of `run`'s three unpinned prints -- the others are the
+    // destroy step's line and the epilogue -- and the one carrying the
     // whole report: `render(&facts, &report, &Opts::default())` survives
     // the suite, which drops `--data` from `remove:` and
     // `vm_unchecked` from the warning above the confirmation. #188.
@@ -1228,10 +1229,11 @@ mod tests {
         lima.vm.name = "l".into();
         // A `limactl` that is not there, so this asks lima nothing.
         // Without it the test forks the *real* one against the
-        // developer's own `~/.lima` -- four times, sixty seconds each
-        // on a Mac whose lima home is locked, and with their live
-        // `ssf-*` instances landing in a `Facts` that asserts nothing
-        // about them. `Vm::new`'s `cfg!(test)` guard covers the home
+        // developer's own `~/.lima` -- four listings on a healthy one,
+        // and on a Mac whose lima home is locked two waits of a minute
+        // each, since the instance listing failing sends the survey
+        // straight to `lima_unanswered`. Their live `ssf-*` instances
+        // would land in a `Facts` that asserts nothing about them. `Vm::new`'s `cfg!(test)` guard covers the home
         // field and not the binary.
         lima.vm.limactl = Some(format!("{rel}/no-limactl"));
         std::fs::create_dir_all(base.join("l")).unwrap();

@@ -1475,7 +1475,7 @@ impl Vm {
             })
             .map(|p| Stray::directory(&p))
             .collect();
-        // Not sorted here: all four callers run `sort_strays` over the
+        // Not sorted here: every caller runs `sort_strays` over the
         // whole list afterwards. Its key, `(is_disk, name)`, orders
         // these fully except for a tie with a lima instance of the same
         // name, and `sort_by` is stable -- so which of the two comes
