@@ -129,9 +129,16 @@ document links to.
     configured VM; ssf lists that `data.ext4` with an `rm -f` remedy and
     does not offer to remove the directory that is part of the configured
     VM path. The line remains after `ssf vm destroy` removes the nested VM.
+    The Firecracker scan follows real directories at most 32 levels and
+    4,096 entries. It names a nested orphan relative to `[vm] dir` (for
+    example `other/deep`) and gives its exact absolute, shell-quoted remedy.
+    The first directory with a `data.ext4` on an unrelated branch represents
+    that retained subtree. It never follows directory symlinks or offers a
+    recursive remedy across the configured VM's lexical or resolved aliases.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
     running the factory in a VM. All three name paths they could not
-    inspect, including individual entries inside a readable directory.
+    inspect, including individual entries, symlinks and scan-limit boundaries
+    inside a readable directory.
     Only `NotFound` establishes absence; permission and I/O failures do
     not. An unread path prevents reassurance that its container is safe
     to remove. Fix access and inspect again before advising removal.

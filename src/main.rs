@@ -4298,6 +4298,25 @@ mod tests {
     }
 
     #[test]
+    fn status_and_doctor_preserve_a_nested_orphans_identity_and_remedy() {
+        let base = Path::new("/vm image");
+        let stray = vm::Stray::directory(base, &base.join("other/deep's vm"));
+        let st = vm::VmStatus {
+            strays: vec![stray.clone()],
+            ..status()
+        };
+        let status_text = render_vm_status(&st);
+        let doctor_text = stray_notes(&[stray], &[]);
+        for text in [status_text, doctor_text] {
+            assert!(text.contains("VM directory other/deep's vm"), "{text}");
+            assert!(
+                text.contains("`rm -rf '/vm image/other/deep'\\''s vm'` removes it"),
+                "the absolute path stays one quoted shell argument: {text}"
+            );
+        }
+    }
+
+    #[test]
     fn the_backend_tooling_is_a_note_on_the_host_and_nothing_in_the_guest() {
         // Why it is only ever a note: `doctor` is forwarded, so a factory
         // in a running VM answers doctor from the guest...

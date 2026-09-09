@@ -370,6 +370,9 @@ pub(crate) enum Observation<T> {
     Unreadable,
 }
 
+const FC_SCAN_MAX_DEPTH: usize = 32;
+const FC_SCAN_MAX_ENTRIES: usize = 4096;
+
 /// Classify one filesystem answer without losing the distinction between
 /// "not there" and "could not look".
 pub(crate) fn observe<T>(answer: std::io::Result<T>) -> Observation<T> {
@@ -400,6 +403,86 @@ impl<T> Observation<T> {
 /// report and its remedy do not print one place two ways.
 fn unread_path(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Resolve a path's filesystem identity even when its final components do
+/// not exist. This keeps the configured VM protected after destroy: the
+/// nearest existing ancestor (including any symlink) is canonicalized, then
+/// the missing suffix is put back.
+fn canonical_identity(path: &Path) -> Observation<PathBuf> {
+    fn resolve(
+        path: &Path,
+        seen_links: &mut std::collections::HashSet<PathBuf>,
+    ) -> Observation<PathBuf> {
+        let mut probe = match observe(std::path::absolute(path)) {
+            Observation::Present(path) => path,
+            Observation::Missing => return Observation::Missing,
+            Observation::Unreadable => return Observation::Unreadable,
+        };
+        let mut suffix = Vec::new();
+        loop {
+            match observe(std::fs::canonicalize(&probe)) {
+                Observation::Present(mut identity) => {
+                    for component in suffix.iter().rev() {
+                        identity.push(component);
+                    }
+                    return Observation::Present(identity);
+                }
+                Observation::Unreadable => return Observation::Unreadable,
+                Observation::Missing => {}
+            }
+
+            // `canonicalize` reports NotFound for a dangling symlink. Read
+            // that link before treating its name as an ordinary missing
+            // suffix, or the configured identity snaps back to the alias's
+            // lexical location as soon as destroy removes its target.
+            match observe(std::fs::symlink_metadata(&probe)) {
+                Observation::Present(metadata) if metadata.file_type().is_symlink() => {
+                    if !seen_links.insert(probe.clone()) {
+                        return Observation::Unreadable;
+                    }
+                    let target = match observe(std::fs::read_link(&probe)) {
+                        Observation::Present(target) => target,
+                        Observation::Missing | Observation::Unreadable => {
+                            return Observation::Unreadable;
+                        }
+                    };
+                    let target = if target.is_absolute() {
+                        target
+                    } else {
+                        probe
+                            .parent()
+                            .unwrap_or_else(|| Path::new("/"))
+                            .join(target)
+                    };
+                    return match resolve(&target, seen_links) {
+                        Observation::Present(mut identity) => {
+                            for component in suffix.iter().rev() {
+                                identity.push(component);
+                            }
+                            Observation::Present(identity)
+                        }
+                        answer => answer,
+                    };
+                }
+                Observation::Present(_) | Observation::Unreadable => {
+                    return Observation::Unreadable;
+                }
+                Observation::Missing => {}
+            }
+
+            let Some(name) = probe.file_name() else {
+                return Observation::Missing;
+            };
+            suffix.push(name.to_os_string());
+            let Some(parent) = probe.parent() else {
+                return Observation::Missing;
+            };
+            probe = parent.to_path_buf();
+        }
+    }
+
+    resolve(path, &mut std::collections::HashSet::new())
 }
 
 /// Follow symlinks and record the exact path when metadata could not be
@@ -610,12 +693,14 @@ impl Stray {
         }
     }
 
-    pub fn directory(path: &Path) -> Self {
+    pub fn directory(base: &Path, path: &Path) -> Self {
         Stray {
             name: path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
+                .strip_prefix(base)
+                .expect("discovered VM directory is below [vm] dir")
+                .to_str()
+                .expect("caller checked the complete relative path")
+                .to_string(),
             kind: StrayKind::Directory,
             // Quoted, because this is the one command in here that
             // destroys something: unquoted, a `[vm] dir` with a space in
@@ -1534,65 +1619,6 @@ impl Vm {
         }
     }
 
-    /// Is this path this VM's own directory -- however `[vm] dir` was
-    /// spelled -- or a directory holding it?
-    ///
-    /// The first test looks dead: `p` always comes from reading the
-    /// absolutised base, so the second subsumes it. It is kept because
-    /// if `absolute()` ever failed the second would be `None`, and this
-    /// VM's own directory would become a stray with an `rm -rf` printed
-    /// over it -- the one wrong answer here that costs a live VM's
-    /// clones.
-    ///
-    /// That reasoning is **unproven**. `absolute()` fails only when the
-    /// working directory cannot be read, and nothing in the suite makes
-    /// that happen, so the branch has never been shown to fire and a
-    /// guard that cannot be shown to fire is indistinguishable from a
-    /// line that does nothing. Keeping it and deleting it were argued
-    /// from the same absence of evidence. The fixture that would settle
-    /// it -- a deleted working directory -- belongs with #192, which
-    /// rewrites this function.
-    fn is_own_or_ancestor(&self, p: &Path) -> bool {
-        if *p == self.dir {
-            return true;
-        }
-        // Or anything holding it. A nested `[vm] name` -- `new/nested`
-        // -- puts the live VM at `<base>/new/nested`, and if a previous
-        // `[vm] name = "new"` left a `data.ext4` at `<base>/new`, that
-        // directory looks exactly like a stray: not equal to `self.dir`,
-        // a real directory, holding its own disk. Reporting it offers
-        // `rm -rf <base>/new`, which takes the live VM's data disk with
-        // it -- the report handing over the one command that destroys
-        // the thing it exists to protect.
-        //
-        // The old disk in it is real, so `fc_dir_contents` reports that
-        // file separately with a file-only remedy. This guard still
-        // withholds the directory remedy before and after destroy: the
-        // configured path does not change when its final directory is
-        // removed.
-        std::path::absolute(&self.dir)
-            .ok()
-            .is_some_and(|own| own.starts_with(p))
-    }
-
-    /// Is this the configured VM's own Firecracker data disk, including
-    /// a different path that resolves to the same file?
-    ///
-    /// The canonical comparison matters for a nested name whose last
-    /// component is a symlink back to an ancestor. In that case the
-    /// ancestor's `data.ext4` and `self.data_disk()` are the same live
-    /// disk, and a file-only remedy over the former would be just as
-    /// destructive as the directory remedy this scan already refuses.
-    fn is_own_data_disk(&self, p: &Path) -> bool {
-        let own = self.data_disk();
-        *p == own
-            || Some(p) == std::path::absolute(&own).ok().as_deref()
-            || std::fs::canonicalize(p)
-                .ok()
-                .zip(std::fs::canonicalize(own).ok())
-                .is_some_and(|(p, own)| p == own)
-    }
-
     /// The VM directories and protected ancestor disks under `[vm] dir`
     /// that this configuration does not name.
     ///
@@ -1670,85 +1696,80 @@ impl Vm {
         self.fc_entries(&base, entries)
     }
 
-    /// The entry-processing half of [`Vm::fc_dir_contents`], split so a
-    /// deterministic test can place an error between two real `DirEntry`
-    /// values. Real filesystems rarely surface a mid-iteration error on
-    /// demand, which made `.flatten()` otherwise untestable.
+    /// Scan real directories beneath `[vm] dir`, stopping at the first VM
+    /// disk on each unrelated branch. The bounds keep a report from turning
+    /// into an unbounded filesystem walk; every cutoff is retained as an
+    /// incomplete path, so exhausting a bound cannot make the base look safe.
     fn fc_entries<I>(&self, base: &Path, entries: I) -> (Vec<Stray>, Vec<PathBuf>)
     where
         I: IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
     {
         let mut strays = Vec::new();
         let mut unread = Vec::new();
-        for answer in entries {
-            let Some(entry) = directory_entry(base, answer, &mut unread) else {
-                continue;
-            };
-            let path = entry.path();
-            // Observe before excluding our own or a non-UTF-8 name. An
-            // exclusion says what to do with an entry only after ssf has
-            // established what kind of entry it is.
-            match observe(std::fs::symlink_metadata(&path)) {
-                Observation::Present(metadata) if metadata.is_dir() => {}
-                Observation::Present(_) | Observation::Missing => continue,
+        let own_lexical = std::path::absolute(&self.dir).unwrap_or_else(|_| self.dir.clone());
+        let own_identity = canonical_identity(&own_lexical);
+        let own_data_identity = canonical_identity(&self.data_disk());
+        if matches!(own_identity, Observation::Unreadable) {
+            unread.push(unread_path(&self.dir));
+        }
+        if matches!(own_data_identity, Observation::Unreadable) {
+            unread.push(unread_path(&self.data_disk()));
+        }
+
+        let mut budget = 0;
+        let mut pending = std::collections::VecDeque::new();
+        if !self.fc_scan_entries(
+            base,
+            base,
+            0,
+            entries,
+            &own_lexical,
+            &own_identity,
+            &own_data_identity,
+            &mut pending,
+            &mut budget,
+            FC_SCAN_MAX_DEPTH,
+            FC_SCAN_MAX_ENTRIES,
+            &mut strays,
+            &mut unread,
+        ) {
+            one_each(&mut unread);
+            return (strays, unread);
+        }
+
+        while let Some((directory, depth)) = pending.pop_front() {
+            if budget >= FC_SCAN_MAX_ENTRIES {
+                unread.push(unread_path(&directory));
+                unread.extend(pending.drain(..).map(|(path, _)| unread_path(&path)));
+                break;
+            }
+            let entries = match observe(std::fs::read_dir(&directory)) {
+                Observation::Present(entries) => entries,
+                Observation::Missing => continue,
                 Observation::Unreadable => {
-                    unread.push(unread_path(&path));
+                    unread.push(unread_path(&directory));
                     continue;
                 }
-            }
-            let is_own = self.is_own_or_ancestor(&path);
-            let disk = path.join("data.ext4");
-            match observe(std::fs::metadata(&disk)) {
-                Observation::Present(_) if !is_own => {
-                    if entry.file_name().to_str().is_some() {
-                        strays.push(Stray::directory(&path));
-                    } else {
-                        // The disk is real, but no exact shell command can
-                        // name it through `Stray`'s UTF-8 fields. Keep the
-                        // inventory incomplete so the base is never called
-                        // safe to remove over a directory we cannot name.
-                        unread.push(unread_path(&path));
-                    }
-                }
-                Observation::Present(_) => {}
-                Observation::Missing => {}
-                Observation::Unreadable => unread.push(unread_path(&disk)),
+            };
+            if !self.fc_scan_entries(
+                base,
+                &directory,
+                depth,
+                entries,
+                &own_lexical,
+                &own_identity,
+                &own_data_identity,
+                &mut pending,
+                &mut budget,
+                FC_SCAN_MAX_DEPTH,
+                FC_SCAN_MAX_ENTRIES,
+                &mut strays,
+                &mut unread,
+            ) {
+                break;
             }
         }
 
-        // Every proper ancestor of a nested configured name is protected
-        // from a recursive remedy, but a disk left directly in that
-        // ancestor can still be named with a file-only remedy.
-        let relative = self.dir.strip_prefix(&self.base).expect("checked above");
-        let components: Vec<_> = relative.components().collect();
-        let mut ancestor = base.to_path_buf();
-        for component in components.iter().take(components.len().saturating_sub(1)) {
-            ancestor.push(component.as_os_str());
-            match observe(std::fs::symlink_metadata(&ancestor)) {
-                Observation::Present(metadata) if metadata.is_dir() => {}
-                Observation::Present(_) | Observation::Missing => continue,
-                Observation::Unreadable => {
-                    unread.push(unread_path(&ancestor));
-                    continue;
-                }
-            }
-            let disk = ancestor.join("data.ext4");
-            // `[vm] dir` and name are UTF-8, but an absolute path also
-            // includes the process CWD, which need not be.
-            match observe(std::fs::symlink_metadata(&disk)) {
-                Observation::Present(metadata)
-                    if metadata.is_file() && !self.is_own_data_disk(&disk) =>
-                {
-                    if disk.to_str().is_some() {
-                        strays.push(Stray::protected_data_disk(&disk));
-                    } else {
-                        unread.push(unread_path(&disk));
-                    }
-                }
-                Observation::Present(_) | Observation::Missing => {}
-                Observation::Unreadable => unread.push(unread_path(&disk)),
-            }
-        }
         // Not sorted here: all four callers run `sort_strays` over the
         // whole list afterwards. Its key, `(is_disk, name)`, orders
         // these fully except for a tie with a lima instance of the same
@@ -1759,6 +1780,139 @@ impl Vm {
         // would not settle it either, only give the two more to
         // disagree about.
         (strays, unread)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn fc_scan_entries<I>(
+        &self,
+        base: &Path,
+        directory: &Path,
+        directory_depth: usize,
+        entries: I,
+        own_lexical: &Path,
+        own_identity: &Observation<PathBuf>,
+        own_data_identity: &Observation<PathBuf>,
+        pending: &mut std::collections::VecDeque<(PathBuf, usize)>,
+        budget: &mut usize,
+        max_depth: usize,
+        max_entries: usize,
+        strays: &mut Vec<Stray>,
+        unread: &mut Vec<PathBuf>,
+    ) -> bool
+    where
+        I: IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
+    {
+        let mut entries = entries.into_iter();
+        loop {
+            if *budget >= max_entries {
+                unread.push(unread_path(directory));
+                unread.extend(pending.drain(..).map(|(path, _)| unread_path(&path)));
+                return false;
+            }
+            let Some(answer) = entries.next() else {
+                break;
+            };
+            *budget += 1;
+            let Some(entry) = directory_entry(directory, answer, unread) else {
+                continue;
+            };
+            let path = entry.path();
+            let metadata = match observe(std::fs::symlink_metadata(&path)) {
+                Observation::Present(metadata) => metadata,
+                Observation::Missing => continue,
+                Observation::Unreadable => {
+                    unread.push(unread_path(&path));
+                    continue;
+                }
+            };
+            if metadata.file_type().is_symlink() {
+                // The target may contain storage, but following it would
+                // escape the bounded tree or loop. Preserve that unknown.
+                unread.push(unread_path(&path));
+                continue;
+            }
+            if !metadata.is_dir() {
+                continue;
+            }
+
+            let identity = match observe(std::fs::canonicalize(&path)) {
+                Observation::Present(identity) => identity,
+                Observation::Missing => continue,
+                Observation::Unreadable => {
+                    unread.push(unread_path(&path));
+                    continue;
+                }
+            };
+            let configured_identity = match own_identity {
+                Observation::Present(identity) => identity,
+                Observation::Missing | Observation::Unreadable => {
+                    // Any directory might alias the configured VM when its
+                    // identity could not be established. Do not print a
+                    // recursive remedy based on a guess.
+                    unread.push(unread_path(&path));
+                    continue;
+                }
+            };
+
+            if path.starts_with(own_lexical) || identity.starts_with(configured_identity) {
+                // Destroy owns this subtree. It must never be described as
+                // untouched or receive a separate removal command.
+                continue;
+            }
+            let is_ancestor =
+                own_lexical.starts_with(&path) || configured_identity.starts_with(&identity);
+            let disk = path.join("data.ext4");
+            let disk_observation = observe(std::fs::symlink_metadata(&disk));
+            let found_disk = match disk_observation {
+                Observation::Present(metadata) if metadata.is_file() => true,
+                Observation::Present(metadata) if metadata.file_type().is_symlink() => {
+                    unread.push(unread_path(&disk));
+                    false
+                }
+                Observation::Present(_) | Observation::Missing => false,
+                Observation::Unreadable => {
+                    unread.push(unread_path(&disk));
+                    false
+                }
+            };
+
+            if found_disk {
+                if is_ancestor {
+                    let disk_identity = observe(std::fs::canonicalize(&disk));
+                    match (disk_identity, own_data_identity) {
+                        (
+                            Observation::Present(disk_identity),
+                            Observation::Present(configured_data_identity),
+                        ) if disk_identity != *configured_data_identity => {
+                            if disk.to_str().is_some() {
+                                strays.push(Stray::protected_data_disk(&disk));
+                            } else {
+                                unread.push(unread_path(&disk));
+                            }
+                        }
+                        (Observation::Present(_), Observation::Present(_)) => {}
+                        _ => unread.push(unread_path(&disk)),
+                    }
+                } else {
+                    let relative = path.strip_prefix(base).expect("entry is beneath base");
+                    if relative.to_str().is_some() {
+                        strays.push(Stray::directory(base, &path));
+                    } else {
+                        unread.push(unread_path(&path));
+                    }
+                    // The retained directory represents its entire subtree.
+                    continue;
+                }
+            }
+
+            let depth = directory_depth + 1;
+            if depth >= max_depth {
+                unread.push(unread_path(&path));
+            } else {
+                pending.push_back((path, depth));
+            }
+        }
+        true
     }
 
     /// Everything the filesystem can say about `[vm] dir`, including the
@@ -3978,7 +4132,7 @@ mod tests {
             "a lima instance a backend change left behind"
         );
         assert_eq!(fallback.len(), 1, "and doctor's fallback sees it too");
-        assert_ne!(survey.present, Some(true), "it is still not this VM");
+        assert_eq!(survey.present, Some(false), "it is still not this VM");
     }
 
     #[test]
@@ -4173,7 +4327,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_unnameable_directory_with_a_data_disk_is_incomplete_inventory() {
+    fn an_unnameable_nested_path_with_a_data_disk_is_incomplete_inventory() {
         use std::os::unix::ffi::OsStringExt as _;
 
         let base = std::env::temp_dir().join(format!(
@@ -4187,8 +4341,9 @@ mod tests {
         let odd = base.join(std::ffi::OsString::from_vec(
             [b'o', b'l', b'd', 0xff].to_vec(),
         ));
-        std::fs::create_dir_all(&odd).unwrap();
-        std::fs::write(odd.join("data.ext4"), b"disk").unwrap();
+        let nested = odd.join("deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("data.ext4"), b"disk").unwrap();
         let mut cfg = crate::config::Config::default();
         cfg.vm.backend = Some(BackendKind::Firecracker);
         cfg.vm.dir = base.to_string_lossy().into_owned();
@@ -4196,7 +4351,7 @@ mod tests {
         let (strays, unread) = Vm::new(&cfg).fc_dir_contents();
         std::fs::remove_dir_all(&base).unwrap();
         assert!(strays.is_empty(), "no inexact removal command: {strays:?}");
-        assert_eq!(unread, [unread_path(&odd)]);
+        assert_eq!(unread, [unread_path(&nested)]);
     }
 
     #[test]
@@ -4290,6 +4445,8 @@ mod tests {
         // reporting nothing at all.
         std::fs::create_dir_all(base.join("older")).unwrap();
         std::fs::write(base.join("older").join("data.ext4"), b"stray").unwrap();
+        std::fs::create_dir_all(base.join("other/deep")).unwrap();
+        std::fs::write(base.join("other/deep/data.ext4"), b"nested stray").unwrap();
         let disk = base.join("new/data.ext4");
         for backend in [BackendKind::Firecracker, BackendKind::Lima] {
             let mut cfg = crate::config::Config::default();
@@ -4298,7 +4455,11 @@ mod tests {
             cfg.vm.dir = base.to_string_lossy().into_owned();
             cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
             let vm = Vm::new(&cfg);
-            let expected = vec![disk.to_string_lossy().into_owned(), "older".to_string()];
+            let expected = vec![
+                disk.to_string_lossy().into_owned(),
+                "older".to_string(),
+                "other/deep".to_string(),
+            ];
 
             // Through status, the person-facing command's collection
             // path, and on both backends because `[vm] dir` is shared.
@@ -4337,6 +4498,10 @@ mod tests {
                 vm.destroy().await.unwrap();
                 assert!(!vm.dir.exists(), "destroy removed the configured VM");
                 assert!(disk.exists(), "destroy did not reach the parent disk");
+                assert!(
+                    base.join("other/deep/data.ext4").exists(),
+                    "destroy did not reach an unrelated nested orphan"
+                );
             } else {
                 // Lima's destroy needs a limactl fixture; the collection
                 // after its directory-removal half is backend-independent.
@@ -4364,7 +4529,7 @@ mod tests {
     }
 
     #[test]
-    fn every_proper_ancestor_disk_is_reported_without_walking_other_trees() {
+    fn every_proper_ancestor_and_unrelated_nested_disk_is_reported() {
         let base = std::env::temp_dir().join(format!(
             "ssf-nested-chain-{}-{}",
             std::process::id(),
@@ -4383,9 +4548,7 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
-        // The walk deliberately follows only the configured VM's
-        // ancestor chain. A nested disk on another branch is outside
-        // this scan and is tracked separately from this issue.
+        // A nested disk on another branch is found by the bounded walk.
         std::fs::create_dir_all(base.join("other/deep")).unwrap();
         std::fs::write(base.join("other/deep/data.ext4"), b"not a top-level VM").unwrap();
         let mut cfg = crate::config::Config::default();
@@ -4398,8 +4561,8 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(
             strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-            [inner.as_str(), outer.as_str(), "older"],
-            "all and only proper ancestor disks plus the unrelated top-level stray"
+            [inner.as_str(), outer.as_str(), "older", "other/deep"],
+            "protected ancestors plus top-level and nested unrelated strays"
         );
         assert!(unread.is_empty(), "complete scan: {unread:?}");
         assert_eq!(
@@ -4409,6 +4572,195 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn a_name_the_live_one_merely_starts_with_is_still_a_stray() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-prefix-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("factory")).unwrap();
+        std::fs::write(base.join("factory/data.ext4"), b"old").unwrap();
+        std::fs::create_dir_all(base.join("factory2")).unwrap();
+        std::fs::write(base.join("factory2/data.ext4"), b"live").unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "factory2".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let strays = Vm::new(&cfg).survey().strays;
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            ["factory"],
+            "ownership compares path components, not string prefixes"
+        );
+    }
+
+    #[test]
+    fn a_found_vm_directory_represents_its_whole_subtree_with_an_exact_remedy() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = base.join("other branch/deep's vm");
+        let hidden = first.join("still/deeper");
+        let second = base.join("third/deep");
+        for directory in [&first, &hidden, &second] {
+            std::fs::create_dir_all(directory).unwrap();
+            std::fs::write(directory.join("data.ext4"), b"disk").unwrap();
+        }
+        let mut cfg = Config::default();
+        cfg.vm.name = "live".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let (mut strays, unread) = Vm::new(&cfg).fc_dir_contents();
+        std::fs::remove_dir_all(&base).unwrap();
+        strays.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            ["other branch/deep's vm", "third/deep"],
+            "the first disk directory retains every deeper disk once"
+        );
+        assert_eq!(
+            strays[0].remove,
+            format!("rm -rf {}", shell_join(&[first.display().to_string()])),
+            "the entire absolute path is one shell-quoted argument"
+        );
+        assert!(unread.is_empty(), "complete scan: {unread:?}");
+    }
+
+    #[test]
+    fn depth_and_entry_bounds_retain_the_exact_unfinished_boundary() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-bounds-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut at_limit = PathBuf::new();
+        let mut beyond_limit = PathBuf::new();
+        for depth in 0..FC_SCAN_MAX_DEPTH {
+            at_limit.push(format!("at-{depth}"));
+            beyond_limit.push(format!("beyond-{depth}"));
+        }
+        let beyond_boundary = base.join(&beyond_limit);
+        std::fs::create_dir_all(base.join(&at_limit)).unwrap();
+        std::fs::write(base.join(&at_limit).join("data.ext4"), b"at limit").unwrap();
+        beyond_limit.push("hidden");
+        std::fs::create_dir_all(base.join(&beyond_limit)).unwrap();
+        std::fs::write(base.join(&beyond_limit).join("data.ext4"), b"too deep").unwrap();
+
+        let mut cfg = Config::default();
+        cfg.vm.name = "live".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        let (strays, unread) = vm.fc_dir_contents();
+        assert_eq!(strays.len(), 1, "the boundary itself is inspected");
+        assert_eq!(strays[0].name, at_limit.to_string_lossy());
+        assert_eq!(unread, [unread_path(&beyond_boundary)]);
+
+        let budget_base = base.join("budget");
+        for name in ["one", "two", "three"] {
+            std::fs::create_dir_all(budget_base.join(name)).unwrap();
+            std::fs::write(budget_base.join(name).join("data.ext4"), b"disk").unwrap();
+        }
+        let entries: Vec<_> = std::fs::read_dir(&budget_base).unwrap().collect();
+        let own = std::path::absolute(&vm.dir).unwrap();
+        let own_identity = canonical_identity(&own);
+        let own_data_identity = canonical_identity(&vm.data_disk());
+        let mut pending = std::collections::VecDeque::new();
+        let mut budget = 0;
+        let mut budget_strays = Vec::new();
+        let mut budget_unread = Vec::new();
+        assert!(!vm.fc_scan_entries(
+            &budget_base,
+            &budget_base,
+            0,
+            entries,
+            &own,
+            &own_identity,
+            &own_data_identity,
+            &mut pending,
+            &mut budget,
+            FC_SCAN_MAX_DEPTH,
+            2,
+            &mut budget_strays,
+            &mut budget_unread,
+        ));
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(budget, 2);
+        assert_eq!(budget_strays.len(), 2, "observations before cutoff survive");
+        assert_eq!(budget_unread, [unread_path(&budget_base)]);
+        assert_eq!(FC_SCAN_MAX_ENTRIES, 4096);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_symlink_identity_protects_its_real_ancestors_after_destroy() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-own-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let real_parent = base.join("real");
+        let configured = real_parent.join("live/a/b");
+        std::fs::create_dir_all(&configured).unwrap();
+        std::fs::write(configured.join("data.ext4"), b"live").unwrap();
+        std::fs::write(real_parent.join("data.ext4"), b"old ancestor").unwrap();
+        std::os::unix::fs::symlink(real_parent.join("live"), base.join("alias")).unwrap();
+
+        let mut cfg = Config::default();
+        cfg.vm.name = "alias/a/b".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        for before_destroy in [true, false] {
+            if !before_destroy {
+                // Leave the configured link dangling, as it can be after
+                // destroy removes the target tree. Its recorded target
+                // identity still protects the real ancestor.
+                std::fs::remove_dir_all(real_parent.join("live")).unwrap();
+            }
+            let (strays, unread) = vm.fc_dir_contents();
+            assert_eq!(strays.len(), 1, "real configured ancestor is retained");
+            assert_eq!(strays[0].kind, StrayKind::ProtectedDataDisk);
+            assert_eq!(
+                strays[0].name,
+                real_parent.join("data.ext4").to_string_lossy()
+            );
+            assert!(
+                strays
+                    .iter()
+                    .all(|stray| !stray.remove.starts_with("rm -rf")),
+                "no recursive remedy can contain the configured alias: {strays:?}"
+            );
+            assert!(
+                unread.contains(&unread_path(&base.join("alias"))),
+                "directory links are not followed or called examined: {unread:?}"
+            );
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[cfg(unix)]
@@ -4461,7 +4813,7 @@ mod tests {
         let i = Stray::lima_instance("ssf-old".into(), &Default::default()).describe();
         assert!(i.contains("`limactl delete ssf-old`"), "{i}");
         assert!(!i.contains("after its instance"), "{i}");
-        let p = Stray::directory(Path::new("/v/old")).describe();
+        let p = Stray::directory(Path::new("/v"), Path::new("/v/old")).describe();
         assert!(p.contains("`rm -rf /v/old`"), "{p}");
         let protected = Stray::protected_data_disk(Path::new("/v/new/data.ext4")).describe();
         assert!(
@@ -4501,7 +4853,7 @@ mod tests {
         // command that removes their clones.
         for holds in [
             Stray::lima_disk("ssf-old".into(), &Default::default()),
-            Stray::directory(Path::new("/v/old")),
+            Stray::directory(Path::new("/v"), Path::new("/v/old")),
             Stray::protected_data_disk(Path::new("/v/new/data.ext4")),
         ] {
             assert!(holds.holds_work(), "{}", holds.name);

@@ -275,10 +275,17 @@ What the commands do under lima:
 Changing `[vm] name` renames nothing that already exists: the old
 `ssf-<old name>` instance and disk stay in lima's home, and under
 Firecracker the old `<[vm] dir>/<old name>/` stays with its data disk in
-it. If the old name is an ancestor of a nested new name, ssf reports the
-old `data.ext4` itself with an `rm -f` remedy: its directory is part of
-the configured VM path and is not offered for removal. This remains in
-the report after `ssf vm destroy` removes the nested VM. Both kinds are
+it. The filesystem scan follows real directories for up to 32 levels and
+4,096 entries, so a nested old name such as `other/deep` is reported with
+that complete name and an absolute, shell-quoted `rm -rf` remedy. The first
+directory holding a `data.ext4` on each unrelated branch represents that
+whole retained subtree; ssf does not descend and list disks inside it again.
+If the old name is an ancestor of a nested new name, ssf reports the old
+`data.ext4` itself with an `rm -f` remedy: its directory is part of the
+configured VM path and is not offered for removal. Lexical and resolved
+symlink identities protect the configured directory and its ancestors,
+including after destroy removes the final directory. This remains in the
+report after `ssf vm destroy` removes the nested VM. Both kinds are
 looked for under either backend: `[vm] dir` is shared by
 them, and lima's home outlives a change of `[vm] backend` as much as a
 change of `[vm] name`. The one thing not looked for is a `data.ext4`
@@ -291,6 +298,13 @@ and `ssf doctor` does on a host that is not running the factory in a VM
 (in VM mode it is forwarded into the guest, which cannot see the host's
 `[vm] dir`). None of them removes it for you: nothing can tell a VM you
 renamed away to keep from one you abandoned.
+
+The scan never follows a directory symlink. A symlink, an unreadable or
+unnameable path, a failed directory entry, or a depth or entry cutoff is
+listed as an incomplete observation. These unknowns withhold any recursive
+remedy whose ownership cannot be established and prevent `[vm] dir` from
+being called plainly safe to remove. Fix access or inspect the named boundary
+before removing anything by hand.
 
 Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,
 `run`, `ssh-config`) goes over ssh and works the same under both.

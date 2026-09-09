@@ -163,10 +163,13 @@ impl Fixture {
                 self.protect(&nested, 0o000);
             }
             Case::UnreadFirecrackerStray => {
-                let old = self.root.join("vm/old");
-                fs::create_dir_all(&old).unwrap();
-                fs::write(old.join("data.ext4"), b"work").unwrap();
-                self.protect(&old, 0o000);
+                let denied = self.root.join("vm/old/deep");
+                fs::create_dir_all(&denied).unwrap();
+                fs::write(denied.join("data.ext4"), b"unread work").unwrap();
+                self.protect(&denied, 0o000);
+                let readable = self.root.join("vm/good/deep");
+                fs::create_dir_all(&readable).unwrap();
+                fs::write(readable.join("data.ext4"), b"visible work").unwrap();
             }
             Case::LimaHomeParent => {
                 let wall = self.root.join("lima-wall");
@@ -484,12 +487,22 @@ fn exercise(case: Case, root: &Path) {
         }
         let mut vm = Vm::new(&cfg);
         vm.lima_home = Some(lima_home.clone());
+        let expected_strays: &[&str] = if matches!(case, Case::UnreadFirecrackerStray) {
+            &["good/deep"]
+        } else {
+            &[]
+        };
 
         let survey = vm.survey();
         assert_eq!(survey.unread, expected, "{backend} survey failed paths");
-        assert!(
-            survey.strays.is_empty(),
-            "{backend} must not claim an uninspected entry"
+        assert_eq!(
+            survey
+                .strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_strays,
+            "{backend} keeps readable discoveries beside an unread branch"
         );
         let expected_configured = expected_configured_vm(case, backend);
         assert_eq!(
@@ -506,18 +519,27 @@ fn exercise(case: Case, root: &Path) {
             fallback_unread, expected,
             "{backend} doctor fallback failed paths"
         );
-        assert!(
-            fallback_strays.is_empty(),
-            "doctor must not claim an uninspected entry"
+        assert_eq!(
+            fallback_strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_strays,
+            "doctor fallback keeps readable discoveries"
         );
 
         let status = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(vm.status());
         assert_eq!(status.unread, expected, "{backend} vm status failed paths");
-        assert!(
-            status.strays.is_empty(),
-            "status must not claim an uninspected entry"
+        assert_eq!(
+            status
+                .strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_strays,
+            "status keeps readable discoveries"
         );
         serde_json::to_value(&status).expect("non-UTF-8 unread paths serialize lossily");
 
@@ -526,9 +548,14 @@ fn exercise(case: Case, root: &Path) {
             facts.vm_unread, expected,
             "{backend} uninstall gather failed paths"
         );
-        assert!(
-            facts.vm_strays.is_empty(),
-            "uninstall must not claim an uninspected entry"
+        assert_eq!(
+            facts
+                .vm_strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_strays,
+            "uninstall keeps readable discoveries"
         );
         assert_eq!(
             facts.vm_present, expected_configured.0,
@@ -827,7 +854,7 @@ fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
             return;
         }
         Case::UnreadFirecrackerStray => {
-            assert_denied(&base.join("old/data.ext4"));
+            assert_denied(&base.join("old/deep/data.ext4"));
             assert_eq!(
                 fs::metadata(base.join("new"))
                     .expect_err("configured VM unexpectedly exists")
@@ -870,7 +897,7 @@ fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
         }
         Case::OwnSymlink => vec![base.join("new")],
         Case::NestedOwnData => vec![base.join("new/nested/data.ext4")],
-        Case::UnreadFirecrackerStray => vec![base.join("old/data.ext4")],
+        Case::UnreadFirecrackerStray => vec![base.join("old/deep")],
         Case::LimaHomeParent => vec![root.join("lima-wall/lima")],
         Case::LimaHome => vec![root.join("lima")],
         Case::LimaHomeEntries => vec![
@@ -914,7 +941,14 @@ fn assert_renderers(
             status_text.contains(&format!("unread:   {note}")),
             "{status_text}"
         );
-        assert_eq!(doctor_text, format!("note {note}\n"));
+        if doctor_strays.is_empty() {
+            assert_eq!(doctor_text, format!("note {note}\n"));
+        } else {
+            assert!(
+                doctor_text.contains(&format!("note {note}\n")),
+                "{doctor_text}"
+            );
+        }
     }
 }
 

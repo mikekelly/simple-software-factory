@@ -2985,7 +2985,7 @@ mod tests {
             s.strays.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
             ["ssf-old"]
         );
-        assert_ne!(s.present, Some(true), "a stray is not this VM");
+        assert_eq!(s.present, Some(false), "a stray is not this VM");
         assert!(!s.startable);
     }
 

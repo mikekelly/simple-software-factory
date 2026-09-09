@@ -2029,6 +2029,32 @@ mod tests {
         for cmd in ["limactl delete ssf-old", "limactl disk delete ssf-old"] {
             assert!(text.contains(cmd), "{cmd} missing from:\n{text}");
         }
+        for line in [
+            "lima also holds the instance ssf-old, which this configuration does not name",
+            "lima also holds the data disk ssf-old, which this configuration does not name",
+        ] {
+            assert!(text.contains(line), "{line} missing from:\n{text}");
+        }
+        let dir_stray = Facts {
+            vm_base_may_exist: true,
+            vm_base: std::path::PathBuf::from("/v"),
+            vm_strays: vec![vm::Stray::directory(
+                std::path::Path::new("/v"),
+                std::path::Path::new("/v/old/deep"),
+            )],
+            ..stray.clone()
+        };
+        let dir_text = render(&dir_stray, &Report::default(), &Opts::default());
+        assert!(
+            dir_text.contains("[vm] dir also holds the VM directory old/deep,"),
+            "the directory says where it is and preserves its nested name: {dir_text}"
+        );
+        assert!(dir_text.contains("no VM named new to remove"), "{dir_text}");
+        assert!(
+            dir_text.contains("safe to remove except for what is listed below"),
+            "the nested disk is carved out of base safety: {dir_text}"
+        );
+        assert!(!dir_text.contains("after its instance"), "{dir_text}");
         assert!(text.contains("`--force` included"), "{text}");
         // An observation, not a claim of ownership: ssf did not
         // necessarily create it and does not need to have, because
@@ -2109,7 +2135,7 @@ mod tests {
             vm_base_may_exist: true,
             vm_present: Some(false),
             vm_data: Some(false),
-            vm_strays: vec![vm::Stray::directory(&base.join("old"))],
+            vm_strays: vec![vm::Stray::directory(&base, &base.join("old"))],
             ..facts()
         };
         let text = render(&orphan, &Report::default(), &Opts::default());
