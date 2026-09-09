@@ -381,7 +381,10 @@ fn unread_if_there(dir: &Path) -> Vec<PathBuf> {
 /// Only `NotFound` is "not there". Every other error is an answer about
 /// the asking, so the caller reports the path rather than its contents.
 pub fn may_exist(p: &Path) -> bool {
-    !matches!(p.symlink_metadata(), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+    // Following, not `symlink_metadata`: a dangling symlink is nothing
+    // at all, and reporting "could not be read" about it would name a
+    // path with nothing behind it.
+    !matches!(std::fs::metadata(p), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Where the data disk is mounted in the guest.
@@ -1506,6 +1509,9 @@ impl Vm {
             // one that is not there is genuinely empty.
             Err(_) => return (Vec::new(), unread_if_there(&base)),
         };
+        // Set when an entry could be named but not looked at, which is
+        // an answer about the asking and not about the directory.
+        let mut undecidable = false;
         let strays: Vec<Stray> = entries
             .flatten()
             // A name that is not UTF-8 would be printed with
@@ -1524,18 +1530,55 @@ impl Vm {
                 // one path where being wrong costs the clones. What a
                 // backend switch strands *inside* it is a question of
                 // its own (#176), and not one this reports on.
-                !self.is_own_dir(p)
-                    && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
-                    && p.join("data.ext4").exists()
+                if self.is_own_dir(p) {
+                    return false;
+                }
+                // The same rule as `may_exist`, one level in. `[vm] dir`
+                // at mode 0444 lists its entries and refuses to stat any
+                // of them: read as "not a directory" that is a silent
+                // empty answer, and the report says `no VM` and calls
+                // `[vm] dir` safe to remove over a data disk of clones.
+                // Only `NotFound` is "nothing here"; anything else means
+                // the directory has not been read, whatever `read_dir`
+                // said.
+                match std::fs::symlink_metadata(p) {
+                    // A real directory, not a symlink to one: `rm -rf`
+                    // on a link removes the link and leaves what it
+                    // pointed at, so a remedy over one is no remedy.
+                    Ok(m) if !m.is_dir() => return false,
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+                    Err(_) => {
+                        undecidable = true;
+                        return false;
+                    }
+                }
+                match std::fs::metadata(p.join("data.ext4")) {
+                    Ok(_) => true,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(_) => {
+                        undecidable = true;
+                        false
+                    }
+                }
             })
             .map(|p| Stray::directory(&p))
             .collect();
         // Not sorted here: all four callers run `sort_strays` over the
         // whole list afterwards. Its key, `(is_disk, name)`, orders
         // these fully except for a tie with a lima instance of the same
-        // name -- and a second, narrower ordering here would not settle
-        // that either, only give the two a chance to disagree.
-        (strays, Vec::new())
+        // name, and `sort_by` is stable -- so which of the two comes
+        // first is whichever the caller pushed first, and `survey` and
+        // `status` push in opposite orders. Two lines, both correct,
+        // swapped between two commands; a second narrower ordering here
+        // would not settle it either, only give the two more to
+        // disagree about.
+        let unread = if undecidable {
+            unread_if_there(&base)
+        } else {
+            Vec::new()
+        };
+        (strays, unread)
     }
 
     /// The strays that can be found without asking the backend
@@ -3957,6 +4000,76 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_vm_dir_that_lists_but_will_not_stat_is_not_an_empty_one() {
+        // Mode 0444: `read_dir` succeeds, so nothing said the directory
+        // could not be read -- and every entry's `lstat` fails EACCES,
+        // so nothing became a stray either. Both halves silent, and the
+        // report is a bare `no VM` with `[vm] dir` called "safe to
+        // remove", over a data disk of clones. The rule the whole change
+        // rests on, one level in from where it was fixed.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nostat-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        set_mode(&base, 0o444);
+        let statted = std::fs::symlink_metadata(base.join("old")).is_ok();
+        let survey = Vm::new(&cfg).survey();
+        set_mode(&base, 0o755);
+        std::fs::remove_dir_all(&base).unwrap();
+        // Root stats it regardless, and then there is nothing to assert.
+        if !statted {
+            assert_eq!(
+                survey.unread,
+                std::slice::from_ref(&base),
+                "listed and not looked at is not looked at"
+            );
+        }
+
+        // And the other half of the same question, one level further
+        // in: `[vm] dir` reads, the VM directory inside it stats, and
+        // only its `data.ext4` cannot be reached -- a VM directory at
+        // mode 000, which is what an interrupted `sudo` chmod leaves.
+        // "I could not tell whether there is a disk in it" is not "there
+        // is no disk in it".
+        let walled = std::env::temp_dir().join(format!(
+            "ssf-nodisk-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let shut = walled.join("old");
+        std::fs::create_dir_all(&shut).unwrap();
+        std::fs::write(shut.join("data.ext4"), b"disk").unwrap();
+        let mut shut_cfg = cfg.clone();
+        shut_cfg.vm.dir = walled.to_string_lossy().into_owned();
+        set_mode(&shut, 0o000);
+        let reachable = std::fs::metadata(shut.join("data.ext4")).is_ok();
+        let shut_survey = Vm::new(&shut_cfg).survey();
+        set_mode(&shut, 0o755);
+        std::fs::remove_dir_all(&walled).unwrap();
+        if !reachable {
+            assert_eq!(
+                shut_survey.unread,
+                std::slice::from_ref(&walled),
+                "a directory whose disk could not be looked for is unknown"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_vm_dir_nobody_could_stat_is_not_a_vm_dir_that_is_gone() {
         // The rule this change is built on -- "could not look" is not
         // "nothing there" -- was implemented with `Path::exists()`,
@@ -3984,6 +4097,11 @@ mod tests {
         let mut cfg = crate::config::Config::default();
         cfg.vm.dir = base.to_string_lossy().into_owned();
         cfg.vm.name = "new".into();
+        // Pinned, or this asks the platform default -- lima on a Mac --
+        // and forks the developer's own `limactl`, turning every real
+        // `ssf-*` instance into a stray and failing the suite on the
+        // machine this backend exists for.
+        cfg.vm.backend = Some(BackendKind::Firecracker);
         set_mode(&root, 0o000);
         let readable_anyway = std::fs::read_dir(&base).is_ok();
         let survey = Vm::new(&cfg).survey();
