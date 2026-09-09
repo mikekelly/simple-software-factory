@@ -163,20 +163,30 @@ names for the same two creates), in every spelling gh takes the body in:
 and any of those behind the value-less letters of a cluster, so a
 review's `-ab hi` and a create's `-eF notes.md` are stamped as much as
 `-b hi` is. Which letters are value-less depends on the command, since
-`-a` approves on a review and names an assignee on a create. A review
-without a body gets one that is only the line, and that goes by its
-action flag, read in every spelling as well: `--approve`,
+`-a` approves on a review and names an assignee on a create.
+
+An approving review needs no body of its own, so one that is only the
+line is added, in every spelling of the approval: `--approve`,
 `--approve=true`, `-a`, `-a=true` and the `-a` inside a cluster all
 count, while `--approve=false` does not, because gh does not read it as
-an action either. It runs the real gh with everything else untouched. To
-pick the byline's form it works out the repository posted to: `--repo`
+an approval either. A review that comments or requests changes is left
+alone, because gh refuses those without a body (`body cannot be blank
+for comment review`) and that refusal is the more useful answer: a
+review carrying nothing but a byline says nothing, and a request for
+changes carrying nothing but a byline blocks the pull request. So `gh pr
+review 3 --comment` fails and asks for a body, where it once posted.
+
+It runs the real gh with everything else untouched. To pick the
+byline's form it works out the repository posted to: `--repo`
 or `-R` in any spelling, an item given as a URL, `GH_REPO`, else the
 checkout's `origin` remote (`git config --get remote.origin.url`); when
 none of those says, the long form is used, which links from anywhere.
 That is gh's own list, but not quite gh's order -- gh prefers the URL to
 `--repo`, and a line carrying both, which is not a line an agent
-writes, can take the short form somewhere it does not belong. The URL has to be the item's own: a URL that
-is the value of a flag taking one is not read as the item, which matters
+writes, can take the short form somewhere it does not belong.
+
+The URL has to be the item's own: a URL that is the value of a flag
+taking one is not read as the item, which matters
 most for `--parent`, `--blocked-by` and `--blocking` (the flags `gh
 issue create` documents as taking numbers or URLs), since that answer
 outranks `GH_REPO` and a post landing elsewhere with the short `#N`
