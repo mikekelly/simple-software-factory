@@ -634,7 +634,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
     for p in &facts.projects {
         keep.push(format!(
             "{} (clones and worktrees; may hold unpushed work)",
-            p.display()
+            vm::shown_path(p)
         ));
     }
     if facts.vm_base_may_exist {
@@ -665,7 +665,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
             .any(|path| path != &facts.vm_base && facts.vm_base.starts_with(path));
         keep.push(format!(
             "{} (VM image and downloads{})",
-            facts.vm_base.display(),
+            vm::shown_path(&facts.vm_base),
             match (base_incomplete, unread_ancestor, holds_a_vm_directory) {
                 (true, _, _) => "; ssf could not finish inspecting it, so what is in it is unknown",
                 (false, true, _) =>
