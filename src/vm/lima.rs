@@ -3026,6 +3026,17 @@ mod tests {
             .filter(|c| c.contains("disk list"))
             .count();
         assert_eq!(asked, 1, "{:?}", t.commands());
+        // ... and it is *this* VM's disk whose size is read out of that
+        // one listing. The lookup moved into a function of its own when
+        // the two calls were merged, and matching the wrong name there
+        // would print somebody else's disk as this one's cap.
+        let sized = Fake::with_all(
+            "Stopped",
+            Edit::Applies,
+            DiskList::Answers,
+            Listing::Answers,
+        );
+        assert_eq!(sized.vm.status().await.data_gib, 20);
     }
 
     #[tokio::test]
@@ -3072,7 +3083,7 @@ mod tests {
                 .map(|s| (s.kind, s.name))
                 .collect();
         assert_eq!(named, [(StrayKind::Directory, "old".to_string())]);
-        // And the filesystem-only path doctor falls back to sees it too.
+        // And the filesystem-only path `ssf doctor` uses sees it too.
         // The name too, not the count: a lima-home stray would satisfy
         // a bare `len() == 1` just as well as the `[vm] dir` one this
         // test is about.
@@ -3127,10 +3138,10 @@ mod tests {
     }
 
     #[test]
-    fn the_filesystem_fallback_reports_both_of_limas_directories() {
-        // What `ssf doctor` falls back to when there is no `limactl` to
-        // run: the half in lima's home is the one a person cannot find
-        // for themselves, since `limactl list` is what is missing.
+    fn the_filesystem_reader_reports_both_of_limas_directories() {
+        // What `ssf doctor` reads instead of asking `limactl`: both of
+        // lima's directories and `[vm] dir`. The half in lima's home is
+        // the one a person cannot easily find for themselves.
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
         let home = t.vm.lima_home.clone().unwrap();
         std::fs::create_dir_all(home.join("ssf-aaa-inst")).unwrap();
@@ -3159,10 +3170,9 @@ mod tests {
             ["ssf-aaa-inst", "zzz-dir", "ssf-aaa"],
             "somebody else's, and a symlink, are not ssf's to name"
         );
-        // ... and this is what `ssf doctor` falls back to when there is
-        // no tooling to ask with, so both of lima's directories and
-        // `[vm] dir` have to reach it: a person who cannot run
-        // `limactl list` is the one who most needs the answer.
+        // ... and this is the reader `ssf doctor` uses, so both of
+        // lima's directories and `[vm] dir` have to reach it: it is the
+        // only answer that command gives about strays.
         let kinds: Vec<_> = strays.iter().map(|s| s.kind).collect();
         assert_eq!(kinds.len(), 3, "both of lima's, and [vm] dir's: {kinds:?}");
         assert!(kinds.contains(&StrayKind::LimaInstance), "{kinds:?}");
