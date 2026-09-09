@@ -1064,6 +1064,10 @@ follow it or offer a removal command for its target.
 Fix access to the named path and inspect it again before deciding to
 remove anything by hand. A missing directory produces no retained-path
 line; a directory that could not be inspected still does.
+If a relative `[vm] dir`, `LIMA_HOME`, or configured multi-component
+`limactl` path cannot be resolved to an absolute name, ssf treats the
+affected inventory as incomplete and offers no working-directory-dependent
+removal command. A bare `limactl` remains a PATH lookup.
 
 These observations appear in `ssf uninstall`, `ssf vm status` and the
 host's `ssf doctor`. Doctor always discovers strays from the filesystem,

@@ -133,6 +133,10 @@ document links to.
     Only `NotFound` establishes absence; permission and I/O failures do
     not. An unread path prevents reassurance that its container is safe
     to remove. Fix access and inspect again before advising removal.
+    If a relative `[vm] dir`, `LIMA_HOME`, or configured multi-component
+    `limactl` path cannot be made absolute, the affected inventory stays
+    unread and ssf offers no cwd-dependent removal command. A bare
+    `limactl` remains a PATH lookup.
     An unread-path line is not a promise that the configured VM's own
     directory survives `vm destroy`, and reporting it alone adds no
     refusal. An unknown configured data-disk presence does engage the

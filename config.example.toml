@@ -60,6 +60,7 @@
 # Unread paths (including entries inside dir or lima's home/_disks) are named by uninstall, vm status and host doctor.
 # Host doctor discovers these paths from the filesystem without waiting for lima to answer.
 # An incomplete inspection never establishes that the containing directory is safe to remove; fix access and inspect again.
+# If relative dir, LIMA_HOME or a configured limactl path cannot be made absolute, ssf names the affected inventory as unread and offers no cwd-dependent removal command; a bare limactl remains PATH-based.
 # dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
 # backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it
 # vcpus = 7                                    # unset = chosen from the machine by `ssf vm build`: its CPUs minus one, at least 2

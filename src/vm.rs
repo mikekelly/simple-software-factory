@@ -1479,21 +1479,12 @@ impl Vm {
     /// Is this path this VM's own directory -- however `[vm] dir` was
     /// spelled -- or a directory holding it?
     ///
-    /// The first test looks dead: `p` always comes from reading the
-    /// absolutised base, so the second subsumes it. It is kept because
-    /// if `absolute()` ever failed the second would be `None`, and this
-    /// VM's own directory would become a stray with an `rm -rf` printed
-    /// over it -- the one wrong answer here that costs a live VM's
-    /// clones.
-    ///
-    /// That reasoning is **unproven**. `absolute()` fails only when the
-    /// working directory cannot be read, and nothing in the suite makes
-    /// that happen, so the branch has never been shown to fire and a
-    /// guard that cannot be shown to fire is indistinguishable from a
-    /// line that does nothing. Keeping it and deleting it were argued
-    /// from the same absence of evidence. The fixture that would settle
-    /// it -- a deleted working directory -- belongs with #192, which
-    /// rewrites this function.
+    /// The first test covers an exact relative spelling. Ordinarily `p`
+    /// comes from the absolutised base and the second subsumes it; if a
+    /// working directory disappears after the scan begins, failing the
+    /// second comparison must still never turn the configured VM itself
+    /// into a removal remedy. The scan boundary below handles a working
+    /// directory that was already unavailable before inventory began.
     fn is_own_or_ancestor(&self, p: &Path) -> bool {
         if *p == self.dir {
             return true;
@@ -1546,7 +1537,28 @@ impl Vm {
         // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
         // means a different directory from every other working
         // directory. `expand_tilde` only expands a leading `~/`.
-        let base = std::path::absolute(&self.base).unwrap_or_else(|_| self.base.clone());
+        let base = match std::path::absolute(&self.base) {
+            Ok(base) => base,
+            Err(_) => {
+                // A relative remedy is meaningful only from the working
+                // directory that resolved it. If that directory cannot
+                // be named, reading through its still-open inode may
+                // succeed while `rm -rf ../vm/old` later addresses a
+                // different place. Inventory is then incomplete and no
+                // removal command is safe to offer. A separate metadata
+                // answer may still prove the target itself is absent;
+                // failure to name the cwd is not allowed to invent that
+                // answer. Direct observations of this VM and its data
+                // were already retained by `fc_inventory` before
+                // reaching this sibling scan.
+                return match observe(std::fs::metadata(&self.base)) {
+                    Observation::Missing => (Vec::new(), Vec::new()),
+                    Observation::Present(_) | Observation::Unreadable => {
+                        (Vec::new(), vec![unread_path(&self.base)])
+                    }
+                };
+            }
+        };
         // What `ssf vm destroy` removes has to be *inside* `[vm] dir`
         // for the siblings this reports to be safe from it. A `[vm]
         // name` of `""` or `.` makes it `[vm] dir` itself; `..` makes it
@@ -2690,23 +2702,28 @@ impl Vm {
         // as "no such instance" it printed `instance: ssf-<name> missing
         // (ssf vm build)` over a VM that exists, which is the same
         // conflation `lima_stop` was fixed for.
-        let (inst, probe_error, mut strays) = match backend {
+        let (inst, probe_error, mut strays, mut listing_unread) = match backend {
             BackendKind::Lima => match self.lima_instances() {
                 Ok(all) => {
-                    let (mine, others) = self.split_instances(all);
-                    (mine, None, others)
+                    let (mine, others, unread) = self.split_instances(all);
+                    (mine, None, others, unread)
                 }
                 // The listing is also the only way to see the stray
                 // instances, so when it fails they come off lima's
                 // filesystem, on the rule the survey uses. Only the
                 // instances: the disks are added below either way.
-                Err(e) => (None, Some(format!("{e:#}")), self.instance_strays_on_disk()),
+                Err(e) => (
+                    None,
+                    Some(format!("{e:#}")),
+                    self.instance_strays_on_disk(),
+                    Vec::new(),
+                ),
             },
             // `[vm] dir` is asked about below, for both backends at
             // once. Seeding it here as well listed every directory
             // twice, and two of a thing whose remedy is a path sends a
             // person looking for a second one that is not there.
-            BackendKind::Firecracker => (None, None, Vec::new()),
+            BackendKind::Firecracker => (None, None, Vec::new(), Vec::new()),
         };
         if backend == BackendKind::Lima {
             // The disks are another listing, taken above so that the
@@ -2722,12 +2739,17 @@ impl Vm {
             // gap means deciding which reader wins -- which is the
             // refusal's question (#176), not the report's.
             match &lima_disks {
-                Some(Ok(all)) => strays.extend(self.split_disks(all.clone()).1),
+                Some(Ok(all)) => {
+                    let (_, disks, mut unread) = self.split_disks(all.clone());
+                    strays.extend(disks);
+                    listing_unread.append(&mut unread);
+                }
                 _ => strays.extend(self.disk_strays_on_disk()),
             }
         }
         let (dir_strays, mut unread) = self.fc_dir_contents();
         strays.extend(dir_strays);
+        unread.append(&mut listing_unread);
         if backend == BackendKind::Firecracker {
             // Under lima the listings above already covered its home;
             // under Firecracker nothing has, and a machine that changed

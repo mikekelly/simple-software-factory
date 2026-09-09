@@ -39,7 +39,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     HostFacts, Observation, Sizes, Stray, StrayKind, Survey, Vm, directory_entry, make_executable,
-    metadata_presence, observe, plan_grow, scripts_dir, sizes_for, unread_path, which,
+    metadata_presence, observe, one_each, plan_grow, scripts_dir, sizes_for, unread_path, which,
 };
 use crate::config::{Config, HerdrConfig, expand_tilde};
 use crate::platform;
@@ -1009,7 +1009,7 @@ impl Vm {
     /// be started to look inside it, which is why that case is not
     /// `startable`.
     pub(super) fn lima_survey(&self) -> Survey {
-        let (mine, others) = match self.lima_instances_within(SURVEY_LIMIT) {
+        let (mine, others, mut listing_unread) = match self.lima_instances_within(SURVEY_LIMIT) {
             Ok(all) => self.split_instances(all),
             Err(e) => return self.lima_unanswered("the instance", &self.lima_name(), &e),
         };
@@ -1019,11 +1019,13 @@ impl Vm {
         // machine, and `status` reads these unconditionally. Reading
         // them costs no `limactl`.
         let (_, mut home_unread) = self.strays_on_disk_read();
+        home_unread.append(&mut listing_unread);
         let dir = metadata_presence(&self.dir, &mut home_unread);
         let disk = match self.lima_disks_within(SURVEY_LIMIT) {
             Ok(all) => {
-                let (mine, others) = self.split_disks(all);
+                let (mine, others, mut unread) = self.split_disks(all);
                 strays.extend(others);
+                home_unread.append(&mut unread);
                 Some(mine)
             }
             Err(e) => {
@@ -1046,6 +1048,7 @@ impl Vm {
             }
         };
         sort_strays(&mut strays);
+        one_each(&mut home_unread);
         Survey {
             present: match (mine.is_some(), disk) {
                 (true, _) | (false, Some(true)) => Some(true),
@@ -1067,10 +1070,15 @@ impl Vm {
     /// in lima's home: the old instance keeps its old name, and asking
     /// only about the new one is how `ssf uninstall` came to say "no VM"
     /// over a VM that was sitting right there.
-    pub(super) fn split_instances(&self, all: Vec<Instance>) -> (Option<Instance>, Vec<Stray>) {
+    pub(super) fn split_instances(
+        &self,
+        all: Vec<Instance>,
+    ) -> (Option<Instance>, Vec<Stray>, Vec<PathBuf>) {
         let name = self.lima_name();
         let mut mine = None;
         let mut strays = Vec::new();
+        let mut unread = Vec::new();
+        let command = self.lima_command();
         for i in all {
             // The first match, as master's `find` took: lima names are
             // unique so it cannot differ, and "cannot differ" is a
@@ -1080,26 +1088,34 @@ impl Vm {
                     mine = Some(i);
                 }
             } else if is_ssf_name(&i.name) {
-                strays.push(Stray::lima_instance(i.name, &self.lima_command()));
+                match &command {
+                    Some(command) => strays.push(Stray::lima_instance(i.name, command)),
+                    None => unread.push(self.lima_object_path(&i.name, false, &i.dir)),
+                }
             }
         }
-        (mine, strays)
+        (mine, strays, unread)
     }
 
     /// [`Vm::split_instances`] for the data disks, which outlive their
     /// instances and hold the clones and worktrees.
-    pub(super) fn split_disks(&self, all: Vec<Disk>) -> (bool, Vec<Stray>) {
+    pub(super) fn split_disks(&self, all: Vec<Disk>) -> (bool, Vec<Stray>, Vec<PathBuf>) {
         let name = self.lima_disk_name();
         let mut mine = false;
         let mut strays = Vec::new();
+        let mut unread = Vec::new();
+        let command = self.lima_command();
         for d in all {
             if d.name == name {
                 mine = true;
             } else if is_ssf_name(&d.name) {
-                strays.push(Stray::lima_disk(d.name, &self.lima_command()));
+                match &command {
+                    Some(command) => strays.push(Stray::lima_disk(d.name, command)),
+                    None => unread.push(self.lima_object_path(&d.name, true, &d.dir)),
+                }
             }
         }
-        (mine, strays)
+        (mine, strays, unread)
     }
 
     /// A `limactl` question that came back an error.
@@ -1178,14 +1194,16 @@ impl Vm {
     /// [`Vm::instance_strays_on_disk`], and whether lima's home could be
     /// read at all.
     fn instance_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
-        let (names, unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima());
-        (
-            names
-                .into_iter()
-                .map(|n| Stray::lima_instance(n, &self.lima_command()))
-                .collect(),
-            unread,
-        )
+        let (names, mut unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima());
+        let command = self.lima_command();
+        let mut strays = Vec::new();
+        for name in names {
+            match &command {
+                Some(command) => strays.push(Stray::lima_instance(name, command)),
+                None => unread.push(self.lima_object_path(&name, false, "")),
+            }
+        }
+        (strays, unread)
     }
 
     /// The data-disk half, which is the one that holds clones and
@@ -1198,17 +1216,19 @@ impl Vm {
     /// [`Vm::disk_strays_on_disk`], and whether lima's disk directory
     /// could be read at all.
     fn disk_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
-        let (names, unread) = Self::ssf_dirs_in(
+        let (names, mut unread) = Self::ssf_dirs_in(
             self.lima_home.as_ref().map(|h| h.join("_disks")).as_deref(),
             self.ours_in_lima_disks(),
         );
-        (
-            names
-                .into_iter()
-                .map(|n| Stray::lima_disk(n, &self.lima_command()))
-                .collect(),
-            unread,
-        )
+        let command = self.lima_command();
+        let mut strays = Vec::new();
+        for name in names {
+            match &command {
+                Some(command) => strays.push(Stray::lima_disk(name, command)),
+                None => unread.push(self.lima_object_path(&name, true, "")),
+            }
+        }
+        (strays, unread)
     }
 
     /// The name in lima's home this configuration calls its own -- and
@@ -1225,24 +1245,64 @@ impl Vm {
     /// How a `limactl` command has to be spelled to reach the lima this
     /// looked in: the home when it is not lima's default, and
     /// `[vm] limactl` when it is set.
-    pub(super) fn lima_command(&self) -> super::LimaCommand {
+    pub(super) fn lima_command(&self) -> Option<super::LimaCommand> {
         let default = self
             .lima_home
             .as_ref()
             .zip(dirs::home_dir())
             .is_some_and(|(h, home)| *h == home.join(".lima"));
-        super::LimaCommand {
+        let home = if default {
+            None
+        } else {
             // Absolute, for the reason the `rm -rf` remedy is: a
             // relative `$LIMA_HOME` printed relative addresses a
-            // different lima home from any other working directory.
-            home: (!default)
-                .then(|| self.lima_home.clone())
-                .flatten()
-                .map(|h| std::path::absolute(&h).unwrap_or(h)),
-            limactl: self.cfg.limactl.clone(),
-        }
+            // different lima home from any other working directory. A
+            // failed resolution cannot fall back to the relative path:
+            // that would turn a naming failure into a deletion command
+            // for whichever home the person happens to paste it from.
+            self.lima_home
+                .as_ref()
+                .map(std::path::absolute)
+                .transpose()
+                .ok()?
+        };
+        let limactl = match self.cfg.limactl.as_deref() {
+            Some(path) => {
+                let expanded = expand_tilde(path);
+                if expanded.components().count() > 1 {
+                    Some(
+                        std::path::absolute(&expanded)
+                            .ok()?
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                } else {
+                    Some(path.to_string())
+                }
+            }
+            None => None,
+        };
+        Some(super::LimaCommand { home, limactl })
     }
 
+    /// The path to report when lima named an object but the command that
+    /// would remove it could not be made independent of the working
+    /// directory. Prefer lima's configured home because it identifies
+    /// disks as well as instances; a listing's directory is the fallback
+    /// for the unusual case where no home is available.
+    fn lima_object_path(&self, name: &str, disk: bool, listed_dir: &str) -> PathBuf {
+        self.lima_home
+            .as_ref()
+            .map(|home| {
+                if disk {
+                    home.join("_disks").join(name)
+                } else {
+                    home.join(name)
+                }
+            })
+            .or_else(|| (!listed_dir.is_empty()).then(|| PathBuf::from(listed_dir)))
+            .unwrap_or_else(|| PathBuf::from(name))
+    }
     /// [`Vm::ours_in_lima`] for the data disks.
     fn ours_in_lima_disks(&self) -> Option<String> {
         (self.backend() == crate::config::BackendKind::Lima).then(|| self.lima_disk_name())
@@ -2974,7 +3034,10 @@ mod tests {
         assert_eq!(s.present, Some(true), "this config's own disk is there");
         assert_eq!(
             s.strays,
-            vec![Stray::lima_instance("ssf-old".into(), &t.vm.lima_command())]
+            vec![Stray::lima_instance(
+                "ssf-old".into(),
+                &t.vm.lima_command().unwrap()
+            )]
         );
         // And it changes none of the answers about *this* VM, which is
         // the whole point: `ssf-one` is still the stopped, startable
@@ -3479,18 +3542,22 @@ mod tests {
         let mut vm = Vm::new(&cfg);
 
         vm.lima_home = dirs::home_dir().map(|h| h.join(".lima"));
-        assert_eq!(vm.lima_command().home, None, "the default is not named");
+        assert_eq!(
+            vm.lima_command().unwrap().home,
+            None,
+            "the default is not named"
+        );
 
         vm.lima_home = Some(PathBuf::from("/elsewhere/lima"));
         assert_eq!(
-            vm.lima_command().home,
+            vm.lima_command().unwrap().home,
             Some(PathBuf::from("/elsewhere/lima")),
             "any other one is"
         );
 
         // And absolute, for the reason the `rm -rf` remedy is.
         vm.lima_home = Some(PathBuf::from("lima"));
-        let home = vm.lima_command().home.unwrap();
+        let home = vm.lima_command().unwrap().home.unwrap();
         assert!(home.is_absolute(), "{}", home.display());
         assert!(home.ends_with("lima"), "{}", home.display());
     }

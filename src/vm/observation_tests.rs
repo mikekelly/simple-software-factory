@@ -23,6 +23,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const CHILD_TEST: &str = "vm::observation_tests::permission_fixture_child";
 const CASE_ENV: &str = "SSF_OBSERVATION_PERMISSION_CASE";
 const ROOT_ENV: &str = "SSF_OBSERVATION_PERMISSION_ROOT";
+const DELETED_CWD_CHILD: &str = "vm::observation_tests::deleted_cwd_fixture_child";
+const DELETED_CWD_ROOT: &str = "SSF_OBSERVATION_DELETED_CWD_ROOT";
 
 #[derive(Clone, Copy)]
 enum Case {
@@ -415,6 +417,329 @@ fn own_lima_instance_symlink_names_its_inaccessible_target() {
 #[test]
 fn own_lima_disk_symlink_names_its_inaccessible_target() {
     run(Case::LimaOwnDiskSymlink);
+}
+
+#[test]
+fn a_deleted_working_directory_suppresses_relative_remedies_in_every_report() {
+    let root = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join(format!(
+            "ssf-deleted-cwd-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    fs::create_dir_all(root.join("cwd")).unwrap();
+    for dir in ["vm/old", "vm/new", "vm/new/nested"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    for dir in ["lima/ssf-old", "lima/_disks/ssf-old"] {
+        fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    fs::write(root.join("vm/old/data.ext4"), b"old clones").unwrap();
+    fs::write(root.join("vm/new/data.ext4"), b"older clones").unwrap();
+    fs::write(root.join("vm/new/nested/data.ext4"), b"live clones").unwrap();
+    let limactl = root.join("limactl");
+    fs::write(
+        &limactl,
+        format!(
+            r#"#!/bin/sh
+case "$*" in
+  '--tty=false list --json') printf '%s\n' '{{"name":"ssf-old","status":"Stopped","dir":"{}/lima/ssf-old"}}' ;;
+  '--tty=false disk list --json') printf '%s\n' '{{"name":"ssf-old","size":7516192768,"dir":"{}/lima/_disks/ssf-old"}}' ;;
+esac
+"#,
+            root.display(),
+            root.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&limactl, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", DELETED_CWD_CHILD, "--ignored", "--nocapture"])
+        .env(DELETED_CWD_ROOT, &root)
+        .output()
+        .unwrap();
+    let _ = fs::remove_dir_all(&root);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "deleted-cwd child failed\nstdout:\n{}\nstderr:\n{}",
+        stdout,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("deleted-cwd fixture completed"),
+        "deleted-cwd child did not run\nstdout:\n{stdout}"
+    );
+}
+
+/// A subprocess because removing the process's working directory makes
+/// `current_dir()` fail permanently; no parallel test should inherit that.
+#[test]
+#[ignore = "deleted-cwd fixture child; invoked by the parent test"]
+fn deleted_cwd_fixture_child() {
+    let root = PathBuf::from(
+        std::env::var_os(DELETED_CWD_ROOT).expect("deleted-cwd fixture root supplied by parent"),
+    );
+    let _sandbox = crate::config::test_support::sandbox();
+    std::env::set_current_dir(root.join("cwd")).unwrap();
+
+    let configurations: Vec<_> = [BackendKind::Firecracker, BackendKind::Lima]
+        .into_iter()
+        .map(|backend| {
+            let mut cfg = Config::default();
+            cfg.vm.name = "new/nested".into();
+            cfg.vm.dir = "../vm".into();
+            cfg.vm.backend = Some(backend);
+            cfg.vm.limactl = Some(root.join("missing-limactl").to_string_lossy().into_owned());
+            let mut vm = Vm::new(&cfg);
+            vm.lima_home = Some(root.join("empty-lima"));
+            (backend, cfg, vm)
+        })
+        .collect();
+
+    let lima_contexts: Vec<_> = ["relative-home", "relative-tool"]
+        .into_iter()
+        .map(|case| {
+            let mut cfg = Config::default();
+            cfg.vm.name = "new/nested".into();
+            cfg.vm.dir = root.join("vm").to_string_lossy().into_owned();
+            cfg.vm.backend = Some(BackendKind::Lima);
+            cfg.vm.limactl = Some(if case == "relative-tool" {
+                "../limactl".into()
+            } else {
+                root.join("limactl").to_string_lossy().into_owned()
+            });
+            let mut vm = Vm::new(&cfg);
+            vm.lima_home = Some(if case == "relative-home" {
+                PathBuf::from("../lima")
+            } else {
+                root.join("lima")
+            });
+            (case, cfg, vm)
+        })
+        .collect();
+
+    // Positive control: while the relative base can be resolved, the
+    // unrelated VM is discovered and the live VM's ancestor is not.
+    for (backend, _, vm) in &configurations {
+        let (strays, unread) = vm.strays_on_filesystem();
+        assert!(unread.is_empty(), "{backend} positive control: {unread:?}");
+        assert_eq!(
+            strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
+            ["old"],
+            "{backend} positive control: {strays:?}"
+        );
+        assert!(
+            strays[0].remove.starts_with("rm -rf /") && strays[0].remove.ends_with("/vm/old"),
+            "stable positive-control remedy: {}",
+            strays[0].remove
+        );
+    }
+    // Positive control for the lima half: both relative settings can be
+    // stabilised while the cwd has a name, so its filesystem inventory
+    // offers remedies carrying the absolute home and tool paths.
+    for (case, _, vm) in &lima_contexts {
+        let (strays, unread) = vm.strays_on_disk_read();
+        assert!(unread.is_empty(), "{case} positive control: {unread:?}");
+        assert_eq!(strays.len(), 2, "{case} positive control: {strays:?}");
+        assert!(
+            strays
+                .iter()
+                .all(|stray| stray.remove.contains(&root.display().to_string())),
+            "{case} stable positive-control remedies: {strays:?}"
+        );
+    }
+
+    fs::remove_dir(root.join("cwd")).unwrap();
+    assert!(
+        std::env::current_dir().is_err(),
+        "cwd still had an absolute name"
+    );
+    assert!(
+        fs::metadata("../vm").unwrap().is_dir(),
+        "relative base is readable"
+    );
+    assert!(
+        fs::metadata("../vm/new/nested/data.ext4")
+            .unwrap()
+            .is_file(),
+        "configured data is still directly observable"
+    );
+
+    let expected = vec![PathBuf::from("../vm")];
+    for (backend, cfg, vm) in configurations {
+        let survey = vm.survey();
+        assert_eq!(survey.present, Some(true), "{backend} configured VM");
+        assert_eq!(
+            survey.data,
+            Some(backend == BackendKind::Firecracker),
+            "{backend} configured data"
+        );
+        assert_eq!(survey.unread, expected, "{backend} survey unread");
+        assert!(
+            survey.strays.is_empty(),
+            "{backend} survey remedies: {:?}",
+            survey.strays
+        );
+
+        let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
+        assert_eq!(doctor_unread, expected, "{backend} doctor unread");
+        assert!(
+            doctor_strays.is_empty(),
+            "{backend} doctor remedies: {doctor_strays:?}"
+        );
+        let doctor = crate::stray_notes(&doctor_strays, &doctor_unread);
+        assert!(
+            doctor.contains("../vm could not be read or named completely"),
+            "{doctor}"
+        );
+        assert!(!doctor.contains("rm -rf"), "{doctor}");
+
+        let status = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(vm.status());
+        assert_eq!(status.unread, expected, "{backend} status unread");
+        assert!(
+            status.strays.is_empty(),
+            "{backend} status remedies: {:?}",
+            status.strays
+        );
+        let status_text = crate::render_vm_status(&status);
+        assert!(
+            status_text.contains("../vm could not be read or named completely"),
+            "{status_text}"
+        );
+        assert!(!status_text.contains("rm -rf"), "{status_text}");
+
+        let facts = Facts::gather(&cfg, &vm);
+        assert_eq!(facts.vm_unread, expected, "{backend} uninstall unread");
+        assert!(
+            facts.vm_strays.is_empty(),
+            "{backend} uninstall remedies: {:?}",
+            facts.vm_strays
+        );
+        let keep = kept(&facts, false);
+        let base = keep
+            .iter()
+            .find(|line| line.starts_with("../vm ("))
+            .expect("relative VM base retained");
+        assert!(base.contains("could not finish inspecting"), "{base}");
+        assert!(!base.contains("safe to remove"), "{base}");
+        let epilogue = left_in_place(&facts, false);
+        assert!(
+            epilogue.contains("../vm (VM image and downloads; ssf could not finish inspecting it"),
+            "{epilogue}"
+        );
+        assert!(!epilogue.contains("rm -rf"), "{epilogue}");
+
+        // Failure to name the working directory is not itself proof
+        // that every relative target exists. Metadata can still prove a
+        // different base absent through the open cwd inode.
+        let mut missing_cfg = cfg.clone();
+        missing_cfg.vm.dir = "../missing".into();
+        missing_cfg.vm.name = "new".into();
+        let mut missing_vm = Vm::new(&missing_cfg);
+        missing_vm.lima_home = Some(root.join("empty-lima"));
+        let (missing_strays, missing_unread) = missing_vm.strays_on_filesystem();
+        assert!(missing_strays.is_empty());
+        assert!(
+            missing_unread.is_empty(),
+            "confirmed absence is not unread: {missing_unread:?}"
+        );
+    }
+
+    // Lima may still execute a relative home or configured tool through
+    // the deleted cwd's open inode, and its JSON listings can therefore
+    // succeed. The reported deletion command cannot be made stable,
+    // though: pasted elsewhere it can select another lima home or
+    // executable. Successful listings and filesystem discovery share
+    // that remedy boundary and retain the affected object paths instead.
+    for (case, cfg, vm) in lima_contexts {
+        let expected = if case == "relative-home" {
+            vec![
+                PathBuf::from("../lima/_disks/ssf-old"),
+                PathBuf::from("../lima/ssf-old"),
+            ]
+        } else {
+            vec![root.join("lima/_disks/ssf-old"), root.join("lima/ssf-old")]
+        };
+
+        let survey = vm.survey();
+        assert_eq!(survey.present, Some(true), "{case} configured VM");
+        assert_eq!(survey.data, Some(false), "{case} configured data");
+        assert_eq!(survey.unread, expected, "{case} survey unread");
+        assert!(
+            survey.strays.iter().all(|stray| !matches!(
+                stray.kind,
+                super::StrayKind::LimaInstance | super::StrayKind::LimaDisk
+            )),
+            "{case} survey lima remedies: {:?}",
+            survey.strays
+        );
+
+        let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
+        assert_eq!(doctor_unread, expected, "{case} doctor unread");
+        assert!(
+            doctor_strays
+                .iter()
+                .all(|stray| !stray.remove.contains("limactl")),
+            "{case} doctor lima remedies: {doctor_strays:?}"
+        );
+        let doctor = crate::stray_notes(&doctor_strays, &doctor_unread);
+        assert!(!doctor.contains("limactl"), "{case} doctor: {doctor}");
+
+        let status = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(vm.status());
+        assert!(
+            status.probe_error.is_none(),
+            "{case}: {:?}",
+            status.probe_error
+        );
+        assert_eq!(status.unread, expected, "{case} status unread");
+        assert!(
+            status
+                .strays
+                .iter()
+                .all(|stray| !stray.remove.contains("limactl")),
+            "{case} status lima remedies: {:?}",
+            status.strays
+        );
+        let status_text = crate::render_vm_status(&status);
+        assert!(
+            !status_text.contains("limactl"),
+            "{case} status: {status_text}"
+        );
+
+        let facts = Facts::gather(&cfg, &vm);
+        assert_eq!(facts.vm_unread, expected, "{case} uninstall unread");
+        assert!(
+            facts
+                .vm_strays
+                .iter()
+                .all(|stray| !stray.remove.contains("limactl")),
+            "{case} uninstall lima remedies: {:?}",
+            facts.vm_strays
+        );
+        let keep = kept(&facts, false).join("\n");
+        let epilogue = left_in_place(&facts, false);
+        assert!(!keep.contains("limactl"), "{case} uninstall keep: {keep}");
+        assert!(
+            !epilogue.contains("limactl"),
+            "{case} uninstall epilogue: {epilogue}"
+        );
+    }
+
+    println!("deleted-cwd fixture completed");
 }
 
 /// Invoked by the named parent tests above.  Ignoring it in an ordinary test
