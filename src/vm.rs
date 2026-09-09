@@ -550,6 +550,32 @@ impl LimaCommand {
     }
 }
 
+/// Characters that could forge report structure or a backticked command.
+/// Display and shell remedies use this same set.
+fn needs_escaping(c: char) -> bool {
+    c.is_control()
+        || c == '`'
+        || matches!(c,
+            '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{feff}')
+}
+
+/// A stray name rendered as one safe, readable line.
+pub fn shown(name: &str) -> String {
+    name.chars()
+        .flat_map(|c| {
+            if needs_escaping(c) {
+                c.escape_unicode().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
+}
+
 /// Something of ssf's shape that this configuration does not name: what
 /// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
 /// instance or data disk in lima's home; under Firecracker a sibling
@@ -643,7 +669,7 @@ impl Stray {
         format!(
             "{} {}, which this configuration does not name{}; ssf leaves it alone -- `{}` removes it{}",
             self.what(),
-            self.name,
+            shown(&self.name),
             // The stakes, in the two commands that hand out the delete.
             // `ssf uninstall` printed this and these did not, so a
             // person who ran `ssf doctor` to find out where their VM
@@ -3544,6 +3570,25 @@ pub fn shell_join(args: &[String]) -> String {
                     .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c))
             {
                 a.clone()
+            } else if a.chars().any(needs_escaping) {
+                let mut out = String::from("$'");
+                for c in a.chars() {
+                    match c {
+                        '\'' => out.push_str("\\'"),
+                        '\\' => out.push_str("\\\\"),
+                        c if needs_escaping(c) => {
+                            let n = c as u32;
+                            if n <= 0xffff {
+                                out.push_str(&format!("\\u{n:04x}"));
+                            } else {
+                                out.push_str(&format!("\\U{n:08x}"));
+                            }
+                        }
+                        c => out.push(c),
+                    }
+                }
+                out.push('\'');
+                out
             } else {
                 format!("'{}'", a.replace('\'', "'\\''"))
             }
@@ -5219,5 +5264,18 @@ mod tests {
         assert_eq!(off.signing_key, Some(SigningKey::Off(false)));
         assert_eq!(off.credential.as_deref(), Some("bot"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stray_names_cannot_forge_report_lines_or_commands() {
+        let name = "ssf-old\n`rm -rf /live`\u{202e}";
+        let stray = Stray::lima_disk(name.into(), &Default::default());
+        let line = stray.describe();
+        assert!(!line.contains('\n'));
+        assert!(line.contains("\\u{a}"));
+        assert!(line.contains("\\u{60}"));
+        assert!(line.contains("\\u{202e}"));
+        assert!(!stray.remove.contains('\n'));
+        assert!(stray.remove.contains("$'"));
     }
 }
