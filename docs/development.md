@@ -6,6 +6,7 @@ Building ssf from source, running a scratch factory, running a dev build as the 
 cargo build && cargo test
 cargo fmt && cargo clippy
 export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token)
+./target/debug/ssf config set driver herdr            # or orca; a fresh config names none
 ./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
 ./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
 ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
@@ -27,13 +28,27 @@ are already using — the driver's server, the checkouts, GitHub, the
 harness's own sessions, the microVM and the bar widget.
 
 It is a second factory in every way the two variables do not cover, and
-the ways that matter are not obvious from the recipe. Before starting one,
-know that a pass creates workspaces and worktrees in the driver you are
-already using, that `ssf release` and `ssf purge` cannot clear them once
-the pass exits, that `gh auth token` inside a session returns the **bot's**
-token rather than yours, and that with a config carrying `vm.enabled` the
-forwarded commands act on the real microVM and its guest. `ssf status`
-under the same variables shows what the scratch factory believes it owns.
+the ways that matter are not obvious from the recipe. Before starting one:
+
+- A pass **can** create workspaces and worktrees — one that finds an item
+  for the bot does — in the driver you are already running, and `ssf
+  release` and `ssf purge` cannot clear them afterwards, since both need a
+  daemon. Tidying is yours, and it costs differently per driver: closing a
+  herdr workspace leaves the checkout, while removing an Orca worktree
+  deletes the checkout and tries to delete its branch.
+- A scratch config names no driver and the default is herdr, whatever your
+  real factory runs, so set `driver` before the `projects_dir` key that
+  depends on it.
+- `gh auth token` returns whatever `gh` is active as: inside an ssf session
+  that is the bot, because `ssf launch` exports `GH_TOKEN`; in your own
+  shell it is you. Whichever it is, the pass and every agent it starts act
+  as that account. Run `gh auth status` first.
+- With a config carrying `vm.enabled`, forwarded commands — `run --once`
+  and `status` among them — act on the real microVM and its guest rather
+  than on anything here.
+- The recipe's widget line writes the real `~/.config/omarchy` on Omarchy.
+  `ssf ui uninstall && ssf ui install` from the **packaged** binary
+  restores it, in its default place and enabled.
 
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
