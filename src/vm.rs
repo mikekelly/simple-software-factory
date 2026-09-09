@@ -341,6 +341,16 @@ pub struct Survey {
     pub data: Option<bool>,
 }
 
+/// Is it there? `None` when nobody could tell: only `NotFound` means
+/// absent, and a denied or failing `stat` is not an answer.
+pub(crate) fn there(p: &Path) -> Option<bool> {
+    match std::fs::metadata(p) {
+        Ok(_) => Some(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    }
+}
+
 /// What the sizing rule reads off this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostFacts {
@@ -1148,7 +1158,11 @@ impl Vm {
                     present: Some(dir || running),
                     running: Some(running),
                     startable: dir,
-                    data: Some(self.data_disk().exists()),
+                    // `there`, not `exists()`: a `[vm] dir` that
+                    // could not be read is not a VM without a data
+                    // disk. `present` keeps `exists()` -- `Some(false)`
+                    // there skips the destroy rather than running it.
+                    data: there(&self.data_disk()),
                 }
             }
             BackendKind::Lima => self.lima_survey(),
@@ -2930,6 +2944,77 @@ mod tests {
         let vm = Vm::new(&cfg);
         assert!(vm.kernel().ends_with("k/vmlinux"));
         assert!(!vm.kernel().starts_with("~"));
+    }
+
+    #[test]
+    fn a_directory_nobody_could_look_in_is_not_a_directory_with_nothing_in_it() {
+        // A denied `stat` answered a confident "no data disk" about a
+        // directory nobody looked into, and that is the one value that
+        // lets `ssf uninstall` past its refusal.
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!(
+            "ssf-unread-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut cfg = Config::default();
+        cfg.vm.name = "one".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let vm = Vm::new(&cfg);
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        let disk = vm.dir.join("data.ext4");
+        std::fs::write(&disk, b"clones").unwrap();
+        // The two answers that are answers, so what follows is about
+        // the third and not about the fixture.
+        assert_eq!(there(&disk), Some(true));
+        assert_eq!(there(&vm.dir.join("nothing-here")), Some(false));
+        assert_eq!(vm.survey().data, Some(true));
+
+        let mut perm = std::fs::metadata(&vm.dir).unwrap().permissions();
+        perm.set_mode(0o000);
+        std::fs::set_permissions(&vm.dir, perm).unwrap();
+        let seen = std::fs::metadata(&disk).map_err(|e| e.kind());
+        // Taken while the mode is still 0o000, because that is the only
+        // moment it says anything: after the restore below it is true
+        // for everyone, and a guard that is true for everyone is not a
+        // guard.
+        let readable_anyway = std::fs::read_dir(&vm.dir).is_ok();
+        // Both readings taken while the denial is in force: the cleanup
+        // below removes the directory, and a `there` called after it
+        // would answer `Some(false)` about a path that really is gone.
+        let denied = there(&disk);
+        let survey = vm.survey();
+        // Restored before the assertions, so a failure still leaves the
+        // temporary directory removable.
+        let mut perm = std::fs::metadata(&vm.dir).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&vm.dir, perm).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+
+        match seen {
+            Err(std::io::ErrorKind::NotFound) => {
+                panic!("the fixture is wrong: the disk was written above")
+            }
+            Err(_) => {
+                assert_eq!(denied, None, "a denied stat is not an answer");
+                assert_eq!(
+                    survey.data, None,
+                    "and the refusal has to see it as one that was never answered"
+                );
+            }
+            // euid 0 ignores the mode, so this case cannot be built here and
+            // this run proves nothing about it. The assertion is the
+            // narrow one that is true: the directory really was
+            // readable, so the stat above was allowed to succeed.
+            Ok(_) => assert!(
+                readable_anyway,
+                "a stat succeeded through a directory nothing should have been able to read"
+            ),
+        }
     }
 
     #[test]
