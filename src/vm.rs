@@ -4780,7 +4780,7 @@ mod tests {
         ));
         std::fs::create_dir_all(base.join("new")).unwrap();
         std::fs::write(base.join("new/data.ext4"), b"live").unwrap();
-        std::os::unix::fs::symlink(&base.join("new"), base.join("new/nested")).unwrap();
+        std::os::unix::fs::symlink(base.join("new"), base.join("new/nested")).unwrap();
         std::fs::create_dir_all(base.join("older")).unwrap();
         std::fs::write(base.join("older/data.ext4"), b"stray").unwrap();
         let mut cfg = crate::config::Config::default();
