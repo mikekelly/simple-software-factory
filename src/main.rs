@@ -4278,8 +4278,8 @@ mod tests {
             text.lines()
                 .filter(|line| line.starts_with("note "))
                 .count(),
-            3,
-            "every collected stray gets its own doctor note: {text}"
+            4,
+            "every collected stray and unread path gets its own doctor note: {text}"
         );
         assert!(
             text.contains("(its clones and worktrees are in it)"),
