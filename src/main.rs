@@ -2409,6 +2409,11 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
 /// `ssf vm status` hid a must-fix in three consecutive rounds. This copy
 /// then hid the same one -- naming `[vm] dir` for a fact about lima's
 /// home -- because only the other copy had been extracted.
+///
+/// What that pins is the text. The `print!` that puts it on a terminal
+/// is in `doctor` and is reachable by nothing: removing it makes
+/// `ssf doctor` silent about a stray it found, with the suite green.
+/// #188 is the seam for that, here and at the three sibling sites.
 pub fn stray_notes(strays: &[vm::Stray], unread: &[PathBuf]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -2431,7 +2436,8 @@ pub fn stray_notes(strays: &[vm::Stray], unread: &[PathBuf]) -> String {
 /// block has hidden a must-fix in three separate gauntlet rounds: a
 /// missing ordering caveat, a sentence that did not use the shared one,
 /// and a line naming the wrong directory. The words are pinned where
-/// they can be.
+/// they can be -- but not the `print!` that shows them, which can be
+/// removed for a silent `ssf vm status` without a test going red. #188.
 pub fn render_vm_status(st: &vm::VmStatus) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
