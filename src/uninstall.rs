@@ -275,27 +275,30 @@ impl Facts {
     /// well; asserting a disk from that would promise to destroy clones
     /// that are not there, and refuse over them.
     pub fn ssh_answered(&mut self, vm: &vm::Vm) {
-        let survey = vm::Survey {
-            present: Some(true),
-            running: Some(true),
-            startable: true,
-            data: self.vm_data,
-            // ssh says nothing about what else lima holds, or about
-            // what could not be read: both are carried through
-            // unchanged rather than one kept and one dropped.
-            strays: self.vm_strays.clone(),
-            unread: self.vm_unread.clone(),
-        };
-        self.vm_present = survey.present;
-        self.vm_running = survey.running;
-        self.vm_startable = survey.startable;
-        self.vm_data = survey.data;
+        // Exactly what ssh proves and no more. It says nothing about
+        // what else lima holds or about what could not be read, so
+        // `vm_strays` and `vm_unread` are not touched here -- they keep
+        // whatever the survey found. An earlier version copied them into
+        // the local `Survey` below to "carry them through"; nothing read
+        // them there, so the copy said something the code did not do.
+        self.vm_present = Some(true);
+        self.vm_running = Some(true);
+        self.vm_startable = true;
         if vm.backend() == vm::BackendKind::Lima {
             self.vm_removed = lima_removed(
                 &vm.lima_name(),
                 &vm.lima_disk_name(),
                 vm.dir.exists().then_some(vm.dir.as_path()),
-                &survey,
+                // `lima_removed` reads `startable`, `running` and
+                // `data`; the other three are not this call's to state.
+                &vm::Survey {
+                    present: Some(true),
+                    running: Some(true),
+                    startable: true,
+                    data: self.vm_data,
+                    strays: Vec::new(),
+                    unread: Vec::new(),
+                },
             );
         }
     }
@@ -962,6 +965,12 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     match destroy_step(&facts) {
         // The same sentence the report is careful about: there is no VM
         // *named this*, which is not the same as nothing being here.
+        //
+        // Nothing pins this `println!` or the `left_in_place` one below:
+        // `run` is async, destroys, and writes the config, so no test
+        // reaches it, and either could be replaced by a literal with the
+        // suite still green. The builders each side of them are pinned;
+        // the wiring is read, not tested.
         Some(line) => println!("{line}"),
         None => {
             if let Err(e) = vm.destroy().await {
@@ -1757,7 +1766,10 @@ mod tests {
         assert!(text.contains("after its instance"), "{text}");
         // The step that runs after the confirmation says it the same
         // way, through the same function -- asserting the helper alone
-        // left the step itself free to print a bare "no VM".
+        // left the step itself free to print a bare "no VM". This pins
+        // the builder only: `run` is not reachable from a test, so the
+        // `println!` there could still print a literal and the suite
+        // would stay green. Said, not faked.
         assert_eq!(
             destroy_step(&stray).as_deref(),
             Some("no VM named new to remove")
@@ -1767,6 +1779,19 @@ mod tests {
             ..stray.clone()
         };
         assert_eq!(destroy_step(&present), None, "there is one; destroy it");
+        // The arm the comment at the call site is about, and the one
+        // this function was extracted to make reachable: nobody could
+        // ask. Skipping the destroy here would print "no VM named new to
+        // remove" and exit reporting success over an instance and a
+        // data disk that are still there.
+        assert_eq!(
+            destroy_step(&Facts {
+                vm_present: None,
+                ..stray.clone()
+            }),
+            None,
+            "could not be asked goes through destroy, which says what it found"
+        );
         // A stray is outside the thing being uninstalled, so nothing
         // stops the command over it and no flag turns it into a target.
         assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
@@ -2023,8 +2048,12 @@ mod tests {
                 "the report names this beside an absolute `rm -rf`: {}",
                 rel_base.display()
             );
-            // ssh proves the guest is up; it says nothing about a
-            // directory on the host nobody could read.
+            // ssh proves the guest is up. It says nothing about a
+            // directory on the host nobody could read, and nothing about
+            // the VM a rename left behind -- so it must leave both as it
+            // found them. Losing the strays here is #158 restored on
+            // every machine whose guest still answers, which is the one
+            // case a person is most likely to be in.
             let mut after_ssh = gathered.clone();
             after_ssh.vm_unread = vec![PathBuf::from("/home/me/.lima")];
             after_ssh.ssh_answered(&vm);
@@ -2032,6 +2061,15 @@ mod tests {
                 after_ssh.vm_unread,
                 [PathBuf::from("/home/me/.lima")],
                 "ssh does not make an unreadable directory readable"
+            );
+            assert_eq!(
+                after_ssh
+                    .vm_strays
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["old"],
+                "nor does it un-strand the VM a rename left behind"
             );
             // ... and the snapshot has to be a snapshot: a `[vm] dir`
             // that is not there must not be reported as one that is,
