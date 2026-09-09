@@ -2411,6 +2411,15 @@ mod tests {
             vm_unread: vec![PathBuf::from("/x"), PathBuf::from("/y")],
             ..unread.clone()
         };
+        let hostile_facts = Facts {
+            vm_base: PathBuf::from("/bad\n\u{202e}`"),
+            vm_unread: vec![PathBuf::from("/bad\n\u{202e}`")],
+            vm_base_may_exist: true,
+            ..unread.clone()
+        };
+        let hostile_keep = kept(&hostile_facts, false).join("\n");
+        assert!(!hostile_keep.contains("/bad\n"));
+        assert!(hostile_keep.contains("\\u{a}"));
         let both_named = kept(&two, false);
         for named in ["/x", "/y"] {
             assert!(
