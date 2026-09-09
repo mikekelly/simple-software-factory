@@ -5,20 +5,41 @@ Building ssf from source, running a scratch factory, running a dev build as the 
 ```sh
 cargo build && cargo test
 cargo fmt && cargo clippy
-SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
-  ./target/debug/ssf repo add you/sandbox --harness claude
-SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
-  ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
-SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # live-test the widget
+export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token)
+./target/debug/ssf config set driver herdr            # or orca; a fresh config names none
+./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
+./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
+./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
+unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest shell, restore SSF_STATE_DIR=/var/lib/ssf/state
+SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
 omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
-A scratch factory with its own `SSF_CONFIG_DIR`/`SSF_STATE_DIR` touches
-nothing of the real one; `ssf run --once` does a single pass, startup
-pass included, and exits. The installed service runs the last package
-installed, so a change is verified with unit tests and scratch runs rather
-than by expecting to see it live.
+**`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's own files and nothing
+else.** Those are the config file, the state file, the socket its commands
+talk to, the bot token, the SSH keys, the `bin` shim directory an agent
+gets on its `PATH`, the `gh` configuration those agents use, and the marker
+that keeps a disabled service off.
+
+Everything else depends on your machine and your configuration rather than
+on those variables: which driver and server the pass uses, where it clones
+and whether that is a checkout something else is already working, which
+account its token belongs to (run `gh auth status` before the recipe —
+`SSF_GITHUB_TOKEN` wins over everything, and in your own shell it is you),
+whether commands are forwarded to a microVM. Some of it no setting reaches
+at all: `ssf ui install` writes the real `~/.config/omarchy`, undone by
+`ssf ui uninstall && ssf ui install` from the packaged binary; `ssf ui
+service` acts on the real unit; and agents use the harness's own sessions.
+
+Assume a scratch factory shares all of it with the real one unless you have
+arranged otherwise. A pass that finds an item for the bot — the startup
+pass included — starts a real agent somewhere, and `ssf release` and
+`ssf purge` will not be the way you clean it up.
+
+The installed service runs the last package installed, so a change is
+verified with unit tests and scratch runs rather than by expecting to see
+it live.
 
 ## Tests write nowhere but a temporary directory
 

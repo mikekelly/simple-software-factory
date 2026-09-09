@@ -14,7 +14,7 @@
 - Update `README.md` (or the right file under `docs/`) and `config.example.toml` for any user-visible behaviour.
 - A change to setup, configuration, commands or operating behaviour also updates `skills/ssf-setup/SKILL.md` in the same PR; the skill is what a coding agent follows to set ssf up, so a PR that leaves it stale is not done.
 - Rebuild the package with `cd packaging && makepkg -fd` before calling something done; commit the `pkgver` bump makepkg makes to `packaging/PKGBUILD`.
-- The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live.
+- The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live; those variables move ssf's own files and nothing else, so read `docs/development.md` before starting one.
 - Check a claim rather than reasoning your way to one: read the source, or try it where trying it changes nothing. Where you have not checked, say so. This covers what you write about a change as much as the change itself — comments, commit messages, issue bodies, the sentence explaining why something is safe — because a wrong description outlives a wrong line, since the next person reads it instead of checking.
 - The gauntlet is a final adversarial review that tries to break your change.
   Choose its depth by blast radius, not diff size. State the class and why on
