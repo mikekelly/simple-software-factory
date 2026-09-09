@@ -865,7 +865,8 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     // destroy step's line and the epilogue -- and the one carrying the
     // whole report: `render(&facts, &report, &Opts::default())` survives
     // the suite, which drops `--data` from `remove:` and
-    // `vm_unchecked` from the warning above the confirmation. #188.
+    // `vm_unchecked` from the warning above the confirmation. Tracked
+    // on #158; #188 held it until that issue was consolidated.
     print!("{}", render(&facts, &report, &opts));
 
     if let Some(why) = hard_stop(&facts, &report, &opts, force) {

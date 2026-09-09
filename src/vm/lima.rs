@@ -3107,6 +3107,15 @@ mod tests {
             Listing::Answers,
         );
         assert_eq!(sized.vm.status().await.data_gib, 7);
+        // And when lima answers without our disk in it, the cap is what
+        // a build would make -- not zero, and not somebody else's. That
+        // arm is separate from the failed-listing one master folded it
+        // in with, so it needs its own fixture.
+        let absent = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Answers);
+        assert_eq!(
+            absent.vm.status().await.data_gib,
+            absent.vm.sizes().data_gib
+        );
     }
 
     #[tokio::test]

@@ -2413,7 +2413,9 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
 /// What that pins is the text. The `print!` that puts it on a terminal
 /// is in `doctor` and is reachable by nothing: removing it makes
 /// `ssf doctor` silent about a stray it found, with the suite green.
-/// #188 is the seam for that, here and at the four sibling sites.
+/// The seam for that is tracked on #158, here and at the four
+/// sibling sites. (#188 held it until that issue was consolidated,
+/// so the number is closed and the gap is not.)
 pub fn stray_notes(strays: &[vm::Stray]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -2430,7 +2432,8 @@ pub fn stray_notes(strays: &[vm::Stray]) -> String {
 /// missing ordering caveat, a sentence that did not use the shared one,
 /// and a line naming the wrong directory. The words are pinned where
 /// they can be -- but not the `print!` that shows them, which can be
-/// removed for a silent `ssf vm status` without a test going red. #188.
+/// removed for a silent `ssf vm status` without a test going red.
+/// Tracked on #158.
 pub fn render_vm_status(st: &vm::VmStatus) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
