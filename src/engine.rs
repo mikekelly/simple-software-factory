@@ -25,7 +25,7 @@ use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
     Blocked, ConflictNotice, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State,
-    now_iso, owner_in,
+    StateLock, now_iso, owner_in,
 };
 use crate::status::session_id;
 
@@ -170,6 +170,10 @@ pub struct Engine {
     /// Merge simulations keyed by repository and branch, reused while the
     /// base and branch commit pair remains unchanged.
     conflict_pairs: BTreeMap<(String, String), ConflictPair>,
+    /// Held from construction through shutdown, before the state is ever
+    /// read. A one-shot engine uses the same guard as the daemon. Declared
+    /// last so it drops only after the rest of the engine.
+    _state_lock: Option<StateLock>,
 }
 
 /// The cached collaborator list of one repository.
@@ -370,6 +374,10 @@ impl Engine {
     }
 
     pub async fn new(cfg: Config) -> Result<Self> {
+        // Take the lock before looking up credentials or reading state: a
+        // rejected `ssf run --once` must not touch a live daemon's state.
+        let state_lock = StateLock::acquire()?;
+        refuse_live_daemon()?;
         let token = cfg.github_token()?;
         let gh = GitHub::new(&cfg.github.api_url, &token)?;
         let me = gh.whoami().await.context("verifying GitHub token")?;
@@ -402,6 +410,7 @@ impl Engine {
             onboarding: None,
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
+            _state_lock: Some(state_lock),
         })
     }
 
@@ -5431,6 +5440,21 @@ fn handed_over(
     }
 }
 
+/// Retain the socket's older-daemon check while the file lock protects new
+/// engines. An installed daemon from before the lock existed has no lock
+/// file, but its live socket still tells a one-shot run to leave its state
+/// alone.
+fn refuse_live_daemon() -> Result<()> {
+    let path = crate::ipc::socket_path();
+    if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+        anyhow::bail!(
+            "another ssf daemon is listening on {}; stop it first",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Listen for the CLI on the daemon's socket, replacing a stale one.
 fn bind_socket() -> Result<tokio::net::UnixListener> {
     let path = crate::ipc::socket_path();
@@ -5439,13 +5463,10 @@ fn bind_socket() -> Result<tokio::net::UnixListener> {
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     if path.exists() {
-        // Another daemon, or a leftover from one that died?
-        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
-            anyhow::bail!(
-                "another ssf daemon is listening on {}; stop it first",
-                path.display()
-            );
-        }
+        // A daemon from before `StateLock` could have bound between this
+        // engine's constructor check and this bind. Leave its socket alone;
+        // only replace one left by a process that died.
+        refuse_live_daemon()?;
         let _ = std::fs::remove_file(&path);
     }
     let listener = tokio::net::UnixListener::bind(&path)
@@ -5662,6 +5683,7 @@ mod tests {
             onboarding: None,
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
+            _state_lock: None,
         }
     }
 
@@ -6427,7 +6449,13 @@ mod tests {
                     });
                     h.lock().unwrap().push(target.clone());
                     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-                    let (status, etag, body) = if method == "POST" && path.ends_with("/comments") {
+                    let (status, etag, body) = if path == "/user" {
+                        (
+                            "200 OK",
+                            "\"user\"".to_string(),
+                            r#"{"login":"bot","id":1,"type":"User"}"#.to_string(),
+                        )
+                    } else if method == "POST" && path.ends_with("/comments") {
                         let comment = serde_json::from_str::<Value>(&sent)
                             .ok()
                             .and_then(|v| v["body"].as_str().map(str::to_string))
@@ -6593,6 +6621,69 @@ mod tests {
         let mut e = engine();
         e.gh = GitHub::new(api_url, "t").unwrap();
         e
+    }
+
+    #[tokio::test]
+    async fn engine_constructor_refuses_a_second_owner_before_auth_or_state_access() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _sandbox = crate::config::test_support::sandbox();
+        let stub = GitHubStub::start().await;
+        let mut cfg = Config::default();
+        cfg.github.api_url = stub.base.clone();
+        cfg.github.token = Some("test-token".into());
+
+        let first = Engine::new(cfg.clone()).await.unwrap();
+        assert_eq!(stub.hits(), vec!["/user"]);
+        let before = std::fs::read(crate::state::state_path()).unwrap();
+
+        let err = match Engine::new(cfg.clone()).await {
+            Ok(_) => panic!("a second engine acquired the same state directory"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("another ssf daemon is listening"));
+        assert!(stub.hits().is_empty(), "the rejected engine called GitHub");
+        assert_eq!(
+            std::fs::read(crate::state::state_path()).unwrap(),
+            before,
+            "the rejected engine rewrote state"
+        );
+
+        drop(first);
+        let second = Engine::new(cfg).await.unwrap();
+        assert_eq!(stub.hits(), vec!["/user"]);
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn engine_constructor_refuses_a_live_socket_before_auth_or_state_access() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _sandbox = crate::config::test_support::sandbox();
+        let stub = GitHubStub::start().await;
+        let mut cfg = Config::default();
+        cfg.github.api_url = stub.base.clone();
+        cfg.github.token = Some("test-token".into());
+        let path = crate::ipc::socket_path();
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let err = match Engine::new(cfg.clone()).await {
+            Ok(_) => panic!("an engine started beside a legacy daemon socket"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "another ssf daemon is listening on {}; stop it first",
+                path.display()
+            )
+        );
+        assert!(stub.hits().is_empty(), "the refused engine called GitHub");
+        assert!(
+            !crate::state::state_path().exists(),
+            "the refused engine created state"
+        );
+        drop(listener);
+        let engine = Engine::new(cfg).await.unwrap();
+        assert_eq!(stub.hits(), vec!["/user"]);
+        drop(engine);
     }
 
     /// Every hit is one of the four listings: nothing was fetched by number.

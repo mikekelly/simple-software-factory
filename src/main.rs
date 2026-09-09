@@ -720,6 +720,10 @@ async fn main() -> Result<()> {
                 let st = vm
                     .exec_ssf(&args)
                     .with_context(|| format!("running `ssf {name}` in the VM"))?;
+                if let Some(note) = forwarded_failure_note(&cli.command, &cfg.vm.name, st.success())
+                {
+                    eprintln!("{note}");
+                }
                 std::process::exit(st.code().unwrap_or(1));
             }
         }
@@ -2253,6 +2257,14 @@ fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         _ => return None,
     };
     vm::forwards(name).then_some(name)
+}
+
+/// A guest's stderr already says why its command failed. For the one-shot
+/// engine command, name the guest as well: from the host a person otherwise
+/// cannot tell which daemon owns the refused state directory.
+fn forwarded_failure_note(cmd: &Command, vm_name: &str, success: bool) -> Option<String> {
+    (!success && matches!(cmd, Command::Run { once: true }))
+        .then(|| format!("`ssf run --once` failed in VM {vm_name}"))
 }
 
 async fn vm_cmd(command: VmCommand) -> Result<()> {
@@ -3994,6 +4006,17 @@ fn which(bin: &str) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_forwarded_one_shot_names_its_guest() {
+        let once = Command::Run { once: true };
+        assert_eq!(
+            forwarded_failure_note(&once, "factory", false).as_deref(),
+            Some("`ssf run --once` failed in VM factory")
+        );
+        assert!(forwarded_failure_note(&once, "factory", true).is_none());
+        assert!(forwarded_failure_note(&Command::Doctor, "factory", false).is_none());
+    }
 
     #[test]
     fn the_backend_tooling_is_a_note_on_the_host_and_nothing_in_the_guest() {
