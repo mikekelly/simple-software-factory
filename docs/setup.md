@@ -1048,7 +1048,11 @@ directory ssf could not read is reported as though it were empty, so
 `safe to remove` can be said of one holding a VM nobody could look
 inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
 home by hand if either has permissions you did not set.
-`ssf uninstall` never removes a stray and `--force` does not reach it:
+A directory that
+*contains* the VM this configuration names is never offered, since the
+command would take the live VM with it -- so an older VM's disk stranded
+in one goes unmentioned, which is issue #193. `ssf uninstall` never
+removes a stray and `--force` does not reach it:
 ssf cannot tell a VM you renamed away to keep from one you abandoned,
 and only one of those is safe to delete. `ssf vm status` names them too,
 and `ssf doctor` does when it runs on the host -- in VM mode `ssf
