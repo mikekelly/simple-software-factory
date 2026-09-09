@@ -2386,7 +2386,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
             if !yes {
                 bail!(
                     "this removes {} and everything in it{}; pass --yes",
-                    vm.dir.display(),
+                    vm::shown_path(&vm.dir),
                     match vm.backend() {
                         vm::BackendKind::Lima => format!(
                             ", the lima instance {} and its disk {}",
@@ -2445,7 +2445,7 @@ pub fn render_vm_status(st: &vm::VmStatus) -> String {
         out,
         "vm:       {} ({}){}",
         st.name,
-        st.dir,
+        vm::shown(&st.dir),
         if st.enabled {
             ""
         } else {

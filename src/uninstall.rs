@@ -258,7 +258,7 @@ impl Facts {
             },
             vm_removed: match vm.backend() {
                 vm::BackendKind::Firecracker => {
-                    format!("its disks in {}", absolute(&vm.dir).display())
+                    format!("its disks in {}", vm::shown_path(&absolute(&vm.dir)))
                 }
                 vm::BackendKind::Lima => lima_removed(
                     &vm.lima_name(),
