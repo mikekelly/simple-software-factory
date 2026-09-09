@@ -1189,17 +1189,23 @@ impl Vm {
     ///
     /// `absolute` fails with the working directory deleted, and then a
     /// relative `$LIMA_HOME` or `[vm] limactl` would be printed as
-    /// given. This function's own doc says what that costs: a home the
-    /// pasting shell resolves elsewhere is "a no-op at best, and at
-    /// worst a same-named instance in the default home" -- so it can
-    /// delete something else, and an earlier version of this comment
-    /// claimed the opposite.
+    /// given. [`super::LimaCommand`]'s doc says what a wrong home
+    /// costs: "a no-op at best, and at worst a same-named instance in
+    /// the default home" -- so it can delete something else, and an
+    /// earlier version of this comment claimed the opposite. A relative
+    /// program is narrower and still wrong: it runs whatever sits at
+    /// that path in the pasting shell, or nothing.
     ///
-    /// So there is no remedy, and no stray to hang one on: the callers
-    /// report nothing rather than a command that may address another
-    /// machine's lima. Same rule as `fc_dir_contents`, which refuses
-    /// for the same reason. Saying that the answer is partial rather
-    /// than empty is #192's.
+    /// Both are checked here, so the sentence and the code agree --
+    /// they did not for one round, which is how this comment came to
+    /// describe a guard on `[vm] limactl` that was not there. Neither
+    /// can be spelled, so there is no remedy and no stray to hang one
+    /// on: the callers report nothing rather than a command that may
+    /// address another machine's lima. Same rule as `fc_dir_contents`.
+    /// Saying that the answer is partial rather than empty is #192's.
+    ///
+    /// A bare program name (`limactl`) is not a path and stays as it is
+    /// -- PATH lookup is how it is meant to be found.
     pub(super) fn lima_command(&self) -> Option<super::LimaCommand> {
         let default = self
             .lima_home
@@ -1210,6 +1216,15 @@ impl Vm {
             Some(h) => Some(std::path::absolute(&h).ok()?),
             None => None,
         };
+        // Mirrors what `LimaCommand::command` will do with it: expand
+        // the tilde, and absolutise anything with more than one
+        // component.
+        if let Some(p) = &self.cfg.limactl {
+            let p = crate::config::expand_tilde(p);
+            if p.components().count() > 1 && std::path::absolute(&p).is_err() {
+                return None;
+            }
+        }
         Some(super::LimaCommand {
             home,
             limactl: self.cfg.limactl.clone(),

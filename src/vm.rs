@@ -397,14 +397,13 @@ impl LimaCommand {
                 // stay bare, or PATH lookup -- which is how
                 // `Vm::limactl` finds it -- stops happening.
                 //
-                // The `unwrap_or` keeps it relative when `absolute`
-                // fails -- deleted working directory, relative
-                // `[vm] limactl`. What that costs is a command that runs
-                // a different program or none, not one that removes the
-                // wrong thing, since the path is the tool rather than
-                // the target. `fc_dir_contents` refuses to report at all
-                // in that state because its path *is* the target. Scope
-                // recorded for #192's combined review.
+                // The `unwrap_or` is unreachable for anything this
+                // prints: `Vm::lima_command` refuses to build a command
+                // at all when a multi-component `[vm] limactl` cannot be
+                // absolutised, so a stray with such a remedy is never
+                // constructed. It stays because this is a `pub` type and
+                // a caller that built one by hand should still get the
+                // path as given rather than a panic.
                 let p = if p.components().count() > 1 {
                     std::path::absolute(&p).unwrap_or(p)
                 } else {
@@ -3909,6 +3908,16 @@ mod tests {
         let mut lima = Vm::new(&cfg);
         lima.lima_home = Some(PathBuf::from("../lima"));
         let lima_strays = lima.strays_on_disk_read();
+        // And the other half of the same refusal, which the home alone
+        // does not cover: an absolute home with a relative
+        // `[vm] limactl`. The program is not the target, so a wrong one
+        // runs something else rather than deleting something else --
+        // narrower, still not a command to hand over.
+        let mut prog = cfg.clone();
+        prog.vm.limactl = Some("bin/limactl".into());
+        let mut prog_vm = Vm::new(&prog);
+        prog_vm.lima_home = Some(root.join("lima"));
+        let prog_strays = prog_vm.strays_on_disk_read();
         std::env::set_current_dir(&root).unwrap();
         std::fs::remove_dir_all(&root).unwrap();
         // Root can still resolve it on some systems; then there is
@@ -3922,6 +3931,10 @@ mod tests {
             assert!(
                 lima_strays.is_empty(),
                 "a remedy carrying a relative lima home: {lima_strays:?}"
+            );
+            assert!(
+                prog_strays.is_empty(),
+                "a remedy carrying a relative program: {prog_strays:?}"
             );
         }
         println!("{DONE}");

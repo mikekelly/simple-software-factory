@@ -1050,18 +1050,23 @@ inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
 home by hand if either has permissions you did not set. A directory
 that *contains* the VM this configuration names is never offered,
 since the command would take the live VM with it -- so an older VM's
-disk stranded in one goes unmentioned, which is issue #193. And if ssf
-cannot work out where its own VM directory is -- which happens when
-`[vm] dir` is relative and the working directory has been deleted out
-from under the command -- it names nothing at all under `[vm] dir`,
-and no lima instance or disk either, rather than print a command whose
-path would mean something else wherever you pasted it. `ssf uninstall`
-never removes a stray and `--force` does not reach it: ssf cannot tell
-a VM you renamed away to keep from one you abandoned, and only one of
-those is safe to delete. `ssf vm status` names them too, and `ssf
-doctor` does when it runs on the host -- in VM mode `ssf doctor` is
-forwarded into the guest, which cannot see the host's `[vm] dir` or
-lima's home.
+disk stranded in one goes unmentioned, which is issue #193. ssf also
+stays quiet where it cannot spell a command you could safely paste,
+which happens when a path it needs is relative and the working
+directory has been deleted out from under the command. The two halves
+are separate: a relative `[vm] dir` silences the directories under it
+-- and its line then reads "safe to remove", with nothing carved out
+-- while a relative `LIMA_HOME` or `[vm] limactl` silences the lima
+instances and disks. Either can happen without the other, so a report
+that names lima strays is not evidence that `[vm] dir` was read. If
+you are running `ssf uninstall` from a directory that has been
+removed, run it from somewhere that exists, or check `[vm] dir` and
+lima's home by hand. `ssf uninstall` never removes a stray and
+`--force` does not reach it: ssf cannot tell a VM you renamed away to
+keep from one you abandoned, and only one of those is safe to delete.
+`ssf vm status` names them too, and `ssf doctor` does when it runs on
+the host -- in VM mode `ssf doctor` is forwarded into the guest, which
+cannot see the host's `[vm] dir` or lima's home.
 
 What it keeps, and lists at the end (the same list both times): the
 clones and worktrees under `~/ssf/projects` (or Orca's projects; may
