@@ -694,6 +694,9 @@ impl Stray {
     }
 
     pub fn directory(base: &Path, path: &Path) -> Self {
+        let path_text = path
+            .to_str()
+            .expect("caller checked the complete removal path");
         Stray {
             name: path
                 .strip_prefix(base)
@@ -706,7 +709,7 @@ impl Stray {
             // destroys something: unquoted, a `[vm] dir` with a space in
             // it makes `rm -rf /Volumes/My Disk/vm/old` -- a remedy that
             // deletes two things, neither of them the right one.
-            remove: format!("rm -rf {}", shell_join(&[path.display().to_string()])),
+            remove: format!("rm -rf {}", shell_join(&[path_text.to_string()])),
         }
     }
 
@@ -2000,7 +2003,7 @@ impl Vm {
                     }
                 } else {
                     let relative = path.strip_prefix(base).expect("entry is beneath base");
-                    if relative.to_str().is_some() {
+                    if relative.to_str().is_some() && path.to_str().is_some() {
                         strays.push(Stray::directory(base, &path));
                     } else {
                         unread.push(unread_path(&path));
@@ -4461,6 +4464,39 @@ mod tests {
         let (strays, unread) = Vm::new(&cfg).fc_dir_contents();
         std::fs::remove_dir_all(&base).unwrap();
         assert!(strays.is_empty(), "no inexact removal command: {strays:?}");
+        assert_eq!(unread, [unread_path(&nested)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_utf8_nested_name_under_a_non_utf8_base_has_no_lossy_remedy() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "ssf-fc-nonutf8-base-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = root.join(std::ffi::OsString::from_vec(b"vm-\xff".to_vec()));
+        let nested = base.join("other/deep");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("data.ext4"), b"disk").unwrap();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = root.join("configured").to_string_lossy().into_owned();
+        cfg.vm.name = "live".into();
+        let vm = Vm::new(&cfg);
+        let (strays, unread) = vm.fc_entries(&base, std::fs::read_dir(&base).unwrap());
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert!(
+            strays.is_empty(),
+            "an absolute path that cannot be named exactly has no command: {strays:?}"
+        );
         assert_eq!(unread, [unread_path(&nested)]);
     }
 
