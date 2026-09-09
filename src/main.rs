@@ -4002,7 +4002,10 @@ async fn doctor() -> Result<()> {
         // `limactl` forks, each bounded at `SURVEY_LIMIT` -- a minute
         // apiece, so two of silence for the person whose lima is
         // wedged, who is exactly the person running `doctor`. It forks
-        // `systemctl` already; what it has never done is wait on lima.
+        // the service manager already -- `systemctl` on Linux,
+        // `launchctl` on the Mac this sentence is about -- so the point
+        // is not that it forks nothing; it is that it has never waited
+        // on lima.
         // What the listing would buy under lima is the suppression of a
         // directory lima has disowned, a cost `strays_on_disk_read`
         // already accepts in its own doc: naming one costs a line, not

@@ -192,9 +192,11 @@ pub struct Facts {
     /// under lima.
     pub vm_removed: String,
     /// `[vm] dir`: the image and downloads, left in place -- and, after
-    /// a changed `[vm] name` under Firecracker, the old VM's directory
-    /// with its data disk, which is why the line about it is not always
-    /// "safe to remove".
+    /// a changed `[vm] name`, the old VM's directory with its data disk,
+    /// which is why the line about it is not always "safe to remove".
+    /// On either backend: `[vm] dir` is shared by them, so a machine
+    /// that switched from Firecracker to lima and renamed gets the same
+    /// line under lima.
     pub vm_base: PathBuf,
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
@@ -248,9 +250,11 @@ impl Facts {
             // its full path, and a relative `[vm] dir` would print two
             // different-looking paths for one place.
             //
-            // Every path the report prints, not this one alone:
-            // `[vm] dir`, the VM's own directory in both `vm_removed`
-            // arms, and the projects directories. Absolutising `keep:`
+            // Every path this change introduced or moved, not this one
+            // alone: `[vm] dir`, the VM's own directory in both
+            // `vm_removed` arms, and the projects directories. (The
+            // config and state directories come from `config::` already
+            // absolute, and are master's.) Absolutising `keep:`
             // and leaving `remove:` relative produced exactly the two
             // spellings this is here to prevent, two lines apart, in
             // the report that says what is about to be destroyed --
