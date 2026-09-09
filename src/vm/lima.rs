@@ -1294,7 +1294,16 @@ impl Vm {
                     continue;
                 }
             }
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str().map(str::to_owned) else {
+                // It is a real directory and its raw name belongs to the
+                // `ssf-*` namespace, but `Stray` cannot carry an exact
+                // non-UTF-8 name or deletion command. Keep the inventory
+                // incomplete rather than silently dropping it or printing
+                // a lossy command that addresses something else.
+                if file_name.as_encoded_bytes().starts_with(b"ssf-") {
+                    unread.push(unread_path(&path));
+                }
                 continue;
             };
             if Some(&name) != ours.as_ref() && is_ssf_name(&name) {
@@ -3087,6 +3096,74 @@ mod tests {
         names.sort();
         assert_eq!(names, ["ssf-old-a", "ssf-old-b"]);
         assert_eq!(unread, [unread_path(&dir)]);
+    }
+
+    #[cfg(unix)]
+    fn assert_unnameable_ssf_directory_is_incomplete(disks: bool) {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "ssf-lima-non-utf8-{}-{}-{}",
+            if disks { "disks" } else { "home" },
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = root.join("lima");
+        let dir = if disks {
+            home.join("_disks")
+        } else {
+            home.clone()
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("ssf-good")).unwrap();
+
+        let unnameable = dir.join(std::ffi::OsString::from_vec(b"ssf-\xff".to_vec()));
+        std::fs::create_dir_all(&unnameable).unwrap();
+        let unrelated = dir.join(std::ffi::OsString::from_vec(b"other-\xff".to_vec()));
+        std::fs::create_dir_all(&unrelated).unwrap();
+
+        let target = root.join("symlink-target");
+        std::fs::create_dir_all(&target).unwrap();
+        let symlink = dir.join(std::ffi::OsString::from_vec(b"ssf-link-\xff".to_vec()));
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+
+        let mut vm = vm();
+        vm.lima_home = Some(home);
+        let (strays, unread) = if disks {
+            vm.disk_strays_read()
+        } else {
+            vm.instance_strays_read()
+        };
+        std::fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(unread, [unread_path(&unnameable)]);
+        assert_eq!(
+            strays.iter().map(|stray| stray.name.as_str()).collect::<Vec<_>>(),
+            ["ssf-good"]
+        );
+        assert!(
+            strays
+                .iter()
+                .all(|stray| !stray.remove.contains('\u{fffd}')),
+            "an inexact name must not become a removal command: {strays:?}"
+        );
+        assert!(!unread.contains(&unrelated));
+        assert!(!unread.contains(&symlink));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lima_home_marks_an_unnameable_ssf_directory_as_incomplete() {
+        assert_unnameable_ssf_directory_is_incomplete(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lima_disks_marks_an_unnameable_ssf_directory_as_incomplete() {
+        assert_unnameable_ssf_directory_is_incomplete(true);
     }
 
     #[tokio::test]
