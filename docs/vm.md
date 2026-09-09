@@ -277,10 +277,14 @@ Changing `[vm] name` renames nothing that already exists: the old
 Firecracker the old `<[vm] dir>/<old name>/` stays with its data disk in
 it. Both are looked for under either backend: `[vm] dir` is shared by
 them, and lima's home outlives a change of `[vm] backend` as much as a
-change of `[vm] name`. `ssf vm status` and `ssf uninstall` each name
-what this configuration does not, with the command that removes it, and
-`ssf doctor` does on a host that is not running the factory in a VM (in
-VM mode it is forwarded into the guest, which cannot see the host's
+change of `[vm] name`. The one thing not looked for is a `data.ext4`
+left in the VM's *own* directory by a switch from Firecracker to lima,
+which is issue #176: `ssf vm destroy` removes that directory, so check
+it by hand before uninstalling if you have changed `[vm] backend`
+without changing `[vm] name`. `ssf vm status` and `ssf uninstall` each
+name what this configuration does not, with the command that removes it,
+and `ssf doctor` does on a host that is not running the factory in a VM
+(in VM mode it is forwarded into the guest, which cannot see the host's
 `[vm] dir`). None of them removes it for you: nothing can tell a VM you
 renamed away to keep from one you abandoned.
 

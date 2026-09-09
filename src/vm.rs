@@ -317,6 +317,14 @@ pub struct VmStatus {
     pub unread: Vec<PathBuf>,
 }
 
+/// One entry per directory, in a stable order. Two of a thing whose
+/// remedy is a path sends a person looking for a second one that is not
+/// there, and `unread` is assembled from two or three places.
+fn one_each(paths: &mut Vec<PathBuf>) {
+    paths.sort();
+    paths.dedup();
+}
+
 /// A directory that could not be read, when it is there at all: a path
 /// that does not exist is genuinely empty, and only one that is there
 /// and would not open is unknown.
@@ -384,6 +392,41 @@ pub struct Survey {
     pub unread: Vec<PathBuf>,
 }
 
+/// How to spell a `limactl` command so that pasting it addresses the
+/// lima ssf actually looked in.
+///
+/// "The remedy must carry the real name" applies to the home as much as
+/// to the instance: a bare `limactl delete ssf-old` run without the
+/// `LIMA_HOME` ssf had addresses `~/.lima` instead -- a no-op at best,
+/// and at worst a same-named instance in the default home. `[vm]
+/// limactl` is the same argument: the reason that setting exists is a
+/// `limactl` that is not on PATH.
+#[derive(Debug, Clone, Default)]
+pub struct LimaCommand {
+    /// `$LIMA_HOME`, when it is not lima's own default.
+    pub home: Option<PathBuf>,
+    /// `[vm] limactl`, when it is set.
+    pub limactl: Option<String>,
+}
+
+impl LimaCommand {
+    pub fn command(&self, verb: &str, name: &str) -> String {
+        let mut out = String::new();
+        if let Some(h) = &self.home {
+            out.push_str(&format!(
+                "LIMA_HOME={} ",
+                shell_join(std::slice::from_ref(&h.display().to_string()))
+            ));
+        }
+        out.push_str(self.limactl.as_deref().unwrap_or("limactl"));
+        out.push(' ');
+        out.push_str(verb);
+        out.push(' ');
+        out.push_str(&shell_join(std::slice::from_ref(&name.to_string())));
+        out
+    }
+}
+
 /// Something of ssf's shape that this configuration does not name: what
 /// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
 /// instance or data disk in lima's home; under Firecracker a sibling
@@ -418,8 +461,8 @@ pub enum StrayKind {
 }
 
 impl Stray {
-    pub fn lima_instance(name: String) -> Self {
-        let remove = format!("limactl delete {}", shell_join(std::slice::from_ref(&name)));
+    pub fn lima_instance(name: String, lima: &LimaCommand) -> Self {
+        let remove = lima.command("delete", &name);
         Stray {
             name,
             kind: StrayKind::LimaInstance,
@@ -427,14 +470,11 @@ impl Stray {
         }
     }
 
-    pub fn lima_disk(name: String) -> Self {
+    pub fn lima_disk(name: String, lima: &LimaCommand) -> Self {
         // Lima refuses to delete a disk still attached to an instance,
         // and `sort_strays` puts instances first for that reason -- but
         // a person reads one line, not an order.
-        let remove = format!(
-            "limactl disk delete {}",
-            shell_join(std::slice::from_ref(&name))
-        );
+        let remove = lima.command("disk delete", &name);
         Stray {
             name,
             kind: StrayKind::LimaDisk,
@@ -478,7 +518,7 @@ impl Stray {
     /// test.
     pub fn describe(&self) -> String {
         format!(
-            "{} {}, which this config does not name; ssf leaves it alone -- `{}` removes it{}",
+            "{} {}, which this configuration does not name; ssf leaves it alone -- `{}` removes it{}",
             self.what(),
             self.name,
             self.remove,
@@ -1410,6 +1450,7 @@ impl Vm {
         strays.extend(lima);
         unread.extend(lima_unread);
         lima::sort_strays(&mut strays);
+        one_each(&mut unread);
         (strays, unread)
     }
 
@@ -1428,6 +1469,8 @@ impl Vm {
                 strays.extend(lima);
                 unread.extend(lima_unread);
                 lima::sort_strays(&mut strays);
+                one_each(&mut unread);
+                one_each(&mut unread);
                 Survey {
                     present: Some(dir || running),
                     running: Some(running),
@@ -1448,6 +1491,7 @@ impl Vm {
                 // what is here unknown -- assigning would have thrown
                 // away lima's own answer about its home.
                 survey.unread.extend(unread);
+                one_each(&mut survey.unread);
                 lima::sort_strays(&mut survey.strays);
                 survey
             }
@@ -3663,6 +3707,22 @@ mod tests {
     }
 
     #[test]
+    fn a_directory_is_named_once_however_many_places_found_it() {
+        // `unread` is assembled from two or three readers, and the same
+        // directory reaching it twice would print two lines with one
+        // remedy between them -- the shape that sent a person looking
+        // for a second `rm -rf` target that was not there. Nothing
+        // produces a duplicate today; this is what keeps that true.
+        let mut paths = vec![
+            PathBuf::from("/b"),
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+        ];
+        one_each(&mut paths);
+        assert_eq!(paths, [PathBuf::from("/a"), PathBuf::from("/b")]);
+    }
+
+    #[test]
     fn a_stray_never_makes_a_vm_out_of_nothing() {
         // The load-bearing invariant: `present` gates the destroy step,
         // so a stray reaching it would be a VM deleted because someone
@@ -3694,16 +3754,16 @@ mod tests {
     fn the_sentence_the_printing_commands_share() {
         // `ssf doctor` and `ssf vm status` only `println!`, which no
         // test reaches, so the words live here where one can.
-        let d = Stray::lima_disk("ssf-old".into()).describe();
+        let d = Stray::lima_disk("ssf-old".into(), &Default::default()).describe();
         assert!(
             d.starts_with("lima also holds the data disk ssf-old,"),
             "{d}"
         );
-        assert!(d.contains("this config does not name"), "{d}");
+        assert!(d.contains("this configuration does not name"), "{d}");
         assert!(d.contains("ssf leaves it alone"), "{d}");
         assert!(d.contains("`limactl disk delete ssf-old`"), "{d}");
         assert!(d.contains("after its instance"), "{d}");
-        let i = Stray::lima_instance("ssf-old".into()).describe();
+        let i = Stray::lima_instance("ssf-old".into(), &Default::default()).describe();
         assert!(i.contains("`limactl delete ssf-old`"), "{i}");
         assert!(!i.contains("after its instance"), "{i}");
         let p = Stray::directory(Path::new("/v/old")).describe();

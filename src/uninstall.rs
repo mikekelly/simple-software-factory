@@ -711,7 +711,7 @@ fn join_and(parts: &[String]) -> String {
 /// because the wrong answer in that direction is silent data loss. What
 /// `[vm] dir` holds without one is ssf's own: a template, an ssh key, a
 /// share.
-pub fn unchecked_workspaces(data: Option<bool>) -> bool {
+fn unchecked_workspaces(data: Option<bool>) -> bool {
     data != Some(false)
 }
 
@@ -1717,8 +1717,8 @@ mod tests {
             vm_startable: false,
             vm_data: Some(false),
             vm_strays: vec![
-                vm::Stray::lima_instance("ssf-old".into()),
-                vm::Stray::lima_disk("ssf-old".into()),
+                vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
+                vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
             ],
             ..facts()
         };
@@ -1792,7 +1792,7 @@ mod tests {
         // exists, since the line only appears when it does.
         let lima = kept(
             &Facts {
-                vm_strays: vec![vm::Stray::lima_disk("ssf-old".into())],
+                vm_strays: vec![vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
                 ..orphan.clone()
             },
             false,

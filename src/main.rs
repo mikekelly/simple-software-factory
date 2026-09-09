@@ -4164,7 +4164,7 @@ mod tests {
         // wording: "ssf leaves it alone" is what the design turns on,
         // and `config.example.toml` and `docs/vm.md` both promise it.
         let st = vm::VmStatus {
-            strays: vec![vm::Stray::lima_disk("ssf-old".into())],
+            strays: vec![vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
             ..status()
         };
         let text = render_vm_status(&st);
@@ -4190,7 +4190,7 @@ mod tests {
         // extracted last round, so this one went on naming `[vm] dir`
         // for a fact about lima's home with nothing to catch it.
         let text = stray_notes(
-            &[vm::Stray::lima_disk("ssf-old".into())],
+            &[vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
             &[PathBuf::from("/home/me/.lima/_disks")],
         );
         assert!(text.contains("ssf leaves it alone"), "{text}");
