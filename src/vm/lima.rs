@@ -999,10 +999,10 @@ impl Vm {
             Err(e) => return self.lima_unanswered(dir, "the instance", &self.lima_name(), &e),
         };
         let mut strays = others;
-        // Lima's own directories, whether or not a listing failed: the
-        // three commands that name strays have to agree about one
-        // machine, and `status` reads these unconditionally. Reading
-        // them costs no `limactl`.
+        // The disks, from lima where it will say and from its own home
+        // where it will not: a data disk is the one answer whose loss
+        // cannot be undone, so the `Err` arm below reads the directory
+        // rather than reporting nothing.
         let disk = match self.lima_disks_within(SURVEY_LIMIT) {
             Ok(all) => {
                 let (mine, others) = self.split_disks(all);
@@ -3030,13 +3030,19 @@ mod tests {
         // one listing. The lookup moved into a function of its own when
         // the two calls were merged, and matching the wrong name there
         // would print somebody else's disk as this one's cap.
+        //
+        // `Crowded`, not `Answers`: a listing holding only our disk
+        // cannot tell "found ours" from "took whichever lima named
+        // first". And 33 GiB is a size the `sizes()` fallback cannot
+        // produce, so a host with little free space cannot make this
+        // pass for the wrong reason.
         let sized = Fake::with_all(
             "Stopped",
             Edit::Applies,
-            DiskList::Answers,
+            DiskList::Crowded,
             Listing::Answers,
         );
-        assert_eq!(sized.vm.status().await.data_gib, 20);
+        assert_eq!(sized.vm.status().await.data_gib, 33);
     }
 
     #[tokio::test]
@@ -3682,6 +3688,8 @@ mod tests {
         /// An `ssf-*` disk this configuration does not name, sorting
         /// before the instance's name, beside somebody else's.
         Strays,
+        /// Ours, listed *after* another disk of a different size.
+        Crowded,
     }
 
     /// What the fake's `limactl list --json` does. It is both the
@@ -3744,6 +3752,7 @@ mod tests {
             let yaml = inst_dir.join("lima.yaml");
             let disk_arm = match disks {
                 DiskList::Answers => r#"echo '{"name":"ssf-one","size":21474836480,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
+                DiskList::Crowded => r#"echo '{"name":"other","size":106300440576,"dir":"/d","mountPoint":"/m"}'; echo '{"name":"ssf-one","size":35433480192,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
                 // A disk whose name sorts before the instance's, so the
                 // ordering rule is not satisfied by luck, and one that
                 // is somebody else's.

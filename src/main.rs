@@ -3998,15 +3998,16 @@ async fn doctor() -> Result<()> {
         // abandoned -- so being named here is the only way they stop
         // being invisible.
         //
-        // Off the filesystem, always. Asking the backend would fork
-        // `limactl` twice inside `doctor`, which forks none today, and
-        // bound each at a minute -- two minutes of silence for the
-        // person whose lima is wedged, who is exactly the person
-        // running `doctor`. What the listing buys under lima is the
-        // suppression of a directory lima has disowned, a cost
-        // `strays_on_disk_read` already accepts in its own doc: naming
-        // one costs a line, not a VM. Under Firecracker the two are the
-        // same answer by construction.
+        // Off the filesystem, always. Asking the backend would add two
+        // `limactl` forks, each bounded at `SURVEY_LIMIT` -- a minute
+        // apiece, so two of silence for the person whose lima is
+        // wedged, who is exactly the person running `doctor`. It forks
+        // `systemctl` already; what it has never done is wait on lima.
+        // What the listing would buy under lima is the suppression of a
+        // directory lima has disowned, a cost `strays_on_disk_read`
+        // already accepts in its own doc: naming one costs a line, not
+        // a VM. Under Firecracker the two are the same answer by
+        // construction.
         print!("{}", stray_notes(&vm.strays_on_filesystem()));
     }
     // The widget lives on the host; inside the guest there is no Omarchy
