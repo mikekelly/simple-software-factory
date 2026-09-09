@@ -826,11 +826,14 @@ async fn main() -> Result<()> {
             json,
         } => purge(dry_run, older_than, force, json).await,
         Command::Guide => {
-            let bot = std::env::var("SSF_BOT")
-                .ok()
-                .filter(|b| !b.is_empty())
-                .or_else(|| state::State::load().ok().and_then(|s| s.bot_login))
-                .unwrap_or_else(|| "<bot>".into());
+            let state_bot = state::State::load().ok().and_then(|state| state.bot_login);
+            let config_bot = Config::load().ok().and_then(|cfg| cfg.github.login);
+            let bot = configured_bot_login(
+                std::env::var("SSF_BOT").ok().as_deref(),
+                state_bot.as_deref(),
+                config_bot.as_deref(),
+            )
+            .unwrap_or_else(|| "<bot>".into());
             print!("{}", prompt::guide(&bot, vm::in_guest()));
             Ok(())
         }
@@ -910,10 +913,11 @@ fn launch(
         cmd.env(format!("GIT_CONFIG_KEY_{}", base + i), k)
             .env(format!("GIT_CONFIG_VALUE_{}", base + i), v);
     }
-    if let Ok(st) = state::State::load() {
-        if let Some(login) = st.bot_login {
-            cmd.env("SSF_BOT", login);
-        }
+    let state_bot = state::State::load().ok().and_then(|state| state.bot_login);
+    if let Some(login) =
+        configured_bot_login(None, state_bot.as_deref(), cfg.github.login.as_deref())
+    {
+        cmd.env("SSF_BOT", login);
     }
     if let Some(r) = repo {
         cmd.env("SSF_REPO", r);
@@ -950,6 +954,21 @@ fn launch(
     }
     let err = cmd.exec();
     Err(anyhow::Error::from(err).context("exec failed"))
+}
+
+/// A running daemon's last authenticated identity is retained in state for
+/// token-only setups. A session's own identity wins, then that cache, then
+/// the configured account for a factory that has not started yet.
+fn configured_bot_login(
+    session_bot: Option<&str>,
+    state_bot: Option<&str>,
+    config_bot: Option<&str>,
+) -> Option<String> {
+    session_bot
+        .filter(|login| !login.is_empty())
+        .or_else(|| state_bot.filter(|login| !login.is_empty()))
+        .or_else(|| config_bot.filter(|login| !login.is_empty()))
+        .map(str::to_owned)
 }
 
 /// What `ssf launch` puts in the agent's environment for git: variables,
@@ -1257,9 +1276,6 @@ async fn auth(command: AuthCommand) -> Result<()> {
 
             let gh = github::GitHub::new(&cfg.github.api_url, &token)?;
             let me = gh.whoami().await?;
-            let mut st = state::State::load().unwrap_or_default();
-            st.bot_login = Some(login.clone());
-            let _ = st.save();
             cfg.github.login = Some(login.clone());
             cfg.github.email = Some(
                 email
@@ -1440,9 +1456,6 @@ pub async fn auth_logout(keep_keys: bool) -> Result<()> {
     cfg.github.login = None;
     cfg.github.email = None;
     cfg.save()?;
-    let mut st = state::State::load().unwrap_or_default();
-    st.bot_login = None;
-    let _ = st.save();
     Ok(())
 }
 
@@ -4776,5 +4789,144 @@ command's effort), without a summary."
             parse_signing_key("~/.ssh/id_ed25519"),
             config::SigningKey::Path("~/.ssh/id_ed25519".into())
         );
+    }
+
+    #[test]
+    fn guide_and_launch_identity_prefer_session_then_daemon_then_config() {
+        assert_eq!(
+            configured_bot_login(
+                Some("session-bot"),
+                Some("daemon-bot"),
+                Some("configured-bot")
+            ),
+            Some("session-bot".into())
+        );
+        assert_eq!(
+            configured_bot_login(Some(""), Some("daemon-bot"), Some("configured-bot")),
+            Some("daemon-bot".into())
+        );
+        assert_eq!(
+            configured_bot_login(None, None, Some("configured-bot")),
+            Some("configured-bot".into())
+        );
+        assert_eq!(configured_bot_login(None, None, Some("")), None);
+        assert_eq!(configured_bot_login(None, None, None), None);
+    }
+
+    async fn auth_test_api() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = [0; 1024];
+                let _ = socket.read(&mut request).await;
+                let body = r#"{"login":"new-bot","id":42,"type":"User"}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        base
+    }
+
+    #[tokio::test]
+    async fn auth_does_not_rewrite_the_live_daemon_snapshot() {
+        // Auth used to load and then save this whole file. The fixture holds
+        // an active session and a daemon snapshot, including the old cache,
+        // so a byte-for-byte check catches either login or logout doing that.
+        let _sandbox = config::test_support::sandbox();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut cfg = Config::default();
+        cfg.github.api_url = auth_test_api().await;
+        cfg.save().unwrap();
+        let live = r#"{
+  "bot_login": "daemon-bot",
+  "last_poll_at": "2026-09-09T01:00:00Z",
+  "last_error": "driver was restarting",
+  "repos": {
+    "acme/widgets": {
+      "issues": {
+        "183": {
+          "number": 183,
+          "title": "Keep this session",
+          "worktree_path": "/scratch/widgets.worktrees/issue-183",
+          "terminal_handle": "live-terminal",
+          "agent_session_id": "live-conversation",
+          "active": true
+        }
+      }
+    }
+  }
+}
+"#;
+        let state_path = state::state_path();
+        std::fs::write(&state_path, live).unwrap();
+        // This is the daemon's in-memory snapshot while auth runs.
+        let daemon_state = state::State::load().unwrap();
+
+        auth(AuthCommand::Login {
+            user: None,
+            web: false,
+            token: Some("test-token".into()),
+            no_keys: true,
+            email: None,
+            yes: true,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            Config::load().unwrap().github.login.as_deref(),
+            Some("new-bot")
+        );
+        assert_eq!(std::fs::read_to_string(&state_path).unwrap(), live);
+
+        // The daemon may save its snapshot after auth. It keeps the live
+        // binding, and it cannot overwrite the separate auth configuration.
+        daemon_state.save().unwrap();
+        assert_eq!(
+            Config::load().unwrap().github.login.as_deref(),
+            Some("new-bot")
+        );
+
+        let after_daemon_save = std::fs::read_to_string(&state_path).unwrap();
+        auth_logout(true).await.unwrap();
+        assert!(Config::load().unwrap().github.login.is_none());
+        assert_eq!(
+            std::fs::read_to_string(&state_path).unwrap(),
+            after_daemon_save
+        );
+
+        // A blank inline token is not a credential either; it must not make
+        // the retained daemon cache look like a live sign-in after logout.
+        let mut logged_out = Config::load().unwrap();
+        logged_out.github.token = Some(" \t\n ".into());
+        logged_out.save().unwrap();
+
+        let status = status::Snapshot {
+            cfg: Config::load().unwrap(),
+            state: state::State::load().unwrap(),
+            workspaces: Vec::new(),
+            down: Vec::new(),
+            errors: Vec::new(),
+        };
+        assert!(status.to_json()["bot_login"].is_null());
+        assert!(status::render_status(&status).contains("bot:     (not signed in)"));
+
+        let state = state::State::load().unwrap();
+        let session = &state.repos["acme/widgets"].issues[&183];
+        assert_eq!(session.terminal_handle.as_deref(), Some("live-terminal"));
+        assert_eq!(
+            session.agent_session_id.as_deref(),
+            Some("live-conversation")
+        );
+        assert!(session.active);
     }
 }

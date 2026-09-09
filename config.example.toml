@@ -6,7 +6,8 @@
 
 [github]
 # api_url = "https://api.github.com"      # GitHub Enterprise: https://ghe.example.com/api/v3
-# Written by `ssf auth login --user <bot>`:
+# Written by `ssf auth login --user <bot>` (the auth commands do not rewrite
+# the daemon's live state.json):
 # login = "acme-bot"
 # email = "12345+acme-bot@users.noreply.github.com"
 # ssh_key_path = "~/.config/ssf/keys/acme-bot_ed25519"   # enrolled for SSH pushes and commit signing

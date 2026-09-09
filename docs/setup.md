@@ -314,11 +314,15 @@ key under `~/.config/ssf/keys/`, enrolled on the bot account as both an
 SSH key and a commit signing key. Agents then push over HTTPS with the
 token or over SSH with that key, and every commit is signed with it; with
 no key enrolled, signing is off rather than falling back to your key.
+Login and logout change this configuration and the credential only; they
+leave the daemon's live session state alone.
 `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
 itself stays. `ssf token` prints the token for anything else that needs
 it. The service, which could not start in step 2, starts on its next
 retry now that there is a token (on a Mac it is not started until step
-6, so its line stays failed for now).
+6, so its line stays failed for now). `ssf status` names the configured
+account before the daemon first starts, then the account the daemon last
+authenticated as. Removing the credential makes status report not signed in.
 
 Check:
 
