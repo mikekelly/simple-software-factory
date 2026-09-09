@@ -688,9 +688,18 @@ impl Shim<'_> {
                 continue;
             }
             if let Some((bools, 'b', attached)) = short {
-                // Re-emitted the way it arrived: attached to the cluster
-                // where the value was attached, and as the next argument
-                // where it was the next argument.
+                // Attached to the cluster whenever there are letters in
+                // front of the `b`, however it arrived. Left as its own
+                // word it can become a bare word ahead of the command
+                // pair, and cobra reads the first of those as the
+                // command: `gh pr -ab '' review` posts, and rewriting it
+                // to `pr -ab <byline> review` makes gh answer `unknown
+                // shorthand flag: 'a' in -ab`. A cluster of three
+                // characters or more swallows nothing, so keeping the
+                // body inside it leaves the lookup as gh found it. With
+                // no letters in front there is nothing to attach to, and
+                // a two-character `-b` swallows the word after it
+                // anyway.
                 match attached {
                     Some(v) => {
                         out.push(format!("-{bools}b{}", stamp(v)));
@@ -698,9 +707,27 @@ impl Shim<'_> {
                         i += 1;
                         continue;
                     }
+                    // Not the next argument, when the next argument is
+                    // a command word. cobra takes the pair out of the
+                    // list before pflag sees it, so gh binds the value
+                    // to the first word after the pair instead: `gh -aF
+                    // pr review notes.md 3` reads `notes.md`. Following
+                    // it there would mean moving an argument out of its
+                    // place, and stamping the command word instead hands
+                    // gh `unknown command "<byline>"`, turning a line it
+                    // accepts into an error. So the line goes over
+                    // whole, exactly as it did before any of this. #201
+                    // has it with the other bodies the shim cannot
+                    // reach.
+                    None if i + 1 == c || i + 1 == s => return args,
                     None if i + 1 < args.len() => {
-                        out.push(format!("-{bools}b"));
-                        out.push(stamp(&args[i + 1]));
+                        let body = stamp(&args[i + 1]);
+                        if bools.is_empty() {
+                            out.push("-b".to_string());
+                            out.push(body);
+                        } else {
+                            out.push(format!("-{bools}b{body}"));
+                        }
                         stamped = true;
                         i += 2;
                         continue;
@@ -719,9 +746,10 @@ impl Shim<'_> {
             // when it goes looking for the command. `gh -aF/dev/null pr
             // review 3` reaches the API; split into three words it comes
             // back `unknown command`, the byline having been read as the
-            // command. The value has to be attached for gh to take a
-            // cluster there at all, so `-aF notes.md` ahead of the words
-            // is already `unknown command` before the shim sees it.
+            // command. `gh -aF notes.md pr review 3` is `unknown
+            // command "notes.md"` before the shim sees it, but only
+            // because the word that cluster wants is the one after the
+            // command pair: see the arm above.
             let file = if a == "--body-file" && i + 1 < args.len() {
                 Some(("", args[i + 1].as_str(), 2))
             } else if let Some(v) = a.strip_prefix("--body-file=") {
@@ -729,6 +757,9 @@ impl Shim<'_> {
             } else {
                 match short {
                     Some((bools, 'F', Some(v))) => Some((bools, v, 1)),
+                    // As above: past a command word the value is gh's to
+                    // find, and not the next argument.
+                    Some((_, 'F', None)) if i + 1 == c || i + 1 == s => return args,
                     Some((bools, 'F', None)) => args.get(i + 1).map(|v| (bools, v.as_str(), 2)),
                     _ => None,
                 }
@@ -788,13 +819,17 @@ impl Shim<'_> {
         //
         // Unless a `--` got there first, in which case that position is
         // among gh's positionals and no flag can go in it. `gh pr -a --
-        // review` reviews the current branch and posts; adding the body
-        // there makes gh answer `accepts at most 1 arg(s)`, and adding
-        // it before the `--` instead makes cobra pair the `-a` with the
-        // `--body` and read the byline as the command name. There is no
-        // third position, so the line is left as it is: an approval that
-        // goes out untagged, exactly as it did before any of this, and
-        // the one shape here that this change cannot reach.
+        // review` reviews the current branch and posts, and so does `gh
+        // -a -- pr review 3`; adding the body at `s + 1` makes gh answer
+        // `accepts at most 1 arg(s)`, and putting it immediately before
+        // the `--` makes cobra pair the `-a` with the `--body` and read
+        // the byline as the command name. A third position does work --
+        // after the command word rather than the subcommand, `gh pr
+        // --body <byline> -a -- review` parses and posts -- so this is a
+        // shape the change could reach and does not, rather than one it
+        // cannot. Left alone, the approval goes out untagged exactly as
+        // it did before any of this; reaching it would mean a second
+        // insert position to keep right, for a line no agent writes.
         if !stamped && review && has_action && ends_flags.is_none_or(|t| t > s) {
             out.insert(s + 1, stamp(""));
             out.insert(s + 1, "--body".to_string());
@@ -1313,6 +1348,15 @@ mod tests {
                 "--body",
                 "hi",
             ]),
+            // gh takes a plain `http://` item too, so the byline has to
+            // follow it there.
+            args(&[
+                "issue",
+                "comment",
+                "http://github.com/acme/other/issues/3",
+                "--body",
+                "hi",
+            ]),
             args(&["issue", "create", "-t", "t", "-b", "hi", "-R", "acme/other"]),
             args(&["issue", "comment", "3", "--body", "hi", "--repo=acme/other"]),
             // Behind a cluster's value-less letters, where `-R` is as
@@ -1696,6 +1740,34 @@ mod tests {
         assert_eq!(rewrite(a.clone()), a);
     }
 
+    /// A cluster before the command words does not take the next
+    /// argument as its value: cobra removes the pair from the list
+    /// before pflag parses it, so gh binds the value to the first word
+    /// after the pair. `gh -aF pr review notes.md 3` reads `notes.md`,
+    /// and `gh -db pr create hello --title t --head br` is a draft whose
+    /// body is `hello`; both were run against gh. Reading the command
+    /// word as the value instead would stamp it and hand gh `unknown
+    /// command "<byline>\n\npr"`, turning a line it accepts into an
+    /// error, so the line goes over whole.
+    #[test]
+    fn a_value_past_the_command_words_is_left_to_gh() {
+        for a in [
+            args(&["-aF", "pr", "review", "notes.md", "999999"]),
+            args(&["-ab", "pr", "review", "hello", "999999"]),
+            args(&["-db", "pr", "create", "hello", "--title", "t"]),
+            args(&["pr", "-ab", "review", "hello", "999999"]),
+            args(&["pr", "-dF", "create", "notes.md", "--title", "t"]),
+        ] {
+            assert_eq!(rewrite(a.clone()), a, "{a:?}");
+        }
+        // Attached, the value is where it looks, and this is stamped.
+        let out = rewrite(args(&["-abhello", "pr", "review", "999999"]));
+        assert_eq!(
+            out,
+            args(&[&format!("-ab{}\n\nhello", line()), "pr", "review", "999999"])
+        );
+    }
+
     /// A `--` is the end of the flags only where gh reads it as one. A
     /// flag that takes a value takes this one: `gh pr review 3 -F --`
     /// looks for a file called `--`, and both lines below post. Read as
@@ -1764,13 +1836,13 @@ mod tests {
     #[test]
     fn bodies_inside_a_cluster_are_stamped() {
         let body = format!("{}\n\nhello", line());
-        // The cluster is re-emitted whole, and the value goes back the
-        // way it arrived: its own argument where it was one, attached
-        // where it was attached.
+        // The cluster is re-emitted whole with the body attached to it,
+        // however the body arrived, so that nothing on the line becomes
+        // a bare word cobra could read as the command.
         for (a, want) in [
             (
                 args(&["pr", "review", "7", "-ab", "hello"]),
-                args(&["pr", "review", "7", "-ab", &body]),
+                args(&["pr", "review", "7", &format!("-ab{body}")]),
             ),
             (
                 args(&["pr", "review", "7", "-abhello"]),
@@ -1782,11 +1854,11 @@ mod tests {
             ),
             (
                 args(&["pr", "review", "7", "-cb", "hello"]),
-                args(&["pr", "review", "7", "-cb", &body]),
+                args(&["pr", "review", "7", &format!("-cb{body}")]),
             ),
             (
                 args(&["pr", "review", "7", "-rb", "hello"]),
-                args(&["pr", "review", "7", "-rb", &body]),
+                args(&["pr", "review", "7", &format!("-rb{body}")]),
             ),
             // Every value-less letter a body can legally sit behind.
             // `-e` is not one of them on any command here: gh refuses
@@ -1794,22 +1866,22 @@ mod tests {
             // leads is dead in every spelling and cannot be pinned.
             (
                 args(&["pr", "create", "-t", "t", "-db", "hello"]),
-                args(&["pr", "create", "-t", "t", "-db", &body]),
+                args(&["pr", "create", "-t", "t", &format!("-db{body}")]),
             ),
             (
                 args(&["pr", "create", "-t", "t", "-fb", "hello"]),
-                args(&["pr", "create", "-t", "t", "-fb", &body]),
+                args(&["pr", "create", "-t", "t", &format!("-fb{body}")]),
             ),
             (
                 args(&["pr", "create", "-t", "t", "-wb", "hello"]),
-                args(&["pr", "create", "-t", "t", "-wb", &body]),
+                args(&["pr", "create", "-t", "t", &format!("-wb{body}")]),
             ),
             // `-e` is dead next to a body on the two comment commands,
             // where gh refuses `--editor` alongside `--body`, but it is
             // live on the two creates, which prompt in a terminal.
             (
                 args(&["issue", "create", "-t", "t", "-eb", "hello"]),
-                args(&["issue", "create", "-t", "t", "-eb", &body]),
+                args(&["issue", "create", "-t", "t", &format!("-eb{body}")]),
             ),
             // The attached form on its own, which used to come out as a
             // body of `=hello`.
@@ -1874,6 +1946,11 @@ mod tests {
             shim.rewrite(args(&["pr", "create", "-t", "t", "-eF", "notes.md"])),
             args(&["pr", "create", "-t", "t", "-e", &body])
         );
+        // A separated value past a command word is gh's to find, so
+        // the line goes over whole -- even here, where the reader would
+        // happily hand back something for a file called `pr`.
+        let a = args(&["-dF", "pr", "create", "notes.md", "-t", "t"]);
+        assert_eq!(shim.rewrite(a.clone()), a);
         // The attached form, which used to make the shim read a file
         // called `=notes.md`, fail, and hand the line to gh unstamped.
         assert_eq!(
