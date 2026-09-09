@@ -336,7 +336,7 @@ fn enumerable_vm_directory_names_every_unstattable_entry() {
 }
 
 #[test]
-fn stattable_vm_entries_name_both_inaccessible_data_disks() {
+fn recursive_scan_names_the_configured_disk_and_unread_stray_directory() {
     run(Case::InaccessibleData);
 }
 
@@ -893,7 +893,11 @@ fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
         Case::InaccessibleParent | Case::InaccessibleSymlinkTarget => vec![base.to_path_buf()],
         Case::VmEntries => vec![base.join("new"), base.join("old"), base.join(odd_name())],
         Case::InaccessibleData => {
-            vec![base.join("new/data.ext4"), base.join("old/data.ext4")]
+            // The configured disk is a direct presence question. For the
+            // unrelated directory the recursive scan also tries read_dir,
+            // so that directory is the exact incomplete subtree boundary
+            // and subsumes the failed child stat.
+            vec![base.join("new/data.ext4"), base.join("old")]
         }
         Case::OwnSymlink => vec![base.join("new")],
         Case::NestedOwnData => vec![base.join("new/nested/data.ext4")],
