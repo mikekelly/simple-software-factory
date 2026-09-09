@@ -4136,6 +4136,7 @@ mod tests {
             strays: vec![
                 vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
                 vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
+                vm::Stray::protected_data_disk(Path::new("/v/new/data.ext4")),
             ],
             ..status()
         };
@@ -4144,6 +4145,23 @@ mod tests {
         assert!(text.contains("limactl delete ssf-old"), "{text}");
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
         assert!(text.contains("after its instance"), "{text}");
+        assert!(
+            text.lines().any(|line| line
+                == concat!(
+                    "stray:    [vm] dir also holds the data disk /v/new/data.ext4, ",
+                    "which the configured VM does not use (its clones and worktrees are in it); ",
+                    "ssf leaves it alone; its directory is part of the configured VM path, so ssf ",
+                    "does not offer to remove that directory -- `rm -f /v/new/data.ext4` removes the disk"
+                )),
+            "the complete protected-disk status sentence: {text}"
+        );
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("stray:"))
+                .count(),
+            3,
+            "every collected stray gets its own status row: {text}"
+        );
         // `ssf vm status` is a column of `label:   value` lines; a
         // stray without its label reads as part of the row above it.
         assert!(text.contains("\nstray:    lima also holds"), "{text}");
@@ -4175,10 +4193,27 @@ mod tests {
         let text = stray_notes(&[
             vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
             vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
+            vm::Stray::protected_data_disk(Path::new("/v/new/data.ext4")),
         ]);
         assert!(text.contains("ssf leaves it alone"), "{text}");
         assert!(text.contains("limactl delete ssf-old"), "{text}");
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
+        assert!(
+            text.lines().any(|line| line == concat!(
+                "note [vm] dir also holds the data disk /v/new/data.ext4, which the configured ",
+                "VM does not use (its clones and worktrees are in it); ssf leaves it alone; its ",
+                "directory is part of the configured VM path, so ssf does not offer to remove ",
+                "that directory -- `rm -f /v/new/data.ext4` removes the disk"
+            )),
+            "the complete protected-disk doctor sentence: {text}"
+        );
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("note "))
+                .count(),
+            3,
+            "every collected stray gets its own doctor note: {text}"
+        );
         assert!(
             text.contains("(its clones and worktrees are in it)"),
             "{text}"

@@ -425,7 +425,8 @@ impl LimaCommand {
 /// Something of ssf's shape that this configuration does not name: what
 /// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
 /// instance or data disk in lima's home; under Firecracker a sibling
-/// directory under `[vm] dir` holding its own `data.ext4`.
+/// directory under `[vm] dir` holding its own `data.ext4`, or a data
+/// disk in an ancestor directory on the configured VM path.
 ///
 /// The wording throughout describes what was observed rather than
 /// claiming it: ssf did not necessarily create it, and does not need to
@@ -433,7 +434,8 @@ impl LimaCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Stray {
     /// What it is called: `ssf-<some other [vm] name>` under lima, the
-    /// directory's name under Firecracker.
+    /// directory's name under Firecracker, or the full path of a
+    /// protected ancestor's disk.
     pub name: String,
     pub kind: StrayKind,
     /// The command that removes it, for the person to run. The name is
@@ -453,6 +455,9 @@ pub enum StrayKind {
     /// A VM directory under `[vm] dir`, whose `data.ext4` is where the
     /// clones and worktrees of that VM were.
     Directory,
+    /// A `data.ext4` in a directory ssf cannot offer to remove because
+    /// that directory is part of the configured VM path.
+    ProtectedDataDisk,
 }
 
 impl Stray {
@@ -492,18 +497,37 @@ impl Stray {
         }
     }
 
+    /// A disk that is stray while the directory holding it is not.
+    ///
+    /// The subject and file-only remedy are also the shape #176 needs
+    /// for a Firecracker disk left in the configured VM's own directory
+    /// after a switch to lima. That caller must first settle whether the
+    /// disk is really stray and provide wording true of its own policy;
+    /// this scan continues to exclude the configured directory itself.
+    pub fn protected_data_disk(path: &Path) -> Self {
+        Stray {
+            name: path.display().to_string(),
+            kind: StrayKind::ProtectedDataDisk,
+            remove: format!("rm -f {}", shell_join(&[path.display().to_string()])),
+        }
+    }
+
     /// How the report describes it, as an observation.
     pub fn what(&self) -> &'static str {
         match self.kind {
             StrayKind::LimaInstance => "lima also holds the instance",
             StrayKind::LimaDisk => "lima also holds the data disk",
             StrayKind::Directory => "[vm] dir also holds the VM directory",
+            StrayKind::ProtectedDataDisk => "[vm] dir also holds the data disk",
         }
     }
 
     /// What is at stake in it, when anything is.
     pub fn holds_work(&self) -> bool {
-        matches!(self.kind, StrayKind::LimaDisk | StrayKind::Directory)
+        matches!(
+            self.kind,
+            StrayKind::LimaDisk | StrayKind::Directory | StrayKind::ProtectedDataDisk
+        )
     }
 
     /// How `ssf doctor` and `ssf vm status` say it. One sentence for
@@ -513,18 +537,31 @@ impl Stray {
     /// test.
     pub fn describe(&self) -> String {
         format!(
-            "{} {}, which this configuration does not name{}; ssf leaves it alone -- `{}` removes it{}",
+            "{} {}{}{}; ssf leaves it alone{} -- `{}` removes {}{}",
             self.what(),
             self.name,
+            self.configuration_note(),
             // The stakes, in the two commands that hand out the delete.
             // `ssf uninstall` printed this and these did not, so a
             // person who ran `ssf doctor` to find out where their VM
             // went read "ssf leaves it alone" as "this is debris", and
             // pasted the command that removes their clones.
             self.holds_work_note(),
+            self.protection_note(),
             self.remove,
+            self.removal_object(),
             self.caveat()
         )
+    }
+
+    /// How this thing differs from what the current VM uses. A protected
+    /// parent directory is named as part of a nested `[vm] name`; it is
+    /// the old disk in that directory that the configured VM does not use.
+    pub fn configuration_note(&self) -> &'static str {
+        match self.kind {
+            StrayKind::ProtectedDataDisk => ", which the configured VM does not use",
+            _ => ", which this configuration does not name",
+        }
     }
 
     /// What is in it, when what is in it is someone's work.
@@ -542,6 +579,27 @@ impl Stray {
         match self.kind {
             StrayKind::LimaDisk => " (after its instance, if it still has one)",
             _ => "",
+        }
+    }
+
+    /// Why the disk's enclosing directory is deliberately absent from
+    /// the remedy. Shared with #176's same disk shape.
+    pub fn protection_note(&self) -> &'static str {
+        match self.kind {
+            StrayKind::ProtectedDataDisk => {
+                "; its directory is part of the configured VM path, so ssf does not offer to remove that directory"
+            }
+            _ => "",
+        }
+    }
+
+    /// Name the command's object where a directory was just mentioned,
+    /// so the file-only remedy cannot read as though it removes that
+    /// directory.
+    pub fn removal_object(&self) -> &'static str {
+        match self.kind {
+            StrayKind::ProtectedDataDisk => "the disk",
+            _ => "it",
         }
     }
 }
@@ -1348,8 +1406,26 @@ impl Vm {
         }
     }
 
-    /// The VM directories under `[vm] dir` that this configuration does
-    /// not name, each holding a `data.ext4` of its own.
+    /// Is this the configured VM's own Firecracker data disk, including
+    /// a different path that resolves to the same file?
+    ///
+    /// The canonical comparison matters for a nested name whose last
+    /// component is a symlink back to an ancestor. In that case the
+    /// ancestor's `data.ext4` and `self.data_disk()` are the same live
+    /// disk, and a file-only remedy over the former would be just as
+    /// destructive as the directory remedy this scan already refuses.
+    fn is_own_data_disk(&self, p: &Path) -> bool {
+        let own = self.data_disk();
+        *p == own
+            || Some(p) == std::path::absolute(&own).ok().as_deref()
+            || std::fs::canonicalize(p)
+                .ok()
+                .zip(std::fs::canonicalize(own).ok())
+                .is_some_and(|(p, own)| p == own)
+    }
+
+    /// The VM directories and protected ancestor disks under `[vm] dir`
+    /// that this configuration does not name.
     ///
     /// A changed `[vm] name` orphans one under Firecracker exactly as it
     /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
@@ -1432,7 +1508,7 @@ impl Vm {
             Ok(e) => e,
             Err(_) => return Vec::new(),
         };
-        let strays: Vec<Stray> = entries
+        let mut strays: Vec<Stray> = entries
             .flatten()
             // A name that is not UTF-8 would be printed with
             // replacement characters, in a command that then matches
@@ -1461,6 +1537,32 @@ impl Vm {
             })
             .map(|p| Stray::directory(&p))
             .collect();
+        // Inspect only the configured VM's ancestor chain, rather than
+        // recursively walking unrelated directories. Each proper
+        // ancestor can be an old VM directory in its own right: for a
+        // name `a/b/c`, both `a/data.ext4` and `a/b/data.ext4` may have
+        // been stranded by earlier names. The directory is protected,
+        // but its disk is still something the report can name and give
+        // a file-only remedy for. Exclude `self.dir` itself: under lima,
+        // a Firecracker disk left there is #176, whose backend evidence
+        // must decide whether it is stray before this shared shape is
+        // used.
+        let relative = self.dir.strip_prefix(&self.base).expect("checked above");
+        let components: Vec<_> = relative.components().collect();
+        let mut ancestor = base.clone();
+        for component in components.iter().take(components.len().saturating_sub(1)) {
+            ancestor.push(component.as_os_str());
+            let disk = ancestor.join("data.ext4");
+            // `[vm] dir` and name are UTF-8, but an absolute path also
+            // includes the process CWD, which need not be.
+            if disk.to_str().is_some()
+                && ancestor.is_dir()
+                && std::fs::symlink_metadata(&disk).is_ok_and(|m| m.is_file())
+                && !self.is_own_data_disk(&disk)
+            {
+                strays.push(Stray::protected_data_disk(&disk));
+            }
+        }
         // Not sorted here: every caller runs `sort_strays` over the
         // whole list afterwards. Its key, `(is_disk, name)`, orders
         // these fully except for a tie with a lima instance of the same
@@ -3783,8 +3885,8 @@ mod tests {
         assert!(!survey.startable);
     }
 
-    #[test]
-    fn a_directory_holding_the_live_vm_is_never_offered_for_deletion() {
+    #[tokio::test]
+    async fn a_protected_ancestor_disk_is_reported_without_offering_the_directory() {
         // A nested `[vm] name` puts the VM at `<base>/new/nested`. If a
         // previous `[vm] name = "new"` left a `data.ext4` at
         // `<base>/new`, that directory looks exactly like a stray --
@@ -3812,16 +3914,156 @@ mod tests {
         // reporting nothing at all.
         std::fs::create_dir_all(base.join("older")).unwrap();
         std::fs::write(base.join("older").join("data.ext4"), b"stray").unwrap();
+        let disk = base.join("new/data.ext4");
+        for backend in [BackendKind::Firecracker, BackendKind::Lima] {
+            let mut cfg = crate::config::Config::default();
+            cfg.vm.name = "new/nested".into();
+            cfg.vm.backend = Some(backend);
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
+            let vm = Vm::new(&cfg);
+            let expected = vec![disk.to_string_lossy().into_owned(), "older".to_string()];
+
+            // Through status, the person-facing command's collection
+            // path, and on both backends because `[vm] dir` is shared.
+            let strays = vm.status().await.strays;
+            assert_eq!(
+                strays.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                expected,
+                "the parent's disk and the unrelated stray under {backend:?}"
+            );
+            assert_eq!(
+                vm.survey()
+                    .strays
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "the uninstall survey before destroy under {backend:?}"
+            );
+            let parent = &strays[0];
+            assert_eq!(parent.kind, StrayKind::ProtectedDataDisk);
+            assert_eq!(
+                parent.remove,
+                format!("rm -f {}", shell_join(&[disk.display().to_string()]))
+            );
+            assert!(
+                strays
+                    .iter()
+                    .all(|s| !s.remove.contains(&vm.dir.display().to_string())),
+                "no remedy can contain the configured VM: {strays:?}"
+            );
+
+            // This is the filesystem state after `vm destroy` removes
+            // the configured VM directory. The parent's old disk still
+            // has to keep the report and its `[vm] dir` carve-out alive.
+            if backend == BackendKind::Firecracker {
+                vm.destroy().await.unwrap();
+                assert!(!vm.dir.exists(), "destroy removed the configured VM");
+                assert!(disk.exists(), "destroy did not reach the parent disk");
+            } else {
+                // Lima's destroy needs a limactl fixture; the collection
+                // after its directory-removal half is backend-independent.
+                std::fs::remove_dir_all(&vm.dir).unwrap();
+            }
+            let after = vm.status().await.strays;
+            assert_eq!(
+                after.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                expected,
+                "after the destroy step under {backend:?}"
+            );
+            assert_eq!(
+                vm.survey()
+                    .strays
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "the uninstall survey after destroy under {backend:?}"
+            );
+            std::fs::create_dir_all(&vm.dir).unwrap();
+            std::fs::write(vm.dir.join("data.ext4"), b"live").unwrap();
+        }
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn every_proper_ancestor_disk_is_reported_without_walking_other_trees() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-chain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (path, contents) in [
+            ("a/data.ext4", b"outer".as_slice()),
+            ("a/b/data.ext4", b"inner".as_slice()),
+            ("a/b/c/data.ext4", b"live".as_slice()),
+            ("older/data.ext4", b"stray".as_slice()),
+        ] {
+            let path = base.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        // The walk deliberately follows only the configured VM's
+        // ancestor chain. A nested disk on another branch is outside
+        // this scan and is tracked separately from this issue.
+        std::fs::create_dir_all(base.join("other/deep")).unwrap();
+        std::fs::write(base.join("other/deep/data.ext4"), b"not a top-level VM").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.name = "a/b/c".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let strays = Vm::new(&cfg).strays_on_filesystem();
+        let inner = base.join("a/b/data.ext4").to_string_lossy().into_owned();
+        let outer = base.join("a/data.ext4").to_string_lossy().into_owned();
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            [inner.as_str(), outer.as_str(), "older"],
+            "all and only proper ancestor disks plus the unrelated top-level stray"
+        );
+        assert_eq!(
+            strays
+                .iter()
+                .filter(|s| s.kind == StrayKind::ProtectedDataDisk)
+                .count(),
+            2
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_protected_ancestor_aliasing_the_live_disk_is_not_a_stray() {
+        // With name `new/nested` and `new/nested -> new`, the apparent
+        // ancestor disk and the configured Firecracker data disk are
+        // one file. The lexical paths differ, so only comparing names
+        // would offer `rm -f` over the live disk.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(base.join("new")).unwrap();
+        std::fs::write(base.join("new/data.ext4"), b"live").unwrap();
+        std::os::unix::fs::symlink(&base.join("new"), base.join("new/nested")).unwrap();
+        std::fs::create_dir_all(base.join("older")).unwrap();
+        std::fs::write(base.join("older/data.ext4"), b"stray").unwrap();
         let mut cfg = crate::config::Config::default();
         cfg.vm.name = "new/nested".into();
         cfg.vm.backend = Some(BackendKind::Firecracker);
         cfg.vm.dir = base.to_string_lossy().into_owned();
-        let strays = Vm::new(&cfg).survey().strays;
+        let strays = Vm::new(&cfg).strays_on_filesystem();
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(
             strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             ["older"],
-            "the live VM's parent is not a stray, and the real one still is"
+            "the live disk's canonical identity is protected"
         );
     }
 
@@ -3947,6 +4189,21 @@ mod tests {
         assert!(!i.contains("after its instance"), "{i}");
         let p = Stray::directory(Path::new("/v/old")).describe();
         assert!(p.contains("`rm -rf /v/old`"), "{p}");
+        let protected = Stray::protected_data_disk(Path::new("/v/new/data.ext4")).describe();
+        assert!(
+            protected.starts_with("[vm] dir also holds the data disk /v/new/data.ext4,"),
+            "{protected}"
+        );
+        assert!(
+            protected.contains("`rm -f /v/new/data.ext4`"),
+            "{protected}"
+        );
+        assert!(
+            protected.contains(
+                "its directory is part of the configured VM path, so ssf does not offer to remove that directory"
+            ),
+            "{protected}"
+        );
         // Each says *where the thing is*, and only the disk's opening
         // was pinned -- so all three arms could collapse to one string
         // with the suite green. On a Linux host with no lima installed,
@@ -3971,6 +4228,7 @@ mod tests {
         for holds in [
             Stray::lima_disk("ssf-old".into(), &Default::default()),
             Stray::directory(Path::new("/v/old")),
+            Stray::protected_data_disk(Path::new("/v/new/data.ext4")),
         ] {
             assert!(holds.holds_work(), "{}", holds.name);
             assert!(

@@ -54,8 +54,9 @@
 # enabled = false
 # name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>; at most 7 characters under lima)
 #                                              # changing it -- or [vm] backend -- renames nothing that exists. Under firecracker the old <dir>/<old>/ stays, your clones in the
-#                                              # data.ext4 inside it; under lima the instance ssf-<old> and the disk ssf-<old> stay in lima's home, the clones on the disk (<dir>/<old>/ holds
-#                                              # only lima's template, share and ssh key, so nothing reports it). `ssf uninstall` and `ssf vm status` name what they find as things ssf will
+#                                              # data.ext4 inside it. If <old> is an ancestor of a nested new name, ssf names that data.ext4 and offers to remove only the file, since removing
+#                                              # its directory would also remove the configured VM. Under lima the instance ssf-<old> and the disk ssf-<old> stay in lima's home, the clones on
+#                                              # the disk (<dir>/<old>/ holds only lima's template, share and ssh key, so nothing reports it). `ssf uninstall` and `ssf vm status` name what they find as things ssf will
 #                                              # not remove (`ssf doctor` too, on a host not running the factory in a VM)
 # dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
 # backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it
