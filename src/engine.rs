@@ -7215,9 +7215,22 @@ mod tests {
         assert!(e.entry(&r, 4).active, "the follow-up stays open");
         assert_eq!(e.entry(&r, 4).shares_workspace_of, Some(3));
 
-        // Removing the workspace does not make a fresh one on its own. A
-        // later delivery to the follow-up re-creates its owner's workspace
-        // and mirrors the new binding back onto the follow-up.
+        // An unchanged poll of the still-open follow-up does not recreate
+        // the workspace. It will be rehydrated only when activity needs
+        // delivery to the session.
+        e.entry(&r, 4).updated_at = Some("x".into());
+        *stub.created.lock().unwrap() = vec![json!({
+            "number": 4, "title": "Follow-up", "body": "work",
+            "html_url": "https://gh/4", "state": "open",
+            "user": {"login": "bot"}, "created_at": "x", "updated_at": "x"
+        })];
+        e.tick_repo(&r).await.unwrap();
+        assert!(e.entry(&r, 3).worktree_id.is_none());
+        assert!(e.entry(&r, 4).worktree_id.is_none());
+        assert!(d.log().is_empty(), "the unchanged poll did not deliver");
+
+        // A later delivery to the follow-up re-creates its owner's
+        // workspace and mirrors the new binding back onto the follow-up.
         stub.set_issue(
             3,
             json!({
@@ -7354,6 +7367,8 @@ mod tests {
     #[tokio::test]
     async fn a_release_is_off_once_the_item_is_live_again() {
         let mut e = engine();
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
         let r = repo();
         e.cfg.repos.push(r.clone());
         // Open and assigned: nothing to release, not even by force.
@@ -7378,6 +7393,7 @@ mod tests {
             st.release_forced = true;
             st.terminal_handle = Some("h".into());
         }
+        d.seed("repo::/w/1", "h", READY_SCREEN);
         e.run_cleanups(&r).await;
         let st = e.entry(&r, 1).clone();
         assert!(!st.release_pending);
@@ -7386,20 +7402,22 @@ mod tests {
         assert_eq!(st.worktree_path.as_deref(), Some("/w/1"));
         assert_eq!(st.terminal_handle.as_deref(), Some("h"));
         assert!(st.released_at.is_none());
-        // A dropped forced release does not make the next plain one forced.
+        // A plain release is also dropped if a bound item becomes active
+        // between request and the daemon's pass.
         seeded(&mut e, 2, Some("b2"), false);
         {
             let st = e.entry(&r, 2);
-            st.worktree_id = Some("repo::/w/2".into());
+            st.worktree_id = Some("w2".into());
             st.worktree_path = Some("/nonexistent/ssf-w2".into());
             st.release_pending = true;
-            st.release_forced = true;
         }
+        d.seed("w2", "t2", READY_SCREEN);
         seeded(&mut e, 3, Some("b2"), true);
         e.entry(&r, 3).shares_workspace_of = Some(2);
-        e.run_cleanups(&r).await; // dependents came back: dropped
+        e.run_cleanups(&r).await;
         assert!(!e.entry(&r, 2).release_pending);
         assert!(!e.entry(&r, 2).release_forced);
+        assert_eq!(e.entry(&r, 2).worktree_id.as_deref(), Some("w2"));
         e.entry(&r, 3).active = false;
         e.entry(&r, 2).release_pending = true;
         e.run_cleanups(&r).await; // plain: re-checked, and the path is gone
