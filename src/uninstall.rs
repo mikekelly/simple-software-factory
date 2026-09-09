@@ -234,20 +234,26 @@ impl Facts {
             },
             vm_removed: match vm.backend() {
                 vm::BackendKind::Firecracker => {
-                    format!("its disks in {}", vm.dir.display())
+                    format!("its disks in {}", absolute(&vm.dir).display())
                 }
                 vm::BackendKind::Lima => lima_removed(
                     &vm.lima_name(),
                     &vm.lima_disk_name(),
-                    vm.dir.exists().then_some(vm.dir.as_path()),
+                    vm.dir.exists().then_some(absolute(&vm.dir)).as_deref(),
                     &survey,
                 ),
             },
-            // Absolute, for the same reason the `rm -rf` remedy is:
-            // the report names this directory beside a command that
-            // gives its full path, and a relative `[vm] dir` would print
-            // two different-looking paths for one place.
-            vm_base: std::path::absolute(&vm.base).unwrap_or_else(|_| vm.base.clone()),
+            // Absolute, for the same reason the `rm -rf` remedy is: the
+            // report names this directory beside a command that gives
+            // its full path, and a relative `[vm] dir` would print two
+            // different-looking paths for one place.
+            //
+            // Every path in the report, not this one alone. Absolutising
+            // `keep:` and leaving `remove:` relative produced exactly
+            // the two spellings this is here to prevent, two lines
+            // apart, in the report that says what is about to be
+            // destroyed.
+            vm_base: absolute(&vm.base),
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
             projects,
@@ -665,6 +671,14 @@ fn no_vm_line(facts: &Facts) -> String {
     } else {
         format!("no VM named {} to remove", facts.vm_name)
     }
+}
+
+/// A path as the report prints it: absolute, so that the sentence
+/// naming a directory and the command beside it are recognisably the
+/// same place. Falls back to the path as given, since a report with one
+/// odd-looking path is better than no report.
+fn absolute(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// "a", "a and b", "a, b, and c" -- the report's list style. One caller
@@ -1169,6 +1183,28 @@ mod tests {
             text.contains("limactl disk delete ssf-old"),
             "the disk is the one that holds the work: {text}"
         );
+        // One place, one spelling -- with the configured VM present, so
+        // `remove:` names a path at all. Without it that line reads "no
+        // VM named new to remove" and every assertion about how it
+        // spells a directory holds vacuously.
+        //
+        // `keep:` was absolutised and `remove:` was not, so the same
+        // directory appeared in one report written two ways, two lines
+        // apart, which is what the absolutising was added to prevent.
+        std::fs::create_dir_all(base.join("new")).unwrap();
+        std::fs::write(base.join("new").join("data.ext4"), b"live").unwrap();
+        let live = render(
+            &Facts::gather(&cfg, &vm::Vm::new(&cfg)),
+            &Report::default(),
+            &Opts::default(),
+        );
+        assert!(live.contains("its disks in /"), "{live}");
+        for line in live.lines().filter(|l| l.contains(&rel)) {
+            assert!(
+                line.contains(&format!("/{rel}")),
+                "one place, two spellings: {line}"
+            );
+        }
         // The other direction of the snapshot, through the same join.
         // `vm_base_exists: true` unconditionally left the suite green,
         // and it is what stops `left in place:` naming a `[vm] dir` that
