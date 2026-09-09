@@ -1044,7 +1044,9 @@ removes with that directory (issue #176) -- check it by hand if you have
 changed `[vm] backend` and kept the name. A directory containing the
 configured VM is never offered for deletion. An older VM's `data.ext4`
 stranded in that ancestor is listed on its own with an `rm -f` remedy,
-before and after the nested VM is destroyed.
+before and after the nested VM is destroyed. `[vm] dir` itself is the
+topmost such ancestor: a `data.ext4` directly in it is listed too, so the
+base is not called safe while that disk remains.
 
 The Firecracker-directory scan follows real directories beneath `[vm] dir`
 for at most 32 levels and 4,096 entries. A nested orphan is named relative to
@@ -1068,10 +1070,14 @@ Only a filesystem `NotFound` answer means a path is absent. Permission
 errors, failed directory entries and other I/O errors mean the contents
 could not be established. This applies to `[vm] dir`, lima's home and
 `_disks`, including their entries. Presence checks follow symlinks at
-configured VM paths. Stray scans inspect a symlink itself but do not follow
-it or offer a removal command for its target. Directory symlinks and the
+configured VM paths. A readable symlink that is exactly the configured VM
+directory is therefore known to be in destroy's scope and does not make the
+scan incomplete. Stray scans do not descend through other directory
+symlinks or offer a removal command for their targets; those links and the
 exact boundary where a depth or entry limit stops the scan are retained as
-incomplete observations.
+incomplete observations. A symlink whose target is known to be a
+non-directory cannot hide VM storage and does not make the scan incomplete;
+a target that cannot be inspected does.
 Fix access to the named path and inspect it again before deciding to
 remove anything by hand. A missing directory produces no retained-path
 line; a directory that could not be inspected still does.

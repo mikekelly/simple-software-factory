@@ -282,7 +282,9 @@ directory holding a `data.ext4` on each unrelated branch represents that
 whole retained subtree; ssf does not descend and list disks inside it again.
 If the old name is an ancestor of a nested new name, ssf reports the old
 `data.ext4` itself with an `rm -f` remedy: its directory is part of the
-configured VM path and is not offered for removal. Lexical and resolved
+configured VM path and is not offered for removal. `[vm] dir` is the
+topmost protected ancestor, so a `data.ext4` directly in it is reported the
+same way and prevents that base from being called safe. Lexical and resolved
 symlink identities protect the configured directory and its ancestors,
 including after destroy removes the final directory. This remains in the
 report after `ssf vm destroy` removes the nested VM. Both kinds are
@@ -299,12 +301,15 @@ and `ssf doctor` does on a host that is not running the factory in a VM
 `[vm] dir`). None of them removes it for you: nothing can tell a VM you
 renamed away to keep from one you abandoned.
 
-The scan never follows a directory symlink. A symlink, an unreadable or
-unnameable path, a failed directory entry, or a depth or entry cutoff is
-listed as an incomplete observation. These unknowns withhold any recursive
-remedy whose ownership cannot be established and prevent `[vm] dir` from
-being called plainly safe to remove. Fix access or inspect the named boundary
-before removing anything by hand.
+The scan never follows a directory symlink. A readable symlink that is
+exactly the configured VM directory belongs to destroy's known scope and is
+skipped. Other directory symlinks, unreadable or unnameable paths, failed
+directory entries, and depth or entry cutoffs are listed as incomplete
+observations. A symlink known to target a non-directory cannot hide VM
+storage and is skipped; an unreadable target remains incomplete. These
+unknowns withhold any recursive remedy whose ownership cannot be established
+and prevent `[vm] dir` from being called plainly safe to remove. Fix access
+or inspect the named boundary before removing anything by hand.
 
 Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,
 `run`, `ssh-config`) goes over ssh and works the same under both.

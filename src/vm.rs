@@ -635,9 +635,9 @@ impl LimaCommand {
 
 /// Something of ssf's shape that this configuration does not name: what
 /// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
-/// instance or data disk in lima's home; under Firecracker a sibling
-/// directory under `[vm] dir` holding its own `data.ext4`, or a data
-/// disk in an ancestor directory on the configured VM path.
+/// instance or data disk in lima's home; under Firecracker a directory
+/// beneath `[vm] dir` holding its own `data.ext4`, or a data disk in an
+/// ancestor directory on the configured VM path.
 ///
 /// The wording throughout describes what was observed rather than
 /// claiming it: ssf did not necessarily create it, and does not need to
@@ -645,7 +645,7 @@ impl LimaCommand {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Stray {
     /// What it is called: `ssf-<some other [vm] name>` under lima, the
-    /// directory's name under Firecracker, or the full path of a
+    /// directory's base-relative path under Firecracker, or the full path of a
     /// protected ancestor's disk.
     pub name: String,
     pub kind: StrayKind,
@@ -1715,6 +1715,15 @@ impl Vm {
         if matches!(own_data_identity, Observation::Unreadable) {
             unread.push(unread_path(&self.data_disk()));
         }
+        // `[vm] dir` itself is the topmost proper ancestor. A disk left
+        // directly in it must be carved out before that directory can be
+        // called safe to remove.
+        Self::fc_protected_disk(
+            &base.join("data.ext4"),
+            &own_data_identity,
+            &mut strays,
+            &mut unread,
+        );
 
         let mut budget = 0;
         let mut pending = std::collections::VecDeque::new();
@@ -1779,7 +1788,39 @@ impl Vm {
         // swapped between two commands; a second narrower ordering here
         // would not settle it either, only give the two more to
         // disagree about.
+        one_each(&mut unread);
         (strays, unread)
+    }
+
+    fn fc_protected_disk(
+        disk: &Path,
+        own_data_identity: &Observation<PathBuf>,
+        strays: &mut Vec<Stray>,
+        unread: &mut Vec<PathBuf>,
+    ) {
+        match observe(std::fs::symlink_metadata(disk)) {
+            Observation::Present(metadata) if metadata.is_file() => {
+                match (observe(std::fs::canonicalize(disk)), own_data_identity) {
+                    (
+                        Observation::Present(disk_identity),
+                        Observation::Present(configured_data_identity),
+                    ) if disk_identity != *configured_data_identity => {
+                        if disk.to_str().is_some() {
+                            strays.push(Stray::protected_data_disk(disk));
+                        } else {
+                            unread.push(unread_path(disk));
+                        }
+                    }
+                    (Observation::Present(_), Observation::Present(_)) => {}
+                    _ => unread.push(unread_path(disk)),
+                }
+            }
+            Observation::Present(metadata) if metadata.file_type().is_symlink() => {
+                unread.push(unread_path(disk));
+            }
+            Observation::Present(_) | Observation::Missing => {}
+            Observation::Unreadable => unread.push(unread_path(disk)),
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1804,14 +1845,14 @@ impl Vm {
     {
         let mut entries = entries.into_iter();
         loop {
+            let Some(answer) = entries.next() else {
+                break;
+            };
             if *budget >= max_entries {
                 unread.push(unread_path(directory));
                 unread.extend(pending.drain(..).map(|(path, _)| unread_path(&path)));
                 return false;
             }
-            let Some(answer) = entries.next() else {
-                break;
-            };
             *budget += 1;
             let Some(entry) = directory_entry(directory, answer, unread) else {
                 continue;
@@ -1826,9 +1867,26 @@ impl Vm {
                 }
             };
             if metadata.file_type().is_symlink() {
-                // The target may contain storage, but following it would
-                // escape the bounded tree or loop. Preserve that unknown.
-                unread.push(unread_path(&path));
+                let target = observe(std::fs::metadata(&path));
+                if path == own_lexical {
+                    // A readable exact configured link is the known subtree
+                    // destroy owns. A failed target is still unknown.
+                    if matches!(target, Observation::Unreadable) {
+                        unread.push(unread_path(&path));
+                    }
+                } else {
+                    match target {
+                        // Never follow a directory link: its target may be
+                        // outside the bound or loop back into this tree.
+                        Observation::Present(metadata) if metadata.is_dir() => {
+                            unread.push(unread_path(&path));
+                        }
+                        // A regular-file target or a missing target cannot
+                        // currently hide a VM directory.
+                        Observation::Present(_) | Observation::Missing => {}
+                        Observation::Unreadable => unread.push(unread_path(&path)),
+                    }
+                }
                 continue;
             }
             if !metadata.is_dir() {
@@ -4451,6 +4509,8 @@ mod tests {
         std::fs::write(base.join("older").join("data.ext4"), b"stray").unwrap();
         std::fs::create_dir_all(base.join("other/deep")).unwrap();
         std::fs::write(base.join("other/deep/data.ext4"), b"nested stray").unwrap();
+        let base_disk = base.join("data.ext4");
+        std::fs::write(&base_disk, b"old base disk").unwrap();
         let disk = base.join("new/data.ext4");
         for backend in [BackendKind::Firecracker, BackendKind::Lima] {
             let mut cfg = crate::config::Config::default();
@@ -4460,6 +4520,7 @@ mod tests {
             cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
             let vm = Vm::new(&cfg);
             let expected = vec![
+                base_disk.to_string_lossy().into_owned(),
                 disk.to_string_lossy().into_owned(),
                 "older".to_string(),
                 "other/deep".to_string(),
@@ -4482,7 +4543,10 @@ mod tests {
                 expected,
                 "the uninstall survey before destroy under {backend:?}"
             );
-            let parent = &strays[0];
+            let parent = strays
+                .iter()
+                .find(|stray| stray.name == disk.to_string_lossy())
+                .unwrap();
             assert_eq!(parent.kind, StrayKind::ProtectedDataDisk);
             assert_eq!(
                 parent.remove,
@@ -4502,6 +4566,7 @@ mod tests {
                 vm.destroy().await.unwrap();
                 assert!(!vm.dir.exists(), "destroy removed the configured VM");
                 assert!(disk.exists(), "destroy did not reach the parent disk");
+                assert!(base_disk.exists(), "destroy did not reach the base disk");
                 assert!(
                     base.join("other/deep/data.ext4").exists(),
                     "destroy did not reach an unrelated nested orphan"
@@ -4709,11 +4774,100 @@ mod tests {
             &mut budget_strays,
             &mut budget_unread,
         ));
-        std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(budget, 2);
         assert_eq!(budget_strays.len(), 2, "observations before cutoff survive");
         assert_eq!(budget_unread, [unread_path(&budget_base)]);
+
+        let entries: Vec<_> = std::fs::read_dir(&budget_base).unwrap().collect();
+        let mut exact_budget = 0;
+        let mut exact_strays = Vec::new();
+        let mut exact_unread = Vec::new();
+        assert!(vm.fc_scan_entries(
+            &budget_base,
+            &budget_base,
+            0,
+            entries,
+            &own,
+            &own_identity,
+            &own_data_identity,
+            &mut std::collections::VecDeque::new(),
+            &mut exact_budget,
+            FC_SCAN_MAX_DEPTH,
+            3,
+            &mut exact_strays,
+            &mut exact_unread,
+        ));
+        assert_eq!(exact_budget, 3);
+        assert_eq!(exact_strays.len(), 3);
+        assert!(
+            exact_unread.is_empty(),
+            "EOF at the exact budget is complete"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(FC_SCAN_MAX_ENTRIES, 4096);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_observed_configured_symlink_is_owned_while_other_directory_links_are_incomplete() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-nested-exact-alias-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let configured_target = base.join("configured-target");
+        std::fs::create_dir_all(&configured_target).unwrap();
+        std::fs::write(configured_target.join("data.ext4"), b"live").unwrap();
+        std::os::unix::fs::symlink(&configured_target, base.join("factory")).unwrap();
+
+        let orphan = base.join("other/deep");
+        std::fs::create_dir_all(&orphan).unwrap();
+        std::fs::write(orphan.join("data.ext4"), b"orphan").unwrap();
+        std::fs::write(base.join("notes.txt"), b"notes").unwrap();
+        std::os::unix::fs::symlink(base.join("notes.txt"), base.join("latest")).unwrap();
+        std::os::unix::fs::symlink(&orphan, base.join("linked-orphan")).unwrap();
+
+        for backend in [BackendKind::Firecracker, BackendKind::Lima] {
+            let mut cfg = Config::default();
+            cfg.vm.name = "factory".into();
+            cfg.vm.backend = Some(backend);
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
+            let survey = Vm::new(&cfg).survey();
+            assert_eq!(
+                survey.present,
+                Some(true),
+                "configured link under {backend:?}"
+            );
+            assert_eq!(
+                survey.data,
+                match backend {
+                    BackendKind::Firecracker => Some(true),
+                    // A failed limactl probe cannot establish whether
+                    // lima's own data disk is present.
+                    BackendKind::Lima => None,
+                },
+                "configured disk under {backend:?}"
+            );
+            assert_eq!(
+                survey
+                    .strays
+                    .iter()
+                    .map(|stray| stray.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["other/deep"],
+                "the link target is owned and a file link is irrelevant under {backend:?}"
+            );
+            assert_eq!(
+                survey.unread,
+                [unread_path(&base.join("linked-orphan"))],
+                "only the unrelated directory link remains incomplete under {backend:?}"
+            );
+        }
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[cfg(unix)]
@@ -4759,10 +4913,18 @@ mod tests {
                     .all(|stray| !stray.remove.starts_with("rm -rf")),
                 "no recursive remedy can contain the configured alias: {strays:?}"
             );
-            assert!(
-                unread.contains(&unread_path(&base.join("alias"))),
-                "directory links are not followed or called examined: {unread:?}"
-            );
+            if before_destroy {
+                assert_eq!(
+                    unread,
+                    [unread_path(&base.join("alias"))],
+                    "an observed directory link is not followed or called examined"
+                );
+            } else {
+                assert!(
+                    unread.is_empty(),
+                    "a link whose target is known missing cannot hide current storage: {unread:?}"
+                );
+            }
         }
         std::fs::remove_dir_all(&base).unwrap();
     }

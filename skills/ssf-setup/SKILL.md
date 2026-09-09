@@ -128,13 +128,17 @@ document links to.
     With a nested new name, an old data disk can be in an ancestor of the
     configured VM; ssf lists that `data.ext4` with an `rm -f` remedy and
     does not offer to remove the directory that is part of the configured
-    VM path. The line remains after `ssf vm destroy` removes the nested VM.
+    VM path. `[vm] dir` itself is the topmost protected ancestor, so a
+    `data.ext4` directly in it is listed too. The line remains after `ssf vm
+    destroy` removes the nested VM.
     The Firecracker scan follows real directories at most 32 levels and
     4,096 entries. It names a nested orphan relative to `[vm] dir` (for
     example `other/deep`) and gives its exact absolute, shell-quoted remedy.
     The first directory with a `data.ext4` on an unrelated branch represents
     that retained subtree. It never follows directory symlinks or offers a
     recursive remedy across the configured VM's lexical or resolved aliases.
+    A readable symlink exactly at the configured VM is its owned subtree and
+    is skipped; a link known to target a non-directory cannot hide a VM.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
     running the factory in a VM. All three name paths they could not
     inspect, including individual entries, symlinks and scan-limit boundaries

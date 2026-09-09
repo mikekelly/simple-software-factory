@@ -2149,10 +2149,10 @@ mod tests {
             ..facts()
         };
         let text = render(&orphan, &Report::default(), &Opts::default());
-        // The configured VM used to be `new` and is now
-        // `new/nested`; after destroy, only the old parent disk is left.
-        // It still prevents the base from being called plainly safe.
-        let protected_disk = base.join("new/data.ext4");
+        // `[vm] dir` itself is the topmost protected ancestor. A disk
+        // directly in it still prevents the base from being called
+        // plainly safe, while only the file is offered for removal.
+        let protected_disk = base.join("data.ext4");
         let protected = Facts {
             vm_strays: vec![vm::Stray::protected_data_disk(&protected_disk)],
             ..orphan.clone()

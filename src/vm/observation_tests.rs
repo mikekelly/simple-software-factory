@@ -32,6 +32,7 @@ enum Case {
     OwnSymlink,
     NestedOwnData,
     UnreadFirecrackerStray,
+    UnknownConfiguredAlias,
     LimaHomeParent,
     LimaHome,
     LimaHomeEntries,
@@ -56,6 +57,7 @@ impl Case {
             Self::OwnSymlink => "own-symlink",
             Self::NestedOwnData => "nested-own-data",
             Self::UnreadFirecrackerStray => "unread-firecracker-stray",
+            Self::UnknownConfiguredAlias => "unknown-configured-alias",
             Self::LimaHomeParent => "lima-home-parent",
             Self::LimaHome => "lima-home",
             Self::LimaHomeEntries => "lima-home-entries",
@@ -80,6 +82,7 @@ impl Case {
             "own-symlink" => Self::OwnSymlink,
             "nested-own-data" => Self::NestedOwnData,
             "unread-firecracker-stray" => Self::UnreadFirecrackerStray,
+            "unknown-configured-alias" => Self::UnknownConfiguredAlias,
             "lima-home-parent" => Self::LimaHomeParent,
             "lima-home" => Self::LimaHome,
             "lima-home-entries" => Self::LimaHomeEntries,
@@ -170,6 +173,16 @@ impl Fixture {
                 let readable = self.root.join("vm/good/deep");
                 fs::create_dir_all(&readable).unwrap();
                 fs::write(readable.join("data.ext4"), b"visible work").unwrap();
+            }
+            Case::UnknownConfiguredAlias => {
+                let base = self.root.join("vm");
+                let sibling = base.join("s1");
+                fs::create_dir_all(&sibling).unwrap();
+                fs::write(sibling.join("data.ext4"), b"configured work").unwrap();
+                let ancestor = base.join("a");
+                fs::create_dir(&ancestor).unwrap();
+                symlink(Path::new("../s1"), ancestor.join("b")).unwrap();
+                self.protect(&ancestor, 0o000);
             }
             Case::LimaHomeParent => {
                 let wall = self.root.join("lima-wall");
@@ -356,6 +369,11 @@ fn missing_own_vm_stays_absent_beside_an_unread_firecracker_stray() {
 }
 
 #[test]
+fn unknown_configured_alias_withholds_a_recursive_sibling_remedy() {
+    run(Case::UnknownConfiguredAlias);
+}
+
+#[test]
 fn lima_home_beneath_an_inaccessible_parent_is_named() {
     run(Case::LimaHomeParent);
 }
@@ -474,6 +492,7 @@ fn exercise(case: Case, root: &Path) {
         let mut cfg = Config::default();
         cfg.vm.name = match case {
             Case::NestedOwnData => "new/nested",
+            Case::UnknownConfiguredAlias => "a/b",
             _ => "new",
         }
         .into();
@@ -773,6 +792,7 @@ fn expected_configured_vm(case: Case, backend: BackendKind) -> (Option<bool>, Op
             Case::InaccessibleParent
             | Case::VmEntries
             | Case::OwnSymlink
+            | Case::UnknownConfiguredAlias
             | Case::LimaHome
             | Case::InaccessibleSymlinkTarget,
         ) => (None, None),
@@ -793,6 +813,7 @@ fn expected_configured_vm(case: Case, backend: BackendKind) -> (Option<bool>, Op
             Case::InaccessibleParent
             | Case::VmEntries
             | Case::OwnSymlink
+            | Case::UnknownConfiguredAlias
             | Case::InaccessibleSymlinkTarget,
         ) => (None, Some(false)),
         (BackendKind::Lima, Case::InaccessibleData | Case::NestedOwnData) => {
@@ -863,6 +884,14 @@ fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
             );
             return;
         }
+        Case::UnknownConfiguredAlias => {
+            assert_denied(&base.join("a/b"));
+            assert!(
+                fs::metadata(base.join("s1/data.ext4")).unwrap().is_file(),
+                "the sibling disk hidden behind the configured link is readable"
+            );
+            return;
+        }
         Case::LimaHomeParent => fs::read_dir(root.join("lima-wall/lima")).map(drop),
         Case::LimaHome => fs::read_dir(root.join("lima")).map(drop),
         Case::LimaHomeEntries => fs::symlink_metadata(root.join("lima/ssf-new")).map(drop),
@@ -891,7 +920,12 @@ fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
 fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
     let mut paths = match case {
         Case::InaccessibleParent | Case::InaccessibleSymlinkTarget => vec![base.to_path_buf()],
-        Case::VmEntries => vec![base.join("new"), base.join("old"), base.join(odd_name())],
+        Case::VmEntries => vec![
+            base.join("data.ext4"),
+            base.join("new"),
+            base.join("old"),
+            base.join(odd_name()),
+        ],
         Case::InaccessibleData => {
             // The configured disk is a direct presence question. For the
             // unrelated directory the recursive scan also tries read_dir,
@@ -902,6 +936,7 @@ fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
         Case::OwnSymlink => vec![base.join("new")],
         Case::NestedOwnData => vec![base.join("new/nested/data.ext4")],
         Case::UnreadFirecrackerStray => vec![base.join("old/deep")],
+        Case::UnknownConfiguredAlias => vec![base.join("a"), base.join("s1")],
         Case::LimaHomeParent => vec![root.join("lima-wall/lima")],
         Case::LimaHome => vec![root.join("lima")],
         Case::LimaHomeEntries => vec![
@@ -997,10 +1032,15 @@ fn assert_uninstall_lists(case: Case, facts: &Facts, base: &Path, expected: &[Pa
 
     if matches!(
         case,
-        Case::VmEntries | Case::InaccessibleData | Case::OwnSymlink | Case::NestedOwnData
+        Case::VmEntries
+            | Case::InaccessibleData
+            | Case::OwnSymlink
+            | Case::NestedOwnData
+            | Case::UnknownConfiguredAlias
     ) {
         let own = match case {
             Case::NestedOwnData => base.join("new/nested"),
+            Case::UnknownConfiguredAlias => base.join("a/b"),
             _ => base.join("new"),
         }
         .to_string_lossy()

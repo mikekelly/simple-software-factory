@@ -4200,7 +4200,7 @@ mod tests {
             strays: vec![
                 vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
                 vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
-                vm::Stray::protected_data_disk(Path::new("/v/new/data.ext4")),
+                vm::Stray::protected_data_disk(Path::new("/v/data.ext4")),
             ],
             ..status()
         };
@@ -4212,10 +4212,10 @@ mod tests {
         assert!(
             text.lines().any(|line| line
                 == concat!(
-                    "stray:    [vm] dir also holds the data disk /v/new/data.ext4, ",
+                    "stray:    [vm] dir also holds the data disk /v/data.ext4, ",
                     "which the configured VM does not use (its clones and worktrees are in it); ",
                     "ssf leaves it alone; its directory is part of the configured VM path, so ssf ",
-                    "does not offer to remove that directory -- `rm -f /v/new/data.ext4` removes the disk"
+                    "does not offer to remove that directory -- `rm -f /v/data.ext4` removes the disk"
                 )),
             "the complete protected-disk status sentence: {text}"
         );
@@ -4258,7 +4258,7 @@ mod tests {
             &[
                 vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
                 vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
-                vm::Stray::protected_data_disk(Path::new("/v/new/data.ext4")),
+                vm::Stray::protected_data_disk(Path::new("/v/data.ext4")),
             ],
             &[PathBuf::from("/home/me/.lima/_disks")],
         );
@@ -4267,10 +4267,10 @@ mod tests {
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
         assert!(
             text.lines().any(|line| line == concat!(
-                "note [vm] dir also holds the data disk /v/new/data.ext4, which the configured ",
+                "note [vm] dir also holds the data disk /v/data.ext4, which the configured ",
                 "VM does not use (its clones and worktrees are in it); ssf leaves it alone; its ",
                 "directory is part of the configured VM path, so ssf does not offer to remove ",
-                "that directory -- `rm -f /v/new/data.ext4` removes the disk"
+                "that directory -- `rm -f /v/data.ext4` removes the disk"
             )),
             "the complete protected-disk doctor sentence: {text}"
         );
