@@ -25,7 +25,7 @@ use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
     Blocked, ConflictNotice, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State,
-    now_iso, owner_in,
+    StateLock, now_iso, owner_in,
 };
 use crate::status::session_id;
 
@@ -119,6 +119,9 @@ fn is_blocked(e: &anyhow::Error) -> bool {
 }
 
 pub struct Engine {
+    /// Held from construction through shutdown, before the state is ever
+    /// read. A one-shot engine uses the same guard as the daemon.
+    _state_lock: Option<StateLock>,
     cfg: Config,
     gh: GitHub,
     drivers: Drivers,
@@ -370,6 +373,10 @@ impl Engine {
     }
 
     pub async fn new(cfg: Config) -> Result<Self> {
+        // Take the lock before looking up credentials or reading state: a
+        // rejected `ssf run --once` must not touch a live daemon's state.
+        let state_lock = StateLock::acquire()?;
+        refuse_live_daemon()?;
         let token = cfg.github_token()?;
         let gh = GitHub::new(&cfg.github.api_url, &token)?;
         let me = gh.whoami().await.context("verifying GitHub token")?;
@@ -384,6 +391,7 @@ impl Engine {
             Vec::new()
         };
         Ok(Self {
+            _state_lock: Some(state_lock),
             cfg,
             gh,
             drivers,
@@ -5431,6 +5439,21 @@ fn handed_over(
     }
 }
 
+/// Retain the socket's older-daemon check while the file lock protects new
+/// engines. An installed daemon from before the lock existed has no lock
+/// file, but its live socket still tells a one-shot run to leave its state
+/// alone.
+fn refuse_live_daemon() -> Result<()> {
+    let path = crate::ipc::socket_path();
+    if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+        anyhow::bail!(
+            "another ssf daemon is listening on {}; stop it first",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Listen for the CLI on the daemon's socket, replacing a stale one.
 fn bind_socket() -> Result<tokio::net::UnixListener> {
     let path = crate::ipc::socket_path();
@@ -5439,13 +5462,10 @@ fn bind_socket() -> Result<tokio::net::UnixListener> {
             .with_context(|| format!("creating {}", parent.display()))?;
     }
     if path.exists() {
-        // Another daemon, or a leftover from one that died?
-        if std::os::unix::net::UnixStream::connect(&path).is_ok() {
-            anyhow::bail!(
-                "another ssf daemon is listening on {}; stop it first",
-                path.display()
-            );
-        }
+        // Another daemon, or a leftover from one that died? This remains a
+        // defence for callers that bind the IPC socket directly; `StateLock`
+        // is the atomic engine ownership guard.
+        refuse_live_daemon()?;
         let _ = std::fs::remove_file(&path);
     }
     let listener = tokio::net::UnixListener::bind(&path)
@@ -5635,6 +5655,7 @@ mod tests {
         // The stand-in driver below is Orca; herdr is the default now.
         cfg.driver = Some(DriverKind::Orca);
         Engine {
+            _state_lock: None,
             cfg,
             gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
             drivers: Drivers::from_list(vec![Driver::Orca(crate::orca::Orca::new(
@@ -6427,7 +6448,13 @@ mod tests {
                     });
                     h.lock().unwrap().push(target.clone());
                     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-                    let (status, etag, body) = if method == "POST" && path.ends_with("/comments") {
+                    let (status, etag, body) = if path == "/user" {
+                        (
+                            "200 OK",
+                            "\"user\"".to_string(),
+                            r#"{"login":"bot","id":1,"type":"User"}"#.to_string(),
+                        )
+                    } else if method == "POST" && path.ends_with("/comments") {
                         let comment = serde_json::from_str::<Value>(&sent)
                             .ok()
                             .and_then(|v| v["body"].as_str().map(str::to_string))
@@ -6593,6 +6620,53 @@ mod tests {
         let mut e = engine();
         e.gh = GitHub::new(api_url, "t").unwrap();
         e
+    }
+
+    #[tokio::test]
+    async fn engine_constructor_refuses_a_second_owner_before_auth_or_state_access() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _sandbox = crate::config::test_support::sandbox();
+        let stub = GitHubStub::start().await;
+        let mut cfg = Config::default();
+        cfg.github.api_url = stub.base.clone();
+        cfg.github.token = Some("test-token".into());
+
+        let first = Engine::new(cfg.clone()).await.unwrap();
+        assert_eq!(stub.hits(), vec!["/user"]);
+        let before = std::fs::read(crate::state::state_path()).unwrap();
+
+        let err = match Engine::new(cfg.clone()).await {
+            Ok(_) => panic!("a second engine acquired the same state directory"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("another ssf daemon is listening"));
+        assert!(stub.hits().is_empty(), "the rejected engine called GitHub");
+        assert_eq!(
+            std::fs::read(crate::state::state_path()).unwrap(),
+            before,
+            "the rejected engine rewrote state"
+        );
+
+        drop(first);
+        let second = Engine::new(cfg).await.unwrap();
+        assert_eq!(stub.hits(), vec!["/user"]);
+        drop(second);
+    }
+
+    #[test]
+    fn a_live_socket_from_an_older_daemon_still_refuses_an_engine() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let path = crate::ipc::socket_path();
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let err = refuse_live_daemon().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "another ssf daemon is listening on {}; stop it first",
+                path.display()
+            )
+        );
+        drop(listener);
     }
 
     /// Every hit is one of the four listings: nothing was fetched by number.

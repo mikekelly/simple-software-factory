@@ -76,6 +76,8 @@
 # herdr = "~/dl/herdr-linux"                   # lima: a Linux herdr binary for the guest; unset = the host's own on Linux, else the guest downloads herdr's release
 
 [daemon]
+# One `ssf run` or `ssf run --once` owns this state directory at a time. A
+# one-shot run refuses while the daemon is active; stop the service first.
 # poll_interval_secs = 10
 # conflict_check_interval_secs = 300           # fetch the base once per active repository at this interval and notify sessions only of committed-branch merge conflicts; 0 disables
 # include_own_events = false                   # deliver the bot's own commits/cross-references and each session's posts back to it

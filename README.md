@@ -359,6 +359,11 @@ are left where they are: nothing reaches them while the daemon is down,
 and it delivers what they missed when it comes back. With the factory in
 a VM, stopping the service shuts the guest down cleanly.
 
+One state directory has one engine owner. `ssf run --once` refuses while its
+daemon is active, including when the command is forwarded to an active VM;
+in that case the guest's `ssf.service` owns the guest state, so let it run its
+next poll or stop that guest service before a one-off pass.
+
 **Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
 the package upgrade restarts the service (and, in the VM, the guest, whose
 sessions are resumed; on macOS `brew upgrade ssf` then `brew services

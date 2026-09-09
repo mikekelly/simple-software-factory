@@ -492,6 +492,9 @@ connection, so the bar widget, `ssf status --json` and `ssf tell` work as
 before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 [-- cmd]` gives a shell. `ssf vm attach` attaches to herdr's session in
 the guest in your terminal;
+`ssf run --once` is therefore a guest command too: while the guest's
+`ssf.service` owns its state it refuses, and the host adds the VM name after
+the guest's refusal.
 `ssf vm ssh-config` prints an `~/.ssh/config` entry so `herdr --remote
 ssf-default` (herdr's thin client) and plain `ssh ssf-default` work too.
 Clicking a session in the bar widget (Omarchy) opens a terminal attached

@@ -1,9 +1,11 @@
 //! Persistent daemon state: which issues are bound to which Orca workspaces,
 //! and which timeline events have already been delivered.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use crate::config::{state_dir, write_atomic};
@@ -419,6 +421,45 @@ pub fn state_path() -> PathBuf {
     state_dir().join("state.json")
 }
 
+/// The exclusive, process-held lock for a state directory. The daemon keeps
+/// its state in memory and writes it wholesale, so every engine, including a
+/// one-shot one, must hold this before reading that state.
+pub struct StateLock {
+    _file: File,
+}
+
+impl StateLock {
+    pub fn acquire() -> Result<Self> {
+        Self::acquire_in(&state_dir())
+    }
+
+    fn acquire_in(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        let path = dir.join("state.lock");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        // `flock` locks the opened inode, rather than the pathname. It is
+        // therefore atomic between processes even if they spell the state
+        // directory differently. Keep `file` alive for the engine's life.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let e = std::io::Error::last_os_error();
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                bail!(
+                    "another ssf daemon is listening on {}; stop it first",
+                    crate::ipc::socket_path().display()
+                );
+            }
+            return Err(e).with_context(|| format!("locking {}", path.display()));
+        }
+        Ok(Self { _file: file })
+    }
+}
+
 impl State {
     pub fn load() -> Result<Self> {
         Self::load_from(&state_path())
@@ -558,6 +599,20 @@ mod tests {
         let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         assert!(back.repos["a/b"].issues[&1].subscriber_only);
         assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+    }
+
+    #[test]
+    fn state_lock_is_exclusive_until_its_owner_drops_it() {
+        let sandbox = crate::config::test_support::sandbox();
+        let first = StateLock::acquire_in(&sandbox.state_dir()).unwrap();
+        // These name the same directory but reach the lock through separate
+        // path spellings, as independently started commands can.
+        let err = StateLock::acquire_in(&sandbox.state_dir().join("."))
+            .err()
+            .expect("the second engine must not get the state lock");
+        assert!(err.to_string().contains("another ssf daemon is listening"));
+        drop(first);
+        StateLock::acquire_in(&sandbox.state_dir()).unwrap();
     }
 
     /// The state file the daemon is restarted against was written before

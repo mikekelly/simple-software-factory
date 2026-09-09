@@ -37,6 +37,10 @@ arranged otherwise. A pass that finds an item for the bot — the startup
 pass included — starts a real agent somewhere, and `ssf release` and
 `ssf purge` will not be the way you clean it up.
 
+`ssf run --once` does a single pass, startup pass included, and exits. It
+refuses while another engine owns its state directory, so wait for that
+run to finish before starting a pass.
+
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
 it live.
