@@ -126,7 +126,16 @@ document links to.
     under `keep:` with the command that removes it, and is never removed
     by ssf or reached by `--force`; leave that decision to the person.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
-    running the factory in a VM. Do not add `--force` on the person's
+    running the factory in a VM. All three name paths they could not
+    inspect, including individual entries inside a readable directory.
+    Only `NotFound` establishes absence; permission and I/O failures do
+    not. An unread path prevents reassurance that its container is safe
+    to remove. Fix access and inspect again before advising removal.
+    An unread-path line is not a promise that the configured VM's own
+    directory survives `vm destroy`, and reporting it alone adds no
+    refusal. An unknown configured data-disk presence does engage the
+    existing refusal for workspaces that cannot be checked; see setup §12
+    and issue #176. Do not add `--force` on the person's
     behalf: show them the report and let them settle the work or decide;
     `--data` (config, the bot's key, state) is also theirs to ask for.
     The package removal that follows (`sudo pacman -R ssf`, `sudo apt

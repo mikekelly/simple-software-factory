@@ -1041,25 +1041,47 @@ lima's home outlives a change of `[vm] backend` just as it outlives a
 change of `[vm] name`. Not looked for: a `data.ext4` a switch from
 Firecracker to lima left in the VM's *own* directory, which `vm destroy`
 removes with that directory (issue #176) -- check it by hand if you have
-changed `[vm] backend` and kept the name. The `[vm] dir` line says one
-of two things, in the report and in the list printed at the end alike:
-safe to remove, or safe to remove except for what is listed below. A
-directory ssf could not read is reported as though it were empty, so
-`safe to remove` can be said of one holding a VM nobody could look
-inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
-home by hand if either has permissions you did not set.
-`ssf uninstall` never removes a stray and `--force` does not reach it:
-ssf cannot tell a VM you renamed away to keep from one you abandoned,
-and only one of those is safe to delete. `ssf vm status` names them too,
-and `ssf doctor` does when it runs on the host -- in VM mode `ssf
-doctor` is forwarded into the guest, which cannot see the host's `[vm]
-dir` or lima's home.
+changed `[vm] backend` and kept the name.
+
+The `[vm] dir` line distinguishes a completed inspection from an
+incomplete one. It says "safe to remove" only when the scan completed
+without finding another VM's data; known VM directories are listed as
+exceptions. If a directory or an entry inside it could not be inspected,
+ssf names the path whose inspection failed and withholds that reassurance
+for its container. A readable parent does not make an unstattable child
+empty, and a stattable VM directory does not establish whether an
+unreachable `data.ext4` is absent.
+
+Only a filesystem `NotFound` answer means a path is absent. Permission
+errors, failed directory entries and other I/O errors mean the contents
+could not be established. This applies to `[vm] dir`, lima's home and
+`_disks`, including their entries and paths reached through symlinks.
+Fix access to the named path and inspect it again before deciding to
+remove anything by hand. A missing directory produces no retained-path
+line; a directory that could not be inspected still does.
+
+These observations appear in `ssf uninstall`, `ssf vm status` and the
+host's `ssf doctor`. In VM mode `ssf doctor` is forwarded into the guest,
+which cannot see the host's `[vm] dir` or lima's home. A path listed as
+unread is an observation failure, not a promise that `vm destroy` leaves
+it untouched: the configured VM's own directory is still in the destroy
+scope. Instances and disks that this configuration does not name stay
+untouched, including with `--force`.
+
+Unread-path reporting alone does not add a refusal. However, when the
+configured VM or its data disk cannot be statted, its presence is unknown
+instead of absent. An unknown data-disk presence engages the existing
+refusal for workspaces whose safety could not be established, including
+after a failed lima query. The message describes what could not be established; it does not
+assert that a data disk exists. Further refusal policy and detection of a
+stranded disk after a backend change remain in issue #176.
 
 What it keeps, and lists at the end (the same list both times): the
 clones and worktrees under `~/ssf/projects` (or Orca's projects; may
 hold unpushed work), the `[vm] dir` (the image and downloads, safe to
-remove -- except for a VM directory a changed `[vm] name` left in it,
-which is listed on its own), and, unless you pass `--data`,
+remove only after a completed inspection, except for a VM directory a
+changed `[vm] name` left in it, which is listed on its own), and, unless
+you pass `--data`,
 `~/.config/ssf` (config and the bot's key) and `~/.local/state/ssf`
 (state, and the marker that keeps a disabled service off, so a reinstall
 stays stopped until `ssf ui service enable`; with `--data` gone, a
