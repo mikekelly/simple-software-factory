@@ -641,10 +641,13 @@ impl Shim<'_> {
         let mut out: Vec<String> = Vec::with_capacity(args.len());
         let mut stamped = false;
         let mut has_action = false;
+        // Where a `--` of gh's own ended the flags, if one did.
+        let mut ends_flags = None;
         let mut i = 0;
         while i < args.len() {
             let a = args[i].as_str();
             if a == "--" {
+                ends_flags = Some(i);
                 out.extend_from_slice(&args[i..]);
                 break;
             }
@@ -702,9 +705,13 @@ impl Shim<'_> {
             // ahead of the `-F` are kept, since the `--body` replacing it
             // cannot carry them -- and then the body has to be attached
             // to it with an `=`, because those letters are a word of
-            // their own and cobra pairs `-a` with the word after it when
-            // it goes looking for the command. Split into three words a
-            // `gh -aF notes.md pr review 3` becomes `unknown command`.
+            // their own and cobra pairs `-a` with the word after it
+            // when it goes looking for the command. `gh -aF/dev/null pr
+            // review 3` reaches the API; split into three words it comes
+            // back `unknown command`, the byline having been read as the
+            // command. The value has to be attached for gh to take a
+            // cluster there at all, so `-aF notes.md` ahead of the words
+            // is already `unknown command` before the shim sees it.
             let file = if a == "--body-file" && i + 1 < args.len() {
                 Some(("", args[i + 1].as_str(), 2))
             } else if let Some(v) = a.strip_prefix("--body-file=") {
@@ -768,7 +775,17 @@ impl Shim<'_> {
         // Nothing was rewritten when `stamped` is false -- every branch
         // above sets it -- so `out` still matches `args` position for
         // position and `s + 1` is where the subcommand's flags begin.
-        if !stamped && review && has_action {
+        //
+        // Unless a `--` got there first, in which case that position is
+        // among gh's positionals and no flag can go in it. `gh pr -a --
+        // review` reviews the current branch and posts; adding the body
+        // there makes gh answer `accepts at most 1 arg(s)`, and adding
+        // it before the `--` instead makes cobra pair the `-a` with the
+        // `--body` and read the byline as the command name. There is no
+        // third position, so the line is left as it is: an approval that
+        // goes out untagged, exactly as it did before any of this, and
+        // the one shape here that this change cannot reach.
+        if !stamped && review && has_action && ends_flags.is_none_or(|t| t > s) {
             out.insert(s + 1, stamp(""));
             out.insert(s + 1, "--body".to_string());
         }
@@ -1634,10 +1651,16 @@ mod tests {
     /// The word after a flag that takes a value is that value even when
     /// it is a `--`, for gh's command lookup as much as for its flags:
     /// cobra breaks on a `--` only when it is the argument it is looking
-    /// at. So both of these are commands gh runs and posts, and reading
-    /// that `--` as the end of the flags left the pair unfound and the
-    /// post untagged. Run against gh: the first is a comment whose body
-    /// is `--`, the second an approval.
+    /// at. `gh -b -- issue comment 1` is a comment whose body is `--`,
+    /// and it posts; reading that `--` as the end of the flags left the
+    /// pair unfound and the post untagged.
+    ///
+    /// The second line here is the one shape this cannot reach. gh runs
+    /// it -- it approves the current branch's pull request -- but the
+    /// insert would land past a `--` that really is gh's, among the
+    /// positionals, and gh answers `accepts at most 1 arg(s)`. Ahead of
+    /// the `--` is worse: cobra pairs the `-a` with the `--body` and
+    /// reads the byline as the command. So it is left alone.
     #[test]
     fn a_swallowed_double_dash_does_not_hide_the_command() {
         let out = rewrite(args(&["-b", "--", "issue", "comment", "1"]));
@@ -1645,11 +1668,8 @@ mod tests {
             out,
             args(&["-b", &format!("{}\n\n--", line()), "issue", "comment", "1"])
         );
-        let out = rewrite(args(&["-R", "--", "pr", "review", "7", "-a"]));
-        assert_eq!(
-            out,
-            args(&["-R", "--", "pr", "review", "--body", &line(), "7", "-a"])
-        );
+        let a = args(&["pr", "-a", "--", "review"]);
+        assert_eq!(rewrite(a.clone()), a);
     }
 
     /// A `--` is the end of the flags only where gh reads it as one. A
@@ -1772,6 +1792,12 @@ mod tests {
             (
                 args(&["issue", "comment", "7", "-b=hello"]),
                 args(&["issue", "comment", "7", &format!("-b{body}")]),
+            ),
+            // A letter followed by nothing but `=` is not that form:
+            // pflag reads the `=` as the value, and so does this.
+            (
+                args(&["issue", "comment", "7", "-b="]),
+                args(&["issue", "comment", "7", &format!("-b{}\n\n=", line())]),
             ),
         ] {
             assert_eq!(rewrite(a.clone()), want, "{a:?}");
