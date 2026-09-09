@@ -719,6 +719,22 @@ fn flag_true(v: &str) -> bool {
     matches!(v, "1" | "t" | "T" | "TRUE" | "true" | "True")
 }
 
+fn review_action(a: &str, long: &str, letter: char) -> Option<bool> {
+    if a == long {
+        return Some(true);
+    }
+    if let Some(v) = a.strip_prefix(long).and_then(|rest| rest.strip_prefix('=')) {
+        return Some(flag_true(v));
+    }
+    let cl = cluster(a, true)?;
+    if let Some((ch, Some(v))) = cl.valued
+        && ch == letter
+    {
+        return Some(flag_true(v));
+    }
+    cl.bools.contains(letter).then_some(true)
+}
+
 /// Does this argument approve, in any spelling gh takes? `--approve`,
 /// `--approve=true`, `-a`, `-a=true`, and inside a cluster as the `-a`
 /// of `-aR o/r` or of `-ab hi`. `--approve=false` carries the flag but
@@ -738,22 +754,6 @@ fn flag_true(v: &str) -> bool {
 /// Nothing posts either way -- gh refuses that line for having no
 /// action, and refuses it again for carrying a body without one -- so
 /// the answer only changes which of the two complaints comes back.
-fn review_action(a: &str, long: &str, letter: char) -> Option<bool> {
-    if a == long {
-        return Some(true);
-    }
-    if let Some(v) = a.strip_prefix(long).and_then(|rest| rest.strip_prefix('=')) {
-        return Some(flag_true(v));
-    }
-    let cl = cluster(a, true)?;
-    if let Some((ch, Some(v))) = cl.valued {
-        if ch == letter {
-            return Some(flag_true(v));
-        }
-    }
-    cl.bools.contains(letter).then_some(true)
-}
-
 fn approves(a: &str) -> bool {
     if a == "--approve" {
         return true;
