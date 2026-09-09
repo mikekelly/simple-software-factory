@@ -4904,6 +4904,12 @@ command's effort), without a summary."
             after_daemon_save
         );
 
+        // A blank inline token is not a credential either; it must not make
+        // the retained daemon cache look like a live sign-in after logout.
+        let mut logged_out = Config::load().unwrap();
+        logged_out.github.token = Some(" \t\n ".into());
+        logged_out.save().unwrap();
+
         let status = status::Snapshot {
             cfg: Config::load().unwrap(),
             state: state::State::load().unwrap(),

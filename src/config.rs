@@ -1437,9 +1437,15 @@ impl Config {
     pub fn token_source(&self) -> &'static str {
         if std::env::var("SSF_GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
             "SSF_GITHUB_TOKEN"
-        } else if self.github.token.is_some() {
+        } else if self
+            .github
+            .token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty())
+        {
             "config.toml"
-        } else if token_path().exists() {
+        } else if std::fs::read_to_string(token_path()).is_ok_and(|token| !token.trim().is_empty())
+        {
             "token file"
         } else if self.github.login.is_some() {
             "gh keyring"
@@ -2456,6 +2462,21 @@ harness = "claude"
             dir_from(None, None, "~/.local/state"),
             PathBuf::from("~/.local/state/ssf")
         );
+    }
+
+    #[test]
+    fn blank_tokens_are_not_configured_credentials() {
+        let _sandbox = test_support::sandbox();
+        for token in ["", " \t\n "] {
+            let mut cfg = Config::default();
+            cfg.github.token = Some(token.into());
+            assert_eq!(cfg.token_source(), "none");
+            assert!(cfg.github_token().is_err());
+        }
+        std::fs::write(token_path(), " \t\n ").unwrap();
+        let cfg = Config::default();
+        assert_eq!(cfg.token_source(), "none");
+        assert!(cfg.github_token().is_err());
     }
 
     /// While a sandbox is held, every path the daemon writes to is inside
