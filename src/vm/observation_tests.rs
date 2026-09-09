@@ -696,6 +696,7 @@ fn exercise_deleted_cwd(root: PathBuf) {
 
         let survey = vm.survey();
         assert_eq!(survey.present, Some(true), "{case} configured VM");
+        assert!(survey.startable, "{case} configured instance was lost");
         assert_eq!(survey.data, Some(true), "{case} configured data");
         assert_eq!(survey.unread, expected, "{case} survey unread");
         assert!(
