@@ -4208,6 +4208,9 @@ mod tests {
         assert!(text.contains("limactl delete ssf-old"), "{text}");
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
         assert!(text.contains("after its instance"), "{text}");
+        // `ssf vm status` is a column of `label:   value` lines; a
+        // stray without its label reads as part of the row above it.
+        assert!(text.contains("\nstray:    lima also holds"), "{text}");
         assert!(
             text.contains("(its clones and worktrees are in it)"),
             "the disk's own line, which is the one that says what is at stake: {text}"
@@ -4255,6 +4258,7 @@ mod tests {
         // twin: that printer holds `st.dir` and could name it by
         // mistake, and this one is handed only strays and unread paths,
         // so an assertion about it would hold for every input.)
+        assert!(text.starts_with("note "), "{text}");
         assert_eq!(stray_notes(&[], &[]), "");
     }
 
