@@ -9,7 +9,6 @@ export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$
 ./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
 ./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
 ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
-./target/debug/ssf status     # names the scratch factory's own sessions; close their workspaces by hand
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # or the rest of this shell talks to the scratch factory
 SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
 omarchy plugin validate ./omarchy-plugin
@@ -20,51 +19,44 @@ cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bu
 `SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's own files and only those:
 the config file, the state file, the socket its commands talk to, the bot
 token, the SSH keys, the `bin` shim directory an agent gets on its `PATH`,
-the `gh` configuration those agents use, and the widget's disabled marker.
-Everything the factory then reaches is the one you are already using — the
-driver's server, the checkouts, GitHub, the harness's own sessions, the
-microVM and the bar widget.
+the `gh` configuration those agents use, and the marker that keeps a
+disabled service off. Everything the factory then reaches is the one you
+are already using — the driver's server, the checkouts, GitHub, the
+harness's own sessions, the microVM and the bar widget.
 
-Four of them are worth knowing before you start one:
+Four consequences, none of them obvious:
 
-- **The driver's server, and what you leave in it.** A pass onboards items:
-  it creates a workspace and launches a real agent in the Orca or herdr you
-  are already using. When the pass exits there is no scratch daemon left,
-  and both `ssf release` and `ssf purge` talk to a running one, so neither
-  can reach what it made. Close those workspaces by hand, in Orca or herdr.
-  Do it while the variables are still set, because `ssf status` is what
-  tells you which sessions and paths are the scratch factory's, and it
-  reads the state file rather than a daemon.
-- **The checkout.** Both drivers find an item's existing worktree by its
-  item number, so a second factory adopts the first one's workspace and
-  worktree without either being open: deliveries then fall back to any live
-  agent in it, and removing the worktree interrupts every agent pane before
-  deleting the directory. Closing workspaces first does not prevent this;
-  a checkout nothing else is using does, and that takes more than one
-  setting. `projects_dir` decides the path only when nothing else has, a
-  `[[repo]] path` (written by `repo add --path` or `repo set --path`)
-  decides it first, and under Orca a project whose setup is already `ready`
-  on the configured host beats both. Under herdr, failing all of that, the
-  clone path is the repository's bare name, so a fork of the watched
-  repository lands on the real checkout.
-- **The identity.** `gh auth token` returns whatever `gh` is signed in as,
-  and inside a session that is the **bot**, because `ssf launch` exports
-  `GH_TOKEN`; run `gh auth status` before the recipe rather than assuming
-  it is you. And if the config has a `github.login` — because you copied
-  your real one, or ran `ssf auth login` under these variables — leaving
-  `SSF_GITHUB_TOKEN` out does not make the factory anonymous: it asks the
-  machine's shared `gh` keyring, which these variables do not move.
-- **The VM.** With a config that has `vm.enabled`, `ssf run --once` does
-  not do one pass: it starts the real microVM and supervises it until
-  killed. The `--once` is never read on that path.
+- **It leaves a workspace and a worktree behind.** A pass onboards items,
+  so it creates a workspace and starts a real agent in the Orca or herdr
+  you are already using. Once the pass exits there is no scratch daemon,
+  and `ssf release` and `ssf purge` both talk to a running one, so neither
+  can clear it. That is yours to tidy in the driver, and mind the
+  difference: closing a herdr workspace leaves the checkout, while removing
+  an Orca worktree deletes the checkout and tries to delete its branch.
+- **It can land on the real checkout.** Both drivers look up an item's
+  existing worktree — herdr through `git worktree list` on the checkout,
+  Orca through its own records — so a second factory adopts the first's
+  worktree, deliveries fall back to any live agent in it, and removing the
+  worktree interrupts every agent pane first. `projects_dir` decides the
+  path only when nothing else has: a `[[repo]] path` decides it first, and
+  under Orca a project whose setup is already `ready` on the configured
+  host beats both. Under herdr, failing those, the clone path is the
+  repository's bare name, so a fork of the watched repository lands on the
+  real one.
+- **It acts as the bot.** `gh auth token` returns whatever `gh` is signed
+  in as, and inside a session that is the bot, because `ssf launch` exports
+  `GH_TOKEN`; check with `gh auth status` first. Omitting
+  `SSF_GITHUB_TOKEN` does not make it anonymous either: with a
+  `github.login` in the config it asks the machine's shared `gh` keyring,
+  which these variables do not move.
+- **`--once` is not always once.** With a config that has `vm.enabled`,
+  `ssf run --once` starts the real microVM and supervises it until killed.
+  The flag is never read on that path.
 
-A fresh scratch config names no driver, and the default is herdr, so add
-`ssf config set driver orca` if that is what your real factory runs;
-without it the Orca notes above do not apply to you and an Orca-only
-machine has no driver to work with. The recipe's widget line writes the
-real `~/.config/omarchy` on Omarchy: `ssf ui uninstall && ssf ui install`
-from the packaged binary restores the files, though it re-enables the
-widget in its default place rather than where you had moved it.
+A fresh scratch config names no driver and the default is herdr, so a
+factory here runs herdr unless you set one. The widget line writes the real
+`~/.config/omarchy` on Omarchy, and re-installing restores the files but
+puts the widget back in its default place and enables it.
 
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
