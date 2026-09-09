@@ -446,13 +446,17 @@ fn a_deleted_working_directory_suppresses_relative_remedies_in_every_report() {
         &limactl,
         format!(
             r#"#!/bin/sh
+if [ "$*" = "--tty=false list --json" ]; then echo '{{"name":"ssf-listed","status":"Stopped","dir":"{}/lima/ssf-listed"}}'; fi
+if [ "$*" = "--tty=false disk list --json" ]; then echo '{{"name":"ssf-listed-disk","size":7516192768,"dir":"{}/lima/_disks/ssf-listed-disk"}}'; fi
 case "$*" in
   '--tty=false list --json') printf '%s\n' '{{"name":"ssf-old","status":"Stopped","dir":"{}/lima/ssf-old"}}' ;;
   '--tty=false disk list --json') printf '%s\n' '{{"name":"ssf-old","size":7516192768,"dir":"{}/lima/_disks/ssf-old"}}' ;;
 esac
 "#,
             root.display(),
-            root.display()
+            root.display(),
+            root.display(),
+            root.display(),
         ),
     )
     .unwrap();
@@ -661,11 +665,18 @@ fn exercise_deleted_cwd(root: PathBuf) {
     for (case, cfg, vm) in lima_contexts {
         let expected = if case == "relative-home" {
             vec![
+                PathBuf::from("../lima/_disks/ssf-listed-disk"),
                 PathBuf::from("../lima/_disks/ssf-old"),
+                PathBuf::from("../lima/ssf-listed"),
                 PathBuf::from("../lima/ssf-old"),
             ]
         } else {
-            vec![root.join("lima/_disks/ssf-old"), root.join("lima/ssf-old")]
+            vec![
+                root.join("lima/_disks/ssf-listed-disk"),
+                root.join("lima/_disks/ssf-old"),
+                root.join("lima/ssf-listed"),
+                root.join("lima/ssf-old"),
+            ]
         };
 
         let survey = vm.survey();
@@ -682,7 +693,15 @@ fn exercise_deleted_cwd(root: PathBuf) {
         );
 
         let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
-        assert_eq!(doctor_unread, expected, "{case} doctor unread");
+        let filesystem_expected = if case == "relative-home" {
+            vec![
+                PathBuf::from("../lima/_disks/ssf-old"),
+                PathBuf::from("../lima/ssf-old"),
+            ]
+        } else {
+            vec![root.join("lima/_disks/ssf-old"), root.join("lima/ssf-old")]
+        };
+        assert_eq!(doctor_unread, filesystem_expected, "{case} doctor unread");
         assert!(
             doctor_strays
                 .iter()
