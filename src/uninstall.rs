@@ -1292,7 +1292,17 @@ mod tests {
             },
         );
         assert!(text.contains("/c and /s (--data)"), "{text}");
-        assert!(!text.contains("remove with --data"), "{text}");
+        // The `keep:` line for these two must be gone, not merely
+        // reworded: saying "remove:  /c and /s (--data)" and
+        // "keep: ... remove with `ssf uninstall --data`" in one screen
+        // is the report both deleting and keeping the directory holding
+        // the bot's key and token. The literal this asserted on was the
+        // pre-`kept()` wording, which no longer exists anywhere, so it
+        // held whatever `render` did.
+        assert!(
+            !text.contains("remove with `ssf uninstall --data`"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -2011,6 +2021,22 @@ mod tests {
         let line = no_vm_line(&unread);
         assert!(line.contains("could not be read"), "{line}");
         assert_ne!(line, "no VM");
+        // Both at once -- a stray lima holds *and* a directory nobody
+        // could read. Only two of the three combinations were driven,
+        // so reordering the arms so a stray silently won and dropped the
+        // unread clause left the suite green. "Could not look" is the
+        // stronger claim and has to survive company: the person is being
+        // told what ssf did not check, and a stray it did find is no
+        // substitute for that.
+        let both_at_once = Facts {
+            vm_strays: vec![vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
+            ..unread.clone()
+        };
+        let line = no_vm_line(&both_at_once);
+        assert!(
+            line.contains("could not be read") && line.contains("no VM named"),
+            "{line}"
+        );
         // `[vm] dir` gets one line, not two: its own already carries the
         // "could not read it" clause, and two of a thing whose remedy is
         // a path sends a person looking for a second one.

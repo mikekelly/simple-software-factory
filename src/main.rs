@@ -4165,18 +4165,53 @@ mod tests {
     }
 
     #[test]
+    fn a_path_that_is_not_utf8_does_not_take_the_whole_json_with_it() {
+        // `ssf vm status --json` is what the widget reads, and serde's
+        // own `PathBuf` refuses a path that is not UTF-8 -- so one odd
+        // byte in an unreadable directory's name would have made the
+        // command print nothing at all. A report about a directory
+        // nobody could read, silenced by the name of the directory
+        // nobody could read. Every other path on `VmStatus` is a lossy
+        // `String` for the same reason.
+        use std::os::unix::ffi::OsStrExt as _;
+        let st = vm::VmStatus {
+            unread: vec![PathBuf::from(std::ffi::OsStr::from_bytes(
+                b"/tmp/ssf-\xff-lima",
+            ))],
+            ..status()
+        };
+        let json = serde_json::to_string(&st).expect("a bad name is a bad line, not no output");
+        assert!(json.contains("ssf-") && json.contains("-lima"), "{json}");
+    }
+
+    #[test]
     fn vm_status_says_a_stray_is_left_alone() {
         // The half that went missing when this printer had its own
         // wording: "ssf leaves it alone" is what the design turns on,
         // and `config.example.toml` and `docs/vm.md` both promise it.
+        //
+        // Two of them, because the canonical #158 case leaves exactly
+        // two -- an instance and its disk -- and `sort_strays` puts
+        // disks last. Printing only the first kept the debris and
+        // dropped the data disk, which is the one holding the clones
+        // and the only one whose line says so. One stray in the fixture
+        // could not tell the difference.
         let st = vm::VmStatus {
-            strays: vec![vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
+            strays: vec![
+                vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
+                vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
+            ],
             ..status()
         };
         let text = render_vm_status(&st);
         assert!(text.contains("ssf leaves it alone"), "{text}");
+        assert!(text.contains("limactl delete ssf-old"), "{text}");
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
         assert!(text.contains("after its instance"), "{text}");
+        assert!(
+            text.contains("(its clones and worktrees are in it)"),
+            "the disk's own line, which is the one that says what is at stake: {text}"
+        );
     }
 
     #[test]
@@ -4195,12 +4230,23 @@ mod tests {
         // The twin of `render_vm_status`'s lines. Only that copy was
         // extracted last round, so this one went on naming `[vm] dir`
         // for a fact about lima's home with nothing to catch it.
+        // Both strays, for the reason `render_vm_status`'s twin takes
+        // both: the disk sorts last, so a printer that stops after one
+        // drops the clones and keeps the debris.
         let text = stray_notes(
-            &[vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
+            &[
+                vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
+                vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
+            ],
             &[PathBuf::from("/home/me/.lima/_disks")],
         );
         assert!(text.contains("ssf leaves it alone"), "{text}");
+        assert!(text.contains("limactl delete ssf-old"), "{text}");
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
+        assert!(
+            text.contains("(its clones and worktrees are in it)"),
+            "{text}"
+        );
         assert!(
             text.contains("/home/me/.lima/_disks could not be read"),
             "{text}"

@@ -313,8 +313,25 @@ pub struct VmStatus {
     /// commands that name strays have to agree about the same machine,
     /// and "I could not look, and here is where" is part of what there
     /// is to agree on.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "lossy_paths"
+    )]
     pub unread: Vec<PathBuf>,
+}
+
+/// Paths as `--json` has to carry them.
+///
+/// serde's own `PathBuf` refuses a path that is not UTF-8, and refusing
+/// is the whole of `ssf vm status --json`: one directory with an odd
+/// byte in its name and the command prints nothing at all, taking the
+/// widget with it. Every other path on `VmStatus` is a lossy `String`
+/// for this reason, and stray *names* are already filtered on it. A
+/// mangled character in a path is a bad line; no output is a broken
+/// command.
+fn lossy_paths<S: serde::Serializer>(paths: &[PathBuf], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_seq(paths.iter().map(|p| p.to_string_lossy()))
 }
 
 /// One entry per directory, in a stable order. Two of a thing whose
@@ -431,10 +448,11 @@ impl LimaCommand {
             Some(p) => {
                 let p = crate::config::expand_tilde(p);
                 // Absolute, for the reason the home and `[vm] dir` are:
-                // a relative path resolves against the pasting shell's
-                // directory, not the daemon's. A bare name has to stay
-                // bare, or PATH lookup -- which is how `Vm::limactl`
-                // finds it -- stops happening.
+                // the report is read wherever it was pasted, which is
+                // not where it was produced, so a relative path names a
+                // different program there -- or none. A bare name has to
+                // stay bare, or PATH lookup -- which is how
+                // `Vm::limactl` finds it -- stops happening.
                 let p = if p.components().count() > 1 {
                     std::path::absolute(&p).unwrap_or(p)
                 } else {
@@ -1380,6 +1398,13 @@ impl Vm {
 
     /// Is this path this VM's own directory, however `[vm] dir` was
     /// spelled?
+    ///
+    /// The first test looks dead -- `p` always comes from reading the
+    /// absolutised base, so the second subsumes it -- and it is kept
+    /// deliberately. If `absolute()` ever fails, the second is `None`
+    /// and this VM's own directory becomes a stray with an `rm -rf`
+    /// printed over it, which is the one wrong answer here that costs a
+    /// live VM's clones. Being right twice is cheaper than that.
     fn is_own_dir(&self, p: &Path) -> bool {
         *p == self.dir || Some(p) == std::path::absolute(&self.dir).ok().as_deref()
     }
@@ -1452,7 +1477,7 @@ impl Vm {
             // one that is not there is genuinely empty.
             Err(_) => return (Vec::new(), unread_if_there(&base)),
         };
-        let mut strays: Vec<Stray> = entries
+        let strays: Vec<Stray> = entries
             .flatten()
             // A name that is not UTF-8 would be printed with
             // replacement characters, in a command that then matches
@@ -1476,7 +1501,10 @@ impl Vm {
             })
             .map(|p| Stray::directory(&p))
             .collect();
-        strays.sort_by(|a, b| a.name.cmp(&b.name));
+        // Not sorted here: all four callers run `sort_strays` over the
+        // whole list afterwards, and its key is total for these. A
+        // second ordering with a narrower key is a chance for the two
+        // to disagree and no help to anyone.
         (strays, Vec::new())
     }
 
@@ -2496,9 +2524,16 @@ impl Vm {
         };
         if backend == BackendKind::Lima {
             // The disks are a second listing, and lima's answer is
-            // better than the filesystem's where it can be had -- two
-            // commands reporting different strays for the same machine
-            // is its own kind of wrong.
+            // better than the filesystem's where it can be had.
+            //
+            // It does not make this and `survey` agree in every case:
+            // when the *instance* listing fails, `lima_survey` goes to
+            // `lima_unanswered` and never asks about disks, while this
+            // still asks. A `_disks/ssf-old` lima no longer tracks is
+            // then named by one and not the other. Both answers are
+            // honest about what their own reader saw, and closing the
+            // gap means deciding which reader wins -- which is the
+            // refusal's question (#176), not the report's.
             match self.lima_disks() {
                 Ok(all) => strays.extend(self.split_disks(all).1),
                 Err(_) => strays.extend(self.disk_strays_on_disk()),
