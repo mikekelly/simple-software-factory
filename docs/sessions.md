@@ -270,7 +270,8 @@ started, do nothing now; resolve the conflict before starting the final
 round. ssf never rebases for the session.
 
 The default interval is five minutes (`daemon.conflict_check_interval_secs
-= 300`). Set it to `0` to turn checks off, or set
+= 300`). `ssf config set daemon.conflict_check_interval_secs 0` turns
+checks off; set it back to `300` to restore the default. Set
 `conflict_check_interval_secs` on a `[[repo]]` to override it for that
 repository. These terminal notices are independent of `event_comments`,
 which controls posts on GitHub.
