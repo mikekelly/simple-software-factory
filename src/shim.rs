@@ -682,6 +682,23 @@ impl Shim<'_> {
             // The shorthand spellings of a body, cluster included, all
             // come from the one reading of the argument.
             let short = cluster(a, review).and_then(|cl| cl.valued.map(|(c, v)| (cl.bools, c, v)));
+            // A body flag whose value would be a command word does not
+            // have its value there. cobra takes the pair out of the list
+            // before pflag sees it, so gh binds the value to the first
+            // word after the pair instead: `gh -aF pr review notes.md 3`
+            // reads `notes.md`, and `gh -d --body pr create hello -t T`
+            // is a create whose body is `hello`. Following it there would
+            // mean moving an argument out of its place, and stamping the
+            // command word instead hands gh `unknown command
+            // "<byline>"`, turning a line it accepts into an error. So
+            // the line goes over whole. #201 has it with the other
+            // bodies the shim cannot reach.
+            if (i + 1 == c || i + 1 == s)
+                && (matches!(a, "--body" | "--body-file")
+                    || matches!(short, Some((_, 'b' | 'F', None))))
+            {
+                return args;
+            }
             // Inline body: --body X, --body=X, -b X, -bX, -b=X, and the
             // same three behind leading boolean letters (-ab hi).
             if a == "--body" && i + 1 < args.len() {
@@ -717,19 +734,6 @@ impl Shim<'_> {
                         i += 1;
                         continue;
                     }
-                    // Not the next argument, when the next argument is
-                    // a command word. cobra takes the pair out of the
-                    // list before pflag sees it, so gh binds the value
-                    // to the first word after the pair instead: `gh -aF
-                    // pr review notes.md 3` reads `notes.md`. Following
-                    // it there would mean moving an argument out of its
-                    // place, and stamping the command word instead hands
-                    // gh `unknown command "<byline>"`, turning a line it
-                    // accepts into an error. So the line goes over
-                    // whole, exactly as it did before any of this. #201
-                    // has it with the other bodies the shim cannot
-                    // reach.
-                    None if i + 1 == c || i + 1 == s => return args,
                     None if i + 1 < args.len() => {
                         let body = stamp(&args[i + 1]);
                         if bools.is_empty() {
@@ -767,9 +771,6 @@ impl Shim<'_> {
             } else {
                 match short {
                     Some((bools, 'F', Some(v))) => Some((bools, v, 1)),
-                    // As above: past a command word the value is gh's to
-                    // find, and not the next argument.
-                    Some((_, 'F', None)) if i + 1 == c || i + 1 == s => return args,
                     Some((bools, 'F', None)) => args.get(i + 1).map(|v| (bools, v.as_str(), 2)),
                     _ => None,
                 }
@@ -1683,6 +1684,7 @@ mod tests {
             args(&["pr", "review", "7", "--approve=true"]),
             args(&["pr", "review", "7", "--approve=1"]),
             args(&["pr", "review", "7", "--approve=True"]),
+            args(&["pr", "review", "7", "--approve=TRUE"]),
             args(&["pr", "review", "7", "-a=true"]),
             args(&["pr", "review", "7", "-a=t"]),
             args(&["pr", "review", "7", "-a=T"]),
@@ -1782,6 +1784,12 @@ mod tests {
             args(&["-aF", "pr", "review", "notes.md", "999999"]),
             args(&["-ab", "pr", "review", "hello", "999999"]),
             args(&["-db", "pr", "create", "hello", "--title", "t"]),
+            // The long spellings reach the same place whenever a
+            // value-less flag ahead of them keeps the command words out
+            // of reach: `gh -d --body pr create hello -t T` is a create
+            // whose body is `hello`.
+            args(&["-d", "--body", "pr", "create", "hello", "-t", "T"]),
+            args(&["-d", "--body-file", "pr", "create", "hello", "-t", "T"]),
             args(&["pr", "-ab", "review", "hello", "999999"]),
             args(&["pr", "-dF", "create", "notes.md", "--title", "t"]),
         ] {

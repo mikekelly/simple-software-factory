@@ -157,13 +157,20 @@ rather than an older package on the shell's `PATH`; `ssf doctor` says
 when the two differ). Invoked as `gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
 `pr comment` and `pr review` (and `issue new` and `pr new`, gh's own
-names for the same two creates), in every spelling gh takes the body in:
+names for the same two creates), in every spelling gh takes the body in
+after the command words:
 `--body`, `--body=`, `-b`, `-b=`, `-bX`, `--body-file`, `--body-file=`,
 `-F`, `-F -`, `-F=` and `-FX`,
 and any of those behind the value-less letters of a cluster, so a
 review's `-ab hi` and a create's `-eF notes.md` are stamped as much as
 `-b hi` is. Which letters are value-less depends on the command, since
-`-a` approves on a review and names an assignee on a create.
+`-a` approves on a review and names an assignee on a create. A body
+flag *before* the command words is the exception: gh binds its value to
+the first word after the pair rather than to the word next to it, and
+the shim does not follow it there, so `gh -ab pr review hi` posts
+untagged. A body gh builds for itself -- `--fill`, `--editor`, `--web`,
+the interactive prompt -- carries no byline either, since there is no
+body argument to prepend to.
 
 An approving review needs no body of its own, so one that is only the
 line is added, in every spelling of the approval: `--approve`,
@@ -181,9 +188,13 @@ byline's form it works out the repository posted to: `--repo`
 or `-R` in any spelling, an item given as a URL, `GH_REPO`, else the
 checkout's `origin` remote (`git config --get remote.origin.url`); when
 none of those says, the long form is used, which links from anywhere.
-That is gh's own list, but not quite gh's order -- gh prefers the URL to
-`--repo`, and a line carrying both, which is not a line an agent
-writes, can take the short form somewhere it does not belong.
+That is gh's own list, but not quite gh's reading of it: gh prefers the
+URL to `--repo`, and takes the last `--repo` where this takes the
+first, and a `--repo` that will not parse ends the search here rather
+than letting a URL further along answer. Each needs a line naming the
+repository twice over, or naming it unparseably, which is not a line an
+agent writes; the cost is the short form on a post landing elsewhere,
+never a lost tag.
 
 The URL has to be the item's own: a URL that is the value of a flag
 taking one is not read as the item, which matters
