@@ -641,7 +641,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         keep.push(format!(
             "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
             stray.what(),
-            stray.name,
+            vm::shown(&stray.name),
             stray.holds_work_note(),
             stray.remove,
             stray.caveat()

@@ -421,29 +421,48 @@ impl LimaCommand {
     }
 }
 
-/// Is this name safe to print in a report?
+/// A name as a report may print it: one line, reading as itself.
 ///
-/// Not UTF-8, and it would be shown with replacement characters beside
-/// a command that then matches nothing -- a remedy the person cannot
-/// act on is worse than the line it occupies.
-///
-/// A control character is worse, and in the other direction. Every
-/// consumer prints one line per stray, so a newline in a directory's
-/// name splits it in two and the second half is written by whoever
-/// made the directory. A name of the form
+/// Every consumer prints one line per stray, and the name comes off a
+/// directory listing. A directory called
 /// `old<newline>stray:    lima also holds the instance ssf-new ...
-/// `limactl delete ssf-new` removes it` renders as a stray line
-/// indistinguishable from a real one, carrying ssf's own "ssf leaves
-/// it alone" and a command that destroys the **live** instance.
-/// Escape sequences are the same problem, smaller.
+/// `limactl delete ssf-new` removes it` therefore rendered as *two*
+/// lines, the second indistinguishable from a real stray -- carrying
+/// ssf's own "ssf leaves it alone" and a pasteable command that
+/// destroys the **live** instance. The bidi and line-separator
+/// characters do the same to a renderer that honours them, which is
+/// where these reports get pasted.
+///
+/// Escaped rather than dropped. Dropping was the first fix and it was
+/// the wrong one twice over: it silenced a real orphaned VM whose name
+/// merely had a tab in it -- putting "no VM" back over an `ssf-*`
+/// instance lima holds, which is the sentence this whole change exists
+/// to abolish -- and it had to be applied at every scanner, which is
+/// how it came to cover two of the four places a name becomes a stray.
+/// Escaping is one place, keeps the entry, and keeps the remedy
+/// actionable: `remove` still carries the real name, shell-quoted.
 ///
 /// Nobody able to create such a directory needs ssf to delete things
 /// for them. But `[vm] dir` and lima's home are writable by every agent
 /// session this product runs, and this is the first ssf output that
 /// prints a name taken off the filesystem beside a delete command it
 /// invites a person to paste.
-pub fn printable_name(name: &str) -> bool {
-    !name.is_empty() && !name.chars().any(char::is_control)
+pub fn shown(name: &str) -> String {
+    name.chars()
+        .flat_map(|c| {
+            let hidden = c.is_control()
+                || matches!(c,
+                    '\u{200b}'..='\u{200f}'
+                    | '\u{2028}'..='\u{202e}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{feff}');
+            if hidden {
+                c.escape_unicode().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 
 /// Something of ssf's shape that this configuration does not name: what
@@ -539,7 +558,7 @@ impl Stray {
         format!(
             "{} {}, which this configuration does not name{}; ssf leaves it alone -- `{}` removes it{}",
             self.what(),
-            self.name,
+            shown(&self.name),
             // The stakes, in the two commands that hand out the delete.
             // `ssf uninstall` printed this and these did not, so a
             // person who ran `ssf doctor` to find out where their VM
@@ -1458,9 +1477,12 @@ impl Vm {
         };
         let strays: Vec<Stray> = entries
             .flatten()
-            // Only names that can be shown as themselves: see
-            // `printable_name`.
-            .filter(|e| e.file_name().to_str().is_some_and(printable_name))
+            // A name that is not UTF-8 would be printed with
+            // replacement characters, in a command that then matches
+            // nothing: a remedy the person cannot act on is worse than
+            // the line it occupies. What it looks like is `shown`'s
+            // question, not this one's.
+            .filter(|e| e.file_name().to_str().is_some())
             .map(|e| e.path())
             .filter(|p| {
                 // Never this VM's own directory **nor any directory
@@ -3340,6 +3362,17 @@ fn open_in_browser(url: &str) -> bool {
 }
 
 /// A command line for the remote shell.
+/// Characters that would leave a report's one-line-per-stray shape, or
+/// reorder it in a renderer that honours bidi. See [`shown`].
+fn needs_escaping(c: char) -> bool {
+    c.is_control()
+        || matches!(c,
+            '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}')
+}
+
 pub fn shell_join(args: &[String]) -> String {
     args.iter()
         .map(|a| {
@@ -3348,6 +3381,36 @@ pub fn shell_join(args: &[String]) -> String {
                     .all(|c| c.is_ascii_alphanumeric() || "-_./=:@%+,".contains(c))
             {
                 a.clone()
+            } else if a.chars().any(needs_escaping) {
+                // ANSI-C quoting. A plain `'...'` around a name holding
+                // a newline is valid shell and still puts a newline in
+                // the report, which splits the line the remedy sits on
+                // -- and a stray's line is what a person reads as ssf's
+                // own. `$'...'` keeps it to one line and stays pasteable
+                // in the shells this report assumes.
+                let mut out = String::from("$'");
+                for c in a.chars() {
+                    match c {
+                        '\'' => out.push_str("\\'"),
+                        '\\' => out.push_str("\\\\"),
+                        // Fixed width: bash reads `\u` as *up to* four
+                        // hex digits, so a variable-length escape
+                        // followed by a hex character would swallow it,
+                        // and one followed by a space would put the
+                        // space in the path.
+                        c if needs_escaping(c) => {
+                            let n = c as u32;
+                            if n <= 0xffff {
+                                out.push_str(&format!("\\u{n:04x}"));
+                            } else {
+                                out.push_str(&format!("\\U{n:08x}"));
+                            }
+                        }
+                        c => out.push(c),
+                    }
+                }
+                out.push('\'');
+                out
             } else {
                 format!("'{}'", a.replace('\'', "'\\''"))
             }
@@ -3963,54 +4026,90 @@ mod tests {
         println!("{DONE}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_name_cannot_forge_a_second_stray_line() {
-        // Every consumer prints one line per stray, so a newline in a
-        // directory's name splits it in two and the second half is
-        // whatever the directory is called. Reported by round 33, which
-        // reproduced it through `ssf vm status`, `ssf doctor` and
-        // `ssf uninstall` alike: a forged line carrying ssf's own "ssf
-        // leaves it alone" and a `limactl delete` of the *live*
-        // instance.
+        // Every consumer prints one line per stray, and the name comes
+        // off a directory listing -- so a newline in it split the line
+        // and the second half was written by whoever made the
+        // directory: a forged stray carrying ssf's own "ssf leaves it
+        // alone" and a `limactl delete` of the *live* instance.
         //
-        // Both scanners, because there are two -- `[vm] dir`'s and
-        // lima's home -- and the rule they share had only its UTF-8
-        // half.
-        let base = std::env::temp_dir().join(format!(
-            "ssf-forge-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        // Through `describe()` and `kept()`, which are the two places a
+        // name is printed, rather than through the scanners: the first
+        // fix filtered at the scanners and reached two of the four
+        // places a name becomes a stray, and silenced a real VM whose
+        // name merely had a tab in it.
         let forged = "old\nstray:    lima also holds the instance ssf-new";
-        std::fs::create_dir_all(base.join(forged)).unwrap();
-        std::fs::write(base.join(forged).join("data.ext4"), b"disk").unwrap();
-        std::fs::create_dir_all(base.join("plain")).unwrap();
-        std::fs::write(base.join("plain").join("data.ext4"), b"disk").unwrap();
-        let home = base.join("lima");
-        std::fs::create_dir_all(home.join("ssf-x\nstray:    forged")).unwrap();
-        std::fs::create_dir_all(home.join("ssf-ok")).unwrap();
-        let mut cfg = crate::config::Config::default();
-        cfg.vm.name = "new".into();
-        cfg.vm.backend = Some(BackendKind::Firecracker);
-        cfg.vm.dir = base.to_string_lossy().into_owned();
-        let mut vm = Vm::new(&cfg);
-        vm.lima_home = Some(home.clone());
-        let strays = vm.strays_on_filesystem();
-        std::fs::remove_dir_all(&base).unwrap();
-        assert_eq!(
-            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-            ["plain", "ssf-ok"],
-            "a name with a newline in it must not reach a printed line"
-        );
-        // ... and the honest ones still do, so this is a filter and not
-        // a silence.
-        for s in &strays {
-            assert!(!s.describe().contains('\n'), "{}", s.describe());
+        for s in [
+            Stray::directory(&std::path::PathBuf::from("/v").join(forged)),
+            Stray::lima_instance(forged.into(), &Default::default()),
+            Stray::lima_disk(forged.into(), &Default::default()),
+        ] {
+            let line = s.describe();
+            assert!(!line.contains('\n'), "{line}");
+            assert!(line.contains("\\u{a}"), "the newline is shown: {line}");
+            // ... and it is still reported, with a remedy that is one
+            // line and still names the real thing. Round-tripped
+            // through the shell rather than asserted by shape: the
+            // point of `$'...'` is that it expands back, and a
+            // fixed-width escape was needed because bash reads `\u` as
+            // up to four hex digits and would otherwise swallow the
+            // character after it.
+            assert!(!s.remove.contains('\n'), "{}", s.remove);
+            // The quoted argument holds spaces of its own, so it is
+            // taken from where the quoting starts rather than by
+            // splitting on whitespace.
+            let at = s.remove.find("$'").unwrap();
+            let quoted = &s.remove[at..];
+            let back = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("printf %s {quoted}"))
+                .output()
+                .expect("sh");
+            // A directory's remedy names its path, a lima one its
+            // name; both end in the name itself.
+            assert!(
+                String::from_utf8_lossy(&back.stdout).ends_with(&s.name),
+                "the remedy must expand back to the real name: {:?}",
+                String::from_utf8_lossy(&back.stdout)
+            );
         }
+        // A name whose escaped character is followed by a *hex* one,
+        // which is what makes the fixed width load-bearing: bash reads
+        // `\u` as up to four hex digits, so `\ua` before `bcd` would be
+        // read as one character `\uabcd` and the remedy would name a
+        // path that does not exist. The forged name above cannot show
+        // this -- its newline is followed by `s`.
+        let hexy = Stray::lima_disk("ssf-x\nabcd".into(), &Default::default());
+        let at = hexy.remove.find("$'").unwrap();
+        let back = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("printf %s {}", &hexy.remove[at..]))
+            .output()
+            .expect("sh");
+        assert_eq!(
+            String::from_utf8_lossy(&back.stdout).as_ref(),
+            "ssf-x\nabcd",
+            "a fixed-width escape, or the next character is swallowed"
+        );
+
+        // The characters a terminal does not split on but a bidi-aware
+        // renderer does, which is where these get pasted.
+        let sneaky = Stray::lima_instance("ssf-\u{202e}dlo".into(), &Default::default());
+        assert!(
+            sneaky.describe().contains("\\u{202e}"),
+            "{}",
+            sneaky.describe()
+        );
+        // An ordinary name with a space in it is untouched -- this is a
+        // renderer, not a filter, and `my old vm` is a name ssf
+        // supports.
+        let plain = Stray::directory(Path::new("/v/my old vm"));
+        assert!(
+            plain.describe().contains("my old vm"),
+            "{}",
+            plain.describe()
+        );
     }
 
     #[test]
