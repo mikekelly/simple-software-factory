@@ -61,7 +61,7 @@
 # Firecracker leftovers are found up to 32 directories deep and 4096 entries; the first data.ext4 directory on a branch represents that retained subtree.
 # Unread, unnameable, directory-symlink or scan-limit paths (including entries inside dir or lima's home/_disks) are named by uninstall, vm status and host doctor.
 # Configured directory or data-disk symlinks remain incomplete even when readable: destroy removes the link, not its target. Other links known to target non-directories are harmless.
-# Under lima, configured instance and disk storage nested below dir -- including their resolved directory and disk-file aliases -- is protected from recursive and file remedies too.
+# Under lima, configured instance and disk storage nested below dir -- including lexical ancestors and resolved directory and disk-file aliases -- is protected from recursive and file remedies too.
 # An incomplete inspection never establishes that the containing directory is safe to remove; fix access and inspect again.
 # dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
 # backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it

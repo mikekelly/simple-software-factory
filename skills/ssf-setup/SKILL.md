@@ -142,9 +142,10 @@ document links to.
     targets and their ancestors receive no recursive remedy. Other links
     known to target non-directories cannot hide a VM.
     When Lima's home is below `[vm] dir`, protect the configured instance and
-    disk directories, their resolved aliases, and Lima's current and legacy
-    root and data-disk file targets from recursive or file remedies. An
-    independent ancestor `data.ext4` may receive only its own `rm -f` remedy.
+    disk directories, their lexical ancestors and resolved aliases, and
+    Lima's current and legacy root and data-disk file targets from recursive
+    or file remedies. An independent ancestor `data.ext4` may receive only
+    its own `rm -f` remedy.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
     running the factory in a VM. All three name paths they could not
     inspect, including individual entries, symlinks and scan-limit boundaries

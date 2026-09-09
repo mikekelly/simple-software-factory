@@ -1718,7 +1718,7 @@ impl Vm {
         if matches!(own_data_identity, Observation::Unreadable) {
             unread.push(unread_path(&self.data_disk()));
         }
-        let (lima_identities, lima_data_identities, lima_identity_unknown) =
+        let (lima_lexical, lima_identities, lima_data_identities, lima_identity_unknown) =
             self.fc_lima_identities(&mut unread);
         // `[vm] dir` itself is the topmost proper ancestor. A disk left
         // directly in it must be carved out before that directory can be
@@ -1742,6 +1742,7 @@ impl Vm {
             &own_lexical,
             &own_identity,
             &own_data_identity,
+            &lima_lexical,
             &lima_identities,
             &lima_data_identities,
             lima_identity_unknown,
@@ -1778,6 +1779,7 @@ impl Vm {
                 &own_lexical,
                 &own_identity,
                 &own_data_identity,
+                &lima_lexical,
                 &lima_identities,
                 &lima_data_identities,
                 lima_identity_unknown,
@@ -1896,10 +1898,14 @@ impl Vm {
     /// but only the active Lima backend owns these names. Canonical identities
     /// protect aliases; an identity that cannot be established withholds
     /// recursive remedies rather than guessing which candidate contains it.
-    fn fc_lima_identities(&self, unread: &mut Vec<PathBuf>) -> (Vec<PathBuf>, Vec<PathBuf>, bool) {
+    fn fc_lima_identities(
+        &self,
+        unread: &mut Vec<PathBuf>,
+    ) -> (Vec<PathBuf>, Vec<PathBuf>, Vec<PathBuf>, bool) {
         if self.backend() != BackendKind::Lima {
-            return (Vec::new(), Vec::new(), false);
+            return (Vec::new(), Vec::new(), Vec::new(), false);
         }
+        let mut lexical = Vec::new();
         let mut identities = Vec::new();
         let mut data_identities = Vec::new();
         let mut unknown = false;
@@ -1918,10 +1924,16 @@ impl Vm {
             match observe(std::fs::symlink_metadata(&path)) {
                 Observation::Missing => {}
                 Observation::Unreadable => {
+                    if !data_file {
+                        lexical.push(unread_path(&path));
+                    }
                     unread.push(unread_path(&path));
                     unknown = true;
                 }
                 Observation::Present(metadata) => {
+                    if !data_file {
+                        lexical.push(unread_path(&path));
+                    }
                     if metadata.file_type().is_symlink() {
                         // Lima deletes its directory entry, not external
                         // storage reached through that entry.
@@ -1940,7 +1952,7 @@ impl Vm {
                 }
             }
         }
-        (identities, data_identities, unknown)
+        (lexical, identities, data_identities, unknown)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1953,6 +1965,7 @@ impl Vm {
         own_lexical: &Path,
         own_identity: &Observation<PathBuf>,
         own_data_identity: &Observation<PathBuf>,
+        lima_lexical: &[PathBuf],
         lima_identities: &[PathBuf],
         lima_data_identities: &[PathBuf],
         lima_identity_unknown: bool,
@@ -2033,6 +2046,9 @@ impl Vm {
             if lima_identities
                 .iter()
                 .any(|configured| identity.starts_with(configured))
+                || lima_lexical
+                    .iter()
+                    .any(|configured| path.starts_with(configured))
             {
                 // Lima owns this configured instance or disk subtree.
                 continue;
@@ -2065,6 +2081,9 @@ impl Vm {
                 || lima_identities
                     .iter()
                     .any(|configured| configured.starts_with(&identity))
+                || lima_lexical
+                    .iter()
+                    .any(|configured| configured.starts_with(&path))
                 || lima_data_identities
                     .iter()
                     .any(|configured| configured.starts_with(&identity));
@@ -4963,6 +4982,7 @@ mod tests {
             &own_data_identity,
             &[],
             &[],
+            &[],
             false,
             &mut pending,
             &mut budget,
@@ -4987,6 +5007,7 @@ mod tests {
             &own,
             &own_identity,
             &own_data_identity,
+            &[],
             &[],
             &[],
             false,
@@ -5242,8 +5263,9 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn configured_lima_directory_and_disk_file_aliases_receive_no_remedy() {
+    #[tokio::test]
+    async fn configured_lima_lexical_and_resolved_aliases_receive_no_recursive_remedy() {
+        let _sandbox = crate::config::test_support::sandbox();
         let base = std::env::temp_dir().join(format!(
             "ssf-lima-storage-aliases-{}-{}",
             std::process::id(),
@@ -5252,12 +5274,14 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let home = base.join("lima");
+        let marker = base.join("other/data.ext4");
+        let home = base.join("other/lima");
         let instance_target = base.join("owned/instance");
         let disk_target = base.join("owned/disk");
         std::fs::create_dir_all(&instance_target).unwrap();
         std::fs::create_dir_all(&disk_target).unwrap();
         std::fs::create_dir_all(home.join("_disks")).unwrap();
+        std::fs::write(&marker, b"independent ancestor disk").unwrap();
         std::os::unix::fs::symlink(&instance_target, home.join("ssf-live")).unwrap();
         std::os::unix::fs::symlink(&disk_target, home.join("_disks/ssf-live")).unwrap();
         for (container, name) in [
@@ -5276,17 +5300,39 @@ mod tests {
         cfg.vm.name = "live".into();
         cfg.vm.backend = Some(BackendKind::Lima);
         cfg.vm.dir = base.to_string_lossy().into_owned();
+        cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
         let mut vm = Vm::new(&cfg);
         vm.lima_home = Some(home.clone());
-        let (strays, unread) = vm.fc_dir_contents();
-        std::fs::remove_dir_all(&base).unwrap();
+        let expected_unread = [home.join("_disks/ssf-live"), home.join("ssf-live")];
+        let assert_inventory = |strays: &[Stray], unread: &[PathBuf], reader: &str| {
+            assert_eq!(unread, expected_unread, "{reader}");
+            assert_eq!(strays.len(), 1, "{reader}: {strays:?}");
+            assert_eq!(strays[0].kind, StrayKind::ProtectedDataDisk, "{reader}");
+            assert_eq!(strays[0].name, marker.to_string_lossy(), "{reader}");
+            assert!(
+                strays
+                    .iter()
+                    .all(|stray| !stray.remove.starts_with("rm -rf")),
+                "{reader} must not remove a lexical or resolved Lima ancestor: {strays:?}"
+            );
+        };
 
-        assert!(strays.is_empty(), "configured storage aliases: {strays:?}");
-        assert_eq!(
-            unread,
-            [home.join("_disks/ssf-live"), home.join("ssf-live")],
-            "readable configured directory links remain destroy boundaries"
+        let survey = vm.survey();
+        assert_inventory(&survey.strays, &survey.unread, "survey");
+        let status = vm.status().await;
+        assert_inventory(&status.strays, &status.unread, "status");
+        let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
+        assert_inventory(&doctor_strays, &doctor_unread, "doctor");
+        let facts = crate::uninstall::Facts::gather(&cfg, &vm);
+        assert_inventory(&facts.vm_strays, &facts.vm_unread, "uninstall");
+        let frozen = crate::uninstall::left_in_place(&facts, false);
+        assert!(
+            frozen.contains("rm -f") && !frozen.contains("rm -rf"),
+            "{frozen}"
         );
+        assert!(instance_target.join("disk").exists());
+        assert!(disk_target.join("datadisk").exists());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[cfg(unix)]

@@ -1059,10 +1059,10 @@ after `vm destroy` removes the configured directory.
 
 When Lima's home is nested below `[vm] dir`, the same ownership rule protects
 the configured `ssf-<name>` instance and external disk directories. Their
-resolved directory aliases and Lima's current and legacy root and data-disk
-file targets are protected too. An independent `data.ext4` in an ancestor is
-listed with only an `rm -f` remedy; no `rm -rf` remedy crosses the configured
-Lima storage.
+lexical ancestors, resolved directory aliases, and Lima's current and legacy
+root and data-disk file targets are protected too. An independent `data.ext4`
+in an ancestor is listed with only an `rm -f` remedy; no `rm -rf` remedy
+crosses the configured Lima storage.
 
 The `[vm] dir` line distinguishes a completed inspection from an
 incomplete one. It says "safe to remove" only when the scan completed
