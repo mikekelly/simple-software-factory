@@ -676,13 +676,14 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
     }
     for stray in &facts.vm_strays {
         keep.push(format!(
-            "{} {}{}{} -- untouched, `--force` included{}; `{}` removes it{}",
+            "{} {}{}{} -- untouched, `--force` included{}; `{}` removes {}{}",
             stray.what(),
             stray.name,
             stray.configuration_note(),
             stray.holds_work_note(),
             stray.protection_note(),
             stray.remove,
+            stray.removal_object(),
             stray.caveat()
         ));
     }
@@ -2171,7 +2172,7 @@ mod tests {
         let protected_line = format!(
             "[vm] dir also holds the data disk {}, which the configured VM does not use \
 (its clones and worktrees are in it) -- untouched, `--force` included; its directory is part \
-of the configured VM path, so ssf does not offer to remove that directory; `rm -f {}` removes it",
+of the configured VM path, so ssf does not offer to remove that directory; `rm -f {}` removes the disk",
             protected_disk.display(),
             protected_disk.display()
         );

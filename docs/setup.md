@@ -1085,8 +1085,9 @@ What it keeps, and lists at the end (the same list both times): the
 clones and worktrees under `~/ssf/projects` (or Orca's projects; may
 hold unpushed work), the `[vm] dir` (the image and downloads, safe to
 remove only after a completed inspection, except for a VM directory a
-changed `[vm] name` left in it, which is listed on its own), and, unless
-you pass `--data`,
+changed `[vm] name` left in it, or an old data disk left in a directory
+on the configured VM path; either is listed on its own), and, unless you
+pass `--data`,
 `~/.config/ssf` (config and the bot's key) and `~/.local/state/ssf`
 (state, and the marker that keeps a disabled service off, so a reinstall
 stays stopped until `ssf ui service enable`; with `--data` gone, a

@@ -4215,7 +4215,7 @@ mod tests {
                     "stray:    [vm] dir also holds the data disk /v/new/data.ext4, ",
                     "which the configured VM does not use (its clones and worktrees are in it); ",
                     "ssf leaves it alone; its directory is part of the configured VM path, so ssf ",
-                    "does not offer to remove that directory -- `rm -f /v/new/data.ext4` removes it"
+                    "does not offer to remove that directory -- `rm -f /v/new/data.ext4` removes the disk"
                 )),
             "the complete protected-disk status sentence: {text}"
         );
@@ -4270,7 +4270,7 @@ mod tests {
                 "note [vm] dir also holds the data disk /v/new/data.ext4, which the configured ",
                 "VM does not use (its clones and worktrees are in it); ssf leaves it alone; its ",
                 "directory is part of the configured VM path, so ssf does not offer to remove ",
-                "that directory -- `rm -f /v/new/data.ext4` removes it"
+                "that directory -- `rm -f /v/new/data.ext4` removes the disk"
             )),
             "the complete protected-disk doctor sentence: {text}"
         );

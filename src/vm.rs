@@ -665,7 +665,7 @@ impl Stray {
     /// test.
     pub fn describe(&self) -> String {
         format!(
-            "{} {}{}{}; ssf leaves it alone{} -- `{}` removes it{}",
+            "{} {}{}{}; ssf leaves it alone{} -- `{}` removes {}{}",
             self.what(),
             self.name,
             self.configuration_note(),
@@ -677,6 +677,7 @@ impl Stray {
             self.holds_work_note(),
             self.protection_note(),
             self.remove,
+            self.removal_object(),
             self.caveat()
         )
     }
@@ -717,6 +718,16 @@ impl Stray {
                 "; its directory is part of the configured VM path, so ssf does not offer to remove that directory"
             }
             _ => "",
+        }
+    }
+
+    /// Name the command's object where a directory was just mentioned,
+    /// so the file-only remedy cannot read as though it removes that
+    /// directory.
+    pub fn removal_object(&self) -> &'static str {
+        match self.kind {
+            StrayKind::ProtectedDataDisk => "the disk",
+            _ => "it",
         }
     }
 }
@@ -1722,6 +1733,8 @@ impl Vm {
                 }
             }
             let disk = ancestor.join("data.ext4");
+            // `[vm] dir` and name are UTF-8, but an absolute path also
+            // includes the process CWD, which need not be.
             match observe(std::fs::symlink_metadata(&disk)) {
                 Observation::Present(metadata)
                     if metadata.is_file() && !self.is_own_data_disk(&disk) =>
@@ -4285,14 +4298,24 @@ mod tests {
             cfg.vm.dir = base.to_string_lossy().into_owned();
             cfg.vm.limactl = Some(base.join("missing-limactl").to_string_lossy().into_owned());
             let vm = Vm::new(&cfg);
+            let expected = vec![disk.to_string_lossy().into_owned(), "older".to_string()];
 
             // Through status, the person-facing command's collection
             // path, and on both backends because `[vm] dir` is shared.
             let strays = vm.status().await.strays;
             assert_eq!(
-                strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-                [disk.to_string_lossy().as_ref(), "older"],
+                strays.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                expected,
                 "the parent's disk and the unrelated stray under {backend:?}"
+            );
+            assert_eq!(
+                vm.survey()
+                    .strays
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "the uninstall survey before destroy under {backend:?}"
             );
             let parent = &strays[0];
             assert_eq!(parent.kind, StrayKind::ProtectedDataDisk);
@@ -4321,9 +4344,18 @@ mod tests {
             }
             let after = vm.status().await.strays;
             assert_eq!(
-                after.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
-                [disk.to_string_lossy().as_ref(), "older"],
+                after.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+                expected,
                 "after the destroy step under {backend:?}"
+            );
+            assert_eq!(
+                vm.survey()
+                    .strays
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "the uninstall survey after destroy under {backend:?}"
             );
             std::fs::create_dir_all(&vm.dir).unwrap();
             std::fs::write(vm.dir.join("data.ext4"), b"live").unwrap();
@@ -4351,8 +4383,9 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, contents).unwrap();
         }
-        // A disk deeper in an unrelated tree must remain represented by
-        // its top-level VM directory, not turn this into a recursive scan.
+        // The walk deliberately follows only the configured VM's
+        // ancestor chain. A nested disk on another branch is outside
+        // this scan and is tracked separately from this issue.
         std::fs::create_dir_all(base.join("other/deep")).unwrap();
         std::fs::write(base.join("other/deep/data.ext4"), b"not a top-level VM").unwrap();
         let mut cfg = crate::config::Config::default();
