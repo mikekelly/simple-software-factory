@@ -117,6 +117,124 @@ the class, findings and fixes on the item. Who merges is the notes' autonomy
 line (the boilerplate ships "a person reviews and merges"). `ssf doctor`
 reports a repository with no project notes at all.
 
+### What a round asks for before calling itself clean
+
+These came out of one issue that ran twenty-seven rounds, and each is
+here because a round missed something and a later one found it. They are
+grouped by the question they answer, and each carries its mechanical
+form where it has one -- the ones with a command are the ones that get
+run.
+
+**What did I check, and what did I only think I checked?**
+
+- When a change computes a structure in one place and renders it in
+  several, ask for a coverage table before calling a round clean: every
+  field, one column per command, each cell either "says it" or
+  "deliberately does not, because --". A reviewer reads one rendering at
+  a time and finds one blank; only the table finds the set, and only the
+  table tells a gap from a boundary.
+- When a struct is assembled in one place from parts that are tested
+  separately, count the callers of the assembling function and how many
+  are tests. Zero test callers means the wiring is untested however good
+  the coverage of the parts looks.
+- When a rule is extracted into one function, mutate each **call site**,
+  not the function. Mutating the shared helper proves it is used
+  somewhere; it says nothing about whether a particular caller uses it.
+- When two sessions work adjacent halves of one subsystem, point each
+  reviewer at the other's **boundary** -- the symbols one branch defines
+  and the other's diff references -- rather than at the other's whole
+  territory. That set is computable from the two diffs in one command,
+  and it is where the defects neither owner's rounds reach turn out to
+  be.
+
+**Which of my checks only look like checks?**
+
+- A collection fixture with one element cannot tell "all of them" from
+  "the first".
+- A fixture missing a precondition asserts about a line that never
+  prints. Confirm the line is in the output before asserting how it is
+  spelled.
+- A negative assertion (`!contains(...)`) names a string that a later
+  edit may have reworded out of existence, leaving the test to hold
+  whatever the code does. Grep each literal and confirm something can
+  still produce it.
+- A test whose assertions sit behind a runtime `if` may never run at
+  all. Make the skip loud -- count the skips and assert the count -- so
+  that "nothing was checked" cannot look like "everything passed". The
+  same goes for anything that selects a subset of tests: a filter, an
+  `#[ignore]`, a `cfg` gate, a feature flag.
+- Apply the mutation a new fixture targets and confirm the fixture
+  fails. A fixture built the wrong way round discriminates nothing.
+- Mutation testing finds *unpinned* behaviour. It cannot find *wrong*
+  behaviour pinned by a test written from the same misunderstanding as
+  the code, because every mutation of the wrong rule turns that test
+  red. What reaches those is reading a comment against the behaviour.
+
+**What did I stop checking without noticing?**
+
+- A deletion needs the same sweep as an addition, and it is cheaper: the
+  words that should no longer appear anywhere are exactly the ones just
+  removed, so one grep for the removed vocabulary finds every sentence
+  still describing it. A rename is a deletion too -- the vocabulary to
+  search for is whatever the identifier used to be called.
+- A comment that states a rule is a claim about **every** site the rule
+  covers, not about the function it sits on. Where it names a concrete
+  failing scenario, that scenario is a test somebody has already written
+  in prose; check the suite has it.
+- A change can be wrong by being **expensive**, and no mutation finds it
+  because the output is identical. Count the external calls a command
+  makes on the base and on the branch and diff the two: a command that
+  costs more than it did needs a reason. Anything bounded by a timeout
+  compounds, and the worst case is usually the failure the code exists
+  to handle.
+
+**Whose claims are these?**
+
+- Read the commit message, the issue body and the pull request body as
+  lists of claims and try to falsify each against the code. Composing a
+  message from the staged diff stops omissions; it does not stop
+  overstatements, because those describe the intention and the diff is
+  consistent with both.
+- Read the pull request body against the final state. It is written once
+  and every round after changes the code, so it drifts furthest on the
+  changes that got the most scrutiny -- and it is what a maintainer
+  reads at merge. Rewrite it *before* the final round, so the round that
+  reads it is not the round that caused it. Half of it is arithmetic:
+  the test count, the warning count and the round count are checkable in
+  a minute, and one of them being stale dates the prose beside it.
+- A disclosure -- "this is known, do not report it" -- is the one input
+  to a round that is copied forward rather than re-derived, so an error
+  in it survives every later round for free. Each names its locations
+  (`file:line`) so falsifying it costs a grep, is re-verified each round
+  rather than carried, and belongs in a comment beside the code it is
+  about, which a later edit cannot pass without reading.
+- **A finding is a claim too.** A correction arrives with the shape of a
+  fact, and a round that has spent all day learning to distrust its own
+  prose will still take a reviewer's number at face value. Check it. And
+  prefer naming the constant to quoting the figure it yields, so that
+  neither party has to be trusted -- a number with a unit in a comment
+  is a copy of something the code already names.
+
+Two rules about running a round rather than about what it looks for. A
+round gets its own worktree, so the reviewer can mutate freely, the
+author's edits cannot be reverted by the reviewer's restore, and neither
+can read a tree the other is halfway through changing. And the commit
+under review does not move while the round runs -- a boundary check
+against `origin/master...HEAD` answers a different question after a
+rebase; measurements taken during a round name the commit they were
+taken against, which lets the author keep working.
+
+Behind the two-clean-round rule is an invariant worth stating on its
+own, because it explains the technicalities: **no artefact ships
+reviewed only by a round that predates it.** A fix arrives after the
+round that read the diff, so under a one-round rule it ships unreviewed
+by construction, and the second clean round is the only thing in the
+process that puts a later reader in front of it. That is an argument for
+two rounds on a change whose *repairs* are risky, not only on one whose
+behaviour is. It also settles the corollary: a round finding only tidies
+caused no substantive change, so nothing new needs reviewing and the
+count is not restarted.
+
 A PR the bot did not write (a human's PR the bot is asked to review, or
 one assigned to it without a session of its own on the branch) is
 unchanged: a session of its own, on the PR's branch, which reviews when
