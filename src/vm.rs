@@ -3455,7 +3455,7 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(quoted.len(), 1, "{quoted:?}");
         assert!(
-            quoted[0].remove.ends_with("/old'") && quoted[0].remove.contains("'"),
+            quoted[0].remove.starts_with("rm -rf '") && quoted[0].remove.ends_with("/old'"),
             "unquoted path would delete two things: {}",
             quoted[0].remove
         );

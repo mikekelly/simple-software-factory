@@ -3042,6 +3042,30 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn vm_status_names_the_strays_limactl_itself_reports() {
+        // The ordinary path, and the one #158 was filed about: `limactl`
+        // is healthy and answers both listings. Every other `status()`
+        // stray test drives the *fallbacks* -- a failed listing, or
+        // Firecracker -- so dropping the strays out of either `Ok` arm
+        // here left the suite green while `ssf vm status` printed
+        // "instance: ssf-one missing (ssf vm build)" and no stray line
+        // at all, over an instance and a disk lima had just named.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Strays, Listing::Strays);
+        let st = t.vm.status().await;
+        let named: Vec<&str> = st.strays.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(named, ["ssf-old", "ssf-aaa"], "{named:?}");
+        // Somebody else's, from both listings, is none of ssf's
+        // business -- and the remedies carry the real names.
+        assert!(!named.contains(&"someone-else"), "{named:?}");
+        let remedies: Vec<&str> = st.strays.iter().map(|s| s.remove.as_str()).collect();
+        assert!(
+            remedies[0].ends_with(" delete ssf-old")
+                && remedies[1].ends_with(" disk delete ssf-aaa"),
+            "{remedies:?}"
+        );
+    }
+
     #[test]
     fn a_vm_directory_under_vm_dir_is_a_stray_under_lima_too() {
         // `[vm] dir` is shared by the backends. A VM built under
