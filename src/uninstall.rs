@@ -2391,6 +2391,14 @@ mod tests {
         let both = unread_note(&[PathBuf::from("/a"), PathBuf::from("/b")]);
         assert!(both.contains("/a") && both.contains("/b"), "{both}");
         assert!(both.contains("them"), "{both}");
+        let hostile = unread_note(&[PathBuf::from("/bad\n\u{202e}`")]);
+        assert!(!hostile.contains('\n'));
+        assert!(
+            hostile.contains("\\u{a}")
+                && hostile.contains("\\u{202e}")
+                && hostile.contains("\\u{60}"),
+            "{hostile}"
+        );
         assert!(
             unread_note(&[PathBuf::from("/a")]).contains("in it is unknown"),
             "one directory is 'it', not 'them'"
