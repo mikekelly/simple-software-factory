@@ -3999,18 +3999,16 @@ async fn doctor() -> Result<()> {
         // abandoned -- so being named here is the only way they stop
         // being invisible.
         //
-        // Without the tooling, off the filesystem: the survey forks
-        // `limactl` twice, and on a machine that has no lima the line
-        // above has already said so -- but a data disk of clones in
-        // lima's home is exactly what a person who cannot run `limactl
-        // list` needs told, so the answer is found the other way rather
-        // than not at all. Firecracker's strays never need tooling.
-        let strays = if tooling.ok {
-            vm.survey().strays
-        } else {
-            vm.strays_on_filesystem()
-        };
-        print!("{}", stray_notes(&strays));
+        // Off the filesystem, always. Asking the backend would fork
+        // `limactl` twice inside `doctor`, which forks none today, and
+        // bound each at a minute -- two minutes of silence for the
+        // person whose lima is wedged, who is exactly the person
+        // running `doctor`. What the listing buys under lima is the
+        // suppression of a directory lima has disowned, a cost
+        // `strays_on_disk_read` already accepts in its own doc: naming
+        // one costs a line, not a VM. Under Firecracker the two are the
+        // same answer by construction.
+        print!("{}", stray_notes(&vm.strays_on_filesystem()));
     }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.

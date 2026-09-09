@@ -1221,9 +1221,26 @@ impl Vm {
 
     /// The data disk's size as lima has it, else what a build would make.
     pub(super) fn lima_data_cap_gib(&self) -> u32 {
-        match self.lima_disk() {
-            Ok(Some(d)) => gib_ceil(d.size),
-            _ => self.sizes().data_gib,
+        self.lima_cap_from(&self.lima_disks())
+    }
+
+    /// The same answer out of a listing somebody already paid for.
+    ///
+    /// `ssf vm status` needs the strays and this disk's size from one
+    /// `limactl disk list`. Asking twice doubles the worst case on a
+    /// lima home that will not lock -- and a wedged lima is the machine
+    /// most likely to have `ssf vm status` run against it in the first
+    /// place, which is the same reason `Vm::survey` takes every answer
+    /// in one pass.
+    pub(super) fn lima_cap_from(&self, disks: &Result<Vec<Disk>>) -> u32 {
+        let name = self.lima_disk_name();
+        match disks {
+            Ok(all) => all
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| gib_ceil(d.size))
+                .unwrap_or_else(|| self.sizes().data_gib),
+            Err(_) => self.sizes().data_gib,
         }
     }
 
@@ -2992,6 +3009,23 @@ mod tests {
                 .any(|c| c.starts_with("rm -rf ") && c.trim_end_matches('\'').ends_with("older")),
             "the [vm] dir stray is missing under lima: {named:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn vm_status_asks_lima_for_its_disks_once() {
+        // The strays and this VM's own size both come off
+        // `limactl disk list`. Asking twice doubled the worst case on a
+        // lima home that will not lock, and `Vm::survey`'s own doc is
+        // the rule being kept here: every answer in one pass, because
+        // each one costs a fork.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Strays, Listing::Strays);
+        let _ = t.vm.status().await;
+        let asked = t
+            .commands()
+            .iter()
+            .filter(|c| c.contains("disk list"))
+            .count();
+        assert_eq!(asked, 1, "{:?}", t.commands());
     }
 
     #[tokio::test]
