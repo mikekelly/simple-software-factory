@@ -1493,10 +1493,12 @@ impl Vm {
     /// outlives a change of `[vm] backend`. Reading either as belonging
     /// to one backend is the mistake this whole change corrects.
     ///
-    /// This is what `ssf doctor` falls back to when there is no tooling
-    /// to ask with -- which is exactly when the person cannot run
-    /// `limactl list` either, so going quiet then would take the report
-    /// away at its most useful.
+    /// This is what `ssf doctor` uses, always. Asking the backend
+    /// instead would fork `limactl` twice inside a command that forks
+    /// none, bounded at a minute each -- two minutes of silence for the
+    /// person whose lima is wedged, who is the person running `doctor`.
+    /// The listing would buy only the suppression of a directory lima
+    /// has disowned, and naming one of those costs a line, not a VM.
     pub fn strays_on_filesystem(&self) -> Vec<Stray> {
         let mut strays = self.fc_dir_contents();
         // Lima's home under both backends: reading it costs no
@@ -2498,8 +2500,9 @@ impl Vm {
             BackendKind::Firecracker => (None, None, Vec::new()),
         };
         if backend == BackendKind::Lima {
-            // The disks are a second listing, and lima's answer is
-            // better than the filesystem's where it can be had.
+            // The disks are another listing, taken above so that the
+            // strays and this VM's size come out of one; lima's answer
+            // is better than the filesystem's where it can be had.
             //
             // It does not make this and `survey` agree in every case:
             // when the *instance* listing fails, `lima_survey` goes to
@@ -3662,7 +3665,7 @@ mod tests {
             ["ssf-old"],
             "a lima instance a backend change left behind"
         );
-        assert_eq!(fallback.len(), 1, "and doctor's fallback sees it too");
+        assert_eq!(fallback.len(), 1, "and the reader doctor uses sees it too");
         // `Some(false)`, not merely "not `Some(true)`": the destroy
         // step skips on `Some(false)` and goes through `destroy` on
         // `None`, so the two are different instructions and an

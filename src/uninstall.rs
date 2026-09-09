@@ -208,7 +208,7 @@ impl Facts {
         let mut projects: Vec<PathBuf> = cfg
             .drivers_in_use()
             .into_iter()
-            .map(|d| cfg.projects_dir(d))
+            .map(|d| absolute(&cfg.projects_dir(d)))
             .filter(|p| p.exists())
             .collect();
         projects.dedup();
@@ -248,11 +248,14 @@ impl Facts {
             // its full path, and a relative `[vm] dir` would print two
             // different-looking paths for one place.
             //
-            // Every path in the report, not this one alone. Absolutising
-            // `keep:` and leaving `remove:` relative produced exactly
-            // the two spellings this is here to prevent, two lines
-            // apart, in the report that says what is about to be
-            // destroyed.
+            // Every path the report prints, not this one alone:
+            // `[vm] dir`, the VM's own directory in both `vm_removed`
+            // arms, and the projects directories. Absolutising `keep:`
+            // and leaving `remove:` relative produced exactly the two
+            // spellings this is here to prevent, two lines apart, in
+            // the report that says what is about to be destroyed --
+            // twice, because `ssh_answered` rebuilds one of those
+            // sentences and was missed the first time.
             vm_base: absolute(&vm.base),
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
@@ -287,7 +290,11 @@ impl Facts {
             self.vm_removed = lima_removed(
                 &vm.lima_name(),
                 &vm.lima_disk_name(),
-                vm.dir.exists().then_some(vm.dir.as_path()),
+                // Through `absolute`, as `gather`'s copy is: this
+                // rebuilds the same sentence on the ordinary VM-mode
+                // path, and printing it relative here put one directory
+                // in the report twice, spelled two ways.
+                vm.dir.exists().then_some(absolute(&vm.dir)).as_deref(),
                 // `lima_removed` reads `startable`, `running` and
                 // `data`; the others are not this call's to state.
                 &vm::Survey {
@@ -1204,6 +1211,31 @@ mod tests {
                 line.contains(&format!("/{rel}")),
                 "one place, two spellings: {line}"
             );
+        }
+        // The lima arm builds that sentence twice -- once in `gather`
+        // and once in `ssh_answered`, which is the ordinary path when
+        // the guest is up -- and each was relative at a different
+        // round. The existing lima fixture cannot see it: its
+        // `[vm] dir` is absolute *and* does not exist, so
+        // `vm.dir.exists()` is false and the path never reaches the
+        // string at all.
+        let mut lima = cfg.clone();
+        lima.vm.backend = Some(vm::BackendKind::Lima);
+        lima.vm.name = "l".into();
+        std::fs::create_dir_all(base.join("l")).unwrap();
+        let lima_vm = vm::Vm::new(&lima);
+        for facts in [Facts::gather(&lima, &lima_vm), {
+            let mut f = Facts::gather(&lima, &lima_vm);
+            f.ssh_answered(&lima_vm);
+            f
+        }] {
+            let text = render(&facts, &Report::default(), &Opts::default());
+            for line in text.lines().filter(|l| l.contains(&rel)) {
+                assert!(
+                    line.contains(&format!("/{rel}")),
+                    "one place, two spellings: {line}"
+                );
+            }
         }
         // The other direction of the snapshot, through the same join.
         // `vm_base_exists: true` unconditionally left the suite green,
