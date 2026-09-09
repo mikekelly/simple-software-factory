@@ -3165,10 +3165,13 @@ mod tests {
         let disks = t.vm.lima_home.clone().unwrap().join("_disks");
         std::fs::create_dir_all(&disks).unwrap();
         assert!(t.vm.survey().unread.is_empty(), "readable while readable");
-        let Some(unread) = while_unreadable(&disks, || !t.vm.survey().unread.is_empty()) else {
+        let Some(unread) = while_unreadable(&disks, || t.vm.survey().unread) else {
             return; // running as root, which reads it anyway
         };
-        assert!(unread, "`_disks` alone being unreadable is still unknown");
+        // Named, and named absolutely -- the sentence about a directory
+        // and the remedy beside it must not print one place two ways.
+        assert_eq!(unread, std::slice::from_ref(&disks));
+        assert!(unread[0].is_absolute(), "{:?}", unread[0]);
 
         // The same, one layer up: with the *instance* listing failing
         // too, the answer comes from `strays_on_disk_read`, which ORs
