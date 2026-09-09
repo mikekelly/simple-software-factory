@@ -244,7 +244,7 @@ const NOT_THE_ITEM: &[&str] = &[
 /// byline's form, so reading a flag's URL as the item is not cosmetic: a
 /// post that lands on another repository carrying the short `#N` links
 /// to *that* repository's issue N.
-fn repo_in_args(args: &[String]) -> Option<String> {
+fn repo_in_args(args: &[String], review: bool) -> Option<String> {
     let mut i = 0;
     let mut url = None;
     while i < args.len() {
@@ -264,12 +264,16 @@ fn repo_in_args(args: &[String]) -> Option<String> {
         if let Some(v) = a.strip_prefix("--repo=") {
             return repo_of(v);
         }
-        if let Some(v) = a
-            .strip_prefix("-R")
-            .map(|v| v.trim_start_matches('='))
-            .filter(|v| !v.is_empty())
-        {
-            return repo_of(v);
+        // `-R` in every shorthand spelling gh takes, including behind
+        // the value-less letters of a cluster: `gh pr create -dR
+        // acme/other` opens a draft there, and reading only a `-R` that
+        // starts the argument would leave the answer to the checkout and
+        // put this session's own short `#N` on a post landing elsewhere.
+        if let Some(('R', attached)) = cluster(a, review).and_then(|cl| cl.valued) {
+            return match attached {
+                Some(v) => repo_of(v),
+                None => args.get(i + 1).and_then(|v| repo_of(v)),
+            };
         }
         if NOT_THE_ITEM.contains(&a) {
             i += 2;
@@ -606,7 +610,7 @@ impl Shim<'_> {
         // Which letters take a value depends on the command: `-a` is an
         // assignee on a create and an approval on a review.
         let review = args[c] == "pr" && args[s] == "review";
-        let on_repo = repo_in_args(&args)
+        let on_repo = repo_in_args(&args, review)
             .or_else(|| self.gh_repo.and_then(repo_of))
             .or_else(|| (self.checkout)());
         let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate);
@@ -715,11 +719,13 @@ impl Shim<'_> {
             out.push(a.to_string());
             i += 1;
             // Not a `--`: that ends the flags rather than feeding one.
-            if skips_value {
-                if let Some(v) = args.get(i).filter(|v| v.as_str() != "--") {
-                    out.push(v.clone());
-                    i += 1;
-                }
+            if let Some(v) = args
+                .get(i)
+                .filter(|_| skips_value)
+                .filter(|v| v.as_str() != "--")
+            {
+                out.push(v.clone());
+                i += 1;
             }
         }
         // An approval needs no body, but should still say where it came from.
@@ -1198,6 +1204,7 @@ mod tests {
                 "--repo=acme/widgets",
             ]),
             args(&["issue", "comment", "3", "--body", "hi", "-Racme/widgets"]),
+            args(&["issue", "comment", "3", "--body", "hi", "-R=acme/widgets"]),
             args(&[
                 "issue",
                 "comment",
@@ -1261,6 +1268,17 @@ mod tests {
                 "hi",
             ]),
             args(&["issue", "create", "-t", "t", "-b", "hi", "-R", "acme/other"]),
+            // Behind a cluster's value-less letters, where `-R` is as
+            // much the repository as it is on its own: read only at the
+            // start of an argument, the answer would fall through to the
+            // checkout and put this session's short `#N` on a post
+            // landing somewhere else.
+            args(&["pr", "create", "-t", "t", "-b", "hi", "-dR", "acme/other"]),
+            args(&["pr", "create", "-t", "t", "-b", "hi", "-dRacme/other"]),
+            args(&["pr", "create", "-t", "t", "-b", "hi", "-dR=acme/other"]),
+            // `-a` approves here rather than naming an assignee, so the
+            // cluster has to be walked with the review's letters.
+            args(&["pr", "review", "3", "-b", "hi", "-aR", "acme/other"]),
         ] {
             let out = rewrite(a.clone());
             assert!(out.contains(&long), "{a:?} -> {out:?}");
