@@ -184,7 +184,7 @@ pub struct Facts {
     /// `[vm] dir` was there when the report was built. Snapshotted, so
     /// that the list printed before the question and the list printed
     /// after the last step are the same list in fact and not only in
-    /// intent -- the steps in between can remove it.
+    /// intent.
     pub vm_base_exists: bool,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
@@ -1222,6 +1222,14 @@ mod tests {
         let mut lima = cfg.clone();
         lima.vm.backend = Some(vm::BackendKind::Lima);
         lima.vm.name = "l".into();
+        // A `limactl` that is not there, so this asks lima nothing.
+        // Without it the test forks the *real* one against the
+        // developer's own `~/.lima` -- four times, sixty seconds each
+        // on a Mac whose lima home is locked, and with their live
+        // `ssf-*` instances landing in a `Facts` that asserts nothing
+        // about them. `Vm::new`'s `cfg!(test)` guard covers the home
+        // field and not the binary.
+        lima.vm.limactl = Some(format!("{rel}/no-limactl"));
         std::fs::create_dir_all(base.join("l")).unwrap();
         let lima_vm = vm::Vm::new(&lima);
         for facts in [Facts::gather(&lima, &lima_vm), {
@@ -1236,6 +1244,25 @@ mod tests {
                     "one place, two spellings: {line}"
                 );
             }
+            // And the strays survive the ssh answer. `ssh_answered` is
+            // the ordinary VM-mode path -- guest up, answering -- so
+            // dropping them there takes every `keep:` and
+            // `left in place:` stray line off the report and puts
+            // `[vm] dir` back to a bare "safe to remove" over the
+            // directory a rename left behind. That is this change's own
+            // defect, on the path most people are on.
+            assert!(
+                facts
+                    .vm_strays
+                    .iter()
+                    .any(|s| s.kind == vm::StrayKind::Directory),
+                "the survey's strays have to survive: {:?}",
+                facts.vm_strays
+            );
+            assert!(
+                text.contains("which this configuration does not name"),
+                "{text}"
+            );
         }
         // The other direction of the snapshot, through the same join.
         // `vm_base_exists: true` unconditionally left the suite green,
@@ -1255,6 +1282,7 @@ mod tests {
                 .contains("VM image and downloads"),
             "and gets no line at all"
         );
+        std::fs::remove_dir_all(&base).unwrap();
         assert!(facts.vm_base_exists, "and so does the snapshot");
         assert!(
             facts.vm_base.is_absolute() && facts.vm_base.ends_with(&rel),

@@ -1494,11 +1494,12 @@ impl Vm {
     /// to one backend is the mistake this whole change corrects.
     ///
     /// This is what `ssf doctor` uses, always. Asking the backend
-    /// instead would fork `limactl` twice inside a command that forks
-    /// none, bounded at a minute each -- two minutes of silence for the
-    /// person whose lima is wedged, who is the person running `doctor`.
-    /// The listing would buy only the suppression of a directory lima
-    /// has disowned, and naming one of those costs a line, not a VM.
+    /// instead would add two `limactl` forks to a command that has
+    /// never waited on lima, each bounded at `SURVEY_LIMIT` -- two
+    /// minutes of silence for the person whose lima is wedged, who is
+    /// the person running `doctor`. The listing would buy only the suppression of
+    /// a directory lima has disowned, and naming one of those costs a
+    /// line, not a VM.
     pub fn strays_on_filesystem(&self) -> Vec<Stray> {
         let mut strays = self.fc_dir_contents();
         // Lima's home under both backends: reading it costs no
