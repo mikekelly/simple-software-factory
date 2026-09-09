@@ -1685,6 +1685,7 @@ fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 clone_url,
                 path,
                 base_branch,
+                conflict_check_interval_secs: None,
                 instructions,
                 prompt_file,
                 allowed_users: None,

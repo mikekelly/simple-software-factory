@@ -178,6 +178,12 @@ pub struct IssueState {
     /// pass buys nothing; this paces the re-check instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retirement_held_at: Option<String>,
+    /// The base and branch commits of the last conflict notice that was
+    /// delivered successfully. A failed delivery leaves this unchanged so
+    /// the same conflict is retried, and a clean check clears it so a later
+    /// divergence is a new incident.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_notice: Option<ConflictNotice>,
     /// Whether the log has already said that the listings and the item
     /// disagree about this one, so that a hold announces itself once per
     /// incident rather than once in the item's life.
@@ -274,6 +280,16 @@ pub struct IssueState {
     /// session itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<Blocked>,
+}
+
+/// The commit pair that identified one successfully delivered conflict
+/// notice. Files are deliberately not persisted: they are recomputed from
+/// the cached merge result when the pair is first seen after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ConflictNotice {
+    pub base_ref: String,
+    pub base_sha: String,
+    pub branch_sha: String,
 }
 
 /// What an item's session runs with instead of the repository's own
