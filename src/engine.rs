@@ -5730,6 +5730,9 @@ mod tests {
         )
         .await;
         sh(&s.work, &["remote", "set-head", "origin", "main"]).await;
+        // Remove the stale tracking ref: only the explicit refspec in the
+        // conflict check can restore it under this narrow mapping.
+        sh(&s.work, &["update-ref", "-d", "refs/remotes/origin/main"]).await;
 
         let mut e = engine();
         let d = crate::driver::StubDriver::new(DriverKind::Orca);
