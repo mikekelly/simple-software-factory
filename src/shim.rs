@@ -352,13 +352,12 @@ fn may_take_a_value(a: &str) -> bool {
 /// sitting in a value — or a `pr merge` whose branch is called `review`
 /// — is never mistaken for one of ours.
 ///
-/// Not handled: pflag's clustered shorthands, exactly as before this
-/// change. `gh pr review -ab hi` posts an approving review with a body,
-/// and the shim reads neither the `-b` nor the `-a` inside the cluster,
-/// so it goes out with no byline and no tag. Where a separate action
-/// flag makes the approval branch add a `--body` next to a clustered
-/// `-F` (`gh pr review --approve -aF notes.md`), gh refuses the line
-/// instead.
+/// Clustered shorthands need no case here either. This scan steps over
+/// a flag without asking what it is, and cobra's own command lookup
+/// steps over a cluster in one piece as well, since only a
+/// two-character `-x` can swallow the word after it. What is inside one
+/// matters further down, where the body and the action flags are read:
+/// see `cluster`.
 fn command_words(args: &[String]) -> Option<(usize, usize)> {
     let mut words = Vec::with_capacity(2);
     let mut i = 0;
@@ -422,6 +421,94 @@ fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
         .any(|n| n.eq_ignore_ascii_case("me") || bot.is_some_and(|b| n.eq_ignore_ascii_case(b)))
 }
 
+/// Shorthand letters that carry no value, so a cluster continues past
+/// them. The sets come from `gh <command> --help` and are disjoint on
+/// purpose: on a review `-a`, `-c` and `-r` approve, comment and request
+/// changes, while on the creates and comments this shim also tags, `-a`
+/// names an assignee and `-r` a reviewer and both take a value. A letter
+/// in neither set ends the walk, which is the safe way to be wrong: an
+/// unknown letter stops the scan rather than reading its value as more
+/// flags.
+fn boolean_shorthand(c: char, review: bool) -> bool {
+    if review {
+        matches!(c, 'a' | 'c' | 'r')
+    } else {
+        matches!(c, 'd' | 'e' | 'f' | 'w')
+    }
+}
+
+/// A single-dash argument read the way pflag reads it: every letter is a
+/// flag of its own, and the first one that takes a value swallows the
+/// rest of the cluster, or the next argument when the cluster ends
+/// there. So `-ab hi`, `-abhi` and `-ab=hi` all approve with a body of
+/// `hi`, while `-ba hi` is a body of `a` and no approval at all.
+struct Cluster<'a> {
+    /// The value-less letters ahead of the one that takes a value.
+    bools: &'a str,
+    /// That letter, and its value where the cluster carries one; `None`
+    /// for the value means the next argument carries it instead.
+    valued: Option<(char, Option<&'a str>)>,
+}
+
+fn cluster(a: &str, review: bool) -> Option<Cluster<'_>> {
+    let rest = a
+        .strip_prefix('-')
+        .filter(|r| !r.is_empty() && !r.starts_with('-'))?;
+    for (n, c) in rest.char_indices() {
+        let after = &rest[n + c.len_utf8()..];
+        // pflag asks about an attached `=` before it asks whether the
+        // flag takes a value at all, which is why `-a=false` really does
+        // set `--approve` to false. A letter followed by nothing but `=`
+        // is not that shape: there the `=` is the value.
+        let attached = if after.len() > 1 && after.starts_with('=') {
+            Some(&after[1..])
+        } else if boolean_shorthand(c, review) {
+            continue;
+        } else if after.is_empty() {
+            None
+        } else {
+            Some(after)
+        };
+        return Some(Cluster {
+            bools: &rest[..n],
+            valued: Some((c, attached)),
+        });
+    }
+    Some(Cluster {
+        bools: rest,
+        valued: None,
+    })
+}
+
+/// The values gh reads as true. Anything else it refuses outright, so a
+/// line carrying one posts nothing whatever this answers.
+fn flag_true(v: &str) -> bool {
+    matches!(v, "1" | "t" | "T" | "TRUE" | "true" | "True")
+}
+
+/// Does this argument carry one of `pr review`'s action flags, set? The
+/// action is what decides whether gh posts at all, and it has more
+/// spellings than a bare word: `--approve`, `--approve=true`, `-a`,
+/// `-a=true`, and inside a cluster as `-ac` or the `-a` of `-ab hi`.
+/// `--approve=false` carries the flag but not the action, exactly as gh
+/// reads it, and a value gh would refuse is no action either.
+fn action_flag(a: &str) -> bool {
+    for name in ["--approve", "--comment", "--request-changes"] {
+        if a == name {
+            return true;
+        }
+        if let Some(v) = a.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
+            return flag_true(v);
+        }
+    }
+    cluster(a, true).is_some_and(|cl| {
+        cl.bools.chars().any(|c| matches!(c, 'a' | 'c' | 'r'))
+            || cl
+                .valued
+                .is_some_and(|(c, v)| matches!(c, 'a' | 'c' | 'r') && v.is_some_and(flag_true))
+    })
+}
+
 impl Shim<'_> {
     /// The gh arguments with the byline and origin tag prepended to the
     /// body, where there is one.
@@ -439,6 +526,9 @@ impl Shim<'_> {
         // vocabulary, never a repository or a login, so including them
         // changes no answer.
         let delegate = creates(&args[s]) && assigns_bot(&args, self.bot);
+        // Which letters take a value depends on the command: `-a` is an
+        // assignee on a create and an approval on a review.
+        let review = args[c] == "pr" && args[s] == "review";
         let on_repo = repo_in_args(&args)
             .or_else(|| self.gh_repo.and_then(repo_of))
             .or_else(|| (self.checkout)());
@@ -458,9 +548,12 @@ impl Shim<'_> {
                 out.extend_from_slice(&args[i..]);
                 break;
             }
-            let short = |flag: &str| a.strip_prefix(flag).filter(|_| !a.starts_with("--"));
-            // Inline body: --body X, -b X, --body=X, -bX.
-            if (a == "--body" || a == "-b") && i + 1 < args.len() {
+            // The shorthand spellings of a body, cluster included, all
+            // come from the one reading of the argument.
+            let short = cluster(a, review).and_then(|cl| cl.valued.map(|(c, v)| (cl.bools, c, v)));
+            // Inline body: --body X, --body=X, -b X, -bX, -b=X, and the
+            // same three behind leading boolean letters (-ab hi).
+            if a == "--body" && i + 1 < args.len() {
                 out.push(a.to_string());
                 out.push(stamp(&args[i + 1]));
                 stamped = true;
@@ -473,28 +566,54 @@ impl Shim<'_> {
                 i += 1;
                 continue;
             }
-            if let Some(v) = short("-b").filter(|v| !v.is_empty()) {
-                out.push(format!("-b{}", stamp(v)));
-                stamped = true;
-                i += 1;
-                continue;
+            if let Some((bools, 'b', attached)) = short {
+                // Re-emitted the way it arrived: attached to the cluster
+                // where the value was attached, and as the next argument
+                // where it was the next argument.
+                match attached {
+                    Some(v) => {
+                        out.push(format!("-{bools}b{}", stamp(v)));
+                        stamped = true;
+                        i += 1;
+                        continue;
+                    }
+                    None if i + 1 < args.len() => {
+                        out.push(format!("-{bools}b"));
+                        out.push(stamp(&args[i + 1]));
+                        stamped = true;
+                        i += 2;
+                        continue;
+                    }
+                    // A `-b` with nothing after it is gh's to complain
+                    // about.
+                    None => {}
+                }
             }
             // Body from a file (or stdin): moved onto the command line so no
-            // temporary file is needed.
-            let file = if (a == "--body-file" || a == "-F") && i + 1 < args.len() {
-                Some((args[i + 1].as_str(), 2))
+            // temporary file is needed. Any boolean letters clustered
+            // ahead of the `-F` are kept, since the `--body` replacing it
+            // cannot carry them.
+            let file = if a == "--body-file" && i + 1 < args.len() {
+                Some(("", args[i + 1].as_str(), 2))
             } else if let Some(v) = a.strip_prefix("--body-file=") {
-                Some((v, 1))
+                Some(("", v, 1))
             } else {
-                short("-F").map(|v| (v, 1))
+                match short {
+                    Some((bools, 'F', Some(v))) => Some((bools, v, 1)),
+                    Some((bools, 'F', None)) => args.get(i + 1).map(|v| (bools, v.as_str(), 2)),
+                    _ => None,
+                }
             };
-            if let Some((path, used)) = file {
+            if let Some((bools, path, used)) = file {
                 let Ok(text) = (self.read)(path) else {
                     return args; // let gh report the unreadable file
                 };
                 let body = stamp(&text);
                 if body.len() > MAX_INLINE_BODY {
                     return args;
+                }
+                if !bools.is_empty() {
+                    out.push(format!("-{bools}"));
                 }
                 out.push("--body".to_string());
                 out.push(body);
@@ -515,17 +634,16 @@ impl Shim<'_> {
         // subcommand's own flags left that approval unstamped, which is
         // the tag loss this whole change is about. `-a`, `-c` and `-r`
         // have no other meaning here, since this is only consulted for a
-        // `review`.
-        let has_action = args.iter().any(|a| {
-            matches!(
-                a.as_str(),
-                "--approve" | "-a" | "--request-changes" | "-r" | "--comment" | "-c"
-            )
-        });
+        // `review`. The reading stops at a `--` for the same reason the
+        // scan above does: past one gh has positionals, not flags.
+        let has_action = args
+            .iter()
+            .take_while(|a| a.as_str() != "--")
+            .any(|a| action_flag(a));
         // Nothing was rewritten when `stamped` is false -- every branch
         // above sets it -- so `out` still matches `args` position for
         // position and `s + 1` is where the subcommand's flags begin.
-        if !stamped && args[c] == "pr" && args[s] == "review" && has_action {
+        if !stamped && review && has_action {
             out.insert(s + 1, stamp(""));
             out.insert(s + 1, "--body".to_string());
         }
@@ -1291,6 +1409,143 @@ mod tests {
                 "--approve",
                 "-R",
                 "acme/other"
+            ])
+        );
+    }
+
+    /// Every spelling gh accepts for an action flag, and every spelling
+    /// it refuses to treat as one. Each was run against the real gh
+    /// against a pull request number that does not exist: the accepted
+    /// ones reach the API and fail on the number, the refused ones are
+    /// turned away for having no action at all.
+    #[test]
+    fn action_flags_are_seen_in_every_spelling() {
+        for a in [
+            // Bare, long and short.
+            args(&["pr", "review", "7", "--approve"]),
+            args(&["pr", "review", "7", "-a"]),
+            args(&["pr", "review", "7", "--comment"]),
+            args(&["pr", "review", "7", "-c"]),
+            args(&["pr", "review", "7", "--request-changes"]),
+            args(&["pr", "review", "7", "-r"]),
+            // Attached: gh parses the value, so a true one is an action.
+            args(&["pr", "review", "7", "--approve=true"]),
+            args(&["pr", "review", "7", "--approve=1"]),
+            args(&["pr", "review", "7", "--approve=True"]),
+            args(&["pr", "review", "7", "-a=true"]),
+            args(&["pr", "review", "7", "-a=t"]),
+            args(&["pr", "review", "7", "--request-changes=TRUE"]),
+            args(&["pr", "review", "7", "--comment=true"]),
+            // Clustered.
+            args(&["pr", "review", "7", "-ac"]),
+            args(&["pr", "review", "7", "-ra"]),
+        ] {
+            let mut want = a.clone();
+            want.splice(2..2, [args(&["--body"])[0].clone(), line()]);
+            assert_eq!(rewrite(a.clone()), want, "{a:?}");
+        }
+        for a in [
+            // The flag is there, the action is not: gh still refuses the
+            // line for want of one, so adding a body would be adding it
+            // to a review that never posts.
+            args(&["pr", "review", "7", "--approve=false"]),
+            args(&["pr", "review", "7", "--approve=F"]),
+            args(&["pr", "review", "7", "-a=false"]),
+            args(&["pr", "review", "7", "-a=0"]),
+            // gh refuses a value it cannot parse outright.
+            args(&["pr", "review", "7", "--approve=yes"]),
+            // A `--` ends the flags, so what follows is a positional.
+            args(&["pr", "review", "--", "--approve"]),
+            // No action at all.
+            args(&["pr", "review", "7"]),
+            args(&["pr", "review", "7", "-R", "acme/widgets"]),
+        ] {
+            assert_eq!(rewrite(a.clone()), a, "{a:?}");
+        }
+    }
+
+    /// A body inside a shorthand cluster is still a body. Reading the
+    /// action flag without reading this would put a second `--body` on
+    /// the line, and gh takes the last: the agent's text would be
+    /// dropped.
+    #[test]
+    fn bodies_inside_a_cluster_are_stamped() {
+        let body = format!("{}\n\nhello", line());
+        // The cluster is re-emitted whole, and the value goes back the
+        // way it arrived: its own argument where it was one, attached
+        // where it was attached.
+        for (a, want) in [
+            (
+                args(&["pr", "review", "7", "-ab", "hello"]),
+                args(&["pr", "review", "7", "-ab", &body]),
+            ),
+            (
+                args(&["pr", "review", "7", "-abhello"]),
+                args(&["pr", "review", "7", &format!("-ab{body}")]),
+            ),
+            (
+                args(&["pr", "review", "7", "-ab=hello"]),
+                args(&["pr", "review", "7", &format!("-ab{body}")]),
+            ),
+            (
+                args(&["pr", "review", "7", "-cb", "hello"]),
+                args(&["pr", "review", "7", "-cb", &body]),
+            ),
+            (
+                args(&["pr", "review", "7", "-rb", "hello"]),
+                args(&["pr", "review", "7", "-rb", &body]),
+            ),
+            // `-e` is an editor on a comment, and takes no value there.
+            (
+                args(&["pr", "comment", "7", "-eb", "hello"]),
+                args(&["pr", "comment", "7", "-eb", &body]),
+            ),
+            (
+                args(&["issue", "comment", "7", "-eb", "hello"]),
+                args(&["issue", "comment", "7", "-eb", &body]),
+            ),
+            (
+                args(&["pr", "create", "-t", "t", "-db", "hello"]),
+                args(&["pr", "create", "-t", "t", "-db", &body]),
+            ),
+        ] {
+            assert_eq!(rewrite(a.clone()), want, "{a:?}");
+        }
+        // The body flag comes first here, so `a` is its value and there
+        // is no approval on the line at all.
+        assert_eq!(
+            rewrite(args(&["pr", "review", "7", "-ba", "hello"])),
+            args(&["pr", "review", "7", &format!("-b{}\n\na", line()), "hello",])
+        );
+    }
+
+    #[test]
+    fn body_files_inside_a_cluster_move_inline() {
+        let read = |p: &str| -> std::io::Result<String> { Ok(format!("read {p}")) };
+        let o = o();
+        let mut shim = shim(&o);
+        shim.read = &read;
+        // The letters ahead of the `-F` survive the move to `--body`.
+        assert_eq!(
+            shim.rewrite(args(&["pr", "review", "7", "-aF", "notes.md"])),
+            args(&[
+                "pr",
+                "review",
+                "7",
+                "-a",
+                "--body",
+                &format!("{}\n\nread notes.md", line()),
+            ])
+        );
+        assert_eq!(
+            shim.rewrite(args(&["pr", "comment", "7", "-eF", "notes.md"])),
+            args(&[
+                "pr",
+                "comment",
+                "7",
+                "-e",
+                "--body",
+                &format!("{}\n\nread notes.md", line()),
             ])
         );
     }
