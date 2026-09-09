@@ -1065,9 +1065,12 @@ stays stopped until `ssf ui service enable`; with `--data` gone, a
 reinstall starts the service). Under lima the instance and the data disk
 go out of lima's own home with `vm destroy`, but `~/.lima` itself stays,
 holding lima's cache of downloaded images and anything else of lima's
-you use; remove it by hand once nothing does. The report names it only
-when something in it is yours -- an `ssf-*` this configuration does not
-name, or a directory that could not be read. The bot GitHub account
+you use; remove it by hand once nothing does. An `ssf-*` in it that this
+configuration does not name gets a line of its own and the `limactl`
+command that removes it. The home's own path appears only when it could
+not be read, or when `LIMA_HOME` points somewhere other than lima's
+default -- the remedy has to carry it then, and in the default home it
+would be noise. The bot GitHub account
 itself is not touched, nor its gh sign-in. `ssf status` afterwards says
 not signed in and stopped; the watched repositories and the records of
 past items still show until `--data` (or a reinstall from scratch)
