@@ -1353,8 +1353,7 @@ impl Vm {
     }
 
     /// The VM directories under `[vm] dir` that this configuration does
-    /// not name, each holding a `data.ext4` of its own, and whether the
-    /// directory could be read at all.
+    /// not name, each holding a `data.ext4` of its own.
     ///
     /// A changed `[vm] name` orphans one under Firecracker exactly as it
     /// orphans an `ssf-*` under lima: `Vm::dir` is `<[vm] dir>/<name>`
@@ -1400,8 +1399,7 @@ impl Vm {
         // Only the components `[vm] name` contributes: a `..` in
         // `[vm] dir` itself is the person's own path, and reading it
         // here tripped a guard written for the name -- hiding every
-        // stray in that directory and reporting it as unreadable when it
-        // reads perfectly well.
+        // stray in a directory that reads perfectly well.
         let inside = self.dir.strip_prefix(&self.base).is_ok_and(|name| {
             name.components().next().is_some()
                 && !name
@@ -1426,9 +1424,6 @@ impl Vm {
             // the line it occupies.
             .filter(|e| e.file_name().to_str().is_some())
             .map(|e| e.path())
-            // A real directory, not a symlink to one: `rm -rf` on a link
-            // removes the link and leaves what it pointed at, so a
-            // remedy over one would not be a remedy.
             .filter(|p| {
                 // Never this VM's own directory, on either backend:
                 // `Vm::destroy` removes it, and a line calling it
@@ -3694,8 +3689,8 @@ mod tests {
     fn a_dot_dot_in_vm_dir_is_the_persons_own_path_not_an_escape() {
         // The guard is about what `[vm] name` adds. Reading the whole of
         // `self.dir` tripped it on a `..` the person wrote in `[vm] dir`
-        // -- hiding every stray in that directory and reporting it as
-        // unreadable when it reads perfectly well.
+        // -- hiding every stray in a directory that reads perfectly
+        // well.
         let root = std::env::temp_dir().join(format!(
             "ssf-dotdot-{}-{}",
             std::process::id(),

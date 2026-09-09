@@ -181,11 +181,6 @@ pub struct Facts {
     /// it: ssf cannot tell a VM someone renamed away to keep from one
     /// they abandoned, and only one of those is safe to delete.
     pub vm_strays: Vec<vm::Stray>,
-    /// Directories that are there and could not be read, so nobody
-    /// knows what is in them -- including whether a VM a rename or a
-    /// backend change orphaned is. Named, not counted: a `~/.lima` left
-    /// root-owned by an earlier `sudo` sent people to fix permissions
-    /// on `[vm] dir`, which was never the problem.
     /// `[vm] dir` was there when the report was built. Snapshotted, so
     /// that the list printed before the question and the list printed
     /// after the last step are the same list in fact and not only in
@@ -672,8 +667,10 @@ fn no_vm_line(facts: &Facts) -> String {
     }
 }
 
-/// "a", "a and b", "a, b, and c" -- the report's list style, in one
-/// place, since three sentences in it need one.
+/// "a", "a and b", "a, b, and c" -- the report's list style. One caller
+/// now that the unreadable-directory sentence has gone to #192, which
+/// will want it back; it is kept because the style belongs to the
+/// report rather than to `lima_removed`.
 fn join_and(parts: &[String]) -> String {
     match parts.split_last() {
         None => String::new(),
@@ -1108,6 +1105,66 @@ mod tests {
         assert_eq!(found.state, "unknown");
         assert_eq!(found.problems.len(), 1, "{:?}", found.problems);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_survey_reaches_the_report() {
+        // `Facts::gather` is the only join between the backend and the
+        // page, it has one caller (`run`, which no test reaches), and
+        // every test either side of it builds its own `Facts`. So
+        // `vm_strays: survey.strays.clone()` could be `Vec::new()` with
+        // the whole suite green -- and then a person who renames
+        // `[vm] name` gets a bare `no VM` and `[vm] dir ... safe to
+        // remove` over the data disk holding their clones, which is
+        // #158 exactly, unfixed, with every other test passing.
+        let _sandbox = crate::config::test_support::sandbox();
+        // Relative, so the absolutising of `vm_base` is pinned too: a
+        // `temp_dir()` path is already absolute and pins nothing, and a
+        // `strip_prefix` of one silently falls back to it -- which is
+        // how the first version of this test passed while checking
+        // neither. Under `target/`, which is the build's own directory
+        // and the only writable place guaranteed to be under the
+        // working directory.
+        let rel = format!(
+            "target/ssf-join-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let base = PathBuf::from(&rel);
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        let mut cfg = Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(vm::BackendKind::Firecracker);
+        cfg.vm.dir = rel.clone();
+        let facts = Facts::gather(&cfg, &vm::Vm::new(&cfg));
+        let text = render(&facts, &Report::default(), &Opts::default());
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            facts
+                .vm_strays
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect::<Vec<_>>(),
+            ["old"],
+            "the VM the rename left behind has to reach the report"
+        );
+        assert!(facts.vm_base_exists, "and so does the snapshot");
+        assert!(
+            facts.vm_base.is_absolute() && facts.vm_base.ends_with(&rel),
+            "named beside an absolute `rm -rf`: {:?}",
+            facts.vm_base
+        );
+        // ... and out the other side, in the words a person reads.
+        assert!(
+            text.contains("safe to remove except for what is listed below"),
+            "{text}"
+        );
+        assert!(text.contains("no VM named new to remove"), "{text}");
+        assert!(!text.contains("no VM\n"), "not the bare sentence: {text}");
     }
 
     fn facts() -> Facts {
