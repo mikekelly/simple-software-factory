@@ -4141,6 +4141,61 @@ mod tests {
             "{kept_line}"
         );
 
+        // The ANSI-C branch has two escapes of its own, and the
+        // round-trips above reach neither: no name in them carries a
+        // quote or a backslash. Both survive being made no-ops, and the
+        // mutant is injectable -- with `'` unescaped, a directory named
+        // ``ssf-`x' ; rm -rf /tmp/pwned ; '`` closes ssf's quoting and
+        // the rest of the name is a command the shell runs. So a name
+        // carrying all three, checked for what actually matters: it
+        // comes back byte-exact, and it is *one* word.
+        //
+        // The backslash is followed by `n` on purpose. `\y` is not an
+        // escape bash knows, so it survives unescaped and the mutant
+        // round-trips by accident; `\n` is one it knows, so leaving it
+        // unescaped turns two characters of a *name* into a newline --
+        // which is round 34's forged line again, reached from the
+        // remedy instead of the display.
+        let armed = "ssf-`x' ; rm -rf /tmp/pwned ; '\\nx";
+        for s in [
+            Stray::directory(&std::path::PathBuf::from("/v").join(armed)),
+            Stray::lima_instance(armed.into(), &Default::default()),
+            Stray::lima_disk(armed.into(), &Default::default()),
+        ] {
+            let at = s.remove.find("$'").unwrap();
+            let quoted = &s.remove[at..];
+            let back = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "set -- {quoted}; printf '%s\\n' \"$#\"; printf %s \"$1\""
+                ))
+                .output()
+                .expect("sh");
+            let out = String::from_utf8_lossy(&back.stdout);
+            let (words, word) = out.split_once('\n').unwrap_or(("?", &out));
+            assert_eq!(words, "1", "the remedy must be one argument: {out:?}");
+            assert!(
+                word.ends_with(&s.name),
+                "the remedy must expand back to the real name: {word:?}"
+            );
+        }
+
+        // The rest of the set the two rounds above did not name. Each
+        // survives deletion from `needs_escaping` with everything else
+        // green, and each is a character a renderer acts on and a
+        // terminal does not show.
+        for c in [
+            '\u{61c}', '\u{200b}', '\u{200f}', '\u{2066}', '\u{2069}', '\u{feff}',
+        ] {
+            let s = Stray::lima_instance(format!("ssf-{c}old"), &Default::default());
+            assert!(
+                s.describe().contains(&format!("\\u{{{:x}}}", c as u32)),
+                "U+{:04X} is shown: {}",
+                c as u32,
+                s.describe()
+            );
+        }
+
         // An ordinary name with a space in it is untouched -- this is a
         // renderer, not a filter, and `my old vm` is a name ssf
         // supports.
