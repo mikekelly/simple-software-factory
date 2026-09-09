@@ -1476,40 +1476,6 @@ impl Vm {
         }
     }
 
-    /// Is this path this VM's own directory -- however `[vm] dir` was
-    /// spelled -- or a directory holding it?
-    ///
-    /// The first test covers an exact relative spelling. Ordinarily `p`
-    /// comes from the absolutised base and the second subsumes it; if a
-    /// working directory disappears after the scan begins, failing the
-    /// second comparison must still never turn the configured VM itself
-    /// into a removal remedy. The scan boundary below handles a working
-    /// directory that was already unavailable before inventory began.
-    fn is_own_or_ancestor(&self, p: &Path) -> bool {
-        if *p == self.dir {
-            return true;
-        }
-        // Or anything holding it. A nested `[vm] name` -- `new/nested`
-        // -- puts the live VM at `<base>/new/nested`, and if a previous
-        // `[vm] name = "new"` left a `data.ext4` at `<base>/new`, that
-        // directory looks exactly like a stray: not equal to `self.dir`,
-        // a real directory, holding its own disk. Reporting it offers
-        // `rm -rf <base>/new`, which takes the live VM's data disk with
-        // it -- the report handing over the one command that destroys
-        // the thing it exists to protect.
-        //
-        // The old disk in it is real and goes unreported, and after the
-        // destroy step `[vm] dir` is then called plainly "safe to
-        // remove" over it. That is #193: naming it needs a remedy that
-        // is not a directory delete, and a sentence to match, which is
-        // three renderers' worth of wording rather than a comparison.
-        // Not offering a lethal command is this change's half; naming
-        // what it cannot offer to remove is that one's.
-        std::path::absolute(&self.dir)
-            .ok()
-            .is_some_and(|own| own.starts_with(p))
-    }
-
     /// The VM directories under `[vm] dir` that this configuration does
     /// not name, each holding a `data.ext4` of its own.
     ///
@@ -1578,16 +1544,13 @@ impl Vm {
         // here tripped a guard written for the name -- hiding every
         // stray in that directory and reporting it as unreadable when it
         // reads perfectly well.
-        let inside = match self.dir.strip_prefix(&self.base) {
-            Ok(name) => {
-                name.components().next().is_some()
-                    && !name
-                        .components()
-                        .any(|c| c == std::path::Component::ParentDir)
-            }
-            Err(_) => false,
-        };
-        if !inside {
+        let name = self.dir.strip_prefix(&self.base).ok().filter(|name| {
+            name.components().next().is_some()
+                && !name
+                    .components()
+                    .any(|c| c == std::path::Component::ParentDir)
+        });
+        let Some(name) = name else {
             // There is a directory here and nobody looked in it. Saying
             // `false` made the report confident about contents it had
             // just declined to read -- `safe to remove` and `no VM` over
@@ -1599,20 +1562,26 @@ impl Vm {
                     (Vec::new(), vec![unread_path(&base)])
                 }
             };
-        }
+        };
+        // Resolve the configured VM from the same stable base used for
+        // every candidate. This is the parent fix's binding rule: an old
+        // directory that contains a nested live VM must never become a
+        // removal remedy. Building it from `base` also avoids a second
+        // cwd lookup after that lookup has already succeeded.
+        let own = base.join(name);
         let entries = match observe(std::fs::read_dir(&base)) {
             Observation::Present(entries) => entries,
             Observation::Missing => return (Vec::new(), Vec::new()),
             Observation::Unreadable => return (Vec::new(), vec![unread_path(&base)]),
         };
-        self.fc_entries(&base, entries)
+        self.fc_entries(&base, &own, entries)
     }
 
     /// The entry-processing half of [`Vm::fc_dir_contents`], split so a
     /// deterministic test can place an error between two real `DirEntry`
     /// values. Real filesystems rarely surface a mid-iteration error on
     /// demand, which made `.flatten()` otherwise untestable.
-    fn fc_entries<I>(&self, base: &Path, entries: I) -> (Vec<Stray>, Vec<PathBuf>)
+    fn fc_entries<I>(&self, base: &Path, own: &Path, entries: I) -> (Vec<Stray>, Vec<PathBuf>)
     where
         I: IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
     {
@@ -1634,7 +1603,7 @@ impl Vm {
                     continue;
                 }
             }
-            let is_own = self.is_own_or_ancestor(&path);
+            let is_own = own.starts_with(&path);
             let disk = path.join("data.ext4");
             match observe(std::fs::metadata(&disk)) {
                 Observation::Present(_) if !is_own => {
@@ -4096,7 +4065,7 @@ mod tests {
             1,
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
         );
-        let (mut strays, unread) = vm.fc_entries(&base, answers);
+        let (mut strays, unread) = vm.fc_entries(&base, &vm.dir, answers);
         std::fs::remove_dir_all(&base).unwrap();
         strays.sort_by(|a, b| a.name.cmp(&b.name));
         assert_eq!(
