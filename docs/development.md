@@ -9,7 +9,7 @@ export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$
 ./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
 ./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
 ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
-unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # or the rest of this shell talks to the scratch factory
+unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest, where the unit sets SSF_STATE_DIR, re-export it instead
 SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
 omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
@@ -20,43 +20,52 @@ cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bu
 the config file, the state file, the socket its commands talk to, the bot
 token, the SSH keys, the `bin` shim directory an agent gets on its `PATH`,
 the `gh` configuration those agents use, and the marker that keeps a
-disabled service off. Everything the factory then reaches is the one you
+disabled service off — though `ssf ui service` acts on the real unit
+either way, so a scratch shell stops the real service and writes the
+marker where it will never be read. Everything the factory then reaches is the one you
 are already using — the driver's server, the checkouts, GitHub, the
 harness's own sessions, the microVM and the bar widget.
 
 Four consequences, none of them obvious:
 
-- **It leaves a workspace and a worktree behind.** A pass onboards items,
-  so it creates a workspace and starts a real agent in the Orca or herdr
+- **It leaves a workspace and a worktree behind.** A pass that finds an
+  item for the bot creates a workspace and starts a real agent in the Orca or herdr
   you are already using. Once the pass exits there is no scratch daemon,
   and `ssf release` and `ssf purge` both talk to a running one, so neither
   can clear it. That is yours to tidy in the driver, and mind the
   difference: closing a herdr workspace leaves the checkout, while removing
   an Orca worktree deletes the checkout and tries to delete its branch.
-- **It can land on the real checkout.** Both drivers look up an item's
-  existing worktree — herdr through `git worktree list` on the checkout,
+- **It can land on the real checkout** — when both factories watch the same
+  repository, which the recipe's own sandbox repository is what prevents.
+  Both drivers look up an item's existing worktree — herdr through `git worktree list` on the checkout,
   Orca through its own records — so a second factory adopts the first's
   worktree, deliveries fall back to any live agent in it, and removing the
   worktree interrupts every agent pane first. `projects_dir` decides the
   path only when nothing else has: a `[[repo]] path` decides it first, and
   under Orca a project whose setup is already `ready` on the configured
-  host beats both. Under herdr, failing those, the clone path is the
-  repository's bare name, so a fork of the watched repository lands on the
-  real one.
+  host beats both. Under herdr, failing those and with `projects_dir` left
+  at its default, the clone path is the repository's bare name, so a fork
+  of the watched repository lands on the real one. A worktree the scratch
+  factory did make is `<projects_dir>/<name>.worktrees/issue-N-…`, which
+  the recipe's own line names.
 - **It acts as the bot.** `gh auth token` returns whatever `gh` is signed
   in as, and inside a session that is the bot, because `ssf launch` exports
   `GH_TOKEN`; check with `gh auth status` first. Omitting
   `SSF_GITHUB_TOKEN` does not make it anonymous either: with a
   `github.login` in the config it asks the machine's shared `gh` keyring,
   which these variables do not move.
-- **`--once` is not always once.** With a config that has `vm.enabled`,
-  `ssf run --once` starts the real microVM and supervises it until killed.
-  The flag is never read on that path.
+- **`--once` does not run here at all when `vm.enabled` is set.** It is a
+  forwarded command: with the VM up, ssf sends it over ssh to the guest,
+  which runs it as the guest's own factory — the `SSF_*` variables are not
+  passed, so the pass is the real one, on real items, posting as the bot.
+  With the VM down it refuses and does nothing.
 
-A fresh scratch config names no driver and the default is herdr, so a
-factory here runs herdr unless you set one. The widget line writes the real
-`~/.config/omarchy` on Omarchy, and re-installing restores the files but
-puts the widget back in its default place and enables it.
+A fresh scratch config names no driver and the default is herdr, so the
+`driver` key decides whether the Orca notes above apply to you. The widget
+line writes the real `~/.config/omarchy` on Omarchy; `ssf ui uninstall &&
+ssf ui install` from the **packaged** binary restores it, and puts the
+widget back in its default place and enabled, since uninstalling disables
+it first.
 
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
