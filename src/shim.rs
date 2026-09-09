@@ -206,14 +206,21 @@ pub fn repo_of(s: &str) -> Option<String> {
     Some(name)
 }
 
-/// Two things this does not do, both recorded rather than fixed. It
-/// takes the first `--repo` where gh takes the last, so a line naming
-/// two of them can still put the short `#N` on a post landing at the
-/// second; and a `--repo` whose value will not parse ends the scan
-/// rather than letting a URL further along answer. Both need a line that
-/// names the repository twice, or names it unparseably, which is not a
-/// line an agent writes; the cost either way is a wrong byline form and
-/// never a lost tag.
+/// Three things this does not do, all recorded rather than fixed, and
+/// all of them costing a wrong byline form rather than a lost tag.
+///
+/// It reads `--repo` in preference to an item given as a URL, where gh
+/// does the opposite: `gh issue comment <url> --repo o/r` posts where
+/// the URL says, in either order, which was run against gh. So a line
+/// carrying both can put this session's short `#N` on a post landing
+/// somewhere else. It takes the first `--repo` where gh takes the last,
+/// which is the same fault on a line naming two. And a `--repo` whose
+/// value will not parse ends the scan rather than letting a URL further
+/// along answer.
+///
+/// Each needs a line naming the repository twice over, once as a URL and
+/// once as a flag, or naming it unparseably, which is not a line an
+/// agent writes.
 ///
 /// The repository a gh command posts to, as far as its arguments say:
 /// `--repo`/`-R` (in any spelling), else an item named by its URL.
@@ -585,36 +592,40 @@ fn flag_true(v: &str) -> bool {
     matches!(v, "1" | "t" | "T" | "TRUE" | "true" | "True")
 }
 
-/// Does this argument carry one of `pr review`'s action flags, set? The
-/// action is what decides whether gh posts at all, and it has more
-/// spellings than a bare word: `--approve`, `--approve=true`, `-a`,
-/// `-a=true`, and inside a cluster as the `-a` of `-aR o/r` or of
-/// `-ab hi`.
-/// `--approve=false` carries the flag but not the action, exactly as gh
-/// reads it, and a value gh would refuse is no action either. One thing
-/// it does not do is prefer the last of a repeated flag the way gh
-/// does, so `-aa=false` reads as an action here and not to gh. Nothing
-/// posts either way -- gh refuses that line for having no action, and
-/// refuses it again for carrying a body without one -- so the answer
-/// only changes which of the two complaints comes back.
-fn action_flag(a: &str) -> bool {
-    for name in ["--approve", "--comment", "--request-changes"] {
-        if a == name {
-            return true;
-        }
-        if let Some(v) = a.strip_prefix(name).and_then(|r| r.strip_prefix('=')) {
-            return flag_true(v);
-        }
+/// Does this argument approve, in any spelling gh takes? `--approve`,
+/// `--approve=true`, `-a`, `-a=true`, and inside a cluster as the `-a`
+/// of `-aR o/r` or of `-ab hi`. `--approve=false` carries the flag but
+/// not the approval, exactly as gh reads it, and a value gh would refuse
+/// is no approval either.
+///
+/// An approval is asked about rather than an action because it is the
+/// only one of the three that gh will post without a body: `--comment`
+/// and `--request-changes` are refused with "body cannot be blank", and
+/// handing them a body of nothing but a byline turns that refusal into a
+/// posted review with no content in it -- which, for request-changes,
+/// blocks the pull request. gh's refusal is the better answer, and it
+/// says what is missing.
+///
+/// One thing this does not do is prefer the last of a repeated flag the
+/// way gh does, so `-aa=false` reads as an approval here and not to gh.
+/// Nothing posts either way -- gh refuses that line for having no
+/// action, and refuses it again for carrying a body without one -- so
+/// the answer only changes which of the two complaints comes back.
+fn approves(a: &str) -> bool {
+    if a == "--approve" {
+        return true;
     }
-    // Only an action letter can reach `bools` on a review, so the first
-    // test could be a bare emptiness check; it names the letters anyway,
-    // so that a change to the boolean set cannot quietly turn some other
-    // flag into an action here.
+    if let Some(v) = a
+        .strip_prefix("--approve")
+        .and_then(|r| r.strip_prefix('='))
+    {
+        return flag_true(v);
+    }
     cluster(a, true).is_some_and(|cl| {
-        cl.bools.chars().any(|c| ACTIONS.contains(&c))
+        cl.bools.contains('a')
             || cl
                 .valued
-                .is_some_and(|(c, v)| ACTIONS.contains(&c) && v.is_some_and(flag_true))
+                .is_some_and(|(c, v)| c == 'a' && v.is_some_and(flag_true))
     })
 }
 
@@ -650,7 +661,7 @@ impl Shim<'_> {
         // `--body-file` alongside it is refused outright.
         let mut out: Vec<String> = Vec::with_capacity(args.len());
         let mut stamped = false;
-        let mut has_action = false;
+        let mut approved = false;
         // Where a `--` of gh's own ended the flags, if one did.
         let mut ends_flags = None;
         let mut i = 0;
@@ -661,14 +672,14 @@ impl Shim<'_> {
                 out.extend_from_slice(&args[i..]);
                 break;
             }
-            // Whether the line already carries an action is read here
+            // Whether the line already approves is read here
             // rather than in a scan of its own. This walk is the one
             // that knows a flag's value from a flag, and a `--` is a
             // value like any other when a flag takes it: `gh pr review 3
             // -R -- --repo o/r -a` posts, and a scan that stopped at
             // that `--` would never see the approval and would let it
             // out untagged.
-            has_action = has_action || (review && action_flag(a));
+            approved = approved || (review && approves(a));
             // The shorthand spellings of a body, cluster included, all
             // come from the one reading of the argument.
             let short = cluster(a, review).and_then(|cl| cl.valued.map(|(c, v)| (cl.bools, c, v)));
@@ -772,12 +783,23 @@ impl Shim<'_> {
                 if body.len() > MAX_INLINE_BODY {
                     return args;
                 }
-                if bools.is_empty() {
+                // One argument in, one argument out. `--body-file=x`,
+                // `-Fx` and `-F=x` are a single word, and turning them
+                // into two leaves the body standing as a bare word,
+                // which cobra reads as the command if anything ahead of
+                // it swallows the `--body`: `gh -d --body-file=notes.md
+                // pr create -t t` came back `unknown command
+                // "<byline>"`. Attached, there is no bare word. The
+                // two-word spellings keep their two words, where
+                // `--body` swallows the text itself.
+                if !bools.is_empty() {
+                    out.push(format!("-{bools}"));
+                }
+                if used == 1 || !bools.is_empty() {
+                    out.push(format!("--body={body}"));
+                } else {
                     out.push("--body".to_string());
                     out.push(body);
-                } else {
-                    out.push(format!("-{bools}"));
-                    out.push(format!("--body={body}"));
                 }
                 stamped = true;
                 i += used;
@@ -801,9 +823,11 @@ impl Shim<'_> {
                 i += 1;
             }
         }
-        // An approval needs no body, but should still say where it came from.
-        // Without an action flag gh would prompt (or reject --body), so those
-        // are left alone.
+        // An approval needs no body, but should still say where it came
+        // from. A comment or a request for changes needs one, and gh
+        // says so, so those are left alone rather than given a body with
+        // nothing in it; without any action at all gh would prompt, or
+        // reject the `--body`.
         // The walk above reads the whole line and not just what follows
         // the subcommand, because a boolean flag floats too, wherever
         // there is a spare positional for cobra to feed the word it
@@ -830,7 +854,7 @@ impl Shim<'_> {
         // cannot. Left alone, the approval goes out untagged exactly as
         // it did before any of this; reaching it would mean a second
         // insert position to keep right, for a line no agent writes.
-        if !stamped && review && has_action && ends_flags.is_none_or(|t| t > s) {
+        if !stamped && review && approved && ends_flags.is_none_or(|t| t > s) {
             out.insert(s + 1, stamp(""));
             out.insert(s + 1, "--body".to_string());
         }
@@ -1577,7 +1601,10 @@ mod tests {
         let out = s.rewrite(args(&["pr", "create", "-t", "t", "-F", "-"]));
         assert_eq!(out, args(&["pr", "create", "-t", "t", "--body", &expect]));
         let out = s.rewrite(args(&["issue", "comment", "1", "--body-file=notes.md"]));
-        assert_eq!(out, args(&["issue", "comment", "1", "--body", &expect]));
+        assert_eq!(
+            out,
+            args(&["issue", "comment", "1", &format!("--body={expect}")])
+        );
         let out = s.rewrite(args(&[
             "issue",
             "comment",
@@ -1592,8 +1619,7 @@ mod tests {
                 "issue",
                 "comment",
                 "1",
-                "--body",
-                &expect,
+                &format!("--body={expect}"),
                 "-R",
                 "acme/widgets"
             ])
@@ -1633,44 +1659,38 @@ mod tests {
         );
     }
 
-    /// Every spelling gh accepts for an action flag, and every spelling
-    /// it refuses to treat as one. Each was run against the real gh
-    /// binary -- not the one on a session's PATH, which is this shim --
-    /// on a pull request number that does not exist. What tells the two
-    /// groups apart is gh's own "--approve, --request-changes, or
-    /// --comment required": the accepted ones get past that line and
-    /// fail on something later, the number or a blank body, and the
-    /// refused ones stop there or, for a value it cannot parse, before
-    /// it. Only some reach the API, so reaching it is not the test.
+    /// Every spelling gh reads as an approval, and every spelling it
+    /// does not. Each was run against the real gh binary -- not the one
+    /// on a session's PATH, which is this shim -- on a pull request
+    /// number that does not exist. What tells the two groups apart is
+    /// gh's own "--approve, --request-changes, or --comment required":
+    /// the approvals get past that line and fail on something later, the
+    /// number or a blank body, and the rest stop there or, for a value
+    /// it cannot parse, before it.
+    ///
+    /// Only an approval gets a body it did not ask for. `--comment` and
+    /// `--request-changes` are actions too, and are read as such
+    /// everywhere else, but gh refuses them without a body of their own
+    /// and that refusal is the right answer: a review carrying nothing
+    /// but a byline says nothing, and a request for changes carrying
+    /// nothing but a byline blocks the pull request.
     #[test]
-    fn action_flags_are_seen_in_every_spelling() {
+    fn approvals_are_seen_in_every_spelling() {
         for a in [
             // Bare, long and short.
             args(&["pr", "review", "7", "--approve"]),
             args(&["pr", "review", "7", "-a"]),
-            args(&["pr", "review", "7", "--comment"]),
-            args(&["pr", "review", "7", "-c"]),
-            args(&["pr", "review", "7", "--request-changes"]),
-            args(&["pr", "review", "7", "-r"]),
-            // Attached: gh parses the value, so a true one is an action.
+            // Attached: gh parses the value, so a true one approves.
             args(&["pr", "review", "7", "--approve=true"]),
             args(&["pr", "review", "7", "--approve=1"]),
             args(&["pr", "review", "7", "--approve=True"]),
             args(&["pr", "review", "7", "-a=true"]),
             args(&["pr", "review", "7", "-a=t"]),
             args(&["pr", "review", "7", "-a=T"]),
-            args(&["pr", "review", "7", "--request-changes=TRUE"]),
-            args(&["pr", "review", "7", "--comment=true"]),
-            // Each action flag in the attached short form, not just the
-            // approval: narrowing the reading to `-a` posts a `-c=true`
-            // review with no byline and no tag.
-            args(&["pr", "review", "7", "-c=true"]),
-            args(&["pr", "review", "7", "-r=true"]),
             // Clustered. `-ac` and `-ra` name two actions, so gh will
-            // not run them either way -- bare, it asks for a body; with
-            // one, it asks for exactly one action -- but both get past
-            // the line that decides this test. `-aR o/r` is the one
-            // cluster here that gh runs.
+            // not run them either way, but the approval is there and
+            // this reading finds it. `-aR o/r` is the one cluster here
+            // that gh runs.
             args(&["pr", "review", "7", "-ac"]),
             args(&["pr", "review", "7", "-ra"]),
         ] {
@@ -1678,7 +1698,7 @@ mod tests {
             want.splice(2..2, [args(&["--body"])[0].clone(), line()]);
             assert_eq!(rewrite(a.clone()), want, "{a:?}");
         }
-        // The action is clustered ahead of a flag that takes a value,
+        // The approval is clustered ahead of a flag that takes a value,
         // and that value is not a flag of its own.
         assert_eq!(
             rewrite(args(&["pr", "review", "7", "-aR", "acme/widgets"])),
@@ -1693,17 +1713,25 @@ mod tests {
             ])
         );
         for a in [
-            // The flag is there, the action is not: gh still refuses the
-            // line for want of one, so adding a body would be adding it
-            // to a review that never posts.
+            // An action, but one gh will not post without a body of its
+            // own: left alone, so gh asks for the body rather than this
+            // inventing one.
+            args(&["pr", "review", "7", "--comment"]),
+            args(&["pr", "review", "7", "-c"]),
+            args(&["pr", "review", "7", "--comment=true"]),
+            args(&["pr", "review", "7", "-c=true"]),
+            args(&["pr", "review", "7", "--request-changes"]),
+            args(&["pr", "review", "7", "-r"]),
+            args(&["pr", "review", "7", "--request-changes=TRUE"]),
+            args(&["pr", "review", "7", "-r=true"]),
+            args(&["pr", "review", "7", "-cR", "acme/widgets"]),
+            // The flag is there, the approval is not: gh refuses the
+            // line for want of an action, so a body would be a body on a
+            // review that never posts.
             args(&["pr", "review", "7", "--approve=false"]),
             args(&["pr", "review", "7", "--approve=F"]),
-            args(&["pr", "review", "7", "--comment=false"]),
-            args(&["pr", "review", "7", "--request-changes=false"]),
             args(&["pr", "review", "7", "-a=false"]),
             args(&["pr", "review", "7", "-a=0"]),
-            args(&["pr", "review", "7", "-c=false"]),
-            args(&["pr", "review", "7", "-r=0"]),
             // gh refuses a value it cannot parse outright.
             args(&["pr", "review", "7", "--approve=yes"]),
             // A `--` ends the flags, so what follows is a positional.
@@ -1946,6 +1974,27 @@ mod tests {
             shim.rewrite(args(&["pr", "create", "-t", "t", "-eF", "notes.md"])),
             args(&["pr", "create", "-t", "t", "-e", &body])
         );
+        // One word in, one word out. Two would leave the body standing
+        // as a bare word, and the `-d` ahead of it swallows the
+        // `--body`, so cobra would read the byline as the command.
+        assert_eq!(
+            shim.rewrite(args(&[
+                "-d",
+                "--body-file=notes.md",
+                "pr",
+                "create",
+                "-t",
+                "t"
+            ])),
+            args(&[
+                "-d",
+                &format!("--body={}\n\nread notes.md", line()),
+                "pr",
+                "create",
+                "-t",
+                "t"
+            ])
+        );
         // A separated value past a command word is gh's to find, so
         // the line goes over whole -- even here, where the reader would
         // happily hand back something for a file called `pr`.
@@ -1960,8 +2009,7 @@ mod tests {
                 "create",
                 "-t",
                 "t",
-                "--body",
-                &format!("{}\n\nread notes.md", line())
+                &format!("--body={}\n\nread notes.md", line())
             ])
         );
         // With no letters to keep, the two-word form gh has always had
