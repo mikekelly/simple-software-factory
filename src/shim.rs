@@ -435,17 +435,24 @@ fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
         .any(|n| n.eq_ignore_ascii_case("me") || bot.is_some_and(|b| n.eq_ignore_ascii_case(b)))
 }
 
+/// The letters `pr review` gives its three action flags, in one place so
+/// that widening or narrowing them is a single edit.
+const ACTIONS: [char; 3] = ['a', 'c', 'r'];
+
 /// Shorthand letters that carry no value, so a cluster continues past
-/// them. The sets come from `gh <command> --help` and are disjoint on
-/// purpose: on a review `-a`, `-c` and `-r` approve, comment and request
-/// changes, while on the creates and comments this shim also tags, `-a`
-/// names an assignee and `-r` a reviewer and both take a value. A letter
-/// in neither set ends the walk, which is the safe way to be wrong: an
-/// unknown letter stops the scan rather than reading its value as more
-/// flags.
+/// them, read out of `gh <command> --help`. The two sets are disjoint
+/// and have to be: on a review `-a` approves and `-r` requests changes,
+/// while on a create `-a` names an assignee and `-r` a reviewer and both
+/// take a value. The second set is the union over the four commands
+/// rather than any one of them -- `-d` and `-f` are only on `pr create`,
+/// `-e` and `-w` are on all four -- and being over-broad there is safe
+/// because gh refuses the lines where it is wrong: `gh issue create -db
+/// hi` is `unknown shorthand flag: 'd' in -db`, stamped or not. A letter
+/// in neither set ends the walk, which is the other safe way to be
+/// wrong: it stops the scan rather than reading a value as more flags.
 fn boolean_shorthand(c: char, review: bool) -> bool {
     if review {
-        matches!(c, 'a' | 'c' | 'r')
+        ACTIONS.contains(&c)
     } else {
         matches!(c, 'd' | 'e' | 'f' | 'w')
     }
@@ -537,8 +544,11 @@ fn cluster(a: &str, review: bool) -> Option<Cluster<'_>> {
     })
 }
 
-/// The values gh reads as true. Anything else it refuses outright, so a
-/// line carrying one posts nothing whatever this answers.
+/// The values gh reads as true, which is Go's `strconv.ParseBool`. The
+/// false ones (`0`, `f`, `F`, `FALSE`, `false`, `False`) parse perfectly
+/// well and simply leave the flag unset; only a value that is neither,
+/// such as `--approve=yes`, makes gh refuse the line outright. Either
+/// way the flag is not an action.
 fn flag_true(v: &str) -> bool {
     matches!(v, "1" | "t" | "T" | "TRUE" | "true" | "True")
 }
@@ -546,7 +556,8 @@ fn flag_true(v: &str) -> bool {
 /// Does this argument carry one of `pr review`'s action flags, set? The
 /// action is what decides whether gh posts at all, and it has more
 /// spellings than a bare word: `--approve`, `--approve=true`, `-a`,
-/// `-a=true`, and inside a cluster as `-ac` or the `-a` of `-ab hi`.
+/// `-a=true`, and inside a cluster as the `-a` of `-aR o/r` or of
+/// `-ab hi`.
 /// `--approve=false` carries the flag but not the action, exactly as gh
 /// reads it, and a value gh would refuse is no action either. One thing
 /// it does not do is prefer the last of a repeated flag the way gh
@@ -563,11 +574,15 @@ fn action_flag(a: &str) -> bool {
             return flag_true(v);
         }
     }
+    // Only an action letter can reach `bools` on a review, so the first
+    // test could be a bare emptiness check; it names the letters anyway,
+    // so that a change to the boolean set cannot quietly turn some other
+    // flag into an action here.
     cluster(a, true).is_some_and(|cl| {
-        cl.bools.chars().any(|c| matches!(c, 'a' | 'c' | 'r'))
+        cl.bools.chars().any(|c| ACTIONS.contains(&c))
             || cl
                 .valued
-                .is_some_and(|(c, v)| matches!(c, 'a' | 'c' | 'r') && v.is_some_and(flag_true))
+                .is_some_and(|(c, v)| ACTIONS.contains(&c) && v.is_some_and(flag_true))
     })
 }
 
@@ -1497,13 +1512,14 @@ mod tests {
     }
 
     /// Every spelling gh accepts for an action flag, and every spelling
-    /// it refuses to treat as one. Each was run against the real gh on a
-    /// pull request number that does not exist, and what tells the two
+    /// it refuses to treat as one. Each was run against the real gh
+    /// binary -- not the one on a session's PATH, which is this shim --
+    /// on a pull request number that does not exist. What tells the two
     /// groups apart is gh's own "--approve, --request-changes, or
     /// --comment required": the accepted ones get past that line and
-    /// fail on something later -- the number, a blank body, or naming
-    /// two actions at once -- and the refused ones do not. Only some of
-    /// them reach the API, so reaching it is not the test.
+    /// fail on something later, the number or a blank body, and the
+    /// refused ones stop there or, for a value it cannot parse, before
+    /// it. Only some reach the API, so reaching it is not the test.
     #[test]
     fn action_flags_are_seen_in_every_spelling() {
         for a in [
@@ -1520,9 +1536,17 @@ mod tests {
             args(&["pr", "review", "7", "--approve=True"]),
             args(&["pr", "review", "7", "-a=true"]),
             args(&["pr", "review", "7", "-a=t"]),
+            args(&["pr", "review", "7", "-a=T"]),
             args(&["pr", "review", "7", "--request-changes=TRUE"]),
             args(&["pr", "review", "7", "--comment=true"]),
-            // Clustered.
+            // Each action flag in the attached short form, not just the
+            // approval: narrowing the reading to `-a` posts a `-c=true`
+            // review with no byline and no tag.
+            args(&["pr", "review", "7", "-c=true"]),
+            args(&["pr", "review", "7", "-r=true"]),
+            // Clustered. `-ac` and `-ra` name two actions, which gh
+            // refuses, but it refuses them for that and not for want of
+            // an action; `-aR o/r` is the one cluster here that runs.
             args(&["pr", "review", "7", "-ac"]),
             args(&["pr", "review", "7", "-ra"]),
         ] {
@@ -1530,14 +1554,32 @@ mod tests {
             want.splice(2..2, [args(&["--body"])[0].clone(), line()]);
             assert_eq!(rewrite(a.clone()), want, "{a:?}");
         }
+        // The action is clustered ahead of a flag that takes a value,
+        // and that value is not a flag of its own.
+        assert_eq!(
+            rewrite(args(&["pr", "review", "7", "-aR", "acme/widgets"])),
+            args(&[
+                "pr",
+                "review",
+                "--body",
+                &line(),
+                "7",
+                "-aR",
+                "acme/widgets"
+            ])
+        );
         for a in [
             // The flag is there, the action is not: gh still refuses the
             // line for want of one, so adding a body would be adding it
             // to a review that never posts.
             args(&["pr", "review", "7", "--approve=false"]),
             args(&["pr", "review", "7", "--approve=F"]),
+            args(&["pr", "review", "7", "--comment=false"]),
+            args(&["pr", "review", "7", "--request-changes=false"]),
             args(&["pr", "review", "7", "-a=false"]),
             args(&["pr", "review", "7", "-a=0"]),
+            args(&["pr", "review", "7", "-c=false"]),
+            args(&["pr", "review", "7", "-r=0"]),
             // gh refuses a value it cannot parse outright.
             args(&["pr", "review", "7", "--approve=yes"]),
             // A `--` ends the flags, so what follows is a positional.
@@ -1581,18 +1623,27 @@ mod tests {
                 args(&["pr", "review", "7", "-rb", "hello"]),
                 args(&["pr", "review", "7", "-rb", &body]),
             ),
-            // `-e` is an editor on a comment, and takes no value there.
-            (
-                args(&["pr", "comment", "7", "-eb", "hello"]),
-                args(&["pr", "comment", "7", "-eb", &body]),
-            ),
-            (
-                args(&["issue", "comment", "7", "-eb", "hello"]),
-                args(&["issue", "comment", "7", "-eb", &body]),
-            ),
+            // Every value-less letter a body can legally sit behind.
+            // `-e` is not one of them on any command here: gh refuses
+            // `--editor` next to a `--body` outright, so a cluster it
+            // leads is dead in every spelling and cannot be pinned.
             (
                 args(&["pr", "create", "-t", "t", "-db", "hello"]),
                 args(&["pr", "create", "-t", "t", "-db", &body]),
+            ),
+            (
+                args(&["pr", "create", "-t", "t", "-fb", "hello"]),
+                args(&["pr", "create", "-t", "t", "-fb", &body]),
+            ),
+            (
+                args(&["pr", "create", "-t", "t", "-wb", "hello"]),
+                args(&["pr", "create", "-t", "t", "-wb", &body]),
+            ),
+            // The attached form on its own, which used to come out as a
+            // body of `=hello`.
+            (
+                args(&["issue", "comment", "7", "-b=hello"]),
+                args(&["issue", "comment", "7", &format!("-b{body}")]),
             ),
         ] {
             assert_eq!(rewrite(a.clone()), want, "{a:?}");
@@ -1636,6 +1687,19 @@ mod tests {
         assert_eq!(
             shim.rewrite(args(&["-aFnotes.md", "pr", "review", "7"])),
             args(&["-a", &body, "pr", "review", "7"])
+        );
+        // The attached form, which used to make the shim read a file
+        // called `=notes.md`, fail, and hand the line to gh unstamped.
+        assert_eq!(
+            shim.rewrite(args(&["pr", "create", "-t", "t", "-F=notes.md"])),
+            args(&[
+                "pr",
+                "create",
+                "-t",
+                "t",
+                "--body",
+                &format!("{}\n\nread notes.md", line())
+            ])
         );
         // With no letters to keep, the two-word form gh has always had
         // is left as it is: cobra pairs `--body` with the word after it,
