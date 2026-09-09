@@ -157,19 +157,25 @@ rather than an older package on the shell's `PATH`; `ssf doctor` says
 when the two differ). Invoked as `gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
 `pr comment` and `pr review` (and `issue new` and `pr new`, gh's own
-names for the same two creates), whether the body is given as `--body`,
-`--body=`, `-b`, `--body-file` or `-F -` (a review without a body gets
-one that is only the line), and runs the real gh with everything else
-untouched. To pick the byline's form it works out the repository posted
-to the way gh does:
-`--repo`/`-R`, an item given as a URL, `GH_REPO`, else the checkout's
-`origin` remote (`git config --get remote.origin.url`); when none of those
-says, the long form is used, which links from anywhere. The URL has to
-be the item's own: the values of `--parent`, `--blocked-by` and
+names for the same two creates), in every spelling gh takes the body in:
+`--body`, `--body=`, `-b`, `-b=`, `-bX`, `--body-file`, `-F -`, `-F=`,
+and any of the shorthands behind the value-less letters of a cluster, so
+`-ab hi` and `-eF notes.md` are stamped as much as `-b hi` is. A review
+without a body gets one that is only the line, and that goes by its
+action flag, read in every spelling as well: `--approve`,
+`--approve=true`, `-a`, `-a=true` and the `-a` inside a cluster all
+count, while `--approve=false` does not, because gh does not read it as
+an action either. It runs the real gh with everything else untouched. To
+pick the byline's form it works out the repository posted to the way gh
+does: `--repo`/`-R` in any spelling, an item given as a URL, `GH_REPO`,
+else the checkout's `origin` remote (`git config --get
+remote.origin.url`); when none of those says, the long form is used,
+which links from anywhere. The URL has to
+be the item's own: a URL that is the value of a flag taking one is not
+read as the item, which matters most for `--parent`, `--blocked-by` and
 `--blocking` (the flags `gh issue create` documents as taking numbers or
-URLs) are not read as one, since that answer outranks `GH_REPO`, and a
-post landing elsewhere with the short `#N` would link to that
-repository's issue N. An item after `--` still counts, as it does for
+URLs), since that answer outranks `GH_REPO` and a post landing elsewhere
+with the short `#N` would link to that repository's issue N. An item after `--` still counts, as it does for
 gh. Beyond that the
 wrapper reads only its environment, writes nothing and leaves stdin and the
 terminal alone, so it works inside read-only sandboxes and does not break
