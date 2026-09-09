@@ -691,7 +691,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         if *dir != facts.vm_base {
             keep.push(format!(
                 "{} (ssf could not read or name it completely; inspection is incomplete; anything belonging to the configured VM may be removed with it)",
-                dir.display()
+                vm::shown_path(dir)
             ));
         }
     }
@@ -747,7 +747,7 @@ fn no_vm_line(facts: &Facts) -> String {
 /// command that has to say it. Hand-copied three ways once, and the
 /// copy in `ssf vm status` named the wrong directory.
 pub fn unread_note(unread: &[PathBuf]) -> String {
-    let names: Vec<String> = unread.iter().map(|p| p.display().to_string()).collect();
+    let names: Vec<String> = unread.iter().map(|p| vm::shown_path(p)).collect();
     format!(
         "{} could not be read or named completely, so what else is in {} is unknown",
         // All of them, in the list style the rest of the report uses.
@@ -813,8 +813,8 @@ fn lima_removed(
         Some(false) => {}
     }
     match dir_present {
-        Some(true) => parts.push(dir.display().to_string()),
-        None => parts.push(format!("{} if it is there", dir.display())),
+        Some(true) => parts.push(vm::shown_path(dir)),
+        None => parts.push(format!("{} if it is there", vm::shown_path(dir))),
         Some(false) => {}
     }
     // "a and b and c" is a hard sentence to read in the one line a
@@ -845,7 +845,7 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
                     &facts
                         .vm_unread
                         .iter()
-                        .map(|p| p.display().to_string())
+                        .map(|p| vm::shown_path(p))
                         .collect::<Vec<_>>()
                 )
             ),

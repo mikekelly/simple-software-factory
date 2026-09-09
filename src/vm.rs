@@ -576,6 +576,10 @@ pub fn shown(name: &str) -> String {
         .collect()
 }
 
+pub fn shown_path(path: &Path) -> String {
+    shown(&path.to_string_lossy())
+}
+
 /// Something of ssf's shape that this configuration does not name: what
 /// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
 /// instance or data disk in lima's home; under Firecracker a sibling
