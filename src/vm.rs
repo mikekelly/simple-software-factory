@@ -3941,6 +3941,14 @@ mod tests {
                 expected,
                 "the uninstall survey before destroy under {backend:?}"
             );
+            assert_eq!(
+                vm.strays_on_filesystem()
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "the filesystem reader doctor uses before destroy under {backend:?}"
+            );
             let parent = &strays[0];
             assert_eq!(parent.kind, StrayKind::ProtectedDataDisk);
             assert_eq!(
@@ -3980,6 +3988,14 @@ mod tests {
                     .collect::<Vec<_>>(),
                 expected,
                 "the uninstall survey after destroy under {backend:?}"
+            );
+            assert_eq!(
+                vm.strays_on_filesystem()
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<Vec<_>>(),
+                expected,
+                "the filesystem reader doctor uses after destroy under {backend:?}"
             );
             std::fs::create_dir_all(&vm.dir).unwrap();
             std::fs::write(vm.dir.join("data.ext4"), b"live").unwrap();

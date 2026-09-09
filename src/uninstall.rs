@@ -1222,6 +1222,43 @@ mod tests {
                 "one place, two spellings: {line}"
             );
         }
+        // A protected parent disk takes the same absolute spelling
+        // through discovery, the pre-destroy summary and the final
+        // kept list. This is the relative `[vm] dir` form of #193:
+        // each renderer must name one place, even though its input was
+        // relative.
+        let mut nested = cfg.clone();
+        nested.vm.name = "new/nested".into();
+        std::fs::create_dir_all(base.join("new/nested")).unwrap();
+        std::fs::write(base.join("new/nested/data.ext4"), b"live").unwrap();
+        let nested_vm = vm::Vm::new(&nested);
+        let nested_facts = Facts::gather(&nested, &nested_vm);
+        let absolute_base = std::path::absolute(&base).unwrap();
+        let parent_disk = absolute_base.join("new/data.ext4");
+        assert_eq!(nested_facts.vm_base, absolute_base);
+        assert!(
+            nested_facts.vm_strays.iter().any(|s| {
+                s.kind == vm::StrayKind::ProtectedDataDisk
+                    && s.name == parent_disk.display().to_string()
+                    && s.remove.contains(&parent_disk.display().to_string())
+            }),
+            "the protected disk uses the report's absolute spelling: {:?}",
+            nested_facts.vm_strays
+        );
+        assert!(
+            nested_facts
+                .vm_removed
+                .contains(&absolute_base.join("new/nested").display().to_string()),
+            "the VM removed uses the same absolute tree: {}",
+            nested_facts.vm_removed
+        );
+        let nested_text = render(&nested_facts, &Report::default(), &Opts::default());
+        for line in nested_text.lines().filter(|line| line.contains(&rel)) {
+            assert!(
+                line.contains(&format!("/{rel}")),
+                "one place, two spellings in the protected-disk report: {line}"
+            );
+        }
         // The lima arm builds that sentence twice -- once in `gather`
         // and once in `ssh_answered`, which is the ordinary path when
         // the guest is up -- and each was relative at a different
