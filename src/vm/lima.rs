@@ -3039,7 +3039,16 @@ mod tests {
                 .collect();
         assert_eq!(named, [(StrayKind::Directory, "old".to_string())]);
         // And the filesystem-only path doctor falls back to sees it too.
-        assert_eq!(t.vm.strays_on_filesystem().len(), 1);
+        // The name too, not the count: a lima-home stray would satisfy
+        // a bare `len() == 1` just as well as the `[vm] dir` one this
+        // test is about.
+        assert_eq!(
+            t.vm.strays_on_filesystem()
+                .iter()
+                .map(|s| (s.kind, s.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(StrayKind::Directory, "old")]
+        );
     }
 
     #[test]
