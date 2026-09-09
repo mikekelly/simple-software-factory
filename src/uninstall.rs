@@ -422,7 +422,7 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
     }
     if facts.vm_base.exists() {
         keep.push(format!(
-            "{} (VM image and downloads; safe to remove)",
+            "{} (VM image and downloads; retained -- inspect before removing)",
             facts.vm_base.display()
         ));
     }
@@ -863,7 +863,7 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
     }
     if facts.vm_base.exists() {
         println!(
-            "  {} (VM image and downloads; safe to remove)",
+            "  {} (VM image and downloads; retained -- inspect before removing)",
             facts.vm_base.display()
         );
     }
@@ -1064,6 +1064,46 @@ mod tests {
         );
         assert!(text.contains("- 1 uncommitted change"), "{text}");
         assert!(!text.contains("(none)"), "{text}");
+    }
+
+    #[test]
+    fn the_vm_base_is_not_called_safe_to_remove_when_nothing_looked_in_it() {
+        // `[vm] dir` held "safe to remove" unconditionally, on the
+        // strength of nothing: the report never looks inside it. What
+        // is in there is usually the image and the downloads, and
+        // sometimes a whole VM directory a changed `[vm] name` left
+        // behind, with clones and worktrees on its disk. Saying "safe"
+        // about a directory nobody inspected is the report telling a
+        // person to delete their own work.
+        //
+        // The fixture's `vm_base` does not exist, so no test reached
+        // this line at all -- `render` prints it only when the
+        // directory is there.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-vmbase-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let mut f = facts();
+        f.vm_base = base.clone();
+        let text = render(&f, &Report::default(), &Opts::default());
+        std::fs::remove_dir_all(&base).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.contains(&base.display().to_string()))
+            .unwrap_or_else(|| panic!("the base has to be named at all: {text}"));
+        assert!(
+            line.contains("retained -- inspect before removing"),
+            "the claim has to be about what was checked: {line}"
+        );
+        assert!(
+            !line.contains("safe to remove"),
+            "nothing looked in it: {line}"
+        );
     }
 
     #[test]

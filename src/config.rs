@@ -1302,6 +1302,31 @@ impl Config {
                 crate::allow::RISK_KEY
             );
         }
+        // `[vm] name` is joined onto `[vm] dir`, and `ssf vm destroy`
+        // and `ssf uninstall` remove the result whole. It has to name a
+        // new directory under `[vm] dir`; nested names are fine.
+        {
+            use std::path::Component;
+            let name = std::path::Path::new(&self.vm.name);
+            let bad = if self.vm.name.is_empty() {
+                Some("is empty")
+            } else if name.is_absolute() {
+                Some("is an absolute path")
+            } else if name.components().any(|c| c == Component::ParentDir) {
+                Some("contains `..`")
+            } else if name.components().all(|c| c == Component::CurDir) {
+                Some("names no directory")
+            } else {
+                None
+            };
+            if let Some(why) = bad {
+                bail!(
+                    "[vm] name {:?} {why}; it must name a directory under [vm] dir, \
+                     which `ssf vm destroy` and `ssf uninstall` remove whole",
+                    self.vm.name
+                );
+            }
+        }
         self.git.validate("git")?;
         self.git.validate_merged("[git]")?;
         for r in &self.repos {
@@ -2335,6 +2360,70 @@ harness = "claude"
             Credential::Helper("store".into()),
         ] {
             assert_eq!(Credential::parse(&c.to_config()).unwrap(), c);
+        }
+    }
+
+    #[test]
+    fn a_vm_name_that_is_not_a_directory_under_vm_dir_is_refused_at_load() {
+        // `Vm::new` is `base.join(&cfg.vm.name)`, and `ssf vm destroy`
+        // and `ssf uninstall` remove the result whole. `join` gives
+        // three ways for that result to be somewhere nobody meant, and
+        // each is a `remove_dir_all` of the wrong tree.
+        let load = |name: &str| -> Result<Config> {
+            let cfg: Config = toml::from_str(&format!("[vm]\nname = {name:?}\n"))?;
+            cfg.validate()?;
+            Ok(cfg)
+        };
+        // Asserted through the join, not just through the message, so
+        // this says what the name would have done rather than only that
+        // it was refused.
+        let base = std::path::Path::new("/g/vm");
+        for (name, why) in [
+            ("", "is empty"),
+            (".", "names no directory"),
+            ("/srv/other", "is an absolute path"),
+            ("..", "contains `..`"),
+            ("a/../..", "contains `..`"),
+            ("../elsewhere", "contains `..`"),
+        ] {
+            let err = load(name).unwrap_err();
+            assert!(format!("{err:#}").contains(why), "{name:?}: {err:#}");
+        }
+        // One predicate, asked both ways, and it is the property the
+        // guard exists to protect: does the join make a *new* directory
+        // strictly under `[vm] dir`? Every refused name fails it, and
+        // every accepted one passes -- so this discriminates rather
+        // than restating the list above.
+        let strictly_under = |name: &str| {
+            let j = base.join(name);
+            j.starts_with(base)
+                && j != base
+                && !j
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+        };
+        for name in ["", ".", "..", "a/../..", "../elsewhere", "/srv/other"] {
+            assert!(
+                !strictly_under(name),
+                "{name:?} joins to {}, which `ssf vm destroy` would remove",
+                base.join(name).display()
+            );
+        }
+
+        // Ordinary and nested names are untouched: `a/b` is a directory
+        // under `[vm] dir` like any other, and refusing it would break
+        // configurations that are doing nothing wrong.
+        for name in [
+            "factory",
+            "a/b",
+            "one/two/three",
+            "./nested",
+            "with space",
+            "   ",
+        ] {
+            let cfg = load(name).unwrap_or_else(|e| panic!("{name:?} is a fine name: {e:#}"));
+            assert_eq!(cfg.vm.name, name);
+            assert!(strictly_under(name), "{name:?}");
         }
     }
 

@@ -124,7 +124,9 @@ document links to.
     has gone or `[vm] dir` has changed. The refusal names its own
     remedy: `ssf vm start` only where there is an instance to start, and
     never for a data disk that outlived its instance or for a lima that
-    would not say whether the VM is running. Do not add `--force` on the
+    would not say whether the VM is running. A directory ssf could not
+    read at all is a question that was never answered, not an empty
+    one, and refuses too. Do not add `--force` on the
     person's behalf: show them the report and let them settle the work
     or decide; `--data` (config, the bot's key, state) is also theirs to
     ask for. The package removal that follows (`sudo pacman -R ssf`,

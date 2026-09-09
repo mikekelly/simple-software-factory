@@ -952,7 +952,7 @@ impl Vm {
                 );
                 // Lima's own filesystem, for the one answer whose loss
                 // cannot be undone.
-                self.lima_disk_dir().map(|p| p.exists())
+                self.lima_disk_dir().and_then(|p| super::there(&p))
             }
         };
         Survey {
@@ -980,8 +980,8 @@ impl Vm {
     /// treat a disk full of workspaces as absent.
     fn lima_unanswered(&self, dir: bool, what: &str, name: &str, e: &anyhow::Error) -> Survey {
         warn!("could not ask lima about {what} {name}: {e:#}");
-        let instance = self.lima_instance_dir().map(|p| p.exists());
-        let disk = self.lima_disk_dir().map(|p| p.exists());
+        let instance = self.lima_instance_dir().and_then(|p| super::there(&p));
+        let disk = self.lima_disk_dir().and_then(|p| super::there(&p));
         let here = instance == Some(true) || disk == Some(true);
         let nothing = instance == Some(false) && disk == Some(false);
         Survey {
@@ -1875,7 +1875,7 @@ impl Vm {
         // failed the step over a disk directory demonstrably not there.
         let held = match self.lima_disk() {
             Ok(d) => d.is_some(),
-            Err(e) => match self.lima_disk_dir().map(|p| p.exists()) {
+            Err(e) => match self.lima_disk_dir().and_then(|p| super::there(&p)) {
                 Some(false) => {
                     warn!(
                         "could not ask lima about disk {disk} ({e:#}); its home holds no such disk"
@@ -2594,6 +2594,66 @@ mod tests {
     }
 
     #[test]
+    fn a_lima_home_nobody_could_look_in_is_not_a_lima_home_with_nothing_in_it() {
+        // Where `limactl` will not answer, lima's own filesystem is
+        // what is left to read, and a denied `stat` on a root-owned
+        // lima home answered "nothing here". Both fallbacks, because
+        // they are different code: the disk listing failing alone drops
+        // into an `Err` arm inside `lima_survey`, while the instance
+        // listing failing takes the whole survey to `lima_unanswered`.
+        use std::os::unix::fs::PermissionsExt;
+        for listing in [Listing::Answers, Listing::Fails] {
+            let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, listing);
+            std::fs::remove_dir_all(&t.vm.dir).unwrap();
+            let home = t.vm.lima_home.clone().unwrap();
+            std::fs::create_dir_all(home.join("_disks").join(t.vm.lima_disk_name())).unwrap();
+            // Readable first, so what follows is about the denial and
+            // not about the fixture.
+            assert_eq!(t.vm.survey().data, Some(true), "{listing:?}");
+
+            let mut perm = std::fs::metadata(&home).unwrap().permissions();
+            perm.set_mode(0o000);
+            std::fs::set_permissions(&home, perm).unwrap();
+            let seen = std::fs::metadata(home.join("_disks").join(t.vm.lima_disk_name()))
+                .map_err(|e| e.kind());
+            // While the mode is still 0o000: after the restore below
+            // this is true for everyone, and says nothing.
+            let readable_anyway = std::fs::read_dir(&home).is_ok();
+            let s = t.vm.survey();
+            // Restored before the assertions, so a failure still leaves
+            // the fixture's `Drop` able to remove it.
+            let mut perm = std::fs::metadata(&home).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&home, perm).unwrap();
+
+            match seen {
+                Err(std::io::ErrorKind::NotFound) => {
+                    panic!("the fixture is wrong: the disk directory is there")
+                }
+                Err(_) => assert_eq!(
+                    s.data, None,
+                    "a denied stat is a question that was never answered ({listing:?})"
+                ),
+                // euid 0 ignores the mode, so this case cannot be
+                // built here and this run proves nothing about it. The
+                // assertion is the narrow one that is true: the home
+                // really was readable.
+                Ok(_) => assert!(
+                    readable_anyway,
+                    "a stat succeeded through a directory nothing should have been able to read"
+                ),
+            }
+            // The instance listing failing takes `present` with it:
+            // nothing was established about the VM either, and
+            // `Some(false)` there would send the destroy step down the
+            // "no VM" arm over a machine nobody could look at.
+            if listing == Listing::Fails && seen.is_err() {
+                assert_eq!(s.present, None, "and the same for the VM itself");
+            }
+        }
+    }
+
+    #[test]
     fn nothing_in_lima_and_no_directory_is_no_vm() {
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
         std::fs::remove_dir_all(&t.vm.dir).unwrap();
@@ -2723,6 +2783,48 @@ mod tests {
         assert!(err.contains("still holds something of ssf-one"), "{err}");
         std::fs::remove_dir_all(&home).unwrap();
         assert!(!t.vm.lima_destroy().unwrap());
+    }
+
+    #[test]
+    fn a_destroy_does_not_declare_a_disk_absent_it_could_not_look_for() {
+        // The step that declares the destroy finished falls back to
+        // lima's own filesystem when `limactl disk list` fails. A
+        // denied `stat` printed "its home holds no such disk" and
+        // reported a clean destroy over a disk nobody could look for.
+        use std::os::unix::fs::PermissionsExt;
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Fails, Listing::Answers);
+        let home = t.vm.lima_home.clone().unwrap();
+        std::fs::create_dir_all(home.join("_disks").join(t.vm.lima_disk_name())).unwrap();
+
+        let mut perm = std::fs::metadata(&home).unwrap().permissions();
+        perm.set_mode(0o000);
+        std::fs::set_permissions(&home, perm).unwrap();
+        let seen = std::fs::metadata(home.join("_disks").join(t.vm.lima_disk_name()))
+            .map_err(|e| e.kind());
+        // While the mode is still 0o000, for the same reason.
+        let readable_anyway = std::fs::read_dir(&home).is_ok();
+        let got = t.vm.lima_destroy().map_err(|e| format!("{e:#}"));
+        let mut perm = std::fs::metadata(&home).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&home, perm).unwrap();
+
+        match seen {
+            Err(std::io::ErrorKind::NotFound) => {
+                panic!("the fixture is wrong: the disk directory is there")
+            }
+            Err(_) => {
+                let err = got.expect_err("a disk nobody could look for is not a disk that is gone");
+                assert!(err.contains("may hold it"), "{err}");
+            }
+            // euid 0 ignores the mode, so this case cannot be built
+            // here and this run proves nothing about it. The assertion
+            // is the narrow one that is true: the home really was
+            // readable.
+            Ok(_) => assert!(
+                readable_anyway,
+                "a stat succeeded through a directory nothing should have been able to read"
+            ),
+        }
     }
 
     #[test]
@@ -2990,7 +3092,7 @@ mod tests {
     /// returning. A fork that failed under load, a lima home under
     /// someone else's lock and a limactl that hangs are all things a
     /// laptop does; none of them is the VM having exited.
-    #[derive(Clone, Copy, PartialEq)]
+    #[derive(Clone, Copy, Debug, PartialEq)]
     enum Listing {
         Answers,
         Empty,

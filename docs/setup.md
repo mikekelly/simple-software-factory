@@ -1003,9 +1003,25 @@ each of the other cases, and it is never `ssf vm start`), or pass
 the clones live on its data disk and are destroyed with it, checked or
 not. `--yes` skips the question for scripted use.
 
+Only "not found" counts as "there is no data disk". A directory ssf
+could not read at all -- a lima home an earlier `sudo` left root-owned,
+which is itself one of the reasons `limactl` fails, or a volume that
+has gone away -- is a question that was never answered, and the command
+refuses over it rather than destroying workspaces nobody checked.
+`--force` still goes ahead. For the same reason a destroy that cannot
+look for the data disk now fails the step instead of reporting that
+lima's home holds no such disk.
+
+`[vm] name` has to name a directory under `[vm] dir`: it is joined onto
+that path and `ssf vm destroy` and `ssf uninstall` remove the result
+whole, so an empty name (which would be `[vm] dir` itself), an absolute
+one, or one containing `..` is refused when the config is read. Nested
+names like `a/b` are fine.
+
 What it keeps, and lists at the end: the clones and worktrees under
 `~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
-dir` (the image and downloads, safe to remove), and, unless you pass
+dir` (the image and downloads; retained -- ssf does not look inside it,
+so inspect it before removing it), and, unless you pass
 `--data`, `~/.config/ssf` (config and the bot's key) and
 `~/.local/state/ssf` (state, and the marker that keeps a disabled service
 off, so a reinstall stays stopped until `ssf ui service enable`; with
