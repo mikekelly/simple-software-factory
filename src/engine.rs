@@ -6233,6 +6233,21 @@ mod tests {
             "the refused engine created state"
         );
         drop(listener);
+        // A concurrently spawned child can retain this CLOEXEC listener
+        // until exec. Wait for it to close before the stale-socket control;
+        // dropping our descriptor alone does not establish that fact.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match tokio::net::UnixStream::connect(&path).await {
+                    Ok(stream) => drop(stream),
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+                    Err(error) => panic!("checking fixture listener closure: {error}"),
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fixture listener remained open after its owner dropped it");
         let engine = Engine::new(cfg).await.unwrap();
         assert_eq!(stub.hits(), vec!["/user"]);
         drop(engine);

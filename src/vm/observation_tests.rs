@@ -31,6 +31,7 @@ enum Case {
     InaccessibleData,
     OwnSymlink,
     NestedOwnData,
+    UnreadFirecrackerStray,
     LimaHomeParent,
     LimaHome,
     LimaHomeEntries,
@@ -54,6 +55,7 @@ impl Case {
             Self::InaccessibleData => "inaccessible-data",
             Self::OwnSymlink => "own-symlink",
             Self::NestedOwnData => "nested-own-data",
+            Self::UnreadFirecrackerStray => "unread-firecracker-stray",
             Self::LimaHomeParent => "lima-home-parent",
             Self::LimaHome => "lima-home",
             Self::LimaHomeEntries => "lima-home-entries",
@@ -77,6 +79,7 @@ impl Case {
             "inaccessible-data" => Self::InaccessibleData,
             "own-symlink" => Self::OwnSymlink,
             "nested-own-data" => Self::NestedOwnData,
+            "unread-firecracker-stray" => Self::UnreadFirecrackerStray,
             "lima-home-parent" => Self::LimaHomeParent,
             "lima-home" => Self::LimaHome,
             "lima-home-entries" => Self::LimaHomeEntries,
@@ -158,6 +161,12 @@ impl Fixture {
                 fs::create_dir_all(&nested).unwrap();
                 fs::write(nested.join("data.ext4"), b"work").unwrap();
                 self.protect(&nested, 0o000);
+            }
+            Case::UnreadFirecrackerStray => {
+                let old = self.root.join("vm/old");
+                fs::create_dir_all(&old).unwrap();
+                fs::write(old.join("data.ext4"), b"work").unwrap();
+                self.protect(&old, 0o000);
             }
             Case::LimaHomeParent => {
                 let wall = self.root.join("lima-wall");
@@ -339,6 +348,11 @@ fn nested_own_vm_names_its_inaccessible_data_disk() {
 }
 
 #[test]
+fn missing_own_vm_stays_absent_beside_an_unread_firecracker_stray() {
+    run(Case::UnreadFirecrackerStray);
+}
+
+#[test]
 fn lima_home_beneath_an_inaccessible_parent_is_named() {
     run(Case::LimaHomeParent);
 }
@@ -477,9 +491,15 @@ fn exercise(case: Case, root: &Path) {
             survey.strays.is_empty(),
             "{backend} must not claim an uninspected entry"
         );
-        if backend == BackendKind::Lima && lima_access_is_denied(case) {
-            assert_eq!(survey.data, None, "denied Lima data presence stays unknown");
-        }
+        let expected_configured = expected_configured_vm(case, backend);
+        assert_eq!(
+            survey.present, expected_configured.0,
+            "{backend} configured VM presence"
+        );
+        assert_eq!(
+            survey.data, expected_configured.1,
+            "{backend} configured data presence"
+        );
 
         let (fallback_strays, fallback_unread) = vm.strays_on_filesystem();
         assert_eq!(
@@ -510,9 +530,14 @@ fn exercise(case: Case, root: &Path) {
             facts.vm_strays.is_empty(),
             "uninstall must not claim an uninspected entry"
         );
-        if backend == BackendKind::Lima && lima_access_is_denied(case) {
-            assert_eq!(facts.vm_data, None, "uninstall keeps denied data unknown");
-        }
+        assert_eq!(
+            facts.vm_present, expected_configured.0,
+            "{backend} gathered VM presence"
+        );
+        assert_eq!(
+            facts.vm_data, expected_configured.1,
+            "{backend} gathered data presence"
+        );
         if matches!(case, Case::InaccessibleParent) {
             assert_eq!(facts.projects, vec![base.clone()]);
             let project_line = format!(
@@ -633,15 +658,14 @@ fn exercise_lima_denied_local(root: &Path) {
     assert_denied(&vm.dir);
 
     let survey = vm.lima_survey();
-    assert_eq!(survey.present, None);
-    assert_eq!(survey.data, Some(false));
+    assert_eq!((survey.present, survey.data), (None, Some(false)));
     assert_eq!(survey.unread, vec![vm.dir.clone()]);
 
     let public = vm.survey();
-    assert_eq!(public.present, None);
+    assert_eq!((public.present, public.data), (None, Some(false)));
     assert_eq!(public.unread, vec![vm.dir.clone()]);
     let facts = Facts::gather(&cfg, &vm);
-    assert_eq!(facts.vm_present, None);
+    assert_eq!((facts.vm_present, facts.vm_data), (None, Some(false)));
     assert_eq!(facts.vm_unread, vec![vm.dir.clone()]);
     assert_eq!(
         facts.vm_removed,
@@ -672,7 +696,13 @@ fn exercise_lima_own_symlink(case: Case, root: &Path) {
     assert_denied(&unread_path);
     let expected = vec![unread_path.clone()];
 
+    let direct = vm.lima_survey();
+    assert_eq!((direct.present, direct.data), (Some(false), Some(false)));
+    assert_eq!(direct.unread, expected);
+    assert!(direct.strays.is_empty());
+
     let survey = vm.survey();
+    assert_eq!((survey.present, survey.data), (Some(false), Some(false)));
     assert_eq!(survey.unread, expected);
     assert!(survey.strays.is_empty());
 
@@ -687,6 +717,10 @@ fn exercise_lima_own_symlink(case: Case, root: &Path) {
     assert!(status.strays.is_empty());
 
     let facts = Facts::gather(&cfg, &vm);
+    assert_eq!(
+        (facts.vm_present, facts.vm_data),
+        (Some(false), Some(false))
+    );
     assert_eq!(facts.vm_unread, expected);
     assert!(facts.vm_strays.is_empty());
     assert_renderers(&status, &fallback_strays, &fallback_unread, &expected);
@@ -705,15 +739,59 @@ fn exercise_lima_own_symlink(case: Case, root: &Path) {
     assert!(left_in_place(&facts, false).contains(unread_path.to_string_lossy().as_ref()));
 }
 
-fn lima_access_is_denied(case: Case) -> bool {
-    matches!(
-        case,
-        Case::LimaHomeParent
+fn expected_configured_vm(case: Case, backend: BackendKind) -> (Option<bool>, Option<bool>) {
+    match (backend, case) {
+        (
+            BackendKind::Firecracker,
+            Case::InaccessibleParent
+            | Case::VmEntries
+            | Case::OwnSymlink
             | Case::LimaHome
+            | Case::InaccessibleSymlinkTarget,
+        ) => (None, None),
+        (BackendKind::Firecracker, Case::InaccessibleData | Case::NestedOwnData) => {
+            (Some(true), None)
+        }
+        (
+            BackendKind::Firecracker,
+            Case::UnreadFirecrackerStray
+            | Case::LimaHomeParent
             | Case::LimaHomeEntries
             | Case::LimaDisks
             | Case::LimaDiskEntries
-    )
+            | Case::DanglingSymlink,
+        ) => (Some(false), Some(false)),
+        (
+            BackendKind::Lima,
+            Case::InaccessibleParent
+            | Case::VmEntries
+            | Case::OwnSymlink
+            | Case::InaccessibleSymlinkTarget,
+        ) => (None, Some(false)),
+        (BackendKind::Lima, Case::InaccessibleData | Case::NestedOwnData) => {
+            (Some(true), Some(false))
+        }
+        (
+            BackendKind::Lima,
+            Case::LimaHomeParent
+            | Case::LimaHome
+            | Case::LimaHomeEntries
+            | Case::LimaDisks
+            | Case::LimaDiskEntries,
+        ) => (None, None),
+        (BackendKind::Lima, Case::UnreadFirecrackerStray | Case::DanglingSymlink) => {
+            (Some(false), Some(false))
+        }
+        (
+            _,
+            Case::LimaLeftoversCompletion
+            | Case::LimaDiskCompletion
+            | Case::FirecrackerCompletion
+            | Case::LimaDeniedLocal
+            | Case::LimaOwnInstanceSymlink
+            | Case::LimaOwnDiskSymlink,
+        ) => unreachable!("specialized permission fixture"),
+    }
 }
 
 fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
@@ -746,6 +824,16 @@ fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
             let error = fs::metadata(base.join("new/nested/data.ext4"))
                 .expect_err("nested data disk unexpectedly statted");
             assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            return;
+        }
+        Case::UnreadFirecrackerStray => {
+            assert_denied(&base.join("old/data.ext4"));
+            assert_eq!(
+                fs::metadata(base.join("new"))
+                    .expect_err("configured VM unexpectedly exists")
+                    .kind(),
+                std::io::ErrorKind::NotFound
+            );
             return;
         }
         Case::LimaHomeParent => fs::read_dir(root.join("lima-wall/lima")).map(drop),
@@ -782,6 +870,7 @@ fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
         }
         Case::OwnSymlink => vec![base.join("new")],
         Case::NestedOwnData => vec![base.join("new/nested/data.ext4")],
+        Case::UnreadFirecrackerStray => vec![base.join("old/data.ext4")],
         Case::LimaHomeParent => vec![root.join("lima-wall/lima")],
         Case::LimaHome => vec![root.join("lima")],
         Case::LimaHomeEntries => vec![
