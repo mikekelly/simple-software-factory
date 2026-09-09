@@ -999,7 +999,11 @@ impl Vm {
             Err(e) => return self.lima_unanswered(dir, "the instance", &self.lima_name(), &e),
         };
         let mut strays = others;
-        let mut home_unread: Vec<PathBuf> = Vec::new();
+        // Lima's own directories, whether or not a listing failed: the
+        // three commands that name strays have to agree about one
+        // machine, and `status` reads these unconditionally. Reading
+        // them costs no `limactl`.
+        let home_unread: Vec<PathBuf> = self.strays_on_disk_read().1;
         let disk = match self.lima_disks_within(SURVEY_LIMIT) {
             Ok(all) => {
                 let (mine, others) = self.split_disks(all);
@@ -1016,9 +1020,11 @@ impl Vm {
                 // on the same rule. Leaving those out hid an old data
                 // disk full of clones in exactly the case where
                 // `limactl disk list` is no use to the person either.
-                let (disks, disk_unread) = self.disk_strays_read();
+                // Only the strays: `home_unread` was filled from both of
+                // lima's directories above, and adding this half again
+                // named `_disks` twice.
+                let (disks, _) = self.disk_strays_read();
                 strays.extend(disks);
-                home_unread.extend(disk_unread);
                 self.lima_disk_dir().map(|p| p.exists())
             }
         };
@@ -1052,7 +1058,7 @@ impl Vm {
             if i.name == name {
                 mine = Some(i);
             } else if is_ssf_name(&i.name) {
-                strays.push(Stray::lima_instance(i.name));
+                strays.push(Stray::lima_instance(i.name, &self.lima_command()));
             }
         }
         (mine, strays)
@@ -1068,7 +1074,7 @@ impl Vm {
             if d.name == name {
                 mine = true;
             } else if is_ssf_name(&d.name) {
-                strays.push(Stray::lima_disk(d.name));
+                strays.push(Stray::lima_disk(d.name, &self.lima_command()));
             }
         }
         (mine, strays)
@@ -1142,7 +1148,10 @@ impl Vm {
     fn instance_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         let (names, unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima());
         (
-            names.into_iter().map(Stray::lima_instance).collect(),
+            names
+                .into_iter()
+                .map(|n| Stray::lima_instance(n, &self.lima_command()))
+                .collect(),
             unread,
         )
     }
@@ -1161,11 +1170,15 @@ impl Vm {
             self.lima_home.as_ref().map(|h| h.join("_disks")).as_deref(),
             self.ours_in_lima_disks(),
         );
-        (names.into_iter().map(Stray::lima_disk).collect(), unread)
+        (
+            names
+                .into_iter()
+                .map(|n| Stray::lima_disk(n, &self.lima_command()))
+                .collect(),
+            unread,
+        )
     }
 
-    /// The `ssf-*` directories in one of lima's directories, other than
-    /// `ours`, and whether the directory could be read at all.
     /// The name in lima's home this configuration calls its own -- and
     /// nothing, under Firecracker. A machine that switched `[vm]
     /// backend` from lima and kept its `[vm] name` has an `ssf-<name>`
@@ -1175,6 +1188,21 @@ impl Vm {
     /// abolish.
     fn ours_in_lima(&self) -> Option<String> {
         (self.backend() == crate::config::BackendKind::Lima).then(|| self.lima_name())
+    }
+
+    /// How a `limactl` command has to be spelled to reach the lima this
+    /// looked in: the home when it is not lima's default, and
+    /// `[vm] limactl` when it is set.
+    pub(super) fn lima_command(&self) -> super::LimaCommand {
+        let default = self
+            .lima_home
+            .as_ref()
+            .zip(dirs::home_dir())
+            .is_some_and(|(h, home)| *h == home.join(".lima"));
+        super::LimaCommand {
+            home: (!default).then(|| self.lima_home.clone()).flatten(),
+            limactl: self.cfg.limactl.clone(),
+        }
     }
 
     /// [`Vm::ours_in_lima`] for the data disks.
@@ -2832,7 +2860,10 @@ mod tests {
         std::fs::remove_dir_all(&t.vm.dir).unwrap();
         let s = t.vm.survey();
         assert_eq!(s.present, Some(true), "this config's own disk is there");
-        assert_eq!(s.strays, vec![Stray::lima_instance("ssf-old".into())]);
+        assert_eq!(
+            s.strays,
+            vec![Stray::lima_instance("ssf-old".into(), &t.vm.lima_command())]
+        );
         // And it changes none of the answers about *this* VM, which is
         // the whole point: `ssf-one` is still the stopped, startable
         // instance with the data disk, and `ssf-old` is a line in the
@@ -2886,10 +2917,19 @@ mod tests {
             s.strays.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
             ["ssf-old", "ssf-one"]
         );
-        assert_eq!(
-            s.strays[0].remove, "limactl delete ssf-old",
-            "the command carries the name the person no longer has"
+        // The command carries the name the person no longer has -- and
+        // the home and `limactl` ssf actually looked in, since a bare
+        // `limactl delete` run without them addresses `~/.lima`.
+        let remove = s.strays[0].remove.clone();
+        assert!(remove.ends_with(" delete ssf-old"), "{remove}");
+        assert!(
+            remove.starts_with(&format!(
+                "LIMA_HOME={} ",
+                t.vm.lima_home.clone().unwrap().display()
+            )),
+            "{remove}"
         );
+        assert!(remove.contains("/limactl "), "the configured one: {remove}");
     }
 
     #[test]
@@ -2902,8 +2942,15 @@ mod tests {
         std::fs::create_dir_all(home.join("_disks").join("ssf-older")).unwrap();
         let named: Vec<_> = t.vm.survey().strays.into_iter().map(|s| s.remove).collect();
         assert_eq!(
-            named,
-            ["limactl delete ssf-old", "limactl disk delete ssf-older"]
+            named
+                .iter()
+                .map(|c| c.rsplit_once(" delete ").unwrap().1)
+                .collect::<Vec<_>>(),
+            ["ssf-old", "ssf-older"]
+        );
+        assert!(
+            named.iter().all(|c| c.starts_with("LIMA_HOME=")),
+            "{named:?}"
         );
     }
 
@@ -2921,9 +2968,9 @@ mod tests {
         assert_eq!(
             s.strays
                 .iter()
-                .map(|x| x.remove.as_str())
+                .map(|x| x.remove.rsplit_once(" delete ").unwrap().1)
                 .collect::<Vec<_>>(),
-            ["limactl disk delete ssf-old"]
+            ["ssf-old"]
         );
         // And it is still not this configuration's VM.
         assert_eq!(s.present, Some(false));
@@ -2973,8 +3020,14 @@ mod tests {
         let st = t.vm.status().await;
         let named: Vec<&str> = st.strays.iter().map(|s| s.remove.as_str()).collect();
         assert_eq!(named.len(), 3, "each exactly once: {named:?}");
-        assert!(named.contains(&"limactl delete ssf-old"), "{named:?}");
-        assert!(named.contains(&"limactl disk delete ssf-old"), "{named:?}");
+        assert!(
+            named.iter().any(|c| c.ends_with(" delete ssf-old")),
+            "{named:?}"
+        );
+        assert!(
+            named.iter().any(|c| c.ends_with(" disk delete ssf-old")),
+            "{named:?}"
+        );
         assert!(
             named
                 .iter()
@@ -3261,10 +3314,10 @@ mod tests {
         // did not create: unquoted, a pasted remedy runs a different
         // command. The `rm -rf` was fixed for this; the other two are
         // the same string in the same report.
-        let odd = Stray::lima_instance("ssf-a b".into());
+        let odd = Stray::lima_instance("ssf-a b".into(), &Default::default());
         assert_eq!(odd.remove, "limactl delete 'ssf-a b'");
         assert_eq!(
-            Stray::lima_disk("ssf-a b".into()).remove,
+            Stray::lima_disk("ssf-a b".into(), &Default::default()).remove,
             "limactl disk delete 'ssf-a b'"
         );
     }

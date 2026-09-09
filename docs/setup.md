@@ -1038,18 +1038,21 @@ lima instance or data disk still in lima's home, or, under Firecracker,
 the old VM's directory under `[vm] dir` with its data disk inside. Both
 are looked for on either backend, since `[vm] dir` is shared by them and
 lima's home outlives a change of `[vm] backend` just as it outlives a
-change of `[vm] name`. The `[vm] dir` line says one of three things, in
-the report and in the list printed at the end alike: safe to remove,
-safe to remove except for what is listed below, or that ssf could not
-read the directory and so does not know what is in it. Any directory
-that could not be read is named -- `[vm] dir`, lima's home, or lima's
-disk directory -- since which one it is decides what you would fix. `ssf
-uninstall` never removes one and `--force` does not reach it: ssf cannot
-tell a VM you renamed away to keep from one you abandoned, and only one
-of those is safe to delete. `ssf vm status` names them too, and `ssf
-doctor` does when it runs on the host -- in VM mode `ssf doctor` is
-forwarded into the guest, which cannot see the host's `[vm] dir` or
-lima's home.
+change of `[vm] name`. Not looked for: a `data.ext4` a switch from
+Firecracker to lima left in the VM's *own* directory, which `vm destroy`
+removes with that directory (issue #176) -- check it by hand if you have
+changed `[vm] backend` and kept the name. The `[vm] dir` line says one
+of three things, in the report and in the list printed at the end alike:
+safe to remove, safe to remove except for what is listed below, or that
+ssf could not read the directory and so does not know what is in it. Any
+directory that could not be read is named -- `[vm] dir`, lima's home, or
+lima's disk directory -- since which one it is decides what you would
+fix. `ssf uninstall` never removes one and `--force` does not reach it:
+ssf cannot tell a VM you renamed away to keep from one you abandoned,
+and only one of those is safe to delete. `ssf vm status` names them too,
+and `ssf doctor` does when it runs on the host -- in VM mode `ssf
+doctor` is forwarded into the guest, which cannot see the host's `[vm]
+dir` or lima's home.
 
 What it keeps, and lists at the end (the same list both times): the
 clones and worktrees under `~/ssf/projects` (or Orca's projects; may
