@@ -186,12 +186,11 @@ pub struct Facts {
     /// backend change orphaned is. Named, not counted: a `~/.lima` left
     /// root-owned by an earlier `sudo` sent people to fix permissions
     /// on `[vm] dir`, which was never the problem.
-    pub vm_unread: Vec<PathBuf>,
     /// `[vm] dir` was there when the report was built. Snapshotted, so
     /// that the list printed before the question and the list printed
     /// after the last step are the same list in fact and not only in
     /// intent -- the steps in between can remove it.
-    pub vm_base_may_exist: bool,
+    pub vm_base_exists: bool,
     /// What `ssf vm destroy` takes with it, in words: the VM's directory
     /// under Firecracker, where its disks are; the lima instance and its
     /// data disk (both in lima's own home, not under `[vm] dir`) as well
@@ -233,11 +232,7 @@ impl Facts {
             vm_startable: survey.startable,
             vm_data: survey.data,
             vm_strays: survey.strays.clone(),
-            vm_unread: survey.unread.clone(),
-            // Not `exists()`: a base nobody could stat is not a base
-            // that is not there, and this gates the whole `keep:` line
-            // for `[vm] dir`.
-            vm_base_may_exist: vm::may_exist(&vm.base),
+            vm_base_exists: vm.base.exists(),
             vm_disk: match vm.backend() {
                 vm::BackendKind::Lima => Some(vm.lima_disk_name()),
                 vm::BackendKind::Firecracker => None,
@@ -279,11 +274,11 @@ impl Facts {
     /// that are not there, and refuse over them.
     pub fn ssh_answered(&mut self, vm: &vm::Vm) {
         // Exactly what ssh proves and no more. It says nothing about
-        // what else lima holds or about what could not be read, so
-        // `vm_strays` and `vm_unread` are not touched here -- they keep
-        // whatever the survey found. An earlier version copied them into
-        // the local `Survey` below to "carry them through"; nothing read
-        // them there, so the copy said something the code did not do.
+        // what else lima holds, so `vm_strays` is not touched here -- it
+        // keeps whatever the survey found. An earlier version copied it
+        // into the local `Survey` below to "carry it through"; nothing
+        // read it there, so the copy said something the code did not
+        // do.
         self.vm_present = Some(true);
         self.vm_running = Some(true);
         self.vm_startable = true;
@@ -293,14 +288,13 @@ impl Facts {
                 &vm.lima_disk_name(),
                 vm.dir.exists().then_some(vm.dir.as_path()),
                 // `lima_removed` reads `startable`, `running` and
-                // `data`; the other three are not this call's to state.
+                // `data`; the others are not this call's to state.
                 &vm::Survey {
                     present: Some(true),
                     running: Some(true),
                     startable: true,
                     data: self.vm_data,
                     strays: Vec::new(),
-                    unread: Vec::new(),
                 },
             );
         }
@@ -595,16 +589,13 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
             p.display()
         ));
     }
-    if facts.vm_base_may_exist {
+    if facts.vm_base_exists {
         // "safe to remove" is true of the images and downloads. It is
         // not true of a VM directory a changed `[vm] name` orphaned,
         // which sits in here with its data disk -- and telling a person
         // their own clones are safe to delete is worse than deleting
         // them, because they run the command themselves and it works.
         //
-        // Nor is it true of a directory nobody could read. "Could not
-        // look" is not "nothing there", and safety nobody verified is
-        // not safety.
         // Not `Stray::holds_work()`, which is true of a lima disk too:
         // this asks the narrower question of whether one of these is a
         // VM directory *inside `[vm] dir`*, since that is the only kind
@@ -616,13 +607,14 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         keep.push(format!(
             "{} (VM image and downloads{})",
             facts.vm_base.display(),
-            match (
-                facts.vm_unread.contains(&facts.vm_base),
-                holds_a_vm_directory,
-            ) {
-                (true, _) => "; ssf could not read it, so what is in it is unknown",
-                (false, true) => "; safe to remove except for what is listed below",
-                (false, false) => "; safe to remove",
+            // A `[vm] dir` nobody could read is called "safe to
+            // remove" here, which is #192's to fix: this change reports
+            // what it found and says nothing about what it could not
+            // look at.
+            if holds_a_vm_directory {
+                "; safe to remove except for what is listed below"
+            } else {
+                "; safe to remove"
             }
         ));
     }
@@ -632,19 +624,6 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
             facts.config_dir.display(),
             facts.state_dir.display()
         ));
-    }
-    for dir in &facts.vm_unread {
-        // Every directory nobody could read, on every path -- the
-        // sentence used to reach the report only through `no_vm_line`,
-        // which fires only when there is no VM at all, so an unreadable
-        // `~/.lima/_disks` beside a VM that exists went unmentioned in
-        // the one command whose output is a delete list.
-        if *dir != facts.vm_base {
-            keep.push(format!(
-                "{} (untouched; ssf could not read it, so what is in it is unknown)",
-                dir.display()
-            ));
-        }
     }
     for stray in &facts.vm_strays {
         keep.push(format!(
@@ -686,34 +665,11 @@ fn destroy_step(facts: &Facts) -> Option<String> {
 /// dir` still has, is the sentence this whole change exists to stop --
 /// so both the report and the destroy step say it through here.
 fn no_vm_line(facts: &Facts) -> String {
-    match (facts.vm_strays.is_empty(), facts.vm_unread.is_empty()) {
-        // A directory nobody could read may hold a VM a rename or a
-        // backend change orphaned, so "no VM" is a claim about contents
-        // nobody looked at -- and which directory is the whole of what
-        // the person has to act on.
-        (_, false) => format!(
-            "no VM named {} to remove; {}",
-            facts.vm_name,
-            unread_note(&facts.vm_unread)
-        ),
-        (true, true) => "no VM".to_string(),
-        (false, true) => format!("no VM named {} to remove", facts.vm_name),
+    if facts.vm_strays.is_empty() {
+        "no VM".to_string()
+    } else {
+        format!("no VM named {} to remove", facts.vm_name)
     }
-}
-
-/// "I could not look, and here is where", in one sentence for every
-/// command that has to say it. Hand-copied three ways once, and the
-/// copy in `ssf vm status` named the wrong directory.
-pub fn unread_note(unread: &[PathBuf]) -> String {
-    let names: Vec<String> = unread.iter().map(|p| p.display().to_string()).collect();
-    format!(
-        "{} could not be read, so what else is in {} is unknown",
-        // All of them, in the list style the rest of the report uses.
-        // Naming one and dropping the others is the failure this whole
-        // change is about, one level down.
-        join_and(&names),
-        if names.len() > 1 { "them" } else { "it" }
-    )
 }
 
 /// "a", "a and b", "a, b, and c" -- the report's list style, in one
@@ -1170,8 +1126,7 @@ mod tests {
             vm_data: Some(true),
             vm_disk: Some("ssf-factory".into()),
             vm_strays: Vec::new(),
-            vm_unread: Vec::new(),
-            vm_base_may_exist: false,
+            vm_base_exists: false,
             vm_removed: "its disks in /vm/factory".into(),
             vm_base: PathBuf::from("/nonexistent/vm"),
             config_dir: PathBuf::from("/c"),
@@ -1206,7 +1161,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("clean and pushed (ssf purge)"), "{text}");
-        // `vm_base_may_exist` is false in this fixture, so the line about
+        // `vm_base_exists` is false in this fixture, so the line about
         // `[vm] dir` must not be here at all. Listing a directory that
         // is not there as "safe to remove" sends a person looking for
         // it; the snapshot is what stops that.
@@ -1558,7 +1513,6 @@ mod tests {
             startable,
             data,
             strays: Vec::new(),
-            unread: Vec::new(),
         };
         assert_eq!(
             lima_removed(
@@ -1856,7 +1810,7 @@ mod tests {
         std::fs::create_dir_all(&base).unwrap();
         let orphan = Facts {
             vm_base: base.clone(),
-            vm_base_may_exist: true,
+            vm_base_exists: true,
             vm_present: Some(false),
             vm_data: Some(false),
             vm_strays: vec![vm::Stray::directory(&base.join("old"))],
@@ -1929,275 +1883,6 @@ mod tests {
             clean_text.contains("downloads; safe to remove)"),
             "{clean_text}"
         );
-    }
-
-    #[test]
-    fn a_directory_nobody_could_read_is_never_called_safe_or_empty() {
-        // The whole point of knowing it, at the layer a person reads.
-        // Pinned here because the `Survey` flag being right buys nothing
-        // if `Facts::gather` drops it or the two sentences ignore it --
-        // all three of those reverted green before this test existed.
-        let unread = Facts {
-            vm_name: "new".into(),
-            vm_base: PathBuf::from("/v"),
-            vm_base_may_exist: true,
-            vm_unread: vec![PathBuf::from("/v")],
-            vm_present: Some(false),
-            vm_data: Some(false),
-            vm_strays: Vec::new(),
-            ..facts()
-        };
-        let lines = kept(&unread, false);
-        assert!(
-            lines.iter().any(|l| l.contains("could not read it")),
-            "{lines:?}"
-        );
-        // The sentence names the directory, because that is what the
-        // person has to act on -- a bool left every printer to guess,
-        // and they guessed `[vm] dir` for a fact about lima's home.
-        let elsewhere = Facts {
-            vm_unread: vec![PathBuf::from("/home/me/.lima")],
-            ..unread.clone()
-        };
-        let line = no_vm_line(&elsewhere);
-        assert!(line.contains("/home/me/.lima"), "{line}");
-        assert!(!line.contains("/v could not"), "{line}");
-        // ... and a `[vm] dir` that was readable keeps its own true
-        // sentence even while somewhere else could not be read -- but
-        // the other directory still gets named, on every path. It used
-        // to reach the report only through `no_vm_line`, so a VM that
-        // existed beside an unreadable `~/.lima/_disks` was reported
-        // with no mention of it at all.
-        let other = kept(&elsewhere, false);
-        assert!(
-            other.iter().any(|l| l.contains("safe to remove)")),
-            "{other:?}"
-        );
-        assert!(
-            other
-                .iter()
-                .any(|l| l.contains("/home/me/.lima (untouched;")),
-            "the other directory is named too: {other:?}"
-        );
-        let present = Facts {
-            vm_present: Some(true),
-            vm_data: None,
-            vm_unread: vec![PathBuf::from("/home/me/.lima/_disks")],
-            ..elsewhere.clone()
-        };
-        assert!(
-            kept(&present, false)
-                .iter()
-                .any(|l| l.contains("/home/me/.lima/_disks")),
-            "named beside a VM that exists too: {:?}",
-            kept(&present, false)
-        );
-        // Every one of them, not the first: naming one and dropping the
-        // rest is this change's own failure one level down.
-        let both = unread_note(&[PathBuf::from("/a"), PathBuf::from("/b")]);
-        assert!(both.contains("/a") && both.contains("/b"), "{both}");
-        assert!(both.contains("them"), "{both}");
-        assert!(
-            unread_note(&[PathBuf::from("/a")]).contains("in it is unknown"),
-            "one directory is 'it', not 'them'"
-        );
-        // ... and the list a person actually reads, not only the
-        // sentence under it: naming the first and dropping the rest is
-        // this change's own failure one layer up.
-        let two = Facts {
-            vm_base_may_exist: true,
-            vm_unread: vec![PathBuf::from("/x"), PathBuf::from("/y")],
-            ..unread.clone()
-        };
-        let both_named = kept(&two, false);
-        for named in ["/x", "/y"] {
-            assert!(
-                both_named.iter().any(|l| l.contains(named)),
-                "{named} missing from {both_named:?}"
-            );
-        }
-        assert!(
-            !lines.iter().any(|l| l.contains("safe to remove")),
-            "safety nobody verified: {lines:?}"
-        );
-        let line = no_vm_line(&unread);
-        assert!(line.contains("could not be read"), "{line}");
-        assert_ne!(line, "no VM");
-        // Both at once -- a stray lima holds *and* a directory nobody
-        // could read. Only two of the three combinations were driven,
-        // so reordering the arms so a stray silently won and dropped the
-        // unread clause left the suite green. "Could not look" is the
-        // stronger claim and has to survive company: the person is being
-        // told what ssf did not check, and a stray it did find is no
-        // substitute for that.
-        let both_at_once = Facts {
-            vm_strays: vec![vm::Stray::lima_disk("ssf-old".into(), &Default::default())],
-            ..unread.clone()
-        };
-        let line = no_vm_line(&both_at_once);
-        assert!(
-            line.contains("could not be read") && line.contains("no VM named"),
-            "{line}"
-        );
-        // `[vm] dir` gets one line, not two: its own already carries the
-        // "could not read it" clause, and two of a thing whose remedy is
-        // a path sends a person looking for a second one.
-        assert_eq!(
-            lines.iter().filter(|l| l.starts_with("/v ")).count(),
-            1,
-            "{lines:?}"
-        );
-        // ... and that `Facts::gather` actually carries it, which
-        // building `Facts` by hand does not pin: dropping it there left
-        // every assertion above green.
-        #[cfg(unix)]
-        {
-            let _sandbox = crate::config::test_support::sandbox();
-            let base = std::env::temp_dir().join(format!(
-                "ssf-gather-unread-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ));
-            std::fs::create_dir_all(&base).unwrap();
-            let mut cfg = Config::default();
-            cfg.vm.name = "new".into();
-            cfg.vm.backend = Some(vm::BackendKind::Firecracker);
-            cfg.vm.dir = base.to_string_lossy().into_owned();
-            let vm = vm::Vm::new(&cfg);
-            // The headline behaviour of the whole change, through the
-            // one function that carries it from the backend to the
-            // page: dropping `vm_strays` here left every hand-built
-            // `Facts` test green.
-            std::fs::create_dir_all(base.join("old")).unwrap();
-            std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
-            let gathered = Facts::gather(&cfg, &vm);
-            assert_eq!(
-                gathered
-                    .vm_strays
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>(),
-                ["old"],
-                "the VM a rename left behind must reach the report"
-            );
-            assert!(gathered.vm_base_may_exist, "and so must the snapshot");
-            // Through an unreadable *parent*, which is the state a
-            // `sudo` leaves and the one `exists()` calls absent. The
-            // snapshot gates the whole `keep:` line for `[vm] dir`, and
-            // the unread loop skips a path equal to `vm_base` -- so with
-            // this false the directory is named nowhere at all, over a
-            // data disk. The other half of this fix had a test; this
-            // half did not, and reverting it alone stayed green.
-            #[cfg(unix)]
-            {
-                let walled = base.join("walled");
-                let inner = walled.join("vm");
-                std::fs::create_dir_all(&inner).unwrap();
-                let mut deep = cfg.clone();
-                deep.vm.dir = inner.to_string_lossy().into_owned();
-                set_mode(&walled, 0o000);
-                let statted = std::fs::metadata(&inner).is_ok();
-                let deep_vm = vm::Vm::new(&deep);
-                let facts = Facts::gather(&deep, &deep_vm);
-                set_mode(&walled, 0o755);
-                // Root stats it regardless, and then there is nothing
-                // to assert.
-                if !statted {
-                    assert!(
-                        facts.vm_base_may_exist,
-                        "a base nobody could stat is not a base that is gone"
-                    );
-                    assert!(
-                        kept(&facts, false)
-                            .iter()
-                            .any(|l| l.contains(&inner.display().to_string())),
-                        "and it has to reach the page: {:?}",
-                        kept(&facts, false)
-                    );
-                }
-            }
-            // From a *relative* `[vm] dir`, since `temp_dir()` is
-            // already absolute and asserting over it pins nothing.
-            let mut rel = cfg.clone();
-            rel.vm.dir = "target".into();
-            let rel_vm = vm::Vm::new(&rel);
-            let rel_base = Facts::gather(&rel, &rel_vm).vm_base;
-            assert!(
-                rel_base.is_absolute(),
-                "the report names this beside an absolute `rm -rf`: {}",
-                rel_base.display()
-            );
-            // ssh proves the guest is up. It says nothing about a
-            // directory on the host nobody could read, and nothing about
-            // the VM a rename left behind -- so it must leave both as it
-            // found them. Losing the strays here is #158 restored on
-            // every machine whose guest still answers, which is the one
-            // case a person is most likely to be in.
-            let mut after_ssh = gathered.clone();
-            after_ssh.vm_unread = vec![PathBuf::from("/home/me/.lima")];
-            after_ssh.ssh_answered(&vm);
-            assert_eq!(
-                after_ssh.vm_unread,
-                [PathBuf::from("/home/me/.lima")],
-                "ssh does not make an unreadable directory readable"
-            );
-            assert_eq!(
-                after_ssh
-                    .vm_strays
-                    .iter()
-                    .map(|s| s.name.as_str())
-                    .collect::<Vec<_>>(),
-                ["old"],
-                "nor does it un-strand the VM a rename left behind"
-            );
-            // ... and the snapshot has to be a snapshot: a `[vm] dir`
-            // that is not there must not be reported as one that is,
-            // since the report's whole `keep:` line for it hangs on this.
-            let mut gone = cfg.clone();
-            gone.vm.dir = base.join("nowhere").to_string_lossy().into_owned();
-            let gone_vm = vm::Vm::new(&gone);
-            assert!(!Facts::gather(&gone, &gone_vm).vm_base_may_exist);
-            assert!(gathered.vm_unread.is_empty(), "readable while readable");
-            set_mode(&base, 0o000);
-            let readable_anyway = std::fs::read_dir(&base).is_ok();
-            let unread = Facts::gather(&cfg, &vm).vm_unread;
-            set_mode(&base, 0o755);
-            std::fs::remove_dir_all(&base).unwrap();
-            // Root reads it regardless, and then there is nothing to
-            // assert -- said by skipping rather than by wrapping the
-            // assertion in a condition that makes it vacuous either way.
-            if !readable_anyway {
-                assert_eq!(
-                    unread,
-                    std::slice::from_ref(&base),
-                    "the directory that could not be read, by name"
-                );
-            }
-        }
-
-        // And with the directory readable and empty, the plain sentences
-        // come back.
-        let known = Facts {
-            vm_unread: Vec::new(),
-            ..unread
-        };
-        assert_eq!(no_vm_line(&known), "no VM");
-        assert!(
-            kept(&known, false)
-                .iter()
-                .any(|l| l.contains("safe to remove)")),
-            "{:?}",
-            kept(&known, false)
-        );
-    }
-
-    #[cfg(unix)]
-    fn set_mode(path: &Path, mode: u32) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
     }
 
     #[test]
