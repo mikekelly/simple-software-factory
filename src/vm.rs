@@ -29,6 +29,8 @@
 //! on the host starts the VM and watches it, so the service is unchanged.
 
 mod lima;
+#[cfg(test)]
+mod observation_tests;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -309,6 +311,117 @@ pub struct VmStatus {
     /// holding `ssf-old` is the other half of the same silence.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub strays: Vec<Stray>,
+    /// Directories that are there and could not be read. The three
+    /// commands that name strays have to agree about the same machine,
+    /// and "I could not look, and here is where" is part of what there
+    /// is to agree on.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        serialize_with = "lossy_paths"
+    )]
+    pub unread: Vec<PathBuf>,
+}
+
+/// Paths as `--json` has to carry them.
+///
+/// serde's own `PathBuf` refuses a path that is not UTF-8, and refusing
+/// is the whole of `ssf vm status --json`: one directory with an odd
+/// byte in its name and the command prints nothing at all, taking the
+/// widget with it. Every other path on `VmStatus` is a lossy `String`
+/// for this reason, and stray *names* are already filtered on it. A
+/// mangled character in a path is a bad line; no output is a broken
+/// command.
+fn lossy_paths<S: serde::Serializer>(paths: &[PathBuf], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_seq(paths.iter().map(|p| p.to_string_lossy()))
+}
+
+/// One entry per directory, in a stable order. Two of a thing whose
+/// remedy is a path sends a person looking for a second one that is not
+/// there, and `unread` is assembled from two or three places.
+///
+/// A directory inside one that could not be read goes too. Nobody can
+/// stat a child of a mode-000 directory either, so `~/.lima` at 000
+/// yields `~/.lima` *and* `~/.lima/_disks` -- one problem, one remedy,
+/// and a second line that reads as a second thing to fix. Sorting first
+/// puts every ancestor before what it contains, so one pass does it.
+fn one_each(paths: &mut Vec<PathBuf>) {
+    paths.sort();
+    paths.dedup();
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in paths.iter() {
+        if !kept.iter().any(|k| p.starts_with(k)) {
+            kept.push(p.clone());
+        }
+    }
+    *paths = kept;
+}
+
+/// The three answers to every filesystem question used by a report.
+///
+/// `Path::exists()`, `Result::is_ok_and` and iterator `flatten()` each
+/// collapse the last two variants. That is unsafe for a report about a
+/// directory which may hold work: only `NotFound` says there is nothing
+/// there; every other error says that ssf did not find out.
+#[derive(Debug)]
+pub(crate) enum Observation<T> {
+    Present(T),
+    Missing,
+    Unreadable,
+}
+
+/// Classify one filesystem answer without losing the distinction between
+/// "not there" and "could not look".
+pub(crate) fn observe<T>(answer: std::io::Result<T>) -> Observation<T> {
+    match answer {
+        Ok(value) => Observation::Present(value),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Observation::Missing,
+        Err(_) => Observation::Unreadable,
+    }
+}
+
+impl<T> Observation<T> {
+    /// Presence as a report may state it: `None` means the stat failed.
+    pub(crate) fn presence(&self) -> Option<bool> {
+        match self {
+            Self::Present(_) => Some(true),
+            Self::Missing => Some(false),
+            Self::Unreadable => None,
+        }
+    }
+
+    pub(crate) fn is_present(&self) -> bool {
+        matches!(self, Self::Present(_))
+    }
+
+    /// Whether a keep-list entry may be there. Unknown stays on the list.
+    pub(crate) fn may_be_present(&self) -> bool {
+        !matches!(self, Self::Missing)
+    }
+}
+
+/// The exact path whose filesystem operation failed, made absolute so the
+/// report and its remedy do not print one place two ways.
+fn unread_path(path: &Path) -> PathBuf {
+    std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// One `read_dir` item, retaining an iteration failure that `flatten()`
+/// would discard. A failed `DirEntry` carries no child path, so the exact
+/// available fact is that `directory` was only partly read.
+fn directory_entry<T>(
+    directory: &Path,
+    answer: std::io::Result<T>,
+    unread: &mut Vec<PathBuf>,
+) -> Option<T> {
+    match observe(answer) {
+        Observation::Present(entry) => Some(entry),
+        Observation::Missing => None,
+        Observation::Unreadable => {
+            unread.push(unread_path(directory));
+            None
+        }
+    }
 }
 
 /// Where the data disk is mounted in the guest.
@@ -352,6 +465,19 @@ pub struct Survey {
     /// that reached that decision would be a VM deleted because someone
     /// edited a name.
     pub strays: Vec<Stray>,
+    /// Directories that are there and could not be read, so what is in
+    /// them is unknown -- `[vm] dir`, lima's home, lima's disk
+    /// directory, or several. Not the same as empty: the report calls
+    /// `[vm] dir` "safe to remove", and safety nobody could verify must
+    /// not be asserted.
+    ///
+    /// The paths, not a flag. A bool said "something could not be read"
+    /// and left every printer to guess which, so all three named
+    /// `[vm] dir` -- and a `~/.lima` left root-owned by an earlier
+    /// `sudo` sent people to fix permissions on a directory that was
+    /// never the problem, while the one holding their clones went
+    /// unnamed. The remedy has to carry the real name here too.
+    pub unread: Vec<PathBuf>,
 }
 
 /// How to spell a `limactl` command so that pasting it addresses the
@@ -1371,13 +1497,11 @@ impl Vm {
     /// it, and calling it untouched would be false on the one path where
     /// being wrong costs the clones.
     ///
-    /// A `read_dir` that failed reports nothing here, and the report then
-    /// says "nothing there" about a directory nobody looked in -- a
-    /// `[vm] dir` left root-owned by an earlier `sudo`, or on a volume
-    /// returning `EIO`, gets `no VM` over `safe to remove`. That is
-    /// wrong, it is master's behaviour, and fixing it in every reader at
-    /// once is #192.
-    fn fc_dir_contents(&self) -> Vec<Stray> {
+    /// A `read_dir` that failed is "nobody looked", which the report must
+    /// not print as "nothing there": a `[vm] dir` left root-owned by an
+    /// earlier `sudo`, or on a volume returning `EIO`, would otherwise
+    /// get `no VM` over `safe to remove`.
+    fn fc_dir_contents(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         // Absolute, because the remedy is an `rm -rf` a person pastes:
         // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
         // means a different directory from every other working
@@ -1402,54 +1526,81 @@ impl Vm {
         // here tripped a guard written for the name -- hiding every
         // stray in that directory and reporting it as unreadable when it
         // reads perfectly well.
-        let inside = self.dir.strip_prefix(&self.base).is_ok_and(|name| {
-            name.components().next().is_some()
-                && !name
-                    .components()
-                    .any(|c| c == std::path::Component::ParentDir)
-        });
-        if !inside {
-            return Vec::new();
-        }
-        // A directory that will not open reports nothing here, which is
-        // the same answer as an empty one. Telling those apart, in every
-        // reader at once, is #192.
-        let entries = match std::fs::read_dir(&base) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
+        let inside = match self.dir.strip_prefix(&self.base) {
+            Ok(name) => {
+                name.components().next().is_some()
+                    && !name
+                        .components()
+                        .any(|c| c == std::path::Component::ParentDir)
+            }
+            Err(_) => false,
         };
-        let strays: Vec<Stray> = entries
-            .flatten()
-            // A name that is not UTF-8 would be printed with
-            // replacement characters, in a command that then matches
-            // nothing: a remedy the person cannot act on is worse than
-            // the line it occupies.
-            .filter(|e| e.file_name().to_str().is_some())
-            .map(|e| e.path())
-            // A real directory, not a symlink to one: `rm -rf` on a link
-            // removes the link and leaves what it pointed at, so a
-            // remedy over one would not be a remedy.
-            .filter(|p| {
-                // Never this VM's own directory, on either backend:
-                // `Vm::destroy` removes it, and a line calling it
-                // "untouched, `--force` included" would be false on the
-                // one path where being wrong costs the clones. What a
-                // backend switch strands *inside* it is a question of
-                // its own (#176), and not one this reports on.
-                // A directory that could not be read at all is not
-                // reported here: telling the two apart is #192, which
-                // takes every reader at once rather than a site at a
-                // time.
-                //
-                // A real directory, not a symlink to one: `rm -rf` on a
-                // link removes the link and leaves what it pointed at,
-                // so a remedy over one would not be a remedy.
-                !self.is_own_dir(p)
-                    && std::fs::symlink_metadata(p).is_ok_and(|m| m.is_dir())
-                    && p.join("data.ext4").exists()
-            })
-            .map(|p| Stray::directory(&p))
-            .collect();
+        if !inside {
+            // There is a directory here and nobody looked in it. Saying
+            // `false` made the report confident about contents it had
+            // just declined to read -- `safe to remove` and `no VM` over
+            // a data disk of clones, from the guard added to prevent
+            // exactly that.
+            return match observe(std::fs::metadata(&base)) {
+                Observation::Missing => (Vec::new(), Vec::new()),
+                Observation::Present(_) | Observation::Unreadable => {
+                    (Vec::new(), vec![unread_path(&base)])
+                }
+            };
+        }
+        let entries = match observe(std::fs::read_dir(&base)) {
+            Observation::Present(entries) => entries,
+            Observation::Missing => return (Vec::new(), Vec::new()),
+            Observation::Unreadable => return (Vec::new(), vec![unread_path(&base)]),
+        };
+        self.fc_entries(&base, entries)
+    }
+
+    /// The entry-processing half of [`Vm::fc_dir_contents`], split so a
+    /// deterministic test can place an error between two real `DirEntry`
+    /// values. Real filesystems rarely surface a mid-iteration error on
+    /// demand, which made `.flatten()` otherwise untestable.
+    fn fc_entries<I>(&self, base: &Path, entries: I) -> (Vec<Stray>, Vec<PathBuf>)
+    where
+        I: IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
+    {
+        let mut strays = Vec::new();
+        let mut unread = Vec::new();
+        for answer in entries {
+            let Some(entry) = directory_entry(base, answer, &mut unread) else {
+                continue;
+            };
+            let path = entry.path();
+            // Observe before excluding our own or a non-UTF-8 name. An
+            // exclusion says what to do with an entry only after ssf has
+            // established what kind of entry it is.
+            match observe(std::fs::symlink_metadata(&path)) {
+                Observation::Present(metadata) if metadata.is_dir() => {}
+                Observation::Present(_) | Observation::Missing => continue,
+                Observation::Unreadable => {
+                    unread.push(unread_path(&path));
+                    continue;
+                }
+            }
+            let is_own = self.is_own_dir(&path);
+            let disk = path.join("data.ext4");
+            match observe(std::fs::metadata(&disk)) {
+                Observation::Present(_) if !is_own => {
+                    if entry.file_name().to_str().is_some() {
+                        strays.push(Stray::directory(&path));
+                    } else {
+                        // The disk is real, but no exact shell command can
+                        // name it through `Stray`'s UTF-8 fields. Keep the
+                        // inventory incomplete so the base is never called
+                        // safe to remove over a directory we cannot name.
+                        unread.push(unread_path(&path));
+                    }
+                }
+                Observation::Present(_) => {}
+                Observation::Missing => {}
+                Observation::Unreadable => unread.push(unread_path(&disk)),
+            }
+        }
         // Not sorted here: all four callers run `sort_strays` over the
         // whole list afterwards. Its key, `(is_disk, name)`, orders
         // these fully except for a tie with a lima instance of the same
@@ -1459,7 +1610,7 @@ impl Vm {
         // swapped between two commands; a second narrower ordering here
         // would not settle it either, only give the two more to
         // disagree about.
-        strays
+        (strays, unread)
     }
 
     /// The strays that can be found without asking the backend
@@ -1467,15 +1618,18 @@ impl Vm {
     /// lima. For the caller that has no tooling to ask with -- which is
     /// exactly when the person cannot run `limactl list` either, so
     /// going quiet then would take the report away at its most useful.
-    pub fn strays_on_filesystem(&self) -> Vec<Stray> {
-        let mut strays = self.fc_dir_contents();
+    pub fn strays_on_filesystem(&self) -> (Vec<Stray>, Vec<PathBuf>) {
+        let (mut strays, mut unread) = self.fc_dir_contents();
         // Lima's home under both backends: reading it costs no
         // `limactl`, and changing `[vm] backend` leaves an `ssf-*`
         // instance and a data disk of clones behind exactly as changing
         // `[vm] name` does.
-        strays.extend(self.strays_on_disk_read());
+        let (lima, lima_unread) = self.strays_on_disk_read();
+        strays.extend(lima);
+        unread.extend(lima_unread);
         lima::sort_strays(&mut strays);
-        strays
+        one_each(&mut unread);
+        (strays, unread)
     }
 
     /// What is here of this VM, asked of the backend in one pass:
@@ -1484,26 +1638,44 @@ impl Vm {
     pub fn survey(&self) -> Survey {
         match self.backend() {
             BackendKind::Firecracker => {
-                let dir = self.dir.exists();
+                // Metadata follows symlinks here: a dangling symlink has
+                // nothing behind it and is therefore missing.
+                let dir = observe(std::fs::metadata(&self.dir));
+                let data = observe(std::fs::metadata(self.data_disk()));
                 let running = self.firecracker_pid().is_some();
-                let mut strays = self.fc_dir_contents();
+                let (mut strays, mut unread) = self.fc_dir_contents();
                 // Lima's home on this backend too: see
                 // `strays_on_filesystem`.
-                strays.extend(self.strays_on_disk_read());
+                let (lima, lima_unread) = self.strays_on_disk_read();
+                strays.extend(lima);
+                unread.extend(lima_unread);
                 lima::sort_strays(&mut strays);
+                one_each(&mut unread);
                 Survey {
-                    present: Some(dir || running),
+                    present: match (dir.presence(), running) {
+                        (_, true) | (Some(true), false) => Some(true),
+                        (Some(false), false) => Some(false),
+                        (None, false) => None,
+                    },
                     running: Some(running),
-                    startable: dir,
-                    data: Some(self.data_disk().exists()),
+                    startable: dir.is_present(),
+                    data: data.presence(),
                     strays,
+                    unread,
                 }
             }
             BackendKind::Lima => {
                 let mut survey = self.lima_survey();
                 // `[vm] dir` is shared by the backends, so its strays
-                // are lima's business as much as Firecracker's.
-                survey.strays.splice(0..0, self.fc_dir_contents());
+                // are lima's business as much as Firecracker's -- and so
+                // is a `[vm] dir` nobody could read.
+                let (strays, unread) = self.fc_dir_contents();
+                survey.strays.splice(0..0, strays);
+                // Either directory being unreadable is enough to make
+                // what is here unknown -- assigning would have thrown
+                // away lima's own answer about its home.
+                survey.unread.extend(unread);
+                one_each(&mut survey.unread);
                 lima::sort_strays(&mut survey.strays);
                 survey
             }
@@ -2479,15 +2651,21 @@ impl Vm {
                 Err(_) => strays.extend(self.disk_strays_on_disk()),
             }
         }
-        strays.extend(self.fc_dir_contents());
+        let (dir_strays, mut unread) = self.fc_dir_contents();
+        strays.extend(dir_strays);
         if backend == BackendKind::Firecracker {
             // Under lima the listings above already covered its home;
             // under Firecracker nothing has, and a machine that changed
             // `[vm] backend` orphans an `ssf-*` instance and its data
             // disk exactly as one that changed `[vm] name` does.
-            strays.extend(self.strays_on_disk_read());
+            let (lima, lima_unread) = self.strays_on_disk_read();
+            strays.extend(lima);
+            unread.extend(lima_unread);
+        } else {
+            unread.extend(self.strays_on_disk_read().1);
         }
         lima::sort_strays(&mut strays);
+        one_each(&mut unread);
         let running = match backend {
             BackendKind::Firecracker => Some(self.running()),
             BackendKind::Lima => probe_error
@@ -2541,6 +2719,7 @@ impl Vm {
             // here is what let `instance: ssf-new missing (ssf vm
             // build)` stand over a machine still holding ssf-old.
             strays,
+            unread,
         }
     }
 
@@ -2706,20 +2885,24 @@ impl Vm {
         // is ssf's own either way, so it goes even when lima's half
         // failed: leaving it behind only makes the next run harder to
         // read, and the failure is still the step's failure below.
-        let dir = if self.dir.exists() {
-            match std::fs::remove_dir_all(&self.dir) {
-                Ok(()) => {
-                    println!("removed {}", self.dir.display());
-                    removed = true;
-                    Ok(())
+        let dir =
+            match observe(std::fs::metadata(&self.dir)) {
+                Observation::Missing => Ok(()),
+                // Only NotFound means there is nothing to remove. If stat
+                // failed, let the removal itself give the completion report
+                // its real answer instead of silently skipping the directory.
+                Observation::Present(_) | Observation::Unreadable => {
+                    match std::fs::remove_dir_all(&self.dir) {
+                        Ok(()) => {
+                            println!("removed {}", self.dir.display());
+                            removed = true;
+                            Ok(())
+                        }
+                        Err(e) => Err(anyhow::Error::new(e)
+                            .context(format!("removing {}", self.dir.display()))),
+                    }
                 }
-                Err(e) => {
-                    Err(anyhow::Error::new(e).context(format!("removing {}", self.dir.display())))
-                }
-            }
-        } else {
-            Ok(())
-        };
+            };
         // Both halves are reported. A directory that would not go is no
         // reason to lose the news that lima still holds an instance and
         // a data disk.
@@ -3362,6 +3545,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -3375,6 +3559,7 @@ mod tests {
                 startable: true,
                 data: Some(false),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
     }
@@ -3435,7 +3620,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn vm_status_reads_limas_home_on_both_backends() {
         // `ssf vm status`, `ssf doctor` and `ssf uninstall` have to
@@ -3470,6 +3654,7 @@ mod tests {
             ["ssf-old"],
             "a lima instance a backend change left behind"
         );
+        assert!(st.unread.is_empty(), "readable while readable");
     }
 
     #[tokio::test]
@@ -3586,7 +3771,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn limas_home_is_read_on_the_firecracker_backend_too() {
         // Changing `[vm] backend` orphans an `ssf-*` instance and its
@@ -3613,7 +3797,7 @@ mod tests {
         let mut vm = Vm::new(&cfg);
         vm.lima_home = Some(home.clone());
         let survey = vm.survey();
-        let fallback = vm.strays_on_filesystem();
+        let (fallback, _) = vm.strays_on_filesystem();
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             survey
@@ -3721,6 +3905,162 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["old"],
             "the stray is there and readable"
+        );
+        assert!(survey.unread.is_empty(), "and not falsely unknown");
+    }
+
+    #[test]
+    fn an_unread_path_is_named_absolutely() {
+        // The report prints this path in one sentence and an absolute
+        // path in the remedy beside it; relative, they are one place
+        // written two ways. A `temp_dir()` fixture cannot show this --
+        // it is already absolute -- so the input has to be relative.
+        let rel = format!(
+            "target/ssf-unread-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        std::fs::create_dir_all(&rel).unwrap();
+        let named = unread_path(Path::new(&rel));
+        std::fs::remove_dir_all(&rel).unwrap();
+        assert!(named.is_absolute(), "{named:?}");
+        assert!(named.ends_with(&rel), "{named:?}");
+    }
+
+    #[test]
+    fn only_not_found_is_missing() {
+        let absent = observe::<()>(Err(std::io::Error::from(std::io::ErrorKind::NotFound)));
+        let denied = observe::<()>(Err(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
+        let io = observe::<()>(Err(std::io::Error::from(std::io::ErrorKind::Other)));
+        assert!(matches!(absent, Observation::Missing));
+        assert!(matches!(denied, Observation::Unreadable));
+        assert!(matches!(io, Observation::Unreadable));
+        assert_eq!(denied.presence(), None);
+        assert!(denied.may_be_present());
+    }
+
+    #[test]
+    fn a_mid_iteration_error_makes_the_directory_unreadable() {
+        let dir = Path::new("target/partly-read");
+        let mut unread = Vec::new();
+        let found = directory_entry::<()>(
+            dir,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            &mut unread,
+        );
+        assert!(found.is_none());
+        assert_eq!(unread, [unread_path(dir)]);
+
+        unread.clear();
+        let vanished = directory_entry::<()>(
+            dir,
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            &mut unread,
+        );
+        assert!(vanished.is_none());
+        assert!(unread.is_empty(), "NotFound alone is absent");
+    }
+
+    #[test]
+    fn firecracker_scan_keeps_entries_around_an_iteration_error() {
+        let base = std::env::temp_dir().join(format!(
+            "ssf-fc-iteration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for name in ["old-a", "old-b"] {
+            let dir = base.join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("data.ext4"), b"disk").unwrap();
+        }
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        cfg.vm.name = "new".into();
+        let vm = Vm::new(&cfg);
+        let mut answers: Vec<_> = std::fs::read_dir(&base).unwrap().collect();
+        assert_eq!(answers.len(), 2);
+        answers.insert(
+            1,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        let (mut strays, unread) = vm.fc_entries(&base, answers);
+        std::fs::remove_dir_all(&base).unwrap();
+        strays.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["old-a", "old-b"]
+        );
+        assert_eq!(unread, [unread_path(&base)]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unnameable_directory_with_a_data_disk_is_incomplete_inventory() {
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let base = std::env::temp_dir().join(format!(
+            "ssf-fc-nonutf8-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let odd = base.join(std::ffi::OsString::from_vec(
+            [b'o', b'l', b'd', 0xff].to_vec(),
+        ));
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("data.ext4"), b"disk").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        cfg.vm.name = "new".into();
+        let (strays, unread) = Vm::new(&cfg).fc_dir_contents();
+        std::fs::remove_dir_all(&base).unwrap();
+        assert!(strays.is_empty(), "no inexact removal command: {strays:?}");
+        assert_eq!(unread, [unread_path(&odd)]);
+    }
+
+    #[test]
+    fn a_directory_is_named_once_however_many_places_found_it() {
+        // `unread` is assembled from two or three readers, and the same
+        // directory reaching it twice would print two lines with one
+        // remedy between them -- the shape that sent a person looking
+        // for a second `rm -rf` target that was not there. Nothing
+        // produces a duplicate today; this is what keeps that true.
+        let mut paths = vec![
+            PathBuf::from("/b"),
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+        ];
+        one_each(&mut paths);
+        assert_eq!(paths, [PathBuf::from("/a"), PathBuf::from("/b")]);
+        // And a directory inside one that could not be read is the same
+        // problem, not a second one: nobody can stat a child of a
+        // mode-000 directory either, so both reach `unread`, and two
+        // lines with one remedy between them is what this is for.
+        let mut nested = vec![
+            PathBuf::from("/home/me/.lima/_disks"),
+            PathBuf::from("/home/me/.lima"),
+            PathBuf::from("/home/me/.limaX"),
+        ];
+        one_each(&mut nested);
+        assert_eq!(
+            nested,
+            [
+                PathBuf::from("/home/me/.lima"),
+                // A prefix of the *string* is not a directory inside it.
+                PathBuf::from("/home/me/.limaX"),
+            ]
         );
     }
 

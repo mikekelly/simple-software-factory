@@ -2414,11 +2414,18 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
 /// is in `doctor` and is reachable by nothing: removing it makes
 /// `ssf doctor` silent about a stray it found, with the suite green.
 /// #188 is the seam for that, here and at the four sibling sites.
-pub fn stray_notes(strays: &[vm::Stray]) -> String {
+pub fn stray_notes(strays: &[vm::Stray], unread: &[PathBuf]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
     for stray in strays {
         let _ = writeln!(out, "note {}", stray.describe());
+    }
+    if !unread.is_empty() {
+        // The same sentence `ssf vm status` and `ssf uninstall` print,
+        // from the same function: a directory nobody could read may hold
+        // a VM a rename left behind, and this is the command a person
+        // runs to find out what is wrong.
+        let _ = writeln!(out, "note {}", uninstall::unread_note(unread));
     }
     out
 }
@@ -2490,6 +2497,13 @@ pub fn render_vm_status(st: &vm::VmStatus) -> String {
     );
     for stray in &st.strays {
         let _ = writeln!(out, "stray:    {}", stray.describe());
+    }
+    if !st.unread.is_empty() {
+        // The directories that could not be read, by name --
+        // this printed `<[vm] dir>/<name>`, which is neither
+        // where the trouble is nor a directory that need
+        // exist.
+        let _ = writeln!(out, "unread:   {}", uninstall::unread_note(&st.unread));
     }
     let _ = writeln!(
         out,
@@ -4005,12 +4019,13 @@ async fn doctor() -> Result<()> {
         // lima's home is exactly what a person who cannot run `limactl
         // list` needs told, so the answer is found the other way rather
         // than not at all. Firecracker's strays never need tooling.
-        let strays = if tooling.ok {
-            vm.survey().strays
+        let (strays, unread) = if tooling.ok {
+            let s = vm.survey();
+            (s.strays, s.unread)
         } else {
             vm.strays_on_filesystem()
         };
-        print!("{}", stray_notes(&strays));
+        print!("{}", stray_notes(&strays, &unread));
     }
     // The widget lives on the host; inside the guest there is no Omarchy
     // shell to check.
@@ -4116,7 +4131,57 @@ mod tests {
             tooling: None,
             probe_error: None,
             strays: Vec::new(),
+            unread: Vec::new(),
         }
+    }
+
+    #[test]
+    fn vm_status_names_the_directory_that_could_not_be_read() {
+        // It named `<[vm] dir>/<name>` -- neither where the trouble is
+        // nor a directory that need exist -- while `ssf doctor` and
+        // `ssf uninstall` named `[vm] dir` correctly. Three commands
+        // have to agree about one machine, so they share one sentence.
+        let st = vm::VmStatus {
+            unread: vec![PathBuf::from("/home/me/.lima")],
+            ..status()
+        };
+        let text = render_vm_status(&st);
+        assert!(text.contains("/home/me/.lima could not be read"), "{text}");
+        assert!(!text.contains("/v/new could not"), "{text}");
+        assert_eq!(
+            text.lines()
+                .find(|l| l.starts_with("unread:"))
+                .map(str::trim_end),
+            Some(
+                format!("unread:   {}", uninstall::unread_note(&st.unread))
+                    .trim_end()
+                    .to_string()
+            )
+            .as_deref(),
+            "the same sentence the other two print"
+        );
+        // Nothing unread, nothing said.
+        assert!(!render_vm_status(&status()).contains("unread:"));
+    }
+
+    #[test]
+    fn a_path_that_is_not_utf8_does_not_take_the_whole_json_with_it() {
+        // `ssf vm status --json` is what the widget reads, and serde's
+        // own `PathBuf` refuses a path that is not UTF-8 -- so one odd
+        // byte in an unreadable directory's name would have made the
+        // command print nothing at all. A report about a directory
+        // nobody could read, silenced by the name of the directory
+        // nobody could read. Every other path on `VmStatus` is a lossy
+        // `String` for the same reason.
+        use std::os::unix::ffi::OsStrExt as _;
+        let st = vm::VmStatus {
+            unread: vec![PathBuf::from(std::ffi::OsStr::from_bytes(
+                b"/tmp/ssf-\xff-lima",
+            ))],
+            ..status()
+        };
+        let json = serde_json::to_string(&st).expect("a bad name is a bad line, not no output");
+        assert!(json.contains("ssf-") && json.contains("-lima"), "{json}");
     }
 
     #[test]
@@ -4161,17 +4226,20 @@ mod tests {
     }
 
     #[test]
-    fn doctor_notes_name_every_stray_not_just_the_first() {
+    fn doctor_notes_name_the_stray_and_the_directory_it_could_not_read() {
         // The twin of `render_vm_status`'s lines. Only that copy was
         // extracted last round, so this one went on naming `[vm] dir`
         // for a fact about lima's home with nothing to catch it.
         // Both strays, for the reason `render_vm_status`'s twin takes
         // both: the disk sorts last, so a printer that stops after one
         // drops the clones and keeps the debris.
-        let text = stray_notes(&[
-            vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
-            vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
-        ]);
+        let text = stray_notes(
+            &[
+                vm::Stray::lima_instance("ssf-old".into(), &Default::default()),
+                vm::Stray::lima_disk("ssf-old".into(), &Default::default()),
+            ],
+            &[PathBuf::from("/home/me/.lima/_disks")],
+        );
         assert!(text.contains("ssf leaves it alone"), "{text}");
         assert!(text.contains("limactl delete ssf-old"), "{text}");
         assert!(text.contains("limactl disk delete ssf-old"), "{text}");
@@ -4179,7 +4247,15 @@ mod tests {
             text.contains("(its clones and worktrees are in it)"),
             "{text}"
         );
-        assert_eq!(stray_notes(&[]), "");
+        assert!(
+            text.contains("/home/me/.lima/_disks could not be read"),
+            "{text}"
+        );
+        // (No `[vm] dir` assertion here, unlike the `render_vm_status`
+        // twin: that printer holds `st.dir` and could name it by
+        // mistake, and this one is handed only strays and unread paths,
+        // so an assertion about it would hold for every input.)
+        assert_eq!(stray_notes(&[], &[]), "");
     }
 
     #[test]

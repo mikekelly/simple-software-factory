@@ -1072,8 +1072,8 @@ Unread-path reporting alone does not add a refusal. However, when the
 configured VM or its data disk cannot be statted, its presence is unknown
 instead of absent. An unknown data-disk presence engages the existing
 refusal for workspaces whose safety could not be established, including
-after a failed lima query. The message describes what could not be established; it does not
-assert that a data disk exists. Further refusal policy and detection of a
+after a failed lima query. The message describes what could not be
+established; it does not assert that a data disk exists. Further refusal policy and detection of a
 stranded disk after a backend change remain in issue #176.
 
 What it keeps, and lists at the end (the same list both times): the

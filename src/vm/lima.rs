@@ -38,8 +38,8 @@ use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use super::{
-    HostFacts, Sizes, Stray, StrayKind, Survey, Vm, make_executable, plan_grow, scripts_dir,
-    sizes_for, which,
+    HostFacts, Observation, Sizes, Stray, StrayKind, Survey, Vm, directory_entry, make_executable,
+    observe, plan_grow, scripts_dir, sizes_for, unread_path, which,
 };
 use crate::config::{Config, HerdrConfig, expand_tilde};
 use crate::platform;
@@ -978,12 +978,28 @@ impl Vm {
     }
 
     /// Is either of them on disk? What is left to go on when `limactl`
-    /// will not answer. `None` when there is no lima home to look in --
-    /// no home directory at all -- which is not the same as "nothing
-    /// there".
-    fn lima_leftovers(&self) -> Option<bool> {
-        let (instance, disk) = (self.lima_instance_dir()?, self.lima_disk_dir()?);
-        Some(instance.exists() || disk.exists())
+    /// will not answer, plus the exact paths whose metadata could not be
+    /// read. `None` with no unread paths means there was no lima home to
+    /// inspect; `None` with paths means inspection was inconclusive.
+    fn lima_leftovers(&self) -> (Option<bool>, Vec<PathBuf>) {
+        let (Some(instance), Some(disk)) = (self.lima_instance_dir(), self.lima_disk_dir()) else {
+            return (None, Vec::new());
+        };
+        let instance_presence = observe(std::fs::metadata(&instance)).presence();
+        let disk_presence = observe(std::fs::metadata(&disk)).presence();
+        let mut unread = Vec::new();
+        if instance_presence.is_none() {
+            unread.push(unread_path(&instance));
+        }
+        if disk_presence.is_none() {
+            unread.push(unread_path(&disk));
+        }
+        let present = match (instance_presence, disk_presence) {
+            (Some(true), _) | (_, Some(true)) => Some(true),
+            (Some(false), Some(false)) => Some(false),
+            _ => None,
+        };
+        (present, unread)
     }
 
     /// What lima holds of this VM. The data disk is asked about as well
@@ -993,7 +1009,7 @@ impl Vm {
     /// be started to look inside it, which is why that case is not
     /// `startable`.
     pub(super) fn lima_survey(&self) -> Survey {
-        let dir = self.dir.exists();
+        let dir = observe(std::fs::metadata(&self.dir)).presence();
         let (mine, others) = match self.lima_instances_within(SURVEY_LIMIT) {
             Ok(all) => self.split_instances(all),
             Err(e) => return self.lima_unanswered(dir, "the instance", &self.lima_name(), &e),
@@ -1003,6 +1019,7 @@ impl Vm {
         // three commands that name strays have to agree about one
         // machine, and `status` reads these unconditionally. Reading
         // them costs no `limactl`.
+        let home_unread: Vec<PathBuf> = self.strays_on_disk_read().1;
         let disk = match self.lima_disks_within(SURVEY_LIMIT) {
             Ok(all) => {
                 let (mine, others) = self.split_disks(all);
@@ -1019,21 +1036,29 @@ impl Vm {
                 // on the same rule. Leaving those out hid an old data
                 // disk full of clones in exactly the case where
                 // `limactl disk list` is no use to the person either.
-                strays.extend(self.disk_strays_on_disk());
-                self.lima_disk_dir().map(|p| p.exists())
+                // Only the strays: `home_unread` was filled from both of
+                // lima's directories above, and adding this half again
+                // named `_disks` twice.
+                let (disks, _) = self.disk_strays_read();
+                strays.extend(disks);
+                self.lima_disk_dir()
+                    .and_then(|p| observe(std::fs::metadata(p)).presence())
             }
         };
         sort_strays(&mut strays);
         Survey {
             present: match (mine.is_some(), disk) {
                 (true, _) | (false, Some(true)) => Some(true),
-                (false, Some(false)) => Some(dir),
-                (false, None) => dir.then_some(true),
+                (false, Some(false)) => dir,
+                (false, None) => (dir == Some(true)).then_some(true),
             },
             running: Some(mine.as_ref().is_some_and(Instance::is_running)),
             startable: mine.is_some(),
             data: disk,
             strays,
+            // `[vm] dir` is the caller's question; lima's own home is
+            // this one's.
+            unread: home_unread,
         }
     }
 
@@ -1083,28 +1108,31 @@ impl Vm {
     /// gets its clean `ssf uninstall`. Something there is a VM that
     /// cannot be asked about -- never a missing binary's licence to
     /// treat a disk full of workspaces as absent.
-    fn lima_unanswered(&self, dir: bool, what: &str, name: &str, e: &anyhow::Error) -> Survey {
+    fn lima_unanswered(
+        &self,
+        dir: Option<bool>,
+        what: &str,
+        name: &str,
+        e: &anyhow::Error,
+    ) -> Survey {
         warn!("could not ask lima about {what} {name}: {e:#}");
-        let instance = self.lima_instance_dir().map(|p| p.exists());
-        let disk = self.lima_disk_dir().map(|p| p.exists());
+        let instance = self
+            .lima_instance_dir()
+            .and_then(|p| observe(std::fs::metadata(p)).presence());
+        let disk = self
+            .lima_disk_dir()
+            .and_then(|p| observe(std::fs::metadata(p)).presence());
         // Same evidence, same rule: what lima's home holds is what there
         // is to go on. Without this a stray goes unmentioned exactly
         // when the person can least find it themselves -- `limactl list`
         // is the command that just failed.
-        let strays = self.strays_on_disk_read();
+        let (strays, unread) = self.strays_on_disk_read();
         let here = instance == Some(true) || disk == Some(true);
-        // Master's rule, and it is not a safe one: `p.exists()` is
-        // `metadata().is_ok()`, so a denied `stat` on lima's home reads
-        // as a confident `false` about a directory nobody looked in, and
-        // `nothing` then makes `present` and `data` both `Some(false)`
-        // -- which takes the "workspaces could not be checked" sentence
-        // off the page above the confirmation. These two feed the
-        // refusal, so the fix is #176's, coordinated with #192.
         let nothing = instance == Some(false) && disk == Some(false);
         Survey {
-            present: if here || dir {
+            present: if here || dir == Some(true) {
                 Some(true)
-            } else if nothing {
+            } else if nothing && dir == Some(false) {
                 Some(false)
             } else {
                 None
@@ -1116,6 +1144,7 @@ impl Vm {
             startable: false,
             data: disk,
             strays,
+            unread,
         }
     }
 
@@ -1124,32 +1153,54 @@ impl Vm {
     /// `limactl` will not list them, and which of lima's directories
     /// could not be read. Reported, never removed -- so naming a
     /// directory lima might disown costs a line, not a VM.
-    pub(super) fn strays_on_disk_read(&self) -> Vec<Stray> {
-        let mut strays = self.instance_strays_on_disk();
-        strays.extend(self.disk_strays_on_disk());
+    pub(super) fn strays_on_disk_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
+        let (mut strays, mut unread) = self.instance_strays_read();
+        let (disks, disk_unread) = self.disk_strays_read();
+        strays.extend(disks);
+        unread.extend(disk_unread);
         sort_strays(&mut strays);
-        strays
+        (strays, unread)
     }
 
     /// The instance half of [`Vm::strays_on_disk_read`].
     pub(super) fn instance_strays_on_disk(&self) -> Vec<Stray> {
-        Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima())
-            .into_iter()
-            .map(|n| Stray::lima_instance(n, &self.lima_command()))
-            .collect()
+        self.instance_strays_read().0
+    }
+
+    /// [`Vm::instance_strays_on_disk`], and whether lima's home could be
+    /// read at all.
+    fn instance_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
+        let (names, unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima());
+        (
+            names
+                .into_iter()
+                .map(|n| Stray::lima_instance(n, &self.lima_command()))
+                .collect(),
+            unread,
+        )
     }
 
     /// The data-disk half, which is the one that holds clones and
     /// worktrees -- so it is wanted on its own whenever `limactl disk
     /// list` is the call that failed.
     pub(super) fn disk_strays_on_disk(&self) -> Vec<Stray> {
-        Self::ssf_dirs_in(
+        self.disk_strays_read().0
+    }
+
+    /// [`Vm::disk_strays_on_disk`], and whether lima's disk directory
+    /// could be read at all.
+    fn disk_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
+        let (names, unread) = Self::ssf_dirs_in(
             self.lima_home.as_ref().map(|h| h.join("_disks")).as_deref(),
             self.ours_in_lima_disks(),
+        );
+        (
+            names
+                .into_iter()
+                .map(|n| Stray::lima_disk(n, &self.lima_command()))
+                .collect(),
+            unread,
         )
-        .into_iter()
-        .map(|n| Stray::lima_disk(n, &self.lima_command()))
-        .collect()
     }
 
     /// The name in lima's home this configuration calls its own -- and
@@ -1190,29 +1241,59 @@ impl Vm {
     }
 
     /// The `ssf-*` directories in one of lima's directories, other than
-    /// `ours`.
+    /// `ours`, and whether the directory could be read at all.
     ///
-    /// A directory that will not open reports nothing here, which is the
-    /// same answer as an empty one -- a lima home left root-owned by an
+    /// The same rule as `[vm] dir`: a `read_dir` that failed is "nobody
+    /// looked", not "nothing there". A lima home left root-owned by an
     /// earlier `sudo` is one of the reasons `limactl` fails in the first
-    /// place, so the two arrive together. Telling them apart, in every
-    /// reader at once, is #192.
-    fn ssf_dirs_in(dir: Option<&Path>, ours: Option<String>) -> Vec<String> {
+    /// place, so the two arrive together -- and reading it as empty
+    /// printed `no VM` over `safe to remove` about a home holding an
+    /// instance and a disk of clones.
+    fn ssf_dirs_in(dir: Option<&Path>, ours: Option<String>) -> (Vec<String>, Vec<PathBuf>) {
         let Some(dir) = dir else {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
-        let entries = match std::fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => return Vec::new(),
+        let entries = match observe(std::fs::read_dir(dir)) {
+            Observation::Present(entries) => entries,
+            Observation::Missing => return (Vec::new(), Vec::new()),
+            Observation::Unreadable => return (Vec::new(), vec![unread_path(dir)]),
         };
-        entries
-            .flatten()
-            // A symlink is not a lima instance directory, and the same
-            // rule `[vm] dir`'s scan uses.
-            .filter(|e| std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir()))
-            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
-            .filter(|name| Some(name) != ours.as_ref() && is_ssf_name(name))
-            .collect()
+        Self::ssf_entries_in(dir, ours, entries)
+    }
+
+    /// Entry processing for [`Vm::ssf_dirs_in`], separate so tests can put
+    /// an error between two real entries and pin that it is retained.
+    fn ssf_entries_in<I>(
+        dir: &Path,
+        ours: Option<String>,
+        entries: I,
+    ) -> (Vec<String>, Vec<PathBuf>)
+    where
+        I: IntoIterator<Item = std::io::Result<std::fs::DirEntry>>,
+    {
+        let mut names = Vec::new();
+        let mut unread = Vec::new();
+        for answer in entries {
+            let Some(entry) = directory_entry(dir, answer, &mut unread) else {
+                continue;
+            };
+            let path = entry.path();
+            match observe(std::fs::symlink_metadata(&path)) {
+                Observation::Present(metadata) if metadata.is_dir() => {}
+                Observation::Present(_) | Observation::Missing => continue,
+                Observation::Unreadable => {
+                    unread.push(unread_path(&path));
+                    continue;
+                }
+            }
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if Some(&name) != ours.as_ref() && is_ssf_name(&name) {
+                names.push(name);
+            }
+        }
+        (names, unread)
     }
 
     /// The data disk's size as lima has it, else what a build would make.
@@ -2055,18 +2136,30 @@ impl Vm {
         let instance = match self.lima_instance() {
             Ok(i) => i,
             Err(e) => match self.lima_leftovers() {
-                Some(false) => {
+                (Some(false), _) => {
                     warn!("could not ask lima about {name} ({e:#}); its home holds nothing of it");
                     return Ok(false);
                 }
-                Some(true) => {
+                (Some(true), _) => {
                     return Err(e).with_context(|| {
                         format!(
                             "lima's home still holds something of {name}, and lima cannot be asked about it"
                         )
                     });
                 }
-                None => {
+                (None, unread) if !unread.is_empty() => {
+                    return Err(e).with_context(|| {
+                        format!(
+                            "lima cannot be asked about {name}, and {} could not be read",
+                            unread
+                                .iter()
+                                .map(|p| p.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(" and ")
+                        )
+                    });
+                }
+                (None, _) => {
                     return Err(e).with_context(|| {
                         format!(
                             "lima cannot be asked about {name}, and there is no home directory to find lima's own in instead"
@@ -2089,17 +2182,25 @@ impl Vm {
         // failed the step over a disk directory demonstrably not there.
         let held = match self.lima_disk() {
             Ok(d) => d.is_some(),
-            Err(e) => match self.lima_disk_dir().map(|p| p.exists()) {
-                Some(false) => {
+            Err(e) => match self.lima_disk_dir() {
+                Some(path) if matches!(observe(std::fs::metadata(&path)), Observation::Missing) => {
                     warn!(
                         "could not ask lima about disk {disk} ({e:#}); its home holds no such disk"
                     );
                     false
                 }
-                _ => {
+                Some(path) => {
                     return Err(e).with_context(|| {
-                        format!("lima cannot be asked about disk {disk}, and its home may hold it")
+                        format!(
+                            "lima cannot be asked about disk {disk}, and {} could not be confirmed absent",
+                            path.display()
+                        )
                     });
+                }
+                None => {
+                    return Err(e).context(format!(
+                        "lima cannot be asked about disk {disk}, and there is no home directory to inspect"
+                    ));
                 }
             },
         };
@@ -2783,6 +2884,7 @@ mod tests {
                 startable: true,
                 data: Some(true),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
         let t = Fake::new("Running");
@@ -2805,6 +2907,7 @@ mod tests {
                 startable: false,
                 data: Some(true),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
     }
@@ -2952,6 +3055,32 @@ mod tests {
         assert_eq!(s.data, Some(false));
     }
 
+    #[test]
+    fn lima_scan_keeps_entries_around_an_iteration_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "ssf-lima-iteration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for name in ["ssf-old-a", "ssf-old-b"] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        let mut answers: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert_eq!(answers.len(), 2);
+        answers.insert(
+            1,
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        );
+        let (mut names, unread) = Vm::ssf_entries_in(&dir, None, answers);
+        std::fs::remove_dir_all(&dir).unwrap();
+        names.sort();
+        assert_eq!(names, ["ssf-old-a", "ssf-old-b"]);
+        assert_eq!(unread, [unread_path(&dir)]);
+    }
+
     #[tokio::test]
     async fn vm_status_names_every_stray_once_when_limactl_will_not_list() {
         // Through `status()`, under lima, on the path where `limactl`
@@ -3031,7 +3160,7 @@ mod tests {
                 .collect();
         assert_eq!(named, [(StrayKind::Directory, "old".to_string())]);
         // And the filesystem-only path doctor falls back to sees it too.
-        assert_eq!(t.vm.strays_on_filesystem().len(), 1);
+        assert_eq!(t.vm.strays_on_filesystem().0.len(), 1);
     }
 
     #[test]
@@ -3060,6 +3189,20 @@ mod tests {
             cfg.vm.dir = base.to_string_lossy().into_owned();
             Vm::new(&cfg).survey().strays.len()
         };
+        let unread = |name: &str| {
+            let mut cfg = Config::default();
+            cfg.vm.name = name.into();
+            cfg.vm.backend = Some(BackendKind::Firecracker);
+            cfg.vm.dir = base.to_string_lossy().into_owned();
+            !Vm::new(&cfg).survey().unread.is_empty()
+        };
+        // A directory the guard declined to look in is unknown, not
+        // empty: saying "empty" made the report confident about contents
+        // it had just refused to read -- `safe to remove` and `no VM`
+        // over a data disk of clones, from the guard added to prevent
+        // exactly that.
+        let refused_is_unknown = unread("..") && unread("") && unread("/etc");
+        let looked = !unread("new");
         let (escapes, nested, ordinary) = (
             [survey(""), survey("."), survey(".."), survey("/etc")],
             survey("a/b"),
@@ -3073,6 +3216,11 @@ mod tests {
         // reported -- the guard must not over-fire.
         assert_eq!(nested, 1, "a/b is inside [vm] dir");
         assert_eq!(ordinary, 1);
+        assert!(
+            refused_is_unknown,
+            "a directory nobody looked in is not an empty one"
+        );
+        assert!(looked, "and one that was read is not unknown");
     }
 
     #[test]
@@ -3099,7 +3247,8 @@ mod tests {
         let dir_stray = t.vm.base.join("zzz-dir");
         std::fs::create_dir_all(&dir_stray).unwrap();
         std::fs::write(dir_stray.join("data.ext4"), b"disk").unwrap();
-        let strays = t.vm.strays_on_filesystem();
+        let (strays, unread) = t.vm.strays_on_filesystem();
+        assert!(unread.is_empty(), "everything here is readable");
         let names: Vec<_> = strays.iter().map(|s| s.name.as_str()).collect();
         // Sorted, not in the order the two directories were read: the
         // disk is last though its name sorts first.
@@ -3108,12 +3257,6 @@ mod tests {
             ["ssf-aaa-inst", "zzz-dir", "ssf-aaa"],
             "somebody else's, and a symlink, are not ssf's to name"
         );
-        // ... and this is what `ssf doctor` falls back to when there is
-        // no tooling to ask with, so it has to carry the unread
-        // directories too -- that is the note a person who cannot run
-        // `limactl list` most needs.
-        #[cfg(unix)]
-        {}
         let kinds: Vec<_> = strays.iter().map(|s| s.kind).collect();
         assert_eq!(kinds.len(), 3, "both of lima's, and [vm] dir's: {kinds:?}");
         assert!(kinds.contains(&StrayKind::LimaInstance), "{kinds:?}");
@@ -3205,6 +3348,7 @@ mod tests {
         // Under lima, this configuration's own: not a stray.
         assert!(
             t.vm.strays_on_filesystem()
+                .0
                 .iter()
                 .all(|s| s.name != t.vm.lima_disk_name()),
             "its own disk is not a stray under lima"
@@ -3275,6 +3419,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
     }
@@ -3294,6 +3439,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
         // The direction that matters: the disk is on disk, so it is
@@ -3308,6 +3454,7 @@ mod tests {
                 startable: false,
                 data: Some(true),
                 strays: Vec::new(),
+                unread: Vec::new(),
             }
         );
     }
@@ -3323,7 +3470,13 @@ mod tests {
         let home = t.vm.lima_home.clone().unwrap();
         std::fs::create_dir_all(home.join("_disks").join("ssf-one")).unwrap();
         let err = t.vm.lima_destroy().unwrap_err().to_string();
-        assert!(err.contains("may hold it"), "{err}");
+        assert_eq!(
+            err,
+            format!(
+                "lima cannot be asked about disk ssf-one, and {} could not be confirmed absent",
+                home.join("_disks/ssf-one").display()
+            )
+        );
         assert!(t.ran("delete -f ssf-one"), "{:?}", t.commands());
         // With nothing of the disk in lima's home there is nothing to
         // delete, and a limactl that would not say so is no reason to
