@@ -15,18 +15,18 @@
 //! repository the post goes to the way gh does: `--repo`, an item given as
 //! a URL (but not one that is a value-taking flag's value),
 //! `GH_REPO`, else the checkout's `origin` remote. The shim reads
-//! nothing but its environment (a `--body-file`, and `git config` for that
-//! remote), writes nothing, and keeps stdin and the terminal intact, so it
-//! works inside read-only sandboxes and leaves gh's interactive flows alone.
+//! its environment, explicit body files/stdin, and `git config` for that
+//! remote. Large bodies use an inherited anonymous file rather than argv.
+//! Interactive flows and the terminal remain gh’s responsibility.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::origin::{Origin, stamp_with};
 
-/// Bodies above this are passed through untouched rather than moved from a
-/// file onto the command line (GitHub rejects them anyway).
-const MAX_INLINE_BODY: usize = 100_000;
+/// Keep individual body arguments well below exec limits, including Linux’s
+/// per-argument limit. Larger bodies travel through an inherited file.
+const MAX_INLINE_BODY: usize = 32_000;
 
 /// Directory the shim lives in: `~/.config/ssf/bin`.
 pub fn dir() -> PathBuf {
@@ -131,6 +131,7 @@ pub fn run() -> ! {
         std::process::exit(127);
     };
     let mut cmd = std::process::Command::new(&real);
+    let mut body_files = Vec::new();
     // Only well-formed UTF-8 argument lists are inspected; anything else is
     // handed to gh exactly as received.
     let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
@@ -145,7 +146,18 @@ pub fn run() -> ! {
                 read: &read_body_file,
                 checkout: &checkout_repo,
             };
-            cmd.args(shim.rewrite(args));
+            let args = shim
+                .try_rewrite(args)
+                .and_then(|args| transport_bodies(args, &mut body_files));
+            match args {
+                Ok(args) => {
+                    cmd.args(args);
+                }
+                Err(err) => {
+                    eprintln!("gh: ssf could not prepare the body: {err:#}");
+                    std::process::exit(1);
+                }
+            }
         }
         _ => {
             cmd.args(&raw);
@@ -158,13 +170,129 @@ pub fn run() -> ! {
 
 fn read_body_file(path: &str) -> std::io::Result<String> {
     use std::io::Read;
-    let mut s = String::new();
+    let mut bytes = Vec::new();
     if path == "-" {
-        std::io::stdin().read_to_string(&mut s)?;
+        std::io::stdin().read_to_end(&mut bytes)?;
     } else {
-        std::fs::File::open(path)?.read_to_string(&mut s)?;
+        std::fs::File::open(path)?.read_to_end(&mut bytes)?;
     }
-    Ok(s)
+    String::from_utf8(bytes)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
+}
+
+/// Anonymous file kept open across exec; gh reopens the descriptor path.
+/// Linux uses memory, other Unix systems use an immediately unlinked private
+/// temporary file. No pathname survives a normal return or successful exec.
+fn body_file(body: &str) -> Result<std::fs::File> {
+    use std::io::{Seek, Write};
+    use std::os::fd::{AsRawFd, FromRawFd};
+    #[cfg(target_os = "linux")]
+    let mut file = {
+        let fd = unsafe { libc::memfd_create(c"ssf-gh-body".as_ptr(), 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        unsafe { std::fs::File::from_raw_fd(fd) }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let mut file = {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::env::temp_dir().join("ssf-gh-body-XXXXXX");
+        let mut name = std::ffi::CString::new(path.as_os_str().as_bytes())?.into_bytes_with_nul();
+        let fd = unsafe { libc::mkstemp(name.as_mut_ptr().cast()) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let file = unsafe { std::fs::File::from_raw_fd(fd) };
+        if unsafe { libc::unlink(name.as_ptr().cast()) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        file
+    };
+    file.write_all(body.as_bytes())?;
+    file.rewind()?;
+    // Keep the descriptor inheritable across exec.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETFD, 0) } < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(file)
+}
+
+fn transport_bodies(mut args: Vec<String>, files: &mut Vec<std::fs::File>) -> Result<Vec<String>> {
+    use std::os::fd::AsRawFd;
+    let Some((c, s)) = command_words(&args) else {
+        return Ok(args);
+    };
+    let review = args[c] == "pr" && args[s] == "review";
+    let needs_file = args.iter().map(|a| a.len() + 1).sum::<usize>() > MAX_INLINE_BODY
+        || args.iter().any(|a| a.contains('\0'));
+    if !needs_file {
+        return Ok(args);
+    }
+    let mut n = 0;
+    while n < args.len() {
+        let a = args[n].as_str();
+        if a == "--" {
+            break;
+        }
+        let short = cluster(a, review).and_then(|cl| cl.valued);
+        // An unrevised file flag means the rewrite deliberately left this
+        // invocation to gh (for example its mutually exclusive flags).
+        if a == "--body-file" || a.starts_with("--body-file=") || matches!(short, Some(('F', _))) {
+            return Ok(args);
+        }
+        let takes = valued_long(a)
+            || short.is_some_and(|(ch, v)| v.is_none() && valued_shorthand(ch, review));
+        n += if takes { 2 } else { 1 };
+    }
+    let mut i = 0;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--" {
+            break;
+        }
+        let short = cluster(a, review);
+        let body = if a == "--body" {
+            args.get(i + 1).map(|v| (v.as_str(), None, true))
+        } else if let Some(v) = a.strip_prefix("--body=") {
+            Some((v, None, false))
+        } else if let Some(cl) = &short {
+            match cl.valued {
+                Some(('b', Some(v))) => Some((v, Some(cl.bools), false)),
+                Some(('b', None)) => args.get(i + 1).map(|v| (v.as_str(), Some(cl.bools), true)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((body, bools, separate)) = body {
+            let file = body_file(body)?;
+            let path = format!("/dev/fd/{}", file.as_raw_fd());
+            let flag = match bools {
+                Some(bools) => format!("-{bools}F"),
+                None => "--body-file".to_string(),
+            };
+            args[i] = if separate {
+                flag
+            } else if bools.is_some() {
+                format!("{flag}{path}")
+            } else {
+                format!("{flag}={path}")
+            };
+            if separate {
+                args[i + 1] = path;
+            }
+            files.push(file);
+            i += if separate { 2 } else { 1 };
+        } else {
+            let skips = short
+                .and_then(|cl| cl.valued)
+                .is_some_and(|(c, v)| v.is_none() && valued_shorthand(c, review))
+                || valued_long(a);
+            i += if skips { 2 } else { 1 };
+        }
+    }
+    Ok(args)
 }
 
 /// The repository the current directory's checkout pushes to (`origin`).
@@ -591,6 +719,22 @@ fn flag_true(v: &str) -> bool {
     matches!(v, "1" | "t" | "T" | "TRUE" | "true" | "True")
 }
 
+fn review_action(a: &str, long: &str, letter: char) -> Option<bool> {
+    if a == long {
+        return Some(true);
+    }
+    if let Some(v) = a.strip_prefix(long).and_then(|rest| rest.strip_prefix('=')) {
+        return Some(flag_true(v));
+    }
+    let cl = cluster(a, true)?;
+    if let Some((ch, Some(v))) = cl.valued
+        && ch == letter
+    {
+        return Some(flag_true(v));
+    }
+    cl.bools.contains(letter).then_some(true)
+}
+
 /// Does this argument approve, in any spelling gh takes? `--approve`,
 /// `--approve=true`, `-a`, `-a=true`, and inside a cluster as the `-a`
 /// of `-aR o/r` or of `-ab hi`. `--approve=false` carries the flag but
@@ -631,12 +775,116 @@ fn approves(a: &str) -> bool {
 impl Shim<'_> {
     /// The gh arguments with the byline and origin tag prepended to the
     /// body, where there is one.
+    #[cfg(test)]
     pub fn rewrite(&self, args: Vec<String>) -> Vec<String> {
+        self.try_rewrite(args).unwrap()
+    }
+
+    pub fn try_rewrite(&self, args: Vec<String>) -> Result<Vec<String>> {
         // `command_words` only ever names a pair from `TAGGED`, so
         // finding one is the whole of the test.
         let Some((c, s)) = command_words(&args) else {
-            return args;
+            return Ok(args);
         };
+        let review = args[c] == "pr" && args[s] == "review";
+        // Cobra removes command words before pflag binds values. Normalize
+        // only lines where a separated value crosses one of those words.
+        let mut n = 0;
+        while n < args.len() {
+            if args[n] == "--" {
+                break;
+            }
+            let takes = valued_long(&args[n])
+                || cluster(&args[n], review)
+                    .and_then(|cl| cl.valued)
+                    .is_some_and(|(ch, v)| v.is_none() && valued_shorthand(ch, review));
+            if takes && (n + 1 == c || n + 1 == s) {
+                let mut normalized = vec![args[c].clone(), args[s].clone()];
+                normalized.extend(
+                    args.iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != c && *i != s)
+                        .map(|(_, a)| a.clone()),
+                );
+                let rewritten = self.try_rewrite(normalized.clone())?;
+                return Ok(if rewritten == normalized {
+                    args
+                } else {
+                    rewritten
+                });
+            }
+            n += if takes { 2 } else { 1 };
+        }
+        // Read only pflag's final body-file value, and preserve gh's
+        // body/body-file mutual exclusion before touching stdin.
+        let mut comments = false;
+        let mut requests_changes = false;
+        let mut inline = false;
+        let mut last_inline = None;
+        let mut last_file = None;
+        let mut n = 0;
+        while n < args.len() {
+            let a = args[n].as_str();
+            if a == "--" {
+                break;
+            }
+            let cl = cluster(a, review);
+            if review {
+                if let Some(value) = review_action(a, "--comment", 'c') {
+                    comments = value;
+                }
+                if let Some(value) = review_action(a, "--request-changes", 'r') {
+                    requests_changes = value;
+                }
+            }
+            let short = cl.and_then(|cl| cl.valued);
+            if a == "--body" || a.starts_with("--body=") || matches!(short, Some(('b', _))) {
+                inline = true;
+            }
+            if a == "--body" {
+                last_inline = args.get(n + 1).map(String::as_str);
+            } else if let Some(v) = a.strip_prefix("--body=") {
+                last_inline = Some(v);
+            } else if let Some(('b', v)) = short {
+                last_inline = v.or_else(|| args.get(n + 1).map(String::as_str));
+            }
+            if a == "--body-file" {
+                last_file = args.get(n + 1).map(String::as_str);
+            } else if let Some(v) = a.strip_prefix("--body-file=") {
+                last_file = Some(v);
+            } else if let Some(('F', v)) = short {
+                last_file = v.or_else(|| args.get(n + 1).map(String::as_str));
+            }
+            let takes = valued_long(a)
+                || short.is_some_and(|(ch, v)| v.is_none() && valued_shorthand(ch, review));
+            if takes && n + 1 == args.len() {
+                return Ok(args);
+            }
+            n += if takes { 2 } else { 1 };
+        }
+        if inline && last_file.is_some() {
+            return Ok(args);
+        }
+        let file_text = match last_file {
+            Some(path) => match (self.read)(path) {
+                Ok(text) => Some(text),
+                Err(err) if path == "-" || err.kind() == std::io::ErrorKind::InvalidData => {
+                    return Err(err).context(
+                        "reading body; refusing to run gh with consumed stdin or invalid UTF-8",
+                    );
+                }
+                Err(_) => return Ok(args),
+            },
+            None => None,
+        };
+        if (comments || requests_changes)
+            && file_text
+                .as_deref()
+                .or(last_inline)
+                .is_some_and(|body| body.trim().is_empty())
+        {
+            anyhow::bail!("body cannot be blank for comment or request-changes review");
+        }
         let origin = self.origin;
         // Both scans read the whole line, not just what follows the
         // subcommand: gh lets a subcommand's flags float before it, so a
@@ -682,23 +930,6 @@ impl Shim<'_> {
             // The shorthand spellings of a body, cluster included, all
             // come from the one reading of the argument.
             let short = cluster(a, review).and_then(|cl| cl.valued.map(|(c, v)| (cl.bools, c, v)));
-            // A body flag whose value would be a command word does not
-            // have its value there. cobra takes the pair out of the list
-            // before pflag sees it, so gh binds the value to the first
-            // word after the pair instead: `gh -aF pr review notes.md 3`
-            // reads `notes.md`, and `gh -d --body pr create hello -t T`
-            // is a create whose body is `hello`. Following it there would
-            // mean moving an argument out of its place, and stamping the
-            // command word instead hands gh `unknown command
-            // "<byline>"`, turning a line it accepts into an error. So
-            // the line goes over whole. #201 has it with the other
-            // bodies the shim cannot reach.
-            if (i + 1 == c || i + 1 == s)
-                && (matches!(a, "--body" | "--body-file")
-                    || matches!(short, Some((_, 'b' | 'F', None))))
-            {
-                return args;
-            }
             // Inline body: --body X, --body=X, -b X, -bX, -b=X, and the
             // same three behind leading boolean letters (-ab hi).
             if a == "--body" && i + 1 < args.len() {
@@ -775,14 +1006,12 @@ impl Shim<'_> {
                     _ => None,
                 }
             };
-            if let Some((bools, path, used)) = file {
-                let Ok(text) = (self.read)(path) else {
-                    return args; // let gh report the unreadable file
-                };
-                let body = stamp(&text);
-                if body.len() > MAX_INLINE_BODY {
-                    return args;
-                }
+            if let Some((bools, _path, used)) = file {
+                let body = stamp(
+                    file_text
+                        .as_deref()
+                        .expect("body file was read before rewriting"),
+                );
                 // The body never stands as a bare word. Left as one it
                 // is what cobra reads as the command, as soon as
                 // anything ahead of it swallows the `--body`: `gh -d
@@ -855,10 +1084,10 @@ impl Shim<'_> {
         // it did before any of this; reaching it would mean a second
         // insert position to keep right, for a line no agent writes.
         if !stamped && review && approved && ends_flags.is_none_or(|t| t > s) {
-            out.insert(s + 1, stamp(""));
+            out.insert(s + 1, stamp_with("", origin, on_repo.as_deref(), delegate));
             out.insert(s + 1, "--body".to_string());
         }
-        out
+        Ok(out)
     }
 }
 
@@ -1580,6 +1809,137 @@ mod tests {
     }
 
     #[test]
+    fn large_bodies_survive_exec_transport() {
+        for text in [
+            "x".repeat(120_000),
+            "界".repeat(60_000),
+            "x".repeat(2_000_000),
+        ] {
+            let read = |_: &str| Ok(text.clone());
+            let origin = o();
+            let mut shim = shim(&origin);
+            shim.read = &read;
+            let rewritten = shim.rewrite(args(&["pr", "create", "-F", "-", "-t", "title"]));
+            let mut files = Vec::new();
+            let transported = transport_bodies(rewritten, &mut files).unwrap();
+            assert_eq!(transported[2], "--body-file");
+            // A real child process must be able to open the inherited fd,
+            // and argv must carry only its path, not the oversized text.
+            let output = std::process::Command::new("cat")
+                .arg(&transported[3])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{}\n\n{text}", line())
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_last_file_is_read_and_mixed_sources_stay_invalid() {
+        let reads = std::cell::RefCell::new(Vec::new());
+        let read = |path: &str| {
+            reads.borrow_mut().push(path.to_string());
+            if path == "missing" {
+                Err(std::io::Error::other("missing"))
+            } else {
+                Ok("final body".to_string())
+            }
+        };
+        let origin = o();
+        let mut shim = shim(&origin);
+        shim.read = &read;
+        for first in ["missing", "-"] {
+            reads.borrow_mut().clear();
+            let out = shim.rewrite(args(&["issue", "comment", "3", "-F", first, "-F", "final"]));
+            assert_eq!(*reads.borrow(), vec!["final"]);
+            assert!(out.last().unwrap().ends_with("final body"));
+        }
+        reads.borrow_mut().clear();
+        let a = args(&["issue", "comment", "3", "-F", "-", "-F", "missing"]);
+        assert_eq!(shim.rewrite(a.clone()), a);
+        assert_eq!(*reads.borrow(), vec!["missing"]);
+        reads.borrow_mut().clear();
+        let a = args(&["pr", "comment", "3", "-F", "-", "--body", "hello"]);
+        assert_eq!(shim.rewrite(a.clone()), a);
+        assert!(reads.borrow().is_empty());
+    }
+
+    #[test]
+    fn invalid_utf8_and_stdin_read_errors_fail_closed() {
+        let origin = o();
+        let mut shim = shim(&origin);
+        let invalid = |_: &str| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid UTF-8",
+            ))
+        };
+        shim.read = &invalid;
+        for path in ["-", "invalid.md"] {
+            assert!(
+                shim.try_rewrite(args(&["issue", "comment", "3", "-F", path]))
+                    .is_err()
+            );
+        }
+        shim.read = &no_files;
+        assert!(
+            shim.try_rewrite(args(&["issue", "comment", "3", "-F", "-"]))
+                .is_err()
+        );
+        use std::os::fd::AsRawFd;
+        let file = body_file("test").unwrap();
+        use std::io::Write;
+        (&file).write_all(&[0xff]).unwrap();
+        assert_eq!(
+            read_body_file(&format!("/dev/fd/{}", file.as_raw_fd()))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[test]
+    fn disabled_review_actions_do_not_suppress_approval_attribution() {
+        for flags in [
+            vec!["-r", "--request-changes=false"],
+            vec!["-c", "--comment=false"],
+            vec!["-rr=false"],
+        ] {
+            let mut a = args(&["pr", "review", "3", "--approve", "--body", ""]);
+            a.extend(args(&flags));
+            assert!(rewrite(a).join("\n").contains(&line()));
+        }
+    }
+
+    #[test]
+    fn explicit_blank_reviews_fail_before_posting() {
+        for action in [
+            "--comment",
+            "--request-changes",
+            "-c",
+            "-r",
+            "--request-changes=true",
+            "-r=true",
+        ] {
+            for body in ["", " ", "\n\t"] {
+                let a = args(&["pr", "review", "3", action, "--body", body]);
+                let origin = o();
+                assert!(shim(&origin).try_rewrite(a).is_err());
+                let read = |_: &str| Ok(body.to_string());
+                let mut shim = shim(&origin);
+                shim.read = &read;
+                assert!(
+                    shim.try_rewrite(args(&["pr", "review", "3", action, "-F", "-"]))
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn body_files_move_inline() {
         let read = |p: &str| -> std::io::Result<String> {
             assert!(p == "notes.md" || p == "-");
@@ -1777,9 +2137,14 @@ mod tests {
     /// `hello`; both were run against gh. Reading the command
     /// word as the value instead would stamp it and hand gh `unknown
     /// command "<byline>\n\npr"`, turning a line it accepts into an
-    /// error, so the line goes over whole.
+    /// error. Normalizing the command position lets every scan bind the
+    /// same value that gh does.
     #[test]
-    fn a_value_past_the_command_words_is_left_to_gh() {
+    fn a_value_past_the_command_words_is_stamped() {
+        let origin = o();
+        let read = |p: &str| Ok(format!("read {p}"));
+        let mut shim = shim(&origin);
+        shim.read = &read;
         for a in [
             args(&["-aF", "pr", "review", "notes.md", "999999"]),
             args(&["-ab", "pr", "review", "hello", "999999"]),
@@ -1793,7 +2158,11 @@ mod tests {
             args(&["pr", "-ab", "review", "hello", "999999"]),
             args(&["pr", "-dF", "create", "notes.md", "--title", "t"]),
         ] {
-            assert_eq!(rewrite(a.clone()), a, "{a:?}");
+            let out = shim.rewrite(a.clone());
+            assert!(out.join("\n").contains(&line()), "{a:?} -> {out:?}");
+            assert!(matches!(out[0].as_str(), "pr"));
+            assert!(matches!(out[1].as_str(), "create" | "review"));
+            assert!(!out.join("\n").contains("read pr"));
         }
         // Attached, the value is where it looks, and this is stamped.
         let out = rewrite(args(&["-abhello", "pr", "review", "999999"]));
@@ -2009,11 +2378,12 @@ mod tests {
                 "t"
             ])
         );
-        // A separated value past a command word is gh's to find, so
-        // the line goes over whole -- even here, where the reader would
-        // happily hand back something for a file called `pr`.
+        // A separated file value binds after command removal, as in gh.
         let a = args(&["-dF", "pr", "create", "notes.md", "-t", "t"]);
-        assert_eq!(shim.rewrite(a.clone()), a);
+        assert_eq!(
+            shim.rewrite(a),
+            args(&["pr", "create", "-d", &body, "-t", "t"])
+        );
         // The attached form, which used to make the shim read a file
         // called `=notes.md`, fail, and hand the line to gh unstamped.
         assert_eq!(
@@ -2156,6 +2526,9 @@ mod tests {
             args(&["issue", "edit", "3", "--body", "x"]),
             args(&["api", "repos/a/b/issues", "-f", "body=x"]),
             args(&["pr", "create", "--fill"]),
+            args(&["pr", "create", "-f"]),
+            args(&["pr", "create", "--fill-first"]),
+            args(&["pr", "create", "--fill-verbose"]),
             args(&["issue", "comment", "3", "--editor"]),
             args(&["issue", "comment", "3", "--", "--body", "x"]),
             args(&["--version"]),

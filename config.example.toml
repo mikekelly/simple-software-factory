@@ -125,3 +125,7 @@ harness = "claude"                             # agent id: see `ssf agents`
 # email = "ann@example.com"
 # signing_key = "~/.ssh/id_ed25519"
 # credential = "token:ann"                     # push as @ann with the token gh holds for her (needs an HTTPS clone_url)
+
+# Session gh shim: explicit bodies are stamped; large bodies use anonymous
+# file transport. Invalid UTF-8 and stdin read errors stop before posting.
+# See docs/identity-and-bylines.md; no configuration is needed.

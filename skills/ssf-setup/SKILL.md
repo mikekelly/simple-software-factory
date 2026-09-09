@@ -155,3 +155,14 @@ document links to.
     Clippy warning count and comparisons against a named base commit.
     Test totals need the base too; equal warning counts alone do not prove
     that a change adds no warnings.
+
+## GitHub body handling
+
+The session’s gh shim stamps explicit bodies, reading only the last repeated
+body-file value. Large bodies use an inherited anonymous file (memory on
+Linux, an immediately unlinked temporary file on other Unix systems). An
+invalid UTF-8 body or stdin read error fails before posting; fix the input
+and retry. Explicit blank comment/request-changes review bodies are rejected before
+posting. Generated `--fill` bodies still need attribution supplied
+by the agent; do not replace requested commit text with a byline-only body.
+See `docs/identity-and-bylines.md`.
