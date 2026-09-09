@@ -9,6 +9,7 @@ export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$
 ./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
 ./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
 ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
+# close any workspace the pass opened, in Orca or herdr, before the next line
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # or the rest of this shell talks to the scratch factory
 SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
 omarchy plugin validate ./omarchy-plugin
@@ -24,30 +25,40 @@ Everything the factory then reaches is the one you are already using — the
 driver's server, the checkouts, GitHub, the harness's own sessions, the
 microVM and the bar widget.
 
-Three of those surprise people:
+Four of those are worth knowing before you start one:
 
-- **The checkout.** Two factories on one checkout share a herdr workspace:
-  `Herdr::open` adopts whatever is already open on that path, deliveries
-  fall back to any live agent in it, and removing the worktree interrupts
-  every agent pane before deleting the directory. So give the scratch
-  factory a checkout nothing else is using, which takes more than one
-  setting: `projects_dir` decides the path only when nothing else has, and
-  a `[[repo]] path`, a `repo add --path`, and — under Orca — a project the
-  server already has for that repository each decide it first. Failing all
-  of those the clone path is the repository's bare name, so a fork of the
-  watched repository lands on the real checkout.
+- **The driver's server, and what you leave in it.** A pass onboards items:
+  it creates a workspace and launches a real agent in the Orca or herdr you
+  are already using. When the pass exits there is no scratch daemon left,
+  and both `ssf release` and `ssf purge` talk to a running one, so they
+  cannot reach what it made. Close those workspaces yourself, and do it
+  before the `unset` line, since afterwards the scratch factory is no
+  longer addressable.
+- **The checkout.** Two factories on one checkout share a workspace: herdr
+  adopts whatever is already open on that path, Orca adopts any worktree in
+  the project linked to that item, deliveries fall back to any live agent
+  in it, and removing the worktree interrupts every agent pane before
+  deleting the directory. So give the scratch factory a checkout nothing
+  else is using, which takes more than one setting: `projects_dir` decides
+  the path only when nothing else has, a `[[repo]] path` (which is what
+  `repo add --path` writes) decides it first, and under Orca a project
+  whose setup is already `ready` on the configured host beats both. Under
+  herdr, failing all of that, the clone path is the repository's bare name,
+  so a fork of the watched repository lands on the real checkout.
 - **The identity.** `gh auth token` returns whatever `gh` is signed in as,
   and inside a session that is the **bot**, because `ssf launch` exports
   `GH_TOKEN`; run `gh auth status` before the recipe rather than assuming
-  it is you. Leaving `SSF_GITHUB_TOKEN` out does not make the factory
-  anonymous either: with a `github.login` in the config it asks the
+  it is you. And if the config has a `github.login` — because you copied
+  your real one, or ran `ssf auth login` under these variables — leaving
+  `SSF_GITHUB_TOKEN` out does not make the factory anonymous: it asks the
   machine's shared `gh` keyring, which these variables do not move.
 - **The VM.** With a config that has `vm.enabled`, `ssf run --once` does
   not do one pass: it starts the real microVM and supervises it until
   killed. The `--once` is never read on that path.
 
-Undoing the one thing on this page that writes outside all of it: re-run
-the packaged `ssf ui install` to put the real widget back.
+The recipe's widget line writes the real `~/.config/omarchy` on Omarchy;
+`ssf ui uninstall && ssf ui install` from the packaged binary puts it back,
+since installing alone never deletes a file your dev tree added.
 
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
