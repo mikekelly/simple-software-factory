@@ -1078,7 +1078,7 @@ impl Vm {
         let mut mine = None;
         let mut strays = Vec::new();
         let mut unread = Vec::new();
-        let command = self.lima_command();
+        let mut names = Vec::new();
         for i in all {
             // The first match, as master's `find` took: lima names are
             // unique so it cannot differ, and "cannot differ" is a
@@ -1088,12 +1088,12 @@ impl Vm {
                     mine = Some(i);
                 }
             } else if is_ssf_name(&i.name) {
-                match &command {
-                    Some(command) => strays.push(Stray::lima_instance(i.name, command)),
-                    None => unread.push(self.lima_object_path(&i.name, false, &i.dir)),
-                }
+                names.push((i.name, i.dir));
             }
         }
+        let (named, named_unread) = self.lima_strays(names, false, Stray::lima_instance);
+        strays.extend(named);
+        unread.extend(named_unread);
         (mine, strays, unread)
     }
 
@@ -1104,18 +1104,45 @@ impl Vm {
         let mut mine = false;
         let mut strays = Vec::new();
         let mut unread = Vec::new();
-        let command = self.lima_command();
+        let mut names = Vec::new();
         for d in all {
             if d.name == name {
                 mine = true;
             } else if is_ssf_name(&d.name) {
-                match &command {
-                    Some(command) => strays.push(Stray::lima_disk(d.name, command)),
-                    None => unread.push(self.lima_object_path(&d.name, true, &d.dir)),
-                }
+                names.push((d.name, d.dir));
             }
         }
+        let (named, named_unread) = self.lima_strays(names, true, Stray::lima_disk);
+        strays.extend(named);
+        unread.extend(named_unread);
         (mine, strays, unread)
+    }
+
+    /// Every Lima stray gets its remedy here. If the configured home or
+    /// tool cannot be made independent of the current working directory,
+    /// return no remedy and retain the named object as unread instead.
+    fn lima_strays(
+        &self,
+        names: Vec<(String, String)>,
+        disk: bool,
+        make: fn(String, &super::LimaCommand) -> Stray,
+    ) -> (Vec<Stray>, Vec<PathBuf>) {
+        let Some(command) = self.lima_command() else {
+            return (
+                Vec::new(),
+                names
+                    .iter()
+                    .map(|(name, dir)| self.lima_object_path(name, disk, dir))
+                    .collect(),
+            );
+        };
+        (
+            names
+                .into_iter()
+                .map(|(name, _)| make(name, &command))
+                .collect(),
+            Vec::new(),
+        )
     }
 
     /// A `limactl` question that came back an error.
@@ -1195,14 +1222,15 @@ impl Vm {
     /// read at all.
     fn instance_strays_read(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         let (names, mut unread) = Self::ssf_dirs_in(self.lima_home.as_deref(), self.ours_in_lima());
-        let command = self.lima_command();
-        let mut strays = Vec::new();
-        for name in names {
-            match &command {
-                Some(command) => strays.push(Stray::lima_instance(name, command)),
-                None => unread.push(self.lima_object_path(&name, false, "")),
-            }
-        }
+        let (strays, named_unread) = self.lima_strays(
+            names
+                .into_iter()
+                .map(|name| (name, String::new()))
+                .collect(),
+            false,
+            Stray::lima_instance,
+        );
+        unread.extend(named_unread);
         (strays, unread)
     }
 
@@ -1220,14 +1248,15 @@ impl Vm {
             self.lima_home.as_ref().map(|h| h.join("_disks")).as_deref(),
             self.ours_in_lima_disks(),
         );
-        let command = self.lima_command();
-        let mut strays = Vec::new();
-        for name in names {
-            match &command {
-                Some(command) => strays.push(Stray::lima_disk(name, command)),
-                None => unread.push(self.lima_object_path(&name, true, "")),
-            }
-        }
+        let (strays, named_unread) = self.lima_strays(
+            names
+                .into_iter()
+                .map(|name| (name, String::new()))
+                .collect(),
+            true,
+            Stray::lima_disk,
+        );
+        unread.extend(named_unread);
         (strays, unread)
     }
 
