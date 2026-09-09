@@ -16,39 +16,26 @@ omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
-**A scratch factory is a second factory, not a sandbox.**
-`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's own files and only those:
-the config file, the state file, the socket its commands talk to, the bot
-token, the SSH keys, the `bin` shim directory an agent gets on its `PATH`,
-the `gh` configuration those agents use, and the marker that keeps a
-disabled service off — though `ssf ui service` acts on the real unit
-either way, so a scratch shell stops the real service and writes the
-marker where it will never be read. Everything the factory then reaches is the one you
-are already using — the driver's server, the checkouts, GitHub, the
-harness's own sessions, the microVM and the bar widget.
+**`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's own files and nothing
+else.** Those are the config file, the state file, the socket its commands
+talk to, the bot token, the SSH keys, the `bin` shim directory an agent
+gets on its `PATH`, the `gh` configuration those agents use, and the marker
+that keeps a disabled service off.
 
-It is a second factory in every way the two variables do not cover, and
-the ways that matter are not obvious from the recipe. Before starting one:
+Everything else depends on your machine and your configuration rather than
+on those variables: which driver and server the pass uses, where it clones
+and whether that is a checkout something else is already working, which
+account its token belongs to (run `gh auth status` before the recipe —
+`SSF_GITHUB_TOKEN` wins over everything, and in your own shell it is you),
+whether commands are forwarded to a microVM. Some of it no setting reaches
+at all: `ssf ui install` writes the real `~/.config/omarchy`, undone by
+`ssf ui uninstall && ssf ui install` from the packaged binary; `ssf ui
+service` acts on the real unit; and agents use the harness's own sessions.
 
-- A pass **can** create workspaces and worktrees — one that finds an item
-  for the bot does — in the driver you are already running, and `ssf
-  release` and `ssf purge` cannot clear them afterwards, since both need a
-  daemon. Tidying is yours, and it costs differently per driver: closing a
-  herdr workspace leaves the checkout, while removing an Orca worktree
-  deletes the checkout and tries to delete its branch.
-- A scratch config names no driver and the default is herdr, whatever your
-  real factory runs, so set `driver` before the `projects_dir` key that
-  depends on it.
-- `gh auth token` returns whatever `gh` is active as: inside an ssf session
-  that is the bot, because `ssf launch` exports `GH_TOKEN`; in your own
-  shell it is you. Whichever it is, the pass and every agent it starts act
-  as that account. Run `gh auth status` first.
-- With a config carrying `vm.enabled`, forwarded commands — `run --once`
-  and `status` among them — act on the real microVM and its guest rather
-  than on anything here.
-- The recipe's widget line writes the real `~/.config/omarchy` on Omarchy.
-  `ssf ui uninstall && ssf ui install` from the **packaged** binary
-  restores it, in its default place and enabled.
+Assume a scratch factory shares all of it with the real one unless you have
+arranged otherwise. A pass that finds an item for the bot — the startup
+pass included — starts a real agent somewhere, and `ssf release` and
+`ssf purge` will not be the way you clean it up.
 
 The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
