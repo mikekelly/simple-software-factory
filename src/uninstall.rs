@@ -169,6 +169,12 @@ pub struct Facts {
     /// it is ssf's own -- a template, an ssh key, a share -- and stops
     /// nothing.
     pub vm_data: Option<bool>,
+    /// A data disk a change of backend stranded in the VM's own
+    /// directory, which `ssf uninstall` refuses over. See
+    /// [`vm::Vm::stranded_disk`]: it is separate from `vm_data` because
+    /// that field is lima's answer about lima's own disk, and the
+    /// sentence saying what the destroy takes is built from it.
+    pub vm_stranded_disk: Option<PathBuf>,
     /// The data disk's name in lima's home, for the one refusal whose
     /// whole remedy is "remove it by hand": `limactl disk delete` needs
     /// an argument, and it is not `[vm] name`. `None` under Firecracker,
@@ -228,6 +234,7 @@ impl Facts {
             vm_running: survey.running,
             vm_startable: survey.startable,
             vm_data: survey.data,
+            vm_stranded_disk: survey.stranded_disk.clone(),
             vm_strays: survey.strays.clone(),
             vm_base_exists: vm.base.exists(),
             vm_disk: match vm.backend() {
@@ -307,6 +314,13 @@ impl Facts {
                     startable: true,
                     data: self.vm_data,
                     strays: Vec::new(),
+                    // Carried, not blanked: `lima_removed` says the
+                    // directory holds a stranded disk, and this call
+                    // rebuilds that sentence on the ordinary VM-mode
+                    // path. `None` here would drop the clause on every
+                    // machine whose guest answers ssh -- which is most
+                    // of them -- while leaving it in the fixtures.
+                    stranded_disk: self.vm_stranded_disk.clone(),
                 },
             );
         }
@@ -721,8 +735,14 @@ fn join_and(parts: &[String]) -> String {
 /// because the wrong answer in that direction is silent data loss. What
 /// `[vm] dir` holds without one is ssf's own: a template, an ssh key, a
 /// share.
-fn unchecked_workspaces(data: Option<bool>) -> bool {
-    data != Some(false)
+///
+/// A disk a change of backend stranded in the VM's own directory counts
+/// as much as the configured one, and has to be asked about separately:
+/// it is lima that is configured, so `data` is lima's truthful
+/// `Some(false)` about a disk lima never had, while a whole Firecracker
+/// VM's clones sit in the directory the destroy removes.
+fn unchecked_workspaces(data: Option<bool>, stranded: Option<&Path>) -> bool {
+    data != Some(false) || stranded.is_some()
 }
 
 /// What `ssf vm destroy` takes with it under lima, in words: only the
@@ -745,7 +765,18 @@ fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Sur
         Some(false) => {}
     }
     if let Some(d) = dir {
-        parts.push(d.display().to_string());
+        // The directory is named either way; what changes is whether
+        // the person is told what is in it. Without this the one line
+        // they read before saying yes calls it a path and nothing more,
+        // and `--force` skips the refusal that would have said the
+        // rest.
+        parts.push(match survey.stranded_disk {
+            Some(_) => format!(
+                "{} (which holds a data disk a change of backend left behind, with clones and worktrees on it)",
+                d.display()
+            ),
+            None => d.display().to_string(),
+        });
     }
     // "a and b and c" is a hard sentence to read in the one line a
     // person scans before saying yes to destroying it all.
@@ -757,6 +788,24 @@ fn lima_removed(instance: &str, disk: &str, dir: Option<&Path>, survey: &vm::Sur
 /// refusal, so they cannot drift apart.
 fn vm_uncheckable(facts: &Facts) -> (String, String) {
     let name = &facts.vm_name;
+    // First, and above the host-mode return below it, because this is
+    // not a state of the VM or of the configuration but of a file: the
+    // clones are in an ext4 image that the configured backend cannot
+    // mount, and nothing anyone does to `[vm] enabled` changes that.
+    // Every remedy further down is wrong here -- `ssf config set
+    // vm.enabled true` points ssf at a lima VM that still cannot read
+    // it, `ssf vm start` starts the wrong backend, and `limactl disk
+    // delete` has no argument that means this file and would be an
+    // instruction to destroy the thing being protected.
+    if let Some(disk) = &facts.vm_stranded_disk {
+        return (
+            format!(
+                "{} is a data disk a change of backend left behind, and the lima VM {name} is configured now cannot mount it to look inside",
+                absolute(disk).display()
+            ),
+            "put `[vm] backend` back to `firecracker` and run this again to reach the clones and worktrees on it, or copy the file somewhere else first".to_string(),
+        );
+    }
     // Host mode is not a state of the VM but of the configuration: the
     // guest is never asked, whatever it would have answered, so none of
     // the remedies below would clear this one. Starting the VM does not
@@ -846,7 +895,8 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             // destroy the work on it unasked; only a backend that said
             // "there is none" lets this through. Leftovers in `[vm] dir`
             // with no disk are ssf's own and stop nothing.
-            opts.vm_unchecked = unchecked_workspaces(facts.vm_data);
+            opts.vm_unchecked =
+                unchecked_workspaces(facts.vm_data, facts.vm_stranded_disk.as_deref());
             opts.report_error = match facts.vm_running {
                 Some(true) => Some(format!(
                     "VM {} is running but does not answer on ssh",
@@ -868,7 +918,7 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         // it. So an empty `items:` here means "not looked at", not
         // "nothing to lose", and a data disk that may hold clones stops
         // the command just as it does in VM mode.
-        opts.vm_unchecked = unchecked_workspaces(facts.vm_data);
+        opts.vm_unchecked = unchecked_workspaces(facts.vm_data, facts.vm_stranded_disk.as_deref());
         report().await
     };
     // One of `run`'s three unpinned prints -- the others are the
@@ -1250,6 +1300,10 @@ mod tests {
         // field and not the binary.
         lima.vm.limactl = Some(format!("{rel}/no-limactl"));
         std::fs::create_dir_all(base.join("l")).unwrap();
+        // A disk a change of backend stranded in the VM's own
+        // directory, so the clause `lima_removed` grows for it is on
+        // this path too -- see the assertion below.
+        std::fs::write(base.join("l").join("data.ext4"), b"clones").unwrap();
         let lima_vm = vm::Vm::new(&lima);
         for facts in [Facts::gather(&lima, &lima_vm), {
             let mut f = Facts::gather(&lima, &lima_vm);
@@ -1277,6 +1331,18 @@ mod tests {
                     .any(|s| s.kind == vm::StrayKind::Directory),
                 "the survey's strays have to survive: {:?}",
                 facts.vm_strays
+            );
+            // So does the stranded-disk clause, for the same reason and
+            // on the same path. `ssh_answered` rebuilds `lima_removed`
+            // from a `Survey` it fills in by hand, so a `None` in that
+            // literal drops the clause on every machine whose guest
+            // answers ssh -- and `--force` skips the refusal that would
+            // otherwise have said what is in the directory, which
+            // leaves nothing anywhere saying the clones are there.
+            assert!(
+                facts.vm_removed.contains("a change of backend left behind"),
+                "the stranded clause has to survive: {}",
+                facts.vm_removed
             );
             assert!(
                 text.contains("which this configuration does not name"),
@@ -1339,6 +1405,7 @@ mod tests {
             config_dir: PathBuf::from("/c"),
             state_dir: PathBuf::from("/s"),
             projects: vec![PathBuf::from("/p")],
+            vm_stranded_disk: None,
         }
     }
 
@@ -1703,9 +1770,12 @@ mod tests {
         // The rule itself, not `Opts::default()`, which would make any
         // facts pass: a disk that is not there is the one answer that
         // lets the command go ahead.
-        assert!(!unchecked_workspaces(leftovers.vm_data));
-        assert!(unchecked_workspaces(Some(true)));
-        assert!(unchecked_workspaces(None), "an unasked disk stops it too");
+        assert!(!unchecked_workspaces(leftovers.vm_data, None));
+        assert!(unchecked_workspaces(Some(true), None));
+        assert!(
+            unchecked_workspaces(None, None),
+            "an unasked disk stops it too"
+        );
         let text = render(&leftovers, &Report::default(), &Opts::default());
         assert!(text.contains("VM factory and /v/factory"), "{text}");
         assert!(!text.contains("go with it"), "{text}");
@@ -1720,6 +1790,7 @@ mod tests {
             startable,
             data,
             strays: Vec::new(),
+            stranded_disk: None,
         };
         assert_eq!(
             lima_removed(
@@ -1767,6 +1838,83 @@ mod tests {
             lima_removed("ssf-f", "ssf-f", None, &survey(false, None, None)),
             "the lima instance ssf-f if it is there and its data disk ssf-f in lima's home if it is there"
         );
+        // A disk a change of backend stranded in the directory. Lima
+        // still has nothing -- the sentence must not grow a promise to
+        // delete `ssf-f` from lima's home -- but the directory stops
+        // being just a path, because `--force` skips the refusal that
+        // would otherwise have said what is in it.
+        let stranded = vm::Survey {
+            stranded_disk: Some(PathBuf::from("/v/f/data.ext4")),
+            ..survey(false, Some(false), Some(false))
+        };
+        assert_eq!(
+            lima_removed("ssf-f", "ssf-f", Some(Path::new("/v/f")), &stranded),
+            "/v/f (which holds a data disk a change of backend left behind, with clones and worktrees on it)"
+        );
+        assert!(
+            !lima_removed("ssf-f", "ssf-f", Some(Path::new("/v/f")), &stranded)
+                .contains("lima's home")
+        );
+    }
+
+    #[test]
+    fn a_stranded_disk_refuses_and_none_of_the_other_remedies_are_offered() {
+        // The disk is a Firecracker image sitting in the VM's own
+        // directory after `[vm] backend` changed. Lima is what is
+        // configured, so `vm_data` is lima's truthful "no disk of
+        // mine" -- and that is the one value that lets `ssf uninstall`
+        // through. The stranded disk has to be asked about separately
+        // or nothing stops the command.
+        let stranded = PathBuf::from("/g/vm/factory/data.ext4");
+        assert!(!unchecked_workspaces(Some(false), None));
+        assert!(unchecked_workspaces(Some(false), Some(&stranded)));
+
+        let facts = |vm_mode| Facts {
+            vm_mode,
+            vm_name: "factory".into(),
+            vm_present: Some(true),
+            vm_running: Some(false),
+            vm_startable: false,
+            vm_data: Some(false),
+            vm_stranded_disk: Some(stranded.clone()),
+            ..Facts::default()
+        };
+        // Both modes, because the arm sits above the host-mode return
+        // and that is the whole point of where it is: with
+        // `[vm] enabled = false` the sentence below would otherwise be
+        // "point ssf back at it", and pointing ssf at a lima VM does
+        // not let it mount an ext4 image Firecracker made.
+        for vm_mode in [true, false] {
+            let f = facts(vm_mode);
+            let opts = Opts {
+                vm_unchecked: unchecked_workspaces(f.vm_data, f.vm_stranded_disk.as_deref()),
+                ..Opts::default()
+            };
+            let why = hard_stop(&f, &Report::default(), &opts, false)
+                .expect("a stranded disk stops the command");
+            assert!(why.contains("/g/vm/factory/data.ext4"), "{why}");
+            // Each of these is a remedy some other arm offers, and each
+            // is wrong here: `limactl disk delete` has no argument that
+            // means this file and would be an instruction to destroy
+            // the thing being protected; `ssf vm start` starts the
+            // backend that cannot read it.
+            for wrong in ["limactl disk delete", "ssf vm start", "vm.enabled true"] {
+                assert!(!why.contains(wrong), "{wrong} is no remedy here: {why}");
+            }
+            assert!(why.contains("firecracker"), "the remedy that works: {why}");
+        }
+        // Without the disk the same facts go through, so the assertions
+        // above are about the disk and not about the rest of the
+        // fixture.
+        let clear = Facts {
+            vm_stranded_disk: None,
+            ..facts(true)
+        };
+        let opts = Opts {
+            vm_unchecked: unchecked_workspaces(clear.vm_data, clear.vm_stranded_disk.as_deref()),
+            ..Opts::default()
+        };
+        assert!(hard_stop(&clear, &Report::default(), &opts, false).is_none());
     }
 
     #[test]
@@ -1843,7 +1991,7 @@ mod tests {
             ..Facts::default()
         };
         let unchecked = Opts {
-            vm_unchecked: unchecked_workspaces(host.vm_data),
+            vm_unchecked: unchecked_workspaces(host.vm_data, host.vm_stranded_disk.as_deref()),
             ..Opts::default()
         };
         assert!(
@@ -1863,7 +2011,10 @@ mod tests {
             vm_data: Some(false),
             ..host.clone()
         };
-        assert!(!unchecked_workspaces(bare.vm_data));
+        assert!(!unchecked_workspaces(
+            bare.vm_data,
+            bare.vm_stranded_disk.as_deref()
+        ));
         assert!(hard_stop(&bare, &Report::default(), &Opts::default(), false).is_none());
     }
 
@@ -2016,7 +2167,10 @@ mod tests {
         // pinned where it can fail, in
         // `hard_stop_names_unpushed_work_and_what_force_does_to_it`.
         assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
-        assert!(!unchecked_workspaces(stray.vm_data));
+        assert!(!unchecked_workspaces(
+            stray.vm_data,
+            stray.vm_stranded_disk.as_deref()
+        ));
         // With nothing of ssf's elsewhere in lima, the plain sentence
         // comes back.
         let alone = Facts {

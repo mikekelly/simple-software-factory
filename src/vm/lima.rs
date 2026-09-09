@@ -1034,6 +1034,7 @@ impl Vm {
             startable: mine.is_some(),
             data: disk,
             strays,
+            stranded_disk: self.stranded_disk(),
         }
     }
 
@@ -1139,6 +1140,9 @@ impl Vm {
             startable: false,
             data: disk,
             strays,
+            // A disk lima never made is still there and still doomed by
+            // the destroy, whatever lima would or would not say.
+            stranded_disk: self.stranded_disk(),
         }
     }
 
@@ -2847,6 +2851,7 @@ mod tests {
                 startable: true,
                 data: Some(true),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
         let t = Fake::new("Running");
@@ -2869,6 +2874,7 @@ mod tests {
                 startable: false,
                 data: Some(true),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
     }
@@ -2884,6 +2890,47 @@ mod tests {
         std::fs::create_dir_all(&t.vm.dir).unwrap();
         let s = t.vm.survey();
         assert_eq!((s.present, s.data), (Some(true), Some(false)));
+    }
+
+    #[tokio::test]
+    async fn a_disk_a_backend_change_stranded_is_seen_without_lima_being_lied_about() {
+        // Switch `[vm] backend` from `firecracker` to `lima` and keep
+        // `[vm] name`, and the Firecracker VM's `data.ext4` -- with
+        // every clone and worktree on it -- stays in
+        // `<[vm] dir>/<name>`, where lima knows nothing of it and
+        // `Vm::destroy` removes it with the directory.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
+        let stranded = t.vm.dir.join("data.ext4");
+        std::fs::write(&stranded, b"clones").unwrap();
+        let s = t.vm.survey();
+        // Lima's own answer is left alone. `lima_removed` builds "what
+        // this destroy takes" out of this field, so forcing it to
+        // `Some(true)` -- the shape #176 was filed with -- would
+        // promise to delete `ssf-one` from lima's home when no such
+        // disk is there, in the one line a person reads before saying
+        // yes to losing the clones.
+        assert_eq!(s.data, Some(false));
+        assert_eq!(s.stranded_disk.as_deref(), Some(stranded.as_path()));
+        // ... and it is not a stray. `destroy` takes this directory, so
+        // a `keep:` line calling it untouched would be false exactly
+        // where being wrong costs the clones -- and the same line on a
+        // healthy machine would say to `rm -rf` the live VM.
+        assert!(s.strays.is_empty(), "{:?}", s.strays);
+        // Nothing is claimed about a directory that has no such file:
+        // otherwise this test would pass on the strength of the
+        // fixture rather than the rule.
+        std::fs::remove_file(&stranded).unwrap();
+        assert_eq!(t.vm.survey().stranded_disk, None);
+        std::fs::write(&stranded, b"clones").unwrap();
+
+        // The refusal is the only thing between the person and the
+        // loss, and this is the line that says so out loud: nobody
+        // reading `destroy` later should think it spares this file.
+        t.vm.destroy().await.unwrap();
+        assert!(
+            !stranded.exists(),
+            "destroy takes the stranded disk -- the refusal is the guard"
+        );
     }
 
     #[test]
@@ -3417,6 +3464,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
     }
@@ -3436,6 +3484,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
         // The direction that matters: the disk is on disk, so it is
@@ -3450,6 +3499,7 @@ mod tests {
                 startable: false,
                 data: Some(true),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
     }

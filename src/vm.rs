@@ -352,6 +352,19 @@ pub struct Survey {
     /// that reached that decision would be a VM deleted because someone
     /// edited a name.
     pub strays: Vec<Stray>,
+    /// A data disk in the VM's own directory that this backend did not
+    /// put there and cannot mount, with every clone and worktree of the
+    /// VM that did on it. Set only under lima; see
+    /// [`Vm::stranded_disk`].
+    ///
+    /// Deliberately *not* folded into [`Survey::data`], which is what
+    /// lima answered about lima's own disk. `lima_removed` reads that
+    /// field to say what the destroy takes, so a forced `Some(true)`
+    /// would promise to remove `ssf-<name>` from lima's home when no
+    /// such disk is there -- printed in the one line a person reads
+    /// before saying yes to losing the clones. It stops the command
+    /// through `unchecked_workspaces` instead.
+    pub stranded_disk: Option<PathBuf>,
 }
 
 /// How to spell a `limactl` command so that pasting it addresses the
@@ -1242,6 +1255,32 @@ impl Vm {
     fn data_disk(&self) -> PathBuf {
         self.dir.join("data.ext4")
     }
+    /// A data disk stranded in the VM's own directory by a change of
+    /// backend, if there is one.
+    ///
+    /// `[vm] dir` is shared by the two backends and `data.ext4` is
+    /// Firecracker's name for its disk. Switch `[vm] backend` from
+    /// `firecracker` to `lima` and keep `[vm] name`, and every clone and
+    /// worktree of the Firecracker VM stays in `<[vm] dir>/<name>`,
+    /// where lima knows nothing of it -- `Survey::data` comes from
+    /// lima's disk listing and says `Some(false)` -- while
+    /// [`Vm::destroy`] removes that directory and the disk with it.
+    ///
+    /// This is not a [`Stray`], and the difference is the whole reason
+    /// the fact exists: `destroy` *takes* this directory, so a `keep:`
+    /// line calling it untouched would be false on the one path where
+    /// being wrong costs the clones, and the same line on a healthy
+    /// machine would tell the person to `rm -rf` the live VM's own
+    /// directory.
+    ///
+    /// Only lima strands anything. Going the other way -- lima to
+    /// Firecracker with the name kept -- leaves an `ssf-<name>` disk in
+    /// lima's home, which `destroy` under Firecracker does not touch and
+    /// which is already reported as a stray. Nothing is lost, so nothing
+    /// needs to refuse.
+    pub(super) fn stranded_disk(&self) -> Option<PathBuf> {
+        (self.backend() == BackendKind::Lima && self.data_disk().exists()).then(|| self.data_disk())
+    }
     fn seed_disk(&self) -> PathBuf {
         self.dir.join("seed.ext4")
     }
@@ -1589,6 +1628,9 @@ impl Vm {
                     startable: dir,
                     data: Some(self.data_disk().exists()),
                     strays,
+                    // Under Firecracker the same file is simply this
+                    // VM's own disk, and `data` above is what says so.
+                    stranded_disk: None,
                 }
             }
             BackendKind::Lima => {
@@ -3495,6 +3537,7 @@ mod tests {
                 startable: false,
                 data: Some(false),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
         // The directory is the VM, but only the data disk in it holds
@@ -3508,6 +3551,7 @@ mod tests {
                 startable: true,
                 data: Some(false),
                 strays: Vec::new(),
+                stranded_disk: None,
             }
         );
     }
