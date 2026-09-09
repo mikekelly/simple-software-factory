@@ -2084,6 +2084,41 @@ mod tests {
                 "the VM a rename left behind must reach the report"
             );
             assert!(gathered.vm_base_may_exist, "and so must the snapshot");
+            // Through an unreadable *parent*, which is the state a
+            // `sudo` leaves and the one `exists()` calls absent. The
+            // snapshot gates the whole `keep:` line for `[vm] dir`, and
+            // the unread loop skips a path equal to `vm_base` -- so with
+            // this false the directory is named nowhere at all, over a
+            // data disk. The other half of this fix had a test; this
+            // half did not, and reverting it alone stayed green.
+            #[cfg(unix)]
+            {
+                let walled = base.join("walled");
+                let inner = walled.join("vm");
+                std::fs::create_dir_all(&inner).unwrap();
+                let mut deep = cfg.clone();
+                deep.vm.dir = inner.to_string_lossy().into_owned();
+                set_mode(&walled, 0o000);
+                let statted = std::fs::metadata(&inner).is_ok();
+                let deep_vm = vm::Vm::new(&deep);
+                let facts = Facts::gather(&deep, &deep_vm);
+                set_mode(&walled, 0o755);
+                // Root stats it regardless, and then there is nothing
+                // to assert.
+                if !statted {
+                    assert!(
+                        facts.vm_base_may_exist,
+                        "a base nobody could stat is not a base that is gone"
+                    );
+                    assert!(
+                        kept(&facts, false)
+                            .iter()
+                            .any(|l| l.contains(&inner.display().to_string())),
+                        "and it has to reach the page: {:?}",
+                        kept(&facts, false)
+                    );
+                }
+            }
             // From a *relative* `[vm] dir`, since `temp_dir()` is
             // already absolute and asserting over it pins nothing.
             let mut rel = cfg.clone();

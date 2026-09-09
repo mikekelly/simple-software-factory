@@ -1044,7 +1044,11 @@ removes with that directory (issue #176) -- check it by hand if you have
 changed `[vm] backend` and kept the name. The `[vm] dir` line says one
 of three things, in the report and in the list printed at the end alike:
 safe to remove, safe to remove except for what is listed below, or that
-ssf could not read the directory and so does not know what is in it. Any
+ssf could not read the directory and so does not know what is in it.
+There is no line at all when the directory is not there -- and only when
+it is genuinely not there: a directory ssf could not so much as ask
+about, because a parent of it is unreadable, gets the third sentence
+rather than silence. Any
 directory that could not be read is named -- `[vm] dir`, lima's home, or
 lima's disk directory -- since which one it is decides what you would
 fix. `ssf uninstall` never removes one and `--force` does not reach it:

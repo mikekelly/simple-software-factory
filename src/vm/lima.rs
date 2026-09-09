@@ -1101,9 +1101,16 @@ impl Vm {
         // is the command that just failed.
         let (strays, unread) = self.strays_on_disk_read();
         let here = instance == Some(true) || disk == Some(true);
-        // A lima home nobody could read cannot say "nothing of it is
-        // here": `p.exists()` on a denied `stat` is a confident `false`
-        // about a directory that was never looked in.
+        // Master's rule, kept deliberately, and it is not a safe one:
+        // `p.exists()` is `metadata().is_ok()`, so a denied `stat` on
+        // lima's home reads as a confident `false` about a directory
+        // nobody looked in, and `nothing` then makes `present` and
+        // `data` both `Some(false)` -- which takes the "workspaces could
+        // not be checked" sentence off the page above the confirmation.
+        // `strays` and `unread` below use `may_exist` and do not have
+        // this flaw; these two feed the refusal, which this change is
+        // forbidden from touching, so the fix belongs to #176 and is
+        // recorded there rather than smuggled in here.
         let nothing = instance == Some(false) && disk == Some(false);
         Survey {
             present: if here || dir {
