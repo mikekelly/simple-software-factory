@@ -125,6 +125,10 @@ document links to.
     or disk, or the old VM's directory under `[vm] dir` -- is listed
     under `keep:` with the command that removes it, and is never removed
     by ssf or reached by `--force`; leave that decision to the person.
+    With a nested new name, an old data disk can be in an ancestor of the
+    configured VM; ssf lists that `data.ext4` with an `rm -f` remedy and
+    does not offer to remove the directory that is part of the configured
+    VM path. The line remains after `ssf vm destroy` removes the nested VM.
     `ssf vm status` names them too, and `ssf doctor` does on a host not
     running the factory in a VM. Do not add `--force` on the person's
     behalf: show them the report and let them settle the work or decide;

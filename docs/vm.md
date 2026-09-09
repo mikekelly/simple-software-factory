@@ -275,7 +275,11 @@ What the commands do under lima:
 Changing `[vm] name` renames nothing that already exists: the old
 `ssf-<old name>` instance and disk stay in lima's home, and under
 Firecracker the old `<[vm] dir>/<old name>/` stays with its data disk in
-it. Both are looked for under either backend: `[vm] dir` is shared by
+it. If the old name is an ancestor of a nested new name, ssf reports the
+old `data.ext4` itself with an `rm -f` remedy: its directory is part of
+the configured VM path and is not offered for removal. This remains in
+the report after `ssf vm destroy` removes the nested VM. Both kinds are
+looked for under either backend: `[vm] dir` is shared by
 them, and lima's home outlives a change of `[vm] backend` as much as a
 change of `[vm] name`. The one thing not looked for is a `data.ext4`
 left in the VM's *own* directory by a switch from Firecracker to lima,

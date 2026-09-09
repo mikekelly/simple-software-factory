@@ -1050,9 +1050,10 @@ inside -- issue #192; until it is fixed, check `[vm] dir` and lima's
 home by hand if either has permissions you did not set.
 A directory that
 *contains* the VM this configuration names is never offered, since the
-command would take the live VM with it -- so an older VM's disk stranded
-in one goes unmentioned, which is issue #193. `ssf uninstall` never
-removes a stray and `--force` does not reach it:
+command would take the live VM with it. An older VM's `data.ext4`
+stranded in such a directory is listed on its own with an `rm -f`
+remedy, before and after the nested VM is destroyed. `ssf uninstall`
+never removes a stray and `--force` does not reach it:
 ssf cannot tell a VM you renamed away to keep from one you abandoned,
 and only one of those is safe to delete. `ssf vm status` names them too,
 and `ssf doctor` does when it runs on the host -- in VM mode `ssf
