@@ -337,22 +337,51 @@ fn lossy_paths<S: serde::Serializer>(paths: &[PathBuf], s: S) -> Result<S::Ok, S
 /// One entry per directory, in a stable order. Two of a thing whose
 /// remedy is a path sends a person looking for a second one that is not
 /// there, and `unread` is assembled from two or three places.
+///
+/// A directory inside one that could not be read goes too. Nobody can
+/// stat a child of a mode-000 directory either, so `~/.lima` at 000
+/// yields `~/.lima` *and* `~/.lima/_disks` -- one problem, one remedy,
+/// and a second line that reads as a second thing to fix. Sorting first
+/// puts every ancestor before what it contains, so one pass does it.
 fn one_each(paths: &mut Vec<PathBuf>) {
     paths.sort();
     paths.dedup();
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for p in paths.iter() {
+        if !kept.iter().any(|k| p.starts_with(k)) {
+            kept.push(p.clone());
+        }
+    }
+    *paths = kept;
 }
 
-/// A directory that could not be read, when it is there at all: a path
-/// that does not exist is genuinely empty, and only one that is there
-/// and would not open is unknown.
+/// A directory that could not be read, unless it is simply not there:
+/// a path that does not exist is genuinely empty, and every other
+/// answer -- including no answer -- is unknown.
 fn unread_if_there(dir: &Path) -> Vec<PathBuf> {
-    if dir.exists() {
-        // Absolute, so the sentence naming it and the remedy beside it
-        // do not print one place two ways.
-        vec![std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())]
-    } else {
-        Vec::new()
+    if !may_exist(dir) {
+        return Vec::new();
     }
+    // Absolute, so the sentence naming it and the remedy beside it do
+    // not print one place two ways.
+    vec![std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())]
+}
+
+/// Is this path there, as far as anything can tell?
+///
+/// Not `Path::exists()`, which answers `false` for "could not ask" as
+/// well as for "not there": it is `metadata().is_ok()`, so a parent
+/// directory an earlier `sudo` left mode 000, or a volume returning
+/// `EIO`, reads as absent. That is the conflation this whole change
+/// exists to stop, and it was sitting inside the function that
+/// implements the rule -- `ssf uninstall` printed a bare `no VM` and a
+/// `keep:` list with no mention of `[vm] dir` at all, over a directory
+/// with a data disk of clones in it, and ran to completion.
+///
+/// Only `NotFound` is "not there". Every other error is an answer about
+/// the asking, so the caller reports the path rather than its contents.
+pub fn may_exist(p: &Path) -> bool {
+    !matches!(p.symlink_metadata(), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
 }
 
 /// Where the data disk is mounted in the guest.
@@ -1502,9 +1531,10 @@ impl Vm {
             .map(|p| Stray::directory(&p))
             .collect();
         // Not sorted here: all four callers run `sort_strays` over the
-        // whole list afterwards, and its key is total for these. A
-        // second ordering with a narrower key is a chance for the two
-        // to disagree and no help to anyone.
+        // whole list afterwards. Its key, `(is_disk, name)`, orders
+        // these fully except for a tie with a lima instance of the same
+        // name -- and a second, narrower ordering here would not settle
+        // that either, only give the two a chance to disagree.
         (strays, Vec::new())
     }
 
@@ -3905,6 +3935,73 @@ mod tests {
         ];
         one_each(&mut paths);
         assert_eq!(paths, [PathBuf::from("/a"), PathBuf::from("/b")]);
+        // And a directory inside one that could not be read is the same
+        // problem, not a second one: nobody can stat a child of a
+        // mode-000 directory either, so both reach `unread`, and two
+        // lines with one remedy between them is what this is for.
+        let mut nested = vec![
+            PathBuf::from("/home/me/.lima/_disks"),
+            PathBuf::from("/home/me/.lima"),
+            PathBuf::from("/home/me/.limaX"),
+        ];
+        one_each(&mut nested);
+        assert_eq!(
+            nested,
+            [
+                PathBuf::from("/home/me/.lima"),
+                // A prefix of the *string* is not a directory inside it.
+                PathBuf::from("/home/me/.limaX"),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_vm_dir_nobody_could_stat_is_not_a_vm_dir_that_is_gone() {
+        // The rule this change is built on -- "could not look" is not
+        // "nothing there" -- was implemented with `Path::exists()`,
+        // which is `metadata().is_ok()`. So the one case its own doc
+        // comment named, a parent an earlier `sudo` left unreadable (or
+        // a volume returning EIO), read as absent: no strays, nothing
+        // unread, and `ssf uninstall` printing a bare `no VM` and a
+        // `keep:` list with no mention of `[vm] dir`, over a data disk
+        // of clones, running to completion.
+        //
+        // Unreadable through the *parent*, deliberately: `[vm] dir`
+        // itself at 000 is the case that already worked, because it can
+        // still be stat'd.
+        let root = std::env::temp_dir().join(format!(
+            "ssf-unstat-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let base = root.join("vm");
+        std::fs::create_dir_all(base.join("old")).unwrap();
+        std::fs::write(base.join("old").join("data.ext4"), b"disk").unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        cfg.vm.name = "new".into();
+        set_mode(&root, 0o000);
+        let readable_anyway = std::fs::read_dir(&base).is_ok();
+        let survey = Vm::new(&cfg).survey();
+        set_mode(&root, 0o755);
+        std::fs::remove_dir_all(&root).unwrap();
+        // Root reads it regardless, and then there is nothing to assert.
+        if !readable_anyway {
+            assert_eq!(
+                survey.unread,
+                std::slice::from_ref(&base),
+                "the directory nobody could ask about has to be named"
+            );
+            assert!(
+                survey.strays.is_empty(),
+                "and nothing in it can be claimed: {:?}",
+                survey.strays
+            );
+        }
     }
 
     #[test]
