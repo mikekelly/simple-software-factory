@@ -1315,9 +1315,26 @@ impl Vm {
 
     /// The data disk's size as lima has it, else what a build would make.
     pub(super) fn lima_data_cap_gib(&self) -> u32 {
-        match self.lima_disk() {
-            Ok(Some(d)) => gib_ceil(d.size),
-            _ => self.sizes().data_gib,
+        self.lima_cap_from(&self.lima_disks())
+    }
+
+    /// The same answer out of a listing somebody already paid for.
+    ///
+    /// `ssf vm status` needs the strays and this disk's size from one
+    /// `limactl disk list`. Asking twice doubles the worst case on a
+    /// lima home that will not lock -- and a wedged lima is the machine
+    /// most likely to have `ssf vm status` run against it in the first
+    /// place, which is the same reason `Vm::survey` takes every answer
+    /// in one pass.
+    pub(super) fn lima_cap_from(&self, disks: &Result<Vec<Disk>>) -> u32 {
+        let name = self.lima_disk_name();
+        match disks {
+            Ok(all) => all
+                .iter()
+                .find(|d| d.name == name)
+                .map(|d| gib_ceil(d.size))
+                .unwrap_or_else(|| self.sizes().data_gib),
+            Err(_) => self.sizes().data_gib,
         }
     }
 
@@ -3208,6 +3225,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn vm_status_asks_lima_for_its_disks_once() {
+        // The strays and this VM's own size both come off
+        // `limactl disk list`. Asking twice doubled the worst case on a
+        // lima home that will not lock, and `Vm::survey`'s own doc is
+        // the rule being kept here: every answer in one pass, because
+        // each one costs a fork.
+        let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Strays, Listing::Strays);
+        let _ = t.vm.status().await;
+        let asked = t
+            .commands()
+            .iter()
+            .filter(|c| c.contains("disk list"))
+            .count();
+        assert_eq!(asked, 1, "{:?}", t.commands());
+        // ... and it is *this* VM's disk whose size is read out of that
+        // one listing. The lookup moved into a function of its own when
+        // the two calls were merged, and matching the wrong name there
+        // would print somebody else's disk as this one's cap.
+        //
+        // `Crowded`, not `Answers`: a listing holding only our disk
+        // cannot tell "found ours" from "took whichever lima named
+        // first". And 33 GiB is a size the `sizes()` fallback cannot
+        // produce, so a host with little free space cannot make this
+        // pass for the wrong reason.
+        let sized = Fake::with_all(
+            "Stopped",
+            Edit::Applies,
+            DiskList::Crowded,
+            Listing::Answers,
+        );
+        assert_eq!(sized.vm.status().await.data_gib, 33);
+    }
+
+    #[tokio::test]
     async fn vm_status_names_the_strays_limactl_itself_reports() {
         // The ordinary path, and the one #158 was filed about: `limactl`
         // is healthy and answers both listings. Every other `status()`
@@ -3251,8 +3302,18 @@ mod tests {
                 .map(|s| (s.kind, s.name))
                 .collect();
         assert_eq!(named, [(StrayKind::Directory, "old".to_string())]);
-        // And the filesystem-only path doctor falls back to sees it too.
-        assert_eq!(t.vm.strays_on_filesystem().0.len(), 1);
+        // And the filesystem-only path `ssf doctor` uses sees it too.
+        // The name too, not the count: a lima-home stray would satisfy
+        // a bare `len() == 1` just as well as the `[vm] dir` one this
+        // test is about.
+        assert_eq!(
+            t.vm.strays_on_filesystem()
+                .0
+                .iter()
+                .map(|s| (s.kind, s.name.as_str()))
+                .collect::<Vec<_>>(),
+            [(StrayKind::Directory, "old")]
+        );
     }
 
     #[test]
@@ -3316,10 +3377,10 @@ mod tests {
     }
 
     #[test]
-    fn the_filesystem_fallback_reports_both_of_limas_directories() {
-        // What `ssf doctor` falls back to when there is no `limactl` to
-        // run: the half in lima's home is the one a person cannot find
-        // for themselves, since `limactl list` is what is missing.
+    fn the_filesystem_reader_reports_both_of_limas_directories() {
+        // What `ssf doctor` reads instead of asking `limactl`: both of
+        // lima's directories and `[vm] dir`. The half in lima's home is
+        // the one a person cannot easily find for themselves.
         let t = Fake::with_all("Stopped", Edit::Applies, DiskList::Empty, Listing::Empty);
         let home = t.vm.lima_home.clone().unwrap();
         std::fs::create_dir_all(home.join("ssf-aaa-inst")).unwrap();
@@ -3349,10 +3410,9 @@ mod tests {
             ["ssf-aaa-inst", "zzz-dir", "ssf-aaa"],
             "somebody else's, and a symlink, are not ssf's to name"
         );
-        // ... and this is what `ssf doctor` falls back to when there is
-        // no tooling to ask with, so both of lima's directories and
-        // `[vm] dir` have to reach it: a person who cannot run
-        // `limactl list` is the one who most needs the answer.
+        // ... and this is the reader `ssf doctor` uses, so both of
+        // lima's directories and `[vm] dir` have to reach it: it is the
+        // only answer that command gives about strays.
         let kinds: Vec<_> = strays.iter().map(|s| s.kind).collect();
         assert_eq!(kinds.len(), 3, "both of lima's, and [vm] dir's: {kinds:?}");
         assert!(kinds.contains(&StrayKind::LimaInstance), "{kinds:?}");
@@ -3872,6 +3932,8 @@ mod tests {
         /// An `ssf-*` disk this configuration does not name, sorting
         /// before the instance's name, beside somebody else's.
         Strays,
+        /// Ours, listed *after* another disk of a different size.
+        Crowded,
     }
 
     /// What the fake's `limactl list --json` does. It is both the
@@ -3934,6 +3996,7 @@ mod tests {
             let yaml = inst_dir.join("lima.yaml");
             let disk_arm = match disks {
                 DiskList::Answers => r#"echo '{"name":"ssf-one","size":21474836480,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
+                DiskList::Crowded => r#"echo '{"name":"other","size":106300440576,"dir":"/d","mountPoint":"/m"}'; echo '{"name":"ssf-one","size":35433480192,"dir":"/d","mountPoint":"/mnt/lima-ssf-one"}'"#.to_string(),
                 // A disk whose name sorts before the instance's, so the
                 // ordering rule is not satisfied by luck, and one that
                 // is somebody else's.

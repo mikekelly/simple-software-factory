@@ -3997,11 +3997,10 @@ async fn doctor() -> Result<()> {
     // VM on.
     if reports_backend_tooling(vm::in_guest()) {
         let vm = vm::Vm::new(&cfg);
-        let tooling = vm.tooling();
         println!(
             "note {} backend: {}{}",
             vm.backend(),
-            tooling.detail,
+            vm.tooling().detail,
             if cfg.vm.enabled {
                 ""
             } else {
@@ -4013,18 +4012,17 @@ async fn doctor() -> Result<()> {
         // abandoned -- so being named here is the only way they stop
         // being invisible.
         //
-        // Without the tooling, off the filesystem: the survey forks
-        // `limactl` twice, and on a machine that has no lima the line
-        // above has already said so -- but a data disk of clones in
-        // lima's home is exactly what a person who cannot run `limactl
-        // list` needs told, so the answer is found the other way rather
-        // than not at all. Firecracker's strays never need tooling.
-        let (strays, unread) = if tooling.ok {
-            let s = vm.survey();
-            (s.strays, s.unread)
-        } else {
-            vm.strays_on_filesystem()
-        };
+        // Off the filesystem, always. Asking the backend would add two
+        // `limactl` forks, each bounded at `SURVEY_LIMIT` -- a minute
+        // apiece, so two of silence for the person whose lima is
+        // wedged, who is exactly the person running `doctor`. It forks
+        // `systemctl` already; what it has never done is wait on lima.
+        // What the listing would buy under lima is the suppression of a
+        // directory lima has disowned, a cost `strays_on_disk_read`
+        // already accepts in its own doc: naming one costs a line, not
+        // a VM. Under Firecracker the two are the same answer by
+        // construction.
+        let (strays, unread) = vm.strays_on_filesystem();
         print!("{}", stray_notes(&strays, &unread));
     }
     // The widget lives on the host; inside the guest there is no Omarchy

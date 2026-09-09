@@ -184,8 +184,8 @@ pub struct Facts {
     /// where the disk is a file inside `[vm] dir` and no such refusal is
     /// reachable.
     pub vm_disk: Option<String>,
-    /// Instances and disks of ssf's that this configuration does not
-    /// name -- what a changed `[vm] name` leaves behind. Named in the
+    /// Instances, disks and VM directories that this configuration does
+    /// not name -- what a changed `[vm] name` leaves behind. Named in the
     /// report as things `ssf uninstall` will not touch, never removed by
     /// it: ssf cannot tell a VM someone renamed away to keep from one
     /// they abandoned, and only one of those is safe to delete.
@@ -223,7 +223,7 @@ impl Facts {
         let mut projects: Vec<PathBuf> = cfg
             .drivers_in_use()
             .into_iter()
-            .map(|d| cfg.projects_dir(d))
+            .map(|d| absolute(&cfg.projects_dir(d)))
             // Only a confirmed absence removes a projects directory from
             // the keep list. A denied stat is exactly when the warning
             // that it may hold clones is needed most.
@@ -256,21 +256,30 @@ impl Facts {
             },
             vm_removed: match vm.backend() {
                 vm::BackendKind::Firecracker => {
-                    format!("its disks in {}", vm.dir.display())
+                    format!("its disks in {}", absolute(&vm.dir).display())
                 }
                 vm::BackendKind::Lima => lima_removed(
                     &vm.lima_name(),
                     &vm.lima_disk_name(),
-                    vm.dir.as_path(),
+                    &absolute(&vm.dir),
                     vm::observe(std::fs::metadata(&vm.dir)).presence(),
                     &survey,
                 ),
             },
-            // Absolute, for the same reason the `rm -rf` remedy is:
-            // the report names this directory beside a command that
-            // gives its full path, and a relative `[vm] dir` would print
-            // two different-looking paths for one place.
-            vm_base: std::path::absolute(&vm.base).unwrap_or_else(|_| vm.base.clone()),
+            // Absolute, for the same reason the `rm -rf` remedy is: the
+            // report names this directory beside a command that gives
+            // its full path, and a relative `[vm] dir` would print two
+            // different-looking paths for one place.
+            //
+            // Every path the report prints, not this one alone:
+            // `[vm] dir`, the VM's own directory in both `vm_removed`
+            // arms, and the projects directories. Absolutising `keep:`
+            // and leaving `remove:` relative produced exactly the two
+            // spellings this is here to prevent, two lines apart, in
+            // the report that says what is about to be destroyed --
+            // twice, because `ssh_answered` rebuilds one of those
+            // sentences and was missed the first time.
+            vm_base: absolute(&vm.base),
             config_dir: config::config_dir(),
             state_dir: config::state_dir(),
             projects,
@@ -304,7 +313,11 @@ impl Facts {
             self.vm_removed = lima_removed(
                 &vm.lima_name(),
                 &vm.lima_disk_name(),
-                vm.dir.as_path(),
+                // Through `absolute`, as `gather`'s copy is: this
+                // rebuilds the same sentence on the ordinary VM-mode
+                // path, and printing it relative here put one directory
+                // in the report twice, spelled two ways.
+                &absolute(&vm.dir),
                 vm::observe(std::fs::metadata(&vm.dir)).presence(),
                 // `lima_removed` reads `startable`, `running` and
                 // `data`; the other three are not this call's to state.
@@ -735,6 +748,14 @@ pub fn unread_note(unread: &[PathBuf]) -> String {
         join_and(&names),
         if names.len() > 1 { "them" } else { "it" }
     )
+}
+
+/// A path as the report prints it: absolute, so that the sentence
+/// naming a directory and the command beside it are recognisably the
+/// same place. Falls back to the path as given, since a report with one
+/// odd-looking path is better than no report.
+fn absolute(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// "a", "a and b", "a, b, and c" -- the report's list style, in one
@@ -1275,6 +1296,99 @@ mod tests {
             text.contains("limactl disk delete ssf-old"),
             "the disk is the one that holds the work: {text}"
         );
+        assert!(facts.vm_base_may_exist, "and so does the snapshot");
+        // One place, one spelling -- with the configured VM present, so
+        // `remove:` names a path at all. Without it that line reads "no
+        // VM named new to remove" and every assertion about how it
+        // spells a directory holds vacuously.
+        //
+        // `keep:` was absolutised and `remove:` was not, so the same
+        // directory appeared in one report written two ways, two lines
+        // apart, which is what the absolutising was added to prevent.
+        std::fs::create_dir_all(base.join("new")).unwrap();
+        std::fs::write(base.join("new").join("data.ext4"), b"live").unwrap();
+        let live = render(
+            &Facts::gather(&cfg, &vm::Vm::new(&cfg)),
+            &Report::default(),
+            &Opts::default(),
+        );
+        assert!(live.contains("its disks in /"), "{live}");
+        for line in live.lines().filter(|l| l.contains(&rel)) {
+            assert!(
+                line.contains(&format!("/{rel}")),
+                "one place, two spellings: {line}"
+            );
+        }
+        // The lima arm builds that sentence twice -- once in `gather`
+        // and once in `ssh_answered`, which is the ordinary path when
+        // the guest is up -- and each was relative at a different
+        // round. The existing lima fixture cannot see it: its
+        // `[vm] dir` is absolute *and* confirmed absent, so the path
+        // never reaches the string at all.
+        let mut lima = cfg.clone();
+        lima.vm.backend = Some(vm::BackendKind::Lima);
+        lima.vm.name = "l".into();
+        // A `limactl` that is not there, so this asks lima nothing.
+        // Without it the test forks the *real* one against the
+        // developer's own `~/.lima` -- four times, sixty seconds each
+        // on a Mac whose lima home is locked, and with their live
+        // `ssf-*` instances landing in a `Facts` that asserts nothing
+        // about them. `Vm::new`'s `cfg!(test)` guard covers the home
+        // field and not the binary.
+        lima.vm.limactl = Some(format!("{rel}/no-limactl"));
+        std::fs::create_dir_all(base.join("l")).unwrap();
+        let lima_vm = vm::Vm::new(&lima);
+        for facts in [Facts::gather(&lima, &lima_vm), {
+            let mut f = Facts::gather(&lima, &lima_vm);
+            f.ssh_answered(&lima_vm);
+            f
+        }] {
+            let text = render(&facts, &Report::default(), &Opts::default());
+            for line in text.lines().filter(|l| l.contains(&rel)) {
+                assert!(
+                    line.contains(&format!("/{rel}")),
+                    "one place, two spellings: {line}"
+                );
+            }
+            // And the strays survive the ssh answer. `ssh_answered` is
+            // the ordinary VM-mode path -- guest up, answering -- so
+            // dropping them there takes every `keep:` and
+            // `left in place:` stray line off the report and puts
+            // `[vm] dir` back to a bare "safe to remove" over the
+            // directory a rename left behind. That is this change's own
+            // defect, on the path most people are on.
+            assert!(
+                facts
+                    .vm_strays
+                    .iter()
+                    .any(|s| s.kind == vm::StrayKind::Directory),
+                "the survey's strays have to survive: {:?}",
+                facts.vm_strays
+            );
+            assert!(
+                text.contains("which this configuration does not name"),
+                "{text}"
+            );
+        }
+        // The other direction of the snapshot, through the same join.
+        // `vm_base_may_exist: true` unconditionally left the suite green,
+        // and it is what stops `left in place:` naming a `[vm] dir` that
+        // has never existed -- on a machine that never ran
+        // `ssf vm build`, which is every machine that installed ssf and
+        // did not use the VM.
+        let mut gone = cfg.clone();
+        gone.vm.dir = format!("{rel}/nowhere");
+        let absent = Facts::gather(&gone, &vm::Vm::new(&gone));
+        assert!(
+            !absent.vm_base_may_exist,
+            "a [vm] dir that is not there was not there"
+        );
+        assert!(
+            !render(&absent, &Report::default(), &Opts::default())
+                .contains("VM image and downloads"),
+            "and gets no line at all"
+        );
+        std::fs::remove_dir_all(&base).unwrap();
         assert!(facts.vm_base_may_exist, "and so does the snapshot");
         assert!(
             facts.vm_base.is_absolute() && facts.vm_base.ends_with(&rel),
@@ -2085,9 +2199,14 @@ mod tests {
             "could not be asked goes through destroy, which says what it found"
         );
         // A stray is outside the thing being uninstalled, so nothing
-        // stops the command over it and no flag turns it into a target.
+        // stops the command over it.
+        //
+        // Only the `false` call says anything: `hard_stop` returns
+        // `None` on its first line when `force`, so asserting that with
+        // `true` holds for every input there is. What `--force` does is
+        // pinned where it can fail, in
+        // `hard_stop_names_unpushed_work_and_what_force_does_to_it`.
         assert!(hard_stop(&stray, &Report::default(), &Opts::default(), false).is_none());
-        assert!(hard_stop(&stray, &Report::default(), &Opts::default(), true).is_none());
         assert!(!unchecked_workspaces(stray.vm_data));
         // With nothing of ssf's elsewhere in lima, the plain sentence
         // comes back.
@@ -2110,7 +2229,7 @@ mod tests {
         // their own work, which is worse than deleting it: they run the
         // command themselves and it succeeds.
         // A path, not a directory: `kept()` reads the hand-set
-        // `vm_base_exists` and never the filesystem, so creating one
+        // `vm_base_may_exist` and never the filesystem, so creating one
         // here would suggest a dependency this test does not have.
         let base = std::env::temp_dir().join(format!(
             "ssf-keep-{}-{}",

@@ -476,8 +476,9 @@ fn exercise(case: Case, root: &Path) {
         .into();
         cfg.vm.dir = base.to_string_lossy().into_owned();
         cfg.vm.backend = Some(backend);
-        // Force Lima through the on-disk fallback without consulting a
-        // developer's installed tooling or real Lima state.
+        // Keep survey, status and uninstall off a developer's installed
+        // tooling or real Lima state. Doctor always uses the filesystem
+        // reader below, regardless of whether limactl is available.
         cfg.vm.limactl = Some(root.join("missing-limactl").to_string_lossy().into_owned());
         if matches!(case, Case::InaccessibleParent) {
             cfg.herdr.projects_dir = base.to_string_lossy().into_owned();
@@ -501,13 +502,13 @@ fn exercise(case: Case, root: &Path) {
             "{backend} configured data presence"
         );
 
-        let (fallback_strays, fallback_unread) = vm.strays_on_filesystem();
+        let (doctor_strays, doctor_unread) = vm.strays_on_filesystem();
         assert_eq!(
-            fallback_unread, expected,
-            "{backend} doctor fallback failed paths"
+            doctor_unread, expected,
+            "{backend} doctor filesystem reader failed paths"
         );
         assert!(
-            fallback_strays.is_empty(),
+            doctor_strays.is_empty(),
             "doctor must not claim an uninspected entry"
         );
 
@@ -561,7 +562,7 @@ fn exercise(case: Case, root: &Path) {
             );
         }
 
-        assert_renderers(&status, &fallback_strays, &fallback_unread, &expected);
+        assert_renderers(&status, &doctor_strays, &doctor_unread, &expected);
         assert_uninstall_lists(case, &facts, &base, &expected);
     }
 

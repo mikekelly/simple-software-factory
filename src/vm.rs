@@ -469,8 +469,8 @@ pub struct Survey {
     /// but `Some(false)`; the leftovers in `[vm] dir` are ssf's own and
     /// hold nothing of anyone's work.
     pub data: Option<bool>,
-    /// Instances and disks of ssf's that this configuration does not
-    /// name: what a changed `[vm] name` leaves behind. Reported, never
+    /// Instances, disks and VM directories that this configuration does
+    /// not name: what a changed `[vm] name` leaves behind. Reported, never
     /// removed, and deliberately not part of [`Survey::present`] --
     /// `ssf uninstall` destroys the VM it is configured for, and a stray
     /// that reached that decision would be a VM deleted because someone
@@ -1679,10 +1679,15 @@ impl Vm {
     /// anything: `[vm] dir` *and* lima's own home, both read on both
     /// backends -- `[vm] dir` is shared by them, and lima's home
     /// outlives a change of `[vm] backend`. Reading either as belonging
-    /// to one backend is the mistake this whole change corrects. For
-    /// the caller that has no tooling to ask with -- which is
-    /// exactly when the person cannot run `limactl list` either, so
-    /// going quiet then would take the report away at its most useful.
+    /// to one backend is the mistake this whole change corrects.
+    ///
+    /// This is what `ssf doctor` uses, always. Asking the backend
+    /// instead would add two `limactl` forks to a command that has
+    /// never waited on lima, each bounded at `SURVEY_LIMIT` -- two
+    /// minutes of silence for the person whose lima is wedged, who is
+    /// the person running `doctor`. The listing would buy only the suppression of
+    /// a directory lima has disowned, and naming one of those costs a
+    /// line, not a VM.
     pub fn strays_on_filesystem(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         let (mut strays, mut unread) = self.fc_dir_contents();
         // Lima's home under both backends: reading it costs no
@@ -2677,6 +2682,11 @@ impl Vm {
         // as "no such instance" it printed `instance: ssf-<name> missing
         // (ssf vm build)` over a VM that exists, which is the same
         // conflation `lima_stop` was fixed for.
+        // One `limactl disk list` for both the strays and this VM's own
+        // size. They used to be two, which doubled the worst case on a
+        // lima home that will not lock -- the machine most likely to
+        // have `ssf vm status` run against it.
+        let lima_disks = (backend == BackendKind::Lima).then(|| self.lima_disks());
         let (inst, probe_error, mut strays) = match backend {
             BackendKind::Lima => match self.lima_instances() {
                 Ok(all) => {
@@ -2696,8 +2706,9 @@ impl Vm {
             BackendKind::Firecracker => (None, None, Vec::new()),
         };
         if backend == BackendKind::Lima {
-            // The disks are a second listing, and lima's answer is
-            // better than the filesystem's where it can be had.
+            // The disks are another listing, taken above so that the
+            // strays and this VM's size come out of one; lima's answer
+            // is better than the filesystem's where it can be had.
             //
             // It does not make this and `survey` agree in every case:
             // when the *instance* listing fails, `lima_survey` goes to
@@ -2707,9 +2718,9 @@ impl Vm {
             // honest about what their own reader saw, and closing the
             // gap means deciding which reader wins -- which is the
             // refusal's question (#176), not the report's.
-            match self.lima_disks() {
-                Ok(all) => strays.extend(self.split_disks(all).1),
-                Err(_) => strays.extend(self.disk_strays_on_disk()),
+            match &lima_disks {
+                Some(Ok(all)) => strays.extend(self.split_disks(all.clone()).1),
+                _ => strays.extend(self.disk_strays_on_disk()),
             }
         }
         let (dir_strays, mut unread) = self.fc_dir_contents();
@@ -2738,7 +2749,10 @@ impl Vm {
         VmStatus {
             vcpus: sizes.vcpus,
             mem_mib: sizes.mem_mib,
-            data_gib: self.data_cap_gib(),
+            data_gib: match &lima_disks {
+                Some(disks) => self.lima_cap_from(disks),
+                None => self.data_cap_gib(),
+            },
             data: if ssh {
                 self.guest_disk_use().ok()
             } else {
@@ -3869,7 +3883,7 @@ mod tests {
             ["ssf-old"],
             "a lima instance a backend change left behind"
         );
-        assert_eq!(fallback.len(), 1, "and doctor's fallback sees it too");
+        assert_eq!(fallback.len(), 1, "and the reader doctor uses sees it too");
         // `Some(false)`, not merely "not `Some(true)`": the destroy
         // step skips on `Some(false)` and goes through `destroy` on
         // `None`, so the two are different instructions and an
