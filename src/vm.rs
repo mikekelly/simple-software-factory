@@ -4040,6 +4040,35 @@ mod tests {
         println!("{DONE}");
     }
 
+    /// A shell on this machine that implements ANSI-C quoting, if there
+    /// is one.
+    ///
+    /// The round-trips below need one, and `sh` is the wrong way to ask
+    /// for it. On Debian and Ubuntu `/bin/sh` is dash, which does not
+    /// implement `$'...'` at all: it reads the `$` as a literal and
+    /// passes the body through untouched, so the remedy comes back as
+    /// its own source text and the assertion fails on a machine where
+    /// nothing is wrong. That is the host the release workflow runs
+    /// `cargo test` on, and the release job is gated on it.
+    ///
+    /// macOS is the other direction: its `/bin/bash` is 3.2, which
+    /// predates `\u`. So this asks each candidate to expand a known
+    /// escape and believes the first one that gets it right, rather
+    /// than trusting a name. zsh is what answers on a stock Mac.
+    ///
+    /// The product is unaffected either way -- a remedy pasted into a
+    /// shell that cannot expand it names a path that does not exist and
+    /// removes nothing, which is the disclosed fail-safe.
+    fn ansi_c_shell() -> Option<&'static str> {
+        ["bash", "zsh", "sh"].into_iter().find(|sh| {
+            std::process::Command::new(sh)
+                .arg("-c")
+                .arg(r"printf %s $'AB'")
+                .output()
+                .is_ok_and(|o| o.stdout == b"AB")
+        })
+    }
+
     #[test]
     fn a_name_cannot_forge_a_second_stray_line() {
         // Every consumer prints one line per stray, and the name comes
@@ -4053,6 +4082,21 @@ mod tests {
         // fix filtered at the scanners and reached two of the four
         // places a name becomes a stray, and silenced a real VM whose
         // name merely had a tab in it.
+        let shell = ansi_c_shell();
+        let expand = |script: String| -> Option<String> {
+            let out = std::process::Command::new(shell?)
+                .arg("-c")
+                .arg(script)
+                .output()
+                .expect("the shell that answered the probe");
+            Some(String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        assert!(
+            shell.is_some() || cfg!(target_os = "macos"),
+            "no shell here expands $'...': on anything but a stock macOS \
+             that is a broken environment, not a passing test"
+        );
+
         let forged = "old\nstray:    lima also holds the instance ssf-new";
         for s in [
             Stray::directory(&std::path::PathBuf::from("/v").join(forged)),
@@ -4075,18 +4119,14 @@ mod tests {
             // splitting on whitespace.
             let at = s.remove.find("$'").unwrap();
             let quoted = &s.remove[at..];
-            let back = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!("printf %s {quoted}"))
-                .output()
-                .expect("sh");
             // A directory's remedy names its path, a lima one its
             // name; both end in the name itself.
-            assert!(
-                String::from_utf8_lossy(&back.stdout).ends_with(&s.name),
-                "the remedy must expand back to the real name: {:?}",
-                String::from_utf8_lossy(&back.stdout)
-            );
+            if let Some(back) = expand(format!("printf %s {quoted}")) {
+                assert!(
+                    back.ends_with(&s.name),
+                    "the remedy must expand back to the real name: {back:?}"
+                );
+            }
         }
         // A name whose escaped character is followed by a *hex* one,
         // which is what makes the fixed width load-bearing: bash reads
@@ -4096,16 +4136,12 @@ mod tests {
         // this -- its newline is followed by `s`.
         let hexy = Stray::lima_disk("ssf-x\nabcd".into(), &Default::default());
         let at = hexy.remove.find("$'").unwrap();
-        let back = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("printf %s {}", &hexy.remove[at..]))
-            .output()
-            .expect("sh");
-        assert_eq!(
-            String::from_utf8_lossy(&back.stdout).as_ref(),
-            "ssf-x\nabcd",
-            "a fixed-width escape, or the next character is swallowed"
-        );
+        if let Some(back) = expand(format!("printf %s {}", &hexy.remove[at..])) {
+            assert_eq!(
+                back, "ssf-x\nabcd",
+                "a fixed-width escape, or the next character is swallowed"
+            );
+        }
 
         // The characters a terminal does not split on but a bidi-aware
         // renderer does, which is where these get pasted.
@@ -4164,20 +4200,16 @@ mod tests {
         ] {
             let at = s.remove.find("$'").unwrap();
             let quoted = &s.remove[at..];
-            let back = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!(
-                    "set -- {quoted}; printf '%s\\n' \"$#\"; printf %s \"$1\""
-                ))
-                .output()
-                .expect("sh");
-            let out = String::from_utf8_lossy(&back.stdout);
-            let (words, word) = out.split_once('\n').unwrap_or(("?", &out));
-            assert_eq!(words, "1", "the remedy must be one argument: {out:?}");
-            assert!(
-                word.ends_with(&s.name),
-                "the remedy must expand back to the real name: {word:?}"
-            );
+            if let Some(out) = expand(format!(
+                "set -- {quoted}; printf '%s\\n' \"$#\"; printf %s \"$1\""
+            )) {
+                let (words, word) = out.split_once('\n').unwrap_or(("?", out.as_str()));
+                assert_eq!(words, "1", "the remedy must be one argument: {out:?}");
+                assert!(
+                    word.ends_with(&s.name),
+                    "the remedy must expand back to the real name: {word:?}"
+                );
+            }
         }
 
         // The rest of the set the two rounds above did not name. Each
