@@ -421,16 +421,28 @@ fn assigns_bot(args: &[String], bot: Option<&str>) -> bool {
         // assignee, so the walk uses that command's letters.
         if let Some(('a', attached)) = cluster(a, false).and_then(|cl| cl.valued) {
             match attached {
-                Some(v) => names.push(v),
+                Some(v) => {
+                    names.push(v);
+                    i += 1;
+                }
                 None => {
                     if let Some(v) = args.get(i + 1) {
                         names.push(v.as_str());
-                        i += 1;
                     }
+                    i += 2;
                 }
             }
+            continue;
         }
-        i += 1;
+        // The argument after a flag that takes a value is that value, so
+        // a login written in a body or a title is not an assignee. This
+        // scan decides whether a new item starts a session of its own,
+        // so a wrong yes here is a session nobody asked for.
+        let skips_value = match cluster(a, false).and_then(|cl| cl.valued) {
+            Some((c, None)) => valued_shorthand(c, false),
+            _ => valued_long(a),
+        };
+        i += if skips_value { 2 } else { 1 };
     }
     names
         .iter()
@@ -454,6 +466,13 @@ const ACTIONS: [char; 3] = ['a', 'c', 'r'];
 /// hi` is `unknown shorthand flag: 'd' in -db`, stamped or not. A letter
 /// in neither set ends the walk, which is the other safe way to be
 /// wrong: it stops the scan rather than reading a value as more flags.
+/// `-h` is the one value-less shorthand these sets leave out, and
+/// deliberately: a line carrying `--help` prints help and posts nothing,
+/// so no reading of it can be observed. Read from gh 2.98.0. The one
+/// direction that would matter is a new
+/// value-less shorthand on a create or a comment: a body behind it would
+/// stop the walk and go out unstamped, so this is worth re-reading when
+/// gh grows a flag.
 fn boolean_shorthand(c: char, review: bool) -> bool {
     if review {
         ACTIONS.contains(&c)
@@ -622,6 +641,7 @@ impl Shim<'_> {
         // `--body-file` alongside it is refused outright.
         let mut out: Vec<String> = Vec::with_capacity(args.len());
         let mut stamped = false;
+        let mut has_action = false;
         let mut i = 0;
         while i < args.len() {
             let a = args[i].as_str();
@@ -629,6 +649,14 @@ impl Shim<'_> {
                 out.extend_from_slice(&args[i..]);
                 break;
             }
+            // Whether the line already carries an action is read here
+            // rather than in a scan of its own. This walk is the one
+            // that knows a flag's value from a flag, and a `--` is a
+            // value like any other when a flag takes it: `gh pr review 3
+            // -R -- --repo o/r -a` posts, and a scan that stopped at
+            // that `--` would never see the approval and would let it
+            // out untagged.
+            has_action = has_action || (review && action_flag(a));
             // The shorthand spellings of a body, cluster included, all
             // come from the one reading of the argument.
             let short = cluster(a, review).and_then(|cl| cl.valued.map(|(c, v)| (cl.bools, c, v)));
@@ -718,12 +746,10 @@ impl Shim<'_> {
             };
             out.push(a.to_string());
             i += 1;
-            // Not a `--`: that ends the flags rather than feeding one.
-            if let Some(v) = args
-                .get(i)
-                .filter(|_| skips_value)
-                .filter(|v| v.as_str() != "--")
-            {
+            // A `--` here is the value and not the end of the flags:
+            // pflag hands it to the flag like any other word, and `gh pr
+            // review 3 -F --` really does look for a file called `--`.
+            if let Some(v) = args.get(i).filter(|_| skips_value) {
                 out.push(v.clone());
                 i += 1;
             }
@@ -738,12 +764,7 @@ impl Shim<'_> {
         // subcommand's own flags left that approval unstamped, which is
         // the tag loss this whole change is about. `-a`, `-c` and `-r`
         // have no other meaning here, since this is only consulted for a
-        // `review`. The reading stops at a `--` for the same reason the
-        // scan above does: past one gh has positionals, not flags.
-        let has_action = args
-            .iter()
-            .take_while(|a| a.as_str() != "--")
-            .any(|a| action_flag(a));
+        // `review`.
         // Nothing was rewritten when `stamped` is false -- every branch
         // above sets it -- so `out` still matches `args` position for
         // position and `s + 1` is where the subcommand's flags begin.
@@ -1610,6 +1631,67 @@ mod tests {
         }
     }
 
+    /// A `--` is the end of the flags only where gh reads it as one. A
+    /// flag that takes a value takes this one: `gh pr review 3 -F --`
+    /// looks for a file called `--`, and both lines below post. Read as
+    /// a terminator, the first loses its approval and goes out untagged
+    /// and the second gets a second `--body` that gh prefers over the
+    /// agent's, which is the tag gone.
+    #[test]
+    fn a_double_dash_a_flag_swallows_is_not_the_end_of_the_flags() {
+        assert_eq!(
+            rewrite(args(&[
+                "pr",
+                "review",
+                "7",
+                "-R",
+                "--",
+                "-a",
+                "--repo",
+                "acme/widgets",
+            ])),
+            args(&[
+                "pr",
+                "review",
+                "--body",
+                &line(),
+                "7",
+                "-R",
+                "--",
+                "-a",
+                "--repo",
+                "acme/widgets",
+            ])
+        );
+        assert_eq!(
+            rewrite(args(&[
+                "pr",
+                "review",
+                "7",
+                "-aR",
+                "--",
+                "-b",
+                "hi",
+                "--repo",
+                "acme/widgets",
+            ])),
+            args(&[
+                "pr",
+                "review",
+                "7",
+                "-aR",
+                "--",
+                "-b",
+                &format!("{}\n\nhi", line()),
+                "--repo",
+                "acme/widgets",
+            ])
+        );
+        // A `--` of its own still ends them.
+        let a = args(&["pr", "review", "7", "--", "--approve"]);
+        assert_eq!(rewrite(a.clone()), a);
+    }
+
     /// A body inside a shorthand cluster is still a body. Reading the
     /// action flag without reading this would put a second `--body` on
     /// the line, and gh takes the last: the agent's text would be
@@ -1656,6 +1738,13 @@ mod tests {
             (
                 args(&["pr", "create", "-t", "t", "-wb", "hello"]),
                 args(&["pr", "create", "-t", "t", "-wb", &body]),
+            ),
+            // `-e` is dead next to a body on the two comment commands,
+            // where gh refuses `--editor` alongside `--body`, but it is
+            // live on the two creates, which prompt in a terminal.
+            (
+                args(&["issue", "create", "-t", "t", "-eb", "hello"]),
+                args(&["issue", "create", "-t", "t", "-eb", &body]),
             ),
             // The attached form on its own, which used to come out as a
             // body of `=hello`.
@@ -1705,6 +1794,11 @@ mod tests {
         assert_eq!(
             shim.rewrite(args(&["-aFnotes.md", "pr", "review", "7"])),
             args(&["-a", &body, "pr", "review", "7"])
+        );
+        // `-e` on a create, which gh runs in a terminal.
+        assert_eq!(
+            shim.rewrite(args(&["pr", "create", "-t", "t", "-eF", "notes.md"])),
+            args(&["pr", "create", "-t", "t", "-e", &body])
         );
         // The attached form, which used to make the shim read a file
         // called `=notes.md`, fail, and hand the line to gh unstamped.
@@ -1953,6 +2047,13 @@ mod tests {
                 ]),
                 Some("OverlayBot"),
             ),
+            // A login inside a body or a title is not an assignee. A
+            // wrong yes here would give the new item a session of its
+            // own instead of leaving it with whoever filed it.
+            (
+                args(&["issue", "create", "-t", "-wa @me", "-b", "child"]),
+                Some("OverlayBot"),
+            ),
             // A letter that takes a value of its own ends the walk, so
             // the `a` here is a label and not an assignee.
             (
@@ -1992,6 +2093,11 @@ mod tests {
             let out = s.rewrite(a.clone());
             assert!(out.contains(&plain), "{a:?} -> {out:?}");
         }
+        // Nor is a login written in the body, which the tag would
+        // otherwise be read out of.
+        s.bot = Some("OverlayBot");
+        let out = s.rewrite(args(&["pr", "create", "-t", "t", "-b", "-wa @me"]));
+        assert!(!out.iter().any(|o| o.contains("mode=delegate")), "{out:?}");
         // @me is the bot even without SSF_BOT: gh runs with the bot's token.
         let out = rewrite(args(&[
             "issue", "create", "-t", "t", "-b", "child", "-a", "@me",
