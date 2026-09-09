@@ -418,7 +418,19 @@ impl LimaCommand {
                 shell_join(std::slice::from_ref(&h.display().to_string()))
             ));
         }
-        out.push_str(self.limactl.as_deref().unwrap_or("limactl"));
+        // Quoted like the name and the home, and tilde-expanded first:
+        // `[vm] limactl = "~/bin/limactl"` runs today only because bash
+        // expands an unquoted word, and `'~/bin/limactl'` would not --
+        // so quoting without expanding would break the setting it is
+        // meant to carry. `Vm::limactl` expands it before running it
+        // too. Unquoted, a path with a space runs a different program
+        // and the remedy for a disk of clones silently does nothing.
+        out.push_str(&match &self.limactl {
+            Some(p) => shell_join(std::slice::from_ref(
+                &crate::config::expand_tilde(p).display().to_string(),
+            )),
+            None => "limactl".to_string(),
+        });
         out.push(' ');
         out.push_str(verb);
         out.push(' ');
@@ -1470,7 +1482,6 @@ impl Vm {
                 unread.extend(lima_unread);
                 lima::sort_strays(&mut strays);
                 one_each(&mut unread);
-                one_each(&mut unread);
                 Survey {
                     present: Some(dir || running),
                     running: Some(running),
@@ -2474,6 +2485,7 @@ impl Vm {
             unread.extend(self.strays_on_disk_read().1);
         }
         lima::sort_strays(&mut strays);
+        one_each(&mut unread);
         let running = match backend {
             BackendKind::Firecracker => Some(self.running()),
             BackendKind::Lima => probe_error
@@ -3704,6 +3716,37 @@ mod tests {
         // The real one is still what the resolver answers, so the
         // guard is about `Vm::new` and not about losing the lookup.
         assert!(lima::lima_home().is_some() || dirs::home_dir().is_none());
+    }
+
+    #[test]
+    fn every_part_of_a_lima_remedy_survives_being_pasted() {
+        // The name was quoted, the home was quoted, and the program
+        // between them was not -- so `[vm] limactl = "/my tools/limactl"`
+        // printed a command bash reads as `/my` with an argument, and the
+        // remedy for a disk of clones silently did nothing.
+        let spaced = LimaCommand {
+            home: Some(PathBuf::from("/Volumes/My Disk/lima")),
+            limactl: Some("/my tools/limactl".into()),
+        };
+        assert_eq!(
+            spaced.command("disk delete", "ssf-a b"),
+            "LIMA_HOME='/Volumes/My Disk/lima' '/my tools/limactl' disk delete 'ssf-a b'"
+        );
+        // A tilde has to survive too: `~/bin/limactl` works today only
+        // because bash expands an unquoted word, so quoting without
+        // expanding first would break the setting being carried.
+        let tilde = LimaCommand {
+            home: None,
+            limactl: Some("~/bin/limactl".into()),
+        };
+        let out = tilde.command("delete", "ssf-old");
+        assert!(!out.contains('~'), "expanded before quoting: {out}");
+        assert!(out.ends_with("/bin/limactl delete ssf-old"), "{out}");
+        // Nothing to carry: the plain command.
+        assert_eq!(
+            LimaCommand::default().command("delete", "ssf-old"),
+            "limactl delete ssf-old"
+        );
     }
 
     #[test]
