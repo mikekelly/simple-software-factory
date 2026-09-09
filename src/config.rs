@@ -704,6 +704,10 @@ fn default_vm_ssh_port() -> u16 {
 pub struct DaemonConfig {
     #[serde(default = "default_poll_interval")]
     pub poll_interval_secs: u64,
+    /// How often the daemon checks active session branches for conflicts with
+    /// the repository base, in seconds. Zero disables the check.
+    #[serde(default = "default_conflict_check_interval")]
+    pub conflict_check_interval_secs: u64,
     /// Deliver the bot account's own commits and cross-references too
     /// (normally noise), and every session's posts back to it. The bot's
     /// comments are otherwise sorted per session by their origin tag, and
@@ -796,6 +800,7 @@ impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
             poll_interval_secs: default_poll_interval(),
+            conflict_check_interval_secs: default_conflict_check_interval(),
             include_own_events: false,
             ignored_events: default_ignored_events(),
             max_body_chars: default_max_body_chars(),
@@ -814,6 +819,9 @@ impl Default for DaemonConfig {
 
 fn default_poll_interval() -> u64 {
     10
+}
+fn default_conflict_check_interval() -> u64 {
+    300
 }
 fn default_ignored_events() -> Vec<String> {
     ["mentioned", "subscribed", "unsubscribed"]
@@ -872,6 +880,11 @@ pub struct RepoConfig {
     /// Base ref for issue worktrees (defaults to the repo's Orca base ref).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// How often this repository's active session branches are checked for
+    /// conflicts, overriding `daemon.conflict_check_interval_secs`. Zero
+    /// disables the check for this repository.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict_check_interval_secs: Option<u64>,
     /// Repo-specific instructions appended to the initial prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -1339,6 +1352,12 @@ impl Config {
     /// repository's own say, else the instance's.
     pub fn event_comments(&self, repo: &RepoConfig) -> bool {
         repo.event_comments.unwrap_or(self.daemon.event_comments)
+    }
+
+    /// The repository's conflict check interval, or the daemon default.
+    pub fn conflict_check_interval_secs(&self, repo: &RepoConfig) -> u64 {
+        repo.conflict_check_interval_secs
+            .unwrap_or(self.daemon.conflict_check_interval_secs)
     }
 
     /// Whether the wildcard is in effect for a repository.

@@ -908,6 +908,28 @@ or leave the workspace as it is; a kept workspace is fine.",
     s
 }
 
+/// Tell a live session that its committed branch cannot merge cleanly into
+/// the current base. This is advisory: the daemon never changes the
+/// worktree, index or branch for the agent.
+pub fn conflict_prompt(base_ref: &str, base_sha: &str, files: &[String]) -> String {
+    let mut s =
+        format!("[ssf] Your branch conflicts with {base_ref} at base commit `{base_sha}`.\n\n");
+    if files.is_empty() {
+        s.push_str("Git reported a merge conflict, but did not name the affected files.\n\n");
+    } else {
+        s.push_str("Conflicting files:\n");
+        for file in files {
+            s.push_str(&format!("- `{file}`\n"));
+        }
+        s.push('\n');
+    }
+    s.push_str(
+        "If your final round has started, rebase your branch onto the base, resolve the conflict, ",
+    );
+    s.push_str("and re-run the round. If the round has not started, do nothing now; resolve the conflict before starting it.");
+    s
+}
+
 /// A comment on an item, as shown to the session that handed the item off.
 pub struct FinalComment {
     pub author: String,
@@ -1586,6 +1608,7 @@ left no summary; read the pull request below.\n\n"
             clone_url: None,
             path: None,
             base_branch: None,
+            conflict_check_interval_secs: None,
             instructions: Some("Run the tests.".into()),
             prompt_file: None,
             allowed_users: None,

@@ -712,6 +712,10 @@ pub struct StubState {
     /// When set, the next `start` fails with this message: a harness that
     /// cannot be started at all.
     pub start_error: Option<String>,
+    /// When set, the next prompt delivery fails with this message. Tests use
+    /// this to exercise the daemon's retry bookkeeping without changing a
+    /// real driver's delivery semantics.
+    pub deliver_error: Option<String>,
     handles: u32,
 }
 
@@ -851,6 +855,9 @@ impl StubDriver {
 
     fn deliver(&self, worktree_id: &str, relaunch: &Relaunch<'_>, text: &str) -> Result<Delivery> {
         self.with(|s| {
+            if let Some(why) = s.deliver_error.take() {
+                bail!("{why}");
+            }
             if !s.worktrees.contains(worktree_id) {
                 bail!("{worktree_id}: no such workspace");
             }

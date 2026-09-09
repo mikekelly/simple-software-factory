@@ -77,6 +77,7 @@
 
 [daemon]
 # poll_interval_secs = 10
+# conflict_check_interval_secs = 300           # fetch the base once per active repository at this interval and notify sessions only of committed-branch merge conflicts; 0 disables
 # include_own_events = false                   # deliver the bot's own commits/cross-references and each session's posts back to it
 # ignored_events = ["mentioned", "subscribed", "unsubscribed"]
 # max_body_chars = 8000
@@ -113,6 +114,7 @@ harness = "claude"                             # agent id: see `ssf agents`
 # prompt_file = "SSF.md"                       # file appended to the initial prompt (see SSF.example.md); relative to the worktree unless absolute
 # allowed_users = ["alice"]                    # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
 # event_comments = false                       # this repository's items get no ssf event posts (default: daemon.event_comments)
+# conflict_check_interval_secs = 0             # disable conflict notices for this repository (default: daemon.conflict_check_interval_secs)
 # [repo.git]                                   # this repository's commit identity, each key over the [git] table above
 # name = "Ann Person"
 # email = "ann@example.com"

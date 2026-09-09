@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info, warn};
 
 use crate::allow::{self, AllowList, Source};
@@ -24,8 +24,8 @@ use crate::prompt::{
 use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
-    Blocked, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State, now_iso,
-    owner_in,
+    Blocked, ConflictNotice, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State,
+    now_iso, owner_in,
 };
 use crate::status::session_id;
 
@@ -73,6 +73,9 @@ const LOGIN_RETRY_MAX: Duration = Duration::from_secs(3600);
 /// the mention re-check is paced: the item itself is still read every
 /// pass, so a close is still noticed at once.
 const RETIREMENT_RECHECK: Duration = Duration::from_secs(600);
+/// A Git command in the advisory check must not hold a daemon pass forever
+/// on a broken remote or repository lock.
+const CONFLICT_GIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The wait before the next restart after `retries` fruitless ones.
 fn retry_wait(retries: u32) -> Duration {
     LOGIN_RETRY
@@ -160,6 +163,13 @@ pub struct Engine {
     /// workspace is delivering right now: a relaunch for it is told of in
     /// that onboarding's `attached`, not as a `resumed` of its own.
     onboarding: Option<(String, u64)>,
+    /// When each repository's conflict check last ran. This is deliberately
+    /// in-memory: a restart gets one fresh check rather than trusting an old
+    /// scheduling timestamp.
+    conflict_checks: BTreeMap<String, Instant>,
+    /// Merge simulations keyed by repository and branch, reused while the
+    /// base and branch commit pair remains unchanged.
+    conflict_pairs: BTreeMap<(String, String), ConflictPair>,
 }
 
 /// The cached collaborator list of one repository.
@@ -168,6 +178,82 @@ struct Collaborators {
     /// Logins with push access, as GitHub gave them.
     logins: Vec<String>,
     etag: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ConflictPair {
+    base_ref: String,
+    base_sha: String,
+    branch_sha: String,
+    conflict: bool,
+    files: Vec<String>,
+}
+
+/// Run one Git command for the conflict check, retaining its exit status so
+/// `merge-tree` can distinguish a real conflict from a failed invocation.
+/// The child is killed when the bounded command future is dropped.
+async fn conflict_git_status(path: &str, args: &[&str]) -> Result<std::process::Output> {
+    let mut command = tokio::process::Command::new("git");
+    command
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(CONFLICT_GIT_TIMEOUT, command.output())
+        .await
+        .with_context(|| format!("git {} timed out", args.join(" ")))??;
+    Ok(out)
+}
+
+async fn conflict_git(path: &str, args: &[&str]) -> Result<String> {
+    let out = conflict_git_status(path, args).await?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+fn normalize_branch(branch: &str) -> String {
+    branch
+        .trim()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch.trim())
+        .to_string()
+}
+
+fn base_ref_candidates(base: &str) -> Result<Vec<String>> {
+    let base = base.trim();
+    if let Some(remote) = base.strip_prefix("refs/remotes/origin/") {
+        return Ok(vec![format!("refs/remotes/origin/{remote}")]);
+    }
+    if let Some(remote) = base.strip_prefix("origin/") {
+        return Ok(vec![format!("refs/remotes/origin/{remote}")]);
+    }
+    if let Some(local) = base.strip_prefix("refs/heads/") {
+        return Ok(vec![format!("refs/remotes/origin/{local}")]);
+    }
+    if base.starts_with("refs/") {
+        anyhow::bail!("configured base {base:?} is not an origin branch")
+    }
+    Ok(vec![format!("refs/remotes/origin/{base}")])
+}
+
+fn base_remote_branch(base: &str) -> Result<String> {
+    let base = base.trim();
+    let branch = base
+        .strip_prefix("refs/remotes/origin/")
+        .or_else(|| base.strip_prefix("origin/"))
+        .or_else(|| base.strip_prefix("refs/heads/"))
+        .unwrap_or(base);
+    if branch.is_empty() || branch.starts_with("refs/") {
+        anyhow::bail!("configured base {base:?} is not an origin branch")
+    }
+    Ok(branch.to_string())
 }
 
 /// The ignore record of a bot-opened item nothing binds to (see
@@ -314,6 +400,8 @@ impl Engine {
             refetch: BTreeSet::new(),
             startup_pass: false,
             onboarding: None,
+            conflict_checks: BTreeMap::new(),
+            conflict_pairs: BTreeMap::new(),
         })
     }
 
@@ -842,6 +930,279 @@ are resumed on the first pass that finds it: {err:#}"
         }
     }
 
+    /// Check the owning sessions in one repository for a merge conflict with
+    /// its current base. The check is paced independently of GitHub polling,
+    /// and does nothing when no eligible session has a live agent to receive
+    /// the advisory.
+    async fn check_conflicts(&mut self, repo: &RepoConfig) -> Result<()> {
+        let interval = Duration::from_secs(self.cfg.conflict_check_interval_secs(repo));
+        if interval.is_zero() {
+            return Ok(());
+        }
+        if self
+            .conflict_checks
+            .get(&repo.name)
+            .is_some_and(|last| last.elapsed() < interval)
+        {
+            return Ok(());
+        }
+
+        let candidates = self.conflict_candidates(repo).await;
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        // Set this before Git work so a failed remote or a locked checkout is
+        // retried at the configured cadence rather than on every ten-second
+        // daemon pass.
+        self.conflict_checks
+            .insert(repo.name.clone(), Instant::now());
+
+        let root = self.conflict_repo_root(repo, &candidates).await?;
+        let (base_ref, base_sha) = self.conflict_base(&root, repo).await?;
+        let base_name = base_ref
+            .strip_prefix("refs/remotes/")
+            .or_else(|| base_ref.strip_prefix("refs/heads/"))
+            .unwrap_or(&base_ref);
+
+        for st in candidates {
+            let Some(branch) = st.branch.as_deref().map(normalize_branch) else {
+                continue;
+            };
+            let Some(worktree) = st.worktree_path.as_deref() else {
+                continue;
+            };
+            let Ok(actual) =
+                conflict_git(worktree, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await
+            else {
+                warn!(
+                    repo = repo.name,
+                    issue = st.number,
+                    "could not read the session worktree branch for conflict check"
+                );
+                continue;
+            };
+            if normalize_branch(&actual) != branch {
+                warn!(
+                    repo = repo.name,
+                    issue = st.number,
+                    expected = branch,
+                    actual,
+                    "session worktree branch differs from state; skipping conflict check"
+                );
+                continue;
+            }
+            let Ok(branch_sha) = conflict_git(worktree, &["rev-parse", "--verify", "HEAD"]).await
+            else {
+                warn!(
+                    repo = repo.name,
+                    issue = st.number,
+                    "could not read the session branch commit for conflict check"
+                );
+                continue;
+            };
+            let key = (repo.name.clone(), branch.clone());
+            let pair = match self.conflict_pairs.get(&key) {
+                Some(pair) if pair.base_sha == base_sha && pair.branch_sha == branch_sha => {
+                    let mut pair = pair.clone();
+                    pair.base_ref = base_ref.clone();
+                    pair
+                }
+                _ => match self.simulate_conflict(&root, &base_sha, &branch_sha).await {
+                    Ok((conflict, files)) => {
+                        let pair = ConflictPair {
+                            base_ref: base_ref.clone(),
+                            base_sha: base_sha.clone(),
+                            branch_sha: branch_sha.clone(),
+                            conflict,
+                            files,
+                        };
+                        self.conflict_pairs.insert(key, pair.clone());
+                        pair
+                    }
+                    Err(e) => {
+                        warn!(
+                            repo = repo.name,
+                            issue = st.number,
+                            branch,
+                            "could not simulate merge for conflict check: {e:#}"
+                        );
+                        continue;
+                    }
+                },
+            };
+            let fingerprint = ConflictNotice {
+                base_ref: pair.base_ref.clone(),
+                base_sha: pair.base_sha.clone(),
+                branch_sha: pair.branch_sha.clone(),
+            };
+            if !pair.conflict {
+                self.entry(repo, st.number).conflict_notice = None;
+                continue;
+            }
+            if self
+                .peek(repo, st.number)
+                .and_then(|s| s.conflict_notice.as_ref())
+                == Some(&fingerprint)
+            {
+                continue;
+            }
+            let text = prompt::conflict_prompt(base_name, &base_sha, &pair.files);
+            match self.deliver_to(repo, st.number, &text, None).await {
+                Ok(d) => {
+                    let e = self.entry(repo, st.number);
+                    e.terminal_handle = Some(d.handle);
+                    e.last_prompt_at = Some(now_iso());
+                    e.prompts_sent += 1;
+                    e.conflict_notice = Some(fingerprint);
+                }
+                Err(e) => warn!(
+                    repo = repo.name,
+                    issue = st.number,
+                    "could not tell the session about its branch conflict: {e:#}"
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// Owning sessions are selected before any Git work, so a repository with
+    /// only retired, released, blocked, handed-over or bound-child records
+    /// does not fetch merely because it remains configured.
+    async fn conflict_candidates(&self, repo: &RepoConfig) -> Vec<IssueState> {
+        let Some(rs) = self.state.repos.get(&repo.name) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for st in rs.issues.values() {
+            if !(st.seeded
+                && st.active
+                && st.shares_workspace_of.is_none()
+                && st.retired_at.is_none()
+                && st.released_at.is_none()
+                && !st.release_pending
+                && !st.cleanup_pending
+                && st.handover.is_none()
+                && st.blocked.is_none()
+                && st.worktree_id.is_some()
+                && st.worktree_path.is_some()
+                && st.branch.is_some())
+            {
+                continue;
+            }
+            let Some(id) = st.worktree_id.as_deref() else {
+                continue;
+            };
+            if self.driver(repo).has_live_agent(id).await.unwrap_or(false) {
+                out.push(st.clone());
+            }
+        }
+        out
+    }
+
+    async fn conflict_repo_root(
+        &self,
+        repo: &RepoConfig,
+        candidates: &[IssueState],
+    ) -> Result<String> {
+        if let Some(path) = repo.path.as_deref() {
+            return Ok(path.to_string());
+        }
+        let st = candidates
+            .first()
+            .context("eligible conflict-check session has no workspace")?;
+        let repo_id = st
+            .repo_id
+            .as_deref()
+            .context("eligible conflict-check session has no repository")?;
+        self.driver(repo).repo_path(repo_id).await
+    }
+
+    async fn conflict_base(&self, root: &str, repo: &RepoConfig) -> Result<(String, String)> {
+        let configured = match repo.base_branch.as_deref().map(str::trim) {
+            Some(b) if !b.is_empty() => b.to_string(),
+            _ => conflict_default_base(root).await?,
+        };
+        let configured = match configured.as_str() {
+            "origin/HEAD" | "refs/remotes/origin/HEAD" => conflict_git(
+                root,
+                &[
+                    "symbolic-ref",
+                    "--quiet",
+                    "--short",
+                    "refs/remotes/origin/HEAD",
+                ],
+            )
+            .await
+            .context("resolving origin/HEAD")?,
+            _ => configured,
+        };
+        let remote_branch = base_remote_branch(&configured)?;
+        let refspec = format!("+refs/heads/{remote_branch}:refs/remotes/origin/{remote_branch}");
+        conflict_git(root, &["fetch", "--quiet", "origin", &refspec])
+            .await
+            .with_context(|| {
+                format!("fetching origin/{remote_branch} for conflict checks in {root}")
+            })?;
+        let refs = base_ref_candidates(&configured)?;
+        for reference in refs {
+            if let Ok(sha) =
+                conflict_git(root, &["rev-parse", "--verify", "--quiet", &reference]).await
+            {
+                return Ok((reference, sha));
+            }
+        }
+        anyhow::bail!("base branch {configured} not found in {root}")
+    }
+
+    async fn simulate_conflict(
+        &self,
+        root: &str,
+        base_sha: &str,
+        branch_sha: &str,
+    ) -> Result<(bool, Vec<String>)> {
+        let args = [
+            "merge-tree",
+            "--write-tree",
+            "--name-only",
+            "--messages",
+            "-z",
+            base_sha,
+            branch_sha,
+        ];
+        let out = conflict_git_status(root, &args).await?;
+        if out.status.success() {
+            return Ok((false, Vec::new()));
+        }
+        if out.status.code() != Some(1) {
+            anyhow::bail!(
+                "git merge-tree failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        if !out.stderr.is_empty() {
+            anyhow::bail!(
+                "git merge-tree failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let records: Vec<&[u8]> = out.stdout.split(|b| *b == 0).collect();
+        let mut files = BTreeSet::new();
+        // With --name-only -z, merge-tree puts the merged tree oid first,
+        // then the affected paths, then an empty record before its message
+        // records. Keeping the raw bytes preserves filenames containing
+        // whitespace or newlines and also covers rename/delete conflicts
+        // whose prose does not say "Merge conflict in".
+        if let Some((_, paths)) = records.split_first() {
+            for path in paths.iter().take_while(|p| !p.is_empty()) {
+                let file = String::from_utf8_lossy(path);
+                if !file.is_empty() {
+                    files.insert(file.to_string());
+                }
+            }
+        }
+        Ok((true, files.into_iter().collect()))
+    }
+
     /// One reconciliation pass over every configured repo.
     pub async fn tick(&mut self) {
         self.reload_config();
@@ -888,6 +1249,10 @@ are resumed on the first pass that finds it: {err:#}"
             self.run_handovers(&repo).await;
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
+                self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+            }
+            if let Err(e) = self.check_conflicts(&repo).await {
+                warn!(repo = repo.name, "branch conflict check failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
             }
             self.capture_sessions(&repo);
@@ -4951,6 +5316,28 @@ deliveries resume"
     }
 }
 
+async fn conflict_default_base(root: &str) -> Result<String> {
+    if let Ok(reference) = conflict_git(
+        root,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )
+    .await
+        && !reference.is_empty()
+    {
+        return Ok(reference);
+    }
+    let branch = conflict_git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+    if branch.is_empty() || branch == "HEAD" {
+        anyhow::bail!("cannot tell the base branch of {root}");
+    }
+    Ok(branch)
+}
+
 /// What `ssf release` and `ssf purge` say of a checkout: its short state,
 /// whether removing it loses nothing, and the reasons when it would.
 async fn checkout_state(path: Option<&str>) -> (String, bool, Vec<String>) {
@@ -5273,6 +5660,8 @@ mod tests {
             refetch: BTreeSet::new(),
             startup_pass: false,
             onboarding: None,
+            conflict_checks: BTreeMap::new(),
+            conflict_pairs: BTreeMap::new(),
         }
     }
 
@@ -5301,6 +5690,68 @@ mod tests {
             harness: "claude".into(),
             ..Default::default()
         }
+    }
+
+    /// A real checkout with one branch that conflicts with a moved `main`,
+    /// plus a stub session that can receive the advisory.
+    async fn conflict_fixture(
+        name: &str,
+        number: u64,
+    ) -> (
+        Engine,
+        RepoConfig,
+        crate::driver::StubDriver,
+        crate::release::testkit::Scratch,
+        String,
+    ) {
+        use crate::release::testkit::{scratch, sh};
+
+        let s = scratch(name).await;
+        let worktree_name = format!("issue-{number}-conflict");
+        let (path, branch) = crate::driver::add_local_worktree(&s.work, &worktree_name, None)
+            .await
+            .unwrap();
+        std::fs::write(std::path::Path::new(&path).join("a.txt"), "feature\n").unwrap();
+        sh(&path, &["add", "a.txt"]).await;
+        sh(&path, &["commit", "-q", "-m", "feature"]).await;
+        std::fs::write(std::path::Path::new(&s.work).join("a.txt"), "base\n").unwrap();
+        sh(&s.work, &["add", "a.txt"]).await;
+        sh(&s.work, &["commit", "-q", "-m", "base"]).await;
+        sh(&s.work, &["push", "-q", "origin", "main"]).await;
+        // Do not rely on remote.origin.fetch: the production check supplies
+        // an explicit branch refspec, which this narrow mapping exercises.
+        sh(
+            &s.work,
+            &[
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/other:refs/remotes/origin/other",
+            ],
+        )
+        .await;
+        sh(&s.work, &["remote", "set-head", "origin", "main"]).await;
+        // Remove the stale tracking ref: only the explicit refspec in the
+        // conflict check can restore it under this narrow mapping.
+        sh(&s.work, &["update-ref", "-d", "refs/remotes/origin/main"]).await;
+
+        let mut e = engine();
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.daemon.conflict_check_interval_secs = 1;
+        let mut r = repo();
+        r.path = Some(s.work.clone());
+        d.seed(&format!("w{number}"), &format!("t{number}"), READY_SCREEN);
+        {
+            let st = e.entry(&r, number);
+            st.html_url = format!("https://gh/{number}");
+            st.seeded = true;
+            st.active = true;
+            st.worktree_id = Some(format!("w{number}"));
+            st.worktree_path = Some(path.clone());
+            st.repo_id = Some(s.work.clone());
+            st.branch = Some(branch);
+        }
+        (e, r, d, s, path)
     }
 
     fn issue(number: u64, author: &str, body: Option<&str>) -> Issue {
@@ -10645,5 +11096,299 @@ mod tests {
             "Close or unassign the item"
         );
         assert_eq!(why_active(&[]).1, "Close the item");
+    }
+
+    #[tokio::test]
+    async fn conflict_simulation_reports_paths_without_touching_the_worktree() {
+        use crate::release::testkit::{scratch, sh};
+
+        let s = scratch("conflict-merge-tree").await;
+        let (path, branch) = crate::driver::add_local_worktree(&s.work, "issue-1-conflict", None)
+            .await
+            .unwrap();
+        std::fs::write(std::path::Path::new(&path).join("a.txt"), "feature\n").unwrap();
+        sh(&path, &["add", "a.txt"]).await;
+        sh(&path, &["commit", "-q", "-m", "feature"]).await;
+        std::fs::write(std::path::Path::new(&s.work).join("a.txt"), "base\n").unwrap();
+        sh(&s.work, &["add", "a.txt"]).await;
+        sh(&s.work, &["commit", "-q", "-m", "base"]).await;
+        sh(&s.work, &["push", "-q", "origin", "main"]).await;
+        let base = conflict_git(&s.work, &["rev-parse", "refs/remotes/origin/main"])
+            .await
+            .unwrap();
+        let head = conflict_git(&path, &["rev-parse", "HEAD"]).await.unwrap();
+        let before = std::fs::read(std::path::Path::new(&path).join("a.txt")).unwrap();
+        let (conflict, files) = engine()
+            .simulate_conflict(&s.work, &base, &head)
+            .await
+            .unwrap();
+        assert!(conflict);
+        assert_eq!(files, vec!["a.txt"]);
+        assert_eq!(
+            std::fs::read(std::path::Path::new(&path).join("a.txt")).unwrap(),
+            before,
+            "merge-tree must not change the agent worktree"
+        );
+        assert_eq!(branch, "refs/heads/bot/issue-1-conflict");
+
+        // A modify/delete conflict has no "Merge conflict in" prose, so the
+        // NUL-delimited name section is the source of truth for it too.
+        let s = scratch("conflict-modify-delete").await;
+        let (path, _) = crate::driver::add_local_worktree(&s.work, "issue-4-conflict", None)
+            .await
+            .unwrap();
+        std::fs::write(std::path::Path::new(&path).join("a.txt"), "feature\n").unwrap();
+        sh(&path, &["add", "a.txt"]).await;
+        sh(&path, &["commit", "-q", "-m", "feature"]).await;
+        sh(&s.work, &["rm", "-q", "a.txt"]).await;
+        sh(&s.work, &["commit", "-q", "-m", "delete"]).await;
+        sh(&s.work, &["push", "-q", "origin", "main"]).await;
+        let base = conflict_git(&s.work, &["rev-parse", "refs/remotes/origin/main"])
+            .await
+            .unwrap();
+        let head = conflict_git(&path, &["rev-parse", "HEAD"]).await.unwrap();
+        let (conflict, files) = engine()
+            .simulate_conflict(&s.work, &base, &head)
+            .await
+            .unwrap();
+        assert!(conflict);
+        assert_eq!(files, vec!["a.txt"]);
+    }
+
+    #[tokio::test]
+    async fn conflict_simulation_allows_clean_divergence() {
+        use crate::release::testkit::{scratch, sh};
+
+        let s = scratch("clean-merge-tree").await;
+        let (path, _) = crate::driver::add_local_worktree(&s.work, "issue-3-clean", None)
+            .await
+            .unwrap();
+        std::fs::write(std::path::Path::new(&path).join("feature.txt"), "feature\n").unwrap();
+        sh(&path, &["add", "feature.txt"]).await;
+        sh(&path, &["commit", "-q", "-m", "feature"]).await;
+        std::fs::write(std::path::Path::new(&s.work).join("base.txt"), "base\n").unwrap();
+        sh(&s.work, &["add", "base.txt"]).await;
+        sh(&s.work, &["commit", "-q", "-m", "base"]).await;
+        sh(&s.work, &["push", "-q", "origin", "main"]).await;
+        let base = conflict_git(&s.work, &["rev-parse", "refs/remotes/origin/main"])
+            .await
+            .unwrap();
+        let head = conflict_git(&path, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(
+            engine()
+                .simulate_conflict(&s.work, &base, &head)
+                .await
+                .unwrap(),
+            (false, Vec::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn conflict_check_notifies_once_and_guards_stale_branch_state() {
+        use crate::release::testkit::{scratch, sh};
+
+        let s = scratch("conflict-notice").await;
+        let (path, branch) = crate::driver::add_local_worktree(&s.work, "issue-2-conflict", None)
+            .await
+            .unwrap();
+        std::fs::write(std::path::Path::new(&path).join("a.txt"), "feature\n").unwrap();
+        sh(&path, &["add", "a.txt"]).await;
+        sh(&path, &["commit", "-q", "-m", "feature"]).await;
+        std::fs::write(std::path::Path::new(&s.work).join("a.txt"), "base\n").unwrap();
+        sh(&s.work, &["add", "a.txt"]).await;
+        sh(&s.work, &["commit", "-q", "-m", "base"]).await;
+        sh(&s.work, &["push", "-q", "origin", "main"]).await;
+
+        let mut e = engine();
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.daemon.conflict_check_interval_secs = 1;
+        let mut r = repo();
+        r.path = Some(s.work.clone());
+        d.seed("w2", "t2", READY_SCREEN);
+        {
+            let st = e.entry(&r, 2);
+            st.html_url = "https://gh/2".into();
+            st.seeded = true;
+            st.active = true;
+            st.worktree_id = Some("w2".into());
+            st.worktree_path = Some(path.clone());
+            st.repo_id = Some(s.work.clone());
+            st.branch = Some(branch);
+        }
+
+        e.check_conflicts(&r).await.unwrap();
+        let first = d.prompts();
+        assert_eq!(first.len(), 1);
+        assert!(first[0].contains("origin/main"));
+        assert!(first[0].contains("a.txt"));
+        assert!(first[0].contains("rebase"));
+        assert!(e.entry(&r, 2).conflict_notice.is_some());
+
+        // The interval is deliberately bypassed here to exercise persisted
+        // pair deduplication as each daemon pass would see it.
+        e.conflict_checks.clear();
+        e.check_conflicts(&r).await.unwrap();
+        assert!(d.prompts().is_empty(), "the same divergence was repeated");
+
+        // A stale state branch must never make the daemon inspect or notify
+        // about a different branch checked out in the agent worktree.
+        sh(&path, &["checkout", "-q", "-b", "other"]).await;
+        e.conflict_checks.clear();
+        e.check_conflicts(&r).await.unwrap();
+        assert!(d.prompts().is_empty(), "stale branch state caused a notice");
+    }
+
+    #[tokio::test]
+    async fn failed_conflict_delivery_is_retried() {
+        let (mut e, r, d, _scratch, _path) = conflict_fixture("conflict-retry", 5).await;
+        d.with(|s| {
+            s.deliver_error = Some("delivery failed".into());
+        });
+
+        e.check_conflicts(&r).await.unwrap();
+        assert!(e.entry(&r, 5).conflict_notice.is_none());
+        let _ = d.prompts();
+
+        // Once delivery is available again, the same pair must be delivered
+        // and recorded.
+        e.conflict_checks.clear();
+        e.check_conflicts(&r).await.unwrap();
+        assert!(e.entry(&r, 5).conflict_notice.is_some());
+        assert_eq!(d.prompts().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn conflict_notice_survives_reload_even_with_an_empty_merge_cache() {
+        let (mut e, r, d, scratch, path) = conflict_fixture("conflict-reload", 6).await;
+        e.check_conflicts(&r).await.unwrap();
+        assert!(e.entry(&r, 6).conflict_notice.is_some());
+        let _ = d.prompts();
+
+        let saved = serde_json::to_string(&e.state).unwrap();
+        let mut restarted = engine();
+        restarted.cfg.daemon.conflict_check_interval_secs = 1;
+        let d2 = crate::driver::StubDriver::new(DriverKind::Orca);
+        restarted.drivers = Drivers::from_list(vec![Driver::Stub(d2.clone())]);
+        d2.seed("w6", "t6", READY_SCREEN);
+        restarted.state = serde_json::from_str(&saved).unwrap();
+        assert!(restarted.conflict_pairs.is_empty());
+        restarted.check_conflicts(&r).await.unwrap();
+        assert!(d2.prompts().is_empty());
+        assert_eq!(
+            restarted.entry(&r, 6).worktree_path.as_deref(),
+            Some(path.as_str())
+        );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn changed_branch_or_base_commit_is_a_new_conflict_notice() {
+        use crate::release::testkit::sh;
+
+        let (mut e, mut r, d, scratch, path) = conflict_fixture("conflict-changed", 7).await;
+        r.base_branch = Some("origin/HEAD".into());
+        e.check_conflicts(&r).await.unwrap();
+        let _ = d.prompts();
+
+        std::fs::write(std::path::Path::new(&path).join("extra.txt"), "extra\n").unwrap();
+        sh(&path, &["add", "extra.txt"]).await;
+        sh(&path, &["commit", "-q", "-m", "extra"]).await;
+        e.conflict_checks.clear();
+        e.check_conflicts(&r).await.unwrap();
+        assert_eq!(d.prompts().len(), 1, "changed branch SHA was not noticed");
+
+        std::fs::write(
+            std::path::Path::new(&scratch.work).join("base-extra.txt"),
+            "base\n",
+        )
+        .unwrap();
+        sh(&scratch.work, &["add", "base-extra.txt"]).await;
+        sh(&scratch.work, &["commit", "-q", "-m", "base-extra"]).await;
+        sh(&scratch.work, &["push", "-q", "origin", "main"]).await;
+        e.conflict_checks.clear();
+        e.check_conflicts(&r).await.unwrap();
+        assert_eq!(d.prompts().len(), 1, "changed base SHA was not noticed");
+    }
+
+    #[tokio::test]
+    async fn inactive_session_states_do_not_fetch_or_notify() {
+        let mut e = engine();
+        let d = crate::driver::StubDriver::new(DriverKind::Orca);
+        e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+        e.cfg.daemon.conflict_check_interval_secs = 1;
+        let mut r = repo();
+        r.path = Some("/no/such/checkout".into());
+        for number in 10..=15 {
+            d.seed(&format!("w{number}"), &format!("t{number}"), READY_SCREEN);
+            let st = e.entry(&r, number);
+            st.seeded = true;
+            st.active = true;
+            st.worktree_id = Some(format!("w{number}"));
+            st.worktree_path = Some("/no/such/worktree".into());
+            st.branch = Some(format!("refs/heads/bot/issue-{number}"));
+        }
+        e.entry(&r, 10).retired_at = Some(now_iso());
+        e.entry(&r, 11).released_at = Some(now_iso());
+        e.entry(&r, 12).blocked = Some(Blocked {
+            reason: Blocked::LOGIN.into(),
+            since: now_iso(),
+            ..Default::default()
+        });
+        e.entry(&r, 13).handover = Some(PendingHandover {
+            harness: "claude".into(),
+            ..Default::default()
+        });
+        e.entry(&r, 14).shares_workspace_of = Some(10);
+        e.entry(&r, 15).active = false;
+        e.check_conflicts(&r).await.unwrap();
+        assert!(d.prompts().is_empty());
+        assert!(
+            e.conflict_checks.is_empty(),
+            "ineligible records triggered a fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn disabled_conflict_checks_do_not_fetch() {
+        let (mut e, r, d, _scratch, _path) = conflict_fixture("conflict-disabled", 16).await;
+        e.cfg.daemon.conflict_check_interval_secs = 0;
+        e.check_conflicts(&r).await.unwrap();
+        assert!(d.prompts().is_empty());
+        assert!(e.conflict_checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_base_fetch_does_not_use_a_stale_remote_commit() {
+        use crate::release::testkit::sh;
+
+        let (mut e, r, d, scratch, _path) = conflict_fixture("conflict-fetch-fails", 17).await;
+        sh(
+            &scratch.work,
+            &["remote", "set-url", "origin", "/no/such/origin.git"],
+        )
+        .await;
+        assert!(e.check_conflicts(&r).await.is_err());
+        assert!(e.entry(&r, 17).conflict_notice.is_none());
+        assert!(d.prompts().is_empty());
+    }
+
+    #[tokio::test]
+    async fn conflict_interval_skips_a_second_fetch() {
+        use crate::release::testkit::sh;
+
+        let (mut e, r, d, scratch, _path) = conflict_fixture("conflict-interval", 18).await;
+        e.cfg.daemon.conflict_check_interval_secs = 3600;
+        e.check_conflicts(&r).await.unwrap();
+        let _ = d.prompts();
+        sh(
+            &scratch.work,
+            &["remote", "set-url", "origin", "/no/such/origin.git"],
+        )
+        .await;
+        // A fetch here would fail; the configured interval makes this pass a
+        // no-op, proving one fetch per repository interval.
+        e.check_conflicts(&r).await.unwrap();
+        assert!(d.prompts().is_empty());
     }
 }
