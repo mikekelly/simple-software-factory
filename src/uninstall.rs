@@ -593,6 +593,23 @@ pub fn hard_stop(facts: &Facts, report: &Report, opts: &Opts, force: bool) -> Op
 /// second is the one the person is still looking at. Twice now a
 /// sentence has been made honest in the report and left as it was a few
 /// lines of output later, so the two no longer have the chance.
+/// The `keep:` sentence for one stray.
+///
+/// A function so the name it prints can be tested: `kept` takes a whole
+/// `Facts`, and the escaping here was unpinned because no test built
+/// one to reach it -- the twin of `describe()`, which had the same
+/// wording and its own test.
+pub fn kept_stray_line(stray: &vm::Stray) -> String {
+    format!(
+        "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
+        stray.what(),
+        vm::shown(&stray.name),
+        stray.holds_work_note(),
+        stray.remove,
+        stray.caveat()
+    )
+}
+
 pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
     let mut keep = Vec::new();
     for p in &facts.projects {
@@ -638,14 +655,7 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         ));
     }
     for stray in &facts.vm_strays {
-        keep.push(format!(
-            "{} {}, which this configuration does not name{} -- untouched, `--force` included; `{}` removes it{}",
-            stray.what(),
-            vm::shown(&stray.name),
-            stray.holds_work_note(),
-            stray.remove,
-            stray.caveat()
-        ));
+        keep.push(kept_stray_line(stray));
     }
     keep
 }

@@ -447,16 +447,39 @@ impl LimaCommand {
 /// session this product runs, and this is the first ssf output that
 /// prints a name taken off the filesystem beside a delete command it
 /// invites a person to paste.
+/// A character a name must not be able to put in a report unescaped.
+///
+/// Two kinds. Ones that leave the one-line-per-stray shape, or reorder
+/// it in a renderer that honours bidi -- a forged *line*. And the
+/// backtick, which is how every command in this report is marked, so a
+/// name carrying one forges a *command inside* a line that is otherwise
+/// perfectly well formed.
+///
+/// The second needs no unusual character at all. A directory called
+/// ``old (its clones and worktrees are in it); ssf leaves it alone --
+/// `limactl disk delete ssf-new` removes it`` renders as one tidy line
+/// whose **first** backticked command destroys the live VM's data disk.
+/// Escaping the line-breaking characters did not touch it, because
+/// nothing in it needed escaping.
+///
+/// One set, used by `shown` for the display and by `shell_join` for the
+/// remedy: a character escaped in one and not the other would split the
+/// line the other had just kept whole.
+fn needs_escaping(c: char) -> bool {
+    c.is_control()
+        || c == '`'
+        || matches!(c,
+            '\u{061c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}')
+}
+
 pub fn shown(name: &str) -> String {
     name.chars()
         .flat_map(|c| {
-            let hidden = c.is_control()
-                || matches!(c,
-                    '\u{200b}'..='\u{200f}'
-                    | '\u{2028}'..='\u{202e}'
-                    | '\u{2066}'..='\u{2069}'
-                    | '\u{feff}');
-            if hidden {
+            if needs_escaping(c) {
                 c.escape_unicode().collect::<Vec<_>>()
             } else {
                 vec![c]
@@ -3361,18 +3384,9 @@ fn open_in_browser(url: &str) -> bool {
         .is_ok()
 }
 
-/// A command line for the remote shell.
-/// Characters that would leave a report's one-line-per-stray shape, or
-/// reorder it in a renderer that honours bidi. See [`shown`].
-fn needs_escaping(c: char) -> bool {
-    c.is_control()
-        || matches!(c,
-            '\u{200b}'..='\u{200f}'
-            | '\u{2028}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-            | '\u{feff}')
-}
-
+/// A command line for the remote shell, and the remedies a report
+/// prints: every argument quoted so that pasting it addresses exactly
+/// what ssf looked at.
 pub fn shell_join(args: &[String]) -> String {
     args.iter()
         .map(|a| {
@@ -4101,6 +4115,32 @@ mod tests {
             "{}",
             sneaky.describe()
         );
+        // A name needing no unusual character at all: every command in
+        // this report is marked with backticks, so a name carrying one
+        // forges a command *inside* a well-formed line. The first
+        // backticked command below is the live VM's disk.
+        let quiet = "old`limactl disk delete ssf-new`x";
+        for s in [
+            Stray::directory(&std::path::PathBuf::from("/v").join(quiet)),
+            Stray::lima_instance(quiet.into(), &Default::default()),
+        ] {
+            let line = s.describe();
+            assert!(
+                !line.contains("`limactl disk delete ssf-new`"),
+                "a name opened a code span: {line}"
+            );
+        }
+        // ... and through `kept()` too, which builds its own sentence
+        // and is the one a person reads before saying yes.
+        let kept_line = crate::uninstall::kept_stray_line(&Stray::lima_instance(
+            quiet.into(),
+            &Default::default(),
+        ));
+        assert!(
+            !kept_line.contains("`limactl disk delete ssf-new`"),
+            "{kept_line}"
+        );
+
         // An ordinary name with a space in it is untouched -- this is a
         // renderer, not a filter, and `my old vm` is a name ssf
         // supports.
