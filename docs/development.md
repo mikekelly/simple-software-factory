@@ -16,6 +16,36 @@ omarchy plugin validate ./omarchy-plugin
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
+When reporting verification, a count must name what it is measured against:
+record the branch and base commits, and use the same command and Rust toolchain
+for both. Test totals need that context too; report the change from the base,
+not just an absolute total. Recheck the comparison after a rebase.
+
+To count unique Clippy warning locations across all targets (requires `jq`):
+
+```sh
+cargo clippy --all-targets --message-format=json 2>/dev/null \
+  | jq -r 'select(.reason=="compiler-message") | .message
+           | select(.level=="warning") | select(.code!=null)
+           | "\(.spans[0].file_name):\(.spans[0].line_start):\(.spans[0].column_start)"' \
+  | sort -u | wc -l
+```
+
+The lint-code filter excludes summaries, and `sort -u` collapses duplicate
+locations reported by multiple targets. Counting `^warning:` lines also counts
+per-target summaries; adding the summary totals double-counts shared warnings,
+and using only the last summary can miss warnings exclusive to another target.
+Run Clippy normally first and check it succeeds: this counting pipeline hides
+stderr and is not a build-success check.
+
+The count is a baseline, not a target: what matters is that the change adds no
+warnings. For example, report “Clippy: 21 unique warning locations on branch
+`<sha>` and on base `c8a4d05`, using the command above and Rust `<version>`;
+no new warnings” only after comparing the diagnostics too. Equal counts alone
+can hide one warning replacing another. If reporting attribution instead,
+identify the base commit and verify that each warning comes from code already
+on that base; a bare “Clippy: 21” does not establish that claim.
+
 **`SSF_CONFIG_DIR` and `SSF_STATE_DIR` move ssf's own files and nothing
 else.** Those are the config file, the state file, the socket its commands
 talk to, the bot token, the SSH keys, the `bin` shim directory an agent
