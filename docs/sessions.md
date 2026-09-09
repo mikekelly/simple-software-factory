@@ -287,8 +287,9 @@ Git or delivery failures remain retryable.
 
 Retired or released sessions receive nothing. Items sharing a session do
 not produce duplicate notices, and blocked sessions or sessions awaiting
-handover are skipped. The advisory does not start an agent that is no
-longer running.
+handover are skipped. Only sessions with a live agent are selected for
+checking. If an active agent exits during the check, normal event delivery
+may resume it to deliver the notice.
 
 ## A harness that is not signed in
 
