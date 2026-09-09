@@ -3141,7 +3141,10 @@ mod tests {
 
         assert_eq!(unread, [unread_path(&unnameable)]);
         assert_eq!(
-            strays.iter().map(|stray| stray.name.as_str()).collect::<Vec<_>>(),
+            strays
+                .iter()
+                .map(|stray| stray.name.as_str())
+                .collect::<Vec<_>>(),
             ["ssf-good"]
         );
         assert!(

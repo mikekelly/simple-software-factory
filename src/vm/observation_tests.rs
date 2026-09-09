@@ -38,6 +38,12 @@ enum Case {
     LimaDiskEntries,
     DanglingSymlink,
     InaccessibleSymlinkTarget,
+    LimaLeftoversCompletion,
+    LimaDiskCompletion,
+    FirecrackerCompletion,
+    LimaDeniedLocal,
+    LimaOwnInstanceSymlink,
+    LimaOwnDiskSymlink,
 }
 
 impl Case {
@@ -55,6 +61,12 @@ impl Case {
             Self::LimaDiskEntries => "lima-disk-entries",
             Self::DanglingSymlink => "dangling-symlink",
             Self::InaccessibleSymlinkTarget => "inaccessible-symlink-target",
+            Self::LimaLeftoversCompletion => "lima-leftovers-completion",
+            Self::LimaDiskCompletion => "lima-disk-completion",
+            Self::FirecrackerCompletion => "firecracker-completion",
+            Self::LimaDeniedLocal => "lima-denied-local",
+            Self::LimaOwnInstanceSymlink => "lima-own-instance-symlink",
+            Self::LimaOwnDiskSymlink => "lima-own-disk-symlink",
         }
     }
 
@@ -72,6 +84,12 @@ impl Case {
             "lima-disk-entries" => Self::LimaDiskEntries,
             "dangling-symlink" => Self::DanglingSymlink,
             "inaccessible-symlink-target" => Self::InaccessibleSymlinkTarget,
+            "lima-leftovers-completion" => Self::LimaLeftoversCompletion,
+            "lima-disk-completion" => Self::LimaDiskCompletion,
+            "firecracker-completion" => Self::FirecrackerCompletion,
+            "lima-denied-local" => Self::LimaDeniedLocal,
+            "lima-own-instance-symlink" => Self::LimaOwnInstanceSymlink,
+            "lima-own-disk-symlink" => Self::LimaOwnDiskSymlink,
             other => panic!("unknown permission fixture {other}"),
         }
     }
@@ -194,6 +212,47 @@ impl Fixture {
                 symlink(wall.join("target"), self.root.join("vm")).unwrap();
                 self.protect(&wall, 0o000);
             }
+            Case::LimaLeftoversCompletion => {
+                let home = self.root.join("lima");
+                fs::create_dir_all(home.join("_disks/ssf-new")).unwrap();
+                fs::create_dir(home.join("ssf-new")).unwrap();
+                self.protect(&home, 0o000);
+            }
+            Case::LimaDiskCompletion => {
+                let disks = self.root.join("lima/_disks");
+                fs::create_dir_all(disks.join("ssf-new")).unwrap();
+                write_limactl(&self.root.join("limactl"), true);
+                self.protect(&disks, 0o000);
+            }
+            Case::FirecrackerCompletion => {
+                let wall = self.root.join("wall");
+                fs::create_dir_all(wall.join("vm/new")).unwrap();
+                self.protect(&wall, 0o000);
+            }
+            Case::LimaDeniedLocal => {
+                let base = self.root.join("vm");
+                let wall = self.root.join("wall");
+                fs::create_dir_all(&base).unwrap();
+                fs::create_dir_all(wall.join("target")).unwrap();
+                fs::create_dir_all(self.root.join("lima/_disks")).unwrap();
+                symlink(wall.join("target"), base.join("new")).unwrap();
+                write_limactl(&self.root.join("limactl"), false);
+                self.protect(&wall, 0o000);
+            }
+            Case::LimaOwnInstanceSymlink | Case::LimaOwnDiskSymlink => {
+                let home = self.root.join("lima");
+                let wall = self.root.join("wall");
+                fs::create_dir_all(home.join("_disks")).unwrap();
+                fs::create_dir_all(wall.join("target")).unwrap();
+                let link = match case {
+                    Case::LimaOwnInstanceSymlink => home.join("ssf-new"),
+                    Case::LimaOwnDiskSymlink => home.join("_disks/ssf-new"),
+                    _ => unreachable!(),
+                };
+                symlink(wall.join("target"), link).unwrap();
+                write_limactl(&self.root.join("limactl"), false);
+                self.protect(&wall, 0o000);
+            }
         }
     }
 
@@ -218,6 +277,16 @@ fn odd_name() -> OsString {
 
 fn set_mode(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+}
+
+fn write_limactl(path: &Path, fail_disk_list: bool) {
+    let body = if fail_disk_list {
+        "#!/bin/sh\ncase \" $* \" in *\" disk list \"*) exit 1;; *) exit 0;; esac\n"
+    } else {
+        "#!/bin/sh\nexit 0\n"
+    };
+    fs::write(path, body).unwrap();
+    set_mode(path, 0o755);
 }
 
 fn run(case: Case) {
@@ -304,6 +373,36 @@ fn symlink_with_an_inaccessible_target_is_unknown() {
     run(Case::InaccessibleSymlinkTarget);
 }
 
+#[test]
+fn denied_lima_leftovers_fail_destroy() {
+    run(Case::LimaLeftoversCompletion);
+}
+
+#[test]
+fn denied_lima_disk_fallback_fails_destroy() {
+    run(Case::LimaDiskCompletion);
+}
+
+#[test]
+fn denied_firecracker_directory_fails_destroy() {
+    run(Case::FirecrackerCompletion);
+}
+
+#[test]
+fn denied_local_lima_directory_keeps_presence_unknown() {
+    run(Case::LimaDeniedLocal);
+}
+
+#[test]
+fn own_lima_instance_symlink_names_its_inaccessible_target() {
+    run(Case::LimaOwnInstanceSymlink);
+}
+
+#[test]
+fn own_lima_disk_symlink_names_its_inaccessible_target() {
+    run(Case::LimaOwnDiskSymlink);
+}
+
 /// Invoked by the named parent tests above.  Ignoring it in an ordinary test
 /// run prevents a second, environment-free invocation from masquerading as
 /// permission coverage.
@@ -331,6 +430,16 @@ fn drop_root_privileges() {
 }
 
 fn exercise(case: Case, root: &Path) {
+    match case {
+        Case::LimaLeftoversCompletion => return exercise_lima_leftovers_completion(root),
+        Case::LimaDiskCompletion => return exercise_lima_disk_completion(root),
+        Case::FirecrackerCompletion => return exercise_firecracker_completion(root),
+        Case::LimaDeniedLocal => return exercise_lima_denied_local(root),
+        Case::LimaOwnInstanceSymlink | Case::LimaOwnDiskSymlink => {
+            return exercise_lima_own_symlink(case, root);
+        }
+        _ => {}
+    }
     let base = match case {
         Case::InaccessibleParent => root.join("wall/vm"),
         Case::LimaHome => root.join("lima/vm"),
@@ -356,6 +465,9 @@ fn exercise(case: Case, root: &Path) {
         // Force Lima through the on-disk fallback without consulting a
         // developer's installed tooling or real Lima state.
         cfg.vm.limactl = Some(root.join("missing-limactl").to_string_lossy().into_owned());
+        if matches!(case, Case::InaccessibleParent) {
+            cfg.herdr.projects_dir = base.to_string_lossy().into_owned();
+        }
         let mut vm = Vm::new(&cfg);
         vm.lima_home = Some(lima_home.clone());
 
@@ -401,10 +513,196 @@ fn exercise(case: Case, root: &Path) {
         if backend == BackendKind::Lima && lima_access_is_denied(case) {
             assert_eq!(facts.vm_data, None, "uninstall keeps denied data unknown");
         }
+        if matches!(case, Case::InaccessibleParent) {
+            assert_eq!(facts.projects, vec![base.clone()]);
+            let project_line = format!(
+                "{} (clones and worktrees; may hold unpushed work)",
+                base.display()
+            );
+            assert!(
+                kept(&facts, false).contains(&project_line),
+                "denied projects directory left the keep list"
+            );
+        }
+
+        if backend == BackendKind::Lima && matches!(case, Case::InaccessibleSymlinkTarget) {
+            let dir = vm.dir.display();
+            assert_eq!(facts.vm_removed, format!("{dir} if it is there"));
+            let mut answered = facts.clone();
+            answered.ssh_answered(&vm);
+            assert_eq!(
+                answered.vm_removed,
+                format!("the lima instance ssf-new and {dir} if it is there")
+            );
+        }
 
         assert_renderers(&status, &fallback_strays, &fallback_unread, &expected);
         assert_uninstall_lists(case, &facts, &base, &expected);
     }
+
+    if matches!(case, Case::InaccessibleParent) {
+        let inspected =
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(crate::uninstall::inspect_path(
+                    base.to_string_lossy().into_owned(),
+                ));
+        assert_eq!(inspected.state, "unknown");
+        assert_eq!(
+            inspected.problems,
+            vec![format!("{} could not be read", base.display())]
+        );
+    }
+}
+
+fn lima_vm(root: &Path, base: &Path, limactl: &Path) -> (Config, Vm) {
+    let mut cfg = Config::default();
+    cfg.vm.name = "new".into();
+    cfg.vm.dir = base.to_string_lossy().into_owned();
+    cfg.vm.backend = Some(BackendKind::Lima);
+    cfg.vm.limactl = Some(limactl.to_string_lossy().into_owned());
+    let mut vm = Vm::new(&cfg);
+    vm.lima_home = Some(root.join("lima"));
+    (cfg, vm)
+}
+
+fn assert_denied(path: &Path) {
+    let error = fs::metadata(path).expect_err("fixture path unexpectedly statted");
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "{} failed for the wrong reason: {error}",
+        path.display()
+    );
+}
+
+fn exercise_lima_leftovers_completion(root: &Path) {
+    let instance = root.join("lima/ssf-new");
+    let disk = root.join("lima/_disks/ssf-new");
+    assert_denied(&instance);
+    assert_denied(&disk);
+    let (_, vm) = lima_vm(root, &root.join("vm"), &root.join("missing-limactl"));
+    let error = vm
+        .lima_destroy()
+        .expect_err("denied leftovers must fail completion");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "lima cannot be asked about ssf-new, and {} and {} could not be read",
+            instance.display(),
+            disk.display()
+        )
+    );
+}
+
+fn exercise_lima_disk_completion(root: &Path) {
+    let disk = root.join("lima/_disks/ssf-new");
+    assert_denied(&disk);
+    let (_, vm) = lima_vm(root, &root.join("vm"), &root.join("limactl"));
+    let error = vm
+        .lima_destroy()
+        .expect_err("denied disk fallback must fail completion");
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "lima cannot be asked about disk ssf-new, and {} could not be confirmed absent",
+            disk.display()
+        )
+    );
+}
+
+fn exercise_firecracker_completion(root: &Path) {
+    let base = root.join("wall/vm");
+    let own = base.join("new");
+    assert_denied(&own);
+    let mut cfg = Config::default();
+    cfg.vm.name = "new".into();
+    cfg.vm.dir = base.to_string_lossy().into_owned();
+    cfg.vm.backend = Some(BackendKind::Firecracker);
+    let vm = Vm::new(&cfg);
+    let error = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(vm.destroy())
+        .expect_err("denied VM directory must fail completion");
+    assert_eq!(error.to_string(), format!("removing {}", own.display()));
+}
+
+fn exercise_lima_denied_local(root: &Path) {
+    let base = root.join("vm");
+    let (cfg, vm) = lima_vm(root, &base, &root.join("limactl"));
+    assert_denied(&vm.dir);
+
+    let survey = vm.lima_survey();
+    assert_eq!(survey.present, None);
+    assert_eq!(survey.data, Some(false));
+    assert_eq!(survey.unread, vec![vm.dir.clone()]);
+
+    let public = vm.survey();
+    assert_eq!(public.present, None);
+    assert_eq!(public.unread, vec![vm.dir.clone()]);
+    let facts = Facts::gather(&cfg, &vm);
+    assert_eq!(facts.vm_present, None);
+    assert_eq!(facts.vm_unread, vec![vm.dir.clone()]);
+    assert_eq!(
+        facts.vm_removed,
+        format!("{} if it is there", vm.dir.display())
+    );
+
+    let mut answered = facts;
+    answered.ssh_answered(&vm);
+    assert_eq!(
+        answered.vm_removed,
+        format!(
+            "the lima instance ssf-new and {} if it is there",
+            vm.dir.display()
+        )
+    );
+}
+
+fn exercise_lima_own_symlink(case: Case, root: &Path) {
+    let base = root.join("vm");
+    let (cfg, vm) = lima_vm(root, &base, &root.join("limactl"));
+    let unread_path = match case {
+        Case::LimaOwnInstanceSymlink => root.join("lima/ssf-new"),
+        Case::LimaOwnDiskSymlink => root.join("lima/_disks/ssf-new"),
+        _ => unreachable!(),
+    };
+    let link = fs::symlink_metadata(&unread_path).unwrap();
+    assert!(link.file_type().is_symlink());
+    assert_denied(&unread_path);
+    let expected = vec![unread_path.clone()];
+
+    let survey = vm.survey();
+    assert_eq!(survey.unread, expected);
+    assert!(survey.strays.is_empty());
+
+    let (fallback_strays, fallback_unread) = vm.strays_on_filesystem();
+    assert_eq!(fallback_unread, expected);
+    assert!(fallback_strays.is_empty());
+
+    let status = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(vm.status());
+    assert_eq!(status.unread, expected);
+    assert!(status.strays.is_empty());
+
+    let facts = Facts::gather(&cfg, &vm);
+    assert_eq!(facts.vm_unread, expected);
+    assert!(facts.vm_strays.is_empty());
+    assert_renderers(&status, &fallback_strays, &fallback_unread, &expected);
+
+    let note = unread_note(&expected);
+    let keep = kept(&facts, false);
+    assert!(
+        keep.iter()
+            .any(|line| line.starts_with(unread_path.to_string_lossy().as_ref())),
+        "{keep:?}"
+    );
+    assert_eq!(
+        crate::stray_notes(&fallback_strays, &fallback_unread),
+        format!("note {note}\n")
+    );
+    assert!(left_in_place(&facts, false).contains(unread_path.to_string_lossy().as_ref()));
 }
 
 fn lima_access_is_denied(case: Case) -> bool {
@@ -460,6 +758,12 @@ fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
             assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
             return;
         }
+        Case::LimaLeftoversCompletion
+        | Case::LimaDiskCompletion
+        | Case::FirecrackerCompletion
+        | Case::LimaDeniedLocal
+        | Case::LimaOwnInstanceSymlink
+        | Case::LimaOwnDiskSymlink => unreachable!("specialized permission fixture"),
     };
     let error = answer.expect_err("fixture operation unexpectedly succeeded");
     assert_eq!(
@@ -493,6 +797,12 @@ fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
             root.join("lima/_disks").join(odd_name()),
         ],
         Case::DanglingSymlink => Vec::new(),
+        Case::LimaLeftoversCompletion
+        | Case::LimaDiskCompletion
+        | Case::FirecrackerCompletion
+        | Case::LimaDeniedLocal
+        | Case::LimaOwnInstanceSymlink
+        | Case::LimaOwnDiskSymlink => unreachable!("specialized permission fixture"),
     };
     paths.sort();
     paths
