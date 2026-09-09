@@ -29,6 +29,8 @@ enum Case {
     InaccessibleParent,
     VmEntries,
     InaccessibleData,
+    OwnSymlink,
+    NestedOwnData,
     LimaHomeParent,
     LimaHome,
     LimaHomeEntries,
@@ -44,6 +46,8 @@ impl Case {
             Self::InaccessibleParent => "inaccessible-parent",
             Self::VmEntries => "vm-entries",
             Self::InaccessibleData => "inaccessible-data",
+            Self::OwnSymlink => "own-symlink",
+            Self::NestedOwnData => "nested-own-data",
             Self::LimaHomeParent => "lima-home-parent",
             Self::LimaHome => "lima-home",
             Self::LimaHomeEntries => "lima-home-entries",
@@ -59,6 +63,8 @@ impl Case {
             "inaccessible-parent" => Self::InaccessibleParent,
             "vm-entries" => Self::VmEntries,
             "inaccessible-data" => Self::InaccessibleData,
+            "own-symlink" => Self::OwnSymlink,
+            "nested-own-data" => Self::NestedOwnData,
             "lima-home-parent" => Self::LimaHomeParent,
             "lima-home" => Self::LimaHome,
             "lima-home-entries" => Self::LimaHomeEntries,
@@ -114,10 +120,26 @@ impl Fixture {
                 self.protect(&base, 0o444);
             }
             Case::InaccessibleData => {
-                let old = self.root.join("vm/old");
-                fs::create_dir_all(&old).unwrap();
-                fs::write(old.join("data.ext4"), b"work").unwrap();
-                self.protect(&old, 0o000);
+                for name in ["new", "old"] {
+                    let dir = self.root.join("vm").join(name);
+                    fs::create_dir_all(&dir).unwrap();
+                    fs::write(dir.join("data.ext4"), b"work").unwrap();
+                    self.protect(&dir, 0o000);
+                }
+            }
+            Case::OwnSymlink => {
+                let base = self.root.join("vm");
+                let wall = self.root.join("wall");
+                fs::create_dir_all(&base).unwrap();
+                fs::create_dir_all(wall.join("target")).unwrap();
+                symlink(wall.join("target"), base.join("new")).unwrap();
+                self.protect(&wall, 0o000);
+            }
+            Case::NestedOwnData => {
+                let nested = self.root.join("vm/new/nested");
+                fs::create_dir_all(&nested).unwrap();
+                fs::write(nested.join("data.ext4"), b"work").unwrap();
+                self.protect(&nested, 0o000);
             }
             Case::LimaHomeParent => {
                 let wall = self.root.join("lima-wall");
@@ -129,6 +151,8 @@ impl Fixture {
                 let home = self.root.join("lima");
                 fs::create_dir_all(home.join("_disks/ssf-old")).unwrap();
                 fs::create_dir(home.join("ssf-old")).unwrap();
+                fs::create_dir_all(home.join("vm/new")).unwrap();
+                fs::write(home.join("vm/new/data.ext4"), b"work").unwrap();
                 self.protect(&home, 0o000);
             }
             Case::LimaHomeEntries => {
@@ -231,8 +255,18 @@ fn enumerable_vm_directory_names_every_unstattable_entry() {
 }
 
 #[test]
-fn stattable_vm_entry_names_its_inaccessible_data_disk() {
+fn stattable_vm_entries_name_both_inaccessible_data_disks() {
     run(Case::InaccessibleData);
+}
+
+#[test]
+fn stattable_own_symlink_names_the_inaccessible_followed_path() {
+    run(Case::OwnSymlink);
+}
+
+#[test]
+fn nested_own_vm_names_its_inaccessible_data_disk() {
+    run(Case::NestedOwnData);
 }
 
 #[test]
@@ -299,6 +333,7 @@ fn drop_root_privileges() {
 fn exercise(case: Case, root: &Path) {
     let base = match case {
         Case::InaccessibleParent => root.join("wall/vm"),
+        Case::LimaHome => root.join("lima/vm"),
         _ => root.join("vm"),
     };
     let lima_home = match case {
@@ -311,7 +346,11 @@ fn exercise(case: Case, root: &Path) {
 
     for backend in [BackendKind::Firecracker, BackendKind::Lima] {
         let mut cfg = Config::default();
-        cfg.vm.name = "new".into();
+        cfg.vm.name = match case {
+            Case::NestedOwnData => "new/nested",
+            _ => "new",
+        }
+        .into();
         cfg.vm.dir = base.to_string_lossy().into_owned();
         cfg.vm.backend = Some(backend);
         // Force Lima through the on-disk fallback without consulting a
@@ -383,7 +422,34 @@ fn assert_permission_precondition(case: Case, root: &Path, base: &Path) {
     let answer = match case {
         Case::InaccessibleParent | Case::InaccessibleSymlinkTarget => fs::metadata(base).map(drop),
         Case::VmEntries => fs::symlink_metadata(base.join("new")).map(drop),
-        Case::InaccessibleData => fs::metadata(base.join("old/data.ext4")).map(drop),
+        Case::InaccessibleData => {
+            for name in ["new", "old"] {
+                let error = fs::metadata(base.join(name).join("data.ext4"))
+                    .expect_err("fixture data disk unexpectedly statted");
+                assert_eq!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied,
+                    "{name}/data.ext4 failed for the wrong reason: {error}"
+                );
+            }
+            return;
+        }
+        Case::OwnSymlink => {
+            let link = fs::symlink_metadata(base.join("new")).unwrap();
+            assert!(link.file_type().is_symlink(), "own entry is a symlink");
+            let error = fs::metadata(base.join("new"))
+                .expect_err("inaccessible symlink target unexpectedly statted");
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            return;
+        }
+        Case::NestedOwnData => {
+            let nested = fs::symlink_metadata(base.join("new/nested")).unwrap();
+            assert!(nested.is_dir(), "configured nested VM is stattable");
+            let error = fs::metadata(base.join("new/nested/data.ext4"))
+                .expect_err("nested data disk unexpectedly statted");
+            assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+            return;
+        }
         Case::LimaHomeParent => fs::read_dir(root.join("lima-wall/lima")).map(drop),
         Case::LimaHome => fs::read_dir(root.join("lima")).map(drop),
         Case::LimaHomeEntries => fs::symlink_metadata(root.join("lima/ssf-new")).map(drop),
@@ -407,7 +473,11 @@ fn expected_unread(case: Case, root: &Path, base: &Path) -> Vec<PathBuf> {
     let mut paths = match case {
         Case::InaccessibleParent | Case::InaccessibleSymlinkTarget => vec![base.to_path_buf()],
         Case::VmEntries => vec![base.join("new"), base.join("old"), base.join(odd_name())],
-        Case::InaccessibleData => vec![base.join("old/data.ext4")],
+        Case::InaccessibleData => {
+            vec![base.join("new/data.ext4"), base.join("old/data.ext4")]
+        }
+        Case::OwnSymlink => vec![base.join("new")],
+        Case::NestedOwnData => vec![base.join("new/nested/data.ext4")],
         Case::LimaHomeParent => vec![root.join("lima-wall/lima")],
         Case::LimaHome => vec![root.join("lima")],
         Case::LimaHomeEntries => vec![
@@ -467,7 +537,6 @@ fn assert_uninstall_lists(case: Case, facts: &Facts, base: &Path, expected: &[Pa
     match case {
         Case::DanglingSymlink
         | Case::LimaHomeParent
-        | Case::LimaHome
         | Case::LimaHomeEntries
         | Case::LimaDisks
         | Case::LimaDiskEntries => {
@@ -479,15 +548,26 @@ fn assert_uninstall_lists(case: Case, facts: &Facts, base: &Path, expected: &[Pa
         }
         _ => {
             assert!(facts.vm_base_may_exist);
-            if expected.iter().any(|path| path.starts_with(base)) {
+            if expected
+                .iter()
+                .any(|path| path.starts_with(base) || base.starts_with(path))
+            {
                 let line = base_line.expect("present or unread base stays on keep list");
                 assert!(!line.contains("safe to remove"), "{line}");
             }
         }
     }
 
-    if matches!(case, Case::VmEntries) {
-        let own = base.join("new").to_string_lossy().into_owned();
+    if matches!(
+        case,
+        Case::VmEntries | Case::InaccessibleData | Case::OwnSymlink | Case::NestedOwnData
+    ) {
+        let own = match case {
+            Case::NestedOwnData => base.join("new/nested"),
+            _ => base.join("new"),
+        }
+        .to_string_lossy()
+        .into_owned();
         assert!(
             keep.iter()
                 .filter(|line| line.contains(&own))

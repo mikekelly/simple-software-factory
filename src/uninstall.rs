@@ -630,14 +630,20 @@ pub fn kept(facts: &Facts, data: bool) -> Vec<String> {
         let base_incomplete = facts
             .vm_unread
             .iter()
-            .any(|path| path == &facts.vm_base || path.starts_with(&facts.vm_base));
+            .any(|path| path.starts_with(&facts.vm_base));
+        let unread_ancestor = facts
+            .vm_unread
+            .iter()
+            .any(|path| path != &facts.vm_base && facts.vm_base.starts_with(path));
         keep.push(format!(
             "{} (VM image and downloads{})",
             facts.vm_base.display(),
-            match (base_incomplete, holds_a_vm_directory) {
-                (true, _) => "; ssf could not finish inspecting it, so what is in it is unknown",
-                (false, true) => "; safe to remove except for what is listed below",
-                (false, false) => "; safe to remove",
+            match (base_incomplete, unread_ancestor, holds_a_vm_directory) {
+                (true, _, _) => "; ssf could not finish inspecting it, so what is in it is unknown",
+                (false, true, _) =>
+                    "; an ancestor could not be inspected; check the unread paths below",
+                (false, false, true) => "; safe to remove except for what is listed below",
+                (false, false, false) => "; safe to remove",
             }
         ));
     }
@@ -1722,6 +1728,98 @@ mod tests {
             assert!(!remedy.contains("ssf vm start"), "{remedy}");
             assert!(!remedy.contains("ssf vm restart"), "{remedy}");
         }
+    }
+
+    #[test]
+    fn unread_data_path_leads_the_report_and_refusal_in_vm_and_host_modes() {
+        let unread = PathBuf::from("/v/factory/data.ext4");
+        let opts = Opts {
+            vm_unchecked: true,
+            ..Opts::default()
+        };
+        for vm_mode in [true, false] {
+            let facts = Facts {
+                vm_mode,
+                vm_name: "factory".into(),
+                vm_present: Some(true),
+                vm_running: Some(false),
+                vm_startable: false,
+                vm_data: None,
+                vm_unread: vec![unread.clone()],
+                vm_base: PathBuf::from("/v"),
+                vm_base_may_exist: true,
+                ..Facts::default()
+            };
+            let report = render(&facts, &Report::default(), &opts);
+            let refusal = hard_stop(&facts, &Report::default(), &opts, false).unwrap();
+            for text in [&report, &refusal] {
+                assert!(text.contains("/v/factory/data.ext4"), "{text}");
+                assert!(
+                    text.contains("fix access to /v/factory/data.ext4"),
+                    "{text}"
+                );
+                assert!(
+                    !text.contains("limactl list") && !text.contains("limactl disk list"),
+                    "filesystem access is the concrete first remedy: {text}"
+                );
+                assert!(
+                    !text.contains("VM factory still has a data disk"),
+                    "unknown presence was asserted: {text}"
+                );
+            }
+            if !vm_mode {
+                assert!(report.contains("`[vm] enabled = false`"), "{report}");
+                assert!(refusal.contains("`[vm] enabled = false`"), "{refusal}");
+            }
+        }
+    }
+
+    #[test]
+    fn host_mode_without_a_filesystem_error_keeps_unknown_disk_presence_conditional() {
+        let facts = Facts {
+            vm_mode: false,
+            vm_name: "factory".into(),
+            vm_present: None,
+            vm_running: Some(false),
+            vm_startable: false,
+            vm_data: None,
+            vm_unread: Vec::new(),
+            ..Facts::default()
+        };
+        let opts = Opts {
+            vm_unchecked: unchecked_workspaces(facts.vm_data),
+            ..Opts::default()
+        };
+        assert!(opts.vm_unchecked);
+        let report = render(&facts, &Report::default(), &opts);
+        let refusal = hard_stop(&facts, &Report::default(), &opts, false).unwrap();
+        for text in [&report, &refusal] {
+            assert!(text.contains("may still have a data disk"), "{text}");
+            assert!(
+                !text.contains("VM factory still has a data disk"),
+                "unknown presence was asserted: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unread_ancestor_makes_the_vm_base_inventory_incomplete() {
+        let facts = Facts {
+            vm_base: PathBuf::from("/srv/lima/vm"),
+            vm_base_may_exist: true,
+            vm_unread: vec![PathBuf::from("/srv/lima")],
+            ..Facts::default()
+        };
+        let lines = kept(&facts, false);
+        let base = lines
+            .iter()
+            .find(|line| line.starts_with("/srv/lima/vm "))
+            .expect("VM base remains on the keep list");
+        assert!(
+            base.contains("an ancestor could not be inspected"),
+            "{base}"
+        );
+        assert!(!base.contains("safe to remove"), "{base}");
     }
 
     #[test]

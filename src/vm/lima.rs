@@ -39,7 +39,7 @@ use tracing::{debug, info, warn};
 
 use super::{
     HostFacts, Observation, Sizes, Stray, StrayKind, Survey, Vm, directory_entry, make_executable,
-    observe, plan_grow, scripts_dir, sizes_for, unread_path, which,
+    metadata_presence, observe, plan_grow, scripts_dir, sizes_for, unread_path, which,
 };
 use crate::config::{Config, HerdrConfig, expand_tilde};
 use crate::platform;
@@ -1009,17 +1009,17 @@ impl Vm {
     /// be started to look inside it, which is why that case is not
     /// `startable`.
     pub(super) fn lima_survey(&self) -> Survey {
-        let dir = observe(std::fs::metadata(&self.dir)).presence();
         let (mine, others) = match self.lima_instances_within(SURVEY_LIMIT) {
             Ok(all) => self.split_instances(all),
-            Err(e) => return self.lima_unanswered(dir, "the instance", &self.lima_name(), &e),
+            Err(e) => return self.lima_unanswered("the instance", &self.lima_name(), &e),
         };
         let mut strays = others;
         // Lima's own directories, whether or not a listing failed: the
         // three commands that name strays have to agree about one
         // machine, and `status` reads these unconditionally. Reading
         // them costs no `limactl`.
-        let home_unread: Vec<PathBuf> = self.strays_on_disk_read().1;
+        let (_, mut home_unread) = self.strays_on_disk_read();
+        let dir = metadata_presence(&self.dir, &mut home_unread);
         let disk = match self.lima_disks_within(SURVEY_LIMIT) {
             Ok(all) => {
                 let (mine, others) = self.split_disks(all);
@@ -1042,7 +1042,7 @@ impl Vm {
                 let (disks, _) = self.disk_strays_read();
                 strays.extend(disks);
                 self.lima_disk_dir()
-                    .and_then(|p| observe(std::fs::metadata(p)).presence())
+                    .and_then(|p| metadata_presence(&p, &mut home_unread))
             }
         };
         sort_strays(&mut strays);
@@ -1108,25 +1108,20 @@ impl Vm {
     /// gets its clean `ssf uninstall`. Something there is a VM that
     /// cannot be asked about -- never a missing binary's licence to
     /// treat a disk full of workspaces as absent.
-    fn lima_unanswered(
-        &self,
-        dir: Option<bool>,
-        what: &str,
-        name: &str,
-        e: &anyhow::Error,
-    ) -> Survey {
+    fn lima_unanswered(&self, what: &str, name: &str, e: &anyhow::Error) -> Survey {
         warn!("could not ask lima about {what} {name}: {e:#}");
+        let (strays, mut unread) = self.strays_on_disk_read();
+        let dir = metadata_presence(&self.dir, &mut unread);
         let instance = self
             .lima_instance_dir()
-            .and_then(|p| observe(std::fs::metadata(p)).presence());
+            .and_then(|p| metadata_presence(&p, &mut unread));
         let disk = self
             .lima_disk_dir()
-            .and_then(|p| observe(std::fs::metadata(p)).presence());
+            .and_then(|p| metadata_presence(&p, &mut unread));
         // Same evidence, same rule: what lima's home holds is what there
         // is to go on. Without this a stray goes unmentioned exactly
         // when the person can least find it themselves -- `limactl list`
         // is the command that just failed.
-        let (strays, unread) = self.strays_on_disk_read();
         let here = instance == Some(true) || disk == Some(true);
         let nothing = instance == Some(false) && disk == Some(false);
         Survey {
@@ -1158,6 +1153,14 @@ impl Vm {
         let (disks, disk_unread) = self.disk_strays_read();
         strays.extend(disks);
         unread.extend(disk_unread);
+        if self.backend() == crate::config::BackendKind::Lima {
+            if let Some(path) = self.lima_instance_dir() {
+                metadata_presence(&path, &mut unread);
+            }
+            if let Some(path) = self.lima_disk_dir() {
+                metadata_presence(&path, &mut unread);
+            }
+        }
         sort_strays(&mut strays);
         (strays, unread)
     }

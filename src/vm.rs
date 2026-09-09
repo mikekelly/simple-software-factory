@@ -390,10 +390,6 @@ impl<T> Observation<T> {
         }
     }
 
-    pub(crate) fn is_present(&self) -> bool {
-        matches!(self, Self::Present(_))
-    }
-
     /// Whether a keep-list entry may be there. Unknown stays on the list.
     pub(crate) fn may_be_present(&self) -> bool {
         !matches!(self, Self::Missing)
@@ -404,6 +400,21 @@ impl<T> Observation<T> {
 /// report and its remedy do not print one place two ways.
 fn unread_path(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Follow symlinks and record the exact path when metadata could not be
+/// obtained. This is the shared form for every direct presence question;
+/// callers cannot take the tri-state answer while accidentally dropping
+/// the failed path from the report.
+fn metadata_presence(path: &Path, unread: &mut Vec<PathBuf>) -> Option<bool> {
+    match observe(std::fs::metadata(path)) {
+        Observation::Present(_) => Some(true),
+        Observation::Missing => Some(false),
+        Observation::Unreadable => {
+            unread.push(unread_path(path));
+            None
+        }
+    }
 }
 
 /// One `read_dir` item, retaining an iteration failure that `flatten()`
@@ -1501,7 +1512,7 @@ impl Vm {
     /// not print as "nothing there": a `[vm] dir` left root-owned by an
     /// earlier `sudo`, or on a volume returning `EIO`, would otherwise
     /// get `no VM` over `safe to remove`.
-    fn fc_dir_contents(&self) -> (Vec<Stray>, Vec<PathBuf>) {
+    fn fc_scanned_contents(&self) -> (Vec<Stray>, Vec<PathBuf>) {
         // Absolute, because the remedy is an `rm -rf` a person pastes:
         // `[vm] dir = "vm"` would otherwise print `rm -rf vm/old`, which
         // means a different directory from every other working
@@ -1613,6 +1624,28 @@ impl Vm {
         (strays, unread)
     }
 
+    /// Everything the filesystem can say about `[vm] dir`, including the
+    /// configured VM paths a shallow sibling scan cannot rediscover (a
+    /// nested name or a symlink with an inaccessible target).
+    fn fc_inventory(&self) -> (Vec<Stray>, Vec<PathBuf>, Option<bool>, Option<bool>) {
+        let mut unread = Vec::new();
+        let dir = metadata_presence(&self.dir, &mut unread);
+        // `[vm] dir` is shared across backend changes. Even under Lima,
+        // this configured path may be a Firecracker directory left from
+        // before the switch; failing to inspect its data file must keep
+        // the base inventory incomplete without declaring it a stray.
+        let data = metadata_presence(&self.data_disk(), &mut unread);
+        let (strays, scanned_unread) = self.fc_scanned_contents();
+        unread.extend(scanned_unread);
+        one_each(&mut unread);
+        (strays, unread, dir, data)
+    }
+
+    fn fc_dir_contents(&self) -> (Vec<Stray>, Vec<PathBuf>) {
+        let (strays, unread, _, _) = self.fc_inventory();
+        (strays, unread)
+    }
+
     /// The strays that can be found without asking the backend
     /// anything: `[vm] dir` under Firecracker, lima's own home under
     /// lima. For the caller that has no tooling to ask with -- which is
@@ -1638,12 +1671,8 @@ impl Vm {
     pub fn survey(&self) -> Survey {
         match self.backend() {
             BackendKind::Firecracker => {
-                // Metadata follows symlinks here: a dangling symlink has
-                // nothing behind it and is therefore missing.
-                let dir = observe(std::fs::metadata(&self.dir));
-                let data = observe(std::fs::metadata(self.data_disk()));
                 let running = self.firecracker_pid().is_some();
-                let (mut strays, mut unread) = self.fc_dir_contents();
+                let (mut strays, mut unread, dir, data) = self.fc_inventory();
                 // Lima's home on this backend too: see
                 // `strays_on_filesystem`.
                 let (lima, lima_unread) = self.strays_on_disk_read();
@@ -1652,14 +1681,14 @@ impl Vm {
                 lima::sort_strays(&mut strays);
                 one_each(&mut unread);
                 Survey {
-                    present: match (dir.presence(), running) {
+                    present: match (dir, running) {
                         (_, true) | (Some(true), false) => Some(true),
                         (Some(false), false) => Some(false),
                         (None, false) => None,
                     },
                     running: Some(running),
-                    startable: dir.is_present(),
-                    data: data.presence(),
+                    startable: dir == Some(true),
+                    data,
                     strays,
                     unread,
                 }
