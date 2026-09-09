@@ -206,6 +206,15 @@ pub fn repo_of(s: &str) -> Option<String> {
     Some(name)
 }
 
+/// Two things this does not do, both recorded rather than fixed. It
+/// takes the first `--repo` where gh takes the last, so a line naming
+/// two of them can still put the short `#N` on a post landing at the
+/// second; and a `--repo` whose value will not parse ends the scan
+/// rather than letting a URL further along answer. Both need a line that
+/// names the repository twice, or names it unparseably, which is not a
+/// line an agent writes; the cost either way is a wrong byline form and
+/// never a lost tag.
+///
 /// The repository a gh command posts to, as far as its arguments say:
 /// `--repo`/`-R` (in any spelling), else an item named by its URL.
 /// [`valued_long`] and [`valued_shorthand`] say which flags' values are
@@ -354,9 +363,10 @@ fn command_words(args: &[String]) -> Option<(usize, usize)> {
             // A `--` here is swallowed like any other word. cobra
             // breaks on one only when it is the argument it is looking
             // at, so `gh -b -- issue comment 1` is a comment with a body
-            // of `--`, and `gh -R -- pr review 3 -a` is an approval:
-            // both post, and stopping at that `--` left the pair unfound
-            // and the post untagged. Both were run against gh.
+            // of `--`, and it posts: stopping at that `--` left the
+            // pair unfound and the post untagged. Run against gh. The
+            // `-R` spelling of the same shape does not post, because the
+            // repository is then the `--` itself.
             i += if may_take_a_value(a) { 2 } else { 1 };
             continue;
         }
@@ -1304,6 +1314,7 @@ mod tests {
                 "hi",
             ]),
             args(&["issue", "create", "-t", "t", "-b", "hi", "-R", "acme/other"]),
+            args(&["issue", "comment", "3", "--body", "hi", "--repo=acme/other"]),
             // Behind a cluster's value-less letters, where `-R` is as
             // much the repository as it is on its own: read only at the
             // start of an argument, the answer would fall through to the
@@ -1319,6 +1330,19 @@ mod tests {
             let out = rewrite(a.clone());
             assert!(out.contains(&long), "{a:?} -> {out:?}");
         }
+        // A URL in the body is not the item, in the shorthand spelling
+        // as much as the long one: `-b` takes it, so this review is on
+        // the session's own repository and carries the short form. This
+        // is what `b` is doing in the review half of `valued_shorthand`.
+        let out = rewrite(args(&[
+            "pr",
+            "review",
+            "7",
+            "-b",
+            "https://github.com/acme/other/pull/1",
+            "--approve",
+        ]));
+        assert!(out[4].starts_with("🤖#12 says: "), "{out:?}");
         // A URL in the body is not the item.
         let out = rewrite(args(&[
             "issue",
@@ -1802,11 +1826,14 @@ mod tests {
         ] {
             assert_eq!(rewrite(a.clone()), want, "{a:?}");
         }
-        // The body flag comes first here, so `a` is its value and there
-        // is no approval on the line at all.
+        // The body flag comes first, so the letter after it is its
+        // value: this is a comment of `a` on item 7, which is what gh
+        // makes of it too. The same shape on a review is a line gh
+        // refuses, since `7` and the word after it are then two
+        // positionals.
         assert_eq!(
-            rewrite(args(&["pr", "review", "7", "-ba", "hello"])),
-            args(&["pr", "review", "7", &format!("-b{}\n\na", line()), "hello",])
+            rewrite(args(&["issue", "comment", "-ba", "7"])),
+            args(&["issue", "comment", &format!("-b{}\n\na", line()), "7"])
         );
     }
 
@@ -2158,8 +2185,7 @@ mod tests {
                     "t",
                     "-b",
                     "child",
-                    "-la",
-                    "OverlayBot",
+                    "-la=OverlayBot",
                 ]),
                 Some("OverlayBot"),
             ),
