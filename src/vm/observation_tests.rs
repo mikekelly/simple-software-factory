@@ -435,7 +435,12 @@ fn a_deleted_working_directory_suppresses_relative_remedies_in_every_report() {
     for dir in ["vm/old", "vm/new", "vm/new/nested"] {
         fs::create_dir_all(root.join(dir)).unwrap();
     }
-    for dir in ["lima/ssf-old", "lima/_disks/ssf-old"] {
+    for dir in [
+        "lima/ssf-old",
+        "lima/ssf-new",
+        "lima/_disks/ssf-old",
+        "lima/_disks/ssf-new",
+    ] {
         fs::create_dir_all(root.join(dir)).unwrap();
     }
     fs::write(root.join("vm/old/data.ext4"), b"old clones").unwrap();
@@ -449,10 +454,16 @@ fn a_deleted_working_directory_suppresses_relative_remedies_in_every_report() {
 if [ "$*" = "--tty=false list --json" ]; then echo '{{"name":"ssf-listed","status":"Stopped","dir":"{}/lima/ssf-listed"}}'; fi
 if [ "$*" = "--tty=false disk list --json" ]; then echo '{{"name":"ssf-listed-disk","size":7516192768,"dir":"{}/lima/_disks/ssf-listed-disk"}}'; fi
 case "$*" in
-  '--tty=false list --json') printf '%s\n' '{{"name":"ssf-old","status":"Stopped","dir":"{}/lima/ssf-old"}}' ;;
-  '--tty=false disk list --json') printf '%s\n' '{{"name":"ssf-old","size":7516192768,"dir":"{}/lima/_disks/ssf-old"}}' ;;
+  '--tty=false list --json')
+    printf '%s\n' '{{"name":"ssf-old","status":"Stopped","dir":"{}/lima/ssf-old"}}'
+    printf '%s\n' '{{"name":"ssf-new","status":"Stopped","dir":"{}/lima/ssf-new"}}' ;;
+  '--tty=false disk list --json')
+    printf '%s\n' '{{"name":"ssf-old","size":7516192768,"dir":"{}/lima/_disks/ssf-old"}}'
+    printf '%s\n' '{{"name":"ssf-new","size":7516192768,"dir":"{}/lima/_disks/ssf-new"}}' ;;
 esac
 "#,
+            root.display(),
+            root.display(),
             root.display(),
             root.display(),
             root.display(),
@@ -492,7 +503,11 @@ fn exercise_deleted_cwd(root: PathBuf) {
         .into_iter()
         .map(|backend| {
             let mut cfg = Config::default();
-            cfg.vm.name = "new/nested".into();
+            // Keep a configured instance and disk in the listing. The
+            // remedy is suppressed below, but `mine` must still feed
+            // present/data when the relative home or tool cannot be
+            // absolutised.
+            cfg.vm.name = "new".into();
             cfg.vm.dir = "../vm".into();
             cfg.vm.backend = Some(backend);
             cfg.vm.limactl = Some(root.join("missing-limactl").to_string_lossy().into_owned());
@@ -506,7 +521,7 @@ fn exercise_deleted_cwd(root: PathBuf) {
         .into_iter()
         .map(|case| {
             let mut cfg = Config::default();
-            cfg.vm.name = "new/nested".into();
+            cfg.vm.name = "new".into();
             cfg.vm.dir = root.join("vm").to_string_lossy().into_owned();
             cfg.vm.backend = Some(BackendKind::Lima);
             cfg.vm.limactl = Some(if case == "relative-tool" {
@@ -681,7 +696,7 @@ fn exercise_deleted_cwd(root: PathBuf) {
 
         let survey = vm.survey();
         assert_eq!(survey.present, Some(true), "{case} configured VM");
-        assert_eq!(survey.data, Some(false), "{case} configured data");
+        assert_eq!(survey.data, Some(true), "{case} configured data");
         assert_eq!(survey.unread, expected, "{case} survey unread");
         assert!(
             survey.strays.iter().all(|stray| !matches!(
