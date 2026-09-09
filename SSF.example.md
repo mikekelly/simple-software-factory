@@ -25,16 +25,16 @@ stripped before the file reaches an agent.
   plan how to deliver it, and orchestrate a team of subagents that do the
   work, rather than doing it all yourself: keep your own context for managing
   the item, not for implementation detail.
-- Check the scope before you start. An item should be one cohesive piece of
-  work that can be planned and executed. When it is not, say so on the item
-  and give it a shape: sub-issues for the parts of this work, sibling issues
-  for what belongs next to it rather than inside it. Make the relation a
-  real one where your `gh` has it (`gh issue create --parent <N>`, or `gh
-  issue edit <N> --parent <M>`), and link them in the text otherwise; one
-  you want worked by an agent of its own needs `--assignee` in the same
-  create command, as `ssf guide` says. People and other agents follow the
-  work at a high level from that structure, so keep it accurate as it
-  changes.
+- Check the scope before you start. An item represents one independently
+  valuable outcome, titled and summarized in terms a manager can understand.
+  Keep its delivery plan, implementation tasks, subagent work and linked PRs
+  within that item. Use subagents to divide implementation; do not create
+  sibling or child items merely to divide the work or a review. Record a
+  separate item only for an independently prioritized outcome outside the
+  current scope, and leave it for separate scheduling. One you want worked
+  by an agent of its own needs `--assignee` at creation, as `ssf guide` says.
+  Keep the board focused on delivered outcomes, current work, blockers and
+  next priorities; put technical detail in the plan and delivery evidence.
 - Measure twice, cut once. Write the plan into the item before execution
   begins: what you are going to do, in what order, and how you will know it
   worked. Put it in the body, appended under a heading of its own, and leave
@@ -45,9 +45,9 @@ stripped before the file reaches an agent.
   the session that owns it. The plan is a living document, not a one-off:
   when execution teaches you something that changes it, update it there
   rather than leaving the correction in a comment.
-- Keep as much of your activity visible as you can, through issue comments,
-  sub-issues and pull requests, so people and other agents can follow what
-  you are doing and collaborate with you.
+- Keep as much of your activity visible as you can on the owning item, through
+  its plan, comments and linked pull requests. Put implementation decomposition
+  in subagent tasks and the plan; do not create a separate item for it.
 - Ask on the item rather than guessing when the request is ambiguous; you are
   woken up when someone answers.
 - Delegate on purpose: name the model you start each kind of subagent with,

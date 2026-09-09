@@ -2565,7 +2565,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
         // Each bullet's own text survives: a stray `<!--` in one would be
         // stripped with everything after it, silently gutting the rule.
         for kept in [
-            "sub-issues for the parts of this work",
+            "one independently",
             "carrying an `ssf: origin=` tag",
             "name the model you start each kind of subagent with",
         ] {
