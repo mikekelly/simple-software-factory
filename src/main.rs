@@ -2413,9 +2413,12 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
 /// What that pins is the text. The `print!` that puts it on a terminal
 /// is in `doctor` and is reachable by nothing: removing it makes
 /// `ssf doctor` silent about a stray it found, with the suite green.
-/// The seam for that is tracked on #158, here and at the four
-/// sibling sites. (#188 held it until that issue was consolidated,
-/// so the number is closed and the gap is not.)
+/// The same is true at four sibling sites: `uninstall::run`'s three
+/// prints and `render_vm_status`'s. No issue number here on purpose --
+/// #188 tracked it and was consolidated, #158 tracks it and closes
+/// with this change, and a pointer that closes reads as a gap that was
+/// fixed. The gap is the sentence above, which stays true until a seam
+/// makes these bodies reachable.
 pub fn stray_notes(strays: &[vm::Stray]) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -2433,7 +2436,6 @@ pub fn stray_notes(strays: &[vm::Stray]) -> String {
 /// and a line naming the wrong directory. The words are pinned where
 /// they can be -- but not the `print!` that shows them, which can be
 /// removed for a silent `ssf vm status` without a test going red.
-/// Tracked on #158.
 pub fn render_vm_status(st: &vm::VmStatus) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();

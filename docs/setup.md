@@ -1056,12 +1056,14 @@ which happens when a path it needs is relative and the working
 directory has been deleted out from under the command. The two halves
 are separate: a relative `[vm] dir` silences the directories under it
 -- and its line then reads "safe to remove", with nothing carved out
--- while a relative `LIMA_HOME` or `[vm] limactl` silences the lima
-instances and disks. Either can happen without the other, so a report
-that names lima strays is not evidence that `[vm] dir` was read. If
-you are running `ssf uninstall` from a directory that has been
-removed, run it from somewhere that exists, or check `[vm] dir` and
-lima's home by hand. `ssf uninstall` never removes a stray and
+-- while a relative `LIMA_HOME`, or a `[vm] limactl` that is a path
+rather than a bare program name, silences the lima instances and
+disks. A bare `limactl` is looked up on `PATH` wherever you paste it,
+so it is not silenced. Either can happen without the other, so a
+report that names lima strays is not evidence that `[vm] dir` was
+read. If you are running `ssf uninstall` from a directory that has
+been removed, run it from somewhere that exists, or check `[vm] dir`
+and lima's home by hand. `ssf uninstall` never removes a stray and
 `--force` does not reach it: ssf cannot tell a VM you renamed away to
 keep from one you abandoned, and only one of those is safe to delete.
 `ssf vm status` names them too, and `ssf doctor` does when it runs on

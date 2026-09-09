@@ -421,6 +421,31 @@ impl LimaCommand {
     }
 }
 
+/// Is this name safe to print in a report?
+///
+/// Not UTF-8, and it would be shown with replacement characters beside
+/// a command that then matches nothing -- a remedy the person cannot
+/// act on is worse than the line it occupies.
+///
+/// A control character is worse, and in the other direction. Every
+/// consumer prints one line per stray, so a newline in a directory's
+/// name splits it in two and the second half is written by whoever
+/// made the directory. A name of the form
+/// `old<newline>stray:    lima also holds the instance ssf-new ...
+/// `limactl delete ssf-new` removes it` renders as a stray line
+/// indistinguishable from a real one, carrying ssf's own "ssf leaves
+/// it alone" and a command that destroys the **live** instance.
+/// Escape sequences are the same problem, smaller.
+///
+/// Nobody able to create such a directory needs ssf to delete things
+/// for them. But `[vm] dir` and lima's home are writable by every agent
+/// session this product runs, and this is the first ssf output that
+/// prints a name taken off the filesystem beside a delete command it
+/// invites a person to paste.
+pub fn printable_name(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(char::is_control)
+}
+
 /// Something of ssf's shape that this configuration does not name: what
 /// a changed `[vm] name` leaves behind. Under lima that is an `ssf-*`
 /// instance or data disk in lima's home; under Firecracker a sibling
@@ -1433,11 +1458,9 @@ impl Vm {
         };
         let strays: Vec<Stray> = entries
             .flatten()
-            // A name that is not UTF-8 would be printed with
-            // replacement characters, in a command that then matches
-            // nothing: a remedy the person cannot act on is worse than
-            // the line it occupies.
-            .filter(|e| e.file_name().to_str().is_some())
+            // Only names that can be shown as themselves: see
+            // `printable_name`.
+            .filter(|e| e.file_name().to_str().is_some_and(printable_name))
             .map(|e| e.path())
             .filter(|p| {
                 // Never this VM's own directory **nor any directory
@@ -3938,6 +3961,56 @@ mod tests {
             );
         }
         println!("{DONE}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_name_cannot_forge_a_second_stray_line() {
+        // Every consumer prints one line per stray, so a newline in a
+        // directory's name splits it in two and the second half is
+        // whatever the directory is called. Reported by round 33, which
+        // reproduced it through `ssf vm status`, `ssf doctor` and
+        // `ssf uninstall` alike: a forged line carrying ssf's own "ssf
+        // leaves it alone" and a `limactl delete` of the *live*
+        // instance.
+        //
+        // Both scanners, because there are two -- `[vm] dir`'s and
+        // lima's home -- and the rule they share had only its UTF-8
+        // half.
+        let base = std::env::temp_dir().join(format!(
+            "ssf-forge-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let forged = "old\nstray:    lima also holds the instance ssf-new";
+        std::fs::create_dir_all(base.join(forged)).unwrap();
+        std::fs::write(base.join(forged).join("data.ext4"), b"disk").unwrap();
+        std::fs::create_dir_all(base.join("plain")).unwrap();
+        std::fs::write(base.join("plain").join("data.ext4"), b"disk").unwrap();
+        let home = base.join("lima");
+        std::fs::create_dir_all(home.join("ssf-x\nstray:    forged")).unwrap();
+        std::fs::create_dir_all(home.join("ssf-ok")).unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.vm.name = "new".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.dir = base.to_string_lossy().into_owned();
+        let mut vm = Vm::new(&cfg);
+        vm.lima_home = Some(home.clone());
+        let strays = vm.strays_on_filesystem();
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(
+            strays.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            ["plain", "ssf-ok"],
+            "a name with a newline in it must not reach a printed line"
+        );
+        // ... and the honest ones still do, so this is a filter and not
+        // a silence.
+        for s in &strays {
+            assert!(!s.describe().contains('\n'), "{}", s.describe());
+        }
     }
 
     #[test]

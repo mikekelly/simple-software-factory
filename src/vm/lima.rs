@@ -1258,6 +1258,10 @@ impl Vm {
             // rule `[vm] dir`'s scan uses.
             .filter(|e| std::fs::symlink_metadata(e.path()).is_ok_and(|m| m.is_dir()))
             .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            // The same rule `[vm] dir`'s scan uses, and for the same
+            // reason: a name is printed as itself in a line a person
+            // reads as ssf's own.
+            .filter(|name| super::printable_name(name))
             .filter(|name| Some(name) != ours.as_ref() && is_ssf_name(name))
             .collect()
     }
