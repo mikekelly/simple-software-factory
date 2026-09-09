@@ -87,153 +87,28 @@ dropped on load with one log line; the old config keys still load and
 `ssf doctor` says they do nothing.
 
 The session arranges its own review according to the repository's notes.
-[`SSF.example.md`](../SSF.example.md) classifies the gauntlet by what a change
-can break: documentation, comments, configuration examples and tests get
-self-review; ordinary daemon behaviour gets one fresh-agent round, a second
-only after a must-fix; data loss, startup failure, broken packages and workspace
-destruction get rounds until two consecutive ones find no must-fix. Mixed
-changes take the highest class. Cosmetic tidies neither count as must-fixes
-nor justify another round; the second clean deep round may inspect the same
-substantive diff. Required tests, formatting, linting and package builds still
-apply to every class.
+[`SSF.example.md`](../SSF.example.md) uses self-review for documentation and
+test-only changes, and one independent review for behavior changes. High-risk
+changes deserve attention to data loss, startup, installation and workspace
+safety, rather than more rounds by default.
 
-One habit sits beside the classes. A claim about how something behaves is
-checked against the thing rather than reasoned about, and that covers what a
-session writes about a change as much as the change: a wrong sentence in a
-comment or a commit message outlives a wrong line, because the next reader
-takes it instead of checking. A claim is checked by reading the source or by
-trying it where trying it changes nothing, and where a session has not
-checked, it says so.
+Review a pinned diff against its intended outcome. Check the affected
+integration boundaries and reproduce suspected defects safely; reviewers
+should use an isolated checkout if their checks modify files. Confirm that
+tests exercise the failing behavior. Findings are evidence for the author
+to assess, not instructions to expand the change.
 
-Give each reviewer the diff, issue and claimed outcome, and ask it to break
-correctness, requirements, tests, docs and conventions. The author decides
-what to act on: accept feedback, decline it with a sentence explaining why,
-or debate it with the same reviewer. Reviewers propose; they do not instruct.
-A round with only declined suggestions is clean. Fix confirmed must-fixes
-before continuing; a discussion is not a fresh round. Use an in-harness
-subagent by default; for deep review prefer a strong reviewer on a different
-model through herdr from round one (`ssf guide` gives the invocation). Report
-the class, findings and fixes on the item. Who merges is the notes' autonomy
-line (the boilerplate ships "a person reviews and merges"). `ssf doctor`
-reports a repository with no project notes at all.
+Fix confirmed behavioral defects and acceptance-criteria violations. Wording,
+naming, comment corrections and optional coverage do not trigger another
+round. Use at most one focused follow-up to verify substantive fixes. If
+defects remain, hold delivery and simplify the change or ask the maintainer
+to choose a smaller scope; do not start an unbounded loop or merge known
+defects. Run relevant validation on the final change, not a package build
+for every round. State the tested commit and remaining limitations in the PR.
 
-### What a round asks for before calling itself clean
-
-These came out of one issue that ran twenty-seven rounds, and each is
-here because a round missed something and a later one found it. They are
-grouped by the question they answer, and each carries its mechanical
-form where it has one -- the ones with a command are the ones that get
-run.
-
-**What did I check, and what did I only think I checked?**
-
-- When a change computes a structure in one place and renders it in
-  several, ask for a coverage table before calling a round clean: every
-  field, one column per command, each cell either "says it" or
-  "deliberately does not, because --". A reviewer reads one rendering at
-  a time and finds one blank; only the table finds the set, and only the
-  table tells a gap from a boundary.
-- When a struct is assembled in one place from parts that are tested
-  separately, count the callers of the assembling function and how many
-  are tests. Zero test callers means the wiring is untested however good
-  the coverage of the parts looks.
-- When a rule is extracted into one function, mutate each **call site**,
-  not the function. Mutating the shared helper proves it is used
-  somewhere; it says nothing about whether a particular caller uses it.
-- When two sessions work adjacent halves of one subsystem, point each
-  reviewer at the other's **boundary** -- the symbols one branch defines
-  and the other's diff references -- rather than at the other's whole
-  territory. That set is computable from the two diffs in one command,
-  and it is where the defects neither owner's rounds reach turn out to
-  be.
-
-**Which of my checks only look like checks?**
-
-- A collection fixture with one element cannot tell "all of them" from
-  "the first".
-- A fixture missing a precondition asserts about a line that never
-  prints. Confirm the line is in the output before asserting how it is
-  spelled.
-- A negative assertion (`!contains(...)`) names a string that a later
-  edit may have reworded out of existence, leaving the test to hold
-  whatever the code does. Grep each literal and confirm something can
-  still produce it.
-- A test whose assertions sit behind a runtime `if` may never run at
-  all. Make the skip loud -- count the skips and assert the count -- so
-  that "nothing was checked" cannot look like "everything passed". The
-  same goes for anything that selects a subset of tests: a filter, an
-  `#[ignore]`, a `cfg` gate, a feature flag.
-- Apply the mutation a new fixture targets and confirm the fixture
-  fails. A fixture built the wrong way round discriminates nothing.
-- Mutation testing finds *unpinned* behaviour. It cannot find *wrong*
-  behaviour pinned by a test written from the same misunderstanding as
-  the code, because every mutation of the wrong rule turns that test
-  red. What reaches those is reading a comment against the behaviour.
-
-**What did I stop checking without noticing?**
-
-- A deletion needs the same sweep as an addition, and it is cheaper: the
-  words that should no longer appear anywhere are exactly the ones just
-  removed, so one grep for the removed vocabulary finds every sentence
-  still describing it. A rename is a deletion too -- the vocabulary to
-  search for is whatever the identifier used to be called.
-- A comment that states a rule is a claim about **every** site the rule
-  covers, not about the function it sits on. Where it names a concrete
-  failing scenario, that scenario is a test somebody has already written
-  in prose; check the suite has it.
-- A change can be wrong by being **expensive**, and no mutation finds it
-  because the output is identical. Count the external calls a command
-  makes on the base and on the branch and diff the two: a command that
-  costs more than it did needs a reason. Anything bounded by a timeout
-  compounds, and the worst case is usually the failure the code exists
-  to handle.
-
-**Whose claims are these?**
-
-- Read the commit message, the issue body and the pull request body as
-  lists of claims and try to falsify each against the code. Composing a
-  message from the staged diff stops omissions; it does not stop
-  overstatements, because those describe the intention and the diff is
-  consistent with both.
-- Read the pull request body against the final state. It is written once
-  and every round after changes the code, so it drifts furthest on the
-  changes that got the most scrutiny -- and it is what a maintainer
-  reads at merge. Rewrite it *before* the final round, so the round that
-  reads it is not the round that caused it. Half of it is arithmetic:
-  the test count, the warning count and the round count are checkable in
-  a minute, and one of them being stale dates the prose beside it.
-- A disclosure -- "this is known, do not report it" -- is the one input
-  to a round that is copied forward rather than re-derived, so an error
-  in it survives every later round for free. Each names its locations
-  (`file:line`) so falsifying it costs a grep, is re-verified each round
-  rather than carried, and belongs in a comment beside the code it is
-  about, which a later edit cannot pass without reading.
-- **A finding is a claim too.** A correction arrives with the shape of a
-  fact, and a round that has spent all day learning to distrust its own
-  prose will still take a reviewer's number at face value. Check it. And
-  prefer naming the constant to quoting the figure it yields, so that
-  neither party has to be trusted -- a number with a unit in a comment
-  is a copy of something the code already names.
-
-Two rules about running a round rather than about what it looks for. A
-round gets its own worktree, so the reviewer can mutate freely, the
-author's edits cannot be reverted by the reviewer's restore, and neither
-can read a tree the other is halfway through changing. And the commit
-under review does not move while the round runs -- a boundary check
-against `origin/master...HEAD` answers a different question after a
-rebase; measurements taken during a round name the commit they were
-taken against, which lets the author keep working.
-
-Behind the two-clean-round rule is an invariant worth stating on its
-own, because it explains the technicalities: **no artefact ships
-reviewed only by a round that predates it.** A fix arrives after the
-round that read the diff, so under a one-round rule it ships unreviewed
-by construction, and the second clean round is the only thing in the
-process that puts a later reader in front of it. That is an argument for
-two rounds on a change whose *repairs* are risky, not only on one whose
-behaviour is. It also settles the corollary: a round finding only tidies
-caused no substantive change, so nothing new needs reviewing and the
-count is not restarted.
+The repository's notes decide who merges. Use `Refs #N` for ongoing
+management or tracking issues; `Closes #N` is appropriate only when the PR
+completes the entire issue. `ssf doctor` reports missing project notes.
 
 A PR the bot did not write (a human's PR the bot is asked to review, or
 one assigned to it without a session of its own on the branch) is
@@ -382,10 +257,10 @@ with the repository's base on origin. A clean merge produces no message,
 even when the branch is far behind. A conflict produces a `[ssf]` message
 in the session, naming the base commit and the conflicting files.
 
-If a final review round has started or finished, rebase onto the named
-base, resolve the conflicts, and rerun the round. If the round has not
-started, do nothing now; resolve the conflict before starting the final
-round. ssf never rebases for the session.
+Resolve conflicts before delivery, using a stable dependency head when work
+is stacked. Check and test the resulting integration; seek focused review
+when conflict resolution changes behavior. A notice alone does not require
+restarting review. ssf never rebases for the session.
 
 The default interval is five minutes (`daemon.conflict_check_interval_secs
 = 300`). `ssf config set daemon.conflict_check_interval_secs 0` turns

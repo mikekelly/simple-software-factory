@@ -129,39 +129,25 @@ contents API on `repo.base_branch`
 file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
 path for notes you would rather not commit.
 
-This is also where working style goes. ssf's prompts carry rules, not
-advice (see [What the agent is told](prompts.md)), so a repository that
-wants its agents told to comment when they start and finish, to ask rather
-than guess, or to commit as they go, says so here. It is also the only
-natural place to steer the models a session spawns its subagents on
-(`daemon.instructions` and `repo.instructions` reach the prompt too),
-since `repo.model` reaches the session alone: a line naming the model
-for planning, diagnosis and the gauntlet and the model for the bulk of
-the implementation work is a rule like any other, and like any other it
-is advice in a prompt rather than configuration, so it holds only where
-the harness lets a session choose a model as it spawns one (see
-[Choosing the harness and the
-model](setup.md#choosing-the-harness-and-the-model)).
+Put project working preferences here (see [What the agent is told](prompts.md)).
+`repo.model` selects the session's model, not its subagents' models. Optional
+subagent preferences belong in these notes or `repo.instructions` and depend
+on what the harness supports; they are not daemon-enforced settings (see
+[Choosing the harness and the model](setup.md#choosing-the-harness-and-the-model)).
 [`SSF.example.md`](../SSF.example.md) (installed as
 `/usr/share/ssf/SSF.example.md`, and on macOS as
 `$(brew --prefix)/share/ssf/SSF.example.md`) is a starting point with
-those lines, who is in charge of the item, how visible to stay, an
-autonomy line (how much a person approves), a delegation line (choose
-the model and effort each subagent runs on rather than taking the
-default), a scope line (an item is one cohesive piece of work; split it
-into sub-issues and sibling issues when it is not, so the shape of the
-work can be read off the issue tree), a plan line (write the plan into
-the body of the item before execution and keep it current there), a line
-on checking a claim (read the source or try it where trying it changes
-nothing, rather than reasoning your way to an answer; say where you have
-not, and apply the same to what you write about a change) and the
-**gauntlet** rule: ssf runs one session per item and starts no reviewer,
-so the boilerplate tells the author to choose self-review, one or two
-fresh-agent rounds, or deep review by blast radius, with explicit stopping
-rules and the same required verification in every class (see [Second
+project preferences: one independently valuable outcome per issue, a short
+plan, useful delegation and concise delivery evidence. Implementation tasks
+stay on their owning issue; separate issues are for independently prioritized
+outcomes outside its scope. Use non-closing PR references for ongoing tracking
+issues. The template uses self-review for documentation/tests and one review
+for behavior changes, with at most one focused follow-up for substantive
+fixes. Unresolved defects mean simplifying or holding delivery, not extending
+the review loop. Validation matches the change; package builds are not a
+per-round requirement (see [Second
 opinions](sessions.md#second-opinions-the-gauntlet)).
-This repository's own [`SSF.md`](../SSF.md) is what produced the comments
-quoted in the README's walkthrough.
+This repository's own [`SSF.md`](../SSF.md) supplies its current preferences.
 
 ## Models and effort levels
 
