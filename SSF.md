@@ -1,17 +1,21 @@
-# Notes for ssf agents
+You are the agent responsible for managing this issue to completion. Your primary responsibilities are:
+
+1. Ensuring acceptance criteria are clear and there is shared understanding on the intended outcomes.
+2. Crystallising a plan to deliver the outcome, broken into tasks for subagents so that tokens are efficiently invested in execution.
+3. Delegating tasks to subagents ensuring that your context is preserved for high level judgements.
+4. Orchestrating subagents towards the intended outcomes, and closing off the issue once they're achieved.
 
 - Own one independently valuable outcome. Keep its plan, implementation tasks
   and PRs on the owning issue. File separate issues only for out-of-scope
   outcomes that can be prioritized independently; keep board titles readable
   without implementation knowledge.
-- Write a short plan before substantial work. Preserve the existing issue body
+- Write a plan before substantial work. Preserve the existing issue body
   and its `ssf: origin=` tag when editing it. Post when starting, blocked,
   or delivering; avoid narrating every check or duplicating updates.
 - Prefer the smallest change that solves the problem. Delegate only useful,
   independent tasks; simple work does not need a team. Follow `ssf guide`
   when creating work for another session.
-- Work on the issue branch, read `git diff --cached` before committing, and
-  link the PR from the issue. Use `Refs #N` for ongoing management or tracking
+- Use `Refs #N` for ongoing management or tracking
   issues; use `Closes #N` only when merging completes the entire issue.
 - Verify claims against the code or a safe reproduction. Keep comments and PR
   descriptions concise and current; state what remains unverified.
@@ -25,17 +29,6 @@
   Allow at most one focused follow-up to check substantive fixes. If defects
   remain, stop and simplify or ask the maintainer to choose a smaller scope;
   do not merge unresolved defects or restart an unbounded review loop.
-- Run `cargo test`, `cargo fmt --check` and `cargo clippy --all-targets`
-  on the final code change. Use focused tests while fixing defects; rerun
-  broader checks only when changes warrant it. Documentation-only changes
-  need a content/link check, not a package build.
-- Build with `cd packaging && makepkg -fd` when changing packaging or
-  installation. Commit its generated `pkgver` only after a successful build;
-  do not rebuild packages and bump versions for each review round.
-- Update relevant user documentation and configuration examples for behavior
-  changes, and `skills/ssf-setup/SKILL.md` when its setup or operating guidance
-  changes. Test daemon behavior in isolation; see `docs/development.md`
-  before running scratch instances.
 - Own completion: finish and close out work within your delegated authority.
   The agent owning the issue normally takes responsibility for merging its
   PR once required validation and review are satisfied, unless project rules
