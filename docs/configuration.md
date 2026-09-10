@@ -129,6 +129,17 @@ contents API on `repo.base_branch`
 file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
 path for notes you would rather not commit.
 
+For additional instructions specific to a harness, add `SSF.<harness>.md` at
+the checkout root, for example `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md`.
+Use the harness identifier from the configuration. ssf appends this file after
+the shared notes, under its own "Project notes" heading. It uses the harness
+actually starting the session, including after a handover or restart, and
+includes no other harness's file. These optional files are independent of
+`repo.prompt_file`: changing the shared notes path does not change their
+location. Missing, empty, or HTML-comment-only files add nothing; HTML
+comments are filtered just as in the shared notes. `ssf doctor` checks the
+shared notes only.
+
 Put project working preferences here (see [What the agent is told](prompts.md)).
 `repo.model` selects the session's model, not its subagents' models. Optional
 subagent preferences belong in these notes or `repo.instructions` and depend

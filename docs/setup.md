@@ -439,6 +439,8 @@ step 10.
 
 **`SSF.md`.** Project working preferences belong in this file at the
 repository root. ssf appends it to the initial prompt; keep it short.
+Add optional `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md` at the root
+for instructions appended only when that harness starts the session.
 Describe one outcome per issue, where the plan lives, relevant validation,
 and who may merge. Keep implementation tasks on that issue. Use `Refs #N`
 for ongoing tracking and `Closes #N` only for complete delivery.
