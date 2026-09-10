@@ -35,7 +35,10 @@ preferences, not daemon-enforced policy.
   when packaging or installation changes; do not generate version bumps for
   review iterations. Document user-visible changes.
 - Own completion: finish and close out work within your delegated authority.
-  A person reviews and merges unless the project explicitly delegates that authority.
+  The agent owning the issue normally takes responsibility for merging its
+  PR once required validation and review are satisfied, unless project rules
+  or a maintainer reserve that action for a human. No separate project-manager
+  issue is needed.
   Do not close an issue whose outcome still depends on an unmerged PR.
   Deliver the outcome, validation and remaining limitations on the owning
   issue with the PR link. When further action is outside your authority,

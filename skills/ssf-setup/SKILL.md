@@ -144,10 +144,12 @@ document links to.
     with package builds for packaging/installation changes. Keep one outcome
     per issue and implementation tasks within it. Use `Refs #N` for ongoing
     management/tracking work; reserve `Closes #N` for complete delivery.
-    State completion and merge authority explicitly: complete work within
-    delegated authority; otherwise tag an appropriate human with the concrete
-    next action. Use the bounded [project guidance audit](../../docs/audit.md)
-    when asked to assess these policies.
+    State completion and merge authority explicitly: the owning issue agent
+    normally takes responsibility for merging after required checks/review,
+    unless reserved for a human. Complete work within delegated authority;
+    otherwise tag an appropriate human with the concrete next action. Use the
+    bounded [project guidance audit](../../docs/audit.md) when asked to assess
+    these policies.
 
 12. **Conflict notices concern committed branches.** Follow
     [Branch conflicts](../../docs/sessions.md#branch-conflicts) when an

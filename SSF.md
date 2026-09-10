@@ -37,7 +37,10 @@
   changes. Test daemon behavior in isolation; see `docs/development.md`
   before running scratch instances.
 - Own completion: finish and close out work within your delegated authority.
-  Leave merging to the maintainer or project-management session.
+  The agent owning the issue normally takes responsibility for merging its
+  PR once required validation and review are satisfied, unless project rules
+  or a maintainer reserve that action for a human. No separate project-manager
+  issue is needed.
   Do not close an issue whose outcome still depends on an unmerged PR.
   Deliver the outcome, validation and remaining limitations on the owning
   issue with the PR link. When further action is outside your authority,

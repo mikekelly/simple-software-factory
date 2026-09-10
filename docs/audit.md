@@ -9,8 +9,10 @@ specific uncertainty. Do not build a score, audit engine or recurring process.
 Ask these qualitative questions:
 
 - **Completion ownership:** Do instructions say what agents may complete,
-  close and merge? When authority ends, must they tag/request an appropriate
-  human with a concrete next action? Does the workflow follow that rule?
+  close and merge, with the owning issue agent normally responsible rather
+  than relying on a separate project-manager issue? When authority ends,
+  must they tag/request an appropriate human with a concrete next action?
+  Does the workflow follow that rule?
 - **KISS and YAGNI:** Do instructions favor the smallest useful outcome and
   defer speculative abstractions, automation and unrelated improvements?
   Is any observed complexity required by the actual acceptance criteria?
