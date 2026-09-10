@@ -34,5 +34,11 @@ preferences, not daemon-enforced policy.
 - Run the project's relevant tests and checks before delivery. Build packages
   when packaging or installation changes; do not generate version bumps for
   review iterations. Document user-visible changes.
-- Deliver the PR with its outcome, validation and remaining limitations.
-  A person reviews and merges; do not merge or close the issue yourself.
+- Own completion: finish and close out work within your delegated authority.
+  A person reviews and merges unless the project explicitly delegates that authority.
+  Do not close an issue whose outcome still depends on an unmerged PR.
+  Deliver the outcome, validation and remaining limitations on the owning
+  issue with the PR link. When further action is outside your authority,
+  explicitly @mention an appropriate human collaborator or request their
+  review, naming the concrete decision or action needed and who owns it;
+  “ready” or “pending review” alone is not a handoff.
