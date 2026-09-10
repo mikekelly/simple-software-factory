@@ -1,243 +1,115 @@
 # Setup
 
-From a fresh Linux machine (Omarchy, Arch, Debian or Ubuntu, Fedora) or Mac to the first issue worked by an agent: prerequisites, the package, the bot account, where the agents run, the first repository and the harness and model it runs on, upgrading, stopping and uninstalling. For whoever installs ssf, or the coding agent they ask to; read it top to bottom the first time. Once the bot is signed in, the later steps stand on their own for changing a factory.
+Install ssf, connect a bot account, and get an agent working on its first
+issue. Follow steps 1–10 for a first installation; use steps 11–12 for
+upgrades and removal. Commands marked **you** require your account,
+browser sign-in, or sudo password.
 
-Installed, this file is `/usr/share/doc/ssf/docs/setup.md` on Omarchy
-and `$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS, next to the
-[README](../README.md) (what ssf is, the everyday commands) and the rest
-of `docs/` (one file per area, linked from each step). The `ssf-setup`
-skill that ships in the repository is a pointer at this document, so an
-agent asked to "set up ssf" follows the same steps; the lines that say
-**you** do something are the ones an agent cannot do for you (type a sudo
-password, create an account, sign in in a browser).
+The recommended setup runs the daemon, herdr and agents inside a VM:
+Firecracker on Linux, lima on macOS. Agents on the host run as your Unix
+user and can access your home directory and credentials. The host
+alternative is in [step 6](#alternative-on-the-host-in-herdr-or-in-orca).
+The bar widget and **Factory** menu are available only on Omarchy.
 
-The path recommended here is the default: the whole factory (daemon,
-herdr, agents) inside a VM, so the agents never see your home directory.
-The VM is a Firecracker microVM on Linux and a lima instance on macOS;
-the steps are the same, and where a command differs between the two the
-macOS form follows the Linux one. The alternatives (the agents on this
-machine, in herdr or in Orca; a driver per repository; commits under
-your own name) are in the same steps, marked as such. The bar widget and
-the **Factory** menu exist only on Omarchy; a Mac has the CLI and the
-service.
+For everyday commands see the [README](../README.md#everyday-commands).
+The installed guide is `/usr/share/doc/ssf/docs/setup.md` on Linux or
+`$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS. The
+`ssf-setup` skill points here rather than keeping
+another copy of the instructions.
 
 ## 1. Before you start
 
-- **Linux on x86_64, or a Mac.** On Linux: Omarchy, Arch, Debian 12 or
-  later, Ubuntu 24.04 or later, or Fedora; there is a package for each
-  (step 2), and the Firecracker microVM image is x86_64 only. ssf runs
-  as a per-user systemd unit, so your user needs a systemd user session
-  (every desktop login has one; a server gets one with `loginctl
-  enable-linger`, step 2, which serves the .deb and .rpm unit only: the
-  Arch and Omarchy package's unit needs a Wayland login and never runs on
-  a headless machine). The bar widget and the **Factory** menu are
-  Omarchy's; elsewhere the CLI and the service are the whole of it. On
-  macOS, ssf is a Homebrew formula with a `brew services` (launchd)
-  service; the VM is a lima instance and needs macOS 13.5 or later for
-  Apple's Virtualization framework, and lima 2.0.1 or newer (what
-  `brew install lima` gives you; `ssf vm build` refuses an older one and
-  says so). Apple silicon and Intel both work; no KVM or nested
-  virtualisation is involved.
-- **`/dev/kvm`** (Linux) usable by your user for the microVM:
-  world-writable on Omarchy, Arch and Fedora. On Debian and Ubuntu a
-  user logged in at the machine's seat gets access through udev, and a
-  user who only comes in over ssh needs the `kvm` group (`sudo usermod
-  -aG kvm $USER`, then log in again) (**you**). Without it, the factory
-  runs on the host (step 6), or in lima over qemu (lima 2.0.1 or newer;
-  see [Backends](vm.md#backends)).
-- **About 30 GB free** under `~/.local/share/ssf/vm` for the VM: on
-  Linux an 8 GB root image plus a copy of it per VM, a 20 GB data disk
-  (sparse, grows with use), the guest kernel and the Firecracker and
-  gvproxy binaries; on macOS a 20 GB root disk and the data disk, both
-  sparse, under `~/.lima`.
-- **A coding agent and a way to pay for it**: a subscription or an API key
-  for the harness you use (Claude Code, Codex, Gemini, Copilot, OpenCode,
-  Pi, Oh My Pi, Grok, Crush). The agent is signed in where it runs, in
-  step 7.
-- **`gh` and `herdr`.** The package depends on the GitHub CLI, 2.40 or
-  newer: `github-cli` on Omarchy and Arch, `gh` on Ubuntu 24.04 and
-  Fedora, all from the distribution's own repositories; Debian 12 ships
-  2.23, too old, so there `gh` comes from [GitHub's apt
-  repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md),
-  added before the package. herdr comes with the package on Omarchy
-  (its repository has it) and, on Arch, from the AUR (`herdr` or
-  `herdr-bin`, installed before the package, which depends on it). The
-  .deb and .rpm do not depend on it, since no apt or dnf package exists:
-  install it by hand, before or after the package, one of
+| Platform | Requirements for the recommended VM setup |
+|----------|-------------------------------------------|
+| Linux x86_64 | Omarchy, Arch, Debian 12+, Ubuntu 24.04+, or Fedora; a systemd user session and usable `/dev/kvm` |
+| macOS | Homebrew, macOS 13.5+, and lima 2.0.1+; Apple silicon and Intel are supported |
 
-  ```sh
-  sudo curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-x86_64 && sudo chmod +x /usr/local/bin/herdr
-  curl -fsSL https://herdr.dev/install.sh | sh     # herdr's own installer, into ~/.local/bin; ssf finds it there
-  ```
+On Linux, check KVM access with `test -r /dev/kvm && test -w /dev/kvm`.
+If access is missing, check the device permissions; on Debian/Ubuntu an
+SSH-only user may need `sudo usermod -aG kvm "$USER"`, followed by a new
+login (**you**). Linux without KVM or on another architecture can use
+[lima with qemu](vm.md#backends); the release packages below are x86_64.
 
-  While it is missing, `ssf doctor` prints ``FAIL herdr driver: CLI
-  `herdr` not found; install it: ...`` with the command for this machine.
-  On macOS the Homebrew formula pulls in `gh` and `lima`, not herdr: in
-  VM mode herdr runs inside the guest, and a Mac needs it on the host
-  only for the host alternative in step 6 or for `herdr --remote`
-  (`brew install herdr`). Orca (`orca-ide-bin`) is only for the host
-  alternative in step 6 and is installed by hand.
-- `ssh` (openssh) is a dependency of every package and of the formula:
-  `ssf auth login` makes the bot's key with `ssh-keygen` and the bot
-  pushes over ssh. The microVM image (Linux) is built with `fakeroot`,
-  `bsdtar` (libarchive), `mkfs.ext4` (e2fsprogs) and `curl`, all present
-  on a stock Omarchy and recommended by the .deb and .rpm, so apt and dnf
-  install them with the package. If `ssf vm build` says one is missing:
-  `sudo pacman -S --needed fakeroot libarchive e2fsprogs curl`, `sudo apt
-  install fakeroot libarchive-tools e2fsprogs curl` or `sudo dnf install
-  fakeroot bsdtar e2fsprogs curl`. On macOS nothing beyond the formula's
-  dependencies.
+Allow roughly 30 GB of initial disk headroom for images and data, plus
+space for repositories and builds. VM disks are sparse and grow with use;
+`ssf vm build` chooses capacity from the machine's available resources.
+See [VM sizing](vm.md#size).
+
+You also need a subscription or API key for a supported coding harness.
+Plan the choice using [step 8](#choosing-the-harness-and-the-model), then sign it in
+where the agents run in step 7.
 
 ## 2. Install the package
 
-The packages come from the latest release on GitHub (the repository's
-Releases page; a `vX.Y.Z` tag builds and attaches them). Download the
-one for this machine and install it (**you**: the package manager asks
-for your sudo password):
+Download the matching package from [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases)
+and run the command for your platform (**you** for sudo):
 
-- **Omarchy**: `ssf-<version>-1-x86_64.pkg.tar.zst`, `sudo pacman -U
-  ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's
-  repositories. Once ssf is in Omarchy's package repository, `sudo
-  pacman -S ssf` instead.
-- **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
-  `herdr` or `herdr-bin` (AUR), which it depends on: `sudo pacman -U
-  ssf-*.pkg.tar.zst`.
-- **Debian 12+, Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
-  install ./ssf_*_amd64.deb` (apt resolves `gh`, `git` and `jq` from the
-  repositories; `dpkg -i` would not). herdr by hand, step 1.
-- **Fedora**: `ssf-<version>-1.x86_64.rpm`, `sudo dnf install
-  ./ssf-*.x86_64.rpm`. herdr by hand, step 1.
+| Platform | Install |
+|----------|---------|
+| Omarchy / Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
+| Debian / Ubuntu | `sudo apt install ./ssf_*_amd64.deb` |
+| Fedora | `sudo dnf install ./ssf-*.x86_64.rpm` |
+| macOS | `brew install mikekelly/ssf/ssf` |
 
-The binary in the .deb and .rpm is static, so one file serves every
-release of the distribution; the release also carries it bare, as
-`ssf-<version>-linux-x86_64`, for anything that is not one of these
-packages.
+Before running the install command, supply any prerequisites the package
+cannot provide:
 
-**What starts when.** The user unit `ssf.service` is enabled for every
-user and started in your session by the install hook, so there is
-nothing to enable. On Omarchy and Arch it starts with the graphical
-(Wayland) session, which the bar widget lives in; the .deb and .rpm
-ship a unit that starts with your systemd user manager at first login
-(`default.target`), display or not. On a machine nobody logs in to, a
-server, `loginctl enable-linger $USER` (**you**: sudo may be needed)
-keeps the user manager, and so the factory, running with no session at
-all; that is the .deb and .rpm unit only, the Arch and Omarchy package's
-unit needs a Wayland login and never runs on a headless machine.
+- **Arch:** install `herdr` or `herdr-bin` from the AUR first. Omarchy's
+  repositories supply herdr.
+- **Debian 12:** install GitHub CLI 2.40+ from [GitHub's apt repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)
+  before ssf; Debian 12's bundled version is too old.
+- **Debian, Ubuntu and Fedora:** herdr is not a package dependency. For
+  host sessions, install it with `curl -fsSL https://herdr.dev/install.sh | sh`.
+  ssf also searches `~/.local/bin`. The VM installs its own herdr.
+- **Linux VM image tools:** if `ssf vm build` reports a missing tool,
+  install `fakeroot`, `curl`, e2fsprogs and libarchive's `bsdtar`:
+  `sudo pacman -S --needed fakeroot libarchive e2fsprogs curl`,
+  `sudo apt install fakeroot libarchive-tools e2fsprogs curl`, or
+  `sudo dnf install fakeroot bsdtar e2fsprogs curl`.
 
-*Arch without a Wayland session* (an X11 desktop, a server reached over
-ssh): the unit's `ConditionEnvironment=WAYLAND_DISPLAY` is never met, so
-give it a drop-in that clears the condition and pull it into
-`default.target`, the way the .deb and .rpm unit starts:
+Homebrew supplies `gh` and `lima`. Host herdr on macOS is optional
+(`brew install herdr`); the VM supplies its own. Orca is installed
+separately if you choose it in step 6.
+
+### Service startup
+
+Linux packages enable `ssf.service` and try to start it in running user
+sessions. It cannot run successfully until the bot is signed in.
+Debian/Fedora units start with the systemd user manager; on a server,
+`loginctl enable-linger "$USER"` keeps it running without a login
+(**you**, if authorization is required).
+
+The Arch/Omarchy unit requires a Wayland session. For X11 or a headless
+host, add this user override:
 
 ```sh
 mkdir -p ~/.config/systemd/user/ssf.service.d
-printf '[Unit]\nConditionEnvironment=\nConditionPathExists=!%%h/.local/state/ssf/disabled\n' > ~/.config/systemd/user/ssf.service.d/no-wayland.conf
-systemctl --user daemon-reload && systemctl --user add-wants default.target ssf.service && systemctl --user start ssf.service
+cat > ~/.config/systemd/user/ssf.service.d/no-wayland.conf <<'EOF'
+[Unit]
+ConditionEnvironment=
+ConditionPathExists=!%h/.local/state/ssf/disabled
+EOF
+systemctl --user daemon-reload
+systemctl --user add-wants default.target ssf.service
+systemctl --user start ssf.service
 ```
 
-An empty `ConditionEnvironment=` resets every condition of the unit, so
-the drop-in puts back the one for the disabled marker, and `ssf ui
-service enable|disable` (the toggle) keeps working. `add-wants` makes the
-symlink under `~/.config/systemd/user/default.target.wants/`, and from
-then on `loginctl enable-linger $USER` applies to this machine too. When
-the hook finds no running session it says so; `systemctl
---user daemon-reload && systemctl --user start ssf.service` starts it
-now.
+Clearing the condition list also clears the disabled-marker condition,
+so the override restores it. Linger can then be used on Arch too.
+Homebrew starts nothing at installation; start its service in step 6.
 
-The package installs `/usr/bin/ssf` (the daemon and management CLI),
-`/usr/bin/ssf-ui` (the helper behind the bar widget and the **Factory**
-menu: service toggle, log, status terminal, open a workspace; installed
-everywhere, useful only with the menu), the user unit above, the bar
-widget under `/usr/share/ssf/omarchy-plugin/` (Omarchy: copied into
-`~/.config/omarchy/plugins/ssf.factory` on the service's first start; it
-shows the state of the factory, and the service toggle is its one
-control), `/usr/share/ssf/SSF.example.md` and `config.example.toml`, the
-microVM scripts under `/usr/share/ssf/vm/`, and this documentation under
-`/usr/share/doc/ssf/`; the same paths on every distribution. Nothing
-else: no config, no state, no account. Off Omarchy there is no widget
-and no menu (`ssf ui install` says `not on Omarchy: no bar widget or
-menu to install`); `ssf ui service enable|disable` works everywhere.
+Config and credentials live in `~/.config/ssf`, state in
+`~/.local/state/ssf`, and VM files in `~/.local/share/ssf/vm` (lima also
+uses `~/.lima`). These paths apply on both platforms. Package examples
+are in `/usr/share/ssf`, or `$(brew --prefix)/share/ssf` on macOS.
 
-**On macOS** the package is a Homebrew formula in the tap
-`mikekelly/homebrew-ssf` (**you**: Homebrew is yours to install first,
-from `https://brew.sh`):
+**Check:** run `ssf doctor`. Before setup is complete, failures for the
+bot, service, driver, repositories and agent command links are expected.
+Resolve unreadable config or a missing GitHub CLI / ssf binary now. A
+missing host herdr is expected if you will use the VM.
 
-```sh
-brew install mikekelly/ssf/ssf
-```
-
-It builds `ssf` from the release tarball and installs `ssf` under
-`$(brew --prefix)/bin`, the VM scripts under `$(brew --prefix)/share/ssf/vm`
-(with `config.example.toml` and `SSF.example.md` next to them), this
-documentation under `$(brew --prefix)/share/doc/ssf`, and a `brew
-services` definition that runs `ssf run` under launchd with its log at
-`$(brew --prefix)/var/log/ssf.log`. It pulls in `gh` and `lima` as
-dependencies. No `ssf-ui`, no widget, no menu (Omarchy only), and no
-herdr: on a Mac the factory runs in the lima VM, where the guest installs
-herdr for itself; `brew install herdr` is only for the host alternative
-in step 6 or for `herdr --remote`. Nothing is started at install; the
-service is started in step 6, once there is a bot to run as. The paths
-are the same as on Linux: `~/.config/ssf` for the config and keys,
-`~/.local/share/ssf` for the VM's files, `~/.local/state/ssf` for the
-state, not `~/Library`, so one path holds everywhere in this
-documentation and in the guest, the same way `gh` and the harness CLIs
-keep their dotfiles.
-
-Check:
-
-```
-$ systemctl --user status ssf.service | head -3     # macOS: brew services info ssf
-$ ssf doctor
-ok   config readable at /home/you/.config/ssf/config.toml
-FAIL no bot account signed in; run `ssf auth login`
-ok   herdr driver: CLI at herdr
-FAIL herdr: herdr is not answering (is a herdr session running?): ...
-note the daemon is not answering (`ssf sub|unsub|tell` need it): ...
-FAIL 0 repositories configured
-ok   GitHub CLI at /usr/bin/gh
-FAIL gh and ssf links in /home/you/.config/ssf/bin not installed yet (ssf launch creates them when an agent starts)
-ok   ssf on PATH at /usr/bin/ssf is this binary
-ok   every post by the bot carried an origin tag
-FAIL ssf.service running
-note firecracker backend: /dev/kvm usable; [vm] enabled is false, so nothing here needs it until you turn the VM on
-ok   bar widget enabled in ~/.config/omarchy/shell.json
-ok   new clones go under /home/you/ssf/projects
-Error: 5 problem(s) found
-```
-
-That is Omarchy. Elsewhere the widget line is a note, and until herdr is
-installed (step 1) its line fails, naming the command for this machine:
-
-```
-FAIL herdr driver: CLI `herdr` not found; install it: sudo curl -fsSL -o /usr/local/bin/herdr https://github.com/herdrdev/herdr/releases/latest/download/herdr-linux-x86_64 && sudo chmod +x /usr/local/bin/herdr
-note bar widget: not on Omarchy, nothing to enable
-```
-
-Every other `FAIL` is expected: there is no bot yet, so the service
-cannot start (it exits and systemd retries it every 15 s until step 4),
-no herdr session is running on the host (none is needed once the factory
-is in the VM), no repository is watched, and the links are made when the
-first agent starts. What has to be `ok` now is the config line, the
-`herdr driver: CLI` line, the GitHub CLI, `ssf on PATH` and, on Omarchy,
-the bar widget. The `note ... backend:` line is not a check but a
-statement of what this machine has for the VM backend it would use, and
-`ssf doctor` prints it on every host (inside the guest it is left out,
-since the guest runs no VM of its own); while `[vm] enabled` is still
-false it ends by saying so. Logs, at any point: `journalctl --user -fu
-ssf.service`.
-
-On a Mac the same output differs in five lines, none of them a problem:
-the `herdr driver: CLI` line fails too until step 6 (no herdr on the
-host; the guest brings its own), the `ssf on PATH` line names
-`/opt/homebrew/bin/ssf` (or `/usr/local/bin/ssf` on Intel), the service
-line names the launchd service rather than the systemd one and reads
-`FAIL the ssf Homebrew service running` (`ssf doctor` checks it with
-`launchctl`), failing until step 6 starts it, the backend line is `note
-lima backend: limactl at /opt/homebrew/bin/limactl; ...` because lima is
-the backend there and `brew` installed `limactl` alongside ssf, and the
-widget line is the `note bar widget: not on Omarchy, nothing to enable`
-above rather than a check, since that check runs on Omarchy only. Logs,
-at any point: `tail -f $(brew --prefix)/var/log/ssf.log`.
+Logs: `journalctl --user -fu ssf.service` on Linux;
+`tail -f "$(brew --prefix)/var/log/ssf.log"` on macOS.
 
 ## 3. Create the bot account
 
@@ -253,10 +125,9 @@ the VM), so the account only limits what `gh` does by default.
 | | An individual | An organisation |
 |---|---|---|
 | Account | a fresh personal account, `<you>-bot` | a *machine user*: a fresh personal account owned by the organisation (`<org>-bot`), signed up with an address the organisation controls |
-| Terms | GitHub allows one free machine account next to a personal one | the same; one machine user can serve every repository |
 | Access | added as a collaborator with **Write** on each watched repository | made an organisation member (a team with **Write** on the repositories, or per-repository) or an outside collaborator with **Write** on each |
 | Boards | a collaborator on your projects | access to the organisation's projects (project **Settings → Manage access**), or the team's |
-| Organisation settings | none | if the organisation restricts OAuth apps, an owner approves **GitHub CLI** (the browser sign-in in step 4 is an OAuth token from gh's app); if it restricts classic personal access tokens, allow them; with SAML SSO, the token and the bot's SSH key have to be authorised for the organisation |
+| Organisation settings | none | if the organisation restricts OAuth apps, an owner approves **GitHub CLI** (the browser sign-in in step 4 is an OAuth token from gh's app); if using a classic personal access token, check that organisation policy permits it; with SAML SSO, the token and the bot's SSH key have to be authorised for the organisation |
 
 **3a. Create the account** (**you**). In a private browser window, sign
 up at `https://github.com/signup` with a separate email address
@@ -324,27 +195,9 @@ retry now that there is a token (on a Mac it is not started until step
 account before the daemon first starts, then the account the daemon last
 authenticated as. Removing the credential makes status report not signed in.
 
-Check:
-
-```
-$ ssf auth status
-Bot account: @acme-bot (User, id 12345678), token from gh keyring
-Bot commit identity: acme-bot <12345678+acme-bot@users.noreply.github.com>
-SSH key: /home/you/.config/ssf/keys/acme-bot_ed25519 (auth key id 1234, signing key id 567)
-$ ssf doctor
-ok   config readable at /home/you/.config/ssf/config.toml
-ok   GitHub token belongs to @acme-bot
-ok   bot SSH key /home/you/.config/ssf/keys/acme-bot_ed25519
-ok   herdr driver: CLI at herdr
-FAIL herdr: herdr is not answering (is a herdr session running?): ...
-ok   daemon answering on /run/user/1000/ssf-....sock as @acme-bot
-FAIL 0 repositories configured
-...
-```
-
-Two failures left, both expected: no herdr session on the host (step 6
-moves the factory into the VM, where herdr runs on its own) and no
-repository (step 8).
+**Check:** `ssf auth status` must name the bot and its commit identity.
+Run `ssf doctor` to check the token and enrolled key. Driver, repository
+and agent-link failures can remain until the following steps.
 
 **Alternative: commits under your own name.** By default the commits
 are the bot's too (`acme-bot <id+acme-bot@users.noreply.github.com>`,
@@ -399,110 +252,42 @@ factory](configuration.md#who-may-drive-the-factory).
 
 ## 6. Where the agents run: the VM, or the host
 
-**Decide: the VM (default), or the host.** On the host the agents
-run as your Unix user and can read your home directory, keyring and SSH
-agent. `ssf vm` moves the daemon, herdr and every agent session into a
-VM (a Firecracker microVM on Linux, a lima instance on macOS); the host
-keeps only what builds, starts and reaches the guest. Inside, the driver
-is always herdr (Orca is a desktop app), so a repository that says `orca`
-runs in herdr there. Sessions run as the guest's `ssf` user, which has
-passwordless `sudo` for everything: an agent there installs packages,
-edits units and reboots the guest as it likes, and its first prompt says
-so. The VM is the boundary; `ssf vm reset` or `ssf vm destroy` undoes
-whatever it did. Take the host path when you want to watch the agents in
-Orca, or a Linux machine has no `/dev/kvm` or is not x86_64 (lima over
-qemu is the other way out there; see [Backends](vm.md#backends)).
-
 ### The VM (default)
 
-Nothing here needs you at the keyboard, and nothing needs root.
+The VM runs its own daemon and herdr. Sessions run as the guest's `ssf`
+user with passwordless sudo; the VM is the isolation boundary.
+Per-repository Orca settings are ignored inside it.
 
 ```sh
-ssf vm build                 # once, a few minutes: makes and provisions the guest (Linux: downloads Firecracker, gvproxy and a kernel, makes the image; macOS: creates the lima instance and boots it once)
+ssf vm build
 ssf config set vm.enabled true
-systemctl --user restart ssf.service   # the service starts the VM and owns it from now on; macOS: brew services start ssf
 ```
 
-`ssf vm build` starts by settling the backend (`firecracker` on Linux,
-`lima` on macOS, written to `config.toml` as `vm.backend` so the VM
-keeps it) and sizing the VM from this machine, writing the sizes to
-`config.toml` under `[vm]`: `vcpus` (the CPUs minus one, at least 2),
-`mem_mib` (half the RAM, at least 4096) and `data_gib` (half the free
-space of the filesystem the data disk will land on, at least 20; the
-disk is sparse, so this reserves nothing). Which filesystem that is
-depends on the backend: `vm.dir` under Firecracker, and under lima the
-directory lima keeps its own disks in (`$LIMA_HOME/_disks`, by default
-`~/.lima/_disks`), which can be another volume. The line it prints names
-the path it measured:
+Then start the service:
 
-```
-VM backend: firecracker (for this machine)
-this machine: 8 CPUs, 32768 MiB RAM, 500 GiB free on /home (measured at /home/you/.local/share/ssf/vm, [vm] dir)
-VM size: 7 vCPUs (from this machine), 16384 MiB RAM (from this machine), 250 GiB data disk (from this machine; sparse, so it takes host space only as the guest writes)
-written to /home/you/.config/ssf/config.toml under [vm] (backend, vcpus, mem_mib, data_gib); edit them there. The data disk itself is made once and only enlarged by `ssf vm grow`
+```sh
+systemctl --user restart ssf.service   # Linux
+# macOS: brew services start ssf
 ```
 
-On a Mac, where the backend is lima, that line ends `(measured at
-/Users/you/.lima/_disks, lima's disk directory)` instead, and the free
-space it reports is the one lima's disks draw on. The guest's `ssf`
-binary there is the release asset for the installed version
-(`ssf-<version>-linux-<arch>`), fetched once with `gh release download`,
-and the guest downloads herdr's Linux release while it
-provisions itself; the guest OS is Arch on Intel and Ubuntu LTS on Apple
-silicon. `ssf vm build` ends with the instance stopped (`built lima
-instance ssf-default; ssf vm start boots it`); the service start above
-boots it. What differs under lima, key by key and command by command, is
-in [Backends](vm.md#backends).
+The service owns the VM from now on. If you previously disabled ssf with
+`ssf ui service disable`, use `ssf ui service enable` to clear that state.
 
-A value already in `[vm]` is kept, and `--vcpus`, `--mem-mib` and
-`--data-gib` write a value of your own. Rule of thumb per parallel
-session: about one vCPU and 2 GiB of RAM per active session, plus one
-clone per repository and a build tree per worktree on the data disk;
-`ssf vm grow` enlarges the data disk later without losing anything (see
-[Size](vm.md#size)).
+`ssf vm build` selects the platform's backend, sizes the VM, and records
+those choices in `[vm]`. Existing sizes are preserved; use `--vcpus`,
+`--mem-mib` or `--data-gib` for an explicit allocation. Read the printed
+sizes and harness installation results. A failed harness installation
+needs attention before you can sign it in. See [Backends](vm.md#backends)
+and [Size](vm.md#size) for alternatives and disk growth.
 
-`ssf vm build` prints, at the end, one line per harness it could install
-in the guest (whatever npm or a release tarball provide; best effort)
-with its version or the failure; make sure yours is on it. Check:
+**Check:** `ssf vm status` should report a running VM, working SSH and an
+active daemon. `ssf doctor` now runs in the guest: its paths are guest
+paths, and herdr should be reachable. Repository and agent-link failures
+can remain. Use `ssf vm status` to diagnose host VM tooling and
+`ssf vm logs` for the guest daemon's log.
 
-```
-$ ssf vm status
-vm:       default (/home/you/.local/share/ssf/vm/default)
-backend:  firecracker
-tooling:  /dev/kvm usable
-image:    built
-state:    running (firecracker pid 12345)
-ssh:      127.0.0.1:2222 answers
-daemon:   active
-size:     7 vCPUs, 16384 MiB; data disk 250 GiB, 0.4 of 250 GiB used (0%)
-logins:   claude not logged in
-$ ssf doctor
-ok   config readable at /home/ssf/.config/ssf/config.toml
-ok   GitHub token belongs to @acme-bot
-ok   bot SSH key /home/ssf/.config/ssf/keys/acme-bot_ed25519
-ok   herdr driver: CLI at herdr
-ok   herdr reachable and ready
-ok   daemon answering on /run/user/1000/ssf-....sock as @acme-bot
-FAIL 0 repositories configured
-...
-```
-
-On a Mac the `backend:` line says `lima`, `tooling:` says where lima is
-(`limactl at /opt/homebrew/bin/limactl`), the `image:` line is
-`instance: ssf-default (/Users/you/.lima/ssf-default)` and `state:` is
-`running` without a pid; the rest is the same. The `tooling:` line is
-the host's own, so it is where you see a missing `limactl` or, on a
-Linux lima host, a missing `qemu-system-<arch>`; `ssf doctor` does not
-answer that question here, because with the VM enabled it runs inside
-the guest. `ssf doctor`, `status`, `peers`, `tell`, `sub`, `release`
-and `purge` now run inside the guest
-(the paths in their output are the guest's, and its service line is the
-guest's systemd unit on either host OS), and the herdr line is `ok`: the
-guest runs its own herdr session. The one failure left is the repository
-(step 8). The sizes and `ssf vm grow`, the port (`vm.ssh_port`), what
-gets into the guest and what persists, reaching it (`ssf vm attach`,
-`ssf vm ssh`, `ssf vm logs`), and changing the image are in [Inside a
-VM](vm.md).
+See [Inside a VM](vm.md) for shared files, persistence, attaching to
+herdr, SSH access, rebuilding and resetting.
 
 ### Alternative: on the host, in herdr or in Orca
 
@@ -524,8 +309,8 @@ per-repository driver is ignored in the VM.
   `/usr/lib/orca-ide/bin/orca-ide` (the CLI; `/usr/bin/orca-ide` launches
   the app, so do not point at that).
 
-On the host the agent's permission-free command (step 8, `command`) is
-the whole of its sandbox. Check: `ssf doctor` says `herdr reachable and
+On the host, the default launch commands bypass harness permission prompts;
+ssf adds no isolation boundary. Check: `ssf doctor` says `herdr reachable and
 ready` (or `orca reachable and ready`). Details: [Drivers](drivers.md).
 
 ## 7. Sign in the harness where the agents run
@@ -563,263 +348,92 @@ blocks the session; the fix is the same command again (step 10).
 
 ## 8. Watch a repository
 
-One `[[repo]]` per watched repository in `~/.config/ssf/config.toml`;
-`ssf repo add` writes it, and the CLI validates harness, model and effort
-ids, so prefer it to editing the file. The bot needs Write on the
-repository (step 3b). `ssf agents` lists the harness ids and which are
-installed.
+Choose the harness and model below, then add the repository using the IDs
+reported for your installation:
 
 ```sh
-ssf repo add acme/widgets --harness claude --model fable --effort medium
+ssf repo add OWNER/NAME --harness HARNESS --model MODEL --effort EFFORT
 ssf repo list --json
 ```
 
-The model and effort are optional and worth choosing rather than
-leaving: [Choosing the harness and the
-model](#choosing-the-harness-and-the-model), below, is how.
+Replace the uppercase placeholders; omit `--effort` for a harness that
+has no effort setting. `model` is optional too. The bot needs Write
+access, and the harness must be installed and signed in where it runs.
 
-Decisions, per repository:
-
-- **`harness`** (required): the agent program signed in in step 7.
-- **`model`, `effort`**: optional, and worth setting. Claude, Codex,
-  Gemini and Grok take Orca's model ids (`opus`, `sonnet`, `gpt-5.5`,
-  ...); Pi, Oh My Pi and OpenCode take their own `provider/model` ids,
-  and Copilot `auto` or a model name. Not every harness has effort
-  levels: Gemini and OpenCode have none, and Crush takes neither (ssf
-  refuses a model for it), so an `--effort` they do not accept is
-  refused when the config loads. `ssf models <harness>` prints the model
-  ids and `ssf agents --json` the effort levels each one takes. Changing
-  the harness resets both. Left unset, the session runs on whatever the
-  harness defaults to, which was chosen for a person at a keyboard
-  rather than for an unattended factory: [Choosing the harness and the
-  model](#choosing-the-harness-and-the-model) below is how to decide,
-  and [Models and effort
-  levels](configuration.md#models-and-effort-levels) is the reference.
-- **`command`**: unless set, every harness starts with its
-  permission-free command (`ssf agents --json` shows it as
-  `launch_command`, e.g. `claude --dangerously-skip-permissions
-  --disallowedTools AskUserQuestion`), because nobody sits at the terminal
-  to approve anything and an agent that asks waits forever. In the VM
-  that is fine: the VM is the wall. On the host it is the whole of the
-  agent's sandbox, so decide whether that is acceptable, or set a
-  permission mode or tool deny list in the agent's own syntax (`ssf repo
-  set acme/widgets --command "..."`; `--clear command` to go back). See
-  [Permissions](configuration.md#permissions). Behavioural limits (do not
-  merge, do not close issues) go in `SSF.md` (step 9), not here.
-- **`driver`**: only when this repository should run in a different
-  driver than the default (host only).
-- **`path`**: an existing checkout instead of a clone (host only; the
-  guest clones for itself). **`clone_url`**: an SSH URL for private
-  repositories (the bot's enrolled key is used). **`base_branch`** for
-  issue worktrees.
-- **`instructions`**: a line or two appended to this repository's initial
-  prompts; anything longer belongs in `SSF.md`.
-
-`[daemon]` keys worth a look (`ssf config set daemon.<key> <value>`):
-
-| Key | Default | Decide |
-|-----|---------|--------|
-| `poll_interval_secs` | `10` | Unchanged listings cost nothing against the rate limit, so the default is fine; raise it on a busy token |
-| `instructions` | | House rules for every repository this daemon watches; per-repository ones go in `SSF.md` |
-| `resume_on_start` | `true` | Bring interrupted sessions back after a reboot; `startup_driver_wait_secs` (`120`) is how long to wait for the driver first |
-| `allowed_users` | the collaborators with Write | Step 5 |
-| `event_comments` | `true` | The daemon posts a short `ssf` block on an issue when it attaches a session to it, brings one back, holds it for a sign-in, gives up on it or releases its workspace; `false` (or `ssf repo set <owner/name> --event-comments false`) if the timeline should hold only what agents and people write |
-
-Every key, with its default: [Configuration](configuration.md);
-`/usr/share/ssf/config.example.toml` (macOS:
-`$(brew --prefix)/share/ssf/config.example.toml`) has each with a
-comment. Changes are picked up on the next poll; no restart needed.
-Check:
-
-```
-$ ssf doctor
-ok   config readable at /home/ssf/.config/ssf/config.toml
-ok   GitHub token belongs to @acme-bot
-ok   bot SSH key /home/ssf/.config/ssf/keys/acme-bot_ed25519
-ok   herdr driver: CLI at herdr
-ok   herdr reachable and ready
-ok   Claude Code signed in inside the VM (claude auth status: signed in (claude.ai))
-ok   daemon answering on /run/user/1000/ssf-....sock as @acme-bot
-ok   1 repository configured
-ok   acme/widgets: allowed users: @ann, @acme-bot (collaborators with push access)
-ok   acme/widgets: harness `claude` installed
-ok   acme/widgets: no checkout yet (the first session clones it under /var/lib/ssf/projects)
-ok   acme/widgets: commits as acme-bot <12345678+acme-bot@users.noreply.github.com> (the bot), signed with /home/ssf/.config/ssf/keys/acme-bot_ed25519, pushes as @acme-bot (the bot)
-ok   acme/widgets: signing key /home/ssf/.config/ssf/keys/acme-bot_ed25519 present
-ok   GitHub CLI at /usr/bin/gh
-FAIL gh and ssf links in /home/ssf/.config/ssf/bin not installed yet (ssf launch creates them when an agent starts)
-ok   ssf on PATH at /usr/bin/ssf is this binary
-ok   every post by the bot carried an origin tag
-ok   ssf.service running
-note bar widget: checked on the host, not inside the VM
-ok   new clones go under /var/lib/ssf/projects
-Error: 1 problem(s) found
-$ ssf status
-bot:     acme-bot
-service: running
-polled:  2026-09-07T10:12:03Z
-driver:  0 workspaces
-config:  /home/ssf/.config/ssf/config.toml
-```
-
-The links line clears itself when the first agent starts. Everything
-else `ok` means the chain is complete: token, key, driver, harness signed
-in where the agents run, the repository and who commits on it.
+Use `ssf repo set OWNER/NAME` with the same options to change settings.
+Changing the harness clears the previous model and effort. Changes apply
+to the next started or resumed session; an already running session keeps
+its selection. A [per-item handover](configuration.md#per-item-overrides)
+takes precedence until that item's workspace is released.
 
 ### Choosing the harness and the model
 
-`model` and `effort` are worth a deliberate choice rather than the
-harness's defaults, and so, before them, is the harness itself. A
-factory is not one person at a keyboard: it runs sessions unattended,
-several at once, for as long as there are issues, and every one of them
-spends a subscription or a bill. The question to answer per repository
-is how much intelligence you can buy for what a task there costs — a
-repository of small, well-specified changes and one of design work do
-not want the same answer.
-
-If you are a coding agent following this document, this is yours to
-raise rather than the person's to remember. Work the choice out, propose
-it with the reasoning, and let them decide what to spend.
-
-**What you can actually run.** In the VM, `ssf vm status`'s `logins:`
-line names the harnesses installed in the guest and says which are
-signed in; it needs the VM running, and prints nothing at all when the
-guest cannot be reached. `ssf agents` and `ssf models` are not forwarded
-into the VM, so on the host they answer for the host; `ssf vm run --
-agents` and `ssf vm run -- models <harness>` ask the guest, which is the
-answer that matters — and for `pi`, `omp` and `opencode` it is the only
-one that works, since ssf gets their lists by running the binary itself,
-and the binary is in the guest. (With the factory on the host, both
-commands already ask the right machine.) What the machine cannot tell
-you, ask: which subscriptions or plans are already paid for and can be
-signed in as in step 7, whether there are API keys and whether metered
-spend is acceptable, and what the factory must not exhaust — a plan
-shared with the person's own interactive use will be. What is already
-paid for and what is metered are constrained differently — a plan by its
-allowance, a key by the bill — and neither
-is free at the margin; which one you are on changes how to read the
-chart below.
-
-Harnesses differ in what they can reach. `claude`, `codex`, `gemini` and
-`grok` take Orca's model ids for their own vendor's models; `copilot`
-takes `auto` or a model name; `pi`, `omp` and `opencode` take a
-`provider/model` id and so reach whatever their providers carry,
-OpenRouter among them, much the widest choice; and `crush` has no model
-flag for its terminal interface, so ssf refuses a `model` for it and
-whatever choice it offers is made in its own configuration instead.
-Effort levels are not universal either: Gemini and OpenCode have none.
-See [Models and effort
-levels](configuration.md#models-and-effort-levels).
-
-**Which model.** Do not answer this from memory: your training data is
-older than the models you can run today, and prices move. Look it up.
-Artificial Analysis publishes the chart that answers it directly —
-[Intelligence Index vs. Cost per Intelligence Index
-Task](https://artificialanalysis.ai/models#intelligence-comparison-tabs) —
-plotting each model's Artificial Analysis Intelligence Index against the
-weighted cost of one Index task on it, with a Pareto line through the
-models nothing else beats on both counts. Read that frontier, filtered
-to the models your harnesses can reach, and compare cost per task rather
-than price per token: what a task costs is the price per token times the
-tokens spent getting to the answer, and those two pull against each
-other. Effort level is part of the same choice, not a detail after it —
-the chart plots a model's reasoning levels as separate points because
-they land in different places on it.
-
-It is an interactive chart, so fetching the page may give you its frame
-and not its numbers. If you cannot read it, say so rather than falling
-back on memory: ask the person to open it and tell you where the models
-in question sit, or leave `model` and `effort` unset with a note of what
-you would have looked up. A guess dressed up as a recommendation is
-worse than the default.
-
-The chart's cost axis is an API price, and the default path here is a
-subscription, where the binding constraint is not the bill but the
-plan: how much of it a session eats and how soon the factory is rate
-limited out of the day, sharing the allowance with the person's own
-interactive use. The intelligence axis still ranks the models; the cost
-axis becomes how much of the plan a task spends, which the chart cannot
-tell you and the person can — ask what the plan allows and what it must
-leave them. On a subscription, a cheaper model on the tier that spends
-most of the tokens buys hours of factory rather than pennies. Where
-spend is metered, read the chart's cost axis as it stands.
-
-**Three tiers.** A session is an orchestrator: it reads the item, plans,
-delegates to subagents and reviews what comes back (that is what
-`SSF.md` tells it to do, step 9). So there are three model choices to
-make, and ssf makes only the first.
-
-| Tier | What runs there | Where it is set |
-|------|-----------------|-----------------|
-| The session | Reading the item, planning, delegating, reviewing, writing on GitHub; the only context that sees the whole item | `repo.model` and `repo.effort`, which ssf appends to the harness's command |
-| Subagents that think | Planning, diagnosis, the gauntlet | The harness's own configuration, and what `SSF.md` tells the session to spawn them on |
-| Subagents that do the work | Implementing a planned change, tests, mechanical edits — most of the tokens spent | The same |
-
-ssf starts one session per item, so `repo.model` and `repo.effort` are
-that session's. What that session spawns underneath itself is between it
-and its harness, and harnesses differ: on some a subagent inherits the
-session's model unless the session or an agent definition names another,
-so leaving the last two rows unsaid does not make them cheap — it makes
-them the session's model. Read how the harness picks a subagent's model
-before you fix the session's, and write what you want into the
-repository's `SSF.md` (step 9), bearing in mind what that line is: a
-rule in a prompt, not configuration. It works where the harness lets a
-session choose a model as it spawns one, and it is advice a session can
-get wrong.
-
-**An example**, the maintainer's, from the chart in September 2026 — the
-shape the answer takes, not ids to copy:
-
-- **Claude Code** — Fable 5.1 at `medium` for the session and for the
-  thinking subagents, Opus 5 at `medium` for the work.
-- **Codex** — GPT-6 Astra at `low` for the session and the thinking
-  subagents, GPT-5.6 Luna at `xhigh` for the work.
-- **Oh My Pi** — GLM-5.3-Flash for the session and the thinking
-  subagents, DeepSeek V4 Pro at `max` for the work.
-
-What the three have in common is the split, not a ranking: one model for
-the two tiers whose tokens are few and whose mistakes are expensive, and
-another for the tier that spends most of them, which wants the most work
-per unit of cost and can be run at a high effort level to get it. Which
-model belongs on which side, and at what effort, is the chart's answer
-rather than a rule of thumb — in one row above the session runs on a
-small fast model and in another on a frontier one.
-
-Writing it down, with the session's model in the same command that adds
-the repository (`ssf repo set <owner/name> --model <id> --effort
-<level>` changes it later, and `--clear model --clear effort` puts it
-back to the harness's own defaults):
+Ask which subscriptions or API keys are available, what metered spending
+is acceptable, and how much allowance must remain for interactive use.
+Check the actual installation before proposing a model:
 
 ```sh
-ssf repo add acme/widgets --harness claude --model fable --effort medium
+# Factory in the VM:
+ssf vm status
+ssf vm run -- agents
+ssf vm run -- models HARNESS
+ssf vm run -- agents --json
+
+# Factory on the host:
+ssf agents
+ssf models HARNESS
+ssf agents --json
 ```
 
-`fable` there is the family alias Claude Code takes; ids are passed
-through as given, so where you want the exact model the chart names
-rather than whichever the family currently points at, pass its full id,
-and a model newer than ssf's catalogue works as long as the harness
-knows it (`ssf models <harness>` lists what it knows of, asking the
-harness itself where it has to). An effort level the harness does not
-accept is refused when the config loads. Keep both out of
-`repo.command`: ssf appends the harness's own model and effort flags to
-whatever `command` is, so a `command` that names a model itself leaves
-the agent with the flag twice and which one it honours is its own
-business.
+`ssf agents` and `ssf models` are not automatically forwarded into the VM.
+The guest commands matter especially for Pi, Oh My Pi and OpenCode,
+whose model lists come from the installed harness. The JSON agent list
+includes supported effort levels and launch commands.
 
-A change applies to the next session started on the repository, a
-resumed one included, and an item already running keeps what it started
-with until then. The exception is an item that has been handed over: a
-handover's model and effort are kept on the item and win over the
-repository's until its workspace is released (see [Per-item
-overrides](configuration.md#per-item-overrides)). `ssf handover` is also
-how one item is moved on its own, but it is not a flag change: it needs
-a `--harness` and a summary, and it ends the session that is there on
-the daemon's next pass and starts a new one, which reads the item and
-the summary rather than the conversation it replaces.
+Use current provider documentation for availability, pricing and plan
+limits. [Artificial Analysis](https://artificialanalysis.ai/models)
+can supplement this with capability and cost-per-task comparisons;
+API costs do not measure consumption of a subscription allowance. If you
+cannot verify a recommendation, say what remains unknown and let the
+person choose, or leave model and effort unset explicitly.
 
-Come back to the choice when a harness ships a new model, when sessions
-start needing more correction, or when the bill or the rate limit moves:
-the chart is different every few weeks.
+ssf selects the main session's model and effort. Optional subagents are
+configured by the harness or requested through `SSF.md`; they may inherit
+the session's model. Delegate only when an independent task benefits from
+it, and check the harness's model-selection rules before budgeting for
+subagents. There is no required three-tier agent hierarchy.
+
+Keep model and effort out of `repo.command`: ssf appends those flags
+itself. Use `--clear model --clear effort` to restore harness defaults.
+Unknown model IDs are passed through to the harness, rather than checked
+against a fixed catalogue. See [Models and effort levels](configuration.md#models-and-effort-levels)
+for IDs, aliases and harness-specific restrictions.
+
+### Other repository settings
+
+- **`command`:** defaults to a launch command that bypasses permission
+  prompts, because terminals are unattended. See `ssf agents --json`
+  and [Permissions](configuration.md#permissions) before changing it;
+  an interactive approval prompt can leave a session waiting indefinitely.
+- **`driver`:** overrides herdr/Orca for one repository on the host.
+- **`path`:** uses an existing host checkout; the VM clones for itself.
+- **`clone_url`, `base_branch`:** override the clone URL and issue
+  worktree base. SSH uses the bot's enrolled key; HTTPS uses a token.
+- **`instructions`:** short additions to initial prompts. Put project
+  working rules in `SSF.md`.
+
+`ssf repo add` writes `[[repo]]` entries in `~/.config/ssf/config.toml`.
+Prefer the CLI for validation. For factory-wide settings, use
+`ssf config set daemon.<key> <value>`; see [Configuration](configuration.md)
+for polling, startup, instructions and event comments. Repository and
+ordinary daemon settings are picked up on the next poll; changing VM or
+service setup can require a restart as described above.
+
+**Check:** `ssf doctor` should confirm the bot, driver, harness login,
+repository access, allowed users, and commit identity. A missing checkout
+is normal before the first issue. The `gh` and `ssf` command links are
+created when the first agent starts, so that failure can remain until
+step 10.
 
 ## 9. Project notes and boards
 
@@ -870,8 +484,8 @@ GitHub (@mentioning it, or a review request, works too).
   the check that the whole chain works. `ssf peers` shows the session and
   what it is doing.
 - **Then a pull request**, from the issue's branch, `Closes #N` in its
-  description, and a comment on the issue with the link and what the
-  gauntlet found. Read it, answer or merge as you would for a colleague,
+  description, and a comment on the issue with the link and the
+  validation results. Read it, answer or merge as you would for a colleague,
   and close the issue when it is done; the agent pushes
   what is left, comments once more and gives its workspace back with
   `ssf release`.
@@ -936,144 +550,53 @@ upgrade should look as it did before.
 
 ## 12. Stopping and uninstalling
 
-**Stopping.** `ssf ui service disable` (the same as the bar widget's
-toggle) stops the service and keeps it from starting at the next login;
-`enable` turns it back on. It holds on both platforms, by different
-means: it writes `~/.local/state/ssf/disabled` either way, and then on
-Linux runs `systemctl --user stop ssf.service` -- the marker is what
-keeps the next login from starting it, through the unit's
-`ConditionPathExists` -- and on macOS runs `brew services stop ssf`,
-which unloads the launchd agent until `brew services start ssf`. By hand,
-`systemctl --user stop ssf.service` stops it only until the next login,
-while `brew services stop ssf` does hold; what it does not do is leave
-the marker, so `ssf doctor` and the bar widget report the daemon as
-merely not running rather than as disabled. Running agents are
-left where they are: nothing reaches them while the daemon is down, and
-it delivers what they missed when it comes back. With the factory in the
-VM, stopping the service shuts the guest down cleanly and its sessions
-come back with it.
+### Stop or restart later
 
-**Uninstalling** is one command and one step for you:
+`ssf ui service disable` stops the service and keeps it stopped across
+logins. `ssf ui service enable` enables it again. Both work on Linux and
+macOS, including machines without the Omarchy widget.
 
-1. `ssf uninstall`: reports what it will stop, remove and revoke, lists
-   the items and the state of their workspaces, and asks once. Then, in
-   the order the pieces depend on each other: `purge` of the clean and
-   pushed workspaces of closed items (needs the running daemon; skipped
-   when it is down), `ui service disable` (with `vm.enabled` that shuts
-   the guest down; on macOS this is `brew services stop ssf`), `ui
-   uninstall` (the bar widget and menu, Omarchy only), `auth logout`
-   (revokes the bot's keys on GitHub and forgets it), `vm destroy`
-   (under the lima backend the lima instance `ssf-default` and its disk
-   `ssf-default` too, on whichever OS you run it; whether there is a VM
-   at all is a question for the backend rather than for `[vm] dir`, so
-   an instance whose directory has been removed by hand, or whose `[vm]
-   dir` has since been changed, is still found and destroyed, and a data
-   disk that outlived its instance is too). Where lima itself will not
-   answer -- `limactl` moved by an upgrade, off the PATH the service
-   runs under, a stale `[vm] limactl` -- what settles it is whether
-   `[vm] dir` or lima's home still holds the instance or the disk, so a
-   machine with nothing of either on it gets a plain `no VM` and one
-   that still has a disk of workspaces is never told it has none. Each
-   step tolerates the thing being gone already, so a second run, or a
-   run on a half-uninstalled machine, is fine. With the factory in the
-   VM the report and the purge come from the guest, before it goes. The
-   one step that can end the run early is `ui service disable`:
-   everything after it destroys something, and none of it may happen
-   while the daemon might still be working, so a service that would not
-   stop leaves the machine as it was and tells you to stop it by hand
-   (`systemctl --user stop ssf.service`, or `brew services stop ssf`)
-   and run `ssf uninstall` again.
-2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`
-   (**you**: sudo; nothing in ssf runs it); on macOS `brew uninstall
-   ssf`, then `brew untap mikekelly/ssf` (`gh` and `lima` stay unless
-   you `brew uninstall` them). The command prints the one for this
-   machine last.
+Host agent terminals survive a daemon stop; activity is delivered when
+the daemon returns. In VM mode, stopping the host service shuts down the
+guest too, and interrupted sessions resume when it starts again.
 
-What stops it: a workspace with uncommitted or unpushed work (an open
-item's too), one that cannot be checked (no origin, a git error), or a
-VM with a data disk whose clones cannot be checked -- it is stopped, it
-gives no report, the disk outlived the instance that mounted it, `[vm]
-enabled = false` means ssf never asks its guest, or lima would not say
-whether it is running or whether that disk is there. Only a data disk
-stops it: what `[vm] dir` holds without one is ssf's own template, ssh
-key and share, and goes without a word. Push or discard the work
-(`ssf vm start` to check a stopped VM; the message says what to do in
-each of the other cases, and it is never `ssf vm start`), or pass
-`--force` to go ahead: on the host the work stays where it is; in the VM
-the clones live on its data disk and are destroyed with it, checked or
-not. `--yes` skips the question for scripted use.
+### Uninstall
 
-`[vm] dir` is shared by the two backends, and `data.ext4` is
-Firecracker's name for its disk. If you switch `[vm] backend` from
-`firecracker` to `lima` and keep `[vm] name`, the Firecracker VM's
-clones and worktrees stay in `<[vm] dir>/<name>` -- where lima knows
-nothing of them and the destroy would remove the directory with them in
-it. A healthy lima guest reports a clean machine, because that disk is
-on nothing lima mounted, so this is checked on the host: `ssf uninstall`
-refuses, names the file, and says to put `[vm] backend` back to
-`firecracker` and run it again to reach the work on it. A directory ssf
-could not read counts the same way, since it cannot rule the disk out.
-`--force` goes ahead.
+1. Run `ssf uninstall`. Read its report and confirm once. It cleans up
+   eligible closed-item workspaces, stops the service, removes the
+   Omarchy UI, revokes the bot's enrolled keys, forgets its credential,
+   and destroys the VM instance and its data disk.
+2. Remove the package with the command it prints (**you** for sudo):
+   `sudo pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or
+   `brew uninstall ssf` followed by `brew untap mikekelly/ssf`.
 
-Only "not found" counts as "there is no data disk". A directory ssf
-could not read at all -- a lima home an earlier `sudo` left root-owned,
-which is itself one of the reasons `limactl` fails, or a volume that
-has gone away -- is a question that was never answered, and the command
-refuses over it rather than destroying workspaces nobody checked.
-`--force` still goes ahead. For the same reason a destroy that cannot
-look for the data disk now fails the step instead of reporting that
-lima's home holds no such disk.
+Uninstall refuses if workspaces contain uncommitted or unpushed work,
+or if VM work cannot be checked. Follow the refusal's specific remedy:
+a stopped VM may need starting, while an orphaned lima disk or a disk
+left by a backend switch needs different recovery. A failed service stop
+halts removal before credentials or VM data are destroyed.
 
-`[vm] name` has to name a directory under `[vm] dir`: it is joined onto
-that path and `ssf vm destroy` and `ssf uninstall` remove the result
-whole, so an empty name (which would be `[vm] dir` itself), an absolute
-one, or one containing `..` is refused when the config is read. Nested
-names like `a/b` are fine.
+`--force` bypasses work-preservation checks: **VM clones and worktrees
+are destroyed with the data disk, including unchecked or unpushed work.**
+An agent must leave that decision to the person. `--yes` skips confirmation;
+it does not replace `--force`.
 
-What it keeps, and lists at the end: the clones and worktrees under
-`~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
-dir` (the image and downloads; retained -- ssf does not look inside it,
-so inspect it before removing it), and, unless you pass
-`--data`, `~/.config/ssf` (config and the bot's key) and
-`~/.local/state/ssf` (state, and the marker that keeps a disabled service
-off, so a reinstall stays stopped until `ssf ui service enable`; with
-`--data` gone, a reinstall starts the service). Under lima the instance
-and the data disk go out of lima's own home with `vm destroy`, but
-`~/.lima` itself stays, holding lima's cache of downloaded images; the
-report does not name it, so remove it by hand once nothing else of yours
-uses lima. The bot GitHub account itself is not touched, nor its gh
-sign-in. `ssf status` afterwards says not signed in and stopped; the
-watched repositories and the records of past items still show until
-`--data` (or a reinstall from scratch) clears them. With the VM gone the
-config's `vm.enabled` is cleared, so `status` does not go looking for it.
+By default, uninstall keeps host clones/worktrees, the VM image/download
+directory, and ssf config/state. Add `--data` only if you also want config
+and state removed. Retained state includes the disabled marker, so a
+reinstall remains stopped until `ssf ui service enable`. The GitHub bot
+account and its gh sign-in remain; lima's cache and separately installed
+dependencies also remain. Inspect retained directories before deleting
+them yourself. See the [uninstall reference](uninstall.md) for the full
+cleanup sequence and disk-recovery cases.
 
 ## Checklist
 
-1. The package for this machine (**you**): `sudo pacman -U
-   ssf-*.pkg.tar.zst`, `sudo apt install ./ssf_*_amd64.deb`, `sudo dnf
-   install ./ssf-*.x86_64.rpm` or, on macOS, `brew install
-   mikekelly/ssf/ssf`, plus herdr by hand off Omarchy on Linux; `ssf
-   doctor` fails only on the bot, herdr, the repository and the links
-   (on a Mac, the service line too: nothing is started at install).
-2. Bot account created (**you**), with Write on each repository and
-   access to the boards.
-3. `ssf auth login --web` as the bot (**you**, in a private window);
-   `ssf auth status` names it.
-4. Commits as the bot (default) or as you (`[git]` table).
-5. `ssf vm build`, `ssf config set vm.enabled true`, `systemctl --user
-   restart ssf.service` (macOS: `brew services start ssf`); `ssf vm
-   status` running, daemon active. (Host alternative: a herdr session
-   running, or Orca with `driver = "orca"`.)
-6. `ssf vm login <harness>` (**you**, at the terminal), or the harness's
-   own login on the host; `logged in` on `ssf vm status`.
-7. `ssf repo add owner/name --harness <id>`, with a `--model` (and an
-   `--effort`, where the harness has them) you chose ([Choosing the
-   harness and the model](#choosing-the-harness-and-the-model)) rather
-   than the harness's defaults; `ssf doctor` clean but for the links
-   line.
-8. `SSF.md` at the repository root.
-9. Assign an issue to the bot; a workspace appears and the agent
-   comments.
-10. To undo all of it later: `ssf uninstall` (add `--data` to drop
-    config and state too), then the package manager's remove command it
-    prints (**you**).
+- Package installed; `ssf doctor` can read config and find GitHub CLI.
+- Bot account has repository Write access and any required board access.
+- `ssf auth status` names the bot; commit identity is intentional.
+- VM and guest daemon are running, or the chosen host driver is ready.
+- Harness is installed and signed in where sessions run.
+- Repository is configured with a deliberate harness/model choice.
+- `SSF.md` describes scope, validation and merge authority.
+- First assigned issue produces an agent comment; `ssf doctor` is clean.
