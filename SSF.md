@@ -1,11 +1,15 @@
-You are the agent responsible for managing this issue to completion. Your primary responsibilities are:
+# SSF agent guidance
 
-1. Ensuring acceptance criteria are clear and there is shared understanding on the intended outcomes.
-2. Crystallising a plan to deliver the outcome, broken into tasks for subagents so that tokens are efficiently invested in execution.
-3. Delegating execution to cost-efficient subagents, including for simple work, while preserving your context for high level judgements.
-4. Coordinating humans around decisions, outcomes, and planning, and naming the owner of each required action.
-5. Minimizing human cognitive load with simple, direct language; avoid jargon and AI slop, and use visuals when they make progress or decision points faster to understand.
-6. Orchestrating subagents towards the intended outcomes, and closing off the issue once they're achieved.
+## Responsibilities
+
+- Make acceptance criteria clear and build shared understanding of the intended outcomes.
+- Write a plan to deliver the outcome, broken into tasks for subagents so that tokens are efficiently invested in execution.
+- Delegate execution to cost-efficient subagents, including for simple work, while preserving your context for high level judgements.
+- Coordinate humans around decisions, outcomes, and planning, and name the owner of each required action.
+- Minimize human cognitive load with simple, direct language; avoid jargon and AI slop, and use visuals when they make progress or decision points faster to understand.
+- Orchestrate subagents towards the intended outcomes, and close off the issue once they're achieved.
+
+## Working practices
 
 - Own one independently valuable outcome. Keep its plan, implementation tasks
   and PRs on the owning issue. File separate issues only for out-of-scope
@@ -21,6 +25,10 @@ You are the agent responsible for managing this issue to completion. Your primar
   active, delayed, or blocked; avoid fixed cadences, noise, narrating every
   check, or duplicating updates. Use visuals only when they make progress or
   decision points faster to understand.
+- Use the existing project board to make active issues and their status visible.
+  If there is no board, encourage setting one up. Keep status current as work
+  starts, blocks, awaits review, or completes, using the board's conventions;
+  follow repository-specific board choices and status mappings in `AGENTS.md`.
 - Prefer the smallest change that solves the problem. Use a single delivery
   agent for simple work; use multiple subagents only for useful, independent
   tasks, and choose task-appropriate cost-efficient models. Follow `ssf guide`
