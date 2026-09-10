@@ -2304,6 +2304,11 @@ deliveries resume"
             .worktree_path
             .as_deref()
             .and_then(|p| ProjectPrompt::load(repo, Path::new(p)));
+        let harness = self.effective(repo, st.number).harness;
+        let harness_prompt = st
+            .worktree_path
+            .as_deref()
+            .and_then(|p| ProjectPrompt::load_harness(repo, Path::new(p), &harness));
         PromptContext {
             repo,
             daemon: &self.cfg.daemon,
@@ -2316,6 +2321,7 @@ deliveries resume"
             handed_over_from: None,
             projects: &st.projects,
             project_prompt,
+            harness_prompt,
             vm_guest: crate::vm::in_guest(),
             pushes_as: self.cfg.git_identity(Some(repo)).credential.prompt_pusher(),
         }
@@ -2994,7 +3000,7 @@ deliveries resume"
             .and_then(|s| s.handover_note.clone());
         let kind = self.item_kind(repo, number);
         let mut story = self
-            .story(repo, number, note.as_ref().map(|n| n.from.as_str()))
+            .story(repo, number, note.as_ref().map(|n| n.from.as_str()), None)
             .await?;
         if let Some(n) = note {
             story.text = prompt::handover_prompt(&n.from, kind, n.summary.as_deref(), &story.text);
@@ -3010,6 +3016,7 @@ deliveries resume"
         repo: &RepoConfig,
         number: u64,
         handed_over_from: Option<&str>,
+        target_harness: Option<&str>,
     ) -> Result<Story> {
         let (owner, name) = repo.split()?;
         let issue = self.gh.issue(owner, name, number).await?;
@@ -3018,10 +3025,16 @@ deliveries resume"
         let me = self.acting_on(repo, number);
         let all = self.for_recipient(&diff.rendered, &me);
         let st = self.entry(repo, number).clone();
-        let ctx = PromptContext {
+        let mut ctx = PromptContext {
             handed_over_from,
             ..self.ctx(repo, &st)
         };
+        if let Some(harness) = target_harness {
+            ctx.harness_prompt = st
+                .worktree_path
+                .as_deref()
+                .and_then(|p| ProjectPrompt::load_harness(repo, Path::new(p), harness));
+        }
         Ok(Story {
             text: prompt::initial_prompt(&issue, &all, &ctx),
             seen: diff.seen,
@@ -4530,7 +4543,10 @@ deliveries resume"
             .summary
             .clone()
             .or_else(|| pending_note.and_then(|n| n.summary));
-        let story = match self.story(repo, number, Some(&note_from)).await {
+        let story = match self
+            .story(repo, number, Some(&note_from), Some(&h.harness))
+            .await
+        {
             Ok(s) => s,
             Err(e) => {
                 self.refuse_handover(
@@ -9073,6 +9089,45 @@ mod tests {
         stub.set_issue(5, assigned_item(5, "alice", "u1"));
         stub.set_timeline(5, vec![assigned_by(1, "alice")]);
         (e, d)
+    }
+
+    #[tokio::test]
+    async fn harness_notes_follow_the_session_through_handover_and_restart() {
+        let sandbox = crate::config::test_support::sandbox();
+        let worktree = sandbox.root().join("worktree");
+        std::fs::create_dir_all(&worktree).unwrap();
+        for (file, text) in [
+            ("SSF.md", "Shared project guidance."),
+            ("SSF.claude.md", "Claude-only guidance."),
+            ("SSF.codex.md", "Codex-only guidance."),
+        ] {
+            std::fs::write(worktree.join(file), text).unwrap();
+        }
+        let stub = GitHubStub::start().await;
+        let (mut e, d) = handover_setup(&stub);
+        let r = repo();
+        e.entry(&r, 5).worktree_path = Some(worktree.to_string_lossy().into_owned());
+        let issue: Issue = serde_json::from_value(assigned_item(5, "alice", "u1")).unwrap();
+        let initial = e.initial_text(&r, &issue, &[]);
+        assert!(initial.contains("Shared project guidance."));
+        assert!(initial.contains("Claude-only guidance."));
+        assert!(!initial.contains("Codex-only guidance."));
+
+        e.handover("o/r#5", "codex", None, None, None, None)
+            .await
+            .unwrap();
+        e.run_handovers(&r).await;
+        let prompts = d.prompts();
+        assert_eq!(prompts.len(), 1, "{prompts:?}");
+        assert!(prompts[0].contains("Shared project guidance."));
+        assert!(prompts[0].contains("Codex-only guidance."));
+        assert!(!prompts[0].contains("Claude-only guidance."));
+
+        // A fresh session after the handover uses the persisted override.
+        let restarted = e.first_message(&r, 5).await.unwrap().text;
+        assert!(restarted.contains("Shared project guidance."));
+        assert!(restarted.contains("Codex-only guidance."));
+        assert!(!restarted.contains("Claude-only guidance."));
     }
 
     /// The whole path of `ssf handover` with a summary: recorded

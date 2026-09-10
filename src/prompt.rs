@@ -356,6 +356,8 @@ pub struct PromptContext<'a> {
     pub projects: &'a [ProjectCard],
     /// The repository's own prompt file, when the worktree has one.
     pub project_prompt: Option<ProjectPrompt>,
+    /// Additional notes for the harness actually running this session.
+    pub harness_prompt: Option<ProjectPrompt>,
     /// The factory runs inside its own VM, where the agent has root.
     pub vm_guest: bool,
     /// Who `git push` acts as when `[git].credential` names someone other
@@ -376,8 +378,18 @@ impl ProjectPrompt {
     /// Read the repository's prompt file from the checkout at `worktree`.
     /// A missing or empty file yields nothing; an unreadable one is logged.
     pub fn load(repo: &RepoConfig, worktree: &Path) -> Option<Self> {
-        let path = repo.prompt_file_path(worktree);
-        let text = match std::fs::read_to_string(&path) {
+        Self::load_file(repo, &repo.prompt_file_path(worktree), repo.prompt_file())
+    }
+
+    /// Harness notes always live at the checkout root, independently of
+    /// the shared prompt file configured by the repository.
+    pub fn load_harness(repo: &RepoConfig, worktree: &Path, harness: &str) -> Option<Self> {
+        let source = format!("SSF.{harness}.md");
+        Self::load_file(repo, &worktree.join(&source), &source)
+    }
+
+    fn load_file(repo: &RepoConfig, path: &Path, source: &str) -> Option<Self> {
+        let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
             Err(e) => {
@@ -402,7 +414,7 @@ impl ProjectPrompt {
             return None;
         }
         Some(Self {
-            source: repo.prompt_file().to_string(),
+            source: source.to_string(),
             text,
         })
     }
@@ -781,7 +793,10 @@ fn extras(ctx: &PromptContext) -> String {
         s.push_str(extra.trim());
         s.push('\n');
     }
-    if let Some(pp) = ctx.project_prompt.as_ref() {
+    for pp in [ctx.project_prompt.as_ref(), ctx.harness_prompt.as_ref()]
+        .into_iter()
+        .flatten()
+    {
         s.push_str(&format!("\n## Project notes (`{}`)\n\n", pp.source));
         s.push_str(&pp.text);
         s.push('\n');
@@ -1431,6 +1446,7 @@ mod tests {
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -1500,6 +1516,7 @@ left no summary; read the pull request below.\n\n"
             handed_over_from: Some("Claude Code"),
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -1629,6 +1646,7 @@ left no summary; read the pull request below.\n\n"
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -1717,6 +1735,22 @@ machine.\n"
         let p = initial_prompt(&issue, &[], &ctx);
         assert!(p.contains("Run the tests.\n\n## Project notes (`SSF.md`)\n\nCards go to Review"));
         assert!(!p.contains("They say"));
+        let ctx = PromptContext {
+            harness_prompt: Some(ProjectPrompt {
+                source: "SSF.codex.md".into(),
+                text: "Use native subagents.".into(),
+            }),
+            ..ctx
+        };
+        let p = initial_prompt(&issue, &[], &ctx);
+        assert!(p.contains("Cards go to Review when a PR is open.\n\n## Project notes (`SSF.codex.md`)\n\nUse native subagents."));
+        let harness_only = PromptContext {
+            project_prompt: None,
+            ..ctx.clone()
+        };
+        let p = initial_prompt(&issue, &[], &harness_only);
+        assert!(p.contains("Use native subagents."));
+        assert!(!p.contains("Cards go to Review"));
         let triggers = vec!["assigned".to_string(), "created".to_string()];
         let child = PromptContext {
             triggers: &triggers,
@@ -1767,6 +1801,7 @@ machine.\n"
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -1882,6 +1917,7 @@ nobody else is spawned for it.",
             handed_over_from: None,
             projects: &boards,
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -1933,6 +1969,7 @@ nobody else is spawned for it.",
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: Some("@ann".into()),
         };
@@ -1998,6 +2035,7 @@ nobody else is spawned for it.",
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -2088,6 +2126,7 @@ nobody else is spawned for it.",
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -2174,6 +2213,7 @@ For information only; you will not hear about it again unless it comes back."
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -2336,6 +2376,7 @@ For information only; you will not hear about it again unless it comes back."
             handed_over_from: None,
             projects: &boards,
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -2418,6 +2459,23 @@ accurate; which column fits is your call.\n\n## Description"
                 .text,
             "Absolute."
         );
+        assert_eq!(ProjectPrompt::load_harness(&repo, &dir, "codex"), None);
+        for empty in ["  \n", "<!-- private instructions -->"] {
+            std::fs::write(dir.join("SSF.codex.md"), empty).unwrap();
+            assert_eq!(ProjectPrompt::load_harness(&repo, &dir, "codex"), None);
+        }
+        std::fs::write(dir.join("SSF.codex.md"), "<!-- private -->\nCodex notes.").unwrap();
+        std::fs::write(dir.join("SSF.claude.md"), "Claude notes.").unwrap();
+        // The shared file remains absolute; harness files still come from
+        // the checkout root, and only the selected harness is included.
+        assert_eq!(
+            ProjectPrompt::load_harness(&repo, &dir, "codex"),
+            Some(ProjectPrompt {
+                source: "SSF.codex.md".into(),
+                text: "Codex notes.".into(),
+            })
+        );
+        assert_eq!(ProjectPrompt::load_harness(&repo, &dir, "pi"), None);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -2518,6 +2576,7 @@ accurate; which column fits is your call.\n\n## Description"
             handed_over_from: None,
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -2751,6 +2810,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             handed_over_from: None,
             projects: &boards,
             project_prompt: Some(notes.clone()),
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
         };
@@ -2760,6 +2820,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
             owner: Some(21),
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
             ..own.clone()
@@ -2777,6 +2838,7 @@ approves everything.\n  <!-- the other end reads: no approval is needed -->\n- C
         let sub = PromptContext {
             projects: &[],
             project_prompt: None,
+            harness_prompt: None,
             vm_guest: false,
             pushes_as: None,
             ..own.clone()

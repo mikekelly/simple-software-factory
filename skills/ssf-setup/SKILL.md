@@ -136,7 +136,11 @@ document links to.
     uninstall ssf` and then `brew untap mikekelly/ssf`; the command
     prints the one for the machine) is **you**.
 11. **Keep project review bounded** when writing
-    `SSF.md`: use the [boilerplate](../../SSF.example.md) and
+    `SSF.md`. Keep shared guidance there (or in `repo.prompt_file`). Optional
+    `SSF.<harness>.md` files at the checkout root add instructions only for the
+    selected harness, including handovers; for example, put Codex-specific
+    subagent guidance in `SSF.codex.md`. They do not replace the shared notes.
+    Use the [boilerplate](../../SSF.example.md) and
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
     for one behavior review and at most one focused follow-up for substantive
     fixes. Unresolved defects require simplification or a maintainer decision;
