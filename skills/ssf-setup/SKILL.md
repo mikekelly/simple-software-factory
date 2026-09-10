@@ -19,7 +19,7 @@ account, the sign-in, who may drive the factory, the VM (the default:
 Firecracker on Linux, lima on macOS) and the host alternatives, the
 harness login, the first repository and the harness and model it runs
 on, `SSF.md`, the first issue, upgrading, stopping and uninstalling,
-with what a healthy `ssf doctor` looks like after each step and which
+with `ssf doctor` checkpoints after each step and which
 commands differ on a Mac. There is
 no second copy of the steps here. The README next to it
 (`/usr/share/doc/ssf/README.md`, or `$(brew --prefix)/share/doc/ssf/README.md`)
@@ -44,8 +44,9 @@ document links to.
    matter, so let its next poll run.
 3. **Prefer the CLI** (`ssf repo add`, `ssf repo set`, `ssf config set`,
    `ssf auth login`) over editing `config.toml` by hand: it validates
-   harness, model and effort ids, and the daemon picks changes up on its
-   next poll without a restart. Never write `github.token` into the
+   harness IDs, model support and effort levels. Unknown model IDs pass
+   through to the harness. Repository settings are picked up on the next poll;
+   VM or service changes may require a restart. Never write `github.token` into the
    file; `ssf config set` refuses it on purpose. `ssf auth login` and
    `ssf auth logout` change credentials and config only; they do not edit
    the daemon's live `state.json` for bot identity.
@@ -56,15 +57,13 @@ document links to.
    person (the machine says which harnesses are installed and signed
    in; only they can say which subscriptions or keys are behind them,
    what metered spend is acceptable and what must not be exhausted),
-   the chart to read
-   instead of answering from memory, and the three tiers. Propose a
-   model and effort per repository and say why; the session's is `ssf
-   repo add`/`ssf repo set --model --effort`, the tiers below it are the
-   harness's own configuration and the repository's `SSF.md`. Say what
-   it would cost and let the person decide. If you cannot verify the
-   numbers, say so and ask for them, or leave `model` and `effort` unset
-   with a note of what you would have looked up — an unverified
-   recommendation is worse than the default.
+   and current provider documentation for availability, pricing and limits.
+   Capability/cost comparisons can supplement this; API prices do not measure
+   subscription allowance. Propose a model and effort per repository and
+   explain the tradeoff. If numbers cannot be verified, say so and let the
+   person choose, or explicitly leave model and effort unset. ssf sets the
+   main session's model; optional subagents follow harness configuration and
+   project instructions. Do not impose a delegation hierarchy on simple work.
 5. **Never sign in as the person** or use their token, key or account for
    the bot. The bot is an account of its own; `ssf auth login --user
    <bot> -y` is the form an agent may run, once the bot is in gh's
@@ -84,9 +83,9 @@ document links to.
    letting it fail at the first boot, so a distribution shipping an old
    lima means lima's release tarball or `[vm] limactl` pointing at a
    newer one. The document says where the alternatives branch off. On
-   Debian, Ubuntu and Fedora the package does not bring herdr; install it
-   as the document's step 1 says before expecting `ssf doctor`'s herdr
-   line to pass. When reading `ssf vm status --json`, treat `running =
+   Debian, Ubuntu and Fedora the package does not bring host herdr; install it
+   as the document's step 2 says for host sessions. The VM supplies its own.
+   When reading `ssf vm status --json`, treat `running =
    null` as an unanswered lima probe, not a stopped VM; `probe_error`
    names why the host could not ask.
 8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
