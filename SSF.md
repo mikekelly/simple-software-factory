@@ -36,5 +36,14 @@
   changes, and `skills/ssf-setup/SKILL.md` when its setup or operating guidance
   changes. Test daemon behavior in isolation; see `docs/development.md`
   before running scratch instances.
-- Deliver the PR with its outcome, validation and remaining limitations.
-  Leave merging to the maintainer or project-management session.
+- Own completion: finish and close out work within your delegated authority.
+  The agent owning the issue normally takes responsibility for merging its
+  PR once required validation and review are satisfied, unless project rules
+  or a maintainer reserve that action for a human. No separate project-manager
+  issue is needed.
+  Do not close an issue whose outcome still depends on an unmerged PR.
+  Deliver the outcome, validation and remaining limitations on the owning
+  issue with the PR link. When further action is outside your authority,
+  explicitly @mention an appropriate human collaborator or request their
+  review, naming the concrete decision or action needed and who owns it;
+  “ready” or “pending review” alone is not a handoff.

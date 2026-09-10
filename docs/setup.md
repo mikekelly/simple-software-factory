@@ -458,8 +458,11 @@ not an expanding loop. Validate the final change; package builds are for
 packaging or installation changes. See [Second
 opinions](sessions.md#second-opinions-the-gauntlet).
 
-**Autonomy.** The template leaves merging to a person. Change that instruction
-if your project delegates merge authority. Delegation is optional and useful
+**Autonomy.** The template makes the agent owning the issue responsible for
+merging after required validation and review, unless project rules or a
+maintainer reserve merging for a human. Adapt that authority to your project;
+when the agent cannot complete the next action, it must explicitly request a
+human collaborator's review or decision. Delegation is optional and useful
 only when an independent task warrants it.
 
 **Boards.** No setup: if the item is on a GitHub project (v2) board, the
