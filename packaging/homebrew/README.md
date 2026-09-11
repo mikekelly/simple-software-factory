@@ -2,7 +2,7 @@
 
 `ssf.rb` is the Homebrew formula for ssf and the only copy that is edited.
 It is written for the version in `Cargo.toml` with a placeholder sha256;
-on every `vX.Y.Z` tag, `.github/workflows/homebrew.yml` runs `render.sh`
+when a `vX.Y.Z` GitHub release is published, `.github/workflows/homebrew.yml` runs `render.sh`
 to put the tag tarball's url and sha256 in (the source of truth keeps the
 placeholder) and pushes the result to the tap repository
 [mikekelly/homebrew-ssf](https://github.com/mikekelly/homebrew-ssf) as
@@ -16,15 +16,14 @@ does not work. On Linux `brew services` would write a
 not line up; a Linux host installs the `.deb`, `.rpm` or Arch package
 from `packaging/linux` and `packaging/release` instead.
 
-## One tag filter, in three places
+## One version filter, in three places
 
-Three checks decide which tags get a formula, and they have to say the
-same thing: the `tags:` filter of `homebrew.yml`, the `vX.Y.Z` test its
-`workflow_dispatch` path applies to the tag you type, and `render.sh`'s
-own check on the version it is given. All three are
-`v[0-9]+.[0-9]+.[0-9]+`, which is `.github/workflows/release.yml`'s
-filter too. A looser one anywhere would publish a formula for a tag
-release.yml never built (`v0.2.0-rc1`, say, which release.yml skips
+Three checks decide which versions get a formula, and they have to agree:
+the published release's tag is checked inside `homebrew.yml`, its manual
+dispatch checks the tag the maintainer enters, and `render.sh` checks the
+version it is given. All accept only `v[0-9]+.[0-9]+.[0-9]+`, matching
+`.github/workflows/release.yml`'s tag filter. A looser check could publish a
+formula for a tag release.yml never built (`v0.2.0-rc1`, say, which it skips
 because nfpm would write `0.2.0~rc1` and makepkg refuses a pkgver with a
 hyphen), so `brew install` would build from a tarball whose release
 carries no packages. Change one and change the others in the same commit.

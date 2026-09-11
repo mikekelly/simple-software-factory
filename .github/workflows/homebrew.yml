@@ -1,14 +1,14 @@
-# On every vX.Y.Z tag, render packaging/homebrew/ssf.rb with the tag tarball's
-# url and sha256 and push it to the Homebrew tap as Formula/ssf.rb.
+# When a vX.Y.Z GitHub release is published, render packaging/homebrew/ssf.rb
+# with the tag tarball's url and sha256 and push it to the Homebrew tap as
+# Formula/ssf.rb.
 # packaging/homebrew/README.md says how the tap and the token are set up.
-# The tag filter is release.yml's, exactly: a tag this workflow publishes a
-# formula for but release.yml does not build would point Homebrew at a
-# release with no packages in it.
+# Waiting for publication keeps the tap from pointing at a draft whose
+# packages have not completed validation. Manual dispatch remains available.
 name: Homebrew formula
 
 on:
-  push:
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -42,11 +42,11 @@ jobs:
       - name: Version from the tag
         id: version
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
         run: |
-          # The same tags as the push trigger above and as release.yml: a
-          # dispatch of a pre-release tag (v0.2.0-rc1) would otherwise render
-          # a formula for a release release.yml never built packages for.
+          # The same tag shape as release.yml: a dispatch or published
+          # pre-release tag (v0.2.0-rc1) would otherwise render a formula for
+          # a release release.yml never built packages for.
           if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::'$TAG' is not a vX.Y.Z tag; release.yml builds packages for those only"
             exit 1

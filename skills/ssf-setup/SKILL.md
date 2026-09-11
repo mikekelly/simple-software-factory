@@ -152,6 +152,11 @@ document links to.
     `sudo apt remove ssf`, `sudo dnf remove ssf`, or on macOS `brew
     uninstall ssf` and then `brew untap mikekelly/ssf`; the command
     prints the one for the machine) is **you**.
+    On Omarchy the optional widget is independent: `omarchy plugin remove
+    ssf.factory` removes only its checkout and leaves the service running.
+    A reinstall uses `ssf setup` for the user and adds the widget separately;
+    preserved configuration, state, clones and worktrees are reused unless the
+    person explicitly chose `--data`.
 11. **Keep project review bounded** when writing
     `SSF.md`. Keep shared guidance there (or in `repo.prompt_file`). Optional
     `SSF.<harness>.md` files at the checkout root add instructions only for the

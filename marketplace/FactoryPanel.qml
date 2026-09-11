@@ -4,7 +4,9 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
-// Simple Software Factory in the bar: a dashboard of the factory's state. Who
+// Simple Software Factory in the bar. Keep this nested, stable entry-point
+// filename: moving the QML root has caused stale Quickshell type-cache loads.
+// A dashboard of the factory's state: who
 // the bot is, whether the service is running, which repositories are watched
 // (and by which agent), the agent sessions currently working and what each
 // is doing, sessions whose harness needs a sign-in, and a way to the log and
@@ -12,22 +14,27 @@ import qs.Ui
 // joins ssf's view of each issue or PR with what the driver reports about the
 // workspace (agent state, last message, activity); the widget never talks to
 // the driver itself. Setup (signing the bot in, watching repositories) is not
-// done here: that is `ssf auth` and `ssf repo` from a terminal, following
-// docs/setup.md. The service toggle in the header is the one control.
+// done automatically. The package owns the application and unit; this widget
+// only observes them and responds to explicit user controls.
 Panel {
   id: root
   moduleName: "ssf.factory"
   ipcTarget: "ssf.factory"
 
   property var status: ({})
+  property string applicationState: "checking"
+  property string applicationMessage: "Checking Software Factory…"
+  property var serviceStatus: ({})
   property bool loaded: false
   property bool cursorActive: false
   property int cursor: 0
 
   readonly property string botLogin: status && status.bot_login ? String(status.bot_login) : ""
+  readonly property string applicationPath: "/usr/bin/ssf"
+  readonly property bool runtimeReady: applicationState === "ready" || applicationState === "service-stopped" || applicationState === "service-failed"
   readonly property bool signedIn: botLogin !== ""
-  readonly property bool serviceEnabled: status && status.service_enabled === true
-  readonly property bool serviceActive: status && status.service_active === true
+  readonly property bool serviceEnabled: serviceStatus && serviceStatus.enabled === true
+  readonly property bool serviceActive: serviceStatus && serviceStatus.active === true
   readonly property string lastError: status && status.last_error ? String(status.last_error) : ""
   // The wildcard allow-list is in effect on some repository: anyone with a
   // GitHub account can drive the agents. Shown as a warning until it is not.
@@ -190,12 +197,17 @@ Panel {
   }
 
   function heroMeta() {
+    if (applicationState === "checking") return "Checking installation"
+    if (applicationState === "missing-package") return "Application not installed"
+    if (applicationState === "missing-configuration") return "Configuration required"
+    if (applicationState === "service-failed") return "Service failed"
     if (!loaded) return "Loading"
     if (!signedIn) return "Bot account not signed in"
     return "@" + botLogin
   }
 
   function heroDetail() {
+    if (!runtimeReady) return applicationMessage
     if (!loaded) return ""
     if (!serviceEnabled) return "Service disabled"
     if (!serviceActive) return "Service not running"
@@ -212,8 +224,33 @@ Panel {
   }
 
   function refresh() {
-    if (statusProc.running) return
-    statusProc.running = true
+    applicationState = "checking"
+    applicationMessage = "Checking Software Factory…"
+    loaded = false
+    if (!packageProc.running) packageProc.running = true
+  }
+
+  function applyServiceStatus(text) {
+    try {
+      var parsed = JSON.parse(text)
+      root.serviceStatus = parsed && typeof parsed === "object" ? parsed : ({})
+    } catch (e) {
+      root.serviceStatus = ({})
+    }
+    if (root.serviceStatus.configured !== true) {
+      root.applicationState = "missing-configuration"
+      root.applicationMessage = "Software Factory is installed but not configured. Choose Configure to run `ssf setup` in a terminal."
+    } else if (root.serviceStatus.failed === true) {
+      root.applicationState = "service-failed"
+      root.applicationMessage = "The Software Factory service failed. Open Logs for details."
+    } else if (!root.serviceActive) {
+      root.applicationState = "service-stopped"
+      root.applicationMessage = root.serviceEnabled ? "Service is enabled but not running." : "Service is disabled."
+    } else {
+      root.applicationState = "ready"
+      root.applicationMessage = ""
+    }
+    if (root.serviceStatus.configured === true && !statusProc.running) statusProc.running = true
   }
 
   function applyStatus(text) {
@@ -238,7 +275,13 @@ Panel {
   }
 
   function toggleService() {
-    run("ssf ui service toggle")
+    if (applicationState === "missing-package" || applicationState === "missing-configuration" || applicationState === "checking") return
+    run(root.applicationPath + " ui service toggle")
+    root.close()
+  }
+
+  function configure() {
+    run("omarchy-launch-floating-terminal-with-presentation " + shellQuote(root.applicationPath + " setup"))
     root.close()
   }
 
@@ -250,7 +293,7 @@ Panel {
 
   function openWorkspace(s) {
     if (!s) return
-    if (s.worktree_id) run("ssf-ui open-workspace " + shellQuote(s.worktree_id) + " " + shellQuote(s.url || ""))
+    if (s.worktree_id) run(root.applicationPath + " ui open-workspace " + shellQuote(s.worktree_id) + " " + shellQuote(s.url || ""))
     else if (s.url) run("omarchy-launch-browser " + shellQuote(s.url))
     root.close()
   }
@@ -296,8 +339,31 @@ Panel {
   Component.onCompleted: refresh()
 
   Process {
+    id: packageProc
+    command: ["/usr/bin/test", "-x", root.applicationPath]
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.applicationState = "missing-package"
+        root.applicationMessage = "Software Factory is not installed. Download its Arch package, then install that file with `sudo pacman -U <package-file>`."
+      } else if (!serviceProc.running) serviceProc.running = true
+    }
+  }
+
+  Process {
+    id: serviceProc
+    command: [root.applicationPath, "ui", "service", "status", "--json"]
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.applyServiceStatus(text) }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.applicationState = "service-failed"
+        root.applicationMessage = "Could not read the Software Factory service state. Open Logs or run `ssf doctor`."
+      }
+    }
+  }
+
+  Process {
     id: statusProc
-    command: ["ssf", "status", "--json"]
+    command: [root.applicationPath, "status", "--json"]
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.applyStatus(text)
@@ -354,10 +420,10 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "r") root.refresh()
-        else if (t === "l") { root.run("ssf-ui logs"); root.close() }
+        else if (t === "l") { root.run(root.applicationPath + " ui logs"); root.close() }
         else if (t === "s") root.toggleService()
         else if (t === "g") { var s = root.cursorSession(); if (s) root.openGithub(s) }
-        else if (t === "p") { root.run("omarchy-launch-floating-terminal-with-presentation ssf-ui peers"); root.close() }
+        else if (t === "p") { root.run("omarchy-launch-floating-terminal-with-presentation " + root.shellQuote(root.applicationPath + " ui peers")); root.close() }
       }
     }
 
@@ -385,14 +451,33 @@ Panel {
           ToggleSwitch {
             checked: root.serviceEnabled
             foreground: root.foreground
-            interactive: true
+        interactive: root.runtimeReady
             onToggled: root.toggleService()
           }
         }
       }
 
       Text {
-        visible: root.lastError !== ""
+        visible: !root.runtimeReady
+        width: parent.width
+        text: root.applicationMessage
+        color: root.applicationState === "service-failed" ? root.urgent : root.dim
+        wrapMode: Text.Wrap
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      PanelActionButton {
+        visible: root.applicationState === "missing-configuration"
+        iconText: "⚙"
+        tooltipText: "Configure in a terminal"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onClicked: root.configure()
+      }
+
+      Text {
+        visible: root.runtimeReady && root.lastError !== ""
         width: parent.width
         text: root.lastError
         color: root.urgent
@@ -406,7 +491,7 @@ Panel {
 
       // ---- Wildcard allow-list warning ----------------------------------
       Text {
-        visible: root.anyoneAllowed
+        visible: root.runtimeReady && root.anyoneAllowed
         width: parent.width
         text: "\uf071  allowed_users is \"*\": anyone with a GitHub account can drive the agents. Set the logins with `ssf repo set <repo> --allowed-users` or `ssf config set daemon.allowed_users`."
         color: root.urgent
@@ -417,7 +502,7 @@ Panel {
 
       // ---- Harness login gone --------------------------------------------
       Text {
-        visible: root.blockedCount > 0
+        visible: root.runtimeReady && root.blockedCount > 0
         width: parent.width
         text: "\uf071  " + (root.blockedCount === 1 ? "A session's harness" : root.blockedCount + " sessions' harnesses") + " sat at a sign-in prompt (the session expired or was revoked): nothing reaches " + (root.blockedCount === 1 ? "it" : "them") + " until the harness is signed in again. See the session rows for the command; ssf resumes them on its own afterwards."
         color: root.urgent
@@ -428,7 +513,7 @@ Panel {
 
       // ---- Not set up yet -----------------------------------------------
       Text {
-        visible: root.loaded && !root.signedIn
+        visible: root.runtimeReady && root.loaded && !root.signedIn
         width: parent.width
         text: "The bot account is not signed in. Setup is done from a terminal: `ssf auth login`, then `ssf repo add` (see docs/setup.md)."
         color: root.dim
@@ -443,6 +528,7 @@ Panel {
       Column {
         width: parent.width
         spacing: Style.space(6)
+        visible: root.runtimeReady
 
         PanelSectionHeader {
           text: "REPOSITORIES"
@@ -495,6 +581,7 @@ Panel {
       Column {
         width: parent.width
         spacing: Style.space(4)
+        visible: root.runtimeReady
 
         PanelSectionHeader {
           text: "SESSIONS"
@@ -543,27 +630,28 @@ Panel {
       Row {
         width: parent.width
         spacing: Style.space(6)
+        visible: root.runtimeReady
 
         PanelActionButton {
           iconText: ""
           tooltipText: "Logs"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: { root.run("ssf-ui logs"); root.close() }
+          onClicked: { root.run(root.applicationPath + " ui logs"); root.close() }
         }
         PanelActionButton {
           iconText: ""
           tooltipText: "Restart service"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: root.run("ssf-ui service restart")
+          onClicked: root.run(root.applicationPath + " ui service restart")
         }
         PanelActionButton {
           iconText: "󰋼"
           tooltipText: "Status and doctor"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: { root.run("omarchy-launch-floating-terminal-with-presentation ssf-ui status"); root.close() }
+          onClicked: { root.run("omarchy-launch-floating-terminal-with-presentation " + root.shellQuote(root.applicationPath + " ui status")); root.close() }
         }
         PanelActionButton {
           iconText: ""

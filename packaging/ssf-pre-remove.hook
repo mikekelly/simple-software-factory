@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Remove
+Type = Package
+Target = ssf
+
+[Action]
+Description = Stopping package-owned SSF user services...
+When = PreTransaction
+Exec = /usr/lib/ssf/package-pre-remove
+AbortOnFail

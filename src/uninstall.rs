@@ -2,7 +2,7 @@
 //!
 //! Everything `ssf` set up outside its package is undone in one go: the
 //! closed workspaces that are safe to remove are purged, the service is
-//! stopped and disabled, the bar widget and menu entries go, the bot is
+//! stopped and disabled, the bot is
 //! signed out (its keys revoked on GitHub), the microVM is destroyed, and
 //! with `--data` the config and state directories too. The projects
 //! directory (clones and worktrees) is never touched: it may hold work
@@ -16,9 +16,11 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use crate::config::{self, Config};
 use crate::state::State;
@@ -300,6 +302,94 @@ pub fn package_removal_command() -> String {
     crate::platform::package_removal_command()
 }
 
+/// Remove a marketplace-owned executable and user unit after the ordinary
+/// uninstall has safely stopped the daemon and dealt with user data. Package
+/// binaries have no adjacent helper, so their uninstall remains unchanged.
+fn marketplace_runtime_helper(exe: &Path) -> Option<PathBuf> {
+    let runtime = exe.parent().and_then(Path::parent)?;
+    let helper = runtime.join("ssf-marketplace");
+    let metadata = runtime.join("install.env");
+    if !helper.is_file() || !metadata.is_file() {
+        return None;
+    }
+    Some(helper)
+}
+
+struct MarketplaceLock {
+    file: File,
+}
+
+fn lock_marketplace_runtime() -> Result<Option<MarketplaceLock>> {
+    let exe = std::env::current_exe().context("finding the running ssf executable")?;
+    let Some(helper) = marketplace_runtime_helper(&exe) else {
+        return Ok(None);
+    };
+    let home = std::env::var_os("HOME").context("HOME is required")?;
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(home).join(".cache"));
+    let dir = cache.join("ssf");
+    let path = dir.join("marketplace.lock");
+    for unsafe_path in [&dir, &path] {
+        if std::fs::symlink_metadata(unsafe_path).is_ok_and(|m| m.file_type().is_symlink()) {
+            bail!(
+                "refusing unsafe marketplace lifecycle lock path {}",
+                unsafe_path.display()
+            );
+        }
+    }
+    std::fs::create_dir_all(&dir)?;
+    let file = OpenOptions::new().create(true).append(true).open(&path)?;
+    if !file.metadata()?.is_file() {
+        bail!(
+            "refusing unsafe marketplace lifecycle lock path {}",
+            path.display()
+        );
+    }
+    // SAFETY: `file` owns this valid descriptor for the lifetime of the guard.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("locking marketplace lifecycle");
+    }
+    let status = Command::new(&helper).arg("validate-uninstall").status()?;
+    if !status.success() {
+        bail!(
+            "{} validate-uninstall exited with {status}",
+            helper.display()
+        );
+    }
+    Ok(Some(MarketplaceLock { file }))
+}
+
+fn remove_marketplace_runtime(data: bool, lock: Option<&MarketplaceLock>) -> Result<bool> {
+    let exe = std::env::current_exe().context("finding the running ssf executable")?;
+    let Some(helper) = marketplace_runtime_helper(&exe) else {
+        return Ok(false);
+    };
+    let mut command = Command::new(&helper);
+    command.arg("uninstall");
+    if let Some(lock) = lock {
+        let fd = lock.file.as_raw_fd();
+        // SAFETY: the descriptor remains owned by `lock`; only its exec flag changes.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("passing marketplace lifecycle lock");
+        }
+        command.arg("--lock-held");
+        command.env("SSF_MARKETPLACE_LOCK_FD", fd.to_string());
+    }
+    if data {
+        command.arg("--data");
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("running {helper:?} uninstall"))?;
+    if !status.success() {
+        bail!("{} uninstall exited with {status}", helper.display());
+    }
+    Ok(true)
+}
+
 /// The report as text: what will stop, go and be revoked, what stays,
 /// then every workspace with its state.
 pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
@@ -349,9 +439,6 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
 
     // remove
     let mut remove = Vec::new();
-    if facts.desktop_present {
-        remove.push("the Factory bar widget and menu entries".to_string());
-    }
     if report.daemon {
         remove.push("workspaces of closed items that are clean and pushed (ssf purge)".to_string());
     } else {
@@ -421,6 +508,12 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
 
     // keep
     let mut keep = Vec::new();
+    if facts.desktop_present {
+        keep.push(
+            "the installed Omarchy widget and menu entries (remove them through Omarchy)"
+                .to_string(),
+        );
+    }
     for p in &facts.projects {
         keep.push(format!(
             "{} (clones and worktrees; may hold unpushed work)",
@@ -687,6 +780,9 @@ fn vm_uncheckable(facts: &Facts) -> (String, String) {
 
 /// The command: report, hard stops, one question, the steps, what is left.
 pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
+    // Hold the marketplace lifecycle lock and validate its owned files before
+    // any report, purge, service operation, or destructive teardown begins.
+    let marketplace_lock = lock_marketplace_runtime()?;
     let cfg = Config::load()?;
     let vm = vm::Vm::new(&cfg);
     let mut facts = Facts::gather(&cfg, &vm);
@@ -810,13 +906,6 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
         ),
     }
 
-    println!("==> remove the bar widget and menu entries");
-    if !facts.desktop_present {
-        println!("already gone");
-    } else if let Err(e) = ui::uninstall_all() {
-        fail("desktop", e);
-    }
-
     println!("==> sign the bot out");
     if !facts.bot_signed_in() {
         println!("bot not signed in; nothing to revoke");
@@ -895,7 +984,24 @@ pub async fn run(yes: bool, force: bool, data: bool) -> Result<()> {
             facts.state_dir.display()
         );
     }
-    println!("the one step that is yours: {}", package_removal_command());
+    let marketplace_removed = if failed == 0 {
+        match remove_marketplace_runtime(data, marketplace_lock.as_ref()) {
+            Ok(removed) => removed,
+            Err(e) => {
+                failed += 1;
+                println!("marketplace runtime failed: {e:#}");
+                false
+            }
+        }
+    } else {
+        if marketplace_lock.is_some() {
+            println!("marketplace runtime preserved so this uninstall can be retried");
+        }
+        false
+    };
+    if !marketplace_removed && marketplace_lock.is_none() {
+        println!("the one step that is yours: {}", package_removal_command());
+    }
     if failed > 0 {
         bail!(
             "{failed} step{} failed (listed above)",
@@ -1141,7 +1247,9 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("the Factory bar widget and menu entries"),
+            text.contains(
+                "installed Omarchy widget and menu entries (remove them through Omarchy)"
+            ),
             "{text}"
         );
         assert!(text.contains("clean and pushed (ssf purge)"), "{text}");

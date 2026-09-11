@@ -14,6 +14,7 @@
 //! `type: dir` entry for every directory under `vm/`.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -158,6 +159,186 @@ fn nfpm_owns_every_vm_directory_in_the_rpm() {
          \x20   packager: rpm\n\
          for each (nfpm's rpm packager only owns what is listed, so an unlisted directory is left behind on erase)"
     );
+}
+
+#[test]
+fn nfpm_owns_the_marketplace_resource_directory_in_the_rpm() {
+    let nfpm = read(NFPM);
+    assert!(
+        nfpm.contains(
+            "- dst: /usr/share/ssf/omarchy-plugin/marketplace\n    type: dir\n    packager: rpm\n"
+        ),
+        "{NFPM} must own the nested marketplace resource directory in the rpm"
+    );
+}
+
+#[test]
+fn packages_leave_service_enablement_to_explicit_setup() {
+    for path in [PKGBUILD, NFPM] {
+        let manifest = read(path);
+        assert!(
+            !manifest.contains("target.wants/ssf.service"),
+            "{path} globally enables ssf"
+        );
+        assert!(
+            !manifest.contains("ssf-marketplace"),
+            "{path} ships the retired executable bootstrap"
+        );
+    }
+    for path in ["packaging/ssf.service", "packaging/linux/ssf.service"] {
+        let unit = read(path);
+        assert!(unit.contains("WantedBy=default.target"));
+        assert!(!unit.contains("ExecStartPre"));
+        assert!(!unit.contains("ConditionPathExists"));
+    }
+    let post = read("packaging/linux/postinstall.sh");
+    assert!(post.contains("ssf setup"));
+    assert!(!post.contains("systemctl"));
+    assert_eq!(
+        read("packaging/ssf.install"),
+        read("packaging/release/ssf.install")
+    );
+}
+
+#[test]
+fn removal_stops_only_the_package_owned_opted_in_unit() {
+    let hook = read("packaging/linux/preremove.sh");
+    assert!(hook.contains("FragmentPath"));
+    assert!(hook.contains("/usr/lib/systemd/user/ssf.service"));
+    assert!(hook.contains("stop ssf.service"));
+    assert!(hook.contains("disable ssf.service"));
+    assert!(hook.contains("daemon-reload"));
+    assert!(hook.contains("upgrade|1) exit 0"));
+    let alpm = read("packaging/ssf-pre-remove.hook");
+    assert!(alpm.contains("Operation = Remove"));
+    assert!(alpm.contains("AbortOnFail"));
+}
+
+#[cfg(unix)]
+#[test]
+fn removal_hook_stops_an_owned_active_unit_even_when_disabled() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ssf-package-hook-{}", std::process::id()));
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
+    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; }';; *'is-active'*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n").unwrap();
+    for name in ["loginctl", "systemctl"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let log = root.join("calls");
+    let status = Command::new("sh")
+        .arg(repo().join("packaging/linux/preremove.sh"))
+        .arg("0")
+        .env("PATH", format!("{}:/usr/bin", bin.display()))
+        .env("SSF_HOOK_LOG", &log)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert!(calls.contains("stop ssf.service"), "{calls}");
+    assert!(calls.contains("disable ssf.service"), "{calls}");
+    assert!(calls.contains("daemon-reload"), "{calls}");
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn removal_hook_fails_when_the_owned_service_cannot_stop() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ssf-package-hook-fail-{}", std::process::id()));
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
+    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; }';; *'stop ssf.service'*) exit 1;; *'is-active'*) exit 0;; esac\n").unwrap();
+    for name in ["loginctl", "systemctl"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let status = Command::new("sh")
+        .arg(repo().join("packaging/linux/preremove.sh"))
+        .arg("0")
+        .env("PATH", format!("{}:/usr/bin", bin.display()))
+        .status()
+        .unwrap();
+    assert!(
+        !status.success(),
+        "removal must abort while the owned daemon may still run"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn removal_discovery_fails_closed_and_skips_confirmed_unrelated_units() {
+    use std::os::unix::fs::PermissionsExt;
+    for (case, loginctl, systemctl, success) in [
+        (
+            "list-failure",
+            "#!/bin/sh\nexit 7\n",
+            "#!/bin/sh\nexit 0\n",
+            false,
+        ),
+        (
+            "property-failure",
+            "#!/bin/sh\necho '1000 alice'\n",
+            "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *FragmentPath*) exit 8;; esac\n",
+            false,
+        ),
+        (
+            "unrelated",
+            "#!/bin/sh\necho '1000 alice'\n",
+            "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *FragmentPath*) echo /home/alice/.config/systemd/user/ssf.service;; *stop*) exit 9;; esac\n",
+            true,
+        ),
+        (
+            "owned-mismatched-exec",
+            "#!/bin/sh\necho '1000 alice'\n",
+            "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *FragmentPath*) echo /usr/lib/systemd/user/ssf.service;; *ExecStart*) echo '{ path=/usr/bin/other ; argv[]=/usr/bin/other ; }';; *stop*) exit 9;; esac\n",
+            false,
+        ),
+        (
+            "owned-extra-command",
+            "#!/bin/sh\necho '1000 alice'\n",
+            "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *FragmentPath*) echo /usr/lib/systemd/user/ssf.service;; *ExecStart*) echo '{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; } ; { path=/usr/bin/other ; argv[]=/usr/bin/other ; }';; *stop*) exit 9;; esac\n",
+            false,
+        ),
+        (
+            "owned-extra-argument",
+            "#!/bin/sh\necho '1000 alice'\n",
+            "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *FragmentPath*) echo /usr/lib/systemd/user/ssf.service;; *ExecStart*) echo '{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run --other ; }';; *stop*) exit 9;; esac\n",
+            false,
+        ),
+        (
+            "offline",
+            "#!/bin/sh\necho '1000 alice'\n",
+            "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo offline; exit 1;; *stop*) exit 9;; esac\n",
+            true,
+        ),
+    ] {
+        let root =
+            std::env::temp_dir().join(format!("ssf-discovery-{case}-{}", std::process::id()));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("loginctl"), loginctl).unwrap();
+        std::fs::write(bin.join("systemctl"), systemctl).unwrap();
+        for name in ["loginctl", "systemctl"] {
+            std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        for script in [
+            "packaging/package-pre-remove.sh",
+            "packaging/linux/preremove.sh",
+        ] {
+            let status = Command::new("sh")
+                .arg(repo().join(script))
+                .arg("0")
+                .env("PATH", format!("{}:/usr/bin", bin.display()))
+                .status()
+                .unwrap();
+            assert_eq!(status.success(), success, "{case}: {script}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
 
 /// A systemd drop-in goes in `/etc/systemd/system/<unit>.d/`, and the unit

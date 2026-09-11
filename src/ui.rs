@@ -26,7 +26,7 @@ pub fn plugin_source_dir() -> PathBuf {
     let candidates = [
         PathBuf::from("/usr/share/ssf/omarchy-plugin"),
         exe_dir.join("../share/ssf/omarchy-plugin"),
-        exe_dir.join("../../omarchy-plugin"),
+        exe_dir.join("../.."),
     ];
     candidates
         .into_iter()
@@ -57,15 +57,34 @@ pub fn menu_extension_path() -> PathBuf {
     home().join(".config/omarchy/extensions/omarchy-menu.jsonc")
 }
 
-pub fn disabled_marker() -> PathBuf {
-    crate::config::state_dir().join("disabled")
+fn run_quiet(cmd: &str, args: &[&str]) -> Result<String> {
+    run_quiet_path(
+        std::path::Path::new(cmd),
+        cmd,
+        args,
+        std::env::var_os("OMARCHY_PATH"),
+    )
 }
 
-fn run_quiet(cmd: &str, args: &[&str]) -> Result<String> {
-    let out = Command::new(cmd)
-        .args(args)
-        .output()
-        .with_context(|| format!("running {cmd}"))?;
+fn run_quiet_path(
+    path: &std::path::Path,
+    cmd: &str,
+    args: &[&str],
+    inherited_omarchy_path: Option<std::ffi::OsString>,
+) -> Result<String> {
+    let mut command = Command::new(path);
+    command.args(args);
+    // Omarchy's plugin scripts source their library through OMARCHY_PATH.
+    // Services and other non-interactive callers do not inherit the shell
+    // profile that exports it, while the supported system installation is
+    // still rooted here.
+    if cmd.starts_with("omarchy-plugin-") {
+        command.env(
+            "OMARCHY_PATH",
+            inherited_omarchy_path.unwrap_or_else(|| "/usr/share/omarchy".into()),
+        );
+    }
+    let out = command.output().with_context(|| format!("running {cmd}"))?;
     if !out.status.success() {
         bail!(
             "{cmd} {} failed: {}",
@@ -89,6 +108,10 @@ pub fn install_plugin() -> Result<bool> {
         bail!("plugin sources not found at {}", src.display());
     }
     let dst = plugin_target_dir();
+    // `omarchy plugin add` installs the whole repository here as a git
+    // checkout. A packaged ssf discovered later must never replace files in
+    // that user-managed checkout with its packaged widget copy.
+    let marketplace_checkout = dst.join(".git").exists();
     let mut changed = false;
     if let Ok(meta) = std::fs::symlink_metadata(&dst)
         && meta.file_type().is_symlink()
@@ -97,13 +120,19 @@ pub fn install_plugin() -> Result<bool> {
         changed = true;
     }
     std::fs::create_dir_all(&dst).with_context(|| format!("creating {}", dst.display()))?;
-    for entry in std::fs::read_dir(&src).with_context(|| format!("reading {}", src.display()))? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
+    let files = ["manifest.json", "marketplace/FactoryPanel.qml"];
+    for relative in files {
+        if marketplace_checkout {
             continue;
         }
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
+        let from = src.join(relative);
+        if !from.is_file() {
+            bail!("plugin source missing {}", from.display());
+        }
+        let to = dst.join(relative);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         let data = std::fs::read(&from)?;
         if std::fs::read(&to).ok().as_deref() != Some(data.as_slice()) {
             crate::config::write_atomic(&to, &data, 0o644)?;
@@ -163,13 +192,25 @@ pub fn desktop_present() -> bool {
 
 /// Removes the bar widget; `Ok(true)` when there was one to remove.
 pub fn uninstall_plugin() -> Result<bool> {
-    if platform::is_omarchy()
-        && widget_enabled()?
-        && let Err(e) = run_quiet("omarchy-plugin-disable", &[PLUGIN_ID])
-    {
-        warn!("could not disable bar widget: {e:#}");
+    uninstall_plugin_with(platform::is_omarchy(), || {
+        run_quiet("omarchy-plugin-disable", &[PLUGIN_ID])
+    })
+}
+
+fn uninstall_plugin_with(
+    is_omarchy: bool,
+    mut disable: impl FnMut() -> Result<String>,
+) -> Result<bool> {
+    if is_omarchy && widget_enabled()? {
+        disable().context("could not disable bar widget before removing desktop integration")?;
     }
     let dst = plugin_target_dir();
+    // The marketplace owns its git checkout and `omarchy plugin remove`
+    // removes it. `ssf uninstall` disables the widget above but preserves the
+    // checkout, including this bootstrap helper, for that explicit final step.
+    if dst.join(".git").exists() {
+        return Ok(false);
+    }
     if let Ok(meta) = std::fs::symlink_metadata(&dst) {
         if meta.file_type().is_symlink() {
             std::fs::remove_file(&dst)?;
@@ -369,7 +410,23 @@ pub fn remove_menu_text(existing: &str) -> Option<String> {
 }
 
 pub fn service_enabled() -> bool {
-    !disabled_marker().exists()
+    if platform::is_macos() {
+        return service_active();
+    }
+    Command::new("systemctl")
+        .args(["--user", "is-enabled", "--quiet", platform::SERVICE])
+        .stdin(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+pub fn service_failed() -> bool {
+    !platform::is_macos()
+        && Command::new("systemctl")
+            .args(["--user", "is-failed", "--quiet", platform::SERVICE])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 /// What to do with a service command (`systemctl`, `brew services`) that
@@ -394,29 +451,32 @@ pub fn set_service_enabled(enabled: bool) -> Result<()> {
 
 /// [`set_service_enabled`], choosing what a failed service command does.
 pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> Result<()> {
-    let marker = disabled_marker();
-    let (result, what) = if enabled {
-        if marker.exists() {
-            std::fs::remove_file(&marker)?;
+    let (result, what) = if platform::is_macos() {
+        if enabled {
+            (crate::platform::service_start(), "start")
+        } else {
+            (crate::platform::service_stop(), "stop")
         }
-        (crate::platform::service_start(), "start")
     } else {
-        if let Some(parent) = marker.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&marker, "created by `ssf ui service disable`\n")?;
-        (crate::platform::service_stop(), "stop")
+        let action = if enabled { "enable" } else { "disable" };
+        let out = Command::new("systemctl")
+            .args(["--user", action, "--now", platform::SERVICE])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .context("running systemctl")
+            .and_then(|out| {
+                if out.status.success() {
+                    Ok(())
+                } else {
+                    bail!(
+                        "`systemctl --user {action} --now {}` failed: {}",
+                        platform::SERVICE,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    )
+                }
+            });
+        (out, action)
     };
-    // The marker is written before the service command because it records
-    // what was asked for, and `ssf ui service disable` means it even when
-    // the stop went wrong (the daemon is meant to stay off, and the next
-    // start is what clears it). A caller that treats the failure as fatal
-    // is not asking for that: its run stops here, nothing else changes,
-    // and a marker saying "disabled" over a service that is still running
-    // would be the one lasting trace of a command that did nothing.
-    if !enabled && result.is_err() && on_error == OnServiceError::Fail {
-        let _ = std::fs::remove_file(&marker);
-    }
     report_service(result, what, on_error)
 }
 
@@ -485,6 +545,58 @@ pub fn uninstall_all() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn omarchy_commands_get_the_supported_root_without_a_shell_profile() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!("ssf-omarchy-command-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let command = root.join("disable");
+        std::fs::write(
+            &command,
+            "#!/bin/bash\n[[ ${1:-} == fail ]] && { echo failed >&2; exit 42; }\n[[ ${OMARCHY_PATH:-} == /usr/share/omarchy ]] || { echo wrong-root >&2; exit 43; }\nprintf disabled\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert_eq!(
+            run_quiet_path(&command, "omarchy-plugin-disable", &[PLUGIN_ID], None).unwrap(),
+            "disabled"
+        );
+        let custom = run_quiet_path(
+            &command,
+            "omarchy-plugin-disable",
+            &[PLUGIN_ID],
+            Some("/custom/omarchy".into()),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{custom:#}").contains("wrong-root"),
+            "an inherited custom Omarchy root must not be replaced: {custom:#}"
+        );
+        let err = run_quiet_path(&command, "omarchy-plugin-disable", &["fail"], None).unwrap_err();
+        assert!(format!("{err:#}").contains("failed"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_disable_failure_preserves_the_marketplace_checkout() {
+        let sandbox = crate::config::test_support::sandbox();
+        let checkout = plugin_target_dir();
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        let shell_config = sandbox.home().join(".config/omarchy/shell.json");
+        std::fs::create_dir_all(shell_config.parent().unwrap()).unwrap();
+        std::fs::write(&shell_config, format!("{{\"right\":[\"{PLUGIN_ID}\"]}}")).unwrap();
+
+        let err = uninstall_plugin_with(true, || anyhow::bail!("disable refused")).unwrap_err();
+        assert!(format!("{err:#}").contains("disable refused"));
+        assert!(
+            checkout.join(".git").is_dir(),
+            "a failed disable must abort before the checkout can be removed"
+        );
+    }
 
     // ssf-ui is Linux desktop glue and is not shipped by the macOS package.
     #[cfg(target_os = "linux")]
@@ -659,7 +771,7 @@ mod tests {
     #[test]
     fn widget_and_helper_have_no_setup_flows() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let panel = std::fs::read_to_string(root.join("omarchy-plugin/Panel.qml")).unwrap();
+        let panel = std::fs::read_to_string(root.join("marketplace/FactoryPanel.qml")).unwrap();
         let helper = std::fs::read_to_string(root.join("bin/ssf-ui")).unwrap();
         for gone in [
             "ssf-ui login",
@@ -669,7 +781,7 @@ mod tests {
             "omarchy-menu-input",
             "omarchy-menu-select",
         ] {
-            assert!(!panel.contains(gone), "Panel.qml still has {gone:?}");
+            assert!(!panel.contains(gone), "FactoryPanel.qml still has {gone:?}");
             assert!(!helper.contains(gone), "ssf-ui still has {gone:?}");
         }
         // Naming the commands in advice text is fine; running them is not.
@@ -679,7 +791,10 @@ mod tests {
             "run(\"ssf auth",
             "run(\"ssf repo",
         ] {
-            assert!(!panel.contains(gone), "Panel.qml still runs {gone:?}");
+            assert!(
+                !panel.contains(gone),
+                "FactoryPanel.qml still runs {gone:?}"
+            );
         }
         for gone in [
             "ssf auth login --",
@@ -693,17 +808,15 @@ mod tests {
             assert!(!helper.contains(gone), "ssf-ui still runs {gone:?}");
         }
         for kept in [
-            "[\"ssf\", \"status\", \"--json\"]",
-            "ssf ui service toggle",
-            "ssf-ui logs",
-            "ssf-ui service restart",
-            "ssf-ui status",
-            "ssf-ui peers",
-            "ssf-ui open-workspace",
+            "\"status\", \"--json\"",
+            "/usr/bin/ssf",
+            "ui service toggle",
+            "ui service restart",
+            "ui open-workspace",
             "blocked_sessions",
             "anyone_allowed",
         ] {
-            assert!(panel.contains(kept), "Panel.qml lost {kept:?}");
+            assert!(panel.contains(kept), "FactoryPanel.qml lost {kept:?}");
         }
         for cmd in ["service)", "logs)", "status)", "peers)", "open-workspace)"] {
             assert!(helper.contains(cmd), "ssf-ui lost the {cmd} command");
@@ -733,7 +846,6 @@ mod tests {
         let sb = crate::config::test_support::sandbox();
         assert!(plugin_target_dir().starts_with(sb.home()));
         assert!(menu_extension_path().starts_with(sb.home()));
-        assert_eq!(disabled_marker(), sb.state_dir().join("disabled"));
     }
 
     #[test]
