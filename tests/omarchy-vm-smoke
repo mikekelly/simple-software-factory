@@ -1,0 +1,31 @@
+#!/bin/bash
+# Exercise the package/widget split in a disposable Omarchy VM.
+set -euo pipefail
+
+usage() {
+  echo "Usage: tests/omarchy-vm-smoke /path/to/omarchy-iso release/omarchy.iso /path/to/ssf.pkg.tar.zst [--reuse-base]" >&2
+  exit 2
+}
+
+(( $# >= 3 && $# <= 4 )) || usage
+ISO_HARNESS=$(realpath "$1")
+ISO=$(realpath "$2")
+SSF_PACKAGE=$(realpath "$3")
+REUSE=${4:-}
+[[ -x "$ISO_HARNESS/test/integration" ]] || { echo "missing upstream test/integration in $ISO_HARNESS" >&2; exit 2; }
+[[ -f $ISO ]] || { echo "ISO not found: $ISO" >&2; exit 2; }
+[[ -f $SSF_PACKAGE && $SSF_PACKAGE == *.pkg.tar.zst ]] || { echo "Arch package not found: $SSF_PACKAGE" >&2; exit 2; }
+[[ -z $REUSE || $REUSE == --reuse-base ]] || usage
+
+scenario="$ISO_HARNESS/test/integration.d/ssf-package-widget-test.sh"
+[[ ! -e $scenario ]] || { echo "refusing to overwrite $scenario" >&2; exit 2; }
+cleanup() { rm -f "$scenario"; }
+trap cleanup EXIT
+cp "$(dirname "$0")/omarchy-vm-scenario.sh" "$scenario"
+
+export SSF_PLUGIN_REPO SSF_PACKAGE SSF_PACKAGE_SHA256 SSF_LEGACY_HELPER
+SSF_PLUGIN_REPO=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+SSF_PACKAGE_SHA256=$(sha256sum "$SSF_PACKAGE" | awk '{print $1}')
+SSF_LEGACY_HELPER=${SSF_LEGACY_HELPER:-/home/mk/.local/share/ssf-install-sources/ssf-omarchy-local-20260910-95c2S9/marketplace/ssf-marketplace}
+[[ -x $SSF_LEGACY_HELPER ]] || { echo "legacy runtime helper fixture not found: $SSF_LEGACY_HELPER" >&2; exit 2; }
+"$ISO_HARNESS/test/integration" "$ISO" ssf-package-widget ${REUSE:+"$REUSE"} --no-preview

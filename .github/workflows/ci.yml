@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets
+      - name: Test
+        run: cargo test --locked --all-targets
+      - name: Validate the Omarchy plugin
+        run: |
+          test -f marketplace/FactoryPanel.qml
+          test ! -e marketplace/ssf-marketplace
+          test ! -e marketplace/ssf.service.in
+          git clone --depth 1 --branch quattro https://github.com/basecamp/omarchy.git /tmp/omarchy
+          PATH="/tmp/omarchy/bin:$PATH" omarchy-plugin-validate .

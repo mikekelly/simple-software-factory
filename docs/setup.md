@@ -51,6 +51,19 @@ and run the command for your platform (**you** for sudo):
 | Fedora | `sudo dnf install ./ssf-*.x86_64.rpm` |
 | macOS | `brew install mikekelly/ssf/ssf` |
 
+Package installation only installs SSF's files. It does not create user
+configuration, authenticate a bot, enable the service, or install the optional
+Omarchy widget. Prepare the current user explicitly after installation:
+
+```sh
+ssf setup
+```
+
+On Linux this creates the initial configuration and enables and starts the
+user service for `default.target`. It asks before enabling systemd linger so
+the service can start at boot and remain available after logout. On macOS it
+creates the initial configuration; start the Homebrew service in step 6.
+
 Before running the install command, supply any prerequisites the package
 cannot provide:
 
@@ -71,32 +84,21 @@ Homebrew supplies `gh` and `lima`. Host herdr on macOS is optional
 (`brew install herdr`); the VM supplies its own. Orca is installed
 separately if you choose it in step 6.
 
-### Service startup
+### Service and optional Omarchy widget
 
-Linux packages enable `ssf.service` and try to start it in running user
-sessions. It cannot run successfully until the bot is signed in.
-Debian/Fedora units start with the systemd user manager; on a server,
-`loginctl enable-linger "$USER"` keeps it running without a login
-(**you**, if authorization is required).
+`ssf setup` is the only package setup step. The Linux unit works in Wayland,
+X11, and headless sessions and starts through the user's `default.target`.
+The service can start before bot login; in VM mode the guest starts without a
+credential and becomes healthy after step 4.
 
-The Arch/Omarchy unit requires a Wayland session. For X11 or a headless
-host, add this user override:
+On Omarchy, install the widget separately if you want its status display and
+service controls:
 
 ```sh
-mkdir -p ~/.config/systemd/user/ssf.service.d
-cat > ~/.config/systemd/user/ssf.service.d/no-wayland.conf <<'EOF'
-[Unit]
-ConditionEnvironment=
-ConditionPathExists=!%h/.local/state/ssf/disabled
-EOF
-systemctl --user daemon-reload
-systemctl --user add-wants default.target ssf.service
-systemctl --user start ssf.service
+omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --enable
 ```
 
-Clearing the condition list also clears the disabled-marker condition,
-so the override restores it. Linger can then be used on Arch too.
-Homebrew starts nothing at installation; start its service in step 6.
+The widget never installs, upgrades, starts, or removes the SSF package.
 
 Config and credentials live in `~/.config/ssf`, state in
 `~/.local/state/ssf`, and VM files in `~/.local/share/ssf/vm` (lima also
@@ -201,9 +203,9 @@ guest daemon to apply the credential change; repository and ordinary
 configuration edits need no restart.
 `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
 itself stays where gh holds the account. `ssf token` prints the token for anything else that needs
-it. The service, which could not start in step 2, starts on its next
-retry now that there is a token. VM users already started the service
-before this step; host-mode macOS users start it in step 6. `ssf status` names the configured
+it. The daemon authenticates on its next retry now that there is a token. VM
+users already started the host service before this step; host-mode macOS users
+start it in step 6. `ssf status` names the configured
 account before the daemon first starts, then the account the daemon last
 authenticated as. Removing the credential makes status report not signed in.
 

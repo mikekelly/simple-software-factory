@@ -23,6 +23,7 @@ mod platform;
 mod prompt;
 mod release;
 mod sessions;
+mod setup;
 mod shim;
 mod state;
 mod status;
@@ -59,6 +60,8 @@ enum Command {
     /// Initialize persistent guest factory state (called by the guest boot service).
     #[command(hide = true)]
     VmInit { seed: PathBuf },
+    /// Prepare this user account and enable the packaged background service.
+    Setup,
     /// Manage the bot account credentials (for people, from a terminal, or the agent setting ssf up for them; factory sessions never run it).
     Auth {
         #[command(subcommand)]
@@ -246,8 +249,8 @@ enum Command {
         command: UiCommand,
     },
     /// Take this machine back to just the package: purge closed workspaces,
-    /// stop and disable the service, remove the bar widget and menu entries,
-    /// sign the bot out (revoking its keys on GitHub), destroy the microVM.
+    /// stop and disable the service, sign the bot out (revoking its keys on
+    /// GitHub), and destroy the microVM. Omarchy owns its widget and menu.
     /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`,
     /// `apt remove` or `dnf remove`; the command prints the one for this
     /// machine), the projects directory (clones and worktrees), and, without
@@ -262,7 +265,7 @@ enum Command {
         #[arg(long)]
         force: bool,
         /// Also remove ~/.config/ssf (config, the bot's key) and
-        /// ~/.local/state/ssf (state, and the disabled-service marker).
+        /// ~/.local/state/ssf (state and setup readiness).
         #[arg(long)]
         data: bool,
         /// Only print the report (what would be stopped, removed and revoked),
@@ -756,6 +759,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::VmInit { seed } => vm::initialize_guest_factory(&seed, &config::config_dir()),
+        Command::Setup => setup::run(),
         Command::Auth { command } => auth(command).await,
         Command::Token => {
             let cfg = Config::load()?;
@@ -3346,10 +3350,17 @@ fn ui_cmd(command: UiCommand) -> Result<()> {
             ServiceCommand::Status { json } => {
                 let enabled = ui::service_enabled();
                 let active = ui::service_active();
+                let failed = ui::service_failed();
+                let configured = setup::complete();
                 if json {
-                    println!("{}", json!({"enabled": enabled, "active": active}));
+                    println!(
+                        "{}",
+                        json!({"enabled": enabled, "active": active, "failed": failed, "configured": configured})
+                    );
                 } else {
-                    println!("enabled: {enabled}\nactive:  {active}");
+                    println!(
+                        "configured: {configured}\nenabled:    {enabled}\nactive:     {active}\nfailed:     {failed}"
+                    );
                 }
                 Ok(())
             }
