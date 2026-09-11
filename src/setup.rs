@@ -249,7 +249,7 @@ pub fn completion_marker() -> PathBuf {
 pub fn complete() -> bool {
     Config::load().is_ok()
         && config::config_path().is_file()
-        && std::fs::read(&completion_marker()).is_ok_and(|body| body == b"ssf-setup-v1\n")
+        && std::fs::read(completion_marker()).is_ok_and(|body| body == b"ssf-setup-v1\n")
 }
 
 #[cfg(test)]
