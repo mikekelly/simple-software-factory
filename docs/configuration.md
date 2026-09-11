@@ -8,11 +8,28 @@ Every key in `~/.config/ssf/config.toml`, the per-project prompt file, model and
 `/usr/share/ssf/config.example.toml`, and on macOS as
 `$(brew --prefix)/share/ssf/config.example.toml`) shows every key with a
 comment. The token is never in this file: a pasted one
-(`ssf auth login --token`) lives in `~/.config/ssf/token` (mode 0600),
-otherwise it is read from gh's keyring when needed.
+(`ssf auth login --token`) lives in `~/.config/ssf/token` (mode 0600).
+In host mode, browser login reads it from gh's keyring when needed.
+In VM mode, browser login and credential storage run inside the guest.
 `ssf config set` refuses to touch `github.token`; use
 `ssf auth login` for that. Changes are picked up on the next poll; no
 restart needed.
+
+With `vm.enabled = true`, the host owns only `[vm]` lifecycle settings
+and the SSH credential used to administer the guest. Repositories,
+`[github]`, `[git]`, `[daemon]` and driver settings belong to the guest.
+Repository commands, factory `ssf config get|set`, and `ssf auth`
+commands run there over SSH; paths in their arguments refer to guest files.
+`ssf config get|set vm.<key>` remains on the host. Factory commands fail
+if the guest is stopped or unreachable; start it with `ssf vm start` and
+retry. They never edit a host factory copy as a fallback.
+
+The guest config and credentials live in its persistent home on the data
+disk. VM restart or root rebuild preserves them. Ordinary edits need no
+`ssf vm sync`; see [migration and recovery](vm.md#upgrading-existing-vms)
+for the older copied-config layout. Select VM mode before that migration;
+using `ssf vm` management commands with `vm.enabled = false` preserves
+your independent host factory settings and credentials.
 
 ```toml
 [daemon]
@@ -65,7 +82,7 @@ instructions = "Run `make test` before opening a PR."
 | `vm.data_gib` | chosen from the machine | The persistent data disk (state, clones, worktrees) in GiB, sparse; unset, `ssf vm build` writes half the free space of the filesystem that will hold the disk (at least 20) here, and prints the path it measured: `vm.dir` under Firecracker, lima's own disk directory (`$LIMA_HOME/_disks`, by default `~/.lima/_disks`) under lima, since that is where lima keeps its disks; `ssf vm grow` enlarges it later |
 | `vm.root_gib` | `8` | The root image `ssf vm build` makes; under lima the instance's root disk, at least 20 whatever is set |
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
-| `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
+| `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Factory configuration, bot credentials, `.gitconfig` and data-disk destinations are protected and refused. Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
 | `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Firecracker only: use binaries or images of your own instead of the downloaded ones |
 | `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with; lima 2.0.1 or newer, which `ssf vm build` checks and says why (see [Backends](vm.md#backends)) |
 | `vm.image` | Arch's cloud image on x86_64, Ubuntu LTS on aarch64 | lima only: a cloud-init image (URL or path; Arch or Debian/Ubuntu) to boot instead of the default for the guest's architecture |

@@ -56,6 +56,9 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum Command {
+    /// Initialize persistent guest factory state (called by the guest boot service).
+    #[command(hide = true)]
+    VmInit { seed: PathBuf },
     /// Manage the bot account credentials (for people, from a terminal, or the agent setting ssf up for them; factory sessions never run it).
     Auth {
         #[command(subcommand)]
@@ -375,8 +378,8 @@ enum VmCommand {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
-    /// Push this machine's config and token into the running guest and
-    /// restart its daemon.
+    /// Finish an interrupted ownership migration; ordinary edits already
+    /// operate in the guest and need no sync.
     Sync,
     /// The guest daemon's journal.
     Logs {
@@ -407,11 +410,10 @@ enum VmCommand {
 
 #[derive(Subcommand)]
 enum AuthCommand {
-    /// Sign in the bot account through the GitHub CLI (pick an account gh
-    /// already knows, or sign in another one in the browser), record its git
-    /// identity and enroll a dedicated SSH key for pushes and commit signing.
+    /// Sign in the bot and enroll an SSH key for pushes and signing.
+    /// VM mode uses device authorization inside the guest; host mode can use gh's keyring.
     Login {
-        /// Use this account from gh's keyring without asking.
+        /// Expected bot login in VM mode; choose this gh account in host mode.
         #[arg(long, alias = "username")]
         user: Option<String>,
         /// Sign in another account in the browser (gh's device flow).
@@ -641,7 +643,7 @@ async fn main() -> Result<()> {
     // bar widget polls it); the others cannot do anything.
     if let Some(name) = forwarded_name(&cli.command)
         && !vm::in_guest()
-        && let Ok(cfg) = Config::load()
+        && let cfg = Config::load()?
         && cfg.vm.enabled
     {
         let vm = vm::Vm::new(&cfg);
@@ -678,6 +680,19 @@ async fn main() -> Result<()> {
                 if let Some(note) = note {
                     eprintln!("{note}");
                 }
+                if !matches!(cli.command, Command::Status { .. } | Command::Doctor) {
+                    vm.ensure_factory_ownership(&cfg)?;
+                }
+                if matches!(
+                    cli.command,
+                    Command::Doctor | Command::Status { json: false }
+                ) {
+                    eprintln!(
+                        "host VM: {} ({backend}, {}); inspecting guest factory",
+                        cfg.vm.name,
+                        probe_word(&probe)
+                    );
+                }
                 let args: Vec<String> = std::env::args().skip(1).collect();
                 // `status --json` is answered even when the guest does
                 // not answer it: an ssh that fails -- the VM down behind
@@ -707,7 +722,16 @@ async fn main() -> Result<()> {
                         .filter(|s| !s.trim().is_empty());
                     match answer {
                         Some(answer) => {
-                            print!("{answer}");
+                            let mut answer: serde_json::Value = serde_json::from_str(&answer)
+                                .context("guest status returned invalid JSON")?;
+                            answer["factory_location"] = "guest".into();
+                            answer["factory_reachable"] = true.into();
+                            answer["host_vm"] = serde_json::json!({
+                                "name": cfg.vm.name, "backend": backend,
+                                "state": probe_word(&probe),
+                                "service_enabled": ui::service_enabled(),
+                            });
+                            println!("{answer}");
                             std::process::exit(
                                 out.map(|o| o.status.code().unwrap_or(1)).unwrap_or(1),
                             );
@@ -731,6 +755,7 @@ async fn main() -> Result<()> {
     }
 
     match cli.command {
+        Command::VmInit { seed } => vm::initialize_guest_factory(&seed, &config::config_dir()),
         Command::Auth { command } => auth(command).await,
         Command::Token => {
             let cfg = Config::load()?;
@@ -1172,9 +1197,23 @@ async fn auth(command: AuthCommand) -> Result<()> {
                         bail!("that token belongs to @{}, not @{u}", me.login);
                     }
                 }
-                let path = config::save_token(&t)?;
-                println!("Stored token for @{} in {}", me.login, path.display());
                 (me.login, t, "token file")
+            } else if vm::in_guest() {
+                let t = ghcli::login_device(&host, ghcli::REQUIRED_SCOPES)?;
+                let gh = github::GitHub::new(&cfg.github.api_url, &t)?;
+                let me = gh
+                    .whoami()
+                    .await
+                    .context("device token rejected by GitHub")?;
+                if let Some(u) = user.as_deref()
+                    && !me.login.eq_ignore_ascii_case(u.trim_start_matches('@'))
+                {
+                    bail!(
+                        "that sign-in belongs to @{}, not @{u}; no bot credentials were changed",
+                        me.login
+                    );
+                }
+                (me.login, t, "guest token file")
             } else {
                 if !ghcli::available() {
                     bail!(
@@ -1278,6 +1317,8 @@ async fn auth(command: AuthCommand) -> Result<()> {
             let gh = github::GitHub::new(&cfg.github.api_url, &token)?;
             let me = gh.whoami().await?;
             cfg.github.login = Some(login.clone());
+            // The newly authenticated credential must replace a legacy inline token.
+            cfg.github.token = None;
             cfg.github.email = Some(
                 email
                     .or_else(|| me.email.clone())
@@ -1317,7 +1358,12 @@ async fn auth(command: AuthCommand) -> Result<()> {
                 }
                 cfg.github.ssh_key_path = Some(pair.private.to_string_lossy().to_string());
             }
+            if source == "token file" || source == "guest token file" {
+                let path = config::save_token(&token)?;
+                println!("Stored token for @{login} in {}", path.display());
+            }
             cfg.save()?;
+            refresh_guest_auth()?;
             if let Some(prev) = previous_active.as_deref() {
                 if prev != login {
                     println!(
@@ -1409,8 +1455,38 @@ async fn auth(command: AuthCommand) -> Result<()> {
             }
             Ok(())
         }
-        AuthCommand::Logout { keep_keys } => auth_logout(keep_keys).await,
+        AuthCommand::Logout { keep_keys } => {
+            auth_logout(keep_keys).await?;
+            refresh_guest_auth()
+        }
     }
+}
+
+/// The daemon holds its API token for its lifetime. Authentication changes
+/// restart only the guest service, whose workspaces live on the data disk.
+fn refresh_guest_auth() -> Result<()> {
+    // Unit tests authenticate against local fixtures and must never control
+    // the real guest service, even when cargo test itself runs inside a VM.
+    #[cfg(not(test))]
+    if vm::in_guest() {
+        if config::config_dir() != PathBuf::from(vm::GUEST_HOME).join(".config/ssf") {
+            println!(
+                "Credentials saved in {}; restart the daemon using that configuration to apply them.",
+                config::config_dir().display()
+            );
+            return Ok(());
+        }
+        let status = std::process::Command::new("sudo")
+            .args(["systemctl", "restart", "ssf.service"])
+            .status()
+            .context("credentials saved in the guest; restarting its daemon")?;
+        if !status.success() {
+            bail!(
+                "credentials saved in the guest, but its daemon could not restart; run `ssf vm ssh -- sudo systemctl restart ssf.service`"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// `ssf auth logout`: revoke the bot's keys on GitHub and remove them here
@@ -1456,6 +1532,7 @@ pub async fn auth_logout(keep_keys: bool) -> Result<()> {
     }
     cfg.github.login = None;
     cfg.github.email = None;
+    cfg.github.token = None;
     cfg.save()?;
     Ok(())
 }
@@ -2250,6 +2327,8 @@ fn probe_word(probe: &Result<bool, String>) -> &'static str {
 fn vm_status_for_guest(vm: &str) -> serde_json::Value {
     serde_json::json!({
         "vm": vm, "service_active": false, "service_enabled": ui::service_enabled(),
+        "factory_location": "guest", "factory_reachable": false,
+        "host_vm": { "state": vm },
         "sessions": [], "repos": [],
     })
 }
@@ -2257,6 +2336,19 @@ fn vm_status_for_guest(vm: &str) -> serde_json::Value {
 /// The name of a command that runs in the guest when the factory is in a VM.
 fn forwarded_name(cmd: &Command) -> Option<&'static str> {
     let name = match cmd {
+        Command::Auth { .. } => "auth",
+        Command::Token => "token",
+        Command::Repo { .. } => "repo",
+        Command::Agents { .. } => "agents",
+        Command::Models { .. } => "models",
+        Command::Config { command } => match command {
+            Some(ConfigCommand::Get { key } | ConfigCommand::Set { key, .. })
+                if key == "vm" || key.starts_with("vm.") =>
+            {
+                return None;
+            }
+            _ => "config",
+        },
         Command::Status { .. } => "status",
         Command::Peers { .. } => "peers",
         Command::Sub { .. } => "sub",
@@ -2299,7 +2391,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
             if let Some(n) = vm.grow(data_gib)? {
                 let mut cfg = cfg;
                 cfg.vm.data_gib = Some(n);
-                cfg.save()?;
+                cfg.save_vm_settings()?;
                 println!(
                     "[vm] data_gib = {n} written to {}",
                     config::config_path().display()
@@ -2511,7 +2603,7 @@ fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()>
         chosen.sources[2],
     );
     if chosen.changed {
-        cfg.save()?;
+        cfg.save_vm_settings()?;
         println!(
             "written to {} under [vm] (backend, vcpus, mem_mib, data_gib); edit them there. The data disk itself is made once and only enlarged by `ssf vm grow`",
             config::config_path().display()
@@ -4025,6 +4117,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn factory_cli_routes_to_guest_but_vm_settings_stay_on_host() {
+        for args in [
+            vec!["ssf", "repo", "list"],
+            vec!["ssf", "repo", "add", "owner/repo", "--harness", "claude"],
+            vec!["ssf", "repo", "set", "owner/repo", "--model", "model"],
+            vec!["ssf", "repo", "remove", "owner/repo"],
+            vec!["ssf", "auth", "login"],
+            vec!["ssf", "auth", "logout"],
+            vec!["ssf", "auth", "status"],
+            vec!["ssf", "token"],
+            vec!["ssf", "config"],
+            vec!["ssf", "config", "path"],
+            vec!["ssf", "config", "get", "daemon"],
+            vec!["ssf", "config", "set", "daemon.poll_interval_secs", "30"],
+            vec!["ssf", "agents"],
+            vec!["ssf", "models", "claude"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap();
+            let name =
+                forwarded_name(&cli.command).unwrap_or_else(|| panic!("{args:?} stayed on host"));
+            assert!(matches!(
+                forwarding_gate(&Ok(false), "factory", "firecracker", name, None),
+                Gate::Refuse(_)
+            ));
+        }
+        for args in [
+            vec!["ssf", "config", "get", "vm"],
+            vec!["ssf", "config", "get", "vm.enabled"],
+            vec!["ssf", "config", "set", "vm.enabled", "false"],
+            vec!["ssf", "vm", "start"],
+            vec!["ssf", "run"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap();
+            assert_eq!(forwarded_name(&cli.command), None, "{args:?}");
+        }
+    }
+
+    #[test]
     fn a_failed_forwarded_one_shot_names_its_guest() {
         let once = Command::Run { once: true };
         assert_eq!(
@@ -4169,6 +4299,9 @@ resource temporarily unavailable"
             let v = vm_status_for_guest(state);
             assert_eq!(v["vm"], state);
             assert_eq!(v["service_active"], false);
+            assert_eq!(v["factory_reachable"], false);
+            assert_eq!(v["factory_location"], "guest");
+            assert_eq!(v["host_vm"]["state"], state);
             assert_eq!(v["sessions"], serde_json::json!([]));
             assert_eq!(v["repos"], serde_json::json!([]));
         }
@@ -4850,6 +4983,7 @@ command's effort), without a summary."
         let _ = rustls::crypto::ring::default_provider().install_default();
         let mut cfg = Config::default();
         cfg.github.api_url = auth_test_api().await;
+        cfg.github.token = Some("legacy-inline-token".into());
         cfg.save().unwrap();
         let live = r#"{
   "bot_login": "daemon-bot",
@@ -4890,6 +5024,9 @@ command's effort), without a summary."
             Config::load().unwrap().github.login.as_deref(),
             Some("new-bot")
         );
+        let authenticated = Config::load().unwrap();
+        assert!(authenticated.github.token.is_none());
+        assert_eq!(authenticated.github_token().unwrap(), "test-token");
         assert_eq!(std::fs::read_to_string(&state_path).unwrap(), live);
 
         // The daemon may save its snapshot after auth. It keeps the live

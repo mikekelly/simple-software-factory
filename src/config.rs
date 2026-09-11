@@ -1421,6 +1421,22 @@ impl Config {
         self.save_to(&config_path())
     }
 
+    /// VM infrastructure changes replace only [vm]. Ownership adoption is the
+    /// sole operation allowed to archive and remove host factory settings.
+    pub fn save_vm_settings(&self) -> Result<()> {
+        let path = config_path();
+        let mut table: toml::Table = match std::fs::read_to_string(&path) {
+            Ok(raw) => toml::from_str(&raw).context("parsing host config")?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Table::new(),
+            Err(e) => return Err(e).context("reading host config"),
+        };
+        table.insert("vm".into(), toml::Value::try_from(&self.vm)?);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        write_atomic(&path, toml::to_string_pretty(&table)?.as_bytes(), 0o600)
+    }
+
     pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -1630,6 +1646,38 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_infrastructure_updates_preserve_host_factory_and_vm_only_layouts() {
+        let _sandbox = test_support::sandbox();
+        for source in [
+            "[vm]\nenabled = true\n",
+            "driver = 'herdr'\n[[repo]]\nname = 'owner/host'\nharness = 'claude'\n[github]\nlogin = 'host-bot'\n[vm]\nenabled = true\n",
+        ] {
+            std::fs::write(config_path(), source).unwrap();
+            let before: toml::Table = toml::from_str(source).unwrap();
+            let mut cfg = Config::load().unwrap();
+            cfg.vm.mem_mib = Some(8192);
+            cfg.save_vm_settings().unwrap();
+            let after: toml::Table =
+                toml::from_str(&std::fs::read_to_string(config_path()).unwrap()).unwrap();
+            assert_eq!(after["vm"]["mem_mib"].as_integer(), Some(8192));
+            let factory = |mut table: toml::Table| {
+                table.remove("vm");
+                table
+            };
+            assert_eq!(factory(after), factory(before));
+        }
+        // Ordinary saves never perform an ownership migration, even when
+        // a host-side ownership marker remains from earlier VM operation.
+        let mut cfg = Config::load().unwrap();
+        cfg.vm.dir = config_dir().join("vms").to_string_lossy().into_owned();
+        let instance = crate::vm::Vm::new(&cfg);
+        std::fs::create_dir_all(&instance.dir).unwrap();
+        std::fs::write(instance.dir.join("guest-owned"), "1").unwrap();
+        cfg.save().unwrap();
+        assert_eq!(Config::load().unwrap().repos[0].name, "owner/host");
+    }
 
     /// The three rules of a per-item override (`ssf handover`): nothing
     /// overridden, the repository's own harness, another harness.

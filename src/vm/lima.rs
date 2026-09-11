@@ -720,6 +720,15 @@ fn plural(n: u64, unit: &str) -> String {
     format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
 }
 
+fn require_safe_root(dir: &Path) -> Result<()> {
+    if dir.join("ssf-safe-root-v2").is_file() || dir.join("ssf-fresh-root-v2").is_file() {
+        return Ok(());
+    }
+    bail!(
+        "this legacy Lima root still contains the old destructive factory seed script; refusing to boot. Run ssf vm reset, then ssf vm start to provision a new disposable root. The persistent data disk, configuration, credentials and worktrees are preserved"
+    );
+}
+
 impl Vm {
     /// The lima instance: `ssf-<name>`.
     pub fn lima_name(&self) -> String {
@@ -1239,6 +1248,10 @@ impl Vm {
         info!("starting {name} for its first boot: the guest provisions itself (a few minutes)");
         self.limactl_start(&["start", "--timeout", &start_timeout_arg(), &name])?;
         self.wait_for_provisioning().await?;
+        if let Some(inst) = self.lima_instance()? {
+            super::write_private(&Path::new(&inst.dir).join("ssf-safe-root-v2"), b"1\n")?;
+            let _ = std::fs::remove_file(Path::new(&inst.dir).join("ssf-fresh-root-v2"));
+        }
         if let Ok(log) =
             self.limactl_output_within(&["shell", &name, "sudo", "cat", PROVISION_LOG], PROBE_LIMIT)
         {
@@ -1542,7 +1555,11 @@ impl Vm {
         self.limactl_run_within(
             &["create", "--name", &name, &template.to_string_lossy()],
             CREATE_LIMIT,
-        )
+        )?;
+        let inst = self
+            .lima_instance()?
+            .context("new Lima instance is missing after create")?;
+        super::write_private(&Path::new(&inst.dir).join("ssf-fresh-root-v2"), b"1\n")
     }
 
     /// Wait for `/etc/ssf-image-built` over `limactl shell`: present at
@@ -1653,6 +1670,7 @@ impl Vm {
         if let Some(yaml) = self.repair_stale_format(Some(&inst), Why::FoundStale) {
             return Err(self.stale_format_error(&yaml));
         }
+        require_safe_root(Path::new(&inst.dir))?;
         self.ensure_key()?;
         self.write_share(host)?;
         self.apply_sizes()?;
@@ -1669,6 +1687,10 @@ impl Vm {
             );
         }
         self.wait_for_provisioning().await?;
+        if let Some(inst) = self.lima_instance()? {
+            super::write_private(&Path::new(&inst.dir).join("ssf-safe-root-v2"), b"1\n")?;
+            let _ = std::fs::remove_file(Path::new(&inst.dir).join("ssf-fresh-root-v2"));
+        }
         if let Err(e) = self.wait_for_ssh(SEED_TIMEOUT).await {
             bail!(
                 "{e:#}; the console is in {}",
@@ -2454,6 +2476,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_lima_root_is_refused_before_boot() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let t = Fake::new("Stopped");
+        let inst = t.vm.lima_instance().unwrap().unwrap();
+        std::fs::remove_file(Path::new(&inst.dir).join("ssf-safe-root-v2")).unwrap();
+        let error =
+            t.vm.lima_start(&Config::default())
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("ssf vm reset"), "{error}");
+        assert!(!t.ran("start"), "{:?}", t.commands());
+        std::fs::write(Path::new(&inst.dir).join("ssf-fresh-root-v2"), "1").unwrap();
+        require_safe_root(Path::new(&inst.dir)).unwrap();
+    }
+
+    #[tokio::test]
     async fn a_start_repairs_the_flag_before_the_boot_and_refuses_what_it_cannot_repair() {
         // The start writes the share tree, which seeds the guest from the
         // bot token and so resolves the config directory (#140).
@@ -3151,6 +3190,7 @@ mod tests {
             ));
             let inst_dir = dir.join("lima/ssf-one");
             std::fs::create_dir_all(&inst_dir).unwrap();
+            std::fs::write(inst_dir.join("ssf-safe-root-v2"), "1").unwrap();
             let log = dir.join("limactl.log");
             let json = format!(
                 r#"{{"name":"ssf-one","status":"{status}","dir":"{}","sshLocalPort":2222,"cpus":3,"memory":8589934592}}"#,

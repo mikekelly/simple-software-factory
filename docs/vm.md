@@ -61,19 +61,15 @@ Linux, and on a Mac with `[vm] vm_type = "qemu"`), under lima; a
 to install; `--json` carries the same as a `tooling` object with `ok`
 and `detail`, null inside the guest, whose host owns the VM.
 
-`ssf doctor` has the line too, but you see it only on a machine where
-`[vm] enabled` is false, and there as a `note` rather than a check,
-since nothing on such a host needs the tooling until you turn the VM
-on. With the VM enabled and running, `doctor` is forwarded into the
-guest, which has no backend tooling of its own; with the VM enabled and
-stopped, the host command refuses to run and its error names what is
-missing (`the factory runs in VM default, which is not running, and
-lima cannot start it: qemu-system-x86_64 not installed; install qemu
-...`). That refusal needs a VM known to be stopped, which needs a
-`limactl` that runs: a host that has not got one at all cannot be asked
-the question, so there the same detail comes on stderr as part of the
-note below and the command is still tried. So on a VM-enabled machine,
-`ssf vm status` is where you look.
+With VM mode disabled, `ssf doctor` reports host backend tooling as a
+note. With VM mode enabled, it inspects the guest factory over SSH;
+`ssf vm status` separately reports host backend tooling and VM health.
+A stopped or unreachable guest makes factory commands fail with a
+VM-specific diagnostic. No local factory check or edit is substituted.
+`ssf status --json` reports `factory_location: "guest"`,
+`factory_reachable`, and a separate `host_vm` object. An unreachable
+factory's empty repository/session arrays are unavailable data, not a
+claim that the guest has no repositories.
 
 A Firecracker build on anything but Linux x86_64 refuses and says to set
 `vm.backend` to `lima`. Either way, `[vm] dir`
@@ -96,7 +92,7 @@ plus Firecracker's seccomp filter. It is x86_64 only: the Firecracker,
 gvproxy and kernel binaries `ssf vm build` downloads are built for it.
 
 The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
-(libarchive), `mkfs.ext4`, `e2fsck` and `resize2fs` (e2fsprogs), `curl`,
+(libarchive), `mkfs.ext4`, `e2fsck`, `debugfs` and `resize2fs` (e2fsprogs), `curl`,
 `openssh`, and its own `herdr` binary, which is copied into the image.
 All of that is on a stock Omarchy; elsewhere `sudo pacman -S --needed
 fakeroot libarchive e2fsprogs curl openssh`, `sudo apt install fakeroot
@@ -272,7 +268,7 @@ What the commands do under lima:
 | `ssf vm destroy --yes` | the instance, the data disk and `<vm.dir>/<name>/`; the confirmation names all three |
 | `ssf vm console` | the instance's serial console log (`serial.log`, or `serialv.log`, in lima's instance directory); fails naming the instance when it has not been booted yet and neither is there |
 
-Everything else (`status`, `ssh`, `attach`, `login`, `sync`, `logs`,
+Everything else (`status`, `ssh`, `attach`, `login`, `logs`,
 `run`, `ssh-config`) goes over ssh and works the same under both.
 
 ## Size
@@ -393,27 +389,27 @@ you installed.
 
 ## What gets in, and what does not
 
-At every start the host writes a small seed (a disk under Firecracker;
-the `seed/` tree of the read-only share under lima, read by the guest's
-seed unit at boot) with the `ssf` binary,
-`config.toml` rewritten for the guest (`driver = "herdr"`, clones under
-`/var/lib/ssf/projects`, no `repo.path`), the bot token (resolved the way
-`ssf token` does, so the host keyring itself is never copied), the bot's
-own SSH key if `ssf auth login` enrolled one, whatever a `[git]` or
-`[repo.git]` table names (a `signing_key` is copied to
-`~/.config/ssf/keys/`, a `token:<login>` is resolved from gh here and
-written to `~/.config/ssf/git-tokens/<login>`, a `file:` token is copied
-there too, and the guest config points at the copies; see [Committing as a
-person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)),
-the ssh public key the host uses to reach the guest, and the files `vm.files` lists
-(`files = ["~/.claude/.credentials.json"]` lands at the same place under
-the guest user's home; `src:dest` places a file elsewhere; see [Harness
-logins](#harness-logins) before copying a login that way). Nothing else
-from the host home is visible in the guest: no `~/.ssh`, no
-`~/.gitconfig`, no other accounts. Commits are signed only if the bot key
-is enrolled or `[git]` names a key. `ssf vm sync` moves `[git]` name and
-email into the running guest; a new key or token needs `ssf vm restart`,
-which writes the seed again (sync says so when the guest lacks one).
+At every start the host supplies the `ssf` binary, the SSH public key
+used to administer the guest, and explicitly selected `vm.files` (a seed
+disk under Firecracker, the read-only `seed/` share under lima). Routine
+starts do not copy factory configuration, bot credentials or signing keys.
+The host needs its separate VM administration key, not the bot's key.
+
+The guest owns repository configuration, harness/model/effort choices,
+daemon policy, allowed users, GitHub bot authentication and git identity.
+Run `ssf auth login --web` after starting and enabling the VM: the device
+flow runs in the guest and prints a URL and code for approval in your
+browser, signed in as the bot. Credentials and the generated signing key
+stay on the guest data disk. `ssf auth status` inspects that guest account.
+Personal git credentials and signing keys must also be provisioned in the
+guest; config paths refer to guest files. See [Committing as a
+person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot).
+
+`vm.files` remains an explicit file import (`src` or `src:dest`). Do not
+use it to maintain a second factory config or overwrite guest credentials.
+Read [Harness logins](#harness-logins) before importing a harness login.
+No other host home files, keyring, SSH configuration or git configuration
+are visible in the guest.
 
 ## Harness logins
 
@@ -485,10 +481,16 @@ back.
 
 The guest's sshd is published on `127.0.0.1:<vm.ssh_port>` (by gvproxy
 under Firecracker, by lima's port forwarding under lima), keyed by a key
-made per VM. With `vm.enabled` the commands that talk to the daemon
+made per VM. With `vm.enabled`, repository, factory configuration and
+bot authentication commands run in the guest, as do commands that talk to the daemon
 (`status`, `peers`, `sub`, `unsub`, `subs`, `tell`, `handover`, `release`,
 `purge`, `doctor`, `run --once`) run inside the guest over that
-connection, so the bar widget, `ssf status --json` and `ssf tell` work as
+connection. A stopped or unreachable guest produces an error; it never
+falls back to editing host factory settings. Start it with `ssf vm start`
+and retry. `ssf config get|set vm.<key>` and `ssf vm ...` operate on the
+host. `ssf vm status` diagnoses host infrastructure; `ssf status`,
+`ssf doctor`, `ssf auth status` and repository listing inspect the guest
+factory. The bar widget, `ssf status --json` and `ssf tell` work as
 before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 [-- cmd]` gives a shell. `ssf vm attach` attaches to herdr's session in
 the guest in your terminal; `ssf vm ssh-config` prints an `~/.ssh/config`
@@ -510,7 +512,8 @@ copy-on-write copy of the image: instant on btrfs, a full copy elsewhere)
 with the packages, and a `data.ext4` (`vm.data_gib`, sparse; see
 [Size](#size)) mounted at `/var/lib/ssf` with everything that matters:
 ssf's state, the clones and the worktrees, and the guest user's home
-(herdr's session state, the harness transcripts, caches), which is
+(factory config, bot token and signing key, git identity, harness logins,
+herdr's session state, transcripts and caches), which is
 bind-mounted from there. Under lima the two are the instance's root disk
 in lima's home and the lima disk `ssf-<name>` (see
 [lima](#lima-macos-and-linux-with-qemu)), which lima mounts at
@@ -521,9 +524,9 @@ shuts the guest down cleanly (Ctrl-Alt-Del through Firecracker's API;
 `resume_on_start` brings the sessions back in herdr, as after a reboot on
 bare metal.
 
-Editing the config on the host takes `ssf vm sync` (pushes config and
-token and restarts the guest daemon) or `ssf vm restart` (a new seed:
-needed for a new `ssf` binary or `vm.files`). `ssf vm reset` gives the
+Factory edits go straight to the guest and are picked up on its next poll.
+`ssf vm restart` supplies a new binary or explicit `vm.files`; it preserves
+established guest factory configuration and credentials. `ssf vm reset` gives the
 guest a fresh root (Firecracker: the root disk remade from a rebuilt
 image; lima: the instance deleted and created again, provisioned on its
 next start) and keeps the data disk, so sessions survive it (the guest
@@ -531,6 +534,76 @@ home is copied from the image only when the data disk is new, so a
 rebuilt image's hooks and `~/.claude.json` reach an existing VM only
 through `ssf vm destroy`, or by hand); `ssf vm destroy --yes` removes the
 VM and all its disks.
+
+## Upgrading existing VMs
+
+Select VM mode (`ssf config set vm.enabled true`) before migrating a
+legacy VM factory: enable it before `ssf vm build` or `ssf vm start`
+when you intend to import host factory settings. VM management with
+`vm.enabled = false` leaves the
+independent host factory configuration and credentials unchanged; it does
+not import them into the guest or strip them from the host. Building while
+VM mode is disabled initializes a separate guest factory. If you later
+enable VM mode while host factory settings remain, reconcile them
+explicitly; they are not silently substituted for that guest.
+
+The first start in VM mode with this version adopts the existing data disk. Until
+adoption completes, the host's legacy factory configuration is translated
+for guest paths and compared with any existing guest configuration. Parsed
+configuration must agree; existing credential and key files must have the
+same bytes as any incoming copies. A missing guest config or credential
+can be imported once. Migration preserves daemon state, clones, worktrees,
+harness logins and the rest of the guest home.
+
+If both versions differ, migration stops before replacing either version.
+The guest daemon stays off and SSH remains available for recovery. Read
+`ssf vm ssh -- cat /home/ssf/.config/ssf/migration-error` and inspect the
+host config and guest `/home/ssf/.config/ssf/config.toml` through
+`ssf vm ssh`. Back up both before reconciling their intended settings or
+credentials. To explicitly choose the existing guest configuration, back
+up the host config, remove its factory sections while retaining `[vm]`,
+and run `ssf vm restart`. To retain changes from both, reconcile them
+explicitly, accounting for translated guest paths, and restart. Never
+remove guest data or its credentials to bypass a conflict.
+
+Successful adoption writes `/home/ssf/.config/ssf/guest-owned` last. Once
+that marker exists, guest configuration and credentials take precedence
+on every later boot. The host saves its original config as
+`config.toml.pre-guest-ownership` (mode 0600), acknowledges adoption in
+`<vm.dir>/<name>/guest-owned`, and saves only `[vm]` in its active config.
+Migration does not revoke an existing host gh login or delete original
+host keys; those legacy credentials are no longer required to run the VM.
+Keep the backup for recovery, rather than editing it as a second factory.
+
+Interrupted adoption is retryable with `ssf vm restart`: copies are
+atomic and existing files are checked again before the completion marker.
+If the guest completed adoption but host acknowledgement was interrupted,
+`ssf vm sync` can finish that acknowledgement. This command now only
+checks/completes ownership migration; it never pushes ordinary factory
+edits. An older guest without the marker must restart to run migration.
+Do not manually create or delete ownership markers.
+
+Legacy roots contain a seed script that can overwrite persistent guest
+configuration. Both backends refuse to boot an incompatible root. For
+Firecracker, start first runs `e2fsck` on the stopped disposable root to
+replay its filesystem journal, then uses `debugfs` read-only to verify
+that the installed seed script matches this binary. An incompatible
+script stops startup before the data disk is attached; startup never
+patches that script in place.
+
+For Firecracker recovery, install the matching ssf package (including its
+guest scripts), then run `ssf vm build --force`, `ssf vm reset`, and
+`ssf vm start`. Reset alone would reuse the old root image and is not
+sufficient. If `vm.rootfs` selects a custom image, replace it with an
+image built with the matching guest scripts before resetting. For Lima,
+run `ssf vm reset`, then `ssf vm start`; the new root provisions the
+current scripts. Both workflows replace only the disposable root and
+preserve the data disk. The next start performs the migration above;
+enable VM mode first when importing legacy host settings.
+
+After successful adoption, `ssf vm reset` and `ssf vm build --force`
+preserve the factory on the data disk. Host mode (`vm.enabled = false`)
+continues using local configuration and credentials without this migration.
 
 Firecracker and gvproxy are started in a session of their own, and lima's
 host agent runs detached too, so a VM started from a terminal (`ssf vm

@@ -12,7 +12,7 @@ The setup document is `docs/setup.md`: `/usr/share/doc/ssf/docs/setup.md`
 once the package is installed on Omarchy,
 `$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS, or
 `docs/setup.md` in a checkout of the repository. Read it and follow it,
-top to bottom for a first install (its numbered steps, then its
+for a first install (in VM mode complete step 6 before step 4, then its
 checklist), or the one step that matches what the person asked for on an
 installed factory. It has the prerequisites, the package, the bot
 account, the sign-in, who may drive the factory, the VM (the default:
@@ -46,7 +46,13 @@ document links to.
    `ssf auth login`) over editing `config.toml` by hand: it validates
    harness IDs, model support and effort levels. Unknown model IDs pass
    through to the harness. Repository settings are picked up on the next poll;
-   VM or service changes may require a restart. Never write `github.token` into the
+   In VM mode, first build, enable and start the VM, then authenticate the
+   bot and configure repositories inside it through the normal CLI.
+   Factory commands route to the guest and fail if it is unavailable;
+   never fall back to host edits or recommend routine `ssf vm sync`.
+   Only `[vm]` settings and the guest administration SSH key belong to
+   the host. Bot credentials, git keys and factory config belong to the
+   guest data disk. VM or service changes may require a restart. Never write `github.token` into the
    file; `ssf config set` refuses it on purpose. `ssf auth login` and
    `ssf auth logout` change credentials and config only; they do not edit
    the daemon's live `state.json` for bot identity.
@@ -67,7 +73,9 @@ document links to.
 5. **Never sign in as the person** or use their token, key or account for
    the bot. The bot is an account of its own; `ssf auth login --user
    <bot> -y` is the form an agent may run, once the bot is in gh's
-   keyring.
+   credential store on the machine running the factory. In VM mode use
+   guest-native `ssf auth login --web`; the person approves the printed
+   device code as the bot, and credentials stay in the guest.
 6. **Never pass `--accept-anyone-risk`** on the person's behalf, and do
    not set `allowed_users` to `"*"` for them; say what it means and let
    them decide.
@@ -87,7 +95,16 @@ document links to.
    as the document's step 2 says for host sessions. The VM supplies its own.
    When reading `ssf vm status --json`, treat `running =
    null` as an unanswered lima probe, not a stopped VM; `probe_error`
-   names why the host could not ask.
+   names why the host could not ask. Use `ssf vm status` to inspect host
+   infrastructure and `ssf status` / `ssf doctor` for guest factory health.
+   Before upgrading an old copied-config VM, read the migration/recovery
+   section in `docs/vm.md`. Legacy Firecracker roots require the matching
+   package and guest scripts, then `ssf vm build --force`, `ssf vm reset`,
+   and `ssf vm start`; reset alone reuses the unsafe old image. Legacy
+   Lima roots require reset and start. Both preserve the data disk; never
+   patch a legacy seed script in place to bypass the startup check.
+   Stop on conflicts, preserve both versions, and have the person choose
+   precedence; never guess or discard state.
 8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or

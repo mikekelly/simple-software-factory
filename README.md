@@ -228,17 +228,15 @@ uninstalling. The short form of the default path:
    for the factory rather than yours (every agent post is made as it,
    and a post by the bot *without* a byline reads as a person's), with
    Write access on each repository it works and to its project boards.
-   `ssf auth login --web` signs it in through gh's device flow; ssf never
-   stores the token, enrolls a dedicated key on the bot account for
-   pushes and commit signing, and switches gh back to your own account
-   afterwards.
 2. **The VM** (the default; the agents never see your home
    directory): `ssf vm build`, `ssf config set vm.enabled true`,
    `systemctl --user restart ssf.service` (macOS: `brew services start
-   ssf`), then `ssf vm login <harness>` to sign your coding agent in
-   inside the guest. The alternative is the
-   agents on this machine, in herdr (the default driver) or in Orca
-   (`ssf config set driver orca`), with the harness signed in here.
+   ssf`). Then `ssf auth login --web` runs GitHub's device flow inside
+   the guest: approve the printed code in a browser signed in as the bot.
+   Its token and signing key stay on the guest data disk. Run
+   `ssf vm login <harness>` to sign your coding agent in there too.
+   The alternative is host mode, in herdr or Orca
+   (`ssf config set driver orca`), with bot and harness login on the host.
 3. **A repository**: `ssf repo add owner/name --harness claude --model
    fable --effort medium` (the *harness* is the agent program: `claude`,
    `codex`, `gemini`, ...; `ssf agents` lists them, and the model and
@@ -267,17 +265,18 @@ what is left, comments once more and gives its workspace back.
 The same commands, with their variants:
 
 ```sh
-ssf auth login                    # pick an account gh knows, or sign in another in the browser
+ssf vm build && ssf config set vm.enabled true   # VM setup first (skip in host mode)
+ssf vm start                     # or start the host service to supervise it
+ssf auth login                    # guest device flow; in host mode, pick a gh account or sign in
 ssf auth login --web              # straight to the browser flow; prints the URL and code,
                                   # so it also works over ssh (set BROWSER=true to stop gh opening one)
-ssf auth login --user acme-bot    # an account gh already knows, no questions
+ssf auth login --user acme-bot    # guest device flow checks this login; host mode selects a gh account
 printf '%s' "$TOKEN" | ssf auth login --token   # a pasted token instead of gh
 ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
 ssf repo add acme/widgets --harness claude
-ssf vm build && ssf config set vm.enabled true   # the factory in the microVM
 ssf vm login claude               # sign the harness in inside the guest
-ssf config set driver orca        # on the host: sessions in Orca instead of herdr (the default)
+ssf config set driver orca        # host mode only: sessions in Orca instead of herdr
 ssf status
 ssf peers                         # the agent sessions and what each is doing
 ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket, worktrees holding work with no agent on them
@@ -324,7 +323,12 @@ ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, 
 journalctl --user -fu ssf.service   # macOS: tail -f $(brew --prefix)/var/log/ssf.log
 ```
 
-Config changes are picked up on the next poll; no restart needed. Every
+Factory config changes are picked up on the next poll; no restart needed.
+In VM mode, repository, factory config and bot auth commands operate in the
+guest; they fail if it is stopped or unreachable. Start it and retry.
+Only `ssf vm ...` and `ssf config get|set vm.<key>` manage host VM settings.
+Use `ssf vm status` for host VM health, and `ssf status` / `ssf doctor`
+for guest factory health. There is no routine config sync. Every
 key, with its default, is in [Configuration](docs/configuration.md).
 
 Things to know when operating it:

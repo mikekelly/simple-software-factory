@@ -126,15 +126,42 @@ directory named after its module and the process (`ssf-state-<pid>`,
 
 The `#[ignore]`d live tests are the exception to all of this and are
 meant to be: they are run by hand, against this machine. `vm_live` boots
-a VM under `~/.local/share/ssf/vm` and seeds its guest with the bot
-token, wherever the real config directory keeps it — a file, or the gh
-keyring — so it holds `test_support::the_machine_itself()` instead of a
+a VM under `~/.local/share/ssf/vm` and may migrate legacy factory settings
+and credentials from the real config directory on first adoption, so it
+holds `test_support::the_machine_itself()` instead of a
 sandbox: the same stack, pointing the three directories at the machine's
 own, creating and deleting nothing. `herdr_live` starts a real harness
 and leaves session files under `~/.claude`, and
 `herdr_live_first_prompt` a `trust_level` entry in `~/.codex/config.toml`.
 That guard is the only way to a real directory from the test build, and
 nothing `cargo test` runs on its own may hold one.
+
+## Firecracker ownership upgrade regression
+
+`firecracker_ownership_boot_persistence` is an ignored, isolated test for a
+Linux host with KVM. It boots a new VM on a temporary data disk, changes guest
+configuration, verifies the boot script and state after restart, refuses a
+legacy root, then verifies state again after resetting to the rebuilt root.
+It uses no host factory credentials. Supply absolute paths to a current image
+built with this checkout's `vm/` scripts, an unmodified legacy image, the kernel,
+and executables:
+
+```sh
+cargo build
+SSF_VM_TEST_ROOTFS=/path/to/current/rootfs.ext4 \
+SSF_VM_TEST_LEGACY_ROOTFS=/path/to/v0.2/rootfs.ext4 \
+SSF_VM_TEST_KERNEL=/path/to/vmlinux \
+SSF_VM_TEST_FIRECRACKER=/path/to/firecracker \
+SSF_VM_TEST_GVPROXY=/path/to/gvproxy \
+SSF_VM_TEST_BINARY="$PWD/target/debug/ssf" \
+env -u SSF_VM_GUEST cargo test firecracker_ownership_boot_persistence -- --ignored --nocapture
+```
+
+The test copies source images; it does not alter them. It stops its VM before
+removing temporary disks, and retains those disks if stopping fails. The normal
+suite also reproduces a committed ext4 journal transaction that restores legacy
+script content despite a successful pre-recovery readback; that regression needs
+`mkfs.ext4`, `debugfs` and `e2fsck`, but no KVM or mount privileges.
 
 ## A dev build as the service
 
