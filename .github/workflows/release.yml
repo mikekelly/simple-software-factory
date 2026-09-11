@@ -92,7 +92,7 @@ jobs:
         # ("Do not perform any dependency checks", makepkg(8)); the package's
         # own depends, herdr included, are written to its metadata as usual.
         run: |
-          pacman -Syu --noconfirm rust jq systemd github-cli git
+          pacman -Syu --noconfirm rust jq systemd github-cli git openssh
           useradd -m builder
       - uses: actions/checkout@v4
         with:
