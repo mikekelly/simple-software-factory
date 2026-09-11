@@ -13,8 +13,8 @@
 //!   Arch bootstrap tarball, and one directory per VM with its persistent
 //!   `root.ext4` (a copy-on-write copy of the image), `data.ext4` (ssf's
 //!   state, the clones and worktrees, mounted at `/var/lib/ssf`), the
-//!   `seed.ext4` written at every start (this binary, the config rewritten
-//!   for the guest, the bot token, the ssh key, the `[vm] files`),
+//!   `seed.ext4` written at every start (this binary, bootstrap defaults,
+//!   host access public key and `[vm] files`; legacy state only during migration),
 //!   Firecracker's config and sockets, PID files and the serial console log.
 //! * lima (the default on macOS; `lima.rs`): a `limactl` instance from a
 //!   cloud image, provisioned by the same guest scripts on its first boot
@@ -71,9 +71,9 @@ const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
 /// VM from the host).
-pub const FORWARDED: [&str; 11] = [
+pub const FORWARDED: [&str; 17] = [
     "status", "peers", "sub", "unsub", "subs", "tell", "release", "handover", "purge", "doctor",
-    "run",
+    "run", "repo", "config", "auth", "token", "agents", "models",
 ];
 
 /// How a harness signs in inside the guest: the flow that works from a
@@ -1446,12 +1446,13 @@ impl Vm {
     pub async fn start(&self, host: &Config) -> Result<()> {
         if self.running() {
             println!("VM {} is already running", self.cfg.name);
-            return Ok(());
+            return self.ensure_factory_ownership(host);
         }
         match self.backend() {
             BackendKind::Firecracker => self.fc_start(host).await,
             BackendKind::Lima => self.lima_start(host).await,
-        }
+        }?;
+        self.ensure_factory_ownership(host)
     }
 
     /// Stop the VM cleanly.
@@ -1528,6 +1529,7 @@ impl Vm {
                 "mkfs.ext4",
             )?;
         }
+        self.refresh_seed_script()?;
         self.write_seed(host)?;
         let boot = self.boot_files(&self.dir);
         std::fs::write(
@@ -1689,10 +1691,9 @@ impl Vm {
     }
 
     /// Build the seed tree at `tree` (replacing what was there): the guest
-    /// `ssf` binary, the config rewritten for the guest, the token, the
-    /// bot's ssh key, our public key and the `[vm] files`. Regenerated at
-    /// every start so the guest follows the host; each backend then
-    /// publishes it its own way.
+    /// binary, bootstrap defaults, our public key and the `[vm] files`.
+    /// Legacy host factory state is included only before initial adoption;
+    /// an established guest always keeps its own settings and credentials.
     fn seed_tree(&self, host: &Config, tree: &Path) -> Result<()> {
         let _ = std::fs::remove_dir_all(tree);
         std::fs::create_dir_all(tree.join("config"))?;
@@ -1701,44 +1702,66 @@ impl Vm {
         std::fs::copy(&binary, tree.join("ssf"))
             .with_context(|| format!("copying {}", binary.display()))?;
         make_executable(&tree.join("ssf"))?;
-        let mut guest = guest_config(host);
-        if let Some(key) = host
-            .github
-            .ssh_key_path
-            .as_deref()
-            .map(expand_tilde)
-            .filter(|p| p.exists())
-        {
-            let name = key
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "bot_ed25519".into());
-            let keys = tree.join("config/keys");
-            std::fs::create_dir_all(&keys)?;
-            std::fs::copy(&key, keys.join(&name))?;
-            let pubkey = crate::keys::public_path(&key);
-            if pubkey.exists() {
-                std::fs::copy(&pubkey, keys.join(format!("{name}.pub")))?;
-            }
-            guest.github.ssh_key_path = Some(format!("{GUEST_HOME}/.config/ssf/keys/{name}"));
-        } else {
-            guest.github.ssh_key_path = None;
-            guest.github.ssh_key_id = None;
-            guest.github.signing_key_id = None;
-        }
-        let host_name = host.github.git_host();
-        guest_git(
-            host,
-            &mut guest,
-            &tree.join("config/keys"),
-            &tree.join("config/git-tokens"),
-            &|login| crate::ghcli::token_for(&host_name, login),
+        // Credentials are imported only during adoption of legacy host state.
+        let defaults = guest_config(&Config::default());
+        write_private(
+            &tree.join("defaults.toml"),
+            toml::to_string_pretty(&defaults)?.as_bytes(),
         )?;
-        let toml = toml::to_string_pretty(&guest).context("serialising the guest config")?;
-        write_private(&tree.join("config/config.toml"), toml.as_bytes())?;
-        match host.github_token() {
-            Ok(t) => write_private(&tree.join("config/token"), t.as_bytes())?,
-            Err(e) => warn!("no bot token for the guest ({e:#}); run `ssf auth login` first"),
+        if host.vm.enabled && !self.dir.join("guest-owned").exists() && has_legacy_factory(host)? {
+            write_private(
+                &tree.join("migration-source.toml"),
+                toml::to_string(&guest_config(host))?.as_bytes(),
+            )?;
+            let mut guest = guest_config(host);
+            if let Some(key) = host.github.ssh_key_path.as_deref()
+                && !expand_tilde(key).is_file()
+            {
+                bail!(
+                    "legacy bot signing key {key} is missing; restore it or explicitly choose the existing guest by backing up and removing host factory sections before restarting"
+                );
+            }
+            if let Some(key) = host
+                .github
+                .ssh_key_path
+                .as_deref()
+                .map(expand_tilde)
+                .filter(|p| p.exists())
+            {
+                let name = key
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "bot_ed25519".into());
+                let keys = tree.join("config/keys");
+                std::fs::create_dir_all(&keys)?;
+                std::fs::copy(&key, keys.join(&name))?;
+                let pubkey = crate::keys::public_path(&key);
+                if pubkey.exists() {
+                    std::fs::copy(&pubkey, keys.join(format!("{name}.pub")))?;
+                }
+                guest.github.ssh_key_path = Some(format!("{GUEST_HOME}/.config/ssf/keys/{name}"));
+            } else {
+                guest.github.ssh_key_path = None;
+                guest.github.ssh_key_id = None;
+                guest.github.signing_key_id = None;
+            }
+            let host_name = host.github.git_host();
+            guest_git(
+                host,
+                &mut guest,
+                &tree.join("config/keys"),
+                &tree.join("config/git-tokens"),
+                &|login| crate::ghcli::token_for(&host_name, login),
+            )?;
+            let toml = toml::to_string_pretty(&guest).context("serialising the guest config")?;
+            write_private(&tree.join("config/config.toml"), toml.as_bytes())?;
+            match host.github_token() {
+                Ok(t) => write_private(&tree.join("config/token"), t.as_bytes())?,
+                Err(e) if host.github.login.is_some() => bail!(
+                    "legacy bot token unavailable ({e:#}); restore it or explicitly keep the guest factory by backing up and removing host factory sections"
+                ),
+                Err(_) => {}
+            }
         }
         std::fs::copy(
             self.key().with_extension("pub"),
@@ -1750,6 +1773,7 @@ impl Vm {
         std::fs::create_dir_all(&files)?;
         for (i, spec) in self.cfg.files.iter().enumerate() {
             let (src, dest) = parse_file_spec(spec, &home);
+            validate_shared_destination(&dest)?;
             if !src.exists() {
                 warn!(
                     spec,
@@ -1765,6 +1789,42 @@ impl Vm {
             list.push('\n');
         }
         std::fs::write(tree.join("files.list"), list)?;
+        Ok(())
+    }
+
+    /// Old roots delete the persistent config when seeded. Upgrade their script
+    /// while stopped and verify it before allowing a boot.
+    fn refresh_seed_script(&self) -> Result<()> {
+        let script = self.dir.join("seed-common-upgrade.sh");
+        std::fs::write(&script, include_str!("../vm/guest/seed-common.sh"))?;
+        let target = "/usr/local/lib/ssf/seed-common.sh";
+        run_ok(
+            Command::new("debugfs")
+                .args(["-w", "-R", &format!("rm {target}")])
+                .arg(self.root_disk()),
+            "removing obsolete seed script",
+        )?;
+        run_ok(
+            Command::new("debugfs")
+                .args([
+                    "-w",
+                    "-R",
+                    &format!("write \"{}\" {target}", script.display()),
+                ])
+                .arg(self.root_disk()),
+            "upgrading seed script",
+        )?;
+        let output = Command::new("debugfs")
+            .args(["-R", &format!("cat {target}")])
+            .arg(self.root_disk())
+            .output()?;
+        if output.stdout != include_bytes!("../vm/guest/seed-common.sh") {
+            bail!(
+                "could not upgrade the stopped VM seed script; root disk kept at {}. Rebuild/reset the disposable root before starting",
+                self.root_disk().display()
+            );
+        }
+        std::fs::remove_file(script)?;
         Ok(())
     }
 
@@ -2034,66 +2094,85 @@ impl Vm {
         )
     }
 
-    /// Push the host's config and token into the running guest and restart
-    /// its daemon (a new binary or `[vm] files` need `ssf vm restart`).
+    /// Explicit migration repair; ordinary factory commands never sync settings.
     pub fn sync(&self, host: &Config) -> Result<()> {
+        self.ensure_factory_ownership(host)?;
+        println!("guest owns factory configuration; no synchronization is needed");
+        Ok(())
+    }
+
+    pub fn factory_owned(&self) -> bool {
+        self.dir.join("guest-owned").exists()
+    }
+
+    pub fn ensure_factory_ownership(&self, host: &Config) -> Result<()> {
+        // A supervisor can retain its startup snapshot for many VM boots.
+        // Adoption must compare and archive what is currently on disk, not
+        // discard edits made while booting or re-import its old snapshot.
+        let current;
+        let host = if crate::config::config_path().exists() {
+            current = Config::load()?;
+            &current
+        } else {
+            host
+        };
+        if !host.vm.enabled {
+            return Ok(());
+        }
+        let selected = Vm::new(host);
+        if selected.dir != self.dir || selected.backend() != self.backend() {
+            bail!(
+                "the host VM selection changed during startup; restart the supervisor before completing migration. No factory settings were changed"
+            );
+        }
         if !self.ssh_ok() {
-            bail!("the VM is not reachable; `ssf vm start` first");
+            bail!(
+                "the VM is stopped or unreachable; run `ssf vm start`. Factory changes belong to the guest and no host configuration was changed"
+            );
         }
-        let mut guest = guest_config(host);
-        // The key path stays whatever the seed set; only the settings move.
-        if let Ok(current) =
-            self.ssh_output(&["cat", &format!("{GUEST_HOME}/.config/ssf/config.toml")])
-            && let Ok(cur) = toml::from_str::<Config>(&current)
+        if self
+            .ssh_output(&["test", "-f", "/home/ssf/.config/ssf/guest-owned"])
+            .is_err()
         {
-            guest.github.ssh_key_path = cur.github.ssh_key_path;
-            let mut missing = keep_guest_git(&mut guest.git, &cur.git);
-            for r in &mut guest.repos {
-                if let Some(c) = cur
-                    .repos
-                    .iter()
-                    .find(|c| c.name.eq_ignore_ascii_case(&r.name))
-                {
-                    missing.extend(
-                        keep_guest_git(&mut r.git, &c.git)
-                            .into_iter()
-                            .map(|m| format!("{} ({})", m, r.name)),
-                    );
-                }
+            let detail = self
+                .ssh_output(&["cat", "/home/ssf/.config/ssf/migration-error"])
+                .unwrap_or_default();
+            bail!(
+                "guest ownership migration is incomplete. {detail} Restart the VM to run migration; existing guest configuration and credentials are preserved"
+            );
+        }
+        if self.factory_owned() && has_legacy_factory(host)? {
+            bail!(
+                "the guest already owns this factory, but the host has new factory settings (for example from host mode). Both are preserved. Back up the host config and remove its factory sections, keeping [vm], to use the guest; reconcile any wanted changes explicitly in the guest"
+            );
+        }
+        if !self.factory_owned() && has_legacy_factory(host)? {
+            let receipt = self.ssh_output(&["cat", "/home/ssf/.config/ssf/migration-source.toml"])
+                .context("guest migration receipt is missing; preserve the host config and explicitly choose guest ownership by removing host factory sections")?;
+            validate_migration_receipt(host, &receipt)?;
+        }
+        let path = crate::config::config_path();
+        let backup = path.with_extension("toml.pre-guest-ownership");
+        if !self.factory_owned() && path.exists() && !backup.exists() {
+            crate::config::write_atomic(&backup, &std::fs::read(&path)?, 0o600)?;
+        }
+        if path.exists() {
+            let existing: toml::Table = toml::from_str(&std::fs::read_to_string(&path)?)?;
+            if existing.keys().any(|key| key != "vm") {
+                let mut table = toml::Table::new();
+                table.insert("vm".into(), toml::Value::try_from(&host.vm)?);
+                crate::config::write_atomic(
+                    &path,
+                    toml::to_string_pretty(&table)?.as_bytes(),
+                    0o600,
+                )?;
             }
-            if !missing.is_empty() {
-                warn!(
-                    "the guest does not have {} yet; `ssf vm restart` seeds it",
-                    missing.join(", ")
-                );
-            }
         }
-        let toml = toml::to_string_pretty(&guest)?;
-        let token = host.github_token().ok();
-        let mut script = format!(
-            "umask 077; mkdir -p ~/.config/ssf; cat > ~/.config/ssf/config.toml <<'SSF_EOF'\n{toml}\nSSF_EOF\n"
-        );
-        if let Some(t) = token {
-            script.push_str(&format!("printf '%s\\n' '{t}' > ~/.config/ssf/token\n"));
-        }
-        script.push_str("sudo systemctl restart ssf\n");
-        let mut cmd = self.ssh(&["bash".to_string(), "-s".to_string()], false);
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()?;
-        use std::io::Write;
-        child
-            .stdin
-            .take()
-            .context("ssh stdin")?
-            .write_all(script.as_bytes())?;
-        let st = child.wait()?;
-        if !st.success() {
-            bail!("sync failed ({st})");
-        }
-        println!("config synced; guest daemon restarted");
+        crate::config::write_atomic(&self.dir.join("guest-owned"), b"1\n", 0o600)?;
+        // Remove transient migration copies after the guest acknowledges them.
+        let _ = std::fs::remove_dir_all(self.dir.join("share/seed/config"));
+        let _ = std::fs::remove_file(self.dir.join("share/seed/migration-source.toml"));
+        let _ = std::fs::remove_file(self.seed_disk());
         Ok(())
     }
 
@@ -2436,6 +2515,138 @@ fn clean_sockets(boot: &BootFiles) {
     }
 }
 
+fn validate_migration_receipt(host: &Config, receipt: &str) -> Result<()> {
+    let accepted: Config = toml::from_str(receipt)?;
+    if toml::to_string(&accepted)? != toml::to_string(&guest_config(host))? {
+        bail!(
+            "host factory settings changed after the guest accepted migration; both are preserved. Reconcile explicitly, or back up and remove the host factory sections to keep the guest"
+        );
+    }
+    Ok(())
+}
+
+fn validate_shared_destination(dest: &str) -> Result<()> {
+    let path = Path::new(dest);
+    if path
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        bail!("[vm] files destination must not contain ..: {dest}");
+    }
+    let home = Path::new(GUEST_HOME);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        home.join(path)
+    };
+    if absolute.starts_with(home.join(".config/ssf"))
+        || absolute == home.join(".gitconfig")
+        || absolute.starts_with("/var/lib/ssf")
+    {
+        bail!(
+            "[vm] files cannot overwrite guest-owned factory state: {dest}; use the guest CLI or ssf vm ssh"
+        );
+    }
+    Ok(())
+}
+
+/// Whether the pre-single-owner host contains factory settings worth migrating.
+fn has_legacy_factory(host: &Config) -> Result<bool> {
+    Ok(
+        toml::to_string(&guest_config(host))?
+            != toml::to_string(&guest_config(&Config::default()))?,
+    )
+}
+
+/// Adopt the persistent guest configuration once. All comparisons precede writes;
+/// a completion marker is the final write, so retrying interrupted copies is safe.
+pub fn initialize_guest_factory(seed: &Path, dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    set_mode(dir, 0o700)?;
+    if dir.join("guest-owned").exists() {
+        return Ok(());
+    }
+    let candidate = seed.join("config");
+    let current_path = dir.join("config.toml");
+    let candidate_path = candidate.join("config.toml");
+    if candidate_path.exists() && current_path.exists() {
+        let incoming: Config = toml::from_str(&std::fs::read_to_string(&candidate_path)?)?;
+        let current: Config = toml::from_str(&std::fs::read_to_string(&current_path)?)?;
+        if toml::to_string(&incoming)? != toml::to_string(&current)? {
+            bail!(
+                "host and guest factory configurations differ. Neither was overwritten. Compare the host config with ~/.config/ssf/config.toml using `ssf vm ssh`, reconcile the intended settings explicitly, then restart. To explicitly keep the guest, back up the host config and remove its factory sections (keep [vm]) before restarting"
+            );
+        }
+    }
+    // Existing token/key bytes win only when identical. Never silently replace
+    // credentials or leave a config referencing a different imported key.
+    let files = migration_files(&candidate)?;
+    for relative in &files {
+        let destination = dir.join(relative);
+        if relative != Path::new("config.toml")
+            && destination.exists()
+            && std::fs::read(candidate.join(relative))? != std::fs::read(&destination)?
+        {
+            bail!(
+                "legacy migration credential/file conflict at {}; both copies were preserved. Resolve the intended credential before restarting",
+                destination.display()
+            );
+        }
+    }
+    for relative in &files {
+        let destination = dir.join(relative);
+        if !destination.exists() {
+            std::fs::create_dir_all(destination.parent().context("migration file parent")?)?;
+            crate::config::write_atomic(
+                &destination,
+                &std::fs::read(candidate.join(relative))?,
+                0o600,
+            )?;
+        }
+    }
+    if !current_path.exists() {
+        crate::config::write_atomic(
+            &current_path,
+            &std::fs::read(seed.join("defaults.toml"))?,
+            0o600,
+        )?;
+    }
+    if seed.join("migration-source.toml").exists() {
+        crate::config::write_atomic(
+            &dir.join("migration-source.toml"),
+            &std::fs::read(seed.join("migration-source.toml"))?,
+            0o600,
+        )?;
+    }
+    crate::config::write_atomic(&dir.join("guest-owned"), b"1\n", 0o600)?;
+    let _ = std::fs::remove_file(dir.join("migration-error"));
+    Ok(())
+}
+
+fn migration_files(root: &Path) -> Result<Vec<PathBuf>> {
+    fn visit(root: &Path, here: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+        if !here.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(here)? {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                visit(root, &entry.path(), files)?;
+            } else if kind.is_file() {
+                files.push(entry.path().strip_prefix(root)?.to_path_buf());
+            } else {
+                bail!("unsupported migration file {}", entry.path().display());
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    visit(root, root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
 /// The host config as the guest runs it: herdr only (Orca is a desktop
 /// app; the guest has no display), paths on the data disk, no host
 /// checkouts, and the VM section off so nothing forwards again.
@@ -2463,8 +2674,7 @@ pub const GUEST_TOKENS_DIR: &str = "/home/ssf/.config/ssf/git-tokens";
 /// `token:<login>` is resolved here with `resolve_token` (gh's keyring)
 /// and written to `tokens_dir` as a file the guest reads (`file:...`), and
 /// a `file:<path>` is copied the same way. A helper string passes through
-/// as it is. A key or file that is missing here is reported and the
-/// setting turned off (unsigned) or left for `ssf doctor` in the guest.
+/// as it is. Missing credentials stop migration without changing intent.
 pub fn guest_git(
     host: &Config,
     guest: &mut Config,
@@ -2489,11 +2699,10 @@ pub fn guest_git(
                 }
                 to.signing_key = Some(SigningKey::Path(format!("{GUEST_KEYS_DIR}/{name}")));
             } else {
-                warn!(
-                    "{where_}: signing key {} does not exist; commits in the VM go out unsigned",
+                bail!(
+                    "{where_}: signing key {} does not exist; restore it before migration",
                     key.display()
                 );
-                to.signing_key = Some(SigningKey::Off(false));
             }
         }
         match from.credential.as_deref().map(Credential::parse) {
@@ -2506,7 +2715,7 @@ pub fn guest_git(
                     )?;
                     to.credential = Some(format!("file:{GUEST_TOKENS_DIR}/{login}"));
                 }
-                Err(e) => warn!(
+                Err(e) => bail!(
                     "{where_}: no token for @{login} here ({e:#}); pushes in the VM as @{login} will fail until it is signed in to gh on the host and the VM restarted"
                 ),
             },
@@ -2515,7 +2724,7 @@ pub fn guest_git(
                     let name = place(&path, tokens_dir, &mut copied)?;
                     to.credential = Some(format!("file:{GUEST_TOKENS_DIR}/{name}"));
                 } else {
-                    warn!(
+                    bail!(
                         "{where_}: token file {} does not exist; pushes in the VM with it will fail",
                         path.display()
                     );
@@ -2552,56 +2761,6 @@ fn place(
     set_mode(&dir.join(&name), 0o600)?;
     copied.insert(src.to_path_buf(), name.clone());
     Ok(name)
-}
-
-/// `ssf vm sync` moves settings, not files: where the host names a key or
-/// a token that the seed carried in, the guest keeps the copy's path.
-/// Returns what the guest does not have yet (a new key, another login's
-/// token), which `ssf vm restart` seeds; `false`, `bot` and helper strings
-/// sync as they are.
-pub fn keep_guest_git(host: &mut GitConfig, guest: &GitConfig) -> Vec<String> {
-    let mut missing = Vec::new();
-    let stem = |p: &Path| {
-        p.file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default()
-    };
-    // The seed names a copy after the host file, with `.N` when two files
-    // share a name.
-    let is_copy_of = |guest_path: &str, dir: &str, name: &str| {
-        let expected = format!("{dir}/{name}");
-        guest_path == expected
-            || guest_path
-                .strip_prefix(&format!("{expected}."))
-                .is_some_and(|n| n.chars().all(|c| c.is_ascii_digit()))
-    };
-    if let Some(SigningKey::Path(p)) = &host.signing_key {
-        let name = stem(&expand_tilde(p));
-        match &guest.signing_key {
-            Some(SigningKey::Path(g)) if is_copy_of(g, GUEST_KEYS_DIR, &name) => {
-                host.signing_key = guest.signing_key.clone();
-            }
-            _ => missing.push(format!("signing key {p}")),
-        }
-    }
-    let wanted = match host.credential.as_deref().map(Credential::parse) {
-        Some(Ok(Credential::Token(login))) => Some((login.clone(), format!("token for @{login}"))),
-        Some(Ok(Credential::File(path))) => {
-            Some((stem(&path), format!("token file {}", path.display())))
-        }
-        _ => None,
-    };
-    if let Some((name, what)) = wanted {
-        match guest.credential.as_deref().map(Credential::parse) {
-            Some(Ok(Credential::File(g)))
-                if is_copy_of(&g.to_string_lossy(), GUEST_TOKENS_DIR, &name) =>
-            {
-                host.credential = guest.credential.clone();
-            }
-            _ => missing.push(what),
-        }
-    }
-    missing
 }
 
 /// Repositories the host config runs in Orca: worth a warning, since the
@@ -2949,6 +3108,208 @@ mod tests {
         cfg.vm.mem_mib = Some(4096);
         cfg.vm.data_gib = Some(20);
         Vm::new(&cfg)
+    }
+
+    #[test]
+    fn disabled_vm_management_preserves_host_factory_and_credentials() {
+        let sandbox = crate::config::test_support::sandbox();
+        let mut config = Config::default();
+        config.github.token = Some("host-only-token".into());
+        config.github.ssh_key_path = Some("/missing-host-key".into());
+        config.vm.dir = sandbox.root().join("vm").to_string_lossy().into_owned();
+        config.save().unwrap();
+        let original = std::fs::read(crate::config::config_path()).unwrap();
+        let mut vm = Vm::new(&config);
+        vm.binary = Some(std::env::current_exe().unwrap());
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        std::fs::write(vm.key().with_extension("pub"), "access-public-key").unwrap();
+        vm.ensure_factory_ownership(&config).unwrap();
+        let mut stale = config.clone();
+        stale.vm.enabled = true;
+        // A long-running supervisor must respect the mode now on disk.
+        vm.ensure_factory_ownership(&stale).unwrap();
+        assert_eq!(
+            std::fs::read(crate::config::config_path()).unwrap(),
+            original
+        );
+        assert!(!vm.factory_owned());
+        let seed = sandbox.root().join("seed");
+        vm.seed_tree(&config, &seed).unwrap();
+        assert!(!seed.join("config/config.toml").exists());
+        assert!(!seed.join("config/token").exists());
+        assert!(!seed.join("migration-source.toml").exists());
+    }
+
+    #[test]
+    fn changed_host_after_guest_commit_requires_explicit_resolution() {
+        let mut host = Config::default();
+        host.github.login = Some("original-bot".into());
+        let receipt = toml::to_string(&guest_config(&host)).unwrap();
+        validate_migration_receipt(&host, &receipt).unwrap();
+        host.github.login = Some("another-bot".into());
+        assert!(validate_migration_receipt(&host, &receipt).is_err());
+    }
+
+    #[test]
+    fn established_vm_seed_never_resolves_or_copies_bot_credentials() {
+        let sandbox = crate::config::test_support::sandbox();
+        let mut config = Config::default();
+        config.vm.dir = sandbox.root().join("vm").to_string_lossy().into_owned();
+        config.github.token = Some("must-not-be-seeded".into());
+        config.github.ssh_key_path = Some("/missing-host-key".into());
+        let mut vm = Vm::new(&config);
+        vm.binary = Some(std::env::current_exe().unwrap());
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        std::fs::write(vm.dir.join("guest-owned"), "1").unwrap();
+        std::fs::write(vm.key().with_extension("pub"), "host-access-public-key").unwrap();
+        let seed = sandbox.root().join("seed");
+        vm.seed_tree(&config, &seed).unwrap();
+        assert!(seed.join("defaults.toml").exists());
+        assert!(!seed.join("config/token").exists());
+        assert!(!seed.join("config/config.toml").exists());
+        assert!(!seed.join("migration-source.toml").exists());
+    }
+
+    #[test]
+    fn stopped_root_seed_script_upgrade_is_repeatable() {
+        if which("mkfs.ext4").is_none() || which("debugfs").is_none() {
+            return;
+        }
+        let sandbox = crate::config::test_support::sandbox();
+        let mut config = Config::default();
+        config.vm.dir = sandbox
+            .root()
+            .join("vm with spaces")
+            .to_string_lossy()
+            .into_owned();
+        let vm = Vm::new(&config);
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        let tree = sandbox.root().join("root-tree");
+        std::fs::create_dir_all(tree.join("usr/local/lib/ssf")).unwrap();
+        std::fs::write(
+            tree.join("usr/local/lib/ssf/seed-common.sh"),
+            "old destructive script",
+        )
+        .unwrap();
+        let disk = std::fs::File::create(vm.root_disk()).unwrap();
+        disk.set_len(16 << 20).unwrap();
+        drop(disk);
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-d"])
+                .arg(tree)
+                .arg(vm.root_disk()),
+            "scratch root",
+        )
+        .unwrap();
+        vm.refresh_seed_script().unwrap();
+        vm.refresh_seed_script().unwrap();
+    }
+
+    #[test]
+    fn shared_files_cannot_replace_factory_state() {
+        for path in [
+            ".config/ssf/token",
+            "/home/ssf/.config/ssf/config.toml",
+            "/var/lib/ssf/home/.config/ssf/keys/bot",
+            ".gitconfig",
+            "../ssf/.config/ssf/token",
+        ] {
+            assert!(validate_shared_destination(path).is_err(), "{path}");
+        }
+        assert!(validate_shared_destination(".ssh/personal-key").is_ok());
+    }
+
+    #[test]
+    fn guest_initialization_is_persistent_and_idempotent() {
+        let sandbox = crate::config::test_support::sandbox();
+        let seed = sandbox.root().join("seed");
+        let guest = sandbox.root().join("guest");
+        std::fs::create_dir_all(&seed).unwrap();
+        std::fs::write(
+            seed.join("defaults.toml"),
+            toml::to_string(&guest_config(&Config::default())).unwrap(),
+        )
+        .unwrap();
+        initialize_guest_factory(&seed, &guest).unwrap();
+        std::fs::write(guest.join("token"), "guest-token").unwrap();
+        std::fs::write(guest.join("config.toml"), "guest edits").unwrap();
+        initialize_guest_factory(&seed, &guest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(guest.join("token")).unwrap(),
+            "guest-token"
+        );
+        assert_eq!(
+            std::fs::read_to_string(guest.join("config.toml")).unwrap(),
+            "guest edits"
+        );
+    }
+
+    #[test]
+    fn legacy_migration_checks_all_conflicts_before_writing() {
+        let sandbox = crate::config::test_support::sandbox();
+        let seed = sandbox.root().join("seed");
+        let candidate = seed.join("config");
+        let guest = sandbox.root().join("guest");
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::create_dir_all(&guest).unwrap();
+        let config = toml::to_string(&guest_config(&Config::default())).unwrap();
+        std::fs::write(candidate.join("config.toml"), &config).unwrap();
+        std::fs::write(candidate.join("token"), "host-token").unwrap();
+        std::fs::write(guest.join("token"), "guest-token").unwrap();
+        assert!(
+            initialize_guest_factory(&seed, &guest)
+                .unwrap_err()
+                .to_string()
+                .contains("conflict")
+        );
+        assert!(!guest.join("config.toml").exists());
+        assert!(!guest.join("guest-owned").exists());
+        assert_eq!(
+            std::fs::read_to_string(guest.join("token")).unwrap(),
+            "guest-token"
+        );
+        // A retry after explicit resolution imports missing files, retaining
+        // identical files from an interrupted earlier import.
+        std::fs::write(guest.join("token"), "host-token").unwrap();
+        initialize_guest_factory(&seed, &guest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(guest.join("config.toml")).unwrap(),
+            config
+        );
+        assert!(guest.join("guest-owned").exists());
+    }
+
+    #[test]
+    fn differing_legacy_repository_settings_stop_migration() {
+        let sandbox = crate::config::test_support::sandbox();
+        let seed = sandbox.root().join("seed");
+        let guest = sandbox.root().join("guest");
+        std::fs::create_dir_all(seed.join("config")).unwrap();
+        std::fs::create_dir_all(&guest).unwrap();
+        let current = guest_config(&Config::default());
+        let mut incoming = current.clone();
+        incoming.github.login = Some("different-bot".into());
+        std::fs::write(
+            seed.join("config/config.toml"),
+            toml::to_string(&incoming).unwrap(),
+        )
+        .unwrap();
+        let original = toml::to_string(&current).unwrap();
+        std::fs::write(guest.join("config.toml"), &original).unwrap();
+        assert!(initialize_guest_factory(&seed, &guest).is_err());
+        assert_eq!(
+            std::fs::read_to_string(guest.join("config.toml")).unwrap(),
+            original
+        );
+        assert!(!guest.join("guest-owned").exists());
+        // Explicit guest precedence: remove the host candidate and retry.
+        std::fs::remove_file(seed.join("config/config.toml")).unwrap();
+        initialize_guest_factory(&seed, &guest).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(guest.join("config.toml")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -3978,6 +4339,14 @@ mod tests {
         let mut guest = guest_config(&host);
         let keys = dir.join("seed/keys");
         let tokens = dir.join("seed/tokens");
+        assert!(
+            guest_git(&host, &mut guest, &keys, &tokens, &|_| Ok(
+                "ghp_keyring".into()
+            ))
+            .is_err()
+        );
+        host.repos[1].git.signing_key = Some(SigningKey::Off(false));
+        guest = guest_config(&host);
         guest_git(&host, &mut guest, &keys, &tokens, &|login| {
             assert_eq!(login, "ann");
             Ok("ghp_keyring".to_string())
@@ -4023,41 +4392,12 @@ mod tests {
             std::fs::read_to_string(tokens.join("pat")).unwrap(),
             "ghp_file\n"
         );
-        // A missing key turns signing off; a helper string passes through.
+        // Explicitly disabled signing and a helper string pass through.
         assert_eq!(guest.repos[1].git.signing_key, Some(SigningKey::Off(false)));
         assert_eq!(
             guest.repos[1].git.credential.as_deref(),
             Some("!gh auth git-credential")
         );
-        // sync: the guest keeps the copies the host's settings stand for,
-        // and says what a restart would bring.
-        let mut synced = host.git.clone();
-        assert!(keep_guest_git(&mut synced, &guest.git).is_empty());
-        assert_eq!(synced.signing_key, guest.git.signing_key);
-        assert_eq!(synced.credential, guest.git.credential);
-        let mut synced = host.repos[0].git.clone();
-        assert!(keep_guest_git(&mut synced, &guest.repos[0].git).is_empty());
-        assert_eq!(synced.signing_key, guest.repos[0].git.signing_key);
-        let mut changed = host.git.clone();
-        changed.credential = Some("token:bob".into());
-        changed.signing_key = Some(SigningKey::Path("/elsewhere/new_key".into()));
-        let missing = keep_guest_git(&mut changed, &guest.git);
-        assert_eq!(missing.len(), 2, "{missing:?}");
-        assert!(missing.iter().any(|m| m.contains("@bob")), "{missing:?}");
-        assert_eq!(
-            changed.credential.as_deref(),
-            Some("token:bob"),
-            "left for the guest's doctor to report"
-        );
-        // Settings that need no file sync as they are.
-        let mut off = GitConfig {
-            signing_key: Some(SigningKey::Off(false)),
-            credential: Some("bot".into()),
-            ..GitConfig::default()
-        };
-        assert!(keep_guest_git(&mut off, &guest.git).is_empty());
-        assert_eq!(off.signing_key, Some(SigningKey::Off(false)));
-        assert_eq!(off.credential.as_deref(), Some("bot"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

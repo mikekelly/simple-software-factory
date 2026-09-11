@@ -40,6 +40,10 @@ instead. For real isolation, run the factory [inside a microVM](vm.md).
 A factory can drive GitHub as the bot (issues, comments, PRs, labels,
 boards) while the commits carry a person's name, so the history and the
 contribution graph attribute the work to them rather than to `acme-bot`.
+In VM mode, these commands edit guest configuration: signing-key and
+token paths name guest files, and `token:<login>` requires a guest gh
+sign-in. The host does not routinely copy personal or bot credentials.
+
 The `[git]` table in `config.toml` says who, instance-wide, and a
 `[repo.git]` table on a `[[repo]]` overrides it key by key:
 
@@ -115,8 +119,8 @@ Things to know before switching it on:
 - `token:<login>` puts that person's token within the agent's reach for
   the length of the session (the helper hands it to git, and an agent can
   call the helper). On bare metal that is no wider than what the agent
-  already has as your Unix user; in the [VM](vm.md) the token is copied
-  onto the seed disk, so the guest holds it. Prefer a token scoped to the
+  already has as your Unix user; in the [VM](vm.md), provision the token
+  inside the guest, where its persistent home holds it. Prefer a token scoped to the
   repositories the factory works on.
 - The first prompt names who `git push` acts as when it is not the bot
   (`@ann` for `token:ann`, a description for a `file:` token or a helper),

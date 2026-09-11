@@ -5,6 +5,7 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Scopes the bot token needs: issues/PRs/pushes, Projects boards, plus key
@@ -165,6 +166,98 @@ pub fn login_web(host: &str, scopes: &[&str]) -> Result<()> {
     Ok(())
 }
 
+/// Run GitHub's device flow inside the guest. The caller must validate the
+/// account and save the returned token with `config::save_token` before using it.
+/// No system keyring or existing gh account is read or changed.
+pub fn login_device(host: &str, scopes: &[&str]) -> Result<String> {
+    login_device_using(host, scopes, &crate::config::config_dir(), Path::new("gh"))
+}
+
+struct DeviceLoginDir(PathBuf);
+
+impl DeviceLoginDir {
+    fn create(root: &Path) -> Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+
+        std::fs::create_dir_all(root).context("creating guest credential directory")?;
+        // Keep even the temporary OAuth result on the persistent guest data disk.
+        // create_dir fails closed if an interrupted attempt with this PID remains.
+        let path = root.join(format!(".device-login-{}", std::process::id()));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&path)
+            .with_context(|| {
+                format!(
+                    "creating private device-login directory {}; if an interrupted login left it behind, remove that directory and retry",
+                    path.display()
+                )
+            })?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for DeviceLoginDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn device_command(program: &Path, config_dir: &Path) -> Command {
+    let mut command = Command::new(program);
+    command
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GITHUB_ENTERPRISE_TOKEN")
+        .env_remove("GH_DEBUG")
+        .env_remove("DEBUG")
+        .env_remove("GH_DEBUG_API_REQUESTS")
+        .env_remove("GH_FORCE_TTY")
+        .env("GH_CONFIG_DIR", config_dir)
+        .env("GH_BROWSER", "false")
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null());
+    command
+}
+
+fn login_device_using(host: &str, scopes: &[&str], root: &Path, program: &Path) -> Result<String> {
+    let directory = DeviceLoginDir::create(root)?;
+    let status = device_command(program, &directory.0)
+        .args([
+            "auth",
+            "login",
+            "--hostname",
+            host,
+            "--web",
+            "--git-protocol",
+            "https",
+            "--skip-ssh-key",
+            "--insecure-storage",
+            "--scopes",
+            &scopes.join(","),
+        ])
+        .status()
+        .context("running guest GitHub device login (is github-cli installed?)")?;
+    if !status.success() {
+        bail!(
+            "guest GitHub device login did not complete; existing bot credentials were not changed"
+        );
+    }
+    let out = device_command(program, &directory.0)
+        .args(["auth", "token", "--hostname", host])
+        .output()
+        .context("reading guest device-login token")?;
+    if !out.status.success() {
+        bail!("could not read the token from the guest device login; retry `ssf auth login`");
+    }
+    let token = String::from_utf8(out.stdout).context("decoding guest device-login token")?;
+    let token = token.trim().to_string();
+    if token.is_empty() {
+        bail!("guest device login returned an empty token");
+    }
+    Ok(token)
+}
+
 /// Interactive scope upgrade for the *active* account.
 pub fn refresh_scopes(host: &str, scopes: &[&str]) -> Result<()> {
     let status = Command::new("gh")
@@ -182,4 +275,82 @@ pub fn refresh_scopes(host: &str, scopes: &[&str]) -> Result<()> {
         bail!("gh auth refresh did not complete");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn device_login_isolates_credentials_and_cleans_temporary_store() {
+        let root =
+            std::env::temp_dir().join(format!("ssf-device-login-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cleanup = DeviceLoginDir(root.clone());
+        let private = DeviceLoginDir::create(&root).unwrap();
+        assert_eq!(
+            std::fs::metadata(&private.0).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        drop(private);
+        let program = root.join("gh");
+        std::fs::write(
+            &program,
+            r#"#!/bin/sh
+set -eu
+test "$GH_PROMPT_DISABLED" = 1
+test "$GH_BROWSER" = false
+if [ "$2" = login ]; then
+    case " $* " in *" --insecure-storage "*) ;; *) exit 9 ;; esac
+    test ! -t 0
+    printf 'device-token\n' > "$GH_CONFIG_DIR/token"
+else
+    cat "$GH_CONFIG_DIR/token"
+fi
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            login_device_using("github.com", REQUIRED_SCOPES, &root, &program).unwrap(),
+            "device-token"
+        );
+        let temporary = root.join(format!(".device-login-{}", std::process::id()));
+        assert!(!temporary.exists());
+        std::fs::write(&program, "#!/bin/sh\nexit 1\n").unwrap();
+        assert!(login_device_using("github.com", REQUIRED_SCOPES, &root, &program).is_err());
+        assert!(!temporary.exists());
+        // An interrupted attempt is never silently reused or deleted.
+        std::fs::create_dir(&temporary).unwrap();
+        std::fs::write(temporary.join("token"), "interrupted-token").unwrap();
+        assert!(login_device_using("github.com", REQUIRED_SCOPES, &root, &program).is_err());
+        assert_eq!(
+            std::fs::read_to_string(temporary.join("token")).unwrap(),
+            "interrupted-token"
+        );
+        drop(cleanup);
+    }
+
+    #[test]
+    fn device_command_removes_inherited_authentication_and_debug_settings() {
+        let command = device_command(Path::new("gh"), Path::new("/guest/private"));
+        let env: BTreeMap<_, _> = command.get_envs().collect();
+        for name in [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+            "GH_DEBUG",
+            "DEBUG",
+            "GH_DEBUG_API_REQUESTS",
+            "GH_FORCE_TTY",
+        ] {
+            assert_eq!(env.get(std::ffi::OsStr::new(name)), Some(&None));
+        }
+        assert_eq!(
+            env.get(std::ffi::OsStr::new("GH_CONFIG_DIR")),
+            Some(&Some(std::ffi::OsStr::new("/guest/private")))
+        );
+    }
 }

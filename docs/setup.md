@@ -151,19 +151,29 @@ gh api repos/OWNER/NAME/collaborators/BOT/permission --jq .permission   # write 
 
 ## 4. Sign the bot in
 
-**Decide: through gh (the normal way), or a pasted token.**
+**VM setup:** complete [the VM instructions in step 6](#the-vm-default)
+first, then return here. Build, enable and start the VM before bot login or
+factory configuration. The guest can start without a bot token; its daemon
+will become healthy after onboarding. All the following auth and factory
+commands then operate inside the guest, even when typed on the host.
+A stopped or unreachable VM returns an error; start it and retry.
 
-- **Through gh.** `ssf auth login --web` runs gh's device flow with the
+**Decide: browser device flow (the normal way), or a pasted token.**
+
+- **Browser login.** `ssf auth login --web` runs the device flow with the
   scopes ssf needs and records the result. **You**: the terminal prints a
   one-time code and `https://github.com/login/device`; open it in the
-  private window where the bot is logged in, enter the code, approve the
-  scopes, then answer `Use @<bot> as the bot account?` in the terminal.
+  private window where the bot is logged in, enter the code and approve the
+  scopes. Host mode may then ask `Use @<bot> as the bot account?` in the terminal.
   Over ssh, or when a browser must not open, `BROWSER=true ssf auth login
-  --web`. Plain `ssf auth login` lists the accounts gh already holds and
-  offers the browser flow; `ssf auth login --user <bot> -y` takes an
-  account gh already knows without questions (the form an agent can run,
-  once the bot is in gh's keyring). ssf reads the token from gh's keyring
-  when it needs it and switches gh back to your own account afterwards.
+  --web`. In VM mode, plain `ssf auth login` also runs the device flow;
+  `--user <bot>` checks that the approved account is the intended bot.
+  The guest saves the result in `~/.config/ssf/token` on its persistent
+  data disk, with no host bot keyring entry or seed copy.
+  In host mode, plain login lists gh's accounts and offers the browser
+  flow; `ssf auth login --user <bot> -y` selects an existing gh account.
+  Host mode reads gh's keyring and switches gh back to your own account
+  afterwards.
 - **A pasted token.** **You**: logged in as the bot, at
   `https://github.com/settings/tokens` create a *classic* personal access
   token with the scopes below (a fine-grained token shows up as missing
@@ -186,12 +196,14 @@ SSH key and a commit signing key. Agents then push over HTTPS with the
 token or over SSH with that key, and every commit is signed with it; with
 no key enrolled, signing is off rather than falling back to your key.
 Login and logout change this configuration and the credential only; they
-leave the daemon's live session state alone.
+leave the daemon's live session state alone. In VM mode they restart the
+guest daemon to apply the credential change; repository and ordinary
+configuration edits need no restart.
 `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
-itself stays. `ssf token` prints the token for anything else that needs
+itself stays where gh holds the account. `ssf token` prints the token for anything else that needs
 it. The service, which could not start in step 2, starts on its next
-retry now that there is a token (on a Mac it is not started until step
-6, so its line stays failed for now). `ssf status` names the configured
+retry now that there is a token. VM users already started the service
+before this step; host-mode macOS users start it in step 6. `ssf status` names the configured
 account before the daemon first starts, then the account the daemon last
 authenticated as. Removing the credential makes status report not signed in.
 
@@ -216,8 +228,7 @@ Before choosing it: the email must be verified on your GitHub account
 graph; a signing key only shows *Verified* if it is registered on that
 same account, so never sign a person's commits with the bot's key;
 `credential = token:<login>` needs that account signed in to `gh` on the
-machine the agents run on (in the VM, the token is copied to the seed
-disk) and an HTTPS `clone_url`, since SSH remotes always use the bot's
+machine the agents run on (inside the guest in VM mode) and an HTTPS `clone_url`, since SSH remotes always use the bot's
 key, and it puts your token within the agent's reach. Author and
 committer are always the same identity. `ssf doctor` prints, per
 repository, who commits, signed with what and who pushes, and fails when
@@ -280,8 +291,8 @@ sizes and harness installation results. A failed harness installation
 needs attention before you can sign it in. See [Backends](vm.md#backends)
 and [Size](vm.md#size) for alternatives and disk growth.
 
-**Check:** `ssf vm status` should report a running VM, working SSH and an
-active daemon. `ssf doctor` now runs in the guest: its paths are guest
+**Check:** `ssf vm status` should report a running VM and working SSH.
+The guest daemon may still need bot login from step 4. `ssf doctor` now runs in the guest: its paths are guest
 paths, and herdr should be reachable. Repository and agent-link failures
 can remain. Use `ssf vm status` to diagnose host VM tooling and
 `ssf vm logs` for the guest daemon's log.
@@ -422,7 +433,9 @@ for IDs, aliases and harness-specific restrictions.
 - **`instructions`:** short additions to initial prompts. Put project
   working rules in `SSF.md`.
 
-`ssf repo add` writes `[[repo]]` entries in `~/.config/ssf/config.toml`.
+`ssf repo add` writes `[[repo]]` entries in the active factory's
+`~/.config/ssf/config.toml`: inside the guest in VM mode, locally in host
+mode. `ssf repo list` reads that same configuration.
 Prefer the CLI for validation. For factory-wide settings, use
 `ssf config set daemon.<key> <value>`; see [Configuration](configuration.md)
 for polling, startup, instructions and event comments. Repository and
@@ -549,7 +562,14 @@ What that restart means:
   conversation, as after a reboot on bare metal. A VM you started by hand
   (`ssf vm start`, no service) needs `ssf vm restart` yourself.
 
-Your config, state, keys and the VM's disks are untouched by an upgrade;
+For upgrades from the copied-config VM layout, follow [VM migration and
+recovery](vm.md#upgrading-existing-vms). Legacy Lima roots require
+`ssf vm reset` followed by `ssf vm start` to install the safe migration
+scripts while preserving the data disk. Conflicts
+stop migration for an explicit choice; do not delete either config to force
+an upgrade through.
+
+Your config, state, keys and the VM's disks are preserved by an upgrade;
 a renamed key keeps loading under its old name. `ssf doctor` after the
 upgrade should look as it did before.
 

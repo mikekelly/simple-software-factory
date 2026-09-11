@@ -126,9 +126,9 @@ directory named after its module and the process (`ssf-state-<pid>`,
 
 The `#[ignore]`d live tests are the exception to all of this and are
 meant to be: they are run by hand, against this machine. `vm_live` boots
-a VM under `~/.local/share/ssf/vm` and seeds its guest with the bot
-token, wherever the real config directory keeps it — a file, or the gh
-keyring — so it holds `test_support::the_machine_itself()` instead of a
+a VM under `~/.local/share/ssf/vm` and may migrate legacy factory settings
+and credentials from the real config directory on first adoption, so it
+holds `test_support::the_machine_itself()` instead of a
 sandbox: the same stack, pointing the three directories at the machine's
 own, creating and deleting nothing. `herdr_live` starts a real harness
 and leaves session files under `~/.claude`, and

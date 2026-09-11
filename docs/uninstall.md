@@ -80,11 +80,17 @@ whole, so an empty name (which would be `[vm] dir` itself), an absolute
 one, or one containing `..` is refused when the config is read. Nested
 names like `a/b` are fine.
 
+In VM mode, the guest data disk owns factory configuration, bot credentials,
+signing keys and harness logins as well as state and worktrees. Destroying
+that disk removes them; a retained host `[vm]` config cannot restore the
+factory. Export any needed guest files before confirming VM destruction.
+
 What it keeps, and lists at the end: the clones and worktrees under
 `~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
 dir` (the image and downloads; retained -- ssf does not look inside it,
 so inspect it before removing it), and, unless you pass
-`--data`, `~/.config/ssf` (config and the bot's key) and
+`--data`, `~/.config/ssf` (host configuration and any legacy or host-mode
+bot keys) and
 `~/.local/state/ssf` (state, and the marker that keeps a disabled service
 off, so a reinstall stays stopped until `ssf ui service enable`; with
 `--data` gone, a reinstall starts the service). Under lima the instance
