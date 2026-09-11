@@ -1,18 +1,9 @@
 [Unit]
 Description=Simple Software Factory: GitHub issues assigned to the bot become agent workspaces in herdr or Orca
 Documentation=https://github.com/mikekelly/simple-software-factory
-# The bar widget, and Orca when it is the driver, live in the graphical session, so wait for it.
-After=graphical-session.target
-PartOf=graphical-session.target
-ConditionEnvironment=WAYLAND_DISPLAY
-# Written by `ssf ui service disable` so a stopped factory stays stopped
-# across logins without the unit having to be disabled.
-ConditionPathExists=!%h/.local/state/ssf/disabled
 
 [Service]
 Type=simple
-# Install the bar widget and menu entries on first start; harmless when done.
-ExecStartPre=-/usr/bin/ssf ui install --quiet
 ExecStart=/usr/bin/ssf run
 # With `[vm] enabled`, `ssf run` starts a Firecracker VM in a session of its
 # own and shuts it down cleanly on SIGTERM; only the main process gets the
@@ -24,4 +15,4 @@ RestartSec=15
 Environment=RUST_LOG=info
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

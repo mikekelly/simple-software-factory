@@ -1,7 +1,10 @@
 # Release packages: on a vX.Y.Z tag, build the .deb, .rpm and bare x86_64
 # binary (packaging/linux), the Arch .pkg.tar.zst (packaging/release) and,
-# best effort, a bare aarch64 binary, and attach them to the GitHub release
-# of that tag, creating it if it does not exist yet. On a manual run
+# best effort, a bare aarch64 binary, and attach them to a draft GitHub release
+# of that tag, creating the draft if it does not exist yet. Existing assets are
+# preserved so a package tested on the release target cannot be overwritten by
+# a rebuild. Publishing is a separate, deliberate step after validation. On
+# a manual run
 # (workflow_dispatch) everything is built the same way and uploaded as
 # workflow artifacts only, with the version from Cargo.toml; no release.
 # Only plain vX.Y.Z tags: a pre-release tag such as v0.2.0-rc1 would make
@@ -96,12 +99,10 @@ jobs:
           # The development PKGBUILD's pkgver counts the commits on HEAD.
           fetch-depth: 0
       - name: makepkg
-        # On a tag the release PKGBUILD builds the tag tarball. GitHub's
-        # archive is `git archive` with a simple-software-factory-X.Y.Z/
-        # prefix, so the same tarball is made here from the checkout (the
-        # repository may be private; makepkg uses a source file that is
-        # already in the directory instead of downloading it), and
-        # --skipchecksums covers the sha256 the PKGBUILD has for the download.
+        # On a tag the checked-in release PKGBUILD downloads the immutable
+        # source commit selected for the release and verifies its checksum.
+        # The tag may point at a later metadata-only commit containing that
+        # checksum, so do not replace the source with an archive of HEAD.
         # On dispatch there is no tag tarball: the development PKGBUILD in
         # packaging/, which sources the release one and tars the working tree,
         # builds instead (version X.Y.Z.rN.gSHA).
@@ -111,11 +112,13 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             VERSION="${GITHUB_REF_NAME#v}"
             mkdir -p /tmp/arch && cp -L packaging/release/PKGBUILD packaging/release/ssf.install /tmp/arch/
-            sed -i "s/^pkgver=.*/pkgver=$VERSION/; s/^pkgrel=.*/pkgrel=1/" /tmp/arch/PKGBUILD
-            git archive --format=tar.gz --prefix="simple-software-factory-$VERSION/" \
-              -o "/tmp/arch/ssf-$VERSION.tar.gz" HEAD
+            PKGVER=$(sed -n 's/^pkgver=//p' /tmp/arch/PKGBUILD)
+            if [ "$PKGVER" != "$VERSION" ]; then
+              echo "::error::tag version $VERSION does not match release PKGBUILD pkgver $PKGVER"
+              exit 1
+            fi
             chown -R builder: /tmp/arch
-            runuser -u builder -- sh -c 'cd /tmp/arch && makepkg -f --skipchecksums --nodeps'
+            runuser -u builder -- sh -c 'cd /tmp/arch && makepkg -f --nodeps'
             mkdir -p dist && mv /tmp/arch/*.pkg.tar.zst dist/
           else
             runuser -u builder -- sh -c 'cd packaging && makepkg -f --nodeps'
@@ -127,8 +130,10 @@ jobs:
           path: dist/*.pkg.tar.zst
           if-no-files-found: error
 
-  # One job publishes, after the builds: no race on `gh release create`, and
-  # a release is only made once every package exists. The condition spells
+  # One job stages a draft release after the builds: no race on
+  # `gh release create`, and a draft is only made once every package exists.
+  # It never publishes the draft or changes a published release, and never
+  # replaces an existing asset. The condition spells
   # that out: always() so a failed aarch64 job does not skip this one, then
   # the two package jobs must have succeeded (the aarch64 binary is uploaded
   # when its job succeeded, skipped otherwise). Tag pushes only: a manual
@@ -143,10 +148,25 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Create the release if missing, upload the packages
+      - name: Create a draft release if missing, add new packages
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
-            || gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            || gh release create "$GITHUB_REF_NAME" --draft --generate-notes --verify-tag
+
+          is_draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')
+          if [ "$is_draft" != true ]; then
+            echo "Release is already published; leaving it unchanged"
+            exit 0
+          fi
+
+          existing=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')
+          for asset in dist/*; do
+            name=${asset##*/}
+            if grep -Fqx -- "$name" <<<"$existing"; then
+              echo "Preserving existing release asset: $name"
+            else
+              gh release upload "$GITHUB_REF_NAME" "$asset"
+            fi
+          done

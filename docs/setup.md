@@ -27,10 +27,9 @@ service.
   later, Ubuntu 24.04 or later, or Fedora; there is a package for each
   (step 2), and the Firecracker microVM image is x86_64 only. ssf runs
   as a per-user systemd unit, so your user needs a systemd user session
-  (every desktop login has one; a server gets one with `loginctl
-  enable-linger`, step 2, which serves the .deb and .rpm unit only: the
-  Arch and Omarchy package's unit needs a Wayland login and never runs on
-  a headless machine). The bar widget and the **Factory** menu are
+  (every desktop login has one; `ssf setup` enables linger in step 2 so
+  the unit can run at boot and after logout on a server too). The bar widget
+  and the **Factory** menu are
   Omarchy's; elsewhere the CLI and the service are the whole of it. On
   macOS, ssf is a Homebrew formula with a `brew services` (launchd)
   service; the VM is a lima instance and needs macOS 13.5 or later for
@@ -88,12 +87,56 @@ service.
   fakeroot bsdtar e2fsprogs curl`. On macOS nothing beyond the formula's
   dependencies.
 
-## 2. Install the package
+## 2. Install ssf
 
-The packages come from the latest release on GitHub (the repository's
-Releases page; a `vX.Y.Z` tag builds and attaches them). Download the
-one for this machine and install it (**you**: the package manager asks
-for your sudo password):
+**Omarchy Quattro (recommended).** Until publication in Omarchy's package
+repository, download the current Arch package and install that local file:
+
+```sh
+sudo pacman -U ./ssf-<version>-1-x86_64.pkg.tar.zst
+ssf setup
+```
+
+Pacman resolves `github-cli`, `herdr` and the package's other dependencies from
+the repositories configured on Omarchy. Do not use `--nodeps`: a successful
+install must leave every declared dependency satisfied. The package only puts
+versioned files in system locations; it does not configure an account, enable
+a service for every user, or install a widget.
+
+Run `ssf setup` as the user who will run the factory. It creates the initial
+user configuration and state, enables and starts the packaged `ssf.service` for
+`default.target`, and requests authorization for `loginctl enable-linger
+$USER`. Linger keeps the user manager alive after logout and starts it during
+boot, before a graphical login. If setup cannot obtain authorization from its
+terminal, it prints the exact `sudo loginctl enable-linger $USER` command for
+you to run, followed by `ssf setup` again. Bot authentication is deliberately
+separate and happens in step 3. Only a completed run writes
+`~/.local/state/ssf/setup-complete`; the widget uses that marker to distinguish
+an installed package from a configured user.
+
+If this user previously had the custom marketplace runtime, `/usr/bin/ssf
+setup` recognizes only its positively owned files, stops and removes that old
+runtime and unit, then enables the packaged unit. It preserves configuration,
+state, VM data, projects and unrelated files. Use the absolute `/usr/bin/ssf`
+path if the old `~/.local/bin/ssf` still comes first on `PATH`.
+
+The optional **Factory** widget is a separate Omarchy plugin:
+
+```sh
+omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --enable
+```
+
+It reads the packaged CLI for status and offers explicit Configure and service
+controls. Plugin add, enable, update and remove never build ssf, invoke `mise`,
+change the service or alter package files. Before the package is installed it
+shows `sudo pacman -U <package-file>`; before per-user setup it shows `ssf
+setup`; a failed configured service has a separate error with `ssf doctor` and
+the journal command. The current public `v0.1.0` release predates this split.
+
+**Package and macOS alternatives.** The packages come from a newer GitHub
+release (a `vX.Y.Z` tag builds and attaches them). Download the one for this
+machine and install it (**you**: the package manager asks for your sudo
+password):
 
 - **Omarchy**: `ssf-<version>-1-x86_64.pkg.tar.zst`, `sudo pacman -U
   ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's
@@ -113,50 +156,20 @@ release of the distribution; the release also carries it bare, as
 `ssf-<version>-linux-x86_64`, for anything that is not one of these
 packages.
 
-**What starts when.** The user unit `ssf.service` is enabled for every
-user and started in your session by the install hook, so there is
-nothing to enable. On Omarchy and Arch it starts with the graphical
-(Wayland) session, which the bar widget lives in; the .deb and .rpm
-ship a unit that starts with your systemd user manager at first login
-(`default.target`), display or not. On a machine nobody logs in to, a
-server, `loginctl enable-linger $USER` (**you**: sudo may be needed)
-keeps the user manager, and so the factory, running with no session at
-all; that is the .deb and .rpm unit only, the Arch and Omarchy package's
-unit needs a Wayland login and never runs on a headless machine.
-
-*Arch without a Wayland session* (an X11 desktop, a server reached over
-ssh): the unit's `ConditionEnvironment=WAYLAND_DISPLAY` is never met, so
-give it a drop-in that clears the condition and pull it into
-`default.target`, the way the .deb and .rpm unit starts:
-
-```sh
-mkdir -p ~/.config/systemd/user/ssf.service.d
-printf '[Unit]\nConditionEnvironment=\nConditionPathExists=!%%h/.local/state/ssf/disabled\n' > ~/.config/systemd/user/ssf.service.d/no-wayland.conf
-systemctl --user daemon-reload && systemctl --user add-wants default.target ssf.service && systemctl --user start ssf.service
-```
-
-An empty `ConditionEnvironment=` resets every condition of the unit, so
-the drop-in puts back the one for the disabled marker, and `ssf ui
-service enable|disable` (the toggle) keeps working. `add-wants` makes the
-symlink under `~/.config/systemd/user/default.target.wants/`, and from
-then on `loginctl enable-linger $USER` applies to this machine too. When
-the hook finds no running session it says so; `systemctl
---user daemon-reload && systemctl --user start ssf.service` starts it
-now.
+**What starts when for packages.** Nothing starts at package installation.
+`ssf setup` enables the same `default.target` user unit on every Linux
+distribution and starts it for that user. Linger keeps it running without a
+login and lets it start during boot. Package installation therefore cannot
+start an unconfigured factory for another user.
 
 The package installs `/usr/bin/ssf` (the daemon and management CLI),
-`/usr/bin/ssf-ui` (the helper behind the bar widget and the **Factory**
-menu: service toggle, log, status terminal, open a workspace; installed
-everywhere, useful only with the menu), the user unit above, the bar
-widget under `/usr/share/ssf/omarchy-plugin/` (Omarchy: copied into
-`~/.config/omarchy/plugins/ssf.factory` on the service's first start; it
-shows the state of the factory, and the service toggle is its one
-control), `/usr/share/ssf/SSF.example.md` and `config.example.toml`, the
+`/usr/bin/ssf-ui` (the helper behind the optional bar widget and the
+**Factory** menu), the user unit above, `/usr/share/ssf/SSF.example.md` and
+`config.example.toml`, the
 microVM scripts under `/usr/share/ssf/vm/`, and this documentation under
 `/usr/share/doc/ssf/`; the same paths on every distribution. Nothing
-else: no config, no state, no account. Off Omarchy there is no widget
-and no menu (`ssf ui install` says `not on Omarchy: no bar widget or
-menu to install`); `ssf ui service enable|disable` works everywhere.
+else: no config, no state, no account and no widget. `ssf ui service
+enable|disable` works everywhere after setup.
 
 **On macOS** the package is a Homebrew formula in the tap
 `mikekelly/homebrew-ssf` (**you**: Homebrew is yours to install first,
@@ -205,7 +218,9 @@ ok   new clones go under /home/you/ssf/projects
 Error: 5 problem(s) found
 ```
 
-That is Omarchy. Elsewhere the widget line is a note, and until herdr is
+That is Omarchy with the optional widget installed. Without it, the widget
+line reports that it is not installed; this does not make the factory
+unhealthy. Elsewhere the widget line is a note, and until herdr is
 installed (step 1) its line fails, naming the command for this machine:
 
 ```
@@ -218,8 +233,8 @@ cannot start (it exits and systemd retries it every 15 s until step 4),
 no herdr session is running on the host (none is needed once the factory
 is in the VM), no repository is watched, and the links are made when the
 first agent starts. What has to be `ok` now is the config line, the
-`herdr driver: CLI` line, the GitHub CLI, `ssf on PATH` and, on Omarchy,
-the bar widget. The `note ... backend:` line is not a check but a
+`herdr driver: CLI` line, the GitHub CLI and `ssf on PATH`. The `note ...
+backend:` line is not a check but a
 statement of what this machine has for the VM backend it would use, and
 `ssf doctor` prints it on every host (inside the guest it is left out,
 since the guest runs no VM of its own); while `[vm] enabled` is still
@@ -931,12 +946,17 @@ their own reference from `ssf guide`.
 
 ## 11. Upgrading
 
+On Omarchy, `omarchy plugin update ssf.factory --yes` updates only the optional
+widget. It never builds or upgrades ssf and never changes the service. Upgrade
+the application through the package manager as described next.
+
 Upgrade the package like any other: the next release's file with the
 command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst`, `sudo apt
 install ./ssf_*_amd64.deb`, `sudo dnf install ./ssf-*.x86_64.rpm`); on
 Omarchy, once ssf is in its repository, `sudo pacman -Syu`. The
-package's hook restarts `ssf.service` in every running user session (or
-tells you to, when it finds none). On macOS it is `brew upgrade ssf`,
+package hook may restart an active service that its user already opted into;
+it never enables a service or creates user state. If needed, run `systemctl
+--user restart ssf.service`. On macOS it is `brew upgrade ssf`,
 then `brew services restart ssf`, since Homebrew restarts nothing on its
 own; the restart takes the guest down and up with the new binary
 (fetched from the release as the guest's `ssf-<version>-linux-<arch>`
@@ -961,30 +981,27 @@ upgrade should look as it did before.
 
 **Stopping.** `ssf ui service disable` (the same as the bar widget's
 toggle) stops the service and keeps it from starting at the next login;
-`enable` turns it back on. It holds on both platforms, by different
-means: it writes `~/.local/state/ssf/disabled` either way, and then on
-Linux runs `systemctl --user stop ssf.service` -- the marker is what
-keeps the next login from starting it, through the unit's
-`ConditionPathExists` -- and on macOS runs `brew services stop ssf`,
-which unloads the launchd agent until `brew services start ssf`. By hand,
+`enable` turns it back on. On Linux these controls run `systemctl --user
+disable --now ssf.service` and `systemctl --user enable --now ssf.service`.
+On macOS they stop or start the Homebrew service. By hand,
 `systemctl --user stop ssf.service` stops it only until the next login,
-while `brew services stop ssf` does hold; what it does not do is leave
-the marker, so `ssf doctor` and the bar widget report the daemon as
-merely not running rather than as disabled. Running agents are
+while `systemctl --user disable --now ssf.service` holds until it is enabled
+again. `ssf doctor` and the widget distinguish a disabled service from one
+that is enabled but stopped or failed. Running agents are
 left where they are: nothing reaches them while the daemon is down, and
 it delivers what they missed when it comes back. With the factory in the
 VM, stopping the service shuts the guest down cleanly and its sessions
 come back with it.
 
-**Uninstalling** is one command and one step for you:
+**Uninstalling** keeps package and widget ownership separate. For package and
+Homebrew installs:
 
 1. `ssf uninstall`: reports what it will stop, remove and revoke, lists
    the items and the state of their workspaces, and asks once. Then, in
    the order the pieces depend on each other: `purge` of the clean and
    pushed workspaces of closed items (needs the running daemon; skipped
    when it is down), `ui service disable` (with `vm.enabled` that shuts
-   the guest down; on macOS this is `brew services stop ssf`), `ui
-   uninstall` (the bar widget and menu, Omarchy only), `auth logout`
+   the guest down; on macOS this is `brew services stop ssf`), `auth logout`
    (revokes the bot's keys on GitHub and forgets it), `vm destroy` (under
    the lima backend the lima instance `ssf-default` and its disk
    `ssf-default` too, on whichever OS you run it). Each step tolerates
@@ -1002,6 +1019,11 @@ come back with it.
    ssf`, then `brew untap mikekelly/ssf` (`gh` and `lima` stay unless
    you `brew uninstall` them). The command prints the one for this
    machine last.
+3. On Omarchy, `omarchy plugin remove ssf.factory --yes` removes the optional
+   widget. It is safe before or after package removal: removing only the widget
+   leaves the service running, while a widget left installed shows the
+   missing-package state. The package removal hook stops and disables the
+   packaged unit in available user managers while preserving user data.
 
 What stops it: a workspace with uncommitted or unpushed work (an open
 item's too), one that cannot be checked (no origin, a git error), or a
@@ -1015,9 +1037,10 @@ What it keeps, and lists at the end: the clones and worktrees under
 `~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
 dir` (the image and downloads, safe to remove), and, unless you pass
 `--data`, `~/.config/ssf` (config and the bot's key) and
-`~/.local/state/ssf` (state, and the marker that keeps a disabled service
-off, so a reinstall stays stopped until `ssf ui service enable`; with
-`--data` gone, a reinstall starts the service). Under lima the instance
+`~/.local/state/ssf` (state and the explicit setup-completion marker).
+Installing or reinstalling a package never enables the service; run `ssf
+setup` again after reinstall, or use `ssf ui service enable` when setup is
+already complete. Under lima the instance
 and the data disk go out of lima's own home with `vm destroy`, but
 `~/.lima` itself stays, holding lima's cache of downloaded images; the
 report does not name it, so remove it by hand once nothing else of yours
@@ -1029,12 +1052,15 @@ config's `vm.enabled` is cleared, so `status` does not go looking for it.
 
 ## Checklist
 
-1. The package for this machine (**you**): `sudo pacman -U
+1. SSF for this machine (**you**): use `sudo pacman -U
    ssf-*.pkg.tar.zst`, `sudo apt install ./ssf_*_amd64.deb`, `sudo dnf
    install ./ssf-*.x86_64.rpm` or, on macOS, `brew install
-   mikekelly/ssf/ssf`, plus herdr by hand off Omarchy on Linux; `ssf
-   doctor` fails only on the bot, herdr, the repository and the links
-   (on a Mac, the service line too: nothing is started at install).
+   mikekelly/ssf/ssf`, plus herdr by hand off Omarchy on Linux. Run `ssf setup`
+   as the factory user. On Omarchy, optionally add the widget with `omarchy
+   plugin add https://github.com/mikekelly/simple-software-factory --enable`.
+   Then `ssf
+   doctor` fails only on the bot, herdr, the repository and the links (on a
+   Mac, the service line too: nothing is started at install).
 2. Bot account created (**you**), with Write on each repository and
    access to the boards.
 3. `ssf auth login --web` as the bot (**you**, in a private window);

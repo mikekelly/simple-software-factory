@@ -1,15 +1,15 @@
 # Maintainer: Mike Kelly <mikekelly321@gmail.com>
 #
-# Release PKGBUILD: builds a tagged release of ssf from the GitHub tag tarball.
+# Release PKGBUILD: builds ssf from the immutable GitHub archive pinned below.
 # This directory (PKGBUILD, ssf.install, .omarchy/package.json) is what goes
 # into Omarchy's package repository as pkgbuilds/ssf/. The development build
 # of the working tree is ../PKGBUILD, which sources this file for everything
 # but the source and version.
 #
-# New release: tag vX.Y.Z (Cargo.toml version first), then here
-#     pkgver=X.Y.Z, pkgrel=1, updpkgsums, makepkg -fd
-# Omarchy's sync-upstream does the same from .omarchy/package.json once the
-# package is in its repository.
+# New release: first freeze and push the implementation commit (Cargo.toml
+# version included), then pin this recipe to that commit's GitHub archive,
+# update pkgver/pkgrel and sha256sums, and build with makepkg -fd. Tag the
+# recipe commit only after the ordinary checksum-verified build succeeds.
 
 pkgname=ssf
 pkgver=0.1.0
@@ -63,11 +63,10 @@ package() {
   install -Dm755 target/release/ssf "$pkgdir/usr/bin/ssf"
   install -Dm755 bin/ssf-ui "$pkgdir/usr/bin/ssf-ui"
   install -Dm644 packaging/ssf.service "$pkgdir/usr/lib/systemd/user/ssf.service"
-  # Enabled for every user out of the box; `ssf ui service disable` turns it off.
-  install -d "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants"
-  ln -s ../ssf.service "$pkgdir/usr/lib/systemd/user/graphical-session.target.wants/ssf.service"
-  install -Dm644 omarchy-plugin/manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"
-  install -Dm644 omarchy-plugin/Panel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/Panel.qml"
+  install -Dm755 packaging/package-pre-remove.sh "$pkgdir/usr/lib/ssf/package-pre-remove"
+  install -Dm644 packaging/ssf-pre-remove.hook "$pkgdir/usr/share/libalpm/hooks/ssf-pre-remove.hook"
+  install -Dm644 manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"
+  install -Dm644 marketplace/FactoryPanel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/marketplace/FactoryPanel.qml"
   install -Dm644 config.example.toml "$pkgdir/usr/share/ssf/config.example.toml"
   # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the
   # guest scripts, the units and their per-backend drop-ins. A loop, not a

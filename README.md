@@ -165,17 +165,39 @@ you set (see
 
 ## Install
 
-ssf is packaged for Omarchy, Arch, Debian/Ubuntu and Fedora (x86_64), and
-is a Homebrew formula for macOS; every release on the Releases page carries
-the Linux packages. Download the one for your machine and install it (on a
-Mac, install it from the tap), then follow [Setup](docs/setup.md), yourself
-or with your coding agent (the `ssf-setup` skill in this repository points
-an agent at that document).
+Until ssf is published in Omarchy's package repository, download the current
+Arch package and install it with pacman. This is a normal package-manager
+install: pacman resolves `github-cli` and `herdr` from Omarchy's configured
+repositories and records every installed file.
 
-- **Omarchy**: `ssf-<version>-1-x86_64.pkg.tar.zst`, `sudo pacman -U
-  ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's
-  repositories (until ssf is in Omarchy's own package repository, then
-  `sudo pacman -S ssf`).
+```sh
+sudo pacman -U ./ssf-<version>-1-x86_64.pkg.tar.zst
+ssf setup
+```
+
+`ssf setup` is the explicit per-user step. It creates the initial configuration,
+enables and starts `ssf.service` for `default.target`, and asks visibly for
+authorization to enable systemd linger. Linger lets the user service start at
+boot and remain available after logout. It does not sign in a bot account;
+follow [Setup](docs/setup.md) for `ssf auth login --web` and repository setup.
+
+The optional Omarchy widget is installed separately:
+
+```sh
+omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --enable
+```
+
+It is only a status and control interface. Adding, updating, enabling or
+removing it never builds, installs, upgrades, starts or removes ssf. If the
+package or setup is missing, the widget shows the command needed to fix that
+state. `mise` is used only by developers building ssf from source.
+
+Arch, Debian/Ubuntu and Fedora (x86_64) remain available as packages, and
+macOS through Homebrew; every release carries the Linux packages.
+
+- **Omarchy**: use a release newer than `v0.1.0` and
+  install `ssf-<version>-1-x86_64.pkg.tar.zst` with `sudo pacman -U
+  ssf-*.pkg.tar.zst`; `github-cli` and `herdr` come from Omarchy's repositories.
 - **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
   `herdr` or `herdr-bin` (AUR), which it depends on. Without a Wayland
   session (X11, a server), see [Setup](docs/setup.md) step 2.
@@ -198,23 +220,26 @@ The Linux packages install the same paths on every distribution:
 |------|------|
 | `/usr/bin/ssf` | the daemon and management CLI |
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
-| `/usr/lib/systemd/user/ssf.service` | background service, enabled for every user: with the graphical session on Omarchy and Arch, with the systemd user manager at login on Debian, Ubuntu and Fedora |
-| `/usr/share/ssf/omarchy-plugin/` | Omarchy only: the bar widget, copied into `~/.config/omarchy/plugins/ssf.factory` on first start; it and the **Factory** menu show the state of the factory, and the service toggle is their one control |
+| `/usr/lib/systemd/user/ssf.service` | background user service, enabled for `default.target` by explicit `ssf setup` |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
 | `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
 | `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
 | `/usr/share/doc/ssf/` | this file and `docs/`, [Setup](docs/setup.md) among them |
 
-The service starts with the graphical session (Omarchy, Arch) or with
-your systemd user manager at login (Debian, Ubuntu, Fedora; `loginctl
-enable-linger` keeps it running on a server), and the package's install
-hook also starts it in any session that is running at install time, so
-there is nothing to enable; it stays in a restart loop until the bot is
-signed in. It comes back with the next login after a reboot (unless it
+The package installs files without changing any user's configuration or
+service. After `ssf setup`, the service belongs to `default.target`; linger
+keeps the user manager running across logout and starts it during boot. It
+comes back after a reboot (unless it
 was switched off with the toggle or `ssf ui service disable`), waits for
 the driver, and resumes the
 agent sessions the reboot cut off. Building from a checkout, and running
 the service from a dev build, is in [Development](docs/development.md).
+
+Removing the shell plugin deliberately leaves the daemon running. To remove
+the application, run `ssf uninstall` (add `--data` only if you also want to
+remove configuration and state), then `sudo pacman -R ssf`. Project clones and
+worktrees are preserved. The widget can be removed independently with
+`omarchy plugin remove ssf.factory`.
 
 ## Set up
 
@@ -222,7 +247,8 @@ the service from a dev build, is in [Development](docs/development.md).
 the bot account, the sign-in, who may drive the factory, where the
 agents run, the harness login, the first repository and the harness and
 model it runs on, the first issue, upgrading, stopping and
-uninstalling. The short form of the default path:
+uninstalling. On Omarchy, start with the package install and `ssf setup` above;
+the short form after that explicit setup is:
 
 1. **The bot account.** The bot is a GitHub account of its own, created
    for the factory rather than yours (every agent post is made as it,
@@ -320,7 +346,7 @@ ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspa
 ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest, a checkout whose workspace was closed by hand included
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
-ssf uninstall [--yes] [--force] [--data]   # back to just the package: reports, asks once; then the package manager's remove command is yours
+ssf uninstall [--yes] [--force] [--data]   # clean up the service/account safely; then remove its package
 journalctl --user -fu ssf.service   # macOS: tail -f $(brew --prefix)/var/log/ssf.log
 ```
 
@@ -359,13 +385,11 @@ are left where they are: nothing reaches them while the daemon is down,
 and it delivers what they missed when it comes back. With the factory in
 a VM, stopping the service shuts the guest down cleanly.
 
-**Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
-the package upgrade restarts the service (and, in the VM, the guest, whose
-sessions are resumed; on macOS `brew upgrade ssf` then `brew services
-restart ssf`); `ssf uninstall` takes the machine back to just the package
-(it reports, asks once, and keeps your clones), then `sudo pacman -R ssf`,
-`sudo apt remove ssf`, `sudo dnf remove ssf` or `brew uninstall ssf` is
-yours.
+**Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading).
+Upgrade ssf with its package manager. An active, already configured service is
+restarted on package upgrade; installing the widget never upgrades it. For
+complete removal run `ssf uninstall`, then remove the package with pacman, apt,
+dnf or brew. Remove the Omarchy widget separately if it is installed.
 
 ## The rest of the story
 

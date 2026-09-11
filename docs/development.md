@@ -9,10 +9,14 @@ SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh aut
   ./target/debug/ssf repo add you/sandbox --harness claude
 SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token) \
   ./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
-SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # live-test the widget
-omarchy plugin validate ./omarchy-plugin
-cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
+omarchy plugin add "file://$PWD" --enable --yes     # live-test the widget only
+omarchy plugin validate .
+cd packaging && makepkg -fd          # build the installable package
 ```
+
+`mise` may select or install a Rust toolchain for these developer builds. It is
+never used by package installation, `ssf setup`, service management or the
+widget.
 
 A scratch factory with its own `SSF_CONFIG_DIR`/`SSF_STATE_DIR` touches
 nothing of the real one; `ssf run --once` does a single pass, startup
@@ -86,8 +90,8 @@ nothing `cargo test` runs on its own may hold one.
 `packaging/dev-install.sh` builds `target/release/ssf`, writes the
 drop-in below pointing the unit at the build, then `systemctl --user
 daemon-reload && systemctl --user restart ssf.service`, and runs the
-build's `doctor`. The package has to be installed once for the unit and
-the widget (`cd packaging && makepkg -si`); the script stops and says so
+build's `doctor`. The package has to be installed once for the unit (`cd
+packaging && makepkg -si`, followed once by `ssf setup`); the script stops and says so
 otherwise. Keep the build outside any worktree an agent might release.
 The drop-in survives package upgrades, so the service keeps running the
 dev build until `packaging/dev-install.sh --undo` removes it and restarts
@@ -96,8 +100,6 @@ the service on the package:
 ```ini
 # ~/.config/systemd/user/ssf.service.d/dev-build.conf
 [Service]
-ExecStartPre=
-ExecStartPre=-/home/you/src/simple-software-factory/target/release/ssf ui install --quiet
 ExecStart=
 ExecStart=/home/you/src/simple-software-factory/target/release/ssf run
 ```
@@ -119,8 +121,8 @@ Two PKGBUILDs share one `package()`:
   the one before. `cd packaging && makepkg -fd` is the local workflow, and
   the `pkgver` bump makepkg writes is committed with the change.
 - `packaging/release/PKGBUILD` is the release build: `pkgver=X.Y.Z`,
-  `source` is the GitHub tag tarball
-  (`.../archive/refs/tags/vX.Y.Z.tar.gz`) with its sha256, and
+  `source` is the immutable GitHub archive for the release's frozen source
+  commit with its sha256, and
   `cargo build --frozen --release` from that tarball. The development
   PKGBUILD sources it and overrides the version, the source and the
   `prepare()`/`build()`/`check()` that work on the copied tree, so
@@ -129,23 +131,33 @@ Two PKGBUILDs share one `package()`:
 
 `packaging/release/` is laid out the way Omarchy's package repository
 ([omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs)) wants a
-package directory: `PKGBUILD`, `ssf.install` (a symlink to
-`../ssf.install`; the copy in step 3 below dereferences it) and `.omarchy/package.json`, which
-tells its `sync-upstream` to follow this repository's `vX.Y.Z` tags and
-puts ssf on the fast release ring, so a new tag reaches the stable channel
-without waiting for an Omarchy release. Everything Omarchy's builder needs
-is in that directory plus the tag tarball, which it downloads
+package directory: `PKGBUILD`, `ssf.install` (the shared install script, kept
+as a regular mirrored file because Omarchy
+plugins reject symlinks anywhere in their checkout) and `.omarchy/package.json`, which
+marks this as a locally maintained fast-ring recipe. The pinned source commit
+and checksum are updated manually for each release. Everything Omarchy's builder needs
+is in that directory plus the commit archive, which it downloads
 unauthenticated: the repository has to be public for the build to work.
 
 Cutting a release:
 
-1. Bump `version` in `Cargo.toml`, `cargo build` (updates `Cargo.lock`),
-   commit, tag `vX.Y.Z` and push the tag. The tag must be plain `vX.Y.Z`
+1. Bump `version` in `Cargo.toml`, update `Cargo.lock`, finish the implementation
+   and workflows, validate them, then commit and push this frozen source as
+   commit A. The release PKGBUILD may still describe the preceding release in A.
+2. Download GitHub's archive for the full commit A object ID. In
+   `packaging/release/PKGBUILD`, set `pkgver=X.Y.Z`, `pkgrel=1`, pin `source`
+   and `_srcname` to that commit ID, and set the archive's actual sha256. Refresh
+   the generated development `pkgver`, then run the ordinary checksum-verifying
+   `makepkg -fd`. Commit these recipe-only changes as B, tag B as `vX.Y.Z`, and
+   push the branch and tag. This two-commit layout avoids a tag archive whose
+   checksum would depend on the recipe containing that checksum.
+
+   The tag must be plain `vX.Y.Z`
    (no `-rc1` or the like: the workflow only runs on those, nfpm would
    write `0.2.0~rc1` and makepkg refuses a hyphen in `pkgver`) and its
-   X.Y.Z must equal `Cargo.toml`'s `version`, or `build.sh` stops. The tag runs
-   `.github/workflows/release.yml`, which makes the GitHub release if
-   there is none and attaches `ssf_X.Y.Z-1_amd64.deb`,
+   X.Y.Z must equal `Cargo.toml` and the release PKGBUILD. The tag runs
+   `.github/workflows/release.yml`, which creates a draft GitHub release if
+   needed and adds (without replacing existing assets) `ssf_X.Y.Z-1_amd64.deb`,
    `ssf-X.Y.Z-1.x86_64.rpm` and the bare static binary
    `ssf-X.Y.Z-linux-x86_64` (a musl build via `packaging/linux/build.sh`
    and nfpm), `ssf-X.Y.Z-1-x86_64.pkg.tar.zst` (from
@@ -156,7 +168,7 @@ Cutting a release:
    workflow artifacts, no release. Locally, `packaging/linux/build.sh`
    builds the .deb, .rpm and the bare binary into `packaging/linux/dist/`
    (it needs `nfpm` and the musl target, and says so).
-   The same tag runs `.github/workflows/homebrew.yml`, which renders
+   Publishing the reviewed draft runs `.github/workflows/homebrew.yml`, which renders
    `packaging/homebrew/ssf.rb` (the formula's source of truth; the
    `url` and `sha256` of the tag tarball go in, see
    `packaging/homebrew/render.sh`) and pushes it to the tap
@@ -170,18 +182,13 @@ Cutting a release:
    `release.yml` does that, and when its best-effort aarch64 job failed,
    `gh release upload vX.Y.Z ssf-X.Y.Z-linux-aarch64` adds the missing
    one by hand.
-2. In `packaging/release/`: `pkgver=X.Y.Z`, `pkgrel=1`, `updpkgsums`
-   (downloads the tag tarball and writes its sha256; it needs the
-   repository to be public, or the tarball fetched with a token into
-   that directory first), `makepkg -fd` to check it builds from the
-   tarball, commit. The workflow attaches the same package to the
-   release, so nothing is uploaded by hand. A development build
-   (`0.1.0.r271.g06491ae`) sorts *above* the release version (`0.1.0`)
+   A development build
+   (`0.2.0.r500.g1234567`) sorts *above* the release version (`0.2.0`)
    for pacman, so a machine installed from one would not be upgraded by
    the package from Omarchy's repository until the next tag.
-3. Once ssf is in Omarchy's repository, Omarchy's `sync-upstream` does step
-   2 on its side and opens the PR there; a change to `depends`,
-   `package()` or `ssf.install` still needs a PR to omarchy-pkgs with the
+3. Once ssf is submitted to Omarchy's repository, update it by PR with the
+   already pinned and verified release recipe; a change to `depends`,
+   `package()` or `ssf.install` likewise needs the
    `packaging/release/` files:
 
    ```sh
@@ -219,10 +226,11 @@ from the release either way.
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
-| `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
+| `src/ui.rs`, `bin/ssf-ui` | service status and controls used by the CLI and Omarchy widget |
+| `manifest.json`, `marketplace/FactoryPanel.qml` | independently installed Omarchy widget; status and explicit controls only, with no runtime installer |
 | `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
-| `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
-| `.github/workflows/homebrew.yml` | the tap workflow: on the same tag, renders the Homebrew formula and pushes it to `mikekelly/homebrew-ssf` |
+| `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and adds them to a draft GitHub release |
+| `.github/workflows/homebrew.yml` | the tap workflow: when the reviewed GitHub release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-ssf` |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 

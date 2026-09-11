@@ -2,18 +2,18 @@
   "schemaVersion": 1,
   "id": "ssf.factory",
   "name": "Software Factory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Simple Software Factory",
   "license": "MIT",
   "description": "GitHub issues and pull requests involving your bot account, and the agent sessions working on them: what each agent is doing, what it last said, and where its workspace is.",
   "kinds": ["bar-widget"],
   "activation": "on-demand",
   "entryPoints": {
-    "barWidget": "Panel.qml"
+    "barWidget": "marketplace/FactoryPanel.qml"
   },
   "barWidget": {
     "displayName": "Software Factory",
-    "description": "A dashboard of the factory: whether the service runs, which bot is signed in, the watched repositories and the agent working each, and the agent sessions (state, last message, activity) with click-through to GitHub or the workspace. Setup is done from the CLI.",
+    "description": "A status and control dashboard for a package-installed Software Factory. It reports installation, configuration and service health, then shows watched repositories and agent sessions. Configuration and service changes happen only from explicit controls.",
     "category": "AI",
     "aliases": ["ssf", "factory"],
     "allowMultiple": false,

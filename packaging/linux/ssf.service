@@ -1,26 +1,12 @@
-# ssf.service for the .deb and .rpm (Debian, Ubuntu, Fedora). The Arch and
-# Omarchy packages (../release/PKGBUILD) install ../ssf.service instead,
-# which starts with the Wayland session. This unit differs from that one:
-#   - no ConditionEnvironment=WAYLAND_DISPLAY and no After=/PartOf=
-#     graphical-session.target: there is no bar widget to wait for, and a
-#     headless machine has no graphical session at all;
-#   - WantedBy=default.target: the unit starts with the user's systemd
-#     manager, at first login. `loginctl enable-linger $USER` starts that
-#     manager at boot and keeps it (and ssf) running with no one logged in.
-# Everything else is the same: the disabled marker, `ssf ui install --quiet`
-# on start (a no-op off Omarchy), KillMode, timeouts, Restart and RUST_LOG.
+# ssf.service for Debian, Ubuntu and Fedora. Explicit `ssf setup` enables
+# this default.target unit and login linger for one user.
 
 [Unit]
 Description=Simple Software Factory: GitHub issues assigned to the bot become agent workspaces in herdr or Orca
 Documentation=https://github.com/mikekelly/simple-software-factory
-# Written by `ssf ui service disable` so a stopped factory stays stopped
-# across logins without the unit having to be disabled.
-ConditionPathExists=!%h/.local/state/ssf/disabled
 
 [Service]
 Type=simple
-# Install the bar widget and menu entries on first start; a no-op off Omarchy.
-ExecStartPre=-/usr/bin/ssf ui install --quiet
 ExecStart=/usr/bin/ssf run
 # With `[vm] enabled`, `ssf run` starts a Firecracker VM in a session of its
 # own and shuts it down cleanly on SIGTERM; only the main process gets the

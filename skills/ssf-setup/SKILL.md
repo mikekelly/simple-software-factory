@@ -26,6 +26,17 @@ no second copy of the steps here. The README next to it
 has the everyday commands, and the rest of `docs/` is the reference the
 document links to.
 
+On Omarchy Quattro, lead with the package route from step 2: install the
+downloaded package with `sudo pacman -U ./ssf-<version>-1-x86_64.pkg.tar.zst`,
+then run `ssf setup` as the factory user. Package installation owns system
+files; explicit setup owns the user's configuration, `default.target` service
+enablement and linger. Authentication remains the separate `ssf auth login
+--web` step. Offer `omarchy plugin add
+https://github.com/mikekelly/simple-software-factory.git --enable` separately
+for the optional status/control widget. Plugin operations never install,
+compile, configure, start, upgrade or remove ssf; `mise` is for source builds
+only.
+
 ## Rules for an agent following it
 
 1. **Stop where only the person can act.** The document marks them
@@ -116,6 +127,12 @@ document links to.
     pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or on
     macOS `brew uninstall ssf` and then `brew untap mikekelly/ssf`; the
     command prints the one for the machine) is **you**.
+    On Omarchy, the optional widget is independent: `omarchy plugin remove
+    ssf.factory` removes only its checkout and leaves the service running.
+    Package removal leaves an installed widget in its actionable
+    missing-package state. Reinstall the package, run `ssf setup`, and add the
+    widget separately if wanted; preserved configuration, state, project clones
+    and worktrees are reused unless the person explicitly chose `--data`.
 11. **Calibrate the project's gauntlet by blast radius** when writing
     `SSF.md`: use the [boilerplate](../../SSF.example.md) and
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
