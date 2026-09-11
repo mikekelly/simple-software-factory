@@ -136,6 +136,33 @@ and leaves session files under `~/.claude`, and
 That guard is the only way to a real directory from the test build, and
 nothing `cargo test` runs on its own may hold one.
 
+## Firecracker ownership upgrade regression
+
+`firecracker_ownership_boot_persistence` is an ignored, isolated test for a
+Linux host with KVM. It boots a new VM on a temporary data disk, changes guest
+configuration, verifies the boot script and state after restart, refuses a
+legacy root, then verifies state again after resetting to the rebuilt root.
+It uses no host factory credentials. Supply absolute paths to a current image
+built with this checkout's `vm/` scripts, an unmodified legacy image, the kernel,
+and executables:
+
+```sh
+cargo build
+SSF_VM_TEST_ROOTFS=/path/to/current/rootfs.ext4 \
+SSF_VM_TEST_LEGACY_ROOTFS=/path/to/v0.2/rootfs.ext4 \
+SSF_VM_TEST_KERNEL=/path/to/vmlinux \
+SSF_VM_TEST_FIRECRACKER=/path/to/firecracker \
+SSF_VM_TEST_GVPROXY=/path/to/gvproxy \
+SSF_VM_TEST_BINARY="$PWD/target/debug/ssf" \
+env -u SSF_VM_GUEST cargo test firecracker_ownership_boot_persistence -- --ignored --nocapture
+```
+
+The test copies source images; it does not alter them. It stops its VM before
+removing temporary disks, and retains those disks if stopping fails. The normal
+suite also reproduces a committed ext4 journal transaction that restores legacy
+script content despite a successful pre-recovery readback; that regression needs
+`mkfs.ext4`, `debugfs` and `e2fsck`, but no KVM or mount privileges.
+
 ## A dev build as the service
 
 `packaging/dev-install.sh` builds `target/release/ssf`, writes the

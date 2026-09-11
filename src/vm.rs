@@ -1516,6 +1516,7 @@ impl Vm {
                 bail!("copying the image failed");
             }
         }
+        self.require_safe_seed_script()?;
         if !self.data_disk().exists() {
             let gib = self.sizes().data_gib;
             info!("making {} ({gib} GiB, sparse)", self.data_disk().display());
@@ -1529,7 +1530,6 @@ impl Vm {
                 "mkfs.ext4",
             )?;
         }
-        self.refresh_seed_script()?;
         self.write_seed(host)?;
         let boot = self.boot_files(&self.dir);
         std::fs::write(
@@ -1792,39 +1792,39 @@ impl Vm {
         Ok(())
     }
 
-    /// Old roots delete the persistent config when seeded. Upgrade their script
-    /// while stopped and verify it before allowing a boot.
-    fn refresh_seed_script(&self) -> Result<()> {
-        let script = self.dir.join("seed-common-upgrade.sh");
-        std::fs::write(&script, include_str!("../vm/guest/seed-common.sh"))?;
-        let target = "/usr/local/lib/ssf/seed-common.sh";
-        run_ok(
-            Command::new("debugfs")
-                .args(["-w", "-R", &format!("rm {target}")])
-                .arg(self.root_disk()),
-            "removing obsolete seed script",
-        )?;
-        run_ok(
-            Command::new("debugfs")
-                .args([
-                    "-w",
-                    "-R",
-                    &format!("write \"{}\" {target}", script.display()),
-                ])
-                .arg(self.root_disk()),
-            "upgrading seed script",
-        )?;
-        let output = Command::new("debugfs")
-            .args(["-R", &format!("cat {target}")])
-            .arg(self.root_disk())
-            .output()?;
-        if output.stdout != include_bytes!("../vm/guest/seed-common.sh") {
+    /// Replay the stopped root's journal before inspecting its boot script.
+    /// Never patch with debugfs: journal replay at boot can undo such writes.
+    /// Legacy roots must be rebuilt/reset before they can see the data disk.
+    fn require_safe_seed_script(&self) -> Result<()> {
+        let disk = self.root_disk();
+        let checked = Command::new("e2fsck")
+            .args(["-f", "-p"])
+            .arg(&disk)
+            .output()
+            .context("checking the stopped root filesystem (is e2fsprogs installed?)")?;
+        // Corrected filesystems and the offline equivalent of reboot-required
+        // are safe to inspect; every unresolved error refuses the boot.
+        if !matches!(checked.status.code(), Some(0..=2)) {
             bail!(
-                "could not upgrade the stopped VM seed script; root disk kept at {}. Rebuild/reset the disposable root before starting",
-                self.root_disk().display()
+                "cannot verify the stopped root filesystem {} ({}): {}{}; no guest boot was attempted. Repair the disposable root or rebuild/reset it; the data disk is untouched",
+                disk.display(),
+                checked.status,
+                String::from_utf8_lossy(&checked.stdout),
+                String::from_utf8_lossy(&checked.stderr)
             );
         }
-        std::fs::remove_file(script)?;
+        let output = Command::new("debugfs")
+            .args(["-R", "cat /usr/local/lib/ssf/seed-common.sh"])
+            .arg(&disk)
+            .output()
+            .context("reading the stopped root seed script (is e2fsprogs installed?)")?;
+        if !output.status.success() || output.stdout != include_bytes!("../vm/guest/seed-common.sh")
+        {
+            bail!(
+                "the Firecracker root {} has a legacy or incompatible seed script; refusing to boot it with the persistent data disk. Install matching ssf guest scripts, run `ssf vm build --force`, then `ssf vm reset` and `ssf vm start`. Reset alone copies the existing root image and is not sufficient; if vm.rootfs is custom, replace that image with a matching build. The data disk is untouched",
+                disk.display()
+            );
+        }
         Ok(())
     }
 
@@ -3171,7 +3171,7 @@ mod tests {
     }
 
     #[test]
-    fn stopped_root_seed_script_upgrade_is_repeatable() {
+    fn stopped_root_requires_matching_script_after_filesystem_recovery() {
         if which("mkfs.ext4").is_none() || which("debugfs").is_none() {
             return;
         }
@@ -3202,8 +3202,127 @@ mod tests {
             "scratch root",
         )
         .unwrap();
-        vm.refresh_seed_script().unwrap();
-        vm.refresh_seed_script().unwrap();
+        assert!(
+            vm.require_safe_seed_script()
+                .unwrap_err()
+                .to_string()
+                .contains("refusing to boot")
+        );
+        // A reset from the same legacy image must still refuse. A rebuild
+        // supplies the safe script through the image filesystem, not a patch.
+        std::fs::write(
+            sandbox
+                .root()
+                .join("root-tree/usr/local/lib/ssf/seed-common.sh"),
+            include_bytes!("../vm/guest/seed-common.sh"),
+        )
+        .unwrap();
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-F", "-q", "-d"])
+                .arg(sandbox.root().join("root-tree"))
+                .arg(vm.root_disk()),
+            "rebuilt scratch root",
+        )
+        .unwrap();
+        vm.require_safe_seed_script().unwrap();
+        vm.require_safe_seed_script().unwrap();
+        std::fs::write(vm.root_disk(), "not an ext4 root").unwrap();
+        assert!(
+            vm.require_safe_seed_script()
+                .unwrap_err()
+                .to_string()
+                .contains("no guest boot")
+        );
+    }
+
+    #[test]
+    fn stopped_root_replays_legacy_journal_before_trusting_script() {
+        if ["mkfs.ext4", "debugfs", "e2fsck"]
+            .iter()
+            .any(|tool| which(tool).is_none())
+        {
+            return;
+        }
+        let sandbox = crate::config::test_support::sandbox();
+        let mut config = Config::default();
+        config.vm.dir = sandbox.root().join("vm").to_string_lossy().into_owned();
+        let vm = Vm::new(&config);
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        let tree = sandbox.root().join("root-tree");
+        let script_path = "/usr/local/lib/ssf/seed-common.sh";
+        std::fs::create_dir_all(tree.join("usr/local/lib/ssf")).unwrap();
+        std::fs::write(
+            tree.join(script_path.trim_start_matches('/')),
+            include_bytes!("../vm/guest/seed-common.sh"),
+        )
+        .unwrap();
+        let disk = std::fs::File::create(vm.root_disk()).unwrap();
+        disk.set_len(64 << 20).unwrap();
+        drop(disk);
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-b", "4096", "-d"])
+                .arg(&tree)
+                .arg(vm.root_disk()),
+            "scratch journaled root",
+        )
+        .unwrap();
+        let block = Command::new("debugfs")
+            .args(["-R", &format!("bmap {script_path} 0")])
+            .arg(vm.root_disk())
+            .output()
+            .unwrap();
+        assert!(block.status.success());
+        let block: u64 = String::from_utf8(block.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Model the state left by an offline patch: the file looks current,
+        // but a committed journal transaction still contains its legacy data.
+        // Journal replay at boot would restore that obsolete first block.
+        let legacy = b"#!/bin/sh\nrm -rf /home/ssf/.config/ssf\n";
+        let mut legacy_block = vec![0_u8; 4096];
+        legacy_block[..legacy.len()].copy_from_slice(legacy);
+        let block_file = sandbox.root().join("legacy-block");
+        std::fs::write(&block_file, legacy_block).unwrap();
+        let commands = sandbox.root().join("journal-commands");
+        std::fs::write(
+            &commands,
+            format!(
+                "journal_open\njournal_write -b {block} \"{}\"\njournal_close\n",
+                block_file.display()
+            ),
+        )
+        .unwrap();
+        run_ok(
+            Command::new("debugfs")
+                .args(["-w", "-f"])
+                .arg(commands)
+                .arg(vm.root_disk()),
+            "queue legacy journal transaction",
+        )
+        .unwrap();
+        let read_script = || {
+            let output = Command::new("debugfs")
+                .args(["-R", &format!("cat {script_path}")])
+                .arg(vm.root_disk())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            output.stdout
+        };
+        assert_eq!(read_script(), include_bytes!("../vm/guest/seed-common.sh"));
+        assert!(
+            vm.require_safe_seed_script()
+                .unwrap_err()
+                .to_string()
+                .contains("refusing to boot")
+        );
+        assert!(read_script().starts_with(legacy));
+        // Recovery is persistent: a repeated startup attempt also refuses.
+        assert!(vm.require_safe_seed_script().is_err());
     }
 
     #[test]
@@ -4217,6 +4336,83 @@ mod tests {
         assert!(pid_runs(std::process::id(), "ssf") || pid_runs(std::process::id(), "vm"));
         assert!(!pid_runs(std::process::id(), "firecracker"));
         assert!(!pid_runs(u32::MAX - 1, "firecracker"));
+    }
+
+    /// Isolated real-boot regression; see docs/development.md for required assets.
+    #[tokio::test]
+    #[ignore = "requires KVM and explicit legacy/current Firecracker assets"]
+    async fn firecracker_ownership_boot_persistence() {
+        let sandbox = crate::config::test_support::sandbox();
+        let asset = |name: &str| -> String {
+            let path = std::env::var(name).unwrap_or_else(|_| panic!("set {name}"));
+            std::fs::canonicalize(path)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        };
+        let safe_root = asset("SSF_VM_TEST_ROOTFS");
+        let legacy_root = asset("SSF_VM_TEST_LEGACY_ROOTFS");
+        let mut cfg = Config::default();
+        // No host factory config or credentials enter this isolated VM.
+        cfg.vm.dir = sandbox.root().join("vms").to_string_lossy().into_owned();
+        cfg.vm.name = "ownership-boot-test".into();
+        cfg.vm.backend = Some(BackendKind::Firecracker);
+        cfg.vm.rootfs = Some(safe_root.clone());
+        cfg.vm.kernel = Some(asset("SSF_VM_TEST_KERNEL"));
+        cfg.vm.firecracker = Some(asset("SSF_VM_TEST_FIRECRACKER"));
+        cfg.vm.gvproxy = Some(asset("SSF_VM_TEST_GVPROXY"));
+        cfg.vm.data_gib = Some(2);
+        cfg.vm.mem_mib = Some(2048);
+        cfg.vm.vcpus = Some(2);
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        cfg.vm.ssh_port = port.local_addr().unwrap().port();
+        drop(port);
+        let mut vm = Vm::new(&cfg);
+        vm.binary = Some(PathBuf::from(asset("SSF_VM_TEST_BINARY")));
+        let result: Result<()> = async {
+            vm.start(&cfg).await?;
+            vm.ssh_output(&["ssf", "config", "set", "daemon.poll_interval_secs", "71"])?;
+            // Unreferenced fixtures exercise persistent credential/key storage
+            // without authenticating or starting work against any GitHub account.
+            vm.ssh_output(&["sh", "-c", "printf credential-sentinel > ~/.config/ssf/test-credential; printf key-sentinel > ~/.config/ssf/test-key"])?;
+            let snapshot = || -> Result<String> {
+                vm.ssh_output(&["cat", "/home/ssf/.config/ssf/config.toml", "/home/ssf/.config/ssf/test-credential", "/home/ssf/.config/ssf/test-key"])
+            };
+            let expected = snapshot()?;
+            anyhow::ensure!(expected.contains("71"), "guest configuration change missing");
+            let check = |vm: &Vm| -> Result<()> {
+                anyhow::ensure!(vm.ssh_output(&["cat", "/usr/local/lib/ssf/seed-common.sh"])? == include_str!("../vm/guest/seed-common.sh").trim(), "booted seed script differs");
+                anyhow::ensure!(vm.ssh_output(&["cat", "/home/ssf/.config/ssf/config.toml", "/home/ssf/.config/ssf/test-credential", "/home/ssf/.config/ssf/test-key"])? == expected, "guest factory state changed across boot");
+                vm.ssh_output(&["test", "-f", "/home/ssf/.config/ssf/guest-owned"])?;
+                Ok(())
+            };
+            check(&vm)?;
+            vm.stop().await?;
+            vm.start(&cfg).await?;
+            check(&vm)?;
+            vm.reset().await?;
+            vm.cfg.rootfs = Some(legacy_root);
+            let error = vm.start(&cfg).await.err().context("legacy root unexpectedly booted")?.to_string();
+            anyhow::ensure!(error.contains("refusing to boot"), "{error}");
+            anyhow::ensure!(!vm.running(), "legacy VM is running");
+            // Recovery changes only the disposable root. Assert the guest's
+            // script and established state after boot, not offline readback.
+            vm.reset().await?;
+            vm.cfg.rootfs = Some(safe_root);
+            vm.start(&cfg).await?;
+            check(&vm)?;
+            Ok(())
+        }.await;
+        let stopped = vm.stop().await;
+        if stopped.is_err() {
+            eprintln!(
+                "VM stop failed; preserving scratch disks at {}",
+                sandbox.root().display()
+            );
+            std::mem::forget(sandbox);
+        }
+        stopped.unwrap();
+        result.unwrap();
     }
 
     /// Against the built image: starts the VM, reaches the guest daemon

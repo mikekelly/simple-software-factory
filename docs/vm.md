@@ -92,7 +92,7 @@ plus Firecracker's seccomp filter. It is x86_64 only: the Firecracker,
 gvproxy and kernel binaries `ssf vm build` downloads are built for it.
 
 The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
-(libarchive), `mkfs.ext4`, `e2fsck` and `resize2fs` (e2fsprogs), `curl`,
+(libarchive), `mkfs.ext4`, `e2fsck`, `debugfs` and `resize2fs` (e2fsprogs), `curl`,
 `openssh`, and its own `herdr` binary, which is copied into the image.
 All of that is on a stock Omarchy; elsewhere `sudo pacman -S --needed
 fakeroot libarchive e2fsprogs curl openssh`, `sudo apt install fakeroot
@@ -583,13 +583,23 @@ checks/completes ownership migration; it never pushes ordinary factory
 edits. An older guest without the marker must restart to run migration.
 Do not manually create or delete ownership markers.
 
-An existing Lima root contains the old seed script. This version refuses
-to boot that root so it cannot overwrite persistent guest configuration.
-Follow the diagnostic: run `ssf vm reset`, then `ssf vm start`. Reset
-replaces only the disposable root and preserves the data disk; the next
-start provisions the new scripts and performs the migration above. The
-host must have VM mode enabled when importing legacy host settings.
-Firecracker upgrades its installed seed script before booting the old root.
+Legacy roots contain a seed script that can overwrite persistent guest
+configuration. Both backends refuse to boot an incompatible root. For
+Firecracker, start first runs `e2fsck` on the stopped disposable root to
+replay its filesystem journal, then uses `debugfs` read-only to verify
+that the installed seed script matches this binary. An incompatible
+script stops startup before the data disk is attached; startup never
+patches that script in place.
+
+For Firecracker recovery, install the matching ssf package (including its
+guest scripts), then run `ssf vm build --force`, `ssf vm reset`, and
+`ssf vm start`. Reset alone would reuse the old root image and is not
+sufficient. If `vm.rootfs` selects a custom image, replace it with an
+image built with the matching guest scripts before resetting. For Lima,
+run `ssf vm reset`, then `ssf vm start`; the new root provisions the
+current scripts. Both workflows replace only the disposable root and
+preserve the data disk. The next start performs the migration above;
+enable VM mode first when importing legacy host settings.
 
 After successful adoption, `ssf vm reset` and `ssf vm build --force`
 preserve the factory on the data disk. Host mode (`vm.enabled = false`)

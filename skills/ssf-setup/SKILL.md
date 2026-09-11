@@ -98,8 +98,13 @@ document links to.
    names why the host could not ask. Use `ssf vm status` to inspect host
    infrastructure and `ssf status` / `ssf doctor` for guest factory health.
    Before upgrading an old copied-config VM, read the migration/recovery
-   section in `docs/vm.md`. Stop on conflicts, preserve both versions,
-   and have the person choose precedence; never guess or discard state.
+   section in `docs/vm.md`. Legacy Firecracker roots require the matching
+   package and guest scripts, then `ssf vm build --force`, `ssf vm reset`,
+   and `ssf vm start`; reset alone reuses the unsafe old image. Legacy
+   Lima roots require reset and start. Both preserve the data disk; never
+   patch a legacy seed script in place to bypass the startup check.
+   Stop on conflicts, preserve both versions, and have the person choose
+   precedence; never guess or discard state.
 8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
    data disk; it prints what it chose and writes it to `[vm]`) and tell
    the person what it picked; pass `--vcpus`, `--mem-mib` or

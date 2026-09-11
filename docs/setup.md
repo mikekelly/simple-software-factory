@@ -563,10 +563,12 @@ What that restart means:
   (`ssf vm start`, no service) needs `ssf vm restart` yourself.
 
 For upgrades from the copied-config VM layout, follow [VM migration and
-recovery](vm.md#upgrading-existing-vms). Legacy Lima roots require
-`ssf vm reset` followed by `ssf vm start` to install the safe migration
-scripts while preserving the data disk. Conflicts
-stop migration for an explicit choice; do not delete either config to force
+recovery](vm.md#upgrading-existing-vms). Legacy roots are refused before
+boot. For Firecracker, install the matching ssf package and guest scripts,
+then run `ssf vm build --force`, `ssf vm reset`, and `ssf vm start`.
+Reset alone reuses the old image. For Lima, run `ssf vm reset`, then
+`ssf vm start`. These workflows preserve the data disk. Conflicts stop
+migration for an explicit choice; do not delete either config to force
 an upgrade through.
 
 Your config, state, keys and the VM's disks are preserved by an upgrade;
