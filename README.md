@@ -208,7 +208,7 @@ macOS through Homebrew; every release carries the Linux packages.
   1](docs/setup.md#1-before-you-start)).
 - **Fedora**: `ssf-<version>-1.x86_64.rpm`, `sudo dnf install
   ./ssf-*.x86_64.rpm`; herdr by hand, as above.
-- **macOS**: `brew install mikekelly/ssf/ssf`; the formula pulls in `gh`
+- **macOS**: `brew install mikekelly/tap/ssf`; the formula pulls in `gh`
   and `lima`. The factory runs inside a [lima](https://lima-vm.io) VM
   (`ssf vm build`, then `brew services start ssf`); the formula installs
   `ssf`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this

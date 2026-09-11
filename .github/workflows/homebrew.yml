@@ -18,7 +18,7 @@ on:
 
 env:
   # The tap repository; the formula is pushed there as Formula/ssf.rb.
-  HOMEBREW_TAP: mikekelly/homebrew-ssf
+  HOMEBREW_TAP: mikekelly/homebrew-tap
 
 # One tap push at a time. Two tags close together (a v0.2.0 and the v0.2.1
 # that fixes it minutes later) would otherwise render, clone, commit and
@@ -92,8 +92,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$TOKEN" ]; then
-            echo "::notice::HOMEBREW_TAP_TOKEN is not set; the formula was rendered but not pushed to the tap ${HOMEBREW_TAP} (it is the ssf.rb artifact of this run)"
-            exit 0
+            echo "::error::HOMEBREW_TAP_TOKEN is not set; the formula was rendered but was not published to ${HOMEBREW_TAP}"
+            exit 1
           fi
           git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/${HOMEBREW_TAP}.git" tap
           cd tap
