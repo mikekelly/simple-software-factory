@@ -242,9 +242,9 @@ Cutting a release:
    `packaging/homebrew/ssf.rb` (the formula's source of truth; the
    `url` and `sha256` of the tag tarball go in, see
    `packaging/homebrew/render.sh`) and pushes it to the tap
-   `mikekelly/homebrew-ssf` as `Formula/ssf.rb` when the
-   `HOMEBREW_TAP_TOKEN` secret is set, or only uploads the rendered
-   formula as the run's `ssf.rb` artifact when it is not
+   `mikekelly/homebrew-tap` as `Formula/ssf.rb` when the
+   `HOMEBREW_TAP_TOKEN` secret is set. Without it, the workflow uploads the
+   rendered formula as the run's `ssf.rb` artifact and then fails
    (`packaging/homebrew/README.md` has the tap setup and the formula
    test). The lima backend downloads the release's bare binaries,
    `ssf-X.Y.Z-linux-x86_64` and `ssf-X.Y.Z-linux-aarch64`, as the guest
@@ -305,7 +305,7 @@ from the release either way.
 | `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
 | `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
-| `.github/workflows/homebrew.yml` | the tap workflow: on the same tag, renders the Homebrew formula and pushes it to `mikekelly/homebrew-ssf` |
+| `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-tap` |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 

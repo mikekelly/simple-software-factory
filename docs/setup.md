@@ -49,7 +49,7 @@ and run the command for your platform (**you** for sudo):
 | Omarchy / Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
 | Debian / Ubuntu | `sudo apt install ./ssf_*_amd64.deb` |
 | Fedora | `sudo dnf install ./ssf-*.x86_64.rpm` |
-| macOS | `brew install mikekelly/ssf/ssf` |
+| macOS | `brew install mikekelly/tap/ssf` |
 
 Package installation only installs SSF's files. It does not create user
 configuration, authenticate a bot, enable the service, or install the optional

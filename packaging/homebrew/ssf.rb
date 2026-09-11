@@ -1,8 +1,8 @@
 # Homebrew formula for ssf, for macOS: the source of truth lives in
 # this repository as packaging/homebrew/ssf.rb; .github/workflows/homebrew.yml
-# renders it on every vX.Y.Z tag (tag tarball url and its sha256, see
-# render.sh) and pushes the result to the tap mikekelly/homebrew-ssf as
-# Formula/ssf.rb, where `brew install mikekelly/ssf/ssf` finds it.
+# renders it when a vX.Y.Z release is published (tag tarball url and its
+# sha256, see render.sh) and pushes the result to mikekelly/homebrew-tap as
+# Formula/ssf.rb, where `brew install mikekelly/tap/ssf` finds it.
 #
 # Not for Linuxbrew, and `depends_on :macos` below turns that away rather
 # than leaving it to the comment: on Linux `brew services` writes a service

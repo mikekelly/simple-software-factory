@@ -5,7 +5,7 @@ It is written for the version in `Cargo.toml` with a placeholder sha256;
 when a `vX.Y.Z` GitHub release is published, `.github/workflows/homebrew.yml` runs `render.sh`
 to put the tag tarball's url and sha256 in (the source of truth keeps the
 placeholder) and pushes the result to the tap repository
-[mikekelly/homebrew-ssf](https://github.com/mikekelly/homebrew-ssf) as
+[mikekelly/homebrew-tap](https://github.com/mikekelly/homebrew-tap) as
 `Formula/ssf.rb`, which is what `brew install` reads.
 
 The formula is for macOS, and says so to Homebrew with `depends_on
@@ -58,11 +58,11 @@ machine; the asset is what every other Mac needs.)
 ## Installing
 
 ```sh
-brew install mikekelly/ssf/ssf
+brew install mikekelly/tap/ssf
 ```
 
-(`mikekelly/ssf/ssf` is Homebrew's short name for `Formula/ssf.rb` in the
-`mikekelly/homebrew-ssf` repository; `brew tap mikekelly/ssf` first is
+(`mikekelly/tap/ssf` is Homebrew's short name for `Formula/ssf.rb` in the
+`mikekelly/homebrew-tap` repository; `brew tap mikekelly/tap` first is
 equivalent.) The formula's caveats say what comes next: setup document,
 `ssf vm build`, `brew services start ssf`.
 
@@ -71,8 +71,8 @@ equivalent.) The formula's caveats say what comes next: setup document,
 The maintainer creates the tap repository and gives this repository's
 workflow a token that can push to it:
 
-1. `gh repo create mikekelly/homebrew-ssf --public` (a tap has to be named
-   `homebrew-<name>`), then commit a first `Formula/ssf.rb` to it, for
+1. Use the public `mikekelly/homebrew-tap` repository, then commit
+   `Formula/ssf.rb` to it, for
    example the workflow artifact of the current release, or a render made
    by hand:
 
@@ -83,11 +83,11 @@ workflow a token that can push to it:
    ```
 
 2. Make a fine-grained personal access token on GitHub with *Contents:
-   read and write* on `mikekelly/homebrew-ssf` only, and save it as the
+   read and write* on `mikekelly/homebrew-tap` only, and save it as the
    `HOMEBREW_TAP_TOKEN` Actions secret of this repository
    (`gh secret set HOMEBREW_TAP_TOKEN`). Without the secret the workflow
-   still renders the formula and uploads it as a workflow artifact, says
-   so, and does not fail.
+   uploads the rendered formula as an artifact and then fails, so a release
+   cannot look published when the tap was not updated.
 
 The tap repository's name is the `HOMEBREW_TAP` environment variable at the
 top of the workflow; nothing else needs to know it besides the header
