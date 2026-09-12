@@ -19,7 +19,7 @@ arch=('x86_64' 'aarch64')
 url="https://github.com/mikekelly/simple-software-factory"
 license=('MIT')
 # openssh: `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
-depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr' 'openssh' 'xdg-utils')
+depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr' 'openssh')
 makedepends=('cargo')
 checkdepends=('git')
 optdepends=(

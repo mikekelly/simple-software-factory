@@ -13,14 +13,14 @@ In host mode, browser login reads it from gh's keyring when needed.
 In VM mode, browser login and credential storage run inside the guest.
 `ssf config set` refuses to touch `github.token`; use
 `ssf auth login` for that. Changes are picked up on the next poll; no
-restart needed.
+restart needed, except `[dashboard]` listener settings require a server restart.
 
-With `vm.enabled = true`, the host owns only `[vm]` lifecycle settings
+With `vm.enabled = true`, the host owns `[vm]` lifecycle and `[dashboard]` web listener settings
 and the SSH credential used to administer the guest. Repositories,
 `[github]`, `[git]`, `[daemon]` and driver settings belong to the guest.
 Repository commands, factory `ssf config get|set`, and `ssf auth`
 commands run there over SSH; paths in their arguments refer to guest files.
-`ssf config get|set vm.<key>` remains on the host. Factory commands fail
+`ssf config get|set vm.<key>` and `dashboard.<key>` remain on the host. Factory commands fail
 if the guest is stopped or unreachable; start it with `ssf vm start` and
 retry. They never edit a host factory copy as a fallback.
 
@@ -61,6 +61,9 @@ instructions = "Run `make test` before opening a PR."
 | `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
 | `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
 | `herdr.tui_idle_timeout_ms` | `90000` | How long a freshly started agent gets to show up in its pane |
+| `dashboard.enabled` | `false` | Enable the optional server web UI; restart required |
+| `dashboard.bind` | `127.0.0.1` | Loopback IP address only; non-loopback exposure requires an authenticated TLS reverse proxy |
+| `dashboard.port` | `8787` | Server web UI port; restart required |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
 | `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it (normally noise; see [Identity and bylines](identity-and-bylines.md)) |
 | `daemon.ignored_events` | `["mentioned", "subscribed", "unsubscribed"]` | Timeline event types that are never delivered |

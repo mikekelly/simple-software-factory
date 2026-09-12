@@ -88,6 +88,9 @@ pub struct Config {
     pub herdr: HerdrConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    /// Optional browser UI owned by ssf-server; disabled by default.
+    #[serde(default)]
+    pub dashboard: DashboardConfig,
     /// Running the whole factory inside a Firecracker microVM (see `ssf vm`).
     #[serde(default)]
     pub vm: VmConfig,
@@ -97,6 +100,37 @@ pub struct Config {
     pub git: GitConfig,
     #[serde(default, rename = "repo")]
     pub repos: Vec<RepoConfig>,
+}
+
+/// Direct web exposure is restricted to loopback. Remote access requires an
+/// authenticated TLS reverse proxy (including Tailscale Serve) or SSH forwarding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DashboardConfig {
+    pub enabled: bool,
+    pub bind: std::net::IpAddr,
+    pub port: u16,
+}
+
+impl Default for DashboardConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind: std::net::Ipv4Addr::LOCALHOST.into(),
+            port: 8787,
+        }
+    }
+}
+
+impl DashboardConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.enabled && !self.bind.is_loopback() {
+            bail!(
+                "dashboard.bind must be loopback; use an authenticated TLS reverse proxy or SSH tunnel for remote access"
+            );
+        }
+        Ok(())
+    }
 }
 
 /// The git identity agents commit with, instance-wide (`[git]`) or per
@@ -1288,6 +1322,7 @@ impl Config {
     /// What a config has to satisfy beyond parsing: repository names and
     /// launch settings, and a wildcard allow-list only with its marker.
     pub fn validate(&self) -> Result<()> {
+        self.dashboard.validate()?;
         if self
             .daemon
             .allowed_users
@@ -1645,6 +1680,33 @@ pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn web_dashboard_defaults_and_security() {
+        let default: super::Config = toml::from_str("").unwrap();
+        assert!(!default.dashboard.enabled);
+        assert_eq!(default.dashboard.bind.to_string(), "127.0.0.1");
+        assert_eq!(default.dashboard.port, 8787);
+        let configured: super::Config =
+            toml::from_str("[dashboard]\nenabled = true\nbind = '::1'\nport = 9090").unwrap();
+        configured.dashboard.validate().unwrap();
+        assert_eq!(configured.dashboard.port, 9090);
+        for address in ["0.0.0.0", "::", "100.64.0.1", "192.168.1.4"] {
+            let mut config = configured.dashboard.clone();
+            config.bind = address.parse().unwrap();
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("authenticated TLS")
+            );
+        }
+        assert!(
+            toml::from_str::<super::Config>("[dashboard]\nenabled = true\nbind = 'localhost'")
+                .is_err()
+        );
+    }
+
     use super::*;
 
     #[test]

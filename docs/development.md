@@ -193,6 +193,12 @@ service does, but nothing restarts it for you.
 
 ## Releasing
 
+The client terminal dashboard needs no browser assets or browser opener package.
+The combined distribution includes browser assets embedded for the optional
+`ssf-server` endpoint; no separate asset installation is needed. Desktop launch
+shortcuts open a terminal. `xdg-open` remains an optional fallback for other
+desktop actions, not a required dashboard dependency.
+
 Two PKGBUILDs share one `package()`:
 
 - `packaging/PKGBUILD` is the development build: it tars the working tree,
@@ -299,7 +305,8 @@ from the release either way.
 | `src/allow.rs` | the allow-list of GitHub users |
 | `src/release.rs` | the release and purge checks |
 | `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `handover`, `release` and `purge` |
-| `src/dashboard.rs`, `src/dashboard_transport.rs`, `dashboard/` | client-side loopback session dashboard and embedded browser assets |
+| `src/dashboard.rs`, `src/dashboard_herdr.rs`, `src/dashboard_transport.rs` | terminal dashboard, optional Herdr focus, and reusable SSH status transport |
+| `src/dashboard_web.rs`, `dashboard/` | optional server HTTP dashboard and embedded browser assets |
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |

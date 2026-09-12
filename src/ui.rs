@@ -233,7 +233,7 @@ fn menu_block() -> String {
         ),
         (
             "factory.dashboard",
-            r#"{"icon":"","label":"Dashboard","action":"ssf dashboard"}"#,
+            r#"{"icon":"","label":"Dashboard","action":"omarchy-launch-terminal ssf dashboard"}"#,
         ),
         (
             "factory.status",
@@ -746,7 +746,7 @@ mod tests {
         ] {
             assert!(block.contains(id), "menu lacks {id}: {block}");
         }
-        assert!(block.contains("\"action\":\"ssf dashboard\""));
+        assert!(block.contains("\"action\":\"omarchy-launch-terminal ssf dashboard\""));
         assert!(block.contains("\"checked\":\"ssf-ui service is-enabled\""));
         assert!(block.contains("\"action\":\"ssf-ui service toggle\""));
         for gone in [

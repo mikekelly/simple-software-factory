@@ -1,512 +1,439 @@
-//! Client-only capability HTTP server presenting canonical server status.
+//! Long-running terminal view of the canonical server dashboard model.
 use anyhow::{Context, Result, bail};
-use serde_json::{Value, json};
-use std::{future::Future, io::Read, sync::Arc, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
-    sync::Mutex,
-    time::{Instant, timeout, timeout_at},
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyModifiers, MouseButton, MouseEventKind},
+    execute, queue,
+    style::Print,
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use serde_json::Value;
+use std::{
+    io::{self, IsTerminal, Write},
+    time::{Duration, Instant},
+};
+use unicode_width::UnicodeWidthChar;
 
-const INDEX: &str = include_str!("../dashboard/index.html");
-const CSS: &str = include_str!("../dashboard/dashboard.css");
-const JS: &str = include_str!("../dashboard/dashboard.js");
-const IDLE: Duration = Duration::from_secs(300);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_HEADERS: usize = 8192;
+#[path = "dashboard_herdr.rs"]
+mod herdr;
 
-pub(crate) async fn run(server: Option<String>, no_browser: bool) -> Result<()> {
-    let source = Arc::new(Mutex::new(crate::dashboard_transport::StatusSource::new(
-        server,
-    )?));
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
-    let token = capability()?;
-    let url = format!("http://{}/{token}/", listener.local_addr()?);
-    println!("{url}");
-    if !no_browser {
-        #[cfg(target_os = "macos")]
-        let opener = "open";
-        #[cfg(not(target_os = "macos"))]
-        let opener = "xdg-open";
-        let result = timeout(
-            REQUEST_TIMEOUT,
-            tokio::process::Command::new(opener)
-                .arg(&url)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .status(),
-        )
-        .await;
-        if !matches!(result, Ok(Ok(status)) if status.success()) {
-            eprintln!("Could not open a browser; open the URL above on this machine.");
+const POLL: Duration = Duration::from_secs(2);
+const STALE: Duration = Duration::from_secs(10);
+const CARD_HEIGHT: usize = 6;
+const HEADER: usize = 3;
+
+struct Terminal;
+impl Terminal {
+    fn enter() -> Result<Self> {
+        if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            bail!(
+                "ssf dashboard requires an interactive terminal (use ssf status --json for scripts)"
+            );
+        }
+        terminal::enable_raw_mode()?;
+        let guard = Self;
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            event::EnableMouseCapture,
+            cursor::Hide
+        )?;
+        Ok(guard)
+    }
+}
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let _ = execute!(
+            io::stdout(),
+            event::DisableMouseCapture,
+            cursor::Show,
+            LeaveAlternateScreen
+        );
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+struct Worker(tokio::task::JoinHandle<()>);
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+#[derive(Default)]
+struct View {
+    cards: Vec<Value>,
+    selected: usize,
+    first: usize,
+    warning: Option<String>,
+    error: Option<String>,
+    received: Option<Instant>,
+    notice: String,
+}
+impl View {
+    fn update(&mut self, payload: Value) -> Result<()> {
+        let dashboard = &payload["dashboard"];
+        let cards = dashboard["cards"]
+            .as_array()
+            .context("Server does not provide the dashboard model; update ssf-server")?;
+        let owner = self
+            .cards
+            .get(self.selected)
+            .map(|card| text(card, "owner").to_owned());
+        self.selected = owner
+            .and_then(|owner| cards.iter().position(|card| text(card, "owner") == owner))
+            .unwrap_or(self.selected)
+            .min(cards.len().saturating_sub(1));
+        self.cards = cards.clone();
+        self.warning = dashboard["warning"].as_str().map(str::to_owned);
+        self.received = Some(Instant::now());
+        self.error = None;
+        Ok(())
+    }
+    fn select(&mut self, delta: isize) {
+        self.selected = self
+            .selected
+            .saturating_add_signed(delta)
+            .min(self.cards.len().saturating_sub(1));
+    }
+    fn visible(&mut self, height: usize) -> usize {
+        let count = ((height.saturating_sub(HEADER + 2)) / CARD_HEIGHT).max(1);
+        if self.selected < self.first {
+            self.first = self.selected;
+        }
+        if self.selected >= self.first + count {
+            self.first = self.selected + 1 - count;
+        }
+        count
+    }
+    fn mouse_card(&self, row: u16, height: usize) -> Option<usize> {
+        let row = usize::from(row);
+        if row < HEADER || row >= height.saturating_sub(2) {
+            return None;
+        }
+        let offset = (row - HEADER) / CARD_HEIGHT;
+        let count = ((height.saturating_sub(HEADER + 2)) / CARD_HEIGHT).max(1);
+        let index = self.first + offset;
+        (offset < count && index < self.cards.len()).then_some(index)
+    }
+    fn status(&self, now: Instant) -> String {
+        if let Some(error) = &self.error {
+            return format!("TRANSPORT ERROR — {error}; showing last received state, retrying");
+        }
+        if let Some(warning) = &self.warning {
+            return format!("UNAVAILABLE / STALE — {warning}");
+        }
+        match self.received {
+            None => "Connecting to SSF…".into(),
+            Some(at) if now.duration_since(at) >= STALE => format!(
+                "STALE — last response {}s ago; refresh pending",
+                now.duration_since(at).as_secs()
+            ),
+            Some(at) => format!("Live — refreshed {}s ago", now.duration_since(at).as_secs()),
         }
     }
-    serve(listener, token, IDLE, move || {
-        let source = source.clone();
-        async move { source.lock().await.snapshot().await }
-    })
-    .await
-}
-
-fn capability() -> Result<String> {
-    let mut bytes = [0u8; 32];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
-}
-
-async fn serve<F, Fut>(
-    listener: TcpListener,
-    token: String,
-    idle: Duration,
-    mut load: F,
-) -> Result<()>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<Value>>,
-{
-    let host = listener.local_addr()?.to_string();
-    let mut deadline = Instant::now() + idle;
-    loop {
-        let Ok(connection) = timeout_at(deadline, listener.accept()).await else {
-            return Ok(());
-        };
-        let (mut stream, _) = connection?;
-        let request = timeout_at(
-            deadline.min(Instant::now() + REQUEST_TIMEOUT),
-            read_request(&mut stream),
-        )
-        .await;
-        let route = match &request {
-            Ok(Ok(request)) => route(request, &host, &token),
-            _ => Err(400),
-        };
-        let (status, kind, body) = match route {
-            Ok("api/status") => {
-                // Only authenticated status polls extend the browser's lifetime.
-                deadline = Instant::now() + idle;
-                let snapshot = match timeout(Duration::from_secs(30), load()).await {
-                    Ok(result) => result.and_then(|value| presentation(&value)),
-                    Err(_) => Err(anyhow::anyhow!("SSF status timed out after 30 seconds")),
-                };
-                match snapshot {
-                    Ok(value) => (200, "application/json", value.to_string()),
-                    Err(error) => (
-                        502,
-                        "application/json",
-                        json!({"error": format!("{error:#}")}).to_string(),
-                    ),
+    fn lines(&mut self, height: usize) -> Vec<String> {
+        let count = self.visible(height);
+        let mut lines = vec![
+            format!("SSF active agents ({})", self.cards.len()),
+            self.status(Instant::now()),
+            String::new(),
+        ];
+        for (index, card) in self.cards.iter().enumerate().skip(self.first).take(count) {
+            let marker = if index == self.selected { '>' } else { ' ' };
+            let origin = &card["origin"];
+            let additional = card["additional"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|item| format!("{} {}", text(item, "id"), text(item, "title")))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .unwrap_or_default();
+            lines.push(format!(
+                "{marker} {} {}",
+                text(origin, "id"),
+                text(origin, "title")
+            ));
+            lines.push(format!(
+                "  Assigned: {}",
+                if additional.is_empty() {
+                    "none"
+                } else {
+                    &additional
                 }
-            }
-            Ok("" | "index.html") => (200, "text/html; charset=utf-8", INDEX.to_owned()),
-            Ok("dashboard.css") => (200, "text/css; charset=utf-8", CSS.to_owned()),
-            Ok("dashboard.js") => (200, "text/javascript; charset=utf-8", JS.to_owned()),
-            Ok(_) => (
-                404,
-                "application/json",
-                json!({"error":"not found"}).to_string(),
-            ),
-            Err(status) => (
-                status,
-                "application/json",
-                json!({"error":"request rejected"}).to_string(),
-            ),
-        };
-        let _ = timeout(REQUEST_TIMEOUT, respond(&mut stream, status, kind, &body)).await;
-        if Instant::now() >= deadline {
-            return Ok(());
+            ));
+            lines.push(format!(
+                "  State: {} | {} {}",
+                text(card, "agent_state"),
+                text(card, "harness"),
+                text(card, "model")
+            ));
+            lines.push(format!(
+                "  Last activity: {}",
+                text(card, "last_activity_at")
+            ));
+            lines.push(format!(
+                "  Latest: {}",
+                text(card, "last_assistant_message")
+            ));
+            lines.push(String::new());
         }
-    }
-}
-
-async fn read_request(stream: &mut TcpStream) -> Result<String> {
-    let mut bytes = Vec::new();
-    while bytes.len() < MAX_HEADERS {
-        let byte = stream.read_u8().await?;
-        bytes.push(byte);
-        if bytes.ends_with(b"\r\n\r\n") {
-            return String::from_utf8(bytes).context("invalid HTTP headers");
-        }
-    }
-    bail!("HTTP headers too large")
-}
-
-fn route<'a>(request: &'a str, host: &str, token: &str) -> std::result::Result<&'a str, u16> {
-    let mut lines = request.split("\r\n");
-    let parts: Vec<_> = lines
-        .next()
-        .unwrap_or_default()
-        .split_whitespace()
-        .collect();
-    if parts.len() != 3 || !matches!(parts[2], "HTTP/1.0" | "HTTP/1.1") {
-        return Err(400);
-    }
-    if parts[0] != "GET" {
-        return Err(405);
-    }
-    let mut hosts = Vec::new();
-    let mut origins = Vec::new();
-    for line in lines.take_while(|line| !line.is_empty()) {
-        let (name, value) = line.split_once(':').ok_or(400u16)?;
-        if name.eq_ignore_ascii_case("host") {
-            hosts.push(value.trim());
-        }
-        if name.eq_ignore_ascii_case("origin") {
-            origins.push(value.trim());
-        }
-        if name.eq_ignore_ascii_case("transfer-encoding")
-            || name.eq_ignore_ascii_case("content-length")
+        if self.cards.is_empty()
+            && self.received.is_some()
+            && self.warning.is_none()
+            && self.error.is_none()
         {
-            return Err(400);
+            lines.push("No active agents".into());
         }
+        lines.truncate(height.saturating_sub(2));
+        lines.resize(height.saturating_sub(2), String::new());
+        lines.push(if self.notice.is_empty() {
+            if herdr::available() {
+                "Enter/click: focus matching agent on this Herdr server".into()
+            } else {
+                "Standalone terminal; pane navigation requires Herdr".into()
+            }
+        } else {
+            self.notice.clone()
+        });
+        lines.push(
+            "↑/↓ j/k: select  PgUp/PgDn: page  Home/End  Enter: focus  q/Ctrl-C: quit".into(),
+        );
+        lines
     }
-    if hosts != [host]
-        || origins.len() > 1
-        || origins
-            .first()
-            .is_some_and(|origin| *origin != format!("http://{host}"))
-    {
-        return Err(403);
-    }
-    let path = parts[1].strip_prefix('/').ok_or(404u16)?;
-    let (provided, relative) = path.split_once('/').ok_or(404u16)?;
-    // Compare all capability bytes, without exposing matching prefixes.
-    let mismatch = provided.len() ^ token.len();
-    let mismatch = provided
-        .bytes()
-        .zip(token.bytes())
-        .fold(mismatch, |acc, (a, b)| acc | usize::from(a ^ b));
-    if mismatch != 0 {
-        return Err(404);
-    }
-    Ok(relative)
+}
+fn text<'a>(value: &'a Value, field: &str) -> &'a str {
+    value[field].as_str().unwrap_or("—")
 }
 
-async fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: &str) -> Result<()> {
-    let reason = match status {
-        200 => "OK",
-        400 => "Bad Request",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        _ => "Bad Gateway",
-    };
-    let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(headers.as_bytes()).await?;
-    stream.write_all(body.as_bytes()).await?;
-    stream.shutdown().await?;
+// Treat all server/agent strings as text, including terminal escape sequences.
+fn clipped(input: &str, width: usize) -> String {
+    let mut used = 0;
+    input
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take_while(|c| {
+            used += c.width().unwrap_or(0);
+            used <= width
+        })
+        .collect()
+}
+// OSC 8 is an optional terminal capability; unsupported terminals still show IDs.
+// Add trusted escapes only after clipping and sanitizing the untrusted text.
+fn linked_line(line: &str, issues: &[Value]) -> String {
+    let mut result = String::new();
+    let mut remaining = line;
+    for issue in issues {
+        let Some(id) = issue["id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && !id.chars().any(char::is_control))
+        else {
+            continue;
+        };
+        let Some(url) = issue["url"]
+            .as_str()
+            .filter(|url| !url.chars().any(char::is_control))
+            .and_then(|url| reqwest::Url::parse(url).ok())
+            .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some())
+        else {
+            continue;
+        };
+        let Some(position) = remaining.find(id) else {
+            continue;
+        };
+        result.push_str(&remaining[..position]);
+        result.push_str(&format!("\x1b]8;;{url}\x1b\\{id}\x1b]8;;\x1b\\"));
+        remaining = &remaining[position + id.len()..];
+    }
+    result.push_str(remaining);
+    result
+}
+
+fn draw(view: &mut View) -> Result<()> {
+    let (width, height) = terminal::size()?;
+    let mut stdout = io::stdout().lock();
+    for (row, line) in view
+        .lines(usize::from(height))
+        .iter()
+        .take(usize::from(height))
+        .enumerate()
+    {
+        let line = clipped(line, usize::from(width).saturating_sub(1));
+        let card_row = row.saturating_sub(HEADER);
+        let card = (row >= HEADER && row < usize::from(height).saturating_sub(2))
+            .then(|| view.cards.get(view.first + card_row / CARD_HEIGHT))
+            .flatten();
+        let line = match (card, card_row % CARD_HEIGHT) {
+            (Some(card), 0) => linked_line(&line, std::slice::from_ref(&card["origin"])),
+            (Some(card), 1) => linked_line(
+                &line,
+                card["additional"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            ),
+            _ => line,
+        };
+        queue!(
+            stdout,
+            cursor::MoveTo(0, row as u16),
+            Clear(ClearType::CurrentLine),
+            Print(line)
+        )?;
+    }
+    stdout.flush()?;
     Ok(())
 }
 
-fn text<'a>(value: &'a Value, key: &str) -> &'a str {
-    value[key].as_str().unwrap_or_default()
-}
-fn issue(row: &Value, fallback: &str) -> Value {
-    let id = row["id"].as_str().unwrap_or(fallback);
-    let url = row["url"]
-        .as_str()
-        .and_then(|url| reqwest::Url::parse(url).ok())
-        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
-    json!({"id":id,"title":row["title"].as_str().unwrap_or(id),"url":url.map(|url|url.to_string()),
-        "kind":row["kind"].as_str().unwrap_or("issue"),"active":row["active"] == true})
-}
-
-fn presentation(payload: &Value) -> Result<Value> {
-    let rows = payload["sessions"]
-        .as_array()
-        .context("SSF returned status data in an unexpected format")?;
-    let active: Vec<_> = rows
-        .iter()
-        .filter(|row| {
-            row["active"] == true
-                && row["subscriber_only"] != true
-                && !text(row, "owner").is_empty()
-        })
-        .collect();
-    let mut owners = Vec::new();
-    let mut cards = Vec::new();
-    for row in &active {
-        let owner = text(row, "owner");
-        if owners.contains(&owner) {
-            continue;
-        }
-        owners.push(owner);
-        let primary = rows
-            .iter()
-            .find(|row| text(row, "id") == owner)
-            .unwrap_or(&Value::Null);
-        let owned: Vec<_> = active
-            .iter()
-            .copied()
-            .filter(|row| text(row, "owner") == owner)
-            .collect();
-        let mut candidates = Vec::new();
-        if !primary.is_null() {
-            candidates.push(primary);
-        }
-        candidates.extend(owned.iter().copied());
-        candidates.sort_by(|a, b| text(b, "last_activity_at").cmp(text(a, "last_activity_at")));
-        let runtime = candidates[0];
-        let message = candidates
-            .iter()
-            .map(|row| text(row, "last_assistant_message").trim())
-            .find(|message| !message.is_empty())
-            .map(|message| message.chars().take(4000).collect::<String>());
-        let metadata = |key| {
-            let value = text(primary, key);
-            if value.is_empty() {
-                text(runtime, key).to_owned()
-            } else {
-                value.to_owned()
+pub(crate) async fn run(server: Option<String>) -> Result<()> {
+    let mut source = crate::dashboard_transport::StatusSource::new(server)?;
+    let _terminal = Terminal::enter()?;
+    let (sender, mut snapshots) = tokio::sync::mpsc::channel(1);
+    let worker = Worker(tokio::spawn(async move {
+        loop {
+            let result = source
+                .snapshot()
+                .await
+                .map_err(|error| format!("{error:#}"));
+            if sender.send(result).await.is_err() {
+                break;
             }
-        };
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model")}));
+            tokio::time::sleep(POLL).await;
+        }
+    }));
+    let (focus_sender, mut focus_results) = tokio::sync::mpsc::channel(1);
+    let mut focus_worker: Option<Worker> = None;
+    let mut view = View::default();
+    let mut ticks = tokio::time::interval(Duration::from_millis(50));
+    let mut termination =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
+    draw(&mut view)?;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            _ = termination.recv() => break,
+            _ = hangup.recv() => break,
+            result = snapshots.recv() => {
+                match result {
+                    Some(Ok(payload)) => { if let Err(error) = view.update(payload) { view.error = Some(error.to_string()); } }
+                    Some(Err(error)) => view.error = Some(error),
+                    None => bail!("Dashboard refresh worker stopped"),
+                }
+            }
+            Some(result) = focus_results.recv() => { view.notice = result; focus_worker = None; }
+            _ = ticks.tick() => {
+                // Poll rather than blocking stdin: transport and signal futures keep running.
+                for _ in 0..32 {
+                    if !event::poll(Duration::ZERO)? { break; }
+                    let height = usize::from(terminal::size()?.1);
+                    let mut activate = false;
+                    match event::read()? {
+                        Event::Key(key) if key.kind != event::KeyEventKind::Release => match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+                            KeyCode::Down | KeyCode::Char('j') => view.select(1),
+                            KeyCode::Up | KeyCode::Char('k') => view.select(-1),
+                            KeyCode::PageDown => { let count = view.visible(height); view.select(count as isize); }
+                            KeyCode::PageUp => { let count = view.visible(height); view.select(-(count as isize)); }
+                            KeyCode::Home => view.selected = 0,
+                            KeyCode::End => view.selected = view.cards.len().saturating_sub(1),
+                            KeyCode::Enter => activate = true,
+                            _ => {},
+                        },
+                        Event::Mouse(mouse) => match mouse.kind {
+                            MouseEventKind::ScrollDown => view.select(1),
+                            MouseEventKind::ScrollUp => view.select(-1),
+                            MouseEventKind::Down(MouseButton::Left) => if let Some(index) = view.mouse_card(mouse.row, height) { view.selected = index; activate = true; },
+                            _ => {},
+                        },
+                        _ => {},
+                    }
+                    if activate && focus_worker.is_none()
+                        && let Some(card) = view.cards.get(view.selected) {
+                            let session = card["agent_session_id"].as_str().unwrap_or_default().to_owned();
+                            let harness = card["harness"].as_str().unwrap_or_default().to_owned();
+                            let sender = focus_sender.clone();
+                            view.notice = "Finding agent on this Herdr server…".into();
+                            focus_worker = Some(Worker(tokio::spawn(async move {
+                                let message = herdr::focus(&session, &harness).await.unwrap_or_else(|error| format!("{error:#}"));
+                                let _ = sender.send(message).await;
+                            })));
+                    }
+                }
+            }
+        }
+        draw(&mut view)?;
     }
-    let warning = if payload["factory_reachable"] == false {
-        let state = text(&payload["host_vm"], "state");
-        Some(format!(
-            "SSF could not reach the guest factory{}",
-            if state.is_empty() {
-                String::new()
-            } else {
-                format!(" (VM {state})")
-            }
-        ))
-    } else if payload["orca"]["available"] == false {
-        let detail = text(&payload["orca"], "error").trim();
-        Some(
-            if detail.is_empty() {
-                "SSF could not reach one or more session drivers"
-            } else {
-                detail
-            }
-            .to_owned(),
-        )
-    } else {
-        None
-    };
-    Ok(
-        json!({"cards":cards,"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
-    )
+    drop(worker);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    fn request(path: &str, host: &str, extra: &str) -> String {
-        format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{extra}\r\n")
+    use serde_json::json;
+    fn payload(owners: &[&str]) -> Value {
+        json!({"dashboard":{"cards":owners.iter().map(|owner|json!({"owner":owner,"origin":{"id":owner,"title":"Issue"},"agent_state":"working","last_activity_at":"today","last_assistant_message":"Latest","additional":[{"id":"r#3","title":"Assigned"}]})).collect::<Vec<_>>()}})
     }
     #[test]
-    fn checks_capability_host_origin_and_method() {
-        let good = request("/secret/api/status", "127.0.0.1:123", "");
-        assert_eq!(route(&good, "127.0.0.1:123", "secret"), Ok("api/status"));
-        for (input, expected) in [
-            (request("/wrong/api/status", "127.0.0.1:123", ""), 404),
-            (request("/secret/api/status", "attacker.example", ""), 403),
-            (
-                request(
-                    "/secret/api/status",
-                    "127.0.0.1:123",
-                    "Origin: https://attacker.example\r\n",
-                ),
-                403,
-            ),
-            (
-                request(
-                    "/secret/api/status",
-                    "127.0.0.1:123",
-                    "Host: 127.0.0.1:123\r\n",
-                ),
-                403,
-            ),
-            (good.replacen("GET", "POST", 1), 405),
-            (
-                request(
-                    "/secret/api/status",
-                    "127.0.0.1:123",
-                    "Content-Length: 10\r\n",
-                ),
-                400,
-            ),
-        ] {
-            assert_eq!(route(&input, "127.0.0.1:123", "secret"), Err(expected));
+    fn selection_survives_reordering_and_scrolling_and_mouse_maps_visible_cards() {
+        let mut view = View::default();
+        view.update(payload(&["r#1", "r#2", "r#3"])).unwrap();
+        view.select(2);
+        assert_eq!(view.visible(17), 2);
+        assert_eq!(view.first, 1);
+        assert_eq!(view.mouse_card(3, 17), Some(1));
+        assert_eq!(view.mouse_card(2, 17), None);
+        assert_eq!(view.mouse_card(16, 17), None);
+        view.update(payload(&["r#3", "r#1"])).unwrap();
+        assert_eq!(view.selected, 0);
+        view.select(-3);
+        assert_eq!(view.selected, 0);
+        view.update(payload(&[])).unwrap();
+        assert_eq!(view.mouse_card(3, 17), None);
+    }
+    #[test]
+    fn blank_rows_never_select_an_offscreen_agent() {
+        let mut view = View::default();
+        view.update(payload(&["r#1", "r#2", "r#3", "r#4"])).unwrap();
+        assert_eq!(view.visible(24), 3);
+        assert_eq!(view.mouse_card(20, 24), Some(2));
+        assert_eq!(view.mouse_card(21, 24), None);
+    }
+    #[test]
+    fn hyperlinks_allow_only_safe_web_urls_and_visible_complete_ids() {
+        let issue = json!({"id":"r#1","url":"https://github.com/o/r/issues/1"});
+        assert!(
+            linked_line("> r#1 Issue", std::slice::from_ref(&issue))
+                .contains("\x1b]8;;https://github.com/o/r/issues/1")
+        );
+        assert_eq!(linked_line("> r#", &[issue]), "> r#");
+        for url in ["javascript:alert(1)", "https://example.org/\x1b]malicious"] {
+            assert_eq!(linked_line("r#1", &[json!({"id":"r#1","url":url})]), "r#1");
         }
-        assert_eq!(capability().unwrap().len(), 64);
-        assert_ne!(capability().unwrap(), capability().unwrap());
     }
-
     #[test]
-    fn presents_server_ownership_and_latest_message_safely() {
-        let snapshot = presentation(&json!({"sessions":[
-            {"id":"r#1","title":"Origin","active":false,"harness":"codex","url":"javascript:alert(1)"},
-            {"id":"r#2","owner":"r#1","active":true,"agent_state":"working","last_activity_at":"2026-09-12T12:00:00Z","last_assistant_message":" Earlier "},
-            {"id":"r#3","owner":"r#1","active":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> "},
-            {"id":"r#4","owner":"r#4","active":true,"subscriber_only":true}
-        ]})).unwrap();
-        let cards = snapshot["cards"].as_array().unwrap();
-        assert_eq!(cards.len(), 1);
-        assert_eq!(cards[0]["origin"]["title"], "Origin");
-        assert!(cards[0]["origin"]["url"].is_null());
-        assert_eq!(cards[0]["additional"].as_array().unwrap().len(), 2);
-        assert_eq!(cards[0]["agent_state"], "idle");
-        assert_eq!(cards[0]["harness"], "codex");
-        assert_eq!(
-            cards[0]["last_assistant_message"],
-            "<script>latest</script>"
-        );
-        assert!(JS.contains(".textContent = card.last_assistant_message"));
-        assert!(!JS.contains("innerHTML"));
-    }
-
-    #[test]
-    fn distinguishes_unreachable_vm_and_driver_errors_from_empty_factory() {
-        let snapshot = presentation(
-            &json!({"sessions":[],"factory_reachable":false,"host_vm":{"state":"stopped"}}),
-        )
-        .unwrap();
-        assert!(snapshot["warning"].as_str().unwrap().contains("VM stopped"));
-        let snapshot = presentation(
-            &json!({"sessions":[],"orca":{"available":false,"error":"driver unavailable"}}),
-        )
-        .unwrap();
-        assert_eq!(snapshot["warning"], "driver unavailable");
-        assert!(presentation(&json!({"sessions":[]})).unwrap()["warning"].is_null());
-        assert!(presentation(&json!({"error":"not a snapshot"})).is_err());
-        assert!(JS.contains("if (body.warning) emptyNode.hidden = true"));
-        assert!(JS.contains("catch (error) {\n    emptyNode.hidden = true"));
-    }
-
-    async fn fetch(address: std::net::SocketAddr, path: &str) -> String {
-        let mut stream = TcpStream::connect(address).await.unwrap();
-        stream
-            .write_all(request(path, &address.to_string(), "").as_bytes())
-            .await
+    fn canonical_cards_errors_stale_state_and_terminal_escapes_are_explicit() {
+        let mut view = View::default();
+        view.update(payload(&["r#1"])).unwrap();
+        let lines = view.lines(24).join("\n");
+        for field in ["r#1 Issue", "r#3 Assigned", "working", "today", "Latest"] {
+            assert!(lines.contains(field));
+        }
+        assert!(view.status(Instant::now() + STALE).contains("STALE"));
+        view.error = Some("connection refused".into());
+        assert!(view.status(Instant::now()).contains("TRANSPORT ERROR"));
+        assert!(view.update(json!({"sessions":[]})).is_err());
+        assert_eq!(view.cards.len(), 1);
+        view.update(json!({"dashboard":{"cards":[],"warning":"VM stopped"}}))
             .unwrap();
-        let mut response = String::new();
-        stream.read_to_string(&mut response).await.unwrap();
-        response
-    }
-
-    #[tokio::test]
-    async fn http_serves_assets_status_and_honest_errors() {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        assert!(address.ip().is_loopback());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counter = calls.clone();
-        let task = tokio::spawn(serve(
-            listener,
-            "secret".into(),
-            Duration::from_secs(2),
-            move || {
-                let n = counter.fetch_add(1, Ordering::SeqCst);
-                async move {
-                    if n == 0 {
-                        Ok(json!({"sessions":[]}))
-                    } else {
-                        bail!("remote server unreachable")
-                    }
-                }
-            },
-        ));
-        let rejected = fetch(address, "/api/status").await;
-        assert!(rejected.starts_with("HTTP/1.1 404"));
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        let html = fetch(address, "/secret/").await;
-        assert!(html.contains("Active agents"));
-        assert!(html.contains("Content-Security-Policy: default-src 'self'"));
-        assert!(html.contains("Referrer-Policy: no-referrer"));
-        assert!(
-            fetch(address, "/secret/dashboard.css")
-                .await
-                .starts_with("HTTP/1.1 200")
-        );
-        assert!(
-            fetch(address, "/secret/dashboard.js")
-                .await
-                .contains("emptyNode.hidden = true")
-        );
-        let status = fetch(address, "/secret/api/status").await;
-        assert!(status.starts_with("HTTP/1.1 200"));
-        assert!(status.contains("\"cards\":[]"));
-        let error = fetch(address, "/secret/api/status").await;
-        assert!(error.starts_with("HTTP/1.1 502"));
-        assert!(error.contains("remote server unreachable"));
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn idle_listener_expires_even_with_incomplete_headers() {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(serve(
-            listener,
-            "secret".into(),
-            Duration::from_millis(80),
-            || async { Ok(json!({"sessions":[]})) },
-        ));
-        let mut stream = TcpStream::connect(address).await.unwrap();
-        stream.write_all(b"GET /").await.unwrap();
-        timeout(Duration::from_secs(1), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert!(TcpStream::connect(address).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn only_status_polls_extend_idle_lifetime() {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(serve(
-            listener,
-            "secret".into(),
-            Duration::from_millis(250),
-            || async { Ok(json!({"sessions":[]})) },
-        ));
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(
-            fetch(address, "/secret/api/status")
-                .await
-                .starts_with("HTTP/1.1 200")
-        );
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(fetch(address, "/secret/").await.starts_with("HTTP/1.1 200"));
-        timeout(Duration::from_millis(200), task)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn oversized_headers_are_bounded() {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        let mut client = TcpStream::connect(address).await.unwrap();
-        let (mut server, _) = listener.accept().await.unwrap();
-        client.write_all(&vec![b'A'; MAX_HEADERS]).await.unwrap();
-        assert!(
-            timeout(REQUEST_TIMEOUT, read_request(&mut server))
-                .await
-                .unwrap()
-                .is_err()
-        );
+        assert!(view.lines(24).join("\n").contains("VM stopped"));
+        assert!(!view.lines(24).join("\n").contains("No active agents"));
+        assert_eq!(clipped("\u{1b}[31m界x\n", 8), " [31m界x");
+        assert_eq!(clipped("界x", 1), "");
     }
 }

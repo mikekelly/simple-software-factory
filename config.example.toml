@@ -3,10 +3,10 @@
 # Most of this is written for you by `ssf repo add` or `ssf config set`
 # (the bar widget only shows state); the token is read from gh's keyring, or from
 # ~/.config/ssf/token (0600) after `ssf auth login --token`, never from here.
-# In VM mode this example spans two owners: only [vm] belongs on the host.
+# In VM mode this example spans two owners: [vm] and [dashboard] belong on the host.
 # Factory settings and credentials belong in the guest persistent home.
 # Use the CLI after starting the VM: factory commands route into the guest;
-# `ssf config get|set vm.<key>` stays on the host. Paths below are guest paths
+# `ssf config get|set vm.<key>` and `dashboard.<key>` stay on the host. Paths below are guest paths
 # in VM mode. Do not copy this whole example over an established host config.
 
 [github]
@@ -136,3 +136,11 @@ harness = "claude"                             # agent id: see `ssf agents`
 # Session gh shim: explicit bodies are stamped; large bodies use anonymous
 # file transport. Invalid UTF-8 and stdin read errors stop before posting.
 # See docs/identity-and-bylines.md; no configuration is needed.
+
+# Optional server browser dashboard. Restart ssf-server after changes.
+# In VM mode this section belongs to the host, not the guest.
+# Only loopback is accepted; use an authenticated TLS reverse proxy for remote access.
+[dashboard]
+# enabled = false
+# bind = "127.0.0.1"
+# port = 8787

@@ -39,7 +39,6 @@ overrides:
       - systemd
       # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
       - openssh-client
-      - xdg-utils
     recommends:
       # A minimal Debian has no `systemctl --user` without it.
       - libpam-systemd
@@ -55,7 +54,6 @@ overrides:
       - systemd
       # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
       - openssh-clients
-      - xdg-utils
     recommends:
       - fakeroot
       - bsdtar

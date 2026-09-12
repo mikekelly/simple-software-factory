@@ -1,122 +1,308 @@
-//! Exercise the installed client boundary without reaching a real factory or browser.
-use std::io::{BufRead, BufReader};
-use std::os::unix::fs::PermissionsExt;
+//! Installed-client PTY coverage; all servers and Herdr commands are isolated fakes.
+#![cfg(unix)]
+use std::io::{Read, Write};
+use std::os::{
+    fd::{AsRawFd, FromRawFd},
+    unix::fs::PermissionsExt,
+};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn script(path: &Path, body: &str) {
     std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
-
-struct Process(std::process::Child);
-impl Drop for Process {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+struct Temp(std::path::PathBuf);
+impl Temp {
+    fn new(name: &str) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("ssf-dashboard-{name}-{}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_ssf"), path.join("ssf")).unwrap();
+        Self(path)
     }
 }
-
-#[tokio::test]
-async fn dashboard_stays_on_client_for_local_remote_and_environment_routes() {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
-    let root = std::env::temp_dir().join(format!("ssf-dashboard-routing-{}", std::process::id()));
-    std::fs::create_dir(&root).unwrap();
-    // A copied client must find its adjacent local server, not one on PATH.
-    std::fs::copy(env!("CARGO_BIN_EXE_ssf"), root.join("ssf")).unwrap();
-    script(
-        &root.join("ssf-server"),
-        r#"printf '%s\n' "$@" > "$TEST_ROOT/local-args"
-printf '%s\n' '{"sessions":[],"factory_reachable":false,"host_vm":{"state":"stopped"}}'"#,
-    );
-    script(
-        &root.join("ssh"),
-        r#"printf '%s\n' "$@" >> "$TEST_ROOT/ssh-args"
-if [ "$TEST_UNREACHABLE" = 1 ]; then echo 'connection refused' >&2; exit 255; fi
-printf '%s\n' '{"sessions":[],"factory_reachable":true}'"#,
-    );
-    for opener in ["open", "xdg-open"] {
-        script(
-            &root.join(opener),
-            r#"printf '%s\n' "$@" > "$TEST_ROOT/browser-url""#,
+impl Drop for Temp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+struct Pty {
+    master: std::fs::File,
+    slave: std::fs::File,
+    child: std::process::Child,
+    output: String,
+    original_flags: libc::tcflag_t,
+}
+impl Pty {
+    fn spawn(mut command: Command) -> Self {
+        let mut master = -1;
+        let mut slave = -1;
+        let size = libc::winsize {
+            ws_row: 30,
+            ws_col: 140,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    &size,
+                )
+            },
+            0
+        );
+        let master = unsafe { std::fs::File::from_raw_fd(master) };
+        let slave = unsafe { std::fs::File::from_raw_fd(slave) };
+        let mut attributes = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut attributes) },
+            0
+        );
+        unsafe {
+            libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
+        }
+        let child = command
+            .stdin(Stdio::from(slave.try_clone().unwrap()))
+            .stdout(Stdio::from(slave.try_clone().unwrap()))
+            .stderr(Stdio::from(slave.try_clone().unwrap()))
+            .spawn()
+            .unwrap();
+        Self {
+            master,
+            slave,
+            child,
+            output: String::new(),
+            original_flags: attributes.c_lflag,
+        }
+    }
+    fn wait_for(&mut self, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            let mut buffer = [0; 16384];
+            if let Ok(n) = self.master.read(&mut buffer) {
+                self.output.push_str(&String::from_utf8_lossy(&buffer[..n]));
+            }
+            if self.output.contains(text) {
+                return;
+            }
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "client exited: {}",
+                self.output
+            );
+            assert!(
+                Instant::now() < deadline,
+                "missing {text:?}: {}",
+                self.output
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    fn key(&mut self, key: &[u8]) {
+        self.master.write_all(key).unwrap();
+    }
+    fn quit(&mut self) {
+        self.key(b"q");
+        self.finished();
+    }
+    fn finished(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(Instant::now() < deadline, "client did not exit promptly");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut attributes = unsafe { std::mem::zeroed() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(self.slave.as_raw_fd(), &mut attributes) },
+            0
+        );
+        assert_eq!(
+            attributes.c_lflag, self.original_flags,
+            "raw mode was not restored"
+        );
+        let mut buffer = [0; 16384];
+        while let Ok(n) = self.master.read(&mut buffer) {
+            if n == 0 {
+                break;
+            }
+            self.output.push_str(&String::from_utf8_lossy(&buffer[..n]));
+        }
+        assert!(
+            self.output.contains("\u{1b}[?1049l"),
+            "alternate screen was not restored"
         );
     }
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap();
-    for route in ["local", "remote", "environment", "unreachable"] {
-        let mut command = Command::new(root.join("ssf"));
-        command
-            .env("PATH", &root)
-            .env("TEST_ROOT", &root)
-            .env_remove("SSF_SERVER");
-        if route == "remote" || route == "unreachable" {
+}
+impl Drop for Pty {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+fn client(root: &Path) -> Command {
+    let mut command = Command::new(root.join("ssf"));
+    command
+        .env("PATH", root)
+        .env("TEST_ROOT", root)
+        .env("TERM", "xterm-256color")
+        .env_remove("SSF_SERVER")
+        .env_remove("HERDR_ENV")
+        .env("SSF_CONFIG_DIR", root.join("config"))
+        .env("SSF_STATE_DIR", root.join("state"));
+    command
+}
+const SNAPSHOT: &str = r#"{"dashboard":{"cards":[{"owner":"r#1","origin":{"id":"r#1","title":"Origin issue"},"additional":[{"id":"r#2","title":"Another issue"}],"agent_state":"working","last_activity_at":"2026-09-12","last_assistant_message":"Latest summary","agent_session_id":"session-1","harness":"codex"}],"warning":null}}"#;
+
+#[test]
+fn terminal_refreshes_for_local_remote_and_environment_routes_without_browser() {
+    let root = Temp::new("routing");
+    script(
+        &root.0.join("ssf-server"),
+        &format!(
+            r#"printf '%s\n' "$@" >> "$TEST_ROOT/local-args"
+printf '%s\n' '{SNAPSHOT}'"#
+        ),
+    );
+    script(
+        &root.0.join("ssh"),
+        &format!(
+            r#"printf '%s\n' "$@" >> "$TEST_ROOT/ssh-args"
+printf '%s\n' '{SNAPSHOT}'"#
+        ),
+    );
+    for route in ["local", "remote", "environment"] {
+        let mut command = client(&root.0);
+        if route == "remote" {
             command.args(["--server", "customer@cloud.example"]);
-        } else if route == "environment" {
+        }
+        if route == "environment" {
             command.env("SSF_SERVER", "environment-host");
         }
-        if route == "unreachable" {
-            command.env("TEST_UNREACHABLE", "1");
+        command.arg("dashboard");
+        let mut terminal = Pty::spawn(command);
+        terminal.wait_for("Latest summary");
+        let file = if route == "local" {
+            "local-args"
+        } else {
+            "ssh-args"
+        };
+        let expected = if route == "environment" { 4 } else { 2 };
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while std::fs::read_to_string(root.0.join(file))
+            .unwrap_or_default()
+            .matches("status")
+            .count()
+            < expected
+        {
+            terminal.wait_for("SSF active agents");
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(20));
         }
-        command
-            .arg("dashboard")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = Process(command.spawn().unwrap());
-        let stdout = child.0.stdout.take().unwrap();
-        let mut url = String::new();
-        BufReader::new(stdout).read_line(&mut url).unwrap();
-        let url = url.trim();
-        assert!(url.starts_with("http://127.0.0.1:"), "{url}");
-        let index = http.get(url).send().await.unwrap();
-        assert!(index.status().is_success());
-        assert!(index.text().await.unwrap().contains("dashboard.js"));
-        assert_eq!(
-            std::fs::read_to_string(root.join("browser-url"))
-                .unwrap()
-                .trim(),
-            url
-        );
-        for _ in 0..2 {
-            let response = http.get(format!("{url}api/status")).send().await.unwrap();
-            if route == "unreachable" {
-                assert_eq!(response.status(), 502);
-                assert!(
-                    response
-                        .text()
-                        .await
-                        .unwrap()
-                        .contains("connection refused")
-                );
-            } else {
-                assert!(response.status().is_success());
-                let value: serde_json::Value = response.json().await.unwrap();
-                assert_eq!(value["cards"], serde_json::json!([]));
-                if route == "local" {
-                    assert!(value["warning"].as_str().unwrap().contains("stopped"));
-                }
-            }
-        }
-        drop(child);
+        assert!(terminal.child.try_wait().unwrap().is_none());
+        terminal.quit();
     }
     assert_eq!(
-        std::fs::read_to_string(root.join("local-args")).unwrap(),
-        "__client\nstatus\n--json\n"
+        std::fs::read_to_string(root.0.join("local-args")).unwrap(),
+        "__client\nstatus\n--json\n__client\nstatus\n--json\n"
     );
-    let ssh = std::fs::read_to_string(root.join("ssh-args")).unwrap();
+    let ssh = std::fs::read_to_string(root.0.join("ssh-args")).unwrap();
     assert!(ssh.contains("customer@cloud.example\nssf-server __client 'status' '--json'"));
     assert!(ssh.contains("environment-host\nssf-server __client 'status' '--json'"));
     let paths: Vec<_> = ssh
         .lines()
         .filter(|line| line.starts_with("ControlPath="))
         .collect();
-    assert_eq!(paths.len(), 6);
-    for pair in paths.as_chunks::<2>().0 {
-        assert_eq!(pair[0], pair[1]);
-    }
-    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(paths.len(), 4);
+    assert_eq!(paths[0], paths[1]);
+    assert_eq!(paths[2], paths[3]);
+    assert_ne!(paths[0], paths[2]);
+    assert_eq!(ssh.matches("ControlMaster=auto").count(), 4);
+}
+
+#[test]
+fn herdr_selection_resolves_cross_workspace_pane_and_stale_panes_leave_dashboard_alive() {
+    let root = Temp::new("focus");
+    script(
+        &root.0.join("ssf-server"),
+        &format!("printf '%s\\n' '{SNAPSHOT}'"),
+    );
+    script(
+        &root.0.join("herdr"),
+        r#"printf '%s\n' "$@" >> "$TEST_ROOT/herdr-args"
+if [ "$2" = list ]; then
+ printf '%s\n' '{"result":{"agents":[{"agent":"codex","pane_id":"w9:p7","agent_session":{"kind":"id","value":"session-1"}}]}}'
+elif [ -f "$TEST_ROOT/closed" ]; then
+ echo 'pane no longer exists' >&2; exit 1
+else
+ printf '%s\n' '{"result":{}}'
+fi"#,
+    );
+    let mut command = client(&root.0);
+    command
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", "w1:p1")
+        .arg("dashboard");
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_for("Latest summary");
+    terminal.key(b"\r");
+    terminal.wait_for("Focused w9:p7");
+    assert!(terminal.child.try_wait().unwrap().is_none());
+    std::fs::write(root.0.join("closed"), "").unwrap();
+    // SGR left click on the first visible card.
+    terminal.key(b"\x1b[<0;5;4M");
+    terminal.wait_for("pane no longer exists");
+    assert!(terminal.child.try_wait().unwrap().is_none());
+    terminal.quit();
+    assert_eq!(
+        std::fs::read_to_string(root.0.join("herdr-args")).unwrap(),
+        "agent\nlist\nagent\nfocus\nw9:p7\nagent\nlist\nagent\nfocus\nw9:p7\n"
+    );
+}
+
+#[test]
+fn errors_are_visible_and_quit_restores_terminal_while_request_is_pending() {
+    let root = Temp::new("errors");
+    script(
+        &root.0.join("ssf-server"),
+        "echo 'connection refused' >&2; exit 1",
+    );
+    let mut command = client(&root.0);
+    command.arg("dashboard");
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_for("TRANSPORT ERROR");
+    terminal.wait_for("connection refused");
+    terminal.quit();
+    script(&root.0.join("ssf-server"), "while :; do :; done");
+    let mut command = client(&root.0);
+    command.arg("dashboard");
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_for("Connecting to SSF");
+    terminal.quit();
+    let mut command = client(&root.0);
+    command.arg("dashboard");
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_for("Connecting to SSF");
+    assert_eq!(
+        unsafe { libc::kill(terminal.child.id() as libc::pid_t, libc::SIGTERM) },
+        0
+    );
+    terminal.finished();
+}
+
+#[test]
+fn non_terminal_is_rejected_with_a_scriptable_alternative() {
+    let root = Temp::new("nonterminal");
+    let output = client(&root.0).arg("dashboard").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ssf status --json"));
 }

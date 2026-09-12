@@ -177,8 +177,8 @@ fn packages_leave_service_enablement_to_explicit_setup() {
     for path in [PKGBUILD, NFPM] {
         let manifest = read(path);
         assert!(
-            manifest.contains("xdg-utils"),
-            "{path} must include the Linux dashboard browser opener"
+            !manifest.contains("xdg-utils"),
+            "{path} must not require a browser opener for the terminal dashboard"
         );
         assert!(
             manifest.contains("ssf-server"),

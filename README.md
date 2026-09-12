@@ -145,10 +145,11 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
 ## How it works
 
 Run `ssf dashboard` for the [session dashboard](docs/dashboard.md): active
-agents in a browser card grid, linked issues, activity and status summaries.
+agents in a live terminal view, originating and assigned issues, activity and summaries.
 Use `ssf --server HOST dashboard` (or `SSF_SERVER`) for a remote factory;
-the browser opens on your client. Linux and macOS clients include the dashboard,
-and local VM factories use normal forwarding.
+the TUI runs in your terminal. Herdr panes optionally support agent navigation,
+and local VM factories use normal forwarding. The server can also serve an
+[optional browser dashboard](docs/dashboard.md#optional-server-web-dashboard), disabled by default.
 
 Every few seconds ssf asks GitHub for the open issues and pull requests that
 involve the bot. For a new one it creates a workspace (in Orca or in herdr,

@@ -9,6 +9,7 @@ mod allow;
 mod config;
 mod dashboard;
 mod dashboard_transport;
+mod dashboard_web;
 mod driver;
 mod engine;
 mod events;
@@ -118,12 +119,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Open the session dashboard in a browser on this computer.
-    Dashboard {
-        /// Print the local capability URL without opening a browser.
-        #[arg(long)]
-        no_browser: bool,
-    },
+    /// Show a live terminal dashboard (arrows/j/k, Enter to focus in Herdr, q to quit).
+    Dashboard,
     /// List the agent sessions on a repository: item, GitHub state, agent
     /// state, branch, last message. Inside a session the repository comes
     /// from SSF_REPO; otherwise every watched repository is listed.
@@ -655,8 +652,8 @@ pub async fn client_main() -> Result<()> {
     let (server, args) = client_target(args, configured)?;
 
     let cli = Cli::parse_from(std::iter::once("ssf".to_owned()).chain(args.clone()));
-    if let Command::Dashboard { no_browser } = cli.command {
-        return dashboard::run(server, no_browser).await;
+    if let Command::Dashboard = cli.command {
+        return dashboard::run(server).await;
     }
 
     let err = match server {
@@ -894,7 +891,7 @@ async fn command_main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Res
             config_cmd(command.unwrap_or(ConfigCommand::Show { json: false }))
         }
         Command::Status { json } => status(json).await,
-        Command::Dashboard { .. } => bail!("run `ssf dashboard` on the client computer"),
+        Command::Dashboard => bail!("run `ssf dashboard` on the client computer"),
         Command::Peers { json, repo, all } => peers(json, repo, all).await,
         Command::Sub { item, r#as, json } => sub(&item, r#as.as_deref(), json, true).await,
         Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false).await,
@@ -2485,12 +2482,15 @@ fn probe_word(probe: &Result<bool, String>) -> &'static str {
 /// in, and the sessions and repositories it could not ask after are
 /// empty rather than invented.
 fn vm_status_for_guest(vm: &str) -> serde_json::Value {
-    serde_json::json!({
+    let mut payload = serde_json::json!({
         "vm": vm, "service_active": false, "service_enabled": ui::service_enabled(),
         "factory_location": "guest", "factory_reachable": false,
         "host_vm": { "state": vm },
         "sessions": [], "repos": [],
-    })
+    });
+    payload["dashboard"] =
+        status::dashboard_presentation(&payload).expect("VM status always contains sessions");
+    payload
 }
 
 /// The name of a command that runs in the guest when the factory is in a VM.
@@ -2503,7 +2503,10 @@ fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Models { .. } => "models",
         Command::Config { command } => match command {
             Some(ConfigCommand::Get { key } | ConfigCommand::Set { key, .. })
-                if key == "vm" || key.starts_with("vm.") =>
+                if key == "vm"
+                    || key.starts_with("vm.")
+                    || key == "dashboard"
+                    || key.starts_with("dashboard.") =>
             {
                 return None;
             }
@@ -2769,6 +2772,15 @@ fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()>
 
 async fn run(once: bool) -> Result<()> {
     let cfg = Config::load()?;
+    let listener = if once {
+        None
+    } else {
+        dashboard_web::bind(&cfg.dashboard).await?
+    };
+    dashboard_web::with_daemon(listener, run_factory(cfg, once)).await
+}
+
+async fn run_factory(cfg: Config, once: bool) -> Result<()> {
     if cfg.vm.enabled {
         // The factory lives in the VM: start it and stay with it.
         return vm::Vm::new(&cfg).supervise(&cfg).await;
@@ -4327,7 +4339,7 @@ mod tests {
     }
 
     #[test]
-    fn factory_cli_routes_to_guest_but_vm_settings_stay_on_host() {
+    fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
         for args in [
             vec!["ssf", "repo", "list"],
             vec!["ssf", "repo", "add", "owner/repo", "--harness", "claude"],
@@ -4355,6 +4367,9 @@ mod tests {
         for args in [
             vec!["ssf", "config", "get", "vm"],
             vec!["ssf", "config", "get", "vm.enabled"],
+            vec!["ssf", "config", "get", "dashboard"],
+            vec!["ssf", "config", "get", "dashboard.port"],
+            vec!["ssf", "config", "set", "dashboard.enabled", "true"],
             vec!["ssf", "config", "set", "vm.enabled", "false"],
             vec!["ssf", "vm", "start"],
         ] {
