@@ -24,8 +24,8 @@ for user in $users; do
   }
   path_count=$(printf '%s' "$exec_start" | grep -o 'path=' | wc -l)
   if [ "$path_count" -ne 1 ] ||
-     ! printf '%s' "$exec_start" | grep -F 'path=/usr/bin/ssf ;' >/dev/null ||
-     ! printf '%s' "$exec_start" | grep -F 'argv[]=/usr/bin/ssf run ;' >/dev/null; then
+     ! printf '%s' "$exec_start" | grep -F 'path=/usr/bin/ssf-server ;' >/dev/null ||
+     ! printf '%s' "$exec_start" | grep -F 'argv[]=/usr/bin/ssf-server ;' >/dev/null; then
     echo "ssf: refusing package removal: package-owned ssf.service has an unrelated effective ExecStart for $user" >&2
     failed=1
     continue

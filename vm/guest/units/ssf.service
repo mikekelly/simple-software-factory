@@ -14,7 +14,7 @@ Environment=HERDR_COMMAND=/usr/local/bin/herdr
 Environment=RUST_LOG=info
 Environment=LANG=en_US.UTF-8
 WorkingDirectory=/home/ssf
-ExecStart=/usr/local/bin/ssf run
+ExecStart=/usr/local/bin/ssf-server
 Restart=on-failure
 RestartSec=15
 

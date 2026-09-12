@@ -177,6 +177,10 @@ fn packages_leave_service_enablement_to_explicit_setup() {
     for path in [PKGBUILD, NFPM] {
         let manifest = read(path);
         assert!(
+            manifest.contains("ssf-server"),
+            "{path} does not ship ssf-server"
+        );
+        assert!(
             !manifest.contains("target.wants/ssf.service"),
             "{path} globally enables ssf"
         );
@@ -187,6 +191,7 @@ fn packages_leave_service_enablement_to_explicit_setup() {
     }
     for path in ["packaging/ssf.service", "packaging/linux/ssf.service"] {
         let unit = read(path);
+        assert!(unit.contains("ExecStart=/usr/bin/ssf-server"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(!unit.contains("ExecStartPre"));
         assert!(!unit.contains("ConditionPathExists"));
@@ -198,6 +203,10 @@ fn packages_leave_service_enablement_to_explicit_setup() {
         read("packaging/ssf.install"),
         read("packaging/release/ssf.install")
     );
+    let upgrade = read("packaging/ssf.install");
+    assert!(upgrade.contains("argv[]=/usr/bin/ssf run ;"));
+    assert!(upgrade.contains("argv[]=/usr/bin/ssf-server ;"));
+    assert!(upgrade.contains("daemon-reload"));
 }
 
 #[test]
@@ -222,7 +231,7 @@ fn removal_hook_stops_an_owned_active_unit_even_when_disabled() {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
-    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; }';; *'is-active'*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n").unwrap();
+    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; }';; *'is-active'*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n").unwrap();
     for name in ["loginctl", "systemctl"] {
         std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -250,7 +259,7 @@ fn removal_hook_fails_when_the_owned_service_cannot_stop() {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
-    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; }';; *'stop ssf.service'*) exit 1;; *'is-active'*) exit 0;; esac\n").unwrap();
+    std::fs::write(bin.join("systemctl"), "#!/bin/sh\ncase \"$*\" in *'is-system-running'*) echo running;; *'show -p FragmentPath'*) echo /usr/lib/systemd/user/ssf.service;; *'show -p ExecStart'*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; }';; *'stop ssf.service'*) exit 1;; *'is-active'*) exit 0;; esac\n").unwrap();
     for name in ["loginctl", "systemctl"] {
         std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
     }

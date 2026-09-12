@@ -249,14 +249,15 @@ lima; unset is lima's default for the machine, and `vz` is refused on
 Linux.
 
 The guest binaries come from somewhere other than the host on a Mac, as
-a macOS `ssf` cannot run in the Linux guest. The guest's `ssf` is `[vm]
-guest_binary` when set (a Linux build of your own, for a dev build);
-else, on a Linux host, the host's own binary, as under Firecracker;
-else the release asset for this version and architecture,
-`ssf-<version>-linux-<x86_64|aarch64>`, downloaded once with `gh release
-download` into `guest-bin/` and reused at every start. A version with no
-such asset on its release fails there, and the message says to build a
-Linux binary and set `guest_binary` to it. herdr is `[vm] herdr` when set
+macOS `ssf` and `ssf-server` cannot run in the Linux guest. The guest's
+`ssf` is `[vm] guest_binary` when set (a Linux build of your own, for a dev
+build); its matching `ssf-server` must sit beside it. An unversioned `ssf`
+uses an unversioned `ssf-server`; a versioned `ssf-...` asset uses the
+corresponding `ssf-server-...` name. Otherwise, on a Linux host, the host's
+own pair is used, as under Firecracker; on another host both release assets
+for this version and architecture are downloaded once with `gh release
+download` into `guest-bin/` and reused at every start. A version missing
+either asset fails there. herdr is `[vm] herdr` when set
 (a Linux herdr binary, to pin one); else, on a Linux host, the host's own
 `herdr`; else the guest downloads herdr's latest Linux release
 (`herdr-linux-<arch>`) while it provisions itself. herdr is installed
@@ -524,7 +525,7 @@ not involved. The command does not enable Tailscale SSH or advertise routes;
 those remain explicit tailnet and security decisions you can make from a shell
 inside the guest.
 
-`ssf run --once` is a guest command too. While the guest's `ssf.service`
+`ssf-server --once` is a guest command too. While the guest's `ssf.service`
 owns its state it refuses; let its next poll do the work. The host adds the
 VM name after the guest's refusal.
 Clicking a session in the bar widget (Omarchy) opens a terminal attached
@@ -638,7 +639,7 @@ Firecracker and gvproxy are started in a session of their own, and lima's
 host agent runs detached too, so a VM started from a terminal (`ssf vm
 start`) outlives that shell and any later `ssf` command. The service
 (the systemd user unit on Linux, `brew services` on macOS) is different:
-`ssf run` starts the VM if it is not up and owns it from then on, so
+`ssf-server` starts the VM if it is not up and owns it from then on, so
 stopping or restarting the service shuts the guest down cleanly, and a
 crash of the host daemon ends it with the service's cgroup on Linux.
 With the VM stopped, `ssf status` says so instead of forwarding (the bar
@@ -670,6 +671,6 @@ command gets a field rather than a parse error.
 A probe that could not be made is never read as a stopped factory:
 reading it that way refused `tell`, `release`, `purge` and `doctor` over
 a running VM and showed the widget an idle one. The supervisor inside
-`ssf run` asks the same question on its own loop, where a slow answer is
+`ssf-server` asks the same question on its own loop, where a slow answer is
 waited out rather than cut short at fifteen seconds, since it gives up on
 a VM only after ten rounds with no answer at all.

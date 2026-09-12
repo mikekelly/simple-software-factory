@@ -8,8 +8,8 @@
 # missing; when there is no musl-gcc the C parts, ring's, are compiled with
 # plain gcc), then runs nfpm on packaging/linux/nfpm.yaml for both formats.
 # Output, in packaging/linux/dist/: ssf_VERSION-1_amd64.deb,
-# ssf-VERSION-1.x86_64.rpm and the bare static binary ssf-VERSION-linux-x86_64
-# (a release asset too: the macOS lima guest downloads it).
+# ssf-VERSION-1.x86_64.rpm and the bare static client/server binaries
+# (release assets too: the macOS lima guest downloads them).
 #
 # VERSION is the argument, else $VERSION, else the version in Cargo.toml.
 # nfpm is $NFPM, else `nfpm` on PATH (https://nfpm.goreleaser.com, 2.47.0 is
@@ -66,5 +66,7 @@ for fmt in deb rpm; do
 done
 install -m755 "target/$target/release/ssf" "$outdir/ssf-$VERSION-linux-x86_64"
 built+=("$outdir/ssf-$VERSION-linux-x86_64")
+install -m755 "target/$target/release/ssf-server" "$outdir/ssf-server-$VERSION-linux-x86_64"
+built+=("$outdir/ssf-server-$VERSION-linux-x86_64")
 echo "==> packages in $outdir:"
 ls -1 "${built[@]}"

@@ -37,8 +37,8 @@ class Ssf < Formula
   depends_on "lima"
 
   def install
-    # Cargo.toml has one binary target, ssf; bin/ssf-ui is the Omarchy bar
-    # widget's helper and is not installed here.
+    # Cargo installs the ssf client and ssf-server daemon; bin/ssf-ui is the
+    # Omarchy bar widget's helper and is not installed here.
     system "cargo", "install", *std_cargo_args
 
     # #{HOMEBREW_PREFIX}/share/ssf/vm is where `ssf vm build` looks for the
@@ -73,9 +73,9 @@ class Ssf < Formula
   end
 
   service do
-    run [opt_bin/"ssf", "run"]
+    run [opt_bin/"ssf-server"]
     keep_alive true
-    # SSF_VM_DIR: where `ssf run` finds the VM scripts (also found relative
+    # SSF_VM_DIR: where `ssf-server` finds the VM scripts (also found relative
     # to the binary; this keeps the service independent of that lookup).
     environment_variables PATH:       std_service_path_env,
                           RUST_LOG:   "info",

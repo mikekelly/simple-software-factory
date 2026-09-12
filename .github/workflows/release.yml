@@ -23,8 +23,8 @@ env:
   NFPM_VERSION: 2.47.0
 
 jobs:
-  # .deb, .rpm and the bare binary ssf-X.Y.Z-linux-x86_64 from a static
-  # musl build, via packaging/linux/build.sh.
+  # .deb, .rpm and bare ssf/ssf-server x86_64 binaries from a static musl
+  # build, via packaging/linux/build.sh.
   linux-packages:
     runs-on: ubuntu-latest
     steps:
@@ -53,8 +53,8 @@ jobs:
           path: packaging/linux/dist/*
           if-no-files-found: error
 
-  # Bare static aarch64 binary, ssf-X.Y.Z-linux-aarch64, cross-compiled; no
-  # aarch64 packages. Best effort: a failure here never blocks the release.
+  # Bare static aarch64 client/server binaries, cross-compiled; no aarch64
+  # packages. Best effort: a failure here never blocks the release.
   linux-aarch64-binary:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -74,6 +74,7 @@ jobs:
             VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1); fi
           cargo build --locked --release --target aarch64-unknown-linux-musl
           mkdir -p dist && install -m755 target/aarch64-unknown-linux-musl/release/ssf "dist/ssf-$VERSION-linux-aarch64"
+          install -m755 target/aarch64-unknown-linux-musl/release/ssf-server "dist/ssf-server-$VERSION-linux-aarch64"
       - uses: actions/upload-artifact@v4
         with:
           name: linux-aarch64-binary

@@ -378,7 +378,7 @@ impl Engine {
 
     pub async fn new(cfg: Config) -> Result<Self> {
         // Take the lock before looking up credentials or reading state: a
-        // rejected `ssf run --once` must not touch a live daemon's state.
+        // rejected `ssf-server --once` must not touch a live daemon's state.
         let state_lock = StateLock::acquire()?;
         refuse_live_daemon()?;
         let token = cfg.github_token()?;
@@ -3684,9 +3684,10 @@ deliveries resume"
     /// state locations are passed along so the wrapper reads the same files,
     /// and the VM guest flag so `ssf guide` in the session knows where it is.
     fn launch_command(&self, repo: &RepoConfig, number: u64, url: &str, inner: &str) -> String {
-        let me = std::env::current_exe()
+        let me = crate::client_executable()
+            .ok()
             .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "ssf".to_string());
+            .unwrap_or_else(|| "ssf".to_string());
         let mut prefix = String::new();
         for var in [
             "SSF_CONFIG_DIR",

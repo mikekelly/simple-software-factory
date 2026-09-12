@@ -4,6 +4,12 @@ How the daemon polls, delivers, resumes and restarts, what `ssf status --json` c
 
 The details behind the README's [How it works](../README.md#how-it-works).
 
+`ssf` is a transport client. Locally it executes the adjacent `ssf-server`;
+with `--server HOST` it asks SSH to execute `ssf-server` on that host. Both
+arrive at the same server-side command parser. Commands that mutate live
+engine state then use the daemon's Unix socket on the server machine; the
+daemon itself exposes no network socket.
+
 ## Polling and delivery
 
 - **Polling, not webhooks.** Every `poll_interval_secs` ssf makes four
@@ -25,7 +31,7 @@ The details behind the README's [How it works](../README.md#how-it-works).
   it), so a lost state file re-attaches instead of creating a second
   workspace.
 - **One engine per state directory.** `state.lock` is an exclusive
-  process-held lock beside `state.json`; both `ssf run` and `ssf run --once`
+  process-held lock beside `state.json`; both `ssf-server` and `ssf-server --once`
   take it before reading state. It is released when its owner exits. Do not
   unlink it to clear a refusal while an engine may still be running.
 - **Delivery into the agent's terminal.** Messages are pasted with bracketed
@@ -75,7 +81,7 @@ The details behind the README's [How it works](../README.md#how-it-works).
   (`daemon.startup_driver_wait_secs`, checking every ten seconds) before its
   first poll; if it is still not up by then, polling starts anyway and
   the pass runs on the first poll that finds it. The pass runs per driver.
-  `daemon.resume_on_start = false` turns it off. `ssf run --once` runs it
+  `daemon.resume_on_start = false` turns it off. `ssf-server --once` runs it
   too.
 - **Retirement.** Closed or unassigned issues get one final message (push,
   final comment, then `ssf release` if everything is on origin) and are

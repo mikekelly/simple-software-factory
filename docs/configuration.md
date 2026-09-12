@@ -75,7 +75,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
 | `daemon.conflict_check_interval_secs` | `300` | Interval between base fetches and committed-branch conflict checks for active sessions; `0` disables. One fetch per repository, with merge simulations only for changed commit pairs (see [Branch conflicts](sessions.md#branch-conflicts)) |
-| `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf run` then starts and watches the VM, and the daemon-facing commands run in the guest |
+| `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf-server` then starts and watches the VM, and daemon-facing client commands run in the guest |
 | `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends)); unset, `ssf vm build` writes the platform's default here |
 | `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's files live (`<dir>/<name>/`); under lima the instance is `ssf-<name>` and its data disk `ssf-<name>` in lima's home, and `name` is then at most 7 characters, since lima labels the disk's filesystem `lima-<disk>` and an ext4 label holds 16 |
 | `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
@@ -87,7 +87,7 @@ instructions = "Run `make test` before opening a PR."
 | `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with; lima 2.0.1 or newer, which `ssf vm build` checks and says why (see [Backends](vm.md#backends)) |
 | `vm.image` | Arch's cloud image on x86_64, Ubuntu LTS on aarch64 | lima only: a cloud-init image (URL or path; Arch or Debian/Ubuntu) to boot instead of the default for the guest's architecture |
 | `vm.vm_type` | lima's default | lima only: `vz` or `qemu`, passed through to lima (`vz` is macOS only) |
-| `vm.guest_binary` | this binary on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` binary to seed into the guest, for a dev build or a version without a release asset |
+| `vm.guest_binary` | this client on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` client to seed into the guest; its matching `ssf-server` build must be beside it (`ssf-server`, or the corresponding versioned release-asset name) |
 | `vm.herdr` | the host's own `herdr` on a Linux host, else herdr's latest Linux release downloaded by the guest while provisioning | lima only: a Linux herdr binary for the guest; installed when the guest is provisioned, so a change needs `ssf vm reset` |
 | `repo.name` | | `owner/name` on GitHub (required) |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |

@@ -1,5 +1,5 @@
 [Unit]
-Description=Mount the data disk and take the host's ssf binary, config and keys from the seed (disk or share)
+Description=Mount the data disk and take the host's ssf binaries, config and keys from the seed (disk or share)
 # Not before sshd here: under lima that ordering would loop through
 # multi-user.target (see units/lima/ssf-seed.service.conf), and the host retries
 # ssh until authorized_keys lands. Under Firecracker there is no such

@@ -26,7 +26,7 @@
 //! and the status. The guest is reached over ssh on `127.0.0.1:<ssh_port>`
 //! with a key made per VM. With `[vm] enabled = true` the daemon-facing
 //! commands are run inside the guest that way, so `ssf status --json` for
-//! the bar widget and `ssf tell` from a terminal work as before; `ssf run`
+//! the bar widget and `ssf tell` from a terminal work as before; `ssf-server`
 //! on the host starts the VM and watches it, so the service is unchanged.
 
 mod lima;
@@ -485,7 +485,7 @@ pub fn supervise_interval(backend: BackendKind) -> Duration {
 /// out of the probe before it gives up. A probe that could not be made
 /// says nothing, so one of them must not end the supervision -- but a
 /// probe that can never be made says nothing for ever, and the loop that
-/// only warned left `ssf run` "supervising" a VM it had not heard about
+/// only warned left `ssf-server` "supervising" a VM it had not heard about
 /// for hours while the service read active. Ten rounds is under a minute
 /// under Firecracker and five minutes under lima: long enough to sit out
 /// a busy laptop or a lima home someone else has locked, short enough
@@ -945,9 +945,9 @@ impl Vm {
     fn binary(&self) -> Result<PathBuf> {
         match &self.binary {
             Some(p) => Ok(p.clone()),
-            None => std::env::current_exe()
+            None => crate::client_executable()
                 .and_then(std::fs::canonicalize)
-                .context("locating the ssf binary"),
+                .context("locating the ssf client binary"),
         }
     }
 
@@ -1617,7 +1617,7 @@ impl Vm {
         Ok(())
     }
 
-    /// `ssf run` on the host with `[vm] enabled`: start the VM and stay
+    /// `ssf-server` on the host with `[vm] enabled`: start the VM and stay
     /// until it ends or we are told to stop, shutting it down cleanly then.
     pub async fn supervise(&self, host: &Config) -> Result<()> {
         self.start(host).await?;
@@ -1698,7 +1698,7 @@ impl Vm {
     }
 
     /// Build the seed tree at `tree` (replacing what was there): the guest
-    /// binary, bootstrap defaults, our public key and the `[vm] files`.
+    /// client and server binaries, bootstrap defaults, our public key and the `[vm] files`.
     /// Legacy host factory state is included only before initial adoption;
     /// an established guest always keeps its own settings and credentials.
     fn seed_tree(&self, host: &Config, tree: &Path) -> Result<()> {
@@ -1709,6 +1709,10 @@ impl Vm {
         std::fs::copy(&binary, tree.join("ssf"))
             .with_context(|| format!("copying {}", binary.display()))?;
         make_executable(&tree.join("ssf"))?;
+        let server = self.guest_server_binary()?;
+        std::fs::copy(&server, tree.join("ssf-server"))
+            .with_context(|| format!("copying {}", server.display()))?;
+        make_executable(&tree.join("ssf-server"))?;
         // Credentials are imported only during adoption of legacy host state.
         let defaults = guest_config(&Config::default());
         write_private(
@@ -1905,6 +1909,55 @@ impl Vm {
         }
     }
 
+    /// The daemon paired with [`Self::guest_binary`]. Release assets use the
+    /// `ssf-server-<version>-linux-<arch>` name; local and configured builds
+    /// keep `ssf-server` beside `ssf`.
+    fn guest_server_binary(&self) -> Result<PathBuf> {
+        let source = guest_binary_source(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            self.cfg.guest_binary.as_deref(),
+        );
+        let client = self.guest_binary()?;
+        let server = match source {
+            GuestBinary::Download { .. } => self.dir.join("guest-bin").join(format!(
+                "ssf-server-{}-linux-{}",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::ARCH
+            )),
+            _ => companion_server_path(&client),
+        };
+        if server.is_file() {
+            return Ok(server);
+        }
+        if matches!(source, GuestBinary::Download { .. }) {
+            let asset = server
+                .file_name()
+                .expect("server asset has a filename")
+                .to_string_lossy()
+                .to_string();
+            let out = Command::new("gh")
+                .args([
+                    "release",
+                    "download",
+                    &format!("v{}", env!("CARGO_PKG_VERSION")),
+                ])
+                .args(["-R", RELEASE_REPO, "--pattern", &asset, "-D"])
+                .arg(server.parent().expect("server asset has a directory"))
+                .stdin(Stdio::null())
+                .output()
+                .context("running gh (is the GitHub CLI installed?)")?;
+            if out.status.success() && server.is_file() {
+                make_executable(&server)?;
+                return Ok(server);
+            }
+        }
+        bail!(
+            "no guest server binary at {}; build ssf and ssf-server together (or place the matching release asset beside [vm] guest_binary)",
+            server.display()
+        )
+    }
+
     // ---- ssh ----
 
     /// The ssh options that reach the guest.
@@ -2085,6 +2138,18 @@ impl Vm {
             .stderr(Stdio::inherit())
             .output()
             .context("running ssh (is the VM up? `ssf vm status`)")
+    }
+
+    /// Run one daemon pass inside the guest.
+    pub fn exec_server_once(&self) -> Result<ExitStatus> {
+        let remote = vec![
+            format!("{GUEST_ENV}=1"),
+            "ssf-server".to_string(),
+            "--once".to_string(),
+        ];
+        self.ssh(&remote, false)
+            .status()
+            .context("running ssf-server in the VM over ssh")
     }
 
     /// A shell, or a command line passed to the guest's shell as given
@@ -2516,6 +2581,18 @@ pub enum GuestBinary {
     Own,
     /// The release asset for this version and the guest's architecture.
     Download { asset: String },
+}
+
+pub(crate) fn companion_server_path(client: &Path) -> PathBuf {
+    let name = client.file_name().and_then(|n| n.to_str()).unwrap_or("ssf");
+    let server = if name == "ssf" {
+        "ssf-server".to_string()
+    } else if let Some(suffix) = name.strip_prefix("ssf-") {
+        format!("ssf-server-{suffix}")
+    } else {
+        "ssf-server".to_string()
+    };
+    client.with_file_name(server)
 }
 
 /// Which binary a host running `os` on `arch` (the guest's architecture
@@ -3220,7 +3297,10 @@ mod tests {
         config.save().unwrap();
         let original = std::fs::read(crate::config::config_path()).unwrap();
         let mut vm = Vm::new(&config);
-        vm.binary = Some(std::env::current_exe().unwrap());
+        let client = sandbox.root().join("ssf");
+        std::fs::write(&client, "client").unwrap();
+        std::fs::write(companion_server_path(&client), "server").unwrap();
+        vm.binary = Some(client);
         std::fs::create_dir_all(&vm.dir).unwrap();
         std::fs::write(vm.key().with_extension("pub"), "access-public-key").unwrap();
         vm.ensure_factory_ownership(&config).unwrap();
@@ -3258,7 +3338,10 @@ mod tests {
         config.github.token = Some("must-not-be-seeded".into());
         config.github.ssh_key_path = Some("/missing-host-key".into());
         let mut vm = Vm::new(&config);
-        vm.binary = Some(std::env::current_exe().unwrap());
+        let client = sandbox.root().join("ssf");
+        std::fs::write(&client, "client").unwrap();
+        std::fs::write(companion_server_path(&client), "server").unwrap();
+        vm.binary = Some(client);
         std::fs::create_dir_all(&vm.dir).unwrap();
         std::fs::write(vm.dir.join("guest-owned"), "1").unwrap();
         std::fs::write(vm.key().with_extension("pub"), "host-access-public-key").unwrap();
@@ -4129,7 +4212,7 @@ mod tests {
     fn a_probe_that_can_never_be_made_ends_the_supervision() {
         // A probe that could not be made says nothing, so one of them
         // must not end the supervision -- but the loop that only ever
-        // warned left `ssf run` "supervising" a VM it had not heard about
+        // warned left `ssf-server` "supervising" a VM it had not heard about
         // for hours, with the service reading active the whole time.
         const { assert!(MAX_UNANSWERED_PROBES > 1) };
         for backend in [BackendKind::Lima, BackendKind::Firecracker] {
@@ -4480,6 +4563,14 @@ mod tests {
         cfg.vm.guest_binary = Some("/nonexistent/ssf-linux".into());
         let e = Vm::new(&cfg).guest_binary().unwrap_err().to_string();
         assert!(e.contains("guest_binary"), "{e}");
+        assert_eq!(
+            companion_server_path(Path::new("/opt/ssf")),
+            PathBuf::from("/opt/ssf-server")
+        );
+        assert_eq!(
+            companion_server_path(Path::new("/tmp/ssf-0.4.0-linux-x86_64")),
+            PathBuf::from("/tmp/ssf-server-0.4.0-linux-x86_64")
+        );
     }
 
     #[test]

@@ -92,7 +92,7 @@ check "SSF cleanup leaves widget enabled" ssh_guest "export OMARCHY_PATH=/usr/sh
 # stop and disable a running service before removing its executable.
 ssh_guest "/usr/bin/ssf setup" >"$RUN_DIR/setup-before-remove.log" 2>&1
 ssh_sudo "pacman -R --noconfirm ssf" >"$RUN_DIR/pacman-remove.log" 2>&1
-check "package, SSF process and unit enablement are gone" ssh_guest 'test ! -e /usr/bin/ssf && ! pgrep -x ssf >/dev/null && ! systemctl --user is-enabled --quiet ssf.service'
+check "package, SSF process and unit enablement are gone" ssh_guest 'test ! -e /usr/bin/ssf && test ! -e /usr/bin/ssf-server && ! pgrep -x ssf-server >/dev/null && ! systemctl --user is-enabled --quiet ssf.service'
 check "package removal stopped the owned running service" ssh_guest '! systemctl --user is-active --quiet ssf.service'
 check "cleanup preserves requested data" ssh_guest 'grep -qx config ~/.config/ssf/preserved && grep -qx state ~/.local/state/ssf/preserved && grep -qx work ~/ssf/projects/keep-me/work'
 check "widget remains enabled in missing-package state" ssh_guest "export OMARCHY_PATH=/usr/share/omarchy; test -d ~/.config/omarchy/plugins/ssf.factory && omarchy plugin list --json | jq -e 'any(.[]; .id == \"ssf.factory\" and .enabled == true)' && grep -Fq 'sudo pacman -U <package-file>' ~/.config/omarchy/plugins/ssf.factory/marketplace/FactoryPanel.qml"
