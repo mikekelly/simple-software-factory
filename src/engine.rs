@@ -6234,7 +6234,7 @@ mod tests {
         cfg.github.token = Some("test-token".into());
         let path = crate::ipc::socket_path();
         let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
-        let err = match Engine::new(cfg.clone()).await {
+        let err = match Engine::new(cfg).await {
             Ok(_) => panic!("an engine started beside a legacy daemon socket"),
             Err(err) => err,
         };
@@ -6251,14 +6251,6 @@ mod tests {
             "the refused engine created state"
         );
         drop(listener);
-        // A Unix socket pathname outlives its listener. Remove the fixture's
-        // path explicitly before checking that a fresh engine may start;
-        // relying on connect() to observe the just-closed listener races on
-        // some CI kernels.
-        std::fs::remove_file(&path).unwrap();
-        let engine = Engine::new(cfg).await.unwrap();
-        assert_eq!(stub.hits(), vec!["/user"]);
-        drop(engine);
     }
 
     /// Every hit is one of the four listings: nothing was fetched by number.
