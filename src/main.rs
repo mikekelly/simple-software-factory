@@ -309,7 +309,7 @@ enum VmCommand {
     /// Size the VM from this machine, then make the guest and provision
     /// it (git, gh, herdr, the harness CLIs). Firecracker (`[vm] backend`,
     /// the default on Linux): downloads Firecracker, gvproxy and a guest
-    /// kernel and makes the root image from the Arch bootstrap tarball.
+    /// kernel and makes the root image from an Ubuntu 24.04 LTS root tarball.
     /// lima (the default on macOS): creates the `ssf-<name>` instance and
     /// its data disk from a cloud image and boots it once. No root needed.
     ///

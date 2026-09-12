@@ -26,7 +26,7 @@ if ! /usr/local/lib/ssf/net-up.sh; then
 fi
 /usr/local/bin/gvforwarder -url vsock://2:1024/connect -iface tap0 -mtu 1500 -preexisting >/run/gvforwarder.log 2>&1 &
 sleep 1
-if ! curl -fsS -o /dev/null --max-time 20 https://geo.mirror.pkgbuild.com/; then
+if ! curl -fsS -o /dev/null --max-time 20 https://archive.ubuntu.com/ubuntu/; then
     cat /run/gvforwarder.log
     finish "FAILED: no network"
 fi

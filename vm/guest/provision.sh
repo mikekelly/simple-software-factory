@@ -3,7 +3,7 @@
 # with the network up. Edit the package lists here and run `ssf vm build
 # --force` to make a new image.
 #
-# SSF_VM_BACKEND: `firecracker` (default) provisions the Arch image
+# SSF_VM_BACKEND: `firecracker` (default) provisions the Ubuntu 24.04 image
 # `ssf vm build` made (the guest files are already in it); `lima` provisions
 # a stock cloud image (Arch or Debian/Ubuntu) on its first boot, from the
 # host's share mounted at /mnt/ssf, and installs the guest files itself.
@@ -13,7 +13,7 @@ export TERM=dumb
 backend=${SSF_VM_BACKEND:-firecracker}
 share=/mnt/ssf
 case "$backend" in
-    firecracker) pkg=pacman ;;
+    firecracker) pkg=apt ;;
     lima)
         if command -v pacman >/dev/null 2>&1; then
             pkg=pacman
@@ -41,8 +41,24 @@ case "$pkg" in
         sshd_unit=ssh.service
         export DEBIAN_FRONTEND=noninteractive
         apt-get update
-        apt-get install -y openssh-server sudo git gh nodejs npm tmux less vim bash-completion \
-            man-db ripgrep jq unzip curl locales
+        apt-get dist-upgrade -y
+        apt-get install -y --no-install-recommends openssh-server sudo git gh tmux less vim \
+            bash-completion man-db ripgrep jq unzip curl locales ca-certificates xz-utils
+        # Noble's Node 18 is below the current harness floor (Claude Code and
+        # Pi require Node 22). Install a pinned upstream Node LTS for both
+        # Firecracker and Ubuntu-based lima guests; /usr/local wins over any
+        # distro node left by a custom image.
+        node_version=v22.23.2
+        case "$machine" in
+            x86_64) node_arch=x64; node_sha=d60acfe00a2932254bb0ad20e01b0d74397a0875595de719654b214f4b03f307 ;;
+            aarch64|arm64) node_arch=arm64; node_sha=fff4078c5def658577f92c88db7db3bc0072924bfb93fe52c1e744a54e94abb8 ;;
+            *) echo "provision: no Node.js release for $machine" >&2; exit 1 ;;
+        esac
+        node_archive="node-$node_version-linux-$node_arch.tar.xz"
+        curl -fsSL -o "/tmp/$node_archive" "https://nodejs.org/dist/$node_version/$node_archive"
+        printf '%s  %s\n' "$node_sha" "/tmp/$node_archive" | sha256sum -c -
+        tar -xJf "/tmp/$node_archive" -C /usr/local --strip-components=1
+        rm -f "/tmp/$node_archive"
         ;;
 esac
 # Locale and time.
@@ -91,6 +107,10 @@ AcceptEnv LANG LC_* SSF_*
 SSHD
 if [ "$backend" = firecracker ]; then
     sed -i '/^PermitRootLogin no$/a AllowUsers ssf' /etc/ssh/sshd_config.d/ssf.conf
+    # Cloud-init normally creates these and rewrites the cloud image's root
+    # label. Firecracker boots without cloud-init, so do both explicitly.
+    ssh-keygen -A
+    sed -i 's/LABEL=cloudimg-rootfs/LABEL=ssf-root/' /etc/fstab
 fi
 # Per-backend unit drop-ins, installed as /etc/systemd/system/<unit>.d/
 # <backend>.conf. A drop-in file names the unit in full, type included
@@ -238,7 +258,10 @@ done
 # (gvforwarder over vsock, instead of the systemd network stack), under
 # lima the image's own network stays.
 if [ "$backend" = firecracker ]; then
-    systemctl enable gvforwarder.service ssf-net.service ssf-seed.service sshd.service herdr-server.service ssf.service
+    # The cloud root has no datasource in Firecracker. Avoid a pointless
+    # boot-time wait and let SSF's seed/network units own initialization.
+    touch /etc/cloud/cloud-init.disabled
+    systemctl enable gvforwarder.service ssf-net.service ssf-seed.service "$sshd_unit" herdr-server.service ssf.service
     systemctl disable systemd-networkd.service systemd-resolved.service 2>/dev/null || true
 else
     systemctl enable ssf-seed.service "$sshd_unit" herdr-server.service ssf.service

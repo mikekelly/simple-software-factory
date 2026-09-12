@@ -8,4 +8,8 @@ ip link set tap0 mtu 1500
 ip addr replace 192.168.127.2/24 dev tap0
 ip link set tap0 up
 ip route replace default via 192.168.127.1 dev tap0
+# Ubuntu cloud roots point this at systemd-resolved's runtime stub, which
+# does not exist while provision-init is PID 1. Firecracker uses gvproxy's
+# DNS server directly and disables resolved in the finished image.
+rm -f /etc/resolv.conf
 printf 'nameserver 192.168.127.1\n' > /etc/resolv.conf

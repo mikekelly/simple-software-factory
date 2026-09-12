@@ -79,6 +79,8 @@ cannot provide:
   `sudo pacman -S --needed fakeroot libarchive e2fsprogs curl`,
   `sudo apt install fakeroot libarchive-tools e2fsprogs curl`, or
   `sudo dnf install fakeroot bsdtar e2fsprogs curl`.
+  The Firecracker guest is Ubuntu 24.04 LTS on every supported Linux host;
+  the host does not need to run Ubuntu.
 
 Homebrew supplies `gh` and `lima`. Host herdr on macOS is optional
 (`brew install herdr`); the VM supplies its own. Orca is installed

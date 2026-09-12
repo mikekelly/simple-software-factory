@@ -9,9 +9,10 @@
 //!   `gvforwarder` in the guest), and the images are made with `fakeroot`
 //!   and `mkfs.ext4 -d`. Files under `[vm] dir` (`~/.local/share/ssf/vm`):
 //!   the downloaded `firecracker`, `gvproxy`, `gvforwarder` and `vmlinux`,
-//!   the root image `rootfs.ext4` that `ssf vm build` provisions from the
-//!   Arch bootstrap tarball, and one directory per VM with its persistent
-//!   `root.ext4` (a copy-on-write copy of the image), `data.ext4` (ssf's
+//!   the root image `rootfs.ext4` that `ssf vm build` provisions from an
+//!   Ubuntu 24.04 LTS minimal cloud root, and one directory per VM with
+//!   its persistent `root.ext4` (a copy-on-write copy of the image),
+//!   `data.ext4` (ssf's
 //!   state, the clones and worktrees, mounted at `/var/lib/ssf`), the
 //!   `seed.ext4` written at every start (this binary, bootstrap defaults,
 //!   host access public key and `[vm] files`; legacy state only during migration),
@@ -51,8 +52,12 @@ pub const GVPROXY_VERSION: &str = "v0.8.9";
 /// fails, `[vm] kernel` points at a kernel of your own (any x86_64 vmlinux
 /// with those drivers built in does).
 pub const KERNEL_URL: &str = "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260902-a6146c8bb213-0/x86_64/vmlinux-6.1.182";
-pub const BOOTSTRAP_URL: &str =
-    "https://geo.mirror.pkgbuild.com/iso/latest/archlinux-bootstrap-x86_64.tar.zst";
+/// A dated Ubuntu 24.04 LTS minimal cloud root. Pinning the released build
+/// keeps a clean build reproducible; apt upgrades it during provisioning.
+pub const UBUNTU_ROOT_URL: &str = "https://cloud-images.ubuntu.com/minimal/releases/noble/\
+release-20260905/ubuntu-24.04-minimal-cloudimg-amd64-root.tar.xz";
+pub const UBUNTU_ROOT_SHA256: &str =
+    "094dc0afc6ded1c3e5ce71f7d0b48d5db922155097bc8fb1ec19db2ebdd17ece";
 
 /// The unprivileged user everything runs as in the guest.
 pub const GUEST_USER: &str = "ssf";
@@ -1190,7 +1195,7 @@ impl Vm {
     // ---- build ----
 
     /// Make the guest: Firecracker downloads what is missing, makes the
-    /// base image from the bootstrap tarball and boots it once to
+    /// base image from the Ubuntu root tarball and boots it once to
     /// provision it; lima creates the instance from a cloud image and
     /// boots it once so the guest scripts provision it.
     pub async fn build(&self, host: &Config, force: bool) -> Result<()> {
@@ -1228,7 +1233,7 @@ impl Vm {
         let build = self.base.join("build");
         std::fs::create_dir_all(&build)?;
         let base = build.join("base.ext4");
-        let tarball = self.base.join("dl/bootstrap.tar.zst");
+        let tarball = self.base.join("dl/ubuntu-24.04-root.tar.xz");
         info!("making the base image from {}", tarball.display());
         let st = Command::new(scripts.join("make-base.sh"))
             .arg(&tarball)
@@ -1352,10 +1357,11 @@ impl Vm {
         if !self.kernel().exists() {
             download(KERNEL_URL, &self.kernel()).await?;
         }
-        let tarball = dl.join("bootstrap.tar.zst");
+        let tarball = dl.join("ubuntu-24.04-root.tar.xz");
         if !tarball.exists() {
-            download(BOOTSTRAP_URL, &tarball).await?;
+            download(UBUNTU_ROOT_URL, &tarball).await?;
         }
+        verify_sha256(&tarball, UBUNTU_ROOT_SHA256)?;
         Ok(())
     }
 
@@ -1516,7 +1522,7 @@ impl Vm {
                 bail!("copying the image failed");
             }
         }
-        self.require_safe_seed_script()?;
+        self.require_compatible_root()?;
         if !self.data_disk().exists() {
             let gib = self.sizes().data_gib;
             info!("making {} ({gib} GiB, sparse)", self.data_disk().display());
@@ -1792,10 +1798,11 @@ impl Vm {
         Ok(())
     }
 
-    /// Replay the stopped root's journal before inspecting its boot script.
-    /// Never patch with debugfs: journal replay at boot can undo such writes.
-    /// Legacy roots must be rebuilt/reset before they can see the data disk.
-    fn require_safe_seed_script(&self) -> Result<()> {
+    /// Replay the stopped root's journal before inspecting its boot script
+    /// and OS identity. Never patch with debugfs: journal replay at boot can
+    /// undo such writes. Legacy and Arch roots must be rebuilt/reset before
+    /// they can see the data disk.
+    fn require_compatible_root(&self) -> Result<()> {
         let disk = self.root_disk();
         let checked = Command::new("e2fsck")
             .args(["-f", "-p"])
@@ -1822,6 +1829,26 @@ impl Vm {
         {
             bail!(
                 "the Firecracker root {} has a legacy or incompatible seed script; refusing to boot it with the persistent data disk. Install matching ssf guest scripts, run `ssf vm build --force`, then `ssf vm reset` and `ssf vm start`. Reset alone copies the existing root image and is not sufficient; if vm.rootfs is custom, replace that image with a matching build. The data disk is untouched",
+                disk.display()
+            );
+        }
+        // Ubuntu ships /etc/os-release as a relative symlink. debugfs does not
+        // follow symlinks for `cat`, so inspect the canonical file directly.
+        let os_release = Command::new("debugfs")
+            .args(["-R", "cat /usr/lib/os-release"])
+            .arg(&disk)
+            .output()
+            .context("reading the stopped root OS identity (is e2fsprogs installed?)")?;
+        let identity_read = os_release.status.success();
+        let os_release = String::from_utf8_lossy(&os_release.stdout);
+        if !identity_read
+            || !os_release.lines().any(|line| line == "ID=ubuntu")
+            || !os_release
+                .lines()
+                .any(|line| matches!(line, "VERSION_ID=24.04" | "VERSION_ID=\"24.04\""))
+        {
+            bail!(
+                "the Firecracker root {} is not the supported Ubuntu 24.04 LTS image; refusing to boot it with the persistent data disk. Run `ssf vm build --force`, then `ssf vm reset` and `ssf vm start`. The data disk is untouched",
                 disk.display()
             );
         }
@@ -2907,6 +2934,23 @@ async fn download(url: &str, to: &Path) -> Result<()> {
     Ok(())
 }
 
+fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+    let output = Command::new("sha256sum")
+        .arg(path)
+        .output()
+        .context("running sha256sum")?;
+    let actual = String::from_utf8_lossy(&output.stdout);
+    let matches = output.status.success() && actual.split_whitespace().next() == Some(expected);
+    if !matches {
+        let _ = std::fs::remove_file(path);
+        bail!(
+            "the SHA-256 checksum for {} did not match; the cached download was removed, so rerun `ssf vm build`",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 fn make_executable(p: &Path) -> Result<()> {
     set_mode(p, 0o755)
 }
@@ -3111,6 +3155,26 @@ mod tests {
     }
 
     #[test]
+    fn a_bad_download_checksum_removes_the_cached_file() {
+        if which("sha256sum").is_none() {
+            return;
+        }
+        let sandbox = crate::config::test_support::sandbox();
+        let archive = sandbox.root().join("ubuntu-root.tar.xz");
+        std::fs::write(&archive, []).unwrap();
+        verify_sha256(
+            &archive,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        .unwrap();
+        let error = verify_sha256(&archive, &"0".repeat(64))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("cached download was removed"));
+        assert!(!archive.exists());
+    }
+
+    #[test]
     fn disabled_vm_management_preserves_host_factory_and_credentials() {
         let sandbox = crate::config::test_support::sandbox();
         let mut config = Config::default();
@@ -3186,6 +3250,12 @@ mod tests {
         std::fs::create_dir_all(&vm.dir).unwrap();
         let tree = sandbox.root().join("root-tree");
         std::fs::create_dir_all(tree.join("usr/local/lib/ssf")).unwrap();
+        std::fs::create_dir_all(tree.join("usr/lib")).unwrap();
+        std::fs::write(
+            tree.join("usr/lib/os-release"),
+            "NAME=Ubuntu\nID=ubuntu\nVERSION_ID=\"24.04\"\n",
+        )
+        .unwrap();
         std::fs::write(
             tree.join("usr/local/lib/ssf/seed-common.sh"),
             "old destructive script",
@@ -3203,7 +3273,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            vm.require_safe_seed_script()
+            vm.require_compatible_root()
                 .unwrap_err()
                 .to_string()
                 .contains("refusing to boot")
@@ -3225,15 +3295,54 @@ mod tests {
             "rebuilt scratch root",
         )
         .unwrap();
-        vm.require_safe_seed_script().unwrap();
-        vm.require_safe_seed_script().unwrap();
+        vm.require_compatible_root().unwrap();
+        vm.require_compatible_root().unwrap();
         std::fs::write(vm.root_disk(), "not an ext4 root").unwrap();
         assert!(
-            vm.require_safe_seed_script()
+            vm.require_compatible_root()
                 .unwrap_err()
                 .to_string()
                 .contains("no guest boot")
         );
+    }
+
+    #[test]
+    fn stopped_arch_root_is_refused_before_it_can_see_factory_data() {
+        if which("mkfs.ext4").is_none() || which("debugfs").is_none() {
+            return;
+        }
+        let sandbox = crate::config::test_support::sandbox();
+        let mut config = Config::default();
+        config.vm.dir = sandbox.root().join("vm").to_string_lossy().into_owned();
+        let vm = Vm::new(&config);
+        std::fs::create_dir_all(&vm.dir).unwrap();
+        let tree = sandbox.root().join("arch-root");
+        std::fs::create_dir_all(tree.join("usr/local/lib/ssf")).unwrap();
+        std::fs::create_dir_all(tree.join("usr/lib")).unwrap();
+        std::fs::write(
+            tree.join("usr/local/lib/ssf/seed-common.sh"),
+            include_bytes!("../vm/guest/seed-common.sh"),
+        )
+        .unwrap();
+        std::fs::write(
+            tree.join("usr/lib/os-release"),
+            "NAME=\"Arch Linux\"\nID=arch\n",
+        )
+        .unwrap();
+        let disk = std::fs::File::create(vm.root_disk()).unwrap();
+        disk.set_len(16 << 20).unwrap();
+        drop(disk);
+        run_ok(
+            Command::new("mkfs.ext4")
+                .args(["-q", "-d"])
+                .arg(tree)
+                .arg(vm.root_disk()),
+            "scratch Arch root",
+        )
+        .unwrap();
+        let error = vm.require_compatible_root().unwrap_err().to_string();
+        assert!(error.contains("not the supported Ubuntu 24.04 LTS image"));
+        assert!(error.contains("data disk is untouched"));
     }
 
     #[test]
@@ -3252,6 +3361,12 @@ mod tests {
         let tree = sandbox.root().join("root-tree");
         let script_path = "/usr/local/lib/ssf/seed-common.sh";
         std::fs::create_dir_all(tree.join("usr/local/lib/ssf")).unwrap();
+        std::fs::create_dir_all(tree.join("usr/lib")).unwrap();
+        std::fs::write(
+            tree.join("usr/lib/os-release"),
+            "NAME=Ubuntu\nID=ubuntu\nVERSION_ID=\"24.04\"\n",
+        )
+        .unwrap();
         std::fs::write(
             tree.join(script_path.trim_start_matches('/')),
             include_bytes!("../vm/guest/seed-common.sh"),
@@ -3315,14 +3430,14 @@ mod tests {
         };
         assert_eq!(read_script(), include_bytes!("../vm/guest/seed-common.sh"));
         assert!(
-            vm.require_safe_seed_script()
+            vm.require_compatible_root()
                 .unwrap_err()
                 .to_string()
                 .contains("refusing to boot")
         );
         assert!(read_script().starts_with(legacy));
         // Recovery is persistent: a repeated startup attempt also refuses.
-        assert!(vm.require_safe_seed_script().is_err());
+        assert!(vm.require_compatible_root().is_err());
     }
 
     #[test]

@@ -27,9 +27,9 @@ optdepends=(
   'omarchy: bar widget, menu entries and floating-terminal flows'
   'gum: nicer prompts in ssf-ui'
   'fakeroot: builds the microVM image (ssf vm build)'
-  'libarchive: bsdtar, unpacks the Arch bootstrap tarball for the microVM image'
+  'libarchive: bsdtar, unpacks the Ubuntu root tarball for the microVM image'
   'e2fsprogs: mkfs.ext4, makes the microVM disks'
-  'curl: downloads Firecracker, gvproxy and the guest kernel'
+  'curl: downloads Firecracker, gvproxy, the guest kernel and Ubuntu root'
 )
 install=ssf.install
 # !debug: no ssf-debug split package. !lto: makepkg's -flto would reach

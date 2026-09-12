@@ -98,10 +98,12 @@ document links to.
    names why the host could not ask. Use `ssf vm status` to inspect host
    infrastructure and `ssf status` / `ssf doctor` for guest factory health.
    Before upgrading an old copied-config VM, read the migration/recovery
-   section in `docs/vm.md`. Legacy Firecracker roots require the matching
-   package and guest scripts, then `ssf vm build --force`, `ssf vm reset`,
-   and `ssf vm start`; reset alone reuses the unsafe old image. Legacy
-   Lima roots require reset and start. Both preserve the data disk; never
+   section in `docs/vm.md`. Firecracker uses an Ubuntu 24.04 LTS guest on
+   every Linux host. Legacy Firecracker roots, including the former Arch
+   guest, require the matching package and guest scripts, then run
+   `ssf vm build --force`, `ssf vm reset`, and `ssf vm start`; reset alone
+   reuses the unsafe old image. Legacy Lima roots require reset and start. Both
+   preserve the data disk; never
    patch a legacy seed script in place to bypass the startup check.
    Stop on conflicts, preserve both versions, and have the person choose
    precedence; never guess or discard state.
