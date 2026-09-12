@@ -634,6 +634,13 @@ Panel {
 
         PanelActionButton {
           iconText: ""
+          tooltipText: "Session dashboard"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          onClicked: { root.run(root.applicationPath + " dashboard"); root.close() }
+        }
+        PanelActionButton {
+          iconText: ""
           tooltipText: "Logs"
           foreground: root.foreground
           fontFamily: root.fontFamily

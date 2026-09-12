@@ -144,10 +144,11 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
 
 ## How it works
 
-The optional [herdr session dashboard](herdr-plugin/README.md) shows active
-agents as a browser card grid, with linked originating and additional issues,
-last activity, and the latest message or status summary. It also works on a
-VM host through SSF's normal command forwarding.
+Run `ssf dashboard` for the [session dashboard](docs/dashboard.md): active
+agents in a browser card grid, linked issues, activity and status summaries.
+Use `ssf --server HOST dashboard` (or `SSF_SERVER`) for a remote factory;
+the browser opens on your client. Linux and macOS clients include the dashboard,
+and local VM factories use normal forwarding.
 
 Every few seconds ssf asks GitHub for the open issues and pull requests that
 involve the bot. For a new one it creates a workspace (in Orca or in herdr,

@@ -71,6 +71,7 @@ fn widget_probes_the_packaged_application_without_bootstrapping_it() {
 fn widget_changes_state_only_from_explicit_controls() {
     let panel = std::fs::read_to_string(repo().join("marketplace/FactoryPanel.qml")).unwrap();
     assert!(panel.contains("onClicked: root.configure()"));
+    assert!(panel.contains("root.run(root.applicationPath + \" dashboard\")"));
     assert!(panel.contains("root.applicationPath + \" setup\""));
     assert!(panel.contains("onToggled: root.toggleService()"));
     assert!(panel.contains("root.applicationPath + \" ui service toggle\""));

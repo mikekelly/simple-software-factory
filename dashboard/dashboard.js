@@ -80,6 +80,7 @@ async function refresh() {
     noticeNode.hidden = !body.warning;
     statusNode.textContent = `Updated ${new Date(body.refreshed_at * 1000).toLocaleTimeString()}`;
   } catch (error) {
+    emptyNode.hidden = true;
     noticeNode.textContent = `Could not refresh: ${error.message}`;
     noticeNode.hidden = false;
     statusNode.textContent = "Refresh failed";

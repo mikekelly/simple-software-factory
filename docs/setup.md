@@ -114,10 +114,11 @@ omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --en
 
 The widget never installs, upgrades, starts, or removes the SSF package.
 
-For a browser grid of active agents, the optional
-[herdr dashboard plugin](../herdr-plugin/README.md) is installed separately.
-Herdr runs plugin actions on its server: with a headless VM, run the dashboard
-on the host using its `ssf` command, or use the documented SSH forwarding flow.
+For a browser grid of active agents, run `ssf dashboard` on your desktop.
+The Linux and macOS clients include it; no plugin or Python installation is
+needed. For a remote factory, use `ssf --server HOST dashboard` or set
+`SSF_SERVER=HOST`. For a local VM, run the client on the host. See the
+[dashboard guide](dashboard.md) for lifecycle and the old herdr plugin migration.
 
 Config and credentials live in `~/.config/ssf`, state in
 `~/.local/state/ssf`, and VM files in `~/.local/share/ssf/vm` (lima also

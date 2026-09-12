@@ -28,12 +28,16 @@ document links to.
 
 ## Rules for an agent following it
 
-The optional herdr browser dashboard is separate from the Omarchy widget.
-See the checkout's `herdr-plugin/README.md` for installation and launch commands.
-Actions execute on the herdr server, so a headless guest cannot open the host's
-browser: use the host launcher with SSF's existing VM forwarding, or an SSH
-tunnel. Herdr's terminal title is a status summary; Claude Code/Codex activity
-times reflect transcript writes, and missing activity times remain unknown.
+The browser dashboard is included in the Linux and macOS client. Run
+`ssf dashboard` on the desktop, or `ssf --server HOST dashboard` /
+`SSF_SERVER=HOST ssf dashboard` for a remote factory. A local VM uses the host
+client's normal VM forwarding. No Python, Omarchy helper or HTTP tunnel is
+needed. See `docs/dashboard.md`: the loopback capability URL expires after
+five minutes without browser polling (shutdown can take another 35 seconds
+for an in-flight request). The herdr plugin is only a compatibility
+launcher for graphical same-machine installs; it executes on the herdr server.
+Herdr's terminal title is a status summary; Claude Code/Codex activity times
+reflect transcript writes, and missing activity times remain unknown.
 
 1. **Stop where only the person can act.** The document marks them
    **you**: type a sudo password (`pacman`, `apt`, `dnf`), create a GitHub account,
