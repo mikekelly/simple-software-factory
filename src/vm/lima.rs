@@ -3262,6 +3262,7 @@ exit 0
             // test. The fake stands in for it: what is being tested here
             // is the order of the steps, not what the seed carries.
             cfg.vm.guest_binary = Some(limactl.to_string_lossy().into_owned());
+            std::fs::write(dir.join("ssf-server"), "server").unwrap();
             let mut vm = Vm::new(&cfg);
             // lima's home, where the instance directory the fake made
             // lives and where `_disks/` would be: the tests must not

@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    ssf::client_main().await
+    ssf::server_main().await
 }

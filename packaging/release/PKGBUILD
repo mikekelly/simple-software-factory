@@ -62,6 +62,7 @@ check() {
 package() {
   cd "$_srcname"
   install -Dm755 target/release/ssf "$pkgdir/usr/bin/ssf"
+  install -Dm755 target/release/ssf-server "$pkgdir/usr/bin/ssf-server"
   install -Dm755 bin/ssf-ui "$pkgdir/usr/bin/ssf-ui"
   install -Dm644 packaging/ssf.service "$pkgdir/usr/lib/systemd/user/ssf.service"
   install -Dm755 packaging/package-pre-remove.sh "$pkgdir/usr/lib/ssf/package-pre-remove"

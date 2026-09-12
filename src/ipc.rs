@@ -135,7 +135,7 @@ pub async fn call(req: &Request) -> Result<Value> {
     let stream = match UnixStream::connect(&path).await {
         Ok(s) => s,
         Err(e) => bail!(
-            "the ssf daemon is not running ({}: {e}); start it with `ssf ui service enable` or `ssf run`",
+            "the ssf daemon is not running ({}: {e}); start it with `ssf ui service enable` or `ssf-server`",
             path.display()
         ),
     };

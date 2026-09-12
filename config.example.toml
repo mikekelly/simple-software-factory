@@ -51,7 +51,7 @@
 
 # The whole factory (daemon, herdr, sessions) inside a VM instead of on this
 # machine: a Firecracker microVM on Linux, a lima instance on macOS; see
-# `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf run` starts and
+# `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf-server` starts and
 # watches the VM, and `ssf status`, `tell`, `peers`, `sub`, `release`, `purge`
 # and `doctor` run inside it. `ssf vm status --json` reports `running = null`
 # (with `probe_error`) when lima cannot answer, rather than claiming it stopped.
@@ -79,11 +79,11 @@
 # limactl = "limactl"                          # lima: the limactl binary, when not the one on PATH; lima 2.0.1 or newer either way
 # image = "https://.../image.qcow2"            # lima: a cloud-init image (URL or path) instead of the default for the guest's architecture
 # vm_type = "vz"                               # lima: vz | qemu; unset = lima's default
-# guest_binary = "~/dl/ssf-linux"              # a Linux ssf binary for the guest; unset = this binary on Linux, else the release asset for this version via gh
+# guest_binary = "~/dl/ssf-linux"              # Linux ssf client for the guest; matching ssf-server binary must be beside it
 # herdr = "~/dl/herdr-linux"                   # lima: a Linux herdr binary for the guest; unset = the host's own on Linux, else the guest downloads herdr's release
 
 [daemon]
-# One `ssf run` or `ssf run --once` owns this state directory at a time. A
+# One `ssf-server` or `ssf-server --once` owns this state directory at a time. A
 # one-shot run refuses while another engine owns it; wait for that run to finish.
 # poll_interval_secs = 10
 # conflict_check_interval_secs = 300           # fetch the base once per active repository at this interval and notify sessions only of committed-branch merge conflicts; 0 disables

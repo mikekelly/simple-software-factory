@@ -9,7 +9,7 @@ export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$
 ./target/debug/ssf config set driver herdr            # or orca; a fresh config names none
 ./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
 ./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
-./target/debug/ssf run --once     # one pass; agents launched by this run read the same SSF_* locations
+./target/debug/ssf-server --once  # one pass; agents launched by this run read the same SSF_* locations
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest shell, restore SSF_STATE_DIR=/var/lib/ssf/state
 SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
 omarchy plugin validate ./omarchy-plugin
@@ -67,7 +67,7 @@ arranged otherwise. A pass that finds an item for the bot — the startup
 pass included — starts a real agent somewhere, and `ssf release` and
 `ssf purge` will not be the way you clean it up.
 
-`ssf run --once` does a single pass, startup pass included, and exits. It
+`ssf-server --once` does a single pass, startup pass included, and exits. It
 refuses while another engine owns its state directory, so wait for that
 run to finish before starting a pass.
 
@@ -165,7 +165,7 @@ script content despite a successful pre-recovery readback; that regression needs
 
 ## A dev build as the service
 
-`packaging/dev-install.sh` builds `target/release/ssf`, writes the
+`packaging/dev-install.sh` builds `target/release/ssf` and `ssf-server`, writes the
 drop-in below pointing the unit at the build, then `systemctl --user
 daemon-reload && systemctl --user restart ssf.service`, and runs the
 build's `doctor`. The package has to be installed once for the unit and
@@ -181,14 +181,14 @@ the service on the package:
 ExecStartPre=
 ExecStartPre=-/home/you/src/simple-software-factory/target/release/ssf ui install --quiet
 ExecStart=
-ExecStart=/home/you/src/simple-software-factory/target/release/ssf run
+ExecStart=/home/you/src/simple-software-factory/target/release/ssf-server
 ```
 
 Run `./target/release/ssf doctor` rather than the packaged `ssf doctor`:
 `doctor` says whether the `ssf` on PATH is the binary running it, so only
 the dev build's own `doctor` shows the two differ (agents run the daemon's
 binary either way, through the links `ssf launch` makes). A dev build
-started by hand (`ssf run`) resumes interrupted sessions on start like the
+started by hand (`ssf-server`) resumes interrupted sessions on start like the
 service does, but nothing restarts it for you.
 
 ## Releasing

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run ssf.service from a dev build instead of the package's /usr/bin/ssf.
+# Run ssf.service from a dev build instead of the package's /usr/bin/ssf-server.
 # For whoever works on ssf itself; a user installs the package (README).
 #
 #   packaging/dev-install.sh          # build target/release/ssf, point the unit at it, restart
@@ -39,7 +39,7 @@ pacman -Qq ssf >/dev/null 2>&1 || {
 
 echo "==> cargo build --release in $repo"
 (cd "$repo" && cargo build --release)
-bin="$repo/target/release/ssf"
+bin="$repo/target/release/ssf-server"
 
 echo "==> pointing ssf.service at $bin ($dropin)"
 mkdir -p "$(dirname "$dropin")"
@@ -49,13 +49,13 @@ cat >"$dropin" <<UNIT
 # removes this file and restarts the service on the package again.
 [Service]
 ExecStartPre=
-ExecStartPre=-$bin ui install --quiet
+ExecStartPre=-$repo/target/release/ssf ui install --quiet
 ExecStart=
-ExecStart=$bin run
+ExecStart=$bin
 UNIT
 systemctl --user daemon-reload
 systemctl --user restart ssf.service
 systemctl --user --no-pager status ssf.service 2>/dev/null | sed -n '1,4p' || true
 
-echo "==> $bin doctor"
-"$bin" doctor || true
+echo "==> $repo/target/release/ssf doctor"
+"$repo/target/release/ssf" doctor || true

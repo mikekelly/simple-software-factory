@@ -90,7 +90,7 @@ default 20 GB root and `DOCKER_SANDBOXES_DOCKER_SIZE` for the separate default
 These are not proven online resize or independently recoverable SSF data volumes.
 Measure actual host pressure under concurrent builds.
 
-Proposed lifecycle: host `ssf run` supervises the selected sandbox; a versioned
+Proposed lifecycle: host `ssf-server` supervises the selected sandbox; a versioned
 guest bootstrap starts herdr and SSF exactly once, preserves the guest ownership
 marker, and exposes readiness. On unknown runtime state, retry with bounds and
 report unavailable; never fall back to running the factory on the host. On stop,

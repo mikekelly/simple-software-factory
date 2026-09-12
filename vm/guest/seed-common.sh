@@ -19,7 +19,7 @@ wait_for() {
 }
 
 # seed_from <seed-dir>: with the data disk on /var/lib/ssf, keep the guest
-# user's home there, and put the host's ssf binary, config, token, ssh key
+# user's home there, and put the host's ssf binaries, config, token, ssh key
 # and listed files where the guest expects them. The root disk then holds
 # nothing but packages, so `ssf vm reset` loses no state.
 seed_from() {
@@ -32,6 +32,7 @@ seed_from() {
     install -d -o ssf -g ssf /var/lib/ssf/state /var/lib/ssf/projects /home/ssf/.config /home/ssf/.ssh
     chmod 700 /home/ssf/.ssh
     install -m755 "$seed/ssf" /usr/local/bin/ssf
+    install -m755 "$seed/ssf-server" /usr/local/bin/ssf-server
     install -d -m700 -o ssf -g ssf /home/ssf/.config/ssf
     # Keep SSH usable for recovery when migration finds a conflict. The daemon
     # may only start after guest ownership was successfully established.

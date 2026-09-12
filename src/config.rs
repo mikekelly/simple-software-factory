@@ -581,7 +581,7 @@ impl std::str::FromStr for BackendKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmConfig {
-    /// Run the factory in the VM: `ssf run` on the host starts and watches
+    /// Run the factory in the VM: `ssf-server` on the host starts and watches
     /// the guest instead of polling GitHub itself, and the daemon-facing
     /// commands (`status`, `tell`, `peers`, ...) run inside the guest.
     #[serde(default)]

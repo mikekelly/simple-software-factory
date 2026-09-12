@@ -86,13 +86,15 @@ fn enable_service() -> Result<()> {
 fn verify_binary() -> Result<()> {
     checked("/usr/bin/ssf", &["--version"], false)
         .context("the package-owned /usr/bin/ssf is not usable")?;
+    checked("/usr/bin/ssf-server", &["--version"], false)
+        .context("the package-owned /usr/bin/ssf-server is not usable")?;
     let unit = std::fs::read_to_string("/usr/lib/systemd/user/ssf.service")
         .context("reading the package-owned /usr/lib/systemd/user/ssf.service")?;
     if !unit
         .lines()
-        .any(|line| line.trim() == "ExecStart=/usr/bin/ssf run")
+        .any(|line| line.trim() == "ExecStart=/usr/bin/ssf-server")
     {
-        bail!("the package-owned ssf.service does not launch `/usr/bin/ssf run`");
+        bail!("the package-owned ssf.service does not launch `/usr/bin/ssf-server`");
     }
     Ok(())
 }
@@ -133,15 +135,15 @@ fn verify_package() -> Result<()> {
         .context("checking ssf.service ExecStart")?;
     let exec = String::from_utf8_lossy(&exec.stdout);
     if !effective_exec_is_owned(&exec) {
-        bail!("ssf.service does not effectively launch the package-owned `/usr/bin/ssf run`");
+        bail!("ssf.service does not effectively launch the package-owned `/usr/bin/ssf-server`");
     }
     Ok(())
 }
 
 fn effective_exec_is_owned(exec: &str) -> bool {
     exec.matches("path=").count() == 1
-        && exec.contains("path=/usr/bin/ssf ;")
-        && exec.contains("argv[]=/usr/bin/ssf run ;")
+        && exec.contains("path=/usr/bin/ssf-server ;")
+        && exec.contains("argv[]=/usr/bin/ssf-server ;")
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -327,13 +329,13 @@ mod tests {
     #[test]
     fn effective_service_has_exactly_the_one_owned_command() {
         assert!(effective_exec_is_owned(
-            "{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; ignore_errors=no ; }"
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; ignore_errors=no ; }"
         ));
         assert!(!effective_exec_is_owned(
-            "{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run --other ; }"
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --other ; }"
         ));
         assert!(!effective_exec_is_owned(
-            "{ path=/usr/bin/ssf ; argv[]=/usr/bin/ssf run ; } ; { path=/usr/bin/other ; argv[]=/usr/bin/other ; }"
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; } ; { path=/usr/bin/other ; argv[]=/usr/bin/other ; }"
         ));
     }
 }

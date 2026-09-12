@@ -216,14 +216,15 @@ macOS through Homebrew; every release carries the Linux packages.
 - **macOS**: `brew install mikekelly/tap/ssf`; the formula pulls in `gh`
   and `lima`. The factory runs inside a [lima](https://lima-vm.io) VM
   (`ssf vm build`, then `brew services start ssf`); the formula installs
-  `ssf`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
+  `ssf`, `ssf-server`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
   documentation under `$(brew --prefix)/share/doc/ssf`.
 
 The Linux packages install the same paths on every distribution:
 
 | Path | What |
 |------|------|
-| `/usr/bin/ssf` | the daemon and management CLI |
+| `/usr/bin/ssf` | management client; locally invokes `ssf-server`, or reaches one over SSH with `--server` |
+| `/usr/bin/ssf-server` | daemon and the server-side command endpoint |
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
 | `/usr/lib/systemd/user/ssf.service` | background user service, enabled for `default.target` by explicit `ssf setup` |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
@@ -354,6 +355,20 @@ ssf uninstall [--yes] [--force] [--data]   # clean up the service/account safely
 journalctl --user -fu ssf.service   # macOS: tail -f $(brew --prefix)/var/log/ssf.log
 ```
 
+Every command can target another machine that has SSF installed:
+
+```sh
+ssf --server factory.example status
+SSF_SERVER=factory.example ssf tell acme/widgets#12 "pause here"
+```
+
+The destination is any SSH destination accepted by `ssh` (including a host
+alias with its user and key in `~/.ssh/config`). The client invokes the same
+`ssf-server` command endpoint that it executes locally, so local
+and remote commands share parsing, validation, and the daemon's local Unix
+socket path. The remote account therefore needs permission to operate that
+factory; SSF exposes no network listener of its own.
+
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the
 guest; they fail if it is stopped or unreachable. Start it and retry.
@@ -394,7 +409,7 @@ are left where they are: nothing reaches them while the daemon is down,
 and it delivers what they missed when it comes back. With the factory in
 a VM, stopping the service shuts the guest down cleanly.
 
-One state directory has one engine owner. `ssf run --once` refuses while its
+One state directory has one engine owner. `ssf-server --once` refuses while its
 daemon is active, including when the command is forwarded to an active VM;
 in that case the guest's `ssf.service` owns the guest state, so let its next
 poll do the work.

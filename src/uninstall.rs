@@ -320,7 +320,7 @@ struct MarketplaceLock {
 }
 
 fn lock_marketplace_runtime() -> Result<Option<MarketplaceLock>> {
-    let exe = std::env::current_exe().context("finding the running ssf executable")?;
+    let exe = crate::client_executable().context("finding the ssf client executable")?;
     let Some(helper) = marketplace_runtime_helper(&exe) else {
         return Ok(None);
     };
@@ -361,7 +361,7 @@ fn lock_marketplace_runtime() -> Result<Option<MarketplaceLock>> {
 }
 
 fn remove_marketplace_runtime(data: bool, lock: Option<&MarketplaceLock>) -> Result<bool> {
-    let exe = std::env::current_exe().context("finding the running ssf executable")?;
+    let exe = crate::client_executable().context("finding the ssf client executable")?;
     let Some(helper) = marketplace_runtime_helper(&exe) else {
         return Ok(false);
     };

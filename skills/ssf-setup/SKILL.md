@@ -46,9 +46,12 @@ times reflect transcript writes, and missing activity times remain unknown.
    and read them before changing anything; most setup problems show up
    there, and the document says which lines are expected to fail at each
    step.
-   A state directory has one engine owner: `ssf run --once` refuses while
+   A state directory has one engine owner: `ssf-server --once` refuses while
    the daemon is running. With a VM it is the guest daemon and state that
    matter, so let its next poll run.
+   To operate a factory over SSH, use `ssf --server HOST COMMAND` or set
+   `SSF_SERVER=HOST`; this invokes the same `ssf-server` command endpoint as
+   a local client, and the SSH account must be able to operate the factory.
 3. **Prefer the CLI** (`ssf repo add`, `ssf repo set`, `ssf config set`,
    `ssf auth login`) over editing `config.toml` by hand: it validates
    harness IDs, model support and effort levels. Unknown model IDs pass

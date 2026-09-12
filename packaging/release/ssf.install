@@ -7,9 +7,14 @@ post_upgrade() {
     [ "$(systemctl --machine="${user}@.host" --user show -p FragmentPath --value ssf.service 2>/dev/null)" = /usr/lib/systemd/user/ssf.service ] || continue
     exec_start=$(systemctl --machine="${user}@.host" --user show -p ExecStart --value ssf.service 2>/dev/null) || continue
     [ "$(printf '%s' "$exec_start" | grep -o 'path=' | wc -l)" -eq 1 ] || continue
-    printf '%s' "$exec_start" | grep -F 'path=/usr/bin/ssf ;' >/dev/null || continue
-    printf '%s' "$exec_start" | grep -F 'argv[]=/usr/bin/ssf run ;' >/dev/null || continue
+    if printf '%s' "$exec_start" | grep -F 'path=/usr/bin/ssf-server ;' >/dev/null &&
+       printf '%s' "$exec_start" | grep -F 'argv[]=/usr/bin/ssf-server ;' >/dev/null; then :
+    elif printf '%s' "$exec_start" | grep -F 'path=/usr/bin/ssf ;' >/dev/null &&
+         printf '%s' "$exec_start" | grep -F 'argv[]=/usr/bin/ssf run ;' >/dev/null; then :
+    else continue
+    fi
     systemctl --machine="${user}@.host" --user is-active --quiet ssf.service >/dev/null 2>&1 || continue
+    systemctl --machine="${user}@.host" --user daemon-reload || { echo "==> warning: could not reload ssf.service for $user" >&2; continue; }
     systemctl --machine="${user}@.host" --user try-restart ssf.service || echo "==> warning: could not restart ssf.service for $user" >&2
   done
 }

@@ -59,6 +59,18 @@ Omarchy widget. Prepare the current user explicitly after installation:
 ssf setup
 ```
 
+The package contains the `ssf` client and the `ssf-server` daemon. A local
+client executes the adjacent server-side command endpoint. From any
+machine with the package and SSH access to the factory account, add
+`--server HOST` to the same command (or set `SSF_SERVER=HOST`):
+
+```sh
+ssf --server factory.example status
+```
+
+SSH starts the same endpoint on the remote machine; SSF opens no TCP listener.
+The remote machine needs the package installed and `ssf-server` on `PATH`.
+
 On Linux this creates the initial configuration and enables and starts the
 user service for `default.target`. It asks before enabling systemd linger so
 the service can start at boot and remain available after logout. On macOS it

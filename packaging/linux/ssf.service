@@ -7,8 +7,8 @@ Documentation=https://github.com/mikekelly/simple-software-factory
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/ssf run
-# With `[vm] enabled`, `ssf run` starts a Firecracker VM in a session of its
+ExecStart=/usr/bin/ssf-server
+# With `[vm] enabled`, `ssf-server` starts a Firecracker VM in a session of its
 # own and shuts it down cleanly on SIGTERM; only the main process gets the
 # signal, the VM is told by ssf.
 KillMode=mixed
