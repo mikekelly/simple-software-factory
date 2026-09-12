@@ -291,14 +291,15 @@ from the release either way.
 
 | Path | What |
 |------|------|
-| `src/main.rs` | the CLI: every subcommand, `doctor`, VM forwarding |
-| `src/engine.rs` | the polling loop: listings, onboarding, delivery, the startup pass, retirement |
+| `src/main.rs`, `src/bin/ssf-server.rs`, `src/lib.rs` | binary entry points and shared library module declarations |
+| `src/cli/` | argument definitions, client dispatch, and handlers grouped by command family (auth, repos/config, sessions, VM, UI, doctor, launch, daemon) |
+| `src/engine.rs`, `src/engine/implementation/` | engine state and helpers; reconciliation, onboarding, issue updates, delivery, lifecycle, handovers, releases, and conflict checks |
 | `src/engine/requests.rs` | daemon-side handling of CLI requests over the IPC socket |
 | `src/github.rs` | REST and GraphQL client (listings, timelines, boards, collaborators) |
-| `src/prompt.rs` | timeline rendering, prompt templates and `ssf guide` |
+| `src/prompt.rs`, `src/prompt/timeline.rs`, `src/prompt/guide.rs` | prompt templates, timeline event rendering, and the on-demand `ssf guide` reference |
 | `src/config.rs`, `src/state.rs` | `config.toml` and `state.json` |
 | `src/driver.rs`, `src/orca.rs`, `src/herdr.rs` | the driver interface and the two drivers |
-| `src/vm.rs`, `src/vm/lima.rs`, `vm/` | `ssf vm`: the Firecracker backend and what both backends share, the lima backend, and the guest scripts and units |
+| `src/vm.rs`, `src/vm/`, `vm/` | VM interface and constants; backend, guest, sizing, and support components; guest scripts and units |
 | `src/platform.rs` | what differs per host OS: the systemd user unit on Linux, the Homebrew launchd service on macOS |
 | `src/sessions.rs` | agent session capture and resume |
 | `src/origin.rs`, `src/shim.rs` | bylines and origin tags; the `gh` wrapper |
@@ -316,6 +317,12 @@ from the release either way.
 | `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-tap` |
 | `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
+
+Large unit-test suites live beside their implementation under `src/<module>/tests.rs`
+or `src/<module>/tests/`, with shared fixtures in the test module. Start with the
+command or responsibility above, then read its tests as needed; a production-code
+change need not load the whole suite. The config/state isolation guards live in
+`src/config/test_support.rs`.
 
 This repository is built by ssf itself: [`SSF.md`](../SSF.md) is what its
 agents are told.
