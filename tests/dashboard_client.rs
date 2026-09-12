@@ -107,6 +107,21 @@ impl Pty {
     fn key(&mut self, key: &[u8]) {
         self.master.write_all(key).unwrap();
     }
+    fn wait_for_file(&mut self, path: &Path, text: &str) {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        loop {
+            if std::fs::read_to_string(path).is_ok_and(|content| content.contains(text)) {
+                return;
+            }
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "client exited: {}",
+                self.output
+            );
+            assert!(Instant::now() < deadline, "missing {text:?} in {path:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     fn quit(&mut self) {
         self.key(b"q");
         self.finished();
@@ -190,8 +205,8 @@ while :; do printf '%s\n' '{SNAPSHOT}'; /usr/bin/sleep 1; done"#
         }
         command.arg("dashboard");
         let mut terminal = Pty::spawn(command);
-        terminal.wait_for("Latest summary");
-        terminal.wait_for("SSF active agents");
+        terminal.wait_for("Origin issue");
+        terminal.wait_for("SSF FACTORY");
         assert!(terminal.child.try_wait().unwrap().is_none());
         terminal.quit();
     }
@@ -211,6 +226,36 @@ while :; do printf '%s\n' '{SNAPSHOT}'; /usr/bin/sleep 1; done"#
     assert_eq!(paths.len(), 2);
     assert_ne!(paths[0], paths[1]);
     assert_eq!(ssh.matches("ControlMaster=auto").count(), 2);
+}
+
+#[test]
+fn repeated_server_routes_share_one_dashboard_and_keep_streams_separate() {
+    let root = Temp::new("multiple-servers");
+    script(
+        &root.0.join("ssh"),
+        r#"while [ "$1" != "--" ]; do shift; done
+shift
+route="$1"
+if [ "$route" = "factory-one" ]; then
+ snapshot='{"server":{"hostname":"factory-one"},"dashboard":{"cards":[{"owner":"r#1","origin":{"id":"r#1","title":"First factory agent"},"additional":[],"agent_state":"working","last_activity_at":"now","last_assistant_message":"one","agent_session_id":"one","harness":"codex"}],"monitored_items":[],"warning":null}}'
+else
+ snapshot='{"server":{"hostname":"factory-two"},"dashboard":{"cards":[{"owner":"r#2","origin":{"id":"r#2","title":"Second factory agent"},"additional":[],"agent_state":"blocked","last_activity_at":"now","last_assistant_message":"two","agent_session_id":"two","harness":"codex"}],"monitored_items":[],"warning":null}}'
+fi
+while :; do printf '%s\n' "$snapshot"; /usr/bin/sleep 1; done"#,
+    );
+    let mut command = client(&root.0);
+    command.args([
+        "--server",
+        "factory-one",
+        "--server",
+        "factory-two",
+        "dashboard",
+    ]);
+    let mut terminal = Pty::spawn(command);
+    terminal.wait_for("First factory agent");
+    terminal.wait_for("Second factory agent");
+    terminal.wait_for("2 servers");
+    terminal.quit();
 }
 
 #[test]
@@ -237,14 +282,17 @@ fi"#,
         .env("HERDR_PANE_ID", "w1:p1")
         .arg("dashboard");
     let mut terminal = Pty::spawn(command);
-    terminal.wait_for("Latest summary");
+    terminal.wait_for("Origin issue");
     terminal.key(b"\r");
-    terminal.wait_for("Focused w9:p7");
+    terminal.wait_for_file(&root.0.join("herdr-args"), "focus\nw9:p7");
     assert!(terminal.child.try_wait().unwrap().is_none());
     std::fs::write(root.0.join("closed"), "").unwrap();
     // SGR left click on the first visible card.
     terminal.key(b"\x1b[<0;5;4M");
-    terminal.wait_for("pane no longer exists");
+    terminal.wait_for_file(
+        &root.0.join("herdr-args"),
+        "focus\nw9:p7\nagent\nlist\nagent\nfocus\nw9:p7",
+    );
     assert!(terminal.child.try_wait().unwrap().is_none());
     terminal.quit();
     assert_eq!(

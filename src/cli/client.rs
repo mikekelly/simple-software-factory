@@ -4,20 +4,24 @@ use super::*;
 /// Run the `ssf` transport client. With no server configured it execs the
 /// adjacent daemon binary directly; `--server HOST` (or `SSF_SERVER`) execs
 /// that same command endpoint through ssh.
-/// adjacent daemon binary directly; `--server HOST` (or `SSF_SERVER`) execs
-/// that same command endpoint through ssh.
 pub async fn client_main() -> Result<()> {
     if shim::invoked_as_gh() {
         shim::run();
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let configured = std::env::var("SSF_SERVER").ok().filter(|s| !s.is_empty());
-    let (server, args) = client_target(args, configured)?;
+    let (servers, args) = client_targets(args, configured)?;
 
     let cli = Cli::parse_from(std::iter::once("ssf".to_owned()).chain(args.clone()));
     if let Command::Dashboard = cli.command {
-        return dashboard::run(server).await;
+        return dashboard::run(servers).await;
     }
+
+    let server = match servers.as_slice() {
+        [] => None,
+        [server] => Some(server.clone()),
+        _ => bail!("multiple --server destinations are supported only by `ssf dashboard`"),
+    };
 
     let err = match server {
         Some(host) => {
@@ -45,27 +49,32 @@ pub(crate) fn remote_client_command(args: &[String]) -> String {
     command
 }
 
-pub(super) fn client_target(
+pub(super) fn client_targets(
     mut args: Vec<String>,
     configured: Option<String>,
-) -> Result<(Option<String>, Vec<String>)> {
-    let mut server = configured;
-    let options_end = args.iter().position(|a| a == "--").unwrap_or(args.len());
-    if let Some(i) = args[..options_end].iter().position(|a| a == "--server") {
-        if i + 1 >= args.len() {
-            bail!("--server needs an SSH destination");
+) -> Result<(Vec<String>, Vec<String>)> {
+    let mut servers = Vec::new();
+    let mut i = 0;
+    while i < args.iter().position(|a| a == "--").unwrap_or(args.len()) {
+        if args[i] == "--server" {
+            if i + 1 >= args.len() {
+                bail!("--server needs an SSH destination");
+            }
+            servers.push(args.remove(i + 1));
+            args.remove(i);
+        } else if let Some(value) = args[i].strip_prefix("--server=") {
+            servers.push(value.to_owned());
+            args.remove(i);
+        } else {
+            i += 1;
         }
-        server = Some(args.remove(i + 1));
-        args.remove(i);
-    } else if let Some((i, value)) = args[..options_end]
-        .iter()
-        .enumerate()
-        .find_map(|(i, a)| a.strip_prefix("--server=").map(|v| (i, v.to_owned())))
-    {
-        server = Some(value);
-        args.remove(i);
     }
-    Ok((server, args))
+    if servers.is_empty()
+        && let Some(configured) = configured
+    {
+        servers.push(configured);
+    }
+    Ok((servers, args))
 }
 
 pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<()> {

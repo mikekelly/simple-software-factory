@@ -211,7 +211,9 @@ service does, but nothing restarts it for you.
 
 ## Releasing
 
-The client terminal dashboard needs no browser assets or browser opener package.
+The client terminal dashboard uses Ratatui/Crossterm and needs no browser assets
+or browser opener package. Its layouts are exercised headlessly with Ratatui's
+`TestBackend`; PTY integration tests cover the installed-client terminal path.
 The combined distribution includes browser assets embedded for the optional
 `ssf-server` endpoint; no separate asset installation is needed. Desktop launch
 shortcuts open a terminal. `xdg-open` remains an optional fallback for other

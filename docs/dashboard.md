@@ -5,6 +5,7 @@ Run a live dashboard in any ordinary terminal:
 ```sh
 ssf dashboard
 ssf --server customer@cloud.example dashboard
+ssf --server factory-one --server factory-two dashboard
 SSF_SERVER=customer@cloud.example ssf dashboard
 ```
 
@@ -12,10 +13,16 @@ Linux and macOS clients include the TUI. No browser, Python, Omarchy or Herdr
 installation is required. Local factories, local VMs and remote factories use
 the same long-running `ssf status --json --watch` stream. Configure SSH
 authentication first; a remote dashboard keeps one noninteractive SSH channel
-open for its lifetime rather than starting a connection on every refresh.
+open for its lifetime rather than starting a connection on every refresh. Repeat
+`--server` to group several factories in one dashboard. Each server has its own
+watch stream, heading, freshness and error state, so one failed connection does
+not make the others look unavailable. `SSF_SERVER` remains the single-server
+default when no explicit destination is supplied.
 
-The dashboard stays open and refreshes automatically. Use arrows or `j`/`k` to
-select a card, Enter to focus its agent in Herdr, and `q` or Ctrl-C to quit.
+The Ratatui dashboard stays open and refreshes automatically. Agent cards use
+one, two or three columns as terminal width permits and fall back to a compact
+list in very small panes. Use arrows or `h`/`j`/`k`/`l` to select a card,
+Page Up/Page Down to page, Enter to focus its agent in Herdr, and `q` or Ctrl-C to quit.
 Mouse selection and wheel scrolling work in terminals with mouse reporting.
 The terminal's normal screen and input mode are restored on exit. Issue IDs
 are hyperlinks in terminals supporting OSC8 links; use your terminal's normal
