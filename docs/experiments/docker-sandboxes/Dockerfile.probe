@@ -1,0 +1,7 @@
+# Disposable example; record the resolved base digest before a live trial.
+FROM docker.io/docker/sandbox-templates:shell
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends jq util-linux \
+    && rm -rf /var/lib/apt/lists/* \
+    && printf 'ssf-225-extension-v1\n' > /etc/ssf-probe-template
+USER agent

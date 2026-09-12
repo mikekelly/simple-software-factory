@@ -1,5 +1,8 @@
 # Inside a VM
 
+For the proposed additional Docker Sandboxes backend, see the
+[feasibility report](plans/docker-sandboxes.md). It is not implemented or enabled.
+
 How `ssf vm` runs the whole factory inside a VM (a Firecracker microVM on Linux, a lima instance on macOS), what gets into the guest, how to reach it and what persists. For whoever wants the agents kept off their own machine; agents only need to know they have `sudo` there, which their first prompt says.
 
 Without it, everything runs on your machine as you: the agents can read
