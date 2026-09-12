@@ -2614,7 +2614,9 @@ pub enum GuestBinary {
 
 pub(crate) fn companion_server_path(client: &Path) -> PathBuf {
     let name = client.file_name().and_then(|n| n.to_str()).unwrap_or("ssf");
-    let server = if name == "ssf" {
+    let server = if name == "ssf-server" || name.starts_with("ssf-server-") {
+        name.to_string()
+    } else if name == "ssf" {
         "ssf-server".to_string()
     } else if let Some(suffix) = name.strip_prefix("ssf-") {
         format!("ssf-server-{suffix}")
@@ -2818,6 +2820,8 @@ pub fn guest_config(host: &Config) -> Config {
         r.path = None;
     }
     g.vm = VmConfig::default();
+    // The optional web endpoint belongs to the supervising host server.
+    g.dashboard = crate::config::DashboardConfig::default();
     g.daemon.startup_driver_wait_secs = 0;
     g
 }
@@ -3949,6 +3953,8 @@ mod tests {
     #[test]
     fn guest_config_is_herdr_only_on_the_data_disk() {
         let mut host = Config::default();
+        host.dashboard.enabled = true;
+        host.dashboard.port = 9090;
         host.driver = Some(DriverKind::Orca);
         host.vm.enabled = true;
         host.vm.files = vec!["~/.claude/.credentials.json".into()];
@@ -3971,6 +3977,8 @@ mod tests {
         );
         let g = guest_config(&host);
         assert_eq!(g.driver, Some(DriverKind::Herdr));
+        assert!(!g.dashboard.enabled);
+        assert_eq!(g.dashboard.port, 8787);
         assert!(!g.vm.enabled);
         assert!(g.vm.files.is_empty());
         assert_eq!(g.herdr.projects_dir, GUEST_PROJECTS_DIR);
@@ -4662,6 +4670,12 @@ mod tests {
         cfg.vm.guest_binary = Some("/nonexistent/ssf-linux".into());
         let e = Vm::new(&cfg).guest_binary().unwrap_err().to_string();
         assert!(e.contains("guest_binary"), "{e}");
+        for server in ["/opt/ssf-server", "/tmp/ssf-server-0.4.0-linux-x86_64"] {
+            assert_eq!(
+                companion_server_path(Path::new(server)),
+                PathBuf::from(server)
+            );
+        }
         assert_eq!(
             companion_server_path(Path::new("/opt/ssf")),
             PathBuf::from("/opt/ssf-server")

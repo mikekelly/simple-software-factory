@@ -637,7 +637,7 @@ Panel {
           tooltipText: "Session dashboard"
           foreground: root.foreground
           fontFamily: root.fontFamily
-          onClicked: { root.run(root.applicationPath + " dashboard"); root.close() }
+          onClicked: { root.run("omarchy-launch-terminal " + root.applicationPath + " dashboard"); root.close() }
         }
         PanelActionButton {
           iconText: ""

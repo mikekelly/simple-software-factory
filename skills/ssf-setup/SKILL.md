@@ -28,14 +28,18 @@ document links to.
 
 ## Rules for an agent following it
 
-The browser dashboard is included in the Linux and macOS client. Run
-`ssf dashboard` on the desktop, or `ssf --server HOST dashboard` /
+The live terminal dashboard is included in the Linux and macOS client. Run
+`ssf dashboard` in any terminal, or `ssf --server HOST dashboard` /
 `SSF_SERVER=HOST ssf dashboard` for a remote factory. A local VM uses the host
-client's normal VM forwarding. No Python, Omarchy helper or HTTP tunnel is
-needed. See `docs/dashboard.md`: the loopback capability URL expires after
-five minutes without browser polling (shutdown can take another 35 seconds
-for an in-flight request). The herdr plugin is only a compatibility
-launcher for graphical same-machine installs; it executes on the herdr server.
+client's normal VM forwarding. No browser or Herdr installation is required.
+Keyboard and mouse selection can focus a matched agent when running inside
+Herdr; matching is scoped to the Herdr server where the TUI runs, including
+its other tabs and workspaces. The optional plugin is only a launch shortcut.
+See `docs/dashboard.md` for controls and failure states. The server web UI is
+off by default; `[dashboard] enabled = true` enables a loopback listener on
+port 8787 after restarting ssf-server. Non-loopback binds are rejected; remote
+web access needs an authenticated TLS reverse proxy. Treat the logged capability
+URL as a secret. In VM mode, `dashboard.*` settings belong to the host.
 Herdr's terminal title is a status summary; Claude Code/Codex activity times
 reflect transcript writes, and missing activity times remain unknown.
 

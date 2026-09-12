@@ -8,27 +8,37 @@ The details behind the README's [How it works](../README.md#how-it-works).
 with `--server HOST` it asks SSH to execute `ssf-server` on that host. Both
 arrive at the same server-side command parser. Commands that mutate live
 engine state then use the daemon's Unix socket on the server machine; the
-daemon itself exposes no network socket.
+daemon exposes no network socket by default.
 
-## Client dashboard
+## Dashboards
 
-`ssf dashboard` owns the browser and a loopback HTTP listener on the client.
-Its embedded assets render the canonical server-side status response; session
-ownership and VM status remain server responsibilities. Remote status uses the
-same SSH target selection as other client commands. It uses OpenSSH control
-multiplexing in a private temporary directory to reuse connections between
-polls; an unused master expires after 60 seconds. Canonical VM status forwarding
-also reuses its guest SSH connection, including when the host is remote. Its
-control socket lives in a private per-user temporary directory and expires
-after 60 seconds without channels. SSH authentication is noninteractive and
-each status request has a 30-second deadline. Transport failures are presented
-as errors rather than empty status.
-The server process does not launch a browser or serve dashboard HTTP.
+`ssf dashboard` runs a terminal UI on the client. The server's status model
+builds `dashboard.cards` from canonical owning sessions, including the origin,
+additional assigned issues, agent session ID, state, activity and latest message.
+Both UIs consume this presentation; neither reconstructs factory ownership.
+The TUI retains the last successful view with an explicit stale warning when
+transport fails. Driver/VM failures, inactive services and overdue daemon polling are separate
+warning states, rather than an empty factory.
 
-The listener binds `127.0.0.1` on an ephemeral port and protects its routes with
-a fresh unguessable capability token. It shuts down after 300 seconds without
-browser polling, plus up to 35 seconds for an in-flight request. See [Session dashboard](dashboard.md) for usage and migration
-from the former Python herdr action.
+Remote status uses the same SSH target selection as other client commands.
+OpenSSH control multiplexing in a private temporary directory reuses connections
+between polls; an unused master expires after 60 seconds. Canonical VM status
+forwarding also reuses its guest SSH connection, including when the host is
+remote. SSH authentication is noninteractive and each request has a 30-second
+deadline. The TUI keeps processing input while status requests run.
+
+Inside Herdr, the TUI matches the canonical `agent_session_id` to Herdr's
+agent list and focuses the corresponding pane using `herdr agent focus`.
+This selects across tabs and workspaces on the current Herdr server and leaves
+the dashboard process in its original pane. The integration uses the pane's
+inherited Herdr environment; SSF's remote target does not change Herdr servers.
+
+The optional server web listener is disabled by default, loopback only, and
+shares the server process lifetime. Browser assets are used by the server
+endpoint; the client opens no browser. Each server start creates a fresh
+capability URL, with bounded HTTP headers and requests, strict Host/Origin
+checks, and a restrictive content security policy. See
+[Session dashboard](dashboard.md) for configuration and proxy expectations.
 
 ## Polling and delivery
 

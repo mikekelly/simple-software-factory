@@ -4,6 +4,7 @@
 //! (agent state, last assistant message, current tool, last activity, board
 //! column, branch). The widget reads this and never talks to Orca itself.
 
+use anyhow::Context;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -409,7 +410,7 @@ impl Snapshot {
                 })
             })
             .collect();
-        json!({
+        let mut payload = json!({
             "bot_login": self.bot_login(),
             "token_configured": self.cfg.github_token().is_ok(),
             "service_enabled": crate::ui::service_enabled(),
@@ -433,7 +434,10 @@ impl Snapshot {
             },
             "sessions": sessions,
             "repos": repos,
-        })
+        });
+        payload["dashboard"] =
+            dashboard_presentation(&payload).expect("canonical status always contains sessions");
+        payload
     }
 }
 
@@ -1341,5 +1345,167 @@ mod tests {
         assert_eq!(ago(Some(&t(3 * 86_400))), "3d");
         assert_eq!(ago(None), "");
         assert_eq!(ago(Some("garbage")), "");
+    }
+}
+
+/// Cards are built once in the canonical server model for both dashboard clients.
+fn text<'a>(value: &'a Value, key: &str) -> &'a str {
+    value[key].as_str().unwrap_or_default()
+}
+fn issue(row: &Value, fallback: &str) -> Value {
+    let id = row["id"].as_str().unwrap_or(fallback);
+    let url = row["url"]
+        .as_str()
+        .and_then(|url| reqwest::Url::parse(url).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
+    json!({"id":id,"title":row["title"].as_str().unwrap_or(id),"url":url.map(|url|url.to_string()),
+        "kind":row["kind"].as_str().unwrap_or("issue"),"active":row["active"] == true})
+}
+
+pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
+    let rows = payload["sessions"]
+        .as_array()
+        .context("SSF returned status data in an unexpected format")?;
+    let active: Vec<_> = rows
+        .iter()
+        .filter(|row| {
+            row["active"] == true
+                && row["subscriber_only"] != true
+                && !text(row, "owner").is_empty()
+        })
+        .collect();
+    let mut owners = Vec::new();
+    let mut cards = Vec::new();
+    for row in &active {
+        let owner = text(row, "owner");
+        if owners.contains(&owner) {
+            continue;
+        }
+        owners.push(owner);
+        let primary = rows
+            .iter()
+            .find(|row| text(row, "id") == owner)
+            .unwrap_or(&Value::Null);
+        let owned: Vec<_> = active
+            .iter()
+            .copied()
+            .filter(|row| text(row, "owner") == owner)
+            .collect();
+        let mut candidates = Vec::new();
+        if !primary.is_null() {
+            candidates.push(primary);
+        }
+        candidates.extend(owned.iter().copied());
+        candidates.sort_by(|a, b| text(b, "last_activity_at").cmp(text(a, "last_activity_at")));
+        let runtime = candidates[0];
+        let message = candidates
+            .iter()
+            .map(|row| text(row, "last_assistant_message").trim())
+            .find(|message| !message.is_empty())
+            .map(|message| message.chars().take(4000).collect::<String>());
+        let metadata = |key| {
+            let value = text(primary, key);
+            if value.is_empty() {
+                text(runtime, key).to_owned()
+            } else {
+                value.to_owned()
+            }
+        };
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"agent_session_id":metadata("agent_session_id")}));
+    }
+    let warning = if payload["factory_reachable"] == false {
+        let state = text(&payload["host_vm"], "state");
+        Some(format!(
+            "SSF could not reach the guest factory{}",
+            if state.is_empty() {
+                String::new()
+            } else {
+                format!(" (VM {state})")
+            }
+        ))
+    } else if payload["orca"]["available"] == false {
+        let detail = text(&payload["orca"], "error").trim();
+        Some(
+            if detail.is_empty() {
+                "SSF could not reach one or more session drivers"
+            } else {
+                detail
+            }
+            .to_owned(),
+        )
+    } else if payload["service_active"] == false {
+        Some("SSF service is inactive; showing latest saved state".to_owned())
+    } else if let Some(last_poll) = payload["last_poll_at"].as_str() {
+        match chrono::DateTime::parse_from_rfc3339(last_poll) {
+            Ok(at)
+                if chrono::Utc::now().signed_duration_since(at).num_seconds()
+                    > (payload["poll_interval_secs"].as_i64().unwrap_or(60) * 3).max(60) =>
+            {
+                Some("SSF daemon state is stale; last successful poll is overdue".to_owned())
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(
+        json!({"cards":cards,"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+    )
+}
+
+#[cfg(test)]
+mod dashboard_tests {
+    use super::*;
+    #[test]
+    fn presents_server_ownership_and_latest_message_safely() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#1","title":"Origin","active":false,"harness":"codex","url":"javascript:alert(1)"},
+            {"id":"r#2","owner":"r#1","active":true,"agent_state":"working","last_activity_at":"2026-09-12T12:00:00Z","last_assistant_message":" Earlier "},
+            {"id":"r#3","owner":"r#1","active":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> "},
+            {"id":"r#4","owner":"r#4","active":true,"subscriber_only":true}
+        ]})).unwrap();
+        let cards = snapshot["cards"].as_array().unwrap();
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0]["origin"]["title"], "Origin");
+        assert!(cards[0]["origin"]["url"].is_null());
+        assert_eq!(cards[0]["additional"].as_array().unwrap().len(), 2);
+        assert_eq!(cards[0]["agent_state"], "idle");
+        assert_eq!(cards[0]["harness"], "codex");
+        assert_eq!(
+            cards[0]["last_assistant_message"],
+            "<script>latest</script>"
+        );
+    }
+
+    #[test]
+    fn distinguishes_unreachable_vm_and_driver_errors_from_empty_factory() {
+        let snapshot = dashboard_presentation(
+            &json!({"sessions":[],"factory_reachable":false,"host_vm":{"state":"stopped"}}),
+        )
+        .unwrap();
+        assert!(snapshot["warning"].as_str().unwrap().contains("VM stopped"));
+        let snapshot = dashboard_presentation(
+            &json!({"sessions":[],"orca":{"available":false,"error":"driver unavailable"}}),
+        )
+        .unwrap();
+        assert_eq!(snapshot["warning"], "driver unavailable");
+        assert!(dashboard_presentation(&json!({"sessions":[]})).unwrap()["warning"].is_null());
+        assert!(dashboard_presentation(&json!({"error":"not a snapshot"})).is_err());
+    }
+
+    #[test]
+    fn cards_carry_canonical_conversation_and_stale_daemon_warning() {
+        let snapshot = dashboard_presentation(&json!({
+            "sessions":[{"id":"r#1", "owner":"r#1", "active":true,
+                "agent_session_id":"conversation-id"}],
+            "service_active":true, "last_poll_at":"2000-01-01T00:00:00Z",
+            "poll_interval_secs":10
+        }))
+        .unwrap();
+        assert_eq!(snapshot["cards"][0]["agent_session_id"], "conversation-id");
+        assert!(snapshot["warning"].as_str().unwrap().contains("stale"));
+        let stopped =
+            dashboard_presentation(&json!({"sessions":[],"service_active":false})).unwrap();
+        assert!(stopped["warning"].as_str().unwrap().contains("inactive"));
     }
 }
