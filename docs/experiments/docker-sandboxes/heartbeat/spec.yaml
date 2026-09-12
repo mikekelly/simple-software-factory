@@ -1,0 +1,12 @@
+schemaVersion: "2"
+kind: mixin
+name: ssf-heartbeat
+version: "0.1.0"
+setup:
+  startup:
+    - command:
+        - bash
+        - -c
+        - 'mkdir -p /home/agent/ssf-probe; exec flock -n /home/agent/ssf-probe/heartbeat.lock bash -c ''while :; do date -u +%s >> /home/agent/ssf-probe/heartbeat.log; sleep 2; done'''
+      user: "1000"
+      background: true
