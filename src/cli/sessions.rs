@@ -1,13 +1,22 @@
 use super::prelude::*;
 
-pub(super) async fn status(json: bool) -> Result<()> {
-    let snap = status::Snapshot::collect(Config::load()?).await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&snap.to_json())?);
+pub(super) async fn status(json: bool, watch: bool) -> Result<()> {
+    if watch {
+        loop {
+            let snap = status::Snapshot::collect(Config::load()?).await?;
+            println!("{}", serde_json::to_string(&snap.to_json())?);
+            std::io::Write::flush(&mut std::io::stdout())?;
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
     } else {
-        print!("{}", status::render_status(&snap));
+        let snap = status::Snapshot::collect(Config::load()?).await?;
+        if json {
+            println!("{}", serde_json::to_string_pretty(&snap.to_json())?);
+        } else {
+            print!("{}", status::render_status(&snap));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 pub(super) async fn peers(json: bool, repo: Option<String>, all: bool) -> Result<()> {

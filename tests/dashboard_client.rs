@@ -161,7 +161,7 @@ fn client(root: &Path) -> Command {
         .env("SSF_STATE_DIR", root.join("state"));
     command
 }
-const SNAPSHOT: &str = r#"{"dashboard":{"cards":[{"owner":"r#1","origin":{"id":"r#1","title":"Origin issue"},"additional":[{"id":"r#2","title":"Another issue"}],"agent_state":"working","last_activity_at":"2026-09-12","last_assistant_message":"Latest summary","agent_session_id":"session-1","harness":"codex"}],"warning":null}}"#;
+const SNAPSHOT: &str = r#"{"dashboard":{"cards":[{"owner":"r#1","origin":{"id":"r#1","title":"Origin issue"},"additional":[{"id":"r#2","title":"Another issue"}],"agent_state":"working","last_activity_at":"2026-09-12","last_assistant_message":"Latest summary","agent_session_id":"session-1","harness":"codex"}],"monitored_items":[],"warning":null}}"#;
 
 #[test]
 fn terminal_refreshes_for_local_remote_and_environment_routes_without_browser() {
@@ -170,14 +170,14 @@ fn terminal_refreshes_for_local_remote_and_environment_routes_without_browser() 
         &root.0.join("ssf-server"),
         &format!(
             r#"printf '%s\n' "$@" >> "$TEST_ROOT/local-args"
-printf '%s\n' '{SNAPSHOT}'"#
+while :; do printf '%s\n' '{SNAPSHOT}'; /usr/bin/sleep 1; done"#
         ),
     );
     script(
         &root.0.join("ssh"),
         &format!(
             r#"printf '%s\n' "$@" >> "$TEST_ROOT/ssh-args"
-printf '%s\n' '{SNAPSHOT}'"#
+while :; do printf '%s\n' '{SNAPSHOT}'; /usr/bin/sleep 1; done"#
         ),
     );
     for route in ["local", "remote", "environment"] {
@@ -191,42 +191,26 @@ printf '%s\n' '{SNAPSHOT}'"#
         command.arg("dashboard");
         let mut terminal = Pty::spawn(command);
         terminal.wait_for("Latest summary");
-        let file = if route == "local" {
-            "local-args"
-        } else {
-            "ssh-args"
-        };
-        let expected = if route == "environment" { 4 } else { 2 };
-        let deadline = Instant::now() + Duration::from_secs(8);
-        while std::fs::read_to_string(root.0.join(file))
-            .unwrap_or_default()
-            .matches("status")
-            .count()
-            < expected
-        {
-            terminal.wait_for("SSF active agents");
-            assert!(Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        terminal.wait_for("SSF active agents");
         assert!(terminal.child.try_wait().unwrap().is_none());
         terminal.quit();
     }
     assert_eq!(
         std::fs::read_to_string(root.0.join("local-args")).unwrap(),
-        "__client\nstatus\n--json\n__client\nstatus\n--json\n"
+        "__client\nstatus\n--json\n--watch\n"
     );
     let ssh = std::fs::read_to_string(root.0.join("ssh-args")).unwrap();
-    assert!(ssh.contains("customer@cloud.example\nssf-server __client 'status' '--json'"));
-    assert!(ssh.contains("environment-host\nssf-server __client 'status' '--json'"));
+    assert!(
+        ssh.contains("customer@cloud.example\nssf-server __client 'status' '--json' '--watch'")
+    );
+    assert!(ssh.contains("environment-host\nssf-server __client 'status' '--json' '--watch'"));
     let paths: Vec<_> = ssh
         .lines()
         .filter(|line| line.starts_with("ControlPath="))
         .collect();
-    assert_eq!(paths.len(), 4);
-    assert_eq!(paths[0], paths[1]);
-    assert_eq!(paths[2], paths[3]);
-    assert_ne!(paths[0], paths[2]);
-    assert_eq!(ssh.matches("ControlMaster=auto").count(), 4);
+    assert_eq!(paths.len(), 2);
+    assert_ne!(paths[0], paths[1]);
+    assert_eq!(ssh.matches("ControlMaster=auto").count(), 2);
 }
 
 #[test]

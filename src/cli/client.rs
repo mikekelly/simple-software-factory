@@ -118,11 +118,18 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         let backend = vm.backend().to_string();
         match forwarding_gate(&probe, &cfg.vm.name, &backend, name, missing.as_deref()) {
             Gate::Refuse(why) => match cli.command {
-                Command::Status { json: true } => {
+                Command::Status { json: true, watch } => {
+                    if watch {
+                        loop {
+                            println!("{}", vm_status_for_guest(probe_word(&probe)));
+                            std::io::Write::flush(&mut std::io::stdout())?;
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                    }
                     println!("{}", vm_status_for_guest(probe_word(&probe)));
                     return Ok(());
                 }
-                Command::Status { json: false } => {
+                Command::Status { json: false, .. } => {
                     println!(
                         "vm:      {} is not running (`ssf vm start`, or `ssf ui service enable`)",
                         cfg.vm.name
@@ -140,7 +147,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 }
                 if matches!(
                     cli.command,
-                    Command::Doctor | Command::Status { json: false }
+                    Command::Doctor | Command::Status { json: false, .. }
                 ) {
                     eprintln!(
                         "host VM: {} ({backend}, {}); inspecting guest factory",
@@ -165,7 +172,13 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 // the VM, nothing of the sessions it could not ask
                 // after, and exiting 0 the way a stopped VM's answer
                 // above does.
-                if matches!(cli.command, Command::Status { json: true }) {
+                if matches!(
+                    cli.command,
+                    Command::Status {
+                        json: true,
+                        watch: false
+                    }
+                ) {
                     let out = vm.capture_ssf(&args);
                     if let Err(e) = &out {
                         eprintln!("running `ssf {name}` in the VM: {e:#}");
@@ -260,7 +273,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         Command::Config { command } => {
             config_cmd(command.unwrap_or(ConfigCommand::Show { json: false }))
         }
-        Command::Status { json } => status(json).await,
+        Command::Status { json, watch } => status(json, watch).await,
         Command::Dashboard => bail!("run `ssf dashboard` on the client computer"),
         Command::Peers { json, repo, all } => peers(json, repo, all).await,
         Command::Sub { item, r#as, json } => sub(&item, r#as.as_deref(), json, true).await,

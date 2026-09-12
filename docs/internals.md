@@ -12,20 +12,22 @@ daemon exposes no network socket by default.
 
 ## Dashboards
 
-`ssf dashboard` runs a terminal UI on the client. The server's status model
-builds `dashboard.cards` from canonical owning sessions, including the origin,
+`ssf dashboard` runs a terminal UI on the client over one long-running
+`status --json --watch` stream. The server's status model builds
+`dashboard.cards` only from driver-reported live agents, including the origin,
 additional assigned issues, agent session ID, state, activity and latest message.
-Both UIs consume this presentation; neither reconstructs factory ownership.
+Active monitored items without an agent are exposed as
+`dashboard.monitored_items`. Both UIs consume this presentation; neither
+reconstructs factory ownership.
 The TUI retains the last successful view with an explicit stale warning when
 transport fails. Driver/VM failures, inactive services and overdue daemon polling are separate
 warning states, rather than an empty factory.
 
-Remote status uses the same SSH target selection as other client commands.
-OpenSSH control multiplexing in a private temporary directory reuses connections
-between polls; an unused master expires after 60 seconds. Canonical VM status
-forwarding also reuses its guest SSH connection, including when the host is
-remote. SSH authentication is noninteractive and each request has a 30-second
-deadline. The TUI keeps processing input while status requests run.
+Remote status uses the same SSH target selection as other client commands and
+keeps one noninteractive SSH channel open for the watch stream. Canonical VM
+status forwarding uses the same stream, including when the host is remote. Each
+snapshot has a 30-second deadline. The TUI keeps processing input while status
+updates arrive.
 
 Inside Herdr, the TUI matches the canonical `agent_session_id` to Herdr's
 agent list and focuses the corresponding pane using `herdr agent focus`.

@@ -41,4 +41,6 @@ pub use cli::{
     summary_quotes_a_sign_in_screen_text,
 };
 
-pub(crate) use cli::{client_executable, purge, remote_client_command, server_executable};
+pub(crate) use cli::{
+    client_executable, hostname, purge, remote_client_command, server_executable,
+};
