@@ -6251,6 +6251,11 @@ mod tests {
             "the refused engine created state"
         );
         drop(listener);
+        // A Unix socket pathname outlives its listener. Remove the fixture's
+        // path explicitly before checking that a fresh engine may start;
+        // relying on connect() to observe the just-closed listener races on
+        // some CI kernels.
+        std::fs::remove_file(&path).unwrap();
         let engine = Engine::new(cfg).await.unwrap();
         assert_eq!(stub.hits(), vec!["/user"]);
         drop(engine);
