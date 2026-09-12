@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSF agents</title>
+  <link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Simple Software Factory</p>
+      <h1>Active agents</h1>
+    </div>
+    <div class="refresh-block" aria-live="polite">
+      <span id="refresh-status">Loading sessions…</span>
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+  <main>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section id="cards" class="cards" aria-label="Active SSF agents" aria-busy="true"></section>
+    <section id="empty" class="empty" hidden>
+      <div class="empty-mark" aria-hidden="true">✓</div>
+      <h2>No active agents</h2>
+      <p>SSF has no assigned sessions to show right now.</p>
+    </section>
+  </main>
+  <template id="card-template">
+    <article class="card">
+      <div class="card-top">
+        <span class="state"><span class="state-dot" aria-hidden="true"></span><span class="state-text"></span></span>
+        <span class="harness"></span>
+      </div>
+      <h2 class="issue-title"></h2>
+      <a class="issue-link" target="_blank" rel="noopener noreferrer"></a>
+      <dl class="facts">
+        <div><dt>Last active</dt><dd class="activity"></dd></div>
+        <div><dt>Latest message or summary</dt><dd class="message"></dd></div>
+      </dl>
+      <div class="additional" hidden>
+        <h3>Additional assigned issues</h3>
+        <ul></ul>
+      </div>
+    </article>
+  </template>
+  <script src="dashboard.js" defer></script>
+</body>
+</html>
