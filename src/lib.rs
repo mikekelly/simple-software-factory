@@ -7,6 +7,8 @@
 mod agents;
 mod allow;
 mod config;
+mod dashboard;
+mod dashboard_transport;
 mod driver;
 mod engine;
 mod events;
@@ -115,6 +117,12 @@ enum Command {
     Status {
         #[arg(long)]
         json: bool,
+    },
+    /// Open the session dashboard in a browser on this computer.
+    Dashboard {
+        /// Print the local capability URL without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
     },
     /// List the agent sessions on a repository: item, GitHub state, agent
     /// state, branch, last message. Inside a session the repository comes
@@ -646,13 +654,14 @@ pub async fn client_main() -> Result<()> {
     let configured = std::env::var("SSF_SERVER").ok().filter(|s| !s.is_empty());
     let (server, args) = client_target(args, configured)?;
 
+    let cli = Cli::parse_from(std::iter::once("ssf".to_owned()).chain(args.clone()));
+    if let Command::Dashboard { no_browser } = cli.command {
+        return dashboard::run(server, no_browser).await;
+    }
+
     let err = match server {
         Some(host) => {
-            let mut command = String::from("ssf-server __client");
-            for arg in args {
-                command.push(' ');
-                command.push_str(&shell_quote(&arg));
-            }
+            let command = remote_client_command(&args);
             std::process::Command::new("ssh")
                 .arg("--")
                 .arg(host)
@@ -665,6 +674,15 @@ pub async fn client_main() -> Result<()> {
             .exec(),
     };
     Err(anyhow::Error::from(err).context("starting ssf-server"))
+}
+
+fn remote_client_command(args: &[String]) -> String {
+    let mut command = String::from("ssf-server __client");
+    for arg in args {
+        command.push(' ');
+        command.push_str(&shell_quote(arg));
+    }
+    command
 }
 
 fn client_target(
@@ -876,6 +894,7 @@ async fn command_main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Res
             config_cmd(command.unwrap_or(ConfigCommand::Show { json: false }))
         }
         Command::Status { json } => status(json).await,
+        Command::Dashboard { .. } => bail!("run `ssf dashboard` on the client computer"),
         Command::Peers { json, repo, all } => peers(json, repo, all).await,
         Command::Sub { item, r#as, json } => sub(&item, r#as.as_deref(), json, true).await,
         Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false).await,

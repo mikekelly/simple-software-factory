@@ -299,6 +299,7 @@ from the release either way.
 | `src/allow.rs` | the allow-list of GitHub users |
 | `src/release.rs` | the release and purge checks |
 | `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `handover`, `release` and `purge` |
+| `src/dashboard.rs`, `src/dashboard_transport.rs`, `dashboard/` | client-side loopback session dashboard and embedded browser assets |
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |
 | `src/agents.rs`, `src/models.rs` | Omarchy's agent catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |

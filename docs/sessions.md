@@ -72,7 +72,7 @@ binding wins):
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
 and "handed off by ...".
 
-The [herdr dashboard](../herdr-plugin/README.md) groups these items into one
+The [session dashboard](dashboard.md), opened with `ssf dashboard`, groups these items into one
 card per owning session, including a retired origin that still owns active
 items. Subscriber-only items do not create cards. With herdr, the latest
 summary is the terminal's status title. For a live Claude Code or Codex session

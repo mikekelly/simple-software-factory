@@ -10,6 +10,26 @@ arrive at the same server-side command parser. Commands that mutate live
 engine state then use the daemon's Unix socket on the server machine; the
 daemon itself exposes no network socket.
 
+## Client dashboard
+
+`ssf dashboard` owns the browser and a loopback HTTP listener on the client.
+Its embedded assets render the canonical server-side status response; session
+ownership and VM status remain server responsibilities. Remote status uses the
+same SSH target selection as other client commands. It uses OpenSSH control
+multiplexing in a private temporary directory to reuse connections between
+polls; an unused master expires after 60 seconds. Canonical VM status forwarding
+also reuses its guest SSH connection, including when the host is remote. Its
+control socket lives in a private per-user temporary directory and expires
+after 60 seconds without channels. SSH authentication is noninteractive and
+each status request has a 30-second deadline. Transport failures are presented
+as errors rather than empty status.
+The server process does not launch a browser or serve dashboard HTTP.
+
+The listener binds `127.0.0.1` on an ephemeral port and protects its routes with
+a fresh unguessable capability token. It shuts down after 300 seconds without
+browser polling, plus up to 35 seconds for an in-flight request. See [Session dashboard](dashboard.md) for usage and migration
+from the former Python herdr action.
+
 ## Polling and delivery
 
 - **Polling, not webhooks.** Every `poll_interval_secs` ssf makes four

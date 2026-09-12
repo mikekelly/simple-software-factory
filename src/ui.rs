@@ -232,6 +232,10 @@ fn menu_block() -> String {
             r#"{"icon":"","label":"Factory","aliases":["ssf","software-factory"],"description":"Simple Software Factory: GitHub issues to agents"}"#,
         ),
         (
+            "factory.dashboard",
+            r#"{"icon":"","label":"Dashboard","action":"ssf dashboard"}"#,
+        ),
+        (
             "factory.status",
             r#"{"icon":"󰋼","label":"Status","action":"omarchy-launch-floating-terminal-with-presentation ssf-ui status"}"#,
         ),
@@ -734,6 +738,7 @@ mod tests {
         let block = menu_block();
         for id in [
             "\"factory\"",
+            "\"factory.dashboard\"",
             "\"factory.status\"",
             "\"factory.toggle\"",
             "\"factory.restart\"",
@@ -741,6 +746,7 @@ mod tests {
         ] {
             assert!(block.contains(id), "menu lacks {id}: {block}");
         }
+        assert!(block.contains("\"action\":\"ssf dashboard\""));
         assert!(block.contains("\"checked\":\"ssf-ui service is-enabled\""));
         assert!(block.contains("\"action\":\"ssf-ui service toggle\""));
         for gone in [
@@ -761,7 +767,7 @@ mod tests {
             .join("\n");
         let parsed: serde_json::Value =
             serde_json::from_str(&format!("{{\n{body}\n}}")).expect("menu rows are JSON");
-        assert_eq!(parsed.as_object().map(|o| o.len()), Some(5));
+        assert_eq!(parsed.as_object().map(|o| o.len()), Some(6));
     }
 
     /// The shipped widget and its helper script only show and reach state.

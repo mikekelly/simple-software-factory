@@ -2132,12 +2132,41 @@ impl Vm {
     /// on this terminal. For the caller that has to answer even when the
     /// guest does not: `status --json`, which the bar widget parses.
     pub fn capture_ssf(&self, args: &[String]) -> Result<std::process::Output> {
-        self.ssh(&self.ssf_remote(args), false)
+        self.capture_ssf_command(args, Path::new("/tmp"))?
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .output()
             .context("running ssh (is the VM up? `ssf vm status`)")
+    }
+
+    /// Reuse only captured status requests, including when this host itself
+    /// is reached over SSH. Guest ownership and VM routing stay on the server.
+    fn capture_ssf_command(&self, args: &[String], socket_root: &Path) -> Result<Command> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let directory = status_control_directory(socket_root)?;
+        let mut identity = DefaultHasher::new();
+        // The key and trust store distinguish factories sharing an SSH port.
+        // Hashing keeps the Unix socket path short enough for macOS.
+        (
+            self.key(),
+            self.known_hosts(),
+            self.cfg.ssh_port,
+            self.target(),
+        )
+            .hash(&mut identity);
+        let socket = directory.join(format!("{:016x}", identity.finish()));
+        let mut command = Command::new("ssh");
+        command.args(self.ssh_args(true));
+        command.args(["-o", "ControlMaster=auto", "-o", "ControlPersist=60"]);
+        command
+            .arg("-o")
+            .arg(format!("ControlPath={}", socket.display()));
+        command
+            .arg(self.target())
+            .arg("--")
+            .arg(shell_join(&self.ssf_remote(args)));
+        Ok(command)
     }
 
     /// Run one daemon pass inside the guest.
@@ -3241,6 +3270,27 @@ pub fn shell_join(args: &[String]) -> String {
         .join(" ")
 }
 
+/// A predictable parent permits short-lived `ssf-server` status processes to
+/// share the same master. Never follow or repair a directory another user made.
+fn status_control_directory(root: &Path) -> Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let uid = unsafe { libc::geteuid() };
+    let directory = root.join(format!("ssf-status-{uid}"));
+    match std::fs::DirBuilder::new().mode(0o700).create(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error).context("creating private VM status SSH directory"),
+    }
+    let metadata = std::fs::symlink_metadata(&directory)?;
+    if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o777 != 0o700 {
+        bail!(
+            "unsafe VM status SSH directory: {} (expected owned directory with mode 0700)",
+            directory.display()
+        );
+    }
+    Ok(directory)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3967,6 +4017,55 @@ mod tests {
         let (src, dest) = parse_file_spec("~/.codex/auth.json", home);
         assert!(!src.starts_with("~"));
         assert!(dest.ends_with(".codex/auth.json"));
+    }
+
+    #[test]
+    fn captured_status_reuses_only_its_factory_connection() {
+        let sandbox = crate::config::test_support::sandbox();
+        let mut vm = vm();
+        let args = vec!["status".into(), "--json".into()];
+        let command_args = |vm: &Vm| {
+            vm.capture_ssf_command(&args, sandbox.root())
+                .unwrap()
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let first = command_args(&vm);
+        assert_eq!(first, command_args(&vm));
+        assert!(first.contains(&"ControlMaster=auto".to_owned()));
+        assert!(first.contains(&"ControlPersist=60".to_owned()));
+        assert!(first.contains(&"ssf@127.0.0.1".to_owned()));
+        assert_eq!(first.last().unwrap(), "SSF_VM_GUEST=1 ssf status --json");
+        let path = |args: Vec<String>| {
+            args.into_iter()
+                .find(|arg| arg.starts_with("ControlPath="))
+                .unwrap()
+        };
+        let original = path(first);
+        vm.cfg.ssh_port += 1;
+        assert_ne!(original, path(command_args(&vm)));
+        vm.cfg.ssh_port -= 1;
+        vm.dir = PathBuf::from("/v/two");
+        assert_ne!(original, path(command_args(&vm)));
+        assert!(!vm.ssh_args(true).iter().any(|arg| arg.contains("Control")));
+    }
+
+    #[test]
+    fn status_control_directory_rejects_shared_and_symlink_paths() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+        let sandbox = crate::config::test_support::sandbox();
+        let directory = status_control_directory(sandbox.root()).unwrap();
+        assert_eq!(std::fs::metadata(&directory).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(status_control_directory(sandbox.root()).unwrap(), directory);
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(status_control_directory(sandbox.root()).is_err());
+        std::fs::remove_dir(&directory).unwrap();
+        symlink(sandbox.root(), &directory).unwrap();
+        assert!(status_control_directory(sandbox.root()).is_err());
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::write(&directory, "occupied").unwrap();
+        assert!(status_control_directory(sandbox.root()).is_err());
     }
 
     #[test]
