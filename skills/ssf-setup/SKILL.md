@@ -103,8 +103,13 @@ document links to.
    guest, require the matching package and guest scripts, then run
    `ssf vm build --force`, `ssf vm reset`, and `ssf vm start`; reset alone
    reuses the unsafe old image. Legacy Lima roots require reset and start. Both
-   preserve the data disk; never
-   patch a legacy seed script in place to bypass the startup check.
+   preserve the data disk; never patch a legacy seed script in place to bypass
+   the startup check. Tailscale is optional and absent from the base image.
+   When asked to enrol the guest, start it and run `ssf vm tailscale`; relay
+   its browser URL. It requests `ssf-vm`, with collision suffixes assigned by
+   Tailscale. A root reset discards the enrolment, so rerun the command
+   afterwards. Do not enable Tailscale SSH, routes, an exit node or key-expiry
+   changes unless asked.
    Stop on conflicts, preserve both versions, and have the person choose
    precedence; never guess or discard state.
 8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,

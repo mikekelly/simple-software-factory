@@ -369,6 +369,10 @@ enum VmCommand {
         /// `grok` or `crush`.
         harness: Option<String>,
     },
+    /// Install Tailscale inside the guest on demand and enrol it in this
+    /// terminal. The requested hostname is `ssf-vm`; Tailscale adds a numeric
+    /// suffix when that name is already present in the tailnet.
+    Tailscale,
     /// Attach to herdr's session in the guest, in this terminal.
     Attach,
     /// A shell in the guest, or run a command there.
@@ -2531,6 +2535,7 @@ async fn vm_cmd(command: VmCommand) -> Result<()> {
                 )
             }
         }
+        VmCommand::Tailscale => exit_with(vm.tailscale()?),
         VmCommand::Attach => exit_with(vm.attach()?),
         VmCommand::Ssh { command } => exit_with(vm.shell(&command)?),
         VmCommand::Run { args } => exit_with(vm.exec_ssf(&args)?),

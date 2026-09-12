@@ -342,6 +342,10 @@ logged in to the harness's provider as yourself):
 ssf vm login claude          # or codex, gemini, ...; without a harness it lists those installed in the guest and asks
 ```
 
+Optionally, `ssf vm tailscale` installs Tailscale only inside the running guest
+and starts its browser enrolment flow. See [Optional Tailscale
+enrolment](vm.md#optional-tailscale-enrolment).
+
 It runs the harness's own browser-less login inside the guest, in your
 terminal: a page to open here and a code to paste back (Claude Code,
 Gemini, OpenCode, Pi, Oh My Pi) or a device code (Codex, Copilot, Grok,

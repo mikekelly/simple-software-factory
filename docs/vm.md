@@ -27,6 +27,7 @@ ssf config set vm.enabled true
 systemctl --user restart ssf.service   # macOS: brew services start ssf; or, by hand: ssf vm start
 ssf vm status             # whether the VM runs and its daemon answers, and which harnesses are logged in there
 ssf vm login              # sign a harness in inside the guest (see below)
+ssf vm tailscale          # optional: enrol the guest in your Tailscale network
 ssf status                # runs inside the guest from now on
 ssf vm attach             # herdr in the guest, in this terminal
 ```
@@ -506,6 +507,22 @@ before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 the guest in your terminal; `ssf vm ssh-config` prints an `~/.ssh/config`
 entry so `herdr --remote ssf-default` (herdr's thin client) and plain `ssh
 ssf-default` work too.
+
+### Optional Tailscale enrolment
+
+`ssf vm tailscale` installs Tailscale inside the running guest, starts its
+daemon and prints the browser login URL that enrols the VM in your tailnet.
+Nothing related to Tailscale is installed in the base image or on the host.
+The command requests the machine name `ssf-vm`. Tailscale keeps machine names
+unique, so an existing name becomes `ssf-vm-1`, then `ssf-vm-2`, and the
+command prints the name and address actually assigned after login.
+
+The Tailscale package, node key and preferences live on the disposable root
+disk and survive ordinary VM restarts. A root reset removes them, so run the
+enrolment command again after resetting. The persistent factory data disk is
+not involved. The command does not enable Tailscale SSH or advertise routes;
+those remain explicit tailnet and security decisions you can make from a shell
+inside the guest.
 
 `ssf run --once` is a guest command too. While the guest's `ssf.service`
 owns its state it refuses; let its next poll do the work. The host adds the

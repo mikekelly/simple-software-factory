@@ -34,6 +34,7 @@ mod lima;
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -2102,6 +2103,30 @@ impl Vm {
         Ok(cmd.status()?)
     }
 
+    /// Install Tailscale on demand and enrol the guest. The script is sent
+    /// over ssh rather than baked into the image, so Tailscale remains absent
+    /// until this explicit command and the flow also works after an upgrade.
+    pub fn tailscale(&self) -> Result<ExitStatus> {
+        let remote = vec![
+            "bash".to_string(),
+            "-s".to_string(),
+            "--".to_string(),
+            "ssf-vm".to_string(),
+        ];
+        let mut child = self
+            .ssh(&remote, false)
+            .stdin(Stdio::piped())
+            .spawn()
+            .context("running ssh (is the VM up? `ssf vm status`)")?;
+        child
+            .stdin
+            .take()
+            .context("opening ssh input")?
+            .write_all(include_bytes!("../vm/guest/tailscale.sh"))
+            .context("sending the Tailscale enrolment script to the guest")?;
+        child.wait().context("waiting for Tailscale enrolment")
+    }
+
     /// Attach to herdr's persistent session in the guest, in this terminal.
     pub fn attach(&self) -> Result<ExitStatus> {
         self.ssh(&["herdr".to_string()], true)
@@ -3152,6 +3177,17 @@ mod tests {
         cfg.vm.mem_mib = Some(4096);
         cfg.vm.data_gib = Some(20);
         Vm::new(&cfg)
+    }
+
+    #[test]
+    fn tailscale_is_an_explicit_guest_action_with_a_stable_requested_name() {
+        let provision = include_str!("../vm/guest/provision.sh");
+        let enrol = include_str!("../vm/guest/tailscale.sh");
+        assert!(!provision.contains("tailscale"));
+        assert!(enrol.contains("hostname=${1:-ssf-vm}"));
+        assert!(enrol.contains("tailscale up --hostname=\"$hostname\""));
+        assert!(!enrol.contains("--ssh"));
+        assert!(!enrol.contains("--advertise-routes"));
     }
 
     #[test]
