@@ -1,0 +1,11 @@
+id = "ssf.dashboard"
+name = "SSF dashboard"
+version = "0.1.0"
+min_herdr_version = "0.8.2"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open-dashboard"
+title = "Open SSF agent dashboard"
+contexts = ["global"]
+command = ["python3", "dashboard.py"]

@@ -72,6 +72,17 @@ binding wins):
 and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
 and "handed off by ...".
 
+The [herdr dashboard](../herdr-plugin/README.md) groups these items into one
+card per owning session, including a retired origin that still owns active
+items. Subscriber-only items do not create cards. With herdr, the latest
+summary is the terminal's status title. For a live Claude Code or Codex session
+that herdr identifies, `last_activity_at` is the most recent write to its
+local transcript (including prompts and tool activity). SSF reads file metadata,
+not transcript contents. It uses `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set,
+otherwise the usual home directories. Other harnesses, missing transcripts,
+and unidentified conversations have no reported time; the dashboard shows
+“Unknown”. Orca continues to supply its own activity timestamps.
+
 ## Second opinions: the gauntlet
 
 ssf runs one session per item and starts no second session on a pull

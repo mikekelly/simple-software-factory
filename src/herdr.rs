@@ -56,6 +56,7 @@ pub struct Agent {
     pub status: String,
     pub cwd: Option<String>,
     pub title: Option<String>,
+    pub session_id: Option<String>,
 }
 
 /// One row of `herdr pane list`.
@@ -104,6 +105,13 @@ pub fn parse_agents(v: &Value) -> Vec<Agent> {
                 status: s(a, "agent_status").unwrap_or_else(|| "unknown".into()),
                 cwd: s(a, "cwd"),
                 title: s(a, "terminal_title_stripped").or_else(|| s(a, "terminal_title")),
+                session_id: a
+                    .get("agent_session")
+                    .filter(|session| {
+                        session.get("kind").and_then(Value::as_str) == Some("id")
+                            && session.get("agent") == a.get("agent")
+                    })
+                    .and_then(|session| s(session, "value")),
             })
         })
         .collect()
@@ -599,7 +607,24 @@ impl Herdr {
         let workspaces = self.run(&["workspace", "list"]).await?;
         let agents = self.agents().await?;
         let panes = parse_panes(&self.run(&["pane", "list"]).await?);
-        Ok(join_ps(&workspaces, &panes, &agents))
+        let mut rows = join_ps(&workspaces, &panes, &agents);
+        // Transcript metadata is local to the machine running this driver.
+        // In VM mode `ssf status` runs in the guest, alongside its agents.
+        tokio::task::spawn_blocking(move || {
+            for row in &mut rows {
+                let (workspace, _) = split_id(&row.worktree_id);
+                row.last_activity_at = agents
+                    .iter()
+                    .filter(|a| a.workspace_id == workspace)
+                    .filter_map(|a| {
+                        crate::sessions::last_activity(&a.kind, &row.path, a.session_id.as_deref()?)
+                    })
+                    .max();
+            }
+            rows
+        })
+        .await
+        .context("reading agent activity")
     }
 
     pub async fn has_live_agent(&self, id: &str) -> Result<bool> {
@@ -1462,6 +1487,21 @@ start working within 5000ms"
     }
 
     #[test]
+    fn activity_session_reference_must_match_the_live_harness() {
+        let rows = parse_agents(&json!({"agents": [
+            {"pane_id": "w1:p1", "agent": "codex", "agent_session":
+                {"agent": "codex", "kind": "id", "value": "session-1"}},
+            {"pane_id": "w2:p1", "agent": "claude", "agent_session":
+                {"agent": "codex", "kind": "id", "value": "old-session"}},
+            {"pane_id": "w3:p1", "agent": "codex", "agent_session":
+                {"agent": "codex", "kind": "path", "value": "/tmp/transcript"}}
+        ]}));
+        assert_eq!(rows[0].session_id.as_deref(), Some("session-1"));
+        assert_eq!(rows[1].session_id, None);
+        assert_eq!(rows[2].session_id, None);
+    }
+
+    #[test]
     fn worktree_list_binds_workspaces_to_checkouts() {
         // `herdr worktree list` on 0.8.2, trimmed.
         let v = json!({"source": {"repo_root": "/p/widgets", "source_workspace_id": "wW"},
@@ -1604,6 +1644,7 @@ start working within 5000ms"
             status: "working".into(),
             cwd: None,
             title: Some("cargo test".into()),
+            session_id: None,
         }];
         let rows = join_ps(&ws, &panes, &agents);
         assert_eq!(rows.len(), 4);

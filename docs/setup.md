@@ -102,6 +102,11 @@ omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --en
 
 The widget never installs, upgrades, starts, or removes the SSF package.
 
+For a browser grid of active agents, the optional
+[herdr dashboard plugin](../herdr-plugin/README.md) is installed separately.
+Herdr runs plugin actions on its server: with a headless VM, run the dashboard
+on the host using its `ssf` command, or use the documented SSH forwarding flow.
+
 Config and credentials live in `~/.config/ssf`, state in
 `~/.local/state/ssf`, and VM files in `~/.local/share/ssf/vm` (lima also
 uses `~/.lima`). These paths apply on both platforms. Package examples
