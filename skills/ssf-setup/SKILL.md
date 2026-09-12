@@ -28,6 +28,13 @@ document links to.
 
 ## Rules for an agent following it
 
+The optional herdr browser dashboard is separate from the Omarchy widget.
+See the checkout's `herdr-plugin/README.md` for installation and launch commands.
+Actions execute on the herdr server, so a headless guest cannot open the host's
+browser: use the host launcher with SSF's existing VM forwarding, or an SSH
+tunnel. Herdr's terminal title is a status summary; Claude Code/Codex activity
+times reflect transcript writes, and missing activity times remain unknown.
+
 1. **Stop where only the person can act.** The document marks them
    **you**: type a sudo password (`pacman`, `apt`, `dnf`), create a GitHub account,
    sign in in a browser, approve a token or scopes, sign a harness in.

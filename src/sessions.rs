@@ -13,6 +13,63 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
+/// Last write to the live conversation's transcript. Herdr exposes a session
+/// reference, but no wall-clock activity time. Missing or unsupported transcripts
+/// stay unknown; a prompt delivery time is not a substitute for agent activity.
+pub fn last_activity(harness: &str, cwd: &str, id: &str) -> Option<String> {
+    let root = match harness {
+        "claude" => std::env::var_os("CLAUDE_CONFIG_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".claude")),
+        "codex" => std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join(".codex")),
+        _ => return None,
+    };
+    transcript_modified(&root, harness, cwd, id).map(|time| {
+        chrono::DateTime::<chrono::Utc>::from(time)
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    })
+}
+
+fn transcript_modified(root: &Path, harness: &str, cwd: &str, id: &str) -> Option<SystemTime> {
+    // The reference comes from another process and must remain a file name.
+    if id.is_empty() || !id.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-') {
+        return None;
+    }
+    match harness {
+        "claude" => {
+            let encoded: String = cwd
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            std::fs::metadata(
+                root.join("projects")
+                    .join(encoded)
+                    .join(format!("{id}.jsonl")),
+            )
+            .ok()?
+            .modified()
+            .ok()
+        }
+        "codex" => {
+            let suffix = format!("-{id}.jsonl");
+            let mut latest = None;
+            walk(&root.join("sessions"), 0, &mut |path| {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.starts_with("rollout-")
+                    && name.ends_with(&suffix)
+                    && let Ok(time) = std::fs::metadata(path).and_then(|m| m.modified())
+                {
+                    latest = Some(latest.map_or(time, |old: SystemTime| old.max(time)));
+                }
+            });
+            latest
+        }
+        _ => None,
+    }
+}
+
 pub fn supports_resume(harness: &str) -> bool {
     matches!(harness, "claude" | "codex")
 }
@@ -168,6 +225,49 @@ fn walk(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path)) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activity_uses_only_the_named_transcript() {
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root();
+        let claude = root.join("projects/-work-tree/session-1.jsonl");
+        std::fs::create_dir_all(claude.parent().unwrap()).unwrap();
+        std::fs::write(&claude, "{}\n").unwrap();
+        let expected = std::fs::metadata(&claude).unwrap().modified().unwrap();
+        assert_eq!(
+            transcript_modified(root, "claude", "/work/tree", "session-1"),
+            Some(expected)
+        );
+        assert_eq!(
+            transcript_modified(root, "claude", "/other", "session-1"),
+            None
+        );
+        assert_eq!(
+            transcript_modified(root, "claude", "/work/tree", "missing"),
+            None
+        );
+        assert_eq!(
+            transcript_modified(root, "claude", "/work/tree", "../session-1"),
+            None
+        );
+
+        let codex = root.join("sessions/2026/09/12/rollout-2026-09-12T15-00-00-session-2.jsonl");
+        std::fs::create_dir_all(codex.parent().unwrap()).unwrap();
+        std::fs::write(&codex, "{}\n").unwrap();
+        let expected = std::fs::metadata(&codex).unwrap().modified().unwrap();
+        assert_eq!(
+            transcript_modified(root, "codex", "/work/tree", "session-2"),
+            Some(expected)
+        );
+        assert_eq!(
+            transcript_modified(root, "codex", "/work/tree", "session-1"),
+            None
+        );
+        assert_eq!(
+            transcript_modified(root, "pi", "/work/tree", "session-2"),
+            None
+        );
+    }
 
     #[test]
     fn claude_dir_encoding_matches_observed_layout() {
