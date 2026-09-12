@@ -130,6 +130,10 @@ def dashboard_cards(payload: Any) -> list[dict[str, Any]]:
 
 def driver_warning(payload: dict[str, Any]) -> str | None:
     """Return SSF's driver error when its otherwise valid snapshot is partial."""
+    if payload.get("factory_reachable") is False:
+        vm = payload.get("host_vm")
+        state = _text(vm.get("state")) if isinstance(vm, dict) else ""
+        return "SSF could not reach the guest factory" + (f" (VM {state})" if state else "")
     status = payload.get("orca")
     if not isinstance(status, dict) or status.get("available") is not False:
         return None
@@ -327,7 +331,11 @@ def _factory_key() -> str:
     identity = [str(Path(__file__).resolve()), shutil.which("ssf") or "ssf"]
     identity.extend(
         os.environ.get(name, "")
-        for name in ("HOME", "SSF_CONFIG_DIR", "SSF_STATE_DIR", "SSF_VM_GUEST", "SSF_VM_NAME")
+        for name in (
+            "HOME", "SSF_CONFIG_DIR", "SSF_STATE_DIR", "SSF_VM_GUEST", "SSF_VM_NAME",
+            "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_COMMAND", "ORCA_CLI_COMMAND",
+            "HERDR_SOCKET_PATH", "HERDR_CONFIG_PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+        )
     )
     return hashlib.sha256("\0".join(identity).encode("utf-8")).hexdigest()[:16]
 

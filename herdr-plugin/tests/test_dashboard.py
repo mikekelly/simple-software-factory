@@ -74,6 +74,16 @@ class GroupingTests(unittest.TestCase):
         )
         self.assertEqual(warning, "herdr: connection refused")
 
+    def test_unreachable_vm_is_not_reported_as_an_empty_factory(self):
+        payload = {
+            "factory_location": "guest", "factory_reachable": False,
+            "host_vm": {"state": "stopped"}, "sessions": [],
+        }
+        snapshot = dashboard.StatusSource(lambda: payload).snapshot()
+        self.assertEqual(snapshot["cards"], [])
+        self.assertIn("could not reach the guest factory", snapshot["warning"])
+        self.assertIn("VM stopped", snapshot["warning"])
+
 
 class SubprocessTests(unittest.TestCase):
     def fixture(self, source):
@@ -102,6 +112,19 @@ class SubprocessTests(unittest.TestCase):
 
 
 class RuntimeSecurityTests(unittest.TestCase):
+    def test_separates_factories_with_different_directories_or_drivers(self):
+        for name in (
+            "SSF_CONFIG_DIR", "SSF_STATE_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME",
+            "HERDR_COMMAND", "ORCA_CLI_COMMAND",
+            "HERDR_SOCKET_PATH", "HERDR_CONFIG_PATH", "CODEX_HOME", "CLAUDE_CONFIG_DIR",
+        ):
+            with self.subTest(name=name):
+                with unittest.mock.patch.dict(os.environ, {name: "/tmp/factory-a"}):
+                    first = dashboard._factory_key()
+                with unittest.mock.patch.dict(os.environ, {name: "/tmp/factory-b"}):
+                    second = dashboard._factory_key()
+                self.assertNotEqual(first, second)
+
     def test_rejects_a_state_url_that_is_not_exact_loopback_capability(self):
         token = "x" * 32
         self.assertIsNone(
@@ -121,7 +144,9 @@ class RuntimeSecurityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             (base / f"ssf-herdr-dashboard-{os.getuid()}").symlink_to(base)
-            with unittest.mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(base)}, clear=False):
+            with unittest.mock.patch.dict(
+                os.environ, {"XDG_RUNTIME_DIR": str(base), "HERDR_PLUGIN_STATE_DIR": ""}, clear=False
+            ):
                 with self.assertRaisesRegex(RuntimeError, "not a directory"):
                     dashboard._runtime_dir()
 
