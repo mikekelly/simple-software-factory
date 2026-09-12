@@ -27,6 +27,7 @@ ssf config set vm.enabled true
 systemctl --user restart ssf.service   # macOS: brew services start ssf; or, by hand: ssf vm start
 ssf vm status             # whether the VM runs and its daemon answers, and which harnesses are logged in there
 ssf vm login              # sign a harness in inside the guest (see below)
+ssf vm tailscale          # optional: enrol the guest in your Tailscale network
 ssf status                # runs inside the guest from now on
 ssf vm attach             # herdr in the guest, in this terminal
 ```
@@ -81,11 +82,12 @@ per `name` under it.
 
 ### Firecracker (Linux)
 
-The guest is a [Firecracker](https://firecracker-microvm.github.io/)
-microVM: Firecracker runs as you given `/dev/kvm` (world-writable on
-Omarchy, Arch and Fedora; on Debian and Ubuntu a user logged in at the
-machine's seat gets access through udev, and a user who only comes in
-over ssh needs the `kvm` group: `sudo usermod -aG kvm $USER` and a new
+The guest is Ubuntu 24.04 LTS in a
+[Firecracker](https://firecracker-microvm.github.io/) microVM, whatever Linux
+distribution the host runs. Firecracker runs as your user, given access to
+`/dev/kvm` (world-writable on Omarchy, Arch and Fedora; on Debian and Ubuntu a
+user logged in at the machine's seat gets access through udev, and a user who
+only comes in over ssh needs the `kvm` group: `sudo usermod -aG kvm $USER` and a new
 login), the guest's network is
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) (a
 user-mode TCP/IP stack on the host end of a vsock, so no tap, bridge or
@@ -102,9 +104,11 @@ fakeroot libarchive e2fsprogs curl openssh`, `sudo apt install fakeroot
 libarchive-tools e2fsprogs curl openssh-client` or `sudo dnf install
 fakeroot bsdtar e2fsprogs curl openssh-clients` (the .deb and .rpm
 recommend them, so apt and dnf bring them with the package).
-`ssf vm build` downloads Firecracker, gvproxy and a guest kernel into
-`vm.dir` and makes the root image there; each VM's disks are files under
-`<vm.dir>/<name>/`.
+`ssf vm build` downloads Firecracker, gvproxy, a guest kernel and a pinned
+official Ubuntu minimal-cloud root tarball into `vm.dir`, verifies its SHA-256,
+then makes the root image there. The tarball is cached in `vm.dir/dl`; a forced
+build reuses it.
+Each VM's disks are files under `<vm.dir>/<name>/`.
 
 ### lima (macOS, and Linux with qemu)
 
@@ -359,10 +363,12 @@ the guest does not know the host's OS).
 
 ## The image
 
-Under Firecracker, `ssf vm build` unpacks the Arch bootstrap tarball,
-adds the guest scripts and units, turns the tree into an ext4 image and
-boots it once with a provisioning init. Under lima there is no image
-step: the instance boots a stock cloud image, and lima runs
+Under Firecracker, `ssf vm build` unpacks a pinned Ubuntu 24.04 LTS
+[minimal-cloud root](https://cloud-images.ubuntu.com/minimal/releases/noble/),
+adds the guest scripts and units, turns the tree into an ext4 image and boots
+it once with a provisioning init. The host may itself be Omarchy, Arch, Ubuntu
+or Fedora; its distribution does not determine the guest. Under lima there is
+no image step: the instance boots a stock cloud image, and lima runs
 `/mnt/ssf/guest/lima-boot.sh` as root at every boot, which on the first
 boot (no `/etc/ssf-image-built` yet) runs the same provisioning script
 with `SSF_VM_BACKEND=lima`, logs it to `/var/log/ssf-provision.log`, and
@@ -371,16 +377,18 @@ should provisioning fail, prints the end of that log (`limactl shell
 ssf-default sudo tail /var/log/ssf-provision.log` shows the rest). Later
 boots find the marker and do nothing.
 
-Either way the provisioning script installs `base` (Arch), `openssh`,
-`sudo`, `git`, `github-cli`, `nodejs`, `npm`, `tmux`, the harness CLIs
+Either way the provisioning script upgrades the base and installs `openssh`,
+`sudo`, `git`, `github-cli`, a pinned upstream Node.js LTS with npm, `tmux`,
+the harness CLIs
 from `ssf agents` that npm or a release tarball provide (Claude Code,
 Codex, Gemini, Copilot, OpenCode, Pi, Grok, Crush; each is best effort
 and listed at the end of the build), an `ssf` user that is root through
 `sudo` (Claude Code refuses its permission-free mode as root, so nothing
 runs as root itself), herdr (the host's own binary, or the one described
 under [Backends](#backends)) and herdr's agent integrations (its
-state-reporting hooks) for the agents present. On the Ubuntu guest the
-same list comes through `apt-get`. The list lives in
+state-reporting hooks) for the agents present. Firecracker installs the list
+through `apt-get`; a lima guest uses `apt-get` or `pacman` according to its
+image. The list lives in
 `vm/guest/provision.sh` (`/usr/share/ssf/vm/` when installed on Linux,
 `$(brew --prefix)/share/ssf/vm/` on macOS). To change it, copy that
 directory somewhere of your own, edit the copy, and run `SSF_VM_DIR=<copy>
@@ -469,9 +477,9 @@ table.
 ## What the agent can do there
 
 The `ssf` user has passwordless `sudo` for everything
-(`vm/guest/sudoers`), so an agent in the guest installs packages with
-the guest's package manager (`pacman` on the Arch guest, `apt` on the
-Ubuntu one), adds tools, edits the units, restarts services and reboots
+(`vm/guest/sudoers`), so an agent in the Firecracker guest installs packages
+with `apt` (a custom lima image may instead use `pacman`), adds tools, edits the
+units, restarts services and reboots
 as it sees fit; the first prompt and `ssf guide` say so with one line
 inside the VM (`SSF_VM_GUEST=1` in the guest's environment is how ssf
 knows) and say nothing on bare metal, where the agent has whatever the
@@ -499,6 +507,22 @@ before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 the guest in your terminal; `ssf vm ssh-config` prints an `~/.ssh/config`
 entry so `herdr --remote ssf-default` (herdr's thin client) and plain `ssh
 ssf-default` work too.
+
+### Optional Tailscale enrolment
+
+`ssf vm tailscale` installs Tailscale inside the running guest, starts its
+daemon and prints the browser login URL that enrols the VM in your tailnet.
+Nothing related to Tailscale is installed in the base image or on the host.
+The command requests the machine name `ssf-vm`. Tailscale keeps machine names
+unique, so an existing name becomes `ssf-vm-1`, then `ssf-vm-2`, and the
+command prints the name and address actually assigned after login.
+
+The Tailscale package, node key and preferences live on the disposable root
+disk and survive ordinary VM restarts. A root reset removes them, so run the
+enrolment command again after resetting. The persistent factory data disk is
+not involved. The command does not enable Tailscale SSH or advertise routes;
+those remain explicit tailnet and security decisions you can make from a shell
+inside the guest.
 
 `ssf run --once` is a guest command too. While the guest's `ssf.service`
 owns its state it refuses; let its next poll do the work. The host adds the
@@ -589,19 +613,21 @@ Do not manually create or delete ownership markers.
 Legacy roots contain a seed script that can overwrite persistent guest
 configuration. Both backends refuse to boot an incompatible root. For
 Firecracker, start first runs `e2fsck` on the stopped disposable root to
-replay its filesystem journal, then uses `debugfs` read-only to verify
-that the installed seed script matches this binary. An incompatible
-script stops startup before the data disk is attached; startup never
-patches that script in place.
+replay its filesystem journal, then uses `debugfs` read-only to verify that
+the installed seed script matches this binary and the root is Ubuntu 24.04
+LTS. An old Arch root or incompatible script stops startup before the data
+disk is attached; startup never patches that root in place.
 
-For Firecracker recovery, install the matching ssf package (including its
-guest scripts), then run `ssf vm build --force`, `ssf vm reset`, and
-`ssf vm start`. Reset alone would reuse the old root image and is not
-sufficient. If `vm.rootfs` selects a custom image, replace it with an
-image built with the matching guest scripts before resetting. For Lima,
-run `ssf vm reset`, then `ssf vm start`; the new root provisions the
-current scripts. Both workflows replace only the disposable root and
-preserve the data disk. The next start performs the migration above;
+For Firecracker recovery, including migration from the former Arch guest,
+install the matching ssf package (including its guest scripts), then run
+`ssf vm build --force`, `ssf vm reset`, and `ssf vm start`. Reset alone would
+reuse the old root image and is not sufficient. These steps replace only the
+disposable root; the independent data disk containing factory configuration,
+credentials, repositories and worktrees is retained. If `vm.rootfs` selects a
+custom image, replace it with an Ubuntu 24.04 image built with the matching
+guest scripts before resetting. For Lima, run `ssf vm reset`, then `ssf vm
+start`; the new root provisions the current scripts and preserves the data
+disk. The next start performs the migration above;
 enable VM mode first when importing legacy host settings.
 
 After successful adoption, `ssf vm reset` and `ssf vm build --force`

@@ -43,7 +43,7 @@ Firecracker or Lima could theoretically do. Sources:
 | Replace OS/reset | Replace root, retain data | Recreate instance, retain data disk | No equivalent proven; `sbx reset` destroys global state |
 | Credentials | Guest-owned bot/harness secrets, signing key | Same | Host proxy possible; SSF token resolution and probes need adaptation |
 | Harness choice | Nine harnesses, herdr integration | Same | Built-in agent kit is one runtime; custom SSF kit or explicit shell bootstrap needed |
-| Template distribution | SSF-built Arch image | Provisioned cloud image | OCI template + Dockerfile extension; architecture/build pipeline untested |
+| Template distribution | SSF-built Ubuntu 24.04 LTS image | Provisioned cloud image | OCI template + Dockerfile extension; architecture/build pipeline untested |
 | Operational dependency | Open-source VM/network binaries | limactl + host hypervisor | Docker account, proprietary runtime, evolving Early Access surface |
 
 Docker sources for platform, isolation, and operation:

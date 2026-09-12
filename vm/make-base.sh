@@ -1,9 +1,9 @@
 #!/bin/bash
-# Turn the Arch bootstrap tarball into an ext4 root image that `ssf vm build`
+# Turn the Ubuntu 24.04 LTS root tarball into an ext4 image that `ssf vm build`
 # boots once to provision. Needs no root: fakeroot keeps the tarball's
 # ownership and mkfs.ext4 -d populates the image from the tree.
 #
-#   make-base.sh <bootstrap.tar.zst> <out.ext4> <size-gib> <guest-dir> [herdr] [gvforwarder]
+#   make-base.sh <ubuntu-root.tar.xz> <out.ext4> <size-gib> <guest-dir> [herdr] [gvforwarder]
 #
 # <guest-dir> is this directory's guest/ (units and scripts copied into the
 # image), <herdr> the herdr binary to ship (the host's /usr/bin/herdr) and
@@ -15,7 +15,7 @@ trap 'rm -rf "$work"' EXIT
 export work tarball out size guest herdr gvforwarder
 fakeroot -- bash -euo pipefail <<'INNER'
 mkdir -p "$work/root"
-bsdtar -xf "$tarball" -C "$work/root" --strip-components=1
+bsdtar -xf "$tarball" -C "$work/root"
 root=$work/root
 install -Dm755 "$guest/provision-init.sh" "$root/usr/local/lib/ssf/provision-init.sh"
 install -Dm755 "$guest/provision.sh" "$root/usr/local/lib/ssf/provision.sh"

@@ -79,6 +79,8 @@ cannot provide:
   `sudo pacman -S --needed fakeroot libarchive e2fsprogs curl`,
   `sudo apt install fakeroot libarchive-tools e2fsprogs curl`, or
   `sudo dnf install fakeroot bsdtar e2fsprogs curl`.
+  The Firecracker guest is Ubuntu 24.04 LTS on every supported Linux host;
+  the host does not need to run Ubuntu.
 
 Homebrew supplies `gh` and `lima`. Host herdr on macOS is optional
 (`brew install herdr`); the VM supplies its own. Orca is installed
@@ -339,6 +341,10 @@ logged in to the harness's provider as yourself):
 ```sh
 ssf vm login claude          # or codex, gemini, ...; without a harness it lists those installed in the guest and asks
 ```
+
+Optionally, `ssf vm tailscale` installs Tailscale only inside the running guest
+and starts its browser enrolment flow. See [Optional Tailscale
+enrolment](vm.md#optional-tailscale-enrolment).
 
 It runs the harness's own browser-less login inside the guest, in your
 terminal: a page to open here and a code to paste back (Claude Code,

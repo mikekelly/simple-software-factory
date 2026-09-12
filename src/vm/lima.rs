@@ -192,9 +192,9 @@ pub fn lima_arch(arch: &str) -> Result<&'static str> {
 }
 
 /// The image lima boots for an architecture when `[vm] image` is unset:
-/// Arch's cloud image for x86_64 (what the Firecracker image is), Ubuntu
-/// LTS for aarch64 (Arch has no official aarch64 cloud image). lima keeps
-/// the URL and digest.
+/// Arch's cloud image for x86_64, Ubuntu LTS for aarch64 (Arch has no
+/// official aarch64 cloud image). Firecracker's fixed Ubuntu guest is
+/// independent of this lima default. lima keeps the URL and digest.
 pub fn base_template(arch: &str) -> &'static str {
     match arch {
         "x86_64" => "template:_images/archlinux",
