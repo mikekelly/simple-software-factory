@@ -87,6 +87,132 @@ fn catalog_commands_are_client_wide_and_sorted() {
 }
 
 #[test]
+fn catalog_adds_isolated_targets_and_remove_only_forgets_them() {
+    let root = Temp::new("catalog-mutations");
+    script(&root.0.join("systemctl"), "exit 1");
+
+    let output = root
+        .client()
+        .args([
+            "server",
+            "add",
+            "local",
+            "--local",
+            "--config-dir",
+            root.0.join("local-config").to_str().unwrap(),
+            "--state-dir",
+            root.0.join("local-state").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let shown = root
+        .client()
+        .args(["server", "show", "local", "--json"])
+        .output()
+        .unwrap();
+    let shown: serde_json::Value = serde_json::from_slice(&shown.stdout).unwrap();
+    assert_eq!(shown["transport"], "local");
+    assert_eq!(shown["implicit"], true);
+    assert_eq!(
+        shown["config_dir"],
+        root.0.join("local-config").to_str().unwrap()
+    );
+
+    let vm_dir = root.0.join("vms/crucible");
+    let output = root
+        .client()
+        .args([
+            "server",
+            "add",
+            "crucible",
+            "--vm",
+            "--runtime-name",
+            "crucib",
+            "--vm-dir",
+            vm_dir.to_str().unwrap(),
+            "--ssh-port",
+            "42322",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("require `--server NAME`"));
+
+    let output = root.client().arg("status").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("multiple SSF servers"));
+
+    let output = root
+        .client()
+        .args(["server", "remove", "crucible"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("was not deleted"), "{text}");
+    assert!(text.contains(vm_dir.to_str().unwrap()), "{text}");
+    assert!(
+        !vm_dir.exists(),
+        "catalog mutation must not create or delete VM data"
+    );
+
+    let list = root
+        .client()
+        .args(["server", "list", "--json"])
+        .output()
+        .unwrap();
+    let list: serde_json::Value = serde_json::from_slice(&list.stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["name"], "local");
+    assert_eq!(list[0]["implicit"], true);
+}
+
+#[test]
+fn catalog_remove_refuses_a_live_target_service() {
+    let root = Temp::new("catalog-remove-live");
+    root.catalog("[servers.local]\ntransport = \"local\"\n");
+    script(
+        &root.0.join("systemctl"),
+        "case \"$*\" in *is-active*) exit 0;; *) exit 1;; esac",
+    );
+    let output = root
+        .client()
+        .args(["server", "remove", "local"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("ui service disable"));
+    assert!(root.0.join("config/servers.toml").exists());
+}
+
+#[test]
+fn catalog_remove_fails_closed_when_service_state_cannot_be_inspected() {
+    let root = Temp::new("catalog-remove-uninspectable");
+    root.catalog("[servers.local]\ntransport = \"local\"\n");
+    let output = root
+        .client()
+        .args(["server", "remove", "local"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("checking ssf@local.service"));
+    assert!(root.0.join("config/servers.toml").exists());
+}
+
+#[test]
 fn one_named_ssh_server_is_implicit_and_an_explicit_name_overrides_the_environment() {
     let root = Temp::new("ssh");
     root.catalog("[servers.cloud]\ntransport = \"ssh\"\ndestination = \"person@cloud.example\"\n");

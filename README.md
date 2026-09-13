@@ -191,8 +191,8 @@ sudo pacman -U ./ssf-<version>-1-x86_64.pkg.tar.zst
 ssf setup
 ```
 
-`ssf setup` is the explicit per-user step. It creates the initial configuration,
-enables and starts `ssf.service` for `default.target`, and asks visibly for
+`ssf setup` is the explicit per-user step. It creates the conventional managed
+VM server `ssf-server`, enables `ssf@ssf-server.service` for `default.target`, and asks visibly for
 authorization to enable systemd linger. Linger lets the user service start at
 boot and remain available after logout. It does not sign in a bot account;
 follow [Setup](docs/setup.md) for `ssf auth login --web` and repository setup.
@@ -226,7 +226,7 @@ macOS through Homebrew; every release carries the Linux packages.
   ./ssf-*.x86_64.rpm`; herdr by hand, as above.
 - **macOS**: `brew install mikekelly/tap/ssf`; the formula pulls in `gh`
   and `lima`. The factory runs inside a [lima](https://lima-vm.io) VM
-  (`ssf vm build`, then `brew services start ssf`); the formula installs
+  (`ssf setup`, then `ssf vm build`); the formula installs
   `ssf`, `ssf-server`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
   documentation under `$(brew --prefix)/share/doc/ssf`.
 
@@ -237,7 +237,8 @@ The Linux packages install the same paths on every distribution:
 | `/usr/bin/ssf` | management client; locally invokes `ssf-server`, or reaches one over SSH with `--server` |
 | `/usr/bin/ssf-server` | daemon and the server-side command endpoint |
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
-| `/usr/lib/systemd/user/ssf.service` | background user service, enabled for `default.target` by explicit `ssf setup` |
+| `/usr/lib/systemd/user/ssf.service` | legacy singleton service retained for unmigrated installations |
+| `/usr/lib/systemd/user/ssf@.service` | one target-qualified background service instance per named local or VM server |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's SSF-agent operating contract in `SSF.md` |
 | `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
 | `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
@@ -272,9 +273,8 @@ the short form after that explicit setup is:
    and a post by the bot *without* a byline reads as a person's), with
    Write access on each repository it works and to its project boards.
 2. **The VM** (the default; the agents never see your home
-   directory): `ssf vm build`, `ssf config set vm.enabled true`,
-   `systemctl --user restart ssf.service` (macOS: `brew services start
-   ssf`). Then `ssf auth login --web` runs GitHub's device flow inside
+   directory): `ssf setup` creates the sole `ssf-server` target, then
+   `ssf vm build` builds it. Then `ssf auth login --web` runs GitHub's device flow inside
    the guest: approve the printed code in a browser signed in as the bot.
    Its token and signing key stay on the guest data disk. Run
    `ssf vm login <harness>` to sign your coding agent in there too.
@@ -309,7 +309,7 @@ what is left, comments once more and gives its workspace back.
 The same commands, with their variants:
 
 ```sh
-ssf vm build && ssf config set vm.enabled true   # VM setup first (skip in host mode)
+ssf vm build                     # after conventional `ssf setup` (skip in host mode)
 ssf vm start                     # or start the host service to supervise it
 ssf auth login                    # guest device flow; in host mode, pick a gh account or sign in
 ssf auth login --web              # straight to the browser flow; prints the URL and code,
@@ -364,7 +364,7 @@ ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspace
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ssf uninstall [--yes] [--force] [--data]   # clean up the service/account safely; then remove its package
-journalctl --user -fu ssf.service   # macOS: tail -f $(brew --prefix)/var/log/ssf.log
+journalctl --user -fu ssf@ssf-server.service   # macOS: tail -f ~/Library/Logs/ssf/ssf-server.log
 ```
 
 Every command can target another machine that has SSF installed:
@@ -394,8 +394,22 @@ then be operated with `ssf --server NAME vm ...` when their runtime names,
 directories and ports are distinct. Background service controls are
 target-qualified too: `ssf --server NAME ui service enable` supervises only
 that local or VM target. Stop the legacy singleton before enabling the first
-target service. Setup and target-aware uninstall remain tracked in
+target service. Target-aware uninstall remains tracked in
 [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+
+Add advanced targets through the catalog CLI:
+
+```sh
+ssf server add local --local
+ssf server add crucible --vm
+ssf server add cloud --ssh ssf@factory.example.com
+ssf server list
+```
+
+The first remains implicit. Adding the second deliberately makes unqualified
+target commands refuse until `--server NAME` is supplied; there is no stored
+default. Disable a target's service before `ssf server remove NAME`; removal
+forgets only the route and retains local data and VM resources.
 
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the
@@ -432,8 +446,8 @@ Things to know when operating it:
 
 **Stopping it.** The toggle in the bar widget (Omarchy), or `ssf ui service
 disable`, stops the service and keeps it from starting at the next login
-(`enable` turns it back on); `systemctl --user stop ssf.service` (macOS:
-`brew services stop ssf`) stops it until the next login. Running agents
+(`enable` turns it back on). Add `--server NAME` when several targets exist.
+Running agents
 are left where they are: nothing reaches them while the daemon is down,
 and it delivers what they missed when it comes back. With the factory in
 a VM, stopping the service shuts the guest down cleanly.

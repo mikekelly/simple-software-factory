@@ -75,11 +75,7 @@ fn migrate_legacy_runtime() -> Result<bool> {
 #[cfg(target_os = "linux")]
 fn enable_service() -> Result<()> {
     checked("systemctl", &["--user", "daemon-reload"], false)?;
-    checked(
-        "systemctl",
-        &["--user", "enable", "--now", "ssf.service"],
-        false,
-    )
+    crate::ui::set_service_enabled_on_error(true, crate::ui::OnServiceError::Fail)
 }
 
 #[cfg(target_os = "linux")]
@@ -96,54 +92,55 @@ fn verify_binary() -> Result<()> {
     {
         bail!("the package-owned ssf.service does not launch `/usr/bin/ssf-server`");
     }
+    let template = std::fs::read_to_string("/usr/lib/systemd/user/ssf@.service")
+        .context("reading the package-owned /usr/lib/systemd/user/ssf@.service")?;
+    if !template
+        .lines()
+        .any(|line| line.trim() == "ExecStart=/usr/bin/ssf-server --target %i")
+    {
+        bail!("the package-owned ssf@.service does not launch one explicit target");
+    }
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
 fn verify_package() -> Result<()> {
     checked("systemctl", &["--user", "daemon-reload"], false)?;
+    let unit = crate::platform::service_unit();
+    let expected_fragment = if crate::platform::service_target().is_some() {
+        "/usr/lib/systemd/user/ssf@.service"
+    } else {
+        "/usr/lib/systemd/user/ssf.service"
+    };
     let output = Command::new("systemctl")
-        .args([
-            "--user",
-            "show",
-            "-p",
-            "FragmentPath",
-            "--value",
-            "ssf.service",
-        ])
+        .args(["--user", "show", "-p", "FragmentPath", "--value", &unit])
         .stdin(Stdio::null())
         .output()
         .context("finding ssf.service")?;
     if !output.status.success()
-        || String::from_utf8_lossy(&output.stdout).trim() != "/usr/lib/systemd/user/ssf.service"
+        || String::from_utf8_lossy(&output.stdout).trim() != expected_fragment
     {
-        bail!(
-            "ssf.service does not resolve to the package-owned /usr/lib/systemd/user/ssf.service"
-        );
+        bail!("{unit} does not resolve to the package-owned {expected_fragment}");
     }
     let exec = Command::new("systemctl")
-        .args([
-            "--user",
-            "show",
-            "-p",
-            "ExecStart",
-            "--value",
-            "ssf.service",
-        ])
+        .args(["--user", "show", "-p", "ExecStart", "--value", &unit])
         .stdin(Stdio::null())
         .output()
         .context("checking ssf.service ExecStart")?;
     let exec = String::from_utf8_lossy(&exec.stdout);
-    if !effective_exec_is_owned(&exec) {
-        bail!("ssf.service does not effectively launch the package-owned `/usr/bin/ssf-server`");
+    if !effective_exec_is_owned(&exec, crate::platform::service_target().as_deref()) {
+        bail!("{unit} does not effectively launch the selected package-owned server");
     }
     Ok(())
 }
 
-fn effective_exec_is_owned(exec: &str) -> bool {
+fn effective_exec_is_owned(exec: &str, target: Option<&str>) -> bool {
     exec.matches("path=").count() == 1
         && exec.contains("path=/usr/bin/ssf-server ;")
-        && exec.contains("argv[]=/usr/bin/ssf-server ;")
+        && exec.contains(&match target {
+            Some(target) => format!("argv[]=/usr/bin/ssf-server --target {target} ;"),
+            None => "argv[]=/usr/bin/ssf-server ;".into(),
+        })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -158,7 +155,7 @@ fn verify_package() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn enable_service() -> Result<()> {
-    checked("brew", &["services", "start", "ssf"], false)
+    crate::ui::set_service_enabled_on_error(true, crate::ui::OnServiceError::Fail)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -200,12 +197,80 @@ fn enable_linger() -> Result<()> {
 
 pub fn run() -> Result<()> {
     verify_existing_config()?;
-    run_verified_setup(
-        verify_binary,
-        migrate_legacy_runtime,
-        verify_package,
-        finish_setup,
-    )
+    verify_binary()?;
+    if migrate_legacy_runtime()? {
+        println!("migrated the legacy marketplace runtime");
+    }
+    let target = prepare_target()?;
+    if let Some(name) = &target {
+        crate::server_catalog::activate_service_target(name)?;
+    }
+    verify_package()?;
+    if target.is_some() {
+        stop_legacy_service()?;
+    }
+    finish_setup()
+}
+
+fn prepare_target() -> Result<Option<String>> {
+    if let Some(identity) = crate::server_catalog::selected_target_identity()? {
+        return Ok(Some(identity.name));
+    }
+    let catalog = crate::server_catalog::Catalog::load()?;
+    match catalog.len() {
+        1 => return Ok(catalog.list().next().map(|(name, _)| name.to_owned())),
+        count if count > 1 => {
+            bail!("multiple SSF servers are configured; select the one to set up with --server")
+        }
+        _ => {}
+    }
+    if crate::config::Config::legacy_vm_settings()?.is_some_and(|vm| vm.enabled) {
+        crate::server_catalog::Catalog::migrate_legacy_vm("ssf-server")?;
+        println!(
+            "Migrated the existing VM in place as server `ssf-server`; its runtime resources and guest data were not moved."
+        );
+        return Ok(Some("ssf-server".into()));
+    }
+    if crate::config::config_path().is_file() {
+        crate::server_catalog::Catalog::migrate_legacy_local()?;
+        println!(
+            "Registered the existing host factory as server `local`; its configuration and state were not moved."
+        );
+        return Ok(Some("local".into()));
+    }
+    crate::server_catalog::Catalog::add_conventional_vm()?;
+    println!("Created the conventional VM server `ssf-server`.");
+    println!("It is selected automatically while it is the only configured server.");
+    Ok(Some("ssf-server".into()))
+}
+
+#[cfg(target_os = "linux")]
+fn stop_legacy_service() -> Result<()> {
+    if crate::ui::legacy_service_enabled_or_active()? {
+        checked(
+            "systemctl",
+            &["--user", "disable", "--now", crate::platform::SERVICE],
+            false,
+        )?;
+        println!("stopped the legacy singleton service");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn stop_legacy_service() -> Result<()> {
+    let plist =
+        dirs::home_dir().map(|home| home.join("Library/LaunchAgents/homebrew.mxcl.ssf.plist"));
+    if crate::platform::legacy_service_active() || plist.is_some_and(|path| path.is_file()) {
+        checked("brew", &["services", "stop", "ssf"], false)?;
+        println!("stopped the legacy singleton service");
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn stop_legacy_service() -> Result<()> {
+    Ok(())
 }
 
 fn verify_existing_config() -> Result<()> {
@@ -216,41 +281,46 @@ fn verify_existing_config() -> Result<()> {
     Ok(())
 }
 
-fn run_verified_setup(
-    verify_files: impl FnOnce() -> Result<()>,
-    migrate: impl FnOnce() -> Result<bool>,
-    verify_effective_unit: impl FnOnce() -> Result<()>,
-    finish: impl FnOnce() -> Result<()>,
-) -> Result<()> {
-    verify_files()?;
-    if migrate()? {
-        println!("migrated the legacy marketplace runtime");
-    }
-    verify_effective_unit()?;
-    finish()
-}
-
 fn finish_setup() -> Result<()> {
     enable_linger()?;
     std::fs::create_dir_all(config::state_dir()).context("creating the SSF state directory")?;
-    if !config::config_path().exists() {
+    let vm_target = crate::server_catalog::selected_target_identity()?
+        .is_some_and(|identity| identity.transport == "vm");
+    if !vm_target && !config::config_path().exists() {
         Config::default().save()?;
     }
     Config::load().context("validating the existing SSF configuration (preserved unchanged)")?;
     enable_service()?;
-    crate::config::write_atomic(&completion_marker(), b"ssf-setup-v1\n", 0o600)?;
-    println!("ssf setup complete; service enabled and running");
-    println!("next: `ssf auth login --web`, then add a repository with `ssf repo add`");
+    let marker = completion_marker();
+    if let Some(parent) = marker.parent() {
+        std::fs::create_dir_all(parent).context("creating the setup marker directory")?;
+    }
+    crate::config::write_atomic(&marker, b"ssf-setup-v1\n", 0o600)?;
+    println!("ssf setup complete; selected service enabled");
+    if vm_target {
+        println!("next: `ssf vm build`, then `ssf auth login --web` in the guest");
+    } else {
+        println!("next: `ssf auth login --web`, then add a repository with `ssf repo add`");
+    }
     Ok(())
 }
 
 pub fn completion_marker() -> PathBuf {
-    config::state_dir().join("setup-complete")
+    match crate::server_catalog::selected_target_identity() {
+        Ok(Some(identity)) if identity.transport == "vm" => config::client_state_dir()
+            .join("setup")
+            .join(format!("{}-complete", identity.name)),
+        _ => config::state_dir().join("setup-complete"),
+    }
 }
 
 pub fn complete() -> bool {
+    let vm_target = crate::server_catalog::selected_target_identity()
+        .ok()
+        .flatten()
+        .is_some_and(|identity| identity.transport == "vm");
     Config::load().is_ok()
-        && config::config_path().is_file()
+        && (vm_target || config::config_path().is_file())
         && std::fs::read(completion_marker()).is_ok_and(|body| body == b"ssf-setup-v1\n")
 }
 
@@ -282,37 +352,65 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_shadow_is_migrated_before_effective_unit_verification() {
-        use std::cell::RefCell;
-        let calls = RefCell::new(Vec::new());
-        run_verified_setup(
-            || {
-                calls.borrow_mut().push("files");
-                Ok(())
-            },
-            || {
-                calls.borrow_mut().push("migrate-shadow");
-                Ok(true)
-            },
-            || {
-                calls.borrow_mut().push("effective-package-unit");
-                Ok(())
-            },
-            || {
-                calls.borrow_mut().push("finish");
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            *calls.borrow(),
-            [
-                "files",
-                "migrate-shadow",
-                "effective-package-unit",
-                "finish"
-            ]
-        );
+    fn fresh_setup_creates_the_conventional_vm_target() {
+        let _sandbox = crate::config::test_support::sandbox();
+        assert!(!config::config_path().exists());
+        assert_eq!(prepare_target().unwrap().as_deref(), Some("ssf-server"));
+        let catalog = crate::server_catalog::Catalog::load().unwrap();
+        let crate::server_catalog::Target::Vm {
+            runtime_name,
+            config: Some(vm),
+            ..
+        } = catalog.get("ssf-server").unwrap()
+        else {
+            panic!("conventional target is not an owned VM")
+        };
+        assert_eq!(runtime_name, "default");
+        assert!(vm.enabled);
+        assert!(vm.ssh_port >= 2222);
+    }
+
+    #[test]
+    fn setup_registers_an_established_host_factory_without_moving_it() {
+        let sandbox = crate::config::test_support::sandbox();
+        Config::default().save().unwrap();
+        let before = std::fs::read(config::config_path()).unwrap();
+        assert_eq!(prepare_target().unwrap().as_deref(), Some("local"));
+        let catalog = crate::server_catalog::Catalog::load().unwrap();
+        assert!(matches!(
+            catalog.get("local"),
+            Some(crate::server_catalog::Target::Local {
+                config_dir: None,
+                state_dir: None
+            })
+        ));
+        assert_eq!(std::fs::read(config::config_path()).unwrap(), before);
+        assert!(!sandbox.state_dir().join("setup-complete").exists());
+    }
+
+    #[test]
+    fn setup_adopts_an_established_vm_without_changing_its_resources() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let mut config = Config::default();
+        config.vm.enabled = true;
+        config.vm.name = "kept".into();
+        config.vm.dir = "/tmp/ssf-established-vm".into();
+        config.vm.ssh_port = 43222;
+        config.save().unwrap();
+        let expected = config.vm.clone();
+        assert_eq!(prepare_target().unwrap().as_deref(), Some("ssf-server"));
+        let catalog = crate::server_catalog::Catalog::load().unwrap();
+        let Some(crate::server_catalog::Target::Vm {
+            runtime_name,
+            config: Some(actual),
+            ..
+        }) = catalog.get("ssf-server")
+        else {
+            panic!("migrated target is not an owned VM")
+        };
+        assert_eq!(runtime_name, "kept");
+        assert_eq!(actual.as_ref(), &expected);
+        assert!(Config::legacy_vm_settings().unwrap().is_none());
     }
 
     #[test]
@@ -329,13 +427,20 @@ mod tests {
     #[test]
     fn effective_service_has_exactly_the_one_owned_command() {
         assert!(effective_exec_is_owned(
-            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; ignore_errors=no ; }"
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; ignore_errors=no ; }",
+            None,
         ));
         assert!(!effective_exec_is_owned(
-            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --other ; }"
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --other ; }",
+            None,
         ));
         assert!(!effective_exec_is_owned(
-            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; } ; { path=/usr/bin/other ; argv[]=/usr/bin/other ; }"
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server ; } ; { path=/usr/bin/other ; argv[]=/usr/bin/other ; }",
+            None,
+        ));
+        assert!(effective_exec_is_owned(
+            "{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --target ssf-server ; }",
+            Some("ssf-server"),
         ));
     }
 }

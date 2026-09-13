@@ -40,11 +40,13 @@ An optional client-owned `~/.config/ssf/servers.toml` gives local, existing VM
 and SSH factories stable names. With one catalog entry commands select it
 implicitly; with several, every factory command requires `--server NAME` or an
 explicit `SSF_SERVER=NAME`, and there is no persistent default. Inspect it with
-`ssf server list` / `ssf server show NAME`. The current catalog stage accepts
-namespaced local entries with distinct absolute `config_dir` and `state_dir`
-paths beside the existing factory and several catalog-owned managed VMs. VM
-targets need unique runtime names, absolute non-overlapping VM directories and
-distinct SSH ports; Firecracker also reserves the adjacent provisioning port.
+`ssf server list` / `ssf server show NAME`. A fresh `ssf setup` creates the
+recommended sole VM target `ssf-server`; it stays implicit while it is the only
+entry. Use `ssf server add local --local`, `ssf server add NAME --vm`, or
+`ssf server add cloud --ssh ssf@factory.example.com` for advanced layouts.
+Local defaults use isolated config/state trees. VM creation persists a
+Lima-safe runtime name, a non-overlapping VM directory and a free SSH/build
+port pair; plan CPU, memory and disk per VM before building several at once.
 For an established enabled VM, verify `ssf vm status` and `ssf status`, run
 `ssf server migrate-vm`, then verify both again explicitly as `ssf-server`
 before adding another target. Migration preserves the runtime and guest data;
@@ -55,8 +57,11 @@ Linux uses `ssf@NAME.service`; macOS uses `dev.ssf.server.NAME` and logs to
 `~/Library/Logs/ssf/NAME.log`. Before enabling the first target service, inspect
 and stop the legacy singleton with `systemctl --user disable --now ssf.service`
 or `brew services stop ssf`; SSF refuses target enablement while it is active or
-enabled so two supervisors cannot own one factory. Setup and uninstall still
-refuse a namespaced target; do not improvise other units.
+enabled so two supervisors cannot own one factory. Setup follows the selected
+target. Uninstall still refuses a namespaced target; do not improvise removal.
+Disable a target service before `ssf server remove NAME`; catalog removal never
+destroys its VM or local data, and VM destruction remains a separate explicitly
+selected command.
 Keyboard and mouse selection can focus a matched agent when running inside
 Herdr; matching is scoped to the Herdr server where the TUI runs, including
 its other tabs and workspaces. The optional plugin is only a launch shortcut.
@@ -83,10 +88,12 @@ reflect transcript writes, and missing activity times remain unknown.
    `~/.omp/agent/agent.db`; missing `auth.json` alone is not a sign-out.
    In Claude Code, a command the person must type themselves can
    be run as `! <command>` from the prompt.
-2. **If ssf is already installed, run `ssf doctor` and `ssf status` first**
-   and read them before changing anything; most setup problems show up
-   there, and the document says which lines are expected to fail at each
-   step.
+2. **If ssf is already installed, inspect `ssf server list` first, then run
+   `ssf --server NAME doctor` and `ssf --server NAME status` for every named
+   target** (or unqualified `ssf doctor` and `ssf status` when no catalog
+   exists) and read them before changing anything. One target's clean result
+   says nothing about another target's safety. Most setup problems show up
+   there, and the document says which lines are expected to fail at each step.
    A state directory has one engine owner: `ssf-server --once` refuses while
    the daemon is running. With a VM it is the guest daemon and state that
    matter, so let its next poll run.

@@ -3,6 +3,13 @@
 For the normal removal sequence, see [Stopping and uninstalling](setup.md#12-stopping-and-uninstalling).
 This page details work-preservation checks, recovery cases and retained data.
 
+For a named multi-server installation, `ssf uninstall` currently refuses rather
+than widening one selection into whole-installation removal. To stop operating
+a target without deleting it, run `ssf --server NAME ui service disable`, then
+`ssf server remove NAME`; the latter reports and retains its local config/state
+paths or managed VM resources. Inspect and destroy a VM separately, while it is
+still selected, only when that data loss is explicitly intended.
+
 **Uninstalling** is one command and one step for you:
 
 1. `ssf uninstall`: reports what it will stop, remove and revoke, lists
