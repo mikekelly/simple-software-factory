@@ -461,6 +461,38 @@ impl StateLock {
 }
 
 impl State {
+    /// Move a repository's state and canonicalise stored session references.
+    /// Old names remain readable through `RepoConfig::aliases`; rewriting the
+    /// cache keeps status and future writes consistent with the canonical name.
+    pub fn rename_repo(&mut self, old: &str, new: &str) -> Result<()> {
+        if old.eq_ignore_ascii_case(new) {
+            return Ok(());
+        }
+        if let Some(repo) = self.repos.remove(old) {
+            if self.repos.contains_key(new) {
+                self.repos.insert(old.to_string(), repo);
+                anyhow::bail!("state contains both repositories {old} and {new}");
+            }
+            self.repos.insert(new.to_string(), repo);
+        }
+        for repo in self.repos.values_mut() {
+            for item in repo.issues.values_mut() {
+                rewrite_session(&mut item.origin, old, new);
+                rewrite_session(&mut item.delegated_by, old, new);
+                if let Some(h) = &mut item.handover {
+                    rewrite_session(&mut h.by, old, new);
+                }
+                for origin in item.origins.values_mut() {
+                    *origin = renamed_session(origin, old, new);
+                }
+                for subscriber in &mut item.subscribers {
+                    *subscriber = renamed_session(subscriber, old, new);
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn load() -> Result<Self> {
         Self::load_from(&state_path())
     }
@@ -559,6 +591,22 @@ impl State {
             }
         }
         dropped
+    }
+}
+
+fn rewrite_session(value: &mut Option<String>, old: &str, new: &str) {
+    if let Some(value) = value {
+        *value = renamed_session(value, old, new);
+    }
+}
+
+fn renamed_session(value: &str, old: &str, new: &str) -> String {
+    match crate::origin::Origin::parse(value) {
+        Some(mut origin) if origin.repo.eq_ignore_ascii_case(old) => {
+            origin.repo = new.to_string();
+            origin.to_string()
+        }
+        _ => value.to_string(),
     }
 }
 

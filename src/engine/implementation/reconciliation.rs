@@ -4,6 +4,7 @@ use tracing::{debug, error, info, warn};
 impl Engine {
     pub async fn tick(&mut self) {
         self.reload_config();
+        self.reconcile_repo_identities(false).await;
         self.state.last_poll_at = Some(now_iso());
         // Per-pass state only. `refetch` is deliberately not reset here: it
         // has to outlive the pass that armed it (issue #141).

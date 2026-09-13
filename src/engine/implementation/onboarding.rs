@@ -431,7 +431,7 @@ impl Engine {
             .cfg
             .repos
             .iter()
-            .find(|r| r.name.eq_ignore_ascii_case(&origin.repo))
+            .find(|r| r.matches_name(&origin.repo))
             .cloned()
         else {
             warn!(

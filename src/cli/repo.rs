@@ -32,6 +32,8 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             let driver = driver.map(|d| d.parse()).transpose()?;
             let mut entry = RepoConfig {
                 name: name.clone(),
+                github_id: None,
+                aliases: Vec::new(),
                 harness,
                 driver,
                 command,
@@ -62,6 +64,8 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 .iter()
                 .position(|x| x.name.eq_ignore_ascii_case(&name))
             {
+                entry.github_id = cfg.repos[pos].github_id;
+                entry.aliases = cfg.repos[pos].aliases.clone();
                 cfg.repos[pos] = entry;
                 "Updated"
             } else {

@@ -99,7 +99,7 @@ impl Engine {
             .cfg
             .repos
             .iter()
-            .find(|r| r.name.eq_ignore_ascii_case(&o.repo))
+            .find(|r| r.matches_name(&o.repo))
             .cloned()
             .with_context(|| format!("{} is not a watched repository", o.repo))?;
         Ok((repo, o.number))

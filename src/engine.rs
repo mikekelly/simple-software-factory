@@ -13,7 +13,7 @@ use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
 use crate::driver::{Driver, Drivers, Relaunch};
 use crate::events::{self, Attach, Conversation, Event};
-use crate::github::{Conditional, GitHub, Issue, PrInfo};
+use crate::github::{Conditional, GitHub, Issue, PrInfo, RepositoryIdentity};
 #[cfg(test)]
 use crate::ipc::Request;
 use crate::login::{self, LoginState, Probe};
@@ -62,6 +62,8 @@ const ABSENT_RECHECK: Duration = Duration::from_secs(900);
 /// loses a long listing does not spend its pass on them; the rest are
 /// looked at on the passes that follow.
 const ABSENT_LOOKS_PER_PASS: usize = 20;
+
+const IDENTITY_CHECK_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// How long a blocked session waits before starting its harness again
 /// when the login check cannot tell whether the login is back (or claims
@@ -172,6 +174,8 @@ pub struct Engine {
     /// Merge simulations keyed by repository and branch, reused while the
     /// base and branch commit pair remains unchanged.
     conflict_pairs: BTreeMap<(String, String), ConflictPair>,
+    /// Repository identity runs separately from the normal issue-poll cadence.
+    identity_checked_at: Option<Instant>,
     /// Held from construction through shutdown, before the state is ever
     /// read. A one-shot engine uses the same guard as the daemon. Declared
     /// last so it drops only after the rest of the engine.
@@ -311,6 +315,7 @@ mod implementation {
     mod conflicts;
     mod delivery;
     mod handovers;
+    mod identity;
     mod issues;
     mod lifecycle;
     mod onboarding;

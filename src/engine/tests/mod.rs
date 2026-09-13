@@ -38,6 +38,7 @@ pub(super) fn engine() -> Engine {
         onboarding: None,
         conflict_checks: BTreeMap::new(),
         conflict_pairs: BTreeMap::new(),
+        identity_checked_at: Some(Instant::now()),
         _state_lock: None,
     }
 }
@@ -218,6 +219,7 @@ struct GitHubStub {
     /// Comments posted (`/repos/o/r/issues/N/comments`), in order:
     /// the path and the comment body.
     posts: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    identity: std::sync::Arc<std::sync::Mutex<RepositoryIdentity>>,
 }
 
 impl GitHubStub {
@@ -239,6 +241,12 @@ impl GitHubStub {
         let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
         let collab_version = Arc::new(AtomicU32::new(1));
         let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let identity = Arc::new(Mutex::new(RepositoryIdentity {
+            id: 1,
+            full_name: "o/r".into(),
+            clone_url: "https://github.com/o/r.git".into(),
+            ssh_url: "git@github.com:o/r.git".into(),
+        }));
         let p = posts.clone();
         let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
         let cf = created_fulls.clone();
@@ -250,6 +258,7 @@ impl GitHubStub {
         );
         let i = issues.clone();
         let pl = pulls.clone();
+        let ri = identity.clone();
         tokio::spawn(async move {
             let other_etags = AtomicU32::new(1);
             loop {
@@ -304,6 +313,12 @@ impl GitHubStub {
                         "200 OK",
                         "\"user\"".to_string(),
                         r#"{"login":"bot","id":1,"type":"User"}"#.to_string(),
+                    )
+                } else if path == "/repos/o/r" || path == "/repositories/1" {
+                    (
+                        "200 OK",
+                        "\"repo\"".to_string(),
+                        serde_json::to_string(&*ri.lock().unwrap()).unwrap(),
                     )
                 } else if method == "POST" && path.ends_with("/comments") {
                     let comment = serde_json::from_str::<Value>(&sent)
@@ -407,7 +422,15 @@ impl GitHubStub {
             collaborators,
             collab_version,
             posts,
+            identity,
         }
+    }
+
+    fn set_identity(&self, name: &str) {
+        let mut identity = self.identity.lock().unwrap();
+        identity.full_name = name.to_string();
+        identity.clone_url = format!("https://github.com/{name}.git");
+        identity.ssh_url = format!("git@github.com:{name}.git");
     }
 
     /// The comment endpoints posted to since the last call.

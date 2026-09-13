@@ -52,6 +52,11 @@ checks, and a restrictive content security policy. See
 
 ## Polling and delivery
 
+- **Repository identity.** The mutable configured `owner/name` is paired with
+  GitHub's immutable repository database id. At startup and every five minutes,
+  ssf resolves that id before issue polling. A rename or transfer made through
+  GitHub repairs the configuration, state keys, historical-name aliases and
+  SSF-managed checkout remotes before work resumes.
 - **Polling, not webhooks.** Every `poll_interval_secs` ssf makes four
   listings per repository (assigned to the bot, mentioning the bot, review
   requested from the bot, opened by the bot), as conditional requests, so a

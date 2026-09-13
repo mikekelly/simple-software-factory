@@ -413,3 +413,69 @@ async fn engine_constructor_refuses_a_live_socket_before_auth_or_state_access() 
     );
     drop(listener);
 }
+
+#[tokio::test]
+async fn github_rename_repairs_config_state_and_historical_session_names() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    stub.set_identity("o/new-name");
+    let mut e = engine_at(&stub.base);
+    let mut r = repo();
+    r.github_id = Some(1);
+    e.cfg.repos.push(r.clone());
+
+    let item = e.entry(&r, 7);
+    item.seeded = true;
+    item.active = true;
+    item.origin = Some("o/r#3".into());
+    item.delegated_by = Some("o/r#2".into());
+    item.subscribers = vec!["o/r#4".into(), "other/repo#9".into()];
+    e.failures.insert(("o/r".into(), 7), 2);
+
+    e.identity_checked_at = None;
+    e.reconcile_repo_identities(false).await;
+
+    let repaired = &e.cfg.repos[0];
+    assert_eq!(repaired.name, "o/new-name");
+    assert_eq!(repaired.github_id, Some(1));
+    assert!(repaired.matches_name("o/r"));
+    assert!(!e.state.repos.contains_key("o/r"));
+    let item = &e.state.repos["o/new-name"].issues[&7];
+    assert_eq!(item.origin.as_deref(), Some("o/new-name#3"));
+    assert_eq!(item.delegated_by.as_deref(), Some("o/new-name#2"));
+    assert_eq!(item.subscribers, ["o/new-name#4", "other/repo#9"]);
+    assert_eq!(e.failures.get(&("o/new-name".into(), 7)), Some(&2));
+    assert_eq!(e.acting_session("o/r#7"), "o/new-name#7");
+
+    let saved = Config::load().unwrap();
+    assert_eq!(saved.repos[0].name, "o/new-name");
+    assert!(saved.repos[0].matches_name("o/r"));
+}
+
+#[tokio::test]
+async fn repository_identity_is_not_checked_on_every_issue_poll() {
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let mut r = repo();
+    r.github_id = Some(1);
+    e.cfg.repos.push(r);
+
+    e.reconcile_repo_identities(false).await;
+
+    assert!(stub.hits().is_empty());
+}
+
+#[tokio::test]
+async fn first_identity_check_enrols_the_stable_github_id() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    e.cfg.repos.push(repo());
+
+    e.identity_checked_at = None;
+    e.reconcile_repo_identities(false).await;
+
+    assert_eq!(e.cfg.repos[0].github_id, Some(1));
+    assert_eq!(e.cfg.repos[0].name, "o/r");
+    assert_eq!(stub.hits(), vec!["/repos/o/r"]);
+}

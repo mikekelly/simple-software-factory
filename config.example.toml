@@ -113,6 +113,7 @@
 # One [[repo]] per watched repository.
 [[repo]]
 name = "owner/name"
+# github_id and aliases are maintained by ssf so GitHub renames and transfers reconnect automatically.
 harness = "claude"                             # agent id: see `ssf agents`
 # driver = "herdr"                             # orca | herdr (default: the top-level `driver`)
 # command = "claude --permission-mode acceptEdits"    # how the agent is started; default: its permission-free command (`ssf agents --json`), run via `ssf launch`

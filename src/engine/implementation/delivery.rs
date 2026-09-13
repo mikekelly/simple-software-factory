@@ -103,12 +103,7 @@ impl Engine {
         let Some(o) = Origin::parse(origin) else {
             return origin.to_string();
         };
-        match self
-            .cfg
-            .repos
-            .iter()
-            .find(|r| r.name.eq_ignore_ascii_case(&o.repo))
-        {
+        match self.cfg.repos.iter().find(|r| r.matches_name(&o.repo)) {
             Some(r) => session_id(&r.name, self.owner_of(r, o.number)),
             None => origin.to_string(),
         }

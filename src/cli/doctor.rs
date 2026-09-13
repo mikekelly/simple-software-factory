@@ -262,6 +262,41 @@ pub(super) async fn doctor() -> Result<()> {
     // /usr/share/ssf, Homebrew under its own prefix.
     let example_notes = platform::share_file("SSF.example.md");
     for r in &cfg.repos {
+        match (&gh, r.github_id) {
+            (Some(gh), Some(id)) => match gh.repository_by_id(id).await {
+                Ok(identity) if identity.full_name.eq_ignore_ascii_case(&r.name) => {
+                    check(true, format!("{}: GitHub repository identity {id}", r.name))
+                }
+                Ok(identity) => check(
+                    false,
+                    format!(
+                        "{}: GitHub repository identity {id} is now {}; the daemon will repair it on its next pass",
+                        r.name, identity.full_name
+                    ),
+                ),
+                Err(e) => check(
+                    false,
+                    format!(
+                        "{}: GitHub repository identity {id} could not be checked: {e:#}",
+                        r.name
+                    ),
+                ),
+            },
+            (Some(_), None) => check(
+                false,
+                format!(
+                    "{}: GitHub repository identity is not enrolled; the daemon will enroll it on its next pass",
+                    r.name
+                ),
+            ),
+            (None, _) => check(
+                false,
+                format!(
+                    "{}: GitHub repository identity cannot be checked without a token",
+                    r.name
+                ),
+            ),
+        }
         // Who may drive it: the configured list, or the collaborators with
         // push access fetched the way the daemon does.
         match cfg.allowed_users(r) {
