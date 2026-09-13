@@ -27,9 +27,23 @@ pub async fn client_main() -> Result<()> {
             .name
             .as_deref()
             .and_then(|name| catalog.get(name))
-            .is_some_and(|target| !matches!(target, server_catalog::Target::Ssh { .. }))
+            .is_some_and(|target| {
+                matches!(
+                    target,
+                    server_catalog::Target::Vm { .. }
+                        | server_catalog::Target::Local {
+                            config_dir: None,
+                            state_dir: None,
+                        }
+                )
+            })
     }) {
         catalog.validate_execution(&routes, &Config::load()?)?;
+    }
+    if let [route] = routes.as_slice()
+        && route.local_context.is_some()
+    {
+        refuse_global_command_for_namespaced_target(&cli.command)?;
     }
     if let Command::Dashboard = cli.command {
         return dashboard::run(
@@ -38,18 +52,19 @@ pub async fn client_main() -> Result<()> {
                 .map(|route| dashboard::ServerRoute {
                     label: route.name,
                     destination: route.destination,
+                    local_context: route.local_context,
                 })
                 .collect(),
         )
         .await;
     }
 
-    let server = match routes.as_slice() {
-        [route] => route.destination.clone(),
+    let route = match routes.as_slice() {
+        [route] => route,
         _ => bail!("multiple --server destinations are supported only by `ssf dashboard`"),
     };
 
-    let err = match server {
+    let err = match &route.destination {
         Some(host) => {
             let command = remote_client_command(&args);
             std::process::Command::new("ssh")
@@ -58,12 +73,34 @@ pub async fn client_main() -> Result<()> {
                 .arg(command)
                 .exec()
         }
-        None => std::process::Command::new(server_executable()?)
-            .arg("__client")
-            .args(args)
-            .exec(),
+        None => {
+            let mut command = std::process::Command::new(server_executable()?);
+            command.arg("__client").args(args).env_remove("SSF_SERVER");
+            if let Some(context) = &route.local_context {
+                command
+                    .env("SSF_CONFIG_DIR", &context.config_dir)
+                    .env("SSF_STATE_DIR", &context.state_dir);
+            }
+            command.exec()
+        }
     };
     Err(anyhow::Error::from(err).context("starting ssf-server"))
+}
+
+fn refuse_global_command_for_namespaced_target(command: &Command) -> Result<()> {
+    if matches!(
+        command,
+        Command::Setup
+            | Command::VmInit { .. }
+            | Command::Vm { .. }
+            | Command::Ui { .. }
+            | Command::Uninstall { .. }
+    ) {
+        bail!(
+            "this command still manages the installation-wide service or VM; it is not yet supported for a namespaced local server"
+        );
+    }
+    Ok(())
 }
 
 fn has_server_argument(args: &[String]) -> bool {
@@ -116,7 +153,17 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
                     server_catalog::Target::Ssh { destination } => {
                         println!("destination: {destination}");
                     }
-                    server_catalog::Target::Local => {}
+                    server_catalog::Target::Local {
+                        config_dir,
+                        state_dir,
+                    } => {
+                        if let Some(config_dir) = config_dir {
+                            println!("config:     {config_dir}");
+                        }
+                        if let Some(state_dir) = state_dir {
+                            println!("state:      {state_dir}");
+                        }
+                    }
                 }
             }
             Ok(())
@@ -126,9 +173,15 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
 
 fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_json::Value {
     match target {
-        server_catalog::Target::Local => {
-            serde_json::json!({"name": name, "transport": "local"})
-        }
+        server_catalog::Target::Local {
+            config_dir,
+            state_dir,
+        } => serde_json::json!({
+            "name": name,
+            "transport": "local",
+            "config_dir": config_dir,
+            "state_dir": state_dir,
+        }),
         server_catalog::Target::Vm {
             runtime_name,
             backend,

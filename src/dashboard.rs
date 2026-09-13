@@ -121,6 +121,7 @@ impl Worker {
 pub(crate) struct ServerRoute {
     pub label: Option<String>,
     pub destination: Option<String>,
+    pub local_context: Option<crate::server_catalog::LocalContext>,
 }
 
 impl Drop for Worker {
@@ -708,6 +709,7 @@ pub(crate) async fn run(servers: Vec<ServerRoute>) -> Result<()> {
         vec![ServerRoute {
             label: None,
             destination: None,
+            local_context: None,
         }]
     } else {
         servers
@@ -716,7 +718,10 @@ pub(crate) async fn run(servers: Vec<ServerRoute>) -> Result<()> {
     let (sender, mut snapshots) = tokio::sync::mpsc::channel(routes.len().max(1));
     let mut workers = Vec::new();
     for (index, route) in routes.iter().enumerate() {
-        let mut source = crate::dashboard_transport::StatusSource::new(route.destination.clone())?;
+        let mut source = crate::dashboard_transport::StatusSource::new_with_context(
+            route.destination.clone(),
+            route.local_context.clone(),
+        )?;
         let sender = sender.clone();
         workers.push(Worker::new(tokio::spawn(async move {
             loop {

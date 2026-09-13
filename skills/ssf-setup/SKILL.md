@@ -41,9 +41,11 @@ and SSH factories stable names. With one catalog entry commands select it
 implicitly; with several, every factory command requires `--server NAME` or an
 explicit `SSF_SERVER=NAME`, and there is no persistent default. Inspect it with
 `ssf server list` / `ssf server show NAME`. The current catalog stage accepts
-only one locally managed `local` or `vm` entry, so do not attempt to configure a
-second local factory or managed VM until #261's isolation and per-target service
-work is installed.
+namespaced local entries with distinct absolute `config_dir` and `state_dir`
+paths beside the existing factory, but it still accepts only one managed VM.
+Setup, service, VM lifecycle and uninstall commands refuse a namespaced target;
+do not improvise background units or attempt a second managed VM until #261's
+per-target service and VM work is installed.
 Keyboard and mouse selection can focus a matched agent when running inside
 Herdr; matching is scoped to the Herdr server where the TUI runs, including
 its other tabs and workspaces. The optional plugin is only a launch shortcut.

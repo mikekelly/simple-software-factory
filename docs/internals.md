@@ -12,10 +12,11 @@ daemon exposes no network socket by default.
 
 If `~/.config/ssf/servers.toml` exists, the client first resolves `--server` or
 `SSF_SERVER` as a catalog name. One entry is implicit; several make an omitted
-selector an error. A `local` or `vm` entry currently enters the same local
-endpoint (and is validated against the existing `vm.enabled` mode); an `ssh`
-entry supplies its configured destination. Without a catalog, omitted and
-explicit destinations preserve the legacy local/SSH behavior.
+selector an error. A legacy `local` or `vm` entry enters the existing local
+endpoint and is validated against `vm.enabled`. A namespaced `local` entry sets
+both `SSF_CONFIG_DIR` and `SSF_STATE_DIR` on its endpoint process and dashboard
+stream; an `ssh` entry supplies its configured destination. Without a catalog,
+omitted and explicit destinations preserve the legacy local/SSH behavior.
 
 ## Dashboards
 

@@ -386,10 +386,11 @@ The client can instead give factories stable names in
 With one entry it is selected automatically. With several, an unqualified
 factory command refuses and lists the names, and `--server` / `SSF_SERVER`
 select a name rather than a raw SSH destination. `ssf server list` and
-`ssf server show NAME` inspect the client-owned catalog. This first catalog
-stage supports any number of SSH targets but only one locally managed `local`
-or `vm` target; concurrent local factories and managed VMs are tracked in
-[#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+`ssf server show NAME` inspect the client-owned catalog. Namespaced local
+targets can coexist with the existing local or VM factory, but background
+services and VM lifecycle remain installation-wide: those commands refuse for
+a namespaced target. Multiple managed VMs and per-target services are tracked
+in [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
 
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the
