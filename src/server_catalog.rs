@@ -99,6 +99,10 @@ impl Catalog {
         let mut legacy_local = Vec::new();
         let mut vm_targets = Vec::new();
         let mut owned_vm = Vec::new();
+        let mut legacy_vm = Vec::new();
+        let mut vm_runtime_names: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut vm_ports: BTreeMap<u16, (&str, &'static str)> = BTreeMap::new();
+        let mut vm_paths: Vec<(PathBuf, &str, &'static str)> = Vec::new();
         let mut config_dirs: BTreeMap<PathBuf, &str> = BTreeMap::new();
         let mut state_dirs: BTreeMap<PathBuf, &str> = BTreeMap::new();
         for (name, target) in &self.servers {
@@ -162,9 +166,46 @@ impl Catalog {
                                 );
                             }
                         }
+                        if let Some(other) = vm_runtime_names.insert(&config.name, name) {
+                            bail!(
+                                "servers {other:?} and {name:?} share VM runtime name {:?}",
+                                config.name
+                            );
+                        }
+                        if config.ssh_port == 0 {
+                            bail!("server {name:?} VM SSH port must not be zero");
+                        }
+                        insert_unique_port(&mut vm_ports, config.ssh_port, name, "SSH")?;
+                        let effective_backend = config
+                            .backend
+                            .unwrap_or_else(crate::config::BackendKind::platform_default);
+                        if effective_backend == crate::config::BackendKind::Firecracker {
+                            let build_port = config
+                                .ssh_port
+                                .checked_add(1)
+                                .unwrap_or_else(|| config.ssh_port.saturating_sub(1));
+                            insert_unique_port(
+                                &mut vm_ports,
+                                build_port,
+                                name,
+                                "Firecracker build",
+                            )?;
+                        }
+                        let base = validate_owned_dir(name, "VM dir", &config.dir)?;
+                        vm_paths.push((base, name, "VM directory"));
+                        if effective_backend == crate::config::BackendKind::Firecracker
+                            && let Some(rootfs) = &config.rootfs
+                        {
+                            vm_paths.push((
+                                validate_owned_dir(name, "VM rootfs", rootfs)?,
+                                name,
+                                "VM rootfs",
+                            ));
+                        }
                         owned_vm.push(name.as_str());
                     } else {
                         legacy_managed.push(name.as_str());
+                        legacy_vm.push(name.as_str());
                     }
                     vm_targets.push(name.as_str());
                 }
@@ -175,10 +216,10 @@ impl Catalog {
                 }
             }
         }
-        if vm_targets.len() > 1 {
+        if vm_targets.len() > 1 && !legacy_vm.is_empty() {
             bail!(
-                "this version supports only one managed VM; found {}",
-                vm_targets.join(", ")
+                "legacy VM server {} cannot coexist with another managed VM; run `ssf server migrate-vm` first",
+                legacy_vm.join(", ")
             );
         }
         if legacy_managed.len() > 1 {
@@ -211,6 +252,28 @@ impl Catalog {
                     .map(|(path, owner)| (path, *owner, "state")),
             )
             .collect();
+        for (vm_path, vm_owner, vm_kind) in &vm_paths {
+            for (path, owner, kind) in &owned_dirs {
+                if overlaps(vm_path, path) {
+                    bail!(
+                        "server {vm_owner:?} {vm_kind} {} overlaps server {owner:?} {kind} directory {}",
+                        vm_path.display(),
+                        path.display()
+                    );
+                }
+            }
+        }
+        for (index, (vm_path, vm_owner, vm_kind)) in vm_paths.iter().enumerate() {
+            for (other_path, other_owner, other_kind) in &vm_paths[index + 1..] {
+                if vm_owner != other_owner && overlaps(vm_path, other_path) {
+                    bail!(
+                        "server {vm_owner:?} {vm_kind} {} overlaps server {other_owner:?} {other_kind} {}",
+                        vm_path.display(),
+                        other_path.display()
+                    );
+                }
+            }
+        }
         let reserved = [crate::config::config_dir(), crate::config::state_dir()];
         for (path, owner, kind) in &owned_dirs {
             for legacy in &reserved {
@@ -247,15 +310,14 @@ impl Catalog {
         self.servers.get(name)
     }
 
-    /// Compatibility for the one installation-wide service: after migration
-    /// it continues supervising the sole managed VM until services themselves
-    /// become target-qualified.
+    /// Compatibility for an installation-wide process with no explicit target.
+    /// It may supervise one owned VM, but must never guess between several.
     pub(crate) fn sole_owned_vm_context() -> Result<Option<SelectedVmContext>> {
         let catalog = Self::load()?;
-        Ok(catalog
+        let contexts = catalog
             .servers
             .iter()
-            .find_map(|(name, target)| match target {
+            .filter_map(|(name, target)| match target {
                 Target::Vm {
                     config: Some(config),
                     ..
@@ -264,7 +326,15 @@ impl Catalog {
                     config: config.as_ref().clone(),
                 }),
                 _ => None,
-            }))
+            })
+            .collect::<Vec<_>>();
+        match contexts.as_slice() {
+            [] => Ok(None),
+            [context] => Ok(Some(context.clone())),
+            _ => bail!(
+                "multiple managed VM servers are configured; this process needs an explicit server target"
+            ),
+        }
     }
 
     /// Legacy local and VM routes must still describe the factory selected by
@@ -569,6 +639,20 @@ fn insert_unique_dir<'a>(
     Ok(())
 }
 
+fn insert_unique_port<'a>(
+    ports: &mut BTreeMap<u16, (&'a str, &'static str)>,
+    port: u16,
+    server: &'a str,
+    purpose: &'static str,
+) -> Result<()> {
+    if let Some((other, other_purpose)) = ports.insert(port, (server, purpose)) {
+        bail!(
+            "server {server:?} {purpose} port {port} conflicts with server {other:?} {other_purpose} port"
+        );
+    }
+    Ok(())
+}
+
 fn validate_name(name: &str) -> Result<()> {
     let valid = (1..=64).contains(&name.len())
         && name
@@ -607,6 +691,36 @@ mod tests {
         let _sandbox = crate::config::test_support::sandbox();
         crate::config::write_atomic(&path(), body.as_bytes(), 0o600)?;
         Catalog::load()
+    }
+
+    fn owned_vm_with_backend(
+        runtime: &str,
+        dir: &str,
+        ssh_port: u16,
+        backend: crate::config::BackendKind,
+    ) -> Target {
+        let config = crate::config::VmConfig {
+            enabled: true,
+            name: runtime.into(),
+            dir: dir.into(),
+            ssh_port,
+            backend: Some(backend),
+            ..Default::default()
+        };
+        Target::Vm {
+            runtime_name: runtime.into(),
+            backend: Some(backend.to_string()),
+            config: Some(Box::new(config)),
+        }
+    }
+
+    fn owned_vm(runtime: &str, dir: &str, ssh_port: u16) -> Target {
+        owned_vm_with_backend(
+            runtime,
+            dir,
+            ssh_port,
+            crate::config::BackendKind::Firecracker,
+        )
     }
 
     #[test]
@@ -671,6 +785,96 @@ mod tests {
                 .to_string()
                 .contains("overlaps legacy")
         );
+    }
+
+    #[test]
+    fn owned_vms_may_coexist_only_with_distinct_host_resources() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let distinct = Catalog {
+            servers: BTreeMap::from([
+                ("one".into(), owned_vm("one", "/tmp/ssf-vm-one", 2222)),
+                ("two".into(), owned_vm("two", "/tmp/ssf-vm-two", 2232)),
+            ]),
+            exists: true,
+        };
+        distinct.validate().unwrap();
+
+        for (replacement, expected) in [
+            (owned_vm("one", "/tmp/other-vms", 2232), "runtime name"),
+            (owned_vm("three", "/tmp/other-vms", 2222), "SSH port"),
+            (
+                owned_vm("three", "/tmp/other-vms", 2223),
+                "Firecracker build",
+            ),
+            (
+                owned_vm("nested", "/tmp/ssf-vm-one/nested", 2232),
+                "overlaps",
+            ),
+        ] {
+            let catalog = Catalog {
+                servers: BTreeMap::from([
+                    ("one".into(), owned_vm("one", "/tmp/ssf-vm-one", 2222)),
+                    ("two".into(), replacement),
+                ]),
+                exists: true,
+            };
+            let error = catalog.validate().unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn an_unqualified_process_never_guesses_between_owned_vms() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let catalog = Catalog {
+            servers: BTreeMap::from([
+                ("one".into(), owned_vm("one", "/tmp/ssf-vm-one", 2222)),
+                ("two".into(), owned_vm("two", "/tmp/ssf-vm-two", 2232)),
+            ]),
+            exists: true,
+        };
+        catalog.validate().unwrap();
+        catalog.save().unwrap();
+        let error = Catalog::sole_owned_vm_context().unwrap_err().to_string();
+        assert!(error.contains("needs an explicit server target"), "{error}");
+    }
+
+    #[test]
+    fn two_lima_targets_derive_distinct_instance_and_disk_identities() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let one = owned_vm_with_backend(
+            "one",
+            "/tmp/ssf-lima-one",
+            2222,
+            crate::config::BackendKind::Lima,
+        );
+        let two = owned_vm_with_backend(
+            "two",
+            "/tmp/ssf-lima-two",
+            2223,
+            crate::config::BackendKind::Lima,
+        );
+        let catalog = Catalog {
+            servers: BTreeMap::from([("one".into(), one.clone()), ("two".into(), two.clone())]),
+            exists: true,
+        };
+        catalog.validate().unwrap();
+
+        let vm = |target: Target| match target {
+            Target::Vm {
+                config: Some(config),
+                ..
+            } => crate::vm::Vm::new(&crate::config::Config {
+                vm: *config,
+                ..Default::default()
+            }),
+            _ => unreachable!(),
+        };
+        let one = vm(one);
+        let two = vm(two);
+        assert_ne!(one.dir, two.dir);
+        assert_ne!(one.lima_name(), two.lima_name());
+        assert_ne!(one.lima_disk_name(), two.lima_disk_name());
     }
 
     #[test]

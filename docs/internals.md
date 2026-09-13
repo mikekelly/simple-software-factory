@@ -17,7 +17,12 @@ endpoint and is validated against `vm.enabled`. `ssf server migrate-vm` copies
 the enabled legacy VM settings into the named target, verifies them, and only
 then removes `[vm]`; equal duplicate representations make an interrupted retry
 safe, while differences stop. The selected VM context is passed to the endpoint
-and the existing sole service supervisor reads that same owned context. A
+and every lifecycle or forwarded command therefore constructs only that VM.
+Catalog validation rejects overlapping VM build/runtime paths, duplicate runtime
+and Lima instance/disk identities, and collisions between SSH or Firecracker
+provisioning ports before execution. An unqualified compatibility supervisor may
+read a sole owned VM context, but refuses when there are several rather than
+using iteration order. A
 namespaced `local` entry sets
 both `SSF_CONFIG_DIR` and `SSF_STATE_DIR` on its endpoint process and dashboard
 stream; an `ssh` entry supplies its configured destination. Without a catalog,

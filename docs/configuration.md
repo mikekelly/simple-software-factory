@@ -40,6 +40,42 @@ The VM instance, disk, guest configuration, credentials and workspaces are not
 moved or rebuilt. The operation is idempotent; conflicting old and new settings
 are both retained and reported rather than resolved by recency.
 
+Several migrated/catalog-owned VM targets may coexist. Each target must have a
+different runtime name, an absolute non-overlapping `config.dir`, and distinct
+host ports. Firecracker also reserves the adjacent port used while provisioning
+(normally `ssh_port + 1`), so leave a gap between VM ports. Its writable build
+area, root image, PID files, sockets, seed, key and logs are isolated by the
+target directory; an explicitly configured Firecracker `rootfs` must also be an
+absolute path disjoint from every other target. Lima derives distinct instance
+and disk identities from the required unique runtime name. For example:
+
+```toml
+[servers.crucible]
+transport = "vm"
+runtime_name = "crucible"
+[servers.crucible.config]
+enabled = true
+name = "crucible"
+dir = "/home/you/.local/share/ssf/vms/crucible"
+backend = "firecracker"
+ssh_port = 2222
+
+[servers.ssf-server]
+transport = "vm"
+runtime_name = "factory"
+[servers.ssf-server.config]
+enabled = true
+name = "factory"
+dir = "/home/you/.local/share/ssf/vms/ssf-server"
+backend = "firecracker"
+ssh_port = 2232
+```
+
+Select lifecycle commands explicitly once a second catalog entry exists, for
+example `ssf --server crucible vm status`. VM status and destructive refusal
+messages include the public server name. A legacy VM wrapper cannot coexist
+with another managed VM; migrate it first.
+
 A `local` entry with no paths wraps the existing host factory and
 therefore cannot coexist with the legacy VM target. A namespaced local entry
 must set both absolute paths. SSF passes them explicitly to the local endpoint,
@@ -49,13 +85,14 @@ or overlap another namespaced target's paths. They must also be outside the
 legacy `~/.config/ssf` and `~/.local/state/ssf` trees so a legacy uninstall
 cannot recursively remove another factory.
 
-The current VM-ownership stage still permits only one managed VM. Background
-service controls, `setup`, VM lifecycle and `uninstall` remain installation-wide
-and refuse for namespaced local targets; uninstall also refuses a migrated VM
-until removal is target-aware. The existing service safely supervises the sole
-migrated VM during this compatibility stage. Run namespaced daemons explicitly
-with matching `SSF_CONFIG_DIR` and `SSF_STATE_DIR` only for development; normal
-per-target services and multiple managed VMs remain tracked in
+VM lifecycle commands are target-aware, but background service controls,
+`setup` and `uninstall` remain installation-wide and refuse namespaced local
+targets; uninstall also refuses a migrated VM until removal is target-aware.
+The compatibility service supervises a sole migrated VM, but fails closed when
+several owned VMs exist rather than choosing one. Operate additional VMs
+manually until per-target services land. Run namespaced daemons explicitly with
+matching `SSF_CONFIG_DIR` and `SSF_STATE_DIR` only for development; normal
+per-target services remain tracked in
 [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
 
 Selection has no configurable default:

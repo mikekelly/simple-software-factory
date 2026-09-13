@@ -389,10 +389,11 @@ select a name rather than a raw SSH destination. `ssf server list` and
 `ssf server show NAME` inspect the client-owned catalog. Namespaced local
 targets can coexist with the existing local or VM factory. `ssf server
 migrate-vm` adopts an existing VM in place as `ssf-server`, moving only its
-host-side settings into the catalog after verification. Background
-services and VM lifecycle remain installation-wide: those commands refuse for
-a namespaced target. Multiple managed VMs and per-target services are tracked
-in [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+host-side settings into the catalog after verification. Multiple owned VMs can
+then be operated with `ssf --server NAME vm ...` when their runtime names,
+directories and ports are distinct. Background service controls remain
+installation-wide and refuse namespaced targets; per-target services are
+tracked in [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
 
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the

@@ -72,13 +72,18 @@ pub(super) fn probe_word(probe: &Result<bool, String>) -> &'static str {
 /// rather than left empty; `vm` is the one field the host can still fill
 /// in, and the sessions and repositories it could not ask after are
 /// empty rather than invented.
-pub(super) fn vm_status_for_guest(vm: &str) -> serde_json::Value {
+pub(super) fn vm_status_for_guest(vm: &str, server: Option<&str>) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "vm": vm, "service_active": false, "service_enabled": factory_ui::service_enabled(),
         "factory_location": "guest", "factory_reachable": false,
         "host_vm": { "state": vm },
         "sessions": [], "repos": [],
     });
+    if let Some(server) = server {
+        payload["server"] = server.into();
+        payload["transport"] = "vm".into();
+        payload["host_vm"]["server"] = server.into();
+    }
     payload["dashboard"] =
         status::dashboard_presentation(&payload).expect("VM status always contains sessions");
     payload
@@ -124,6 +129,7 @@ pub(super) fn forwarded_name(cmd: &Command) -> Option<&'static str> {
 pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
     let cfg = Config::load()?;
     let vm = factory_vm::Vm::new(&cfg);
+    let selected_server = server_catalog::selected_vm_context()?.map(|context| context.name);
     match command {
         VmCommand::Build {
             force,
@@ -165,8 +171,15 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
         VmCommand::Status { json } => {
             let st = vm.status().await;
             if json {
-                println!("{}", serde_json::to_string_pretty(&st)?);
+                let mut value = serde_json::to_value(&st)?;
+                if let Some(server) = &selected_server {
+                    value["server"] = serde_json::Value::String(server.clone());
+                }
+                println!("{}", serde_json::to_string_pretty(&value)?);
             } else {
+                if let Some(server) = &selected_server {
+                    println!("server:   {server}");
+                }
                 println!(
                     "vm:       {} ({}){}",
                     st.name,
@@ -298,7 +311,8 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
         VmCommand::Destroy { yes } => {
             if !yes {
                 bail!(
-                    "this removes {} and everything in it{}; pass --yes",
+                    "this removes managed VM server {} at {} and everything in it{}; pass --yes",
+                    selected_server.as_deref().unwrap_or("<legacy>"),
                     vm.dir.display(),
                     match vm.backend() {
                         factory_vm::BackendKind::Lima => format!(

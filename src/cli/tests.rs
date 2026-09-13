@@ -234,12 +234,14 @@ fn the_widget_gets_an_answer_for_a_guest_that_did_not_give_one() {
     assert_eq!(probe_word(&Ok(false)), "stopped");
     assert_eq!(probe_word(&Err("no answer".into())), "unknown");
     for state in ["running", "stopped", "unknown"] {
-        let v = vm_status_for_guest(state);
+        let v = vm_status_for_guest(state, Some("crucible"));
         assert_eq!(v["vm"], state);
         assert_eq!(v["service_active"], false);
         assert_eq!(v["factory_reachable"], false);
         assert_eq!(v["factory_location"], "guest");
         assert_eq!(v["host_vm"]["state"], state);
+        assert_eq!(v["server"], "crucible");
+        assert_eq!(v["transport"], "vm");
         assert_eq!(v["sessions"], serde_json::json!([]));
         assert_eq!(v["repos"], serde_json::json!([]));
     }

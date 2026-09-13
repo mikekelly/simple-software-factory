@@ -60,6 +60,23 @@ After migration, `ssf config get|set vm.<key>` keeps operating on the selected
 target even though its settings no longer live in the guest factory's
 `config.toml`.
 
+Multiple catalog-owned VMs can be operated independently with the same selector:
+
+```sh
+ssf --server crucible vm start
+ssf --server ssf-server vm status
+ssf --server crucible status
+```
+
+They need unique runtime names, absolute non-overlapping VM directories, and
+distinct SSH ports. Firecracker also uses the adjacent port while building, so
+the conventional examples leave ten ports between targets. These checks happen
+while the whole catalog is loaded, before a lifecycle mutation. VM status names
+both the public server and backend runtime; a refused `vm destroy` names the
+public server and resolved directory. See the
+[server catalog](configuration.md#server-catalog) for a complete example and
+current service limitation.
+
 ## Backends
 
 `[vm] backend` is `firecracker` or `lima`. Unset, it means Firecracker on
