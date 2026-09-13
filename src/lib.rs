@@ -25,6 +25,7 @@ mod origin;
 mod platform;
 mod prompt;
 mod release;
+mod server_catalog;
 mod sessions;
 mod setup;
 mod shim;

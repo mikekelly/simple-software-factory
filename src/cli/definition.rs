@@ -8,7 +8,7 @@ use super::prelude::*;
     about = "Simple Software Factory: GitHub issues -> agent workspaces in herdr or Orca"
 )]
 pub(super) struct Cli {
-    /// Run on this SSH destination; repeat to group servers in the dashboard.
+    /// Select a configured server; without a server catalog, an SSH destination.
     #[arg(long, global = true, env = "SSF_SERVER")]
     pub(super) _server: Option<String>,
     /// Log verbosity (also honours RUST_LOG).
@@ -38,6 +38,11 @@ pub(super) enum Command {
     /// Initialize persistent guest factory state (called by the guest boot service).
     #[command(hide = true)]
     VmInit { seed: PathBuf },
+    /// List and inspect the client computer's configured SSF servers.
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
+    },
     /// Prepare this user account and enable the packaged background service.
     Setup,
     /// Manage the bot account credentials (for people, from a terminal, or the agent setting ssf up for them; factory sessions never run it).
@@ -278,6 +283,21 @@ pub(super) enum Command {
     GitCredential {
         /// get | store | erase
         op: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum ServerCommand {
+    /// List configured server names and transports.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one configured server.
+    Show {
+        name: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 

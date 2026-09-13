@@ -9,17 +9,43 @@ pub async fn client_main() -> Result<()> {
         shim::run();
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let explicit_server = has_server_argument(&args);
     let configured = std::env::var("SSF_SERVER").ok().filter(|s| !s.is_empty());
     let (servers, args) = client_targets(args, configured)?;
 
     let cli = Cli::parse_from(std::iter::once("ssf".to_owned()).chain(args.clone()));
+    if let Command::Server { command } = cli.command {
+        if explicit_server {
+            bail!("--server does not apply to `ssf server`");
+        }
+        return server_catalog_command(command);
+    }
+    let catalog = server_catalog::Catalog::load()?;
+    let routes = catalog.resolve(servers)?;
+    if routes.iter().any(|route| {
+        route
+            .name
+            .as_deref()
+            .and_then(|name| catalog.get(name))
+            .is_some_and(|target| !matches!(target, server_catalog::Target::Ssh { .. }))
+    }) {
+        catalog.validate_execution(&routes, &Config::load()?)?;
+    }
     if let Command::Dashboard = cli.command {
-        return dashboard::run(servers).await;
+        return dashboard::run(
+            routes
+                .into_iter()
+                .map(|route| dashboard::ServerRoute {
+                    label: route.name,
+                    destination: route.destination,
+                })
+                .collect(),
+        )
+        .await;
     }
 
-    let server = match servers.as_slice() {
-        [] => None,
-        [server] => Some(server.clone()),
+    let server = match routes.as_slice() {
+        [route] => route.destination.clone(),
         _ => bail!("multiple --server destinations are supported only by `ssf dashboard`"),
     };
 
@@ -38,6 +64,86 @@ pub async fn client_main() -> Result<()> {
             .exec(),
     };
     Err(anyhow::Error::from(err).context("starting ssf-server"))
+}
+
+fn has_server_argument(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .any(|arg| arg == "--server" || arg.starts_with("--server="))
+}
+
+fn server_catalog_command(command: ServerCommand) -> Result<()> {
+    let catalog = server_catalog::Catalog::load()?;
+    match command {
+        ServerCommand::List { json } => {
+            if json {
+                let rows: Vec<_> = catalog
+                    .list()
+                    .map(|(name, target)| server_catalog_json(name, target))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else if catalog.list().next().is_none() {
+                println!("No configured servers (unqualified commands use the local server).")
+            } else {
+                for (name, target) in catalog.list() {
+                    println!("{name}\t{}", target.transport());
+                }
+            }
+            Ok(())
+        }
+        ServerCommand::Show { name, json } => {
+            let target = catalog
+                .get(&name)
+                .with_context(|| format!("unknown SSF server {name:?}"))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&server_catalog_json(&name, target))?
+                );
+            } else {
+                println!("name:       {name}");
+                println!("transport:  {}", target.transport());
+                match target {
+                    server_catalog::Target::Vm {
+                        runtime_name,
+                        backend,
+                    } => {
+                        println!("runtime:    {runtime_name}");
+                        if let Some(backend) = backend {
+                            println!("backend:    {backend}");
+                        }
+                    }
+                    server_catalog::Target::Ssh { destination } => {
+                        println!("destination: {destination}");
+                    }
+                    server_catalog::Target::Local => {}
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_json::Value {
+    match target {
+        server_catalog::Target::Local => {
+            serde_json::json!({"name": name, "transport": "local"})
+        }
+        server_catalog::Target::Vm {
+            runtime_name,
+            backend,
+        } => serde_json::json!({
+            "name": name,
+            "transport": "vm",
+            "runtime_name": runtime_name,
+            "backend": backend,
+        }),
+        server_catalog::Target::Ssh { destination } => serde_json::json!({
+            "name": name,
+            "transport": "ssh",
+            "destination": destination,
+        }),
+    }
 }
 
 pub(crate) fn remote_client_command(args: &[String]) -> String {
@@ -236,6 +342,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         Command::VmInit { seed } => {
             factory_vm::initialize_guest_factory(&seed, &config::config_dir())
         }
+        Command::Server { .. } => bail!("run `ssf server` on the client computer"),
         Command::Setup => setup::run(),
         Command::Auth { command } => auth(command).await,
         Command::Token => {

@@ -118,6 +118,11 @@ impl Worker {
     }
 }
 
+pub(crate) struct ServerRoute {
+    pub label: Option<String>,
+    pub destination: Option<String>,
+}
+
 impl Drop for Worker {
     fn drop(&mut self) {
         if let Some(handle) = &self.0 {
@@ -698,17 +703,20 @@ fn render(frame: &mut Frame<'_>, view: &mut View) {
     );
 }
 
-pub(crate) async fn run(servers: Vec<String>) -> Result<()> {
-    let routes: Vec<Option<String>> = if servers.is_empty() {
-        vec![None]
+pub(crate) async fn run(servers: Vec<ServerRoute>) -> Result<()> {
+    let routes = if servers.is_empty() {
+        vec![ServerRoute {
+            label: None,
+            destination: None,
+        }]
     } else {
-        servers.into_iter().map(Some).collect()
+        servers
     };
     let mut terminal = TerminalSession::enter()?;
     let (sender, mut snapshots) = tokio::sync::mpsc::channel(routes.len().max(1));
     let mut workers = Vec::new();
-    for (index, route) in routes.iter().cloned().enumerate() {
-        let mut source = crate::dashboard_transport::StatusSource::new(route)?;
+    for (index, route) in routes.iter().enumerate() {
+        let mut source = crate::dashboard_transport::StatusSource::new(route.destination.clone())?;
         let sender = sender.clone();
         workers.push(Worker::new(tokio::spawn(async move {
             loop {
@@ -729,7 +737,12 @@ pub(crate) async fn run(servers: Vec<String>) -> Result<()> {
     drop(sender);
     let (focus_sender, mut focus_results) = tokio::sync::mpsc::channel(1);
     let mut focus_worker: Option<Worker> = None;
-    let mut view = View::new(routes);
+    let mut view = View::new(
+        routes
+            .into_iter()
+            .map(|route| route.label.or(route.destination))
+            .collect(),
+    );
     let mut ticks = tokio::time::interval(Duration::from_millis(50));
     let mut termination =
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

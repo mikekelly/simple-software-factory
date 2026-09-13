@@ -10,6 +10,13 @@ arrive at the same server-side command parser. Commands that mutate live
 engine state then use the daemon's Unix socket on the server machine; the
 daemon exposes no network socket by default.
 
+If `~/.config/ssf/servers.toml` exists, the client first resolves `--server` or
+`SSF_SERVER` as a catalog name. One entry is implicit; several make an omitted
+selector an error. A `local` or `vm` entry currently enters the same local
+endpoint (and is validated against the existing `vm.enabled` mode); an `ssh`
+entry supplies its configured destination. Without a catalog, omitted and
+explicit destinations preserve the legacy local/SSH behavior.
+
 ## Dashboards
 
 `ssf dashboard` runs a Ratatui terminal UI on the client over one long-running
