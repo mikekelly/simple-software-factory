@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -68,13 +69,27 @@ pub(crate) struct SelectedVmContext {
 }
 
 pub(crate) const SELECTED_VM_ENV: &str = "SSF_INTERNAL_SELECTED_VM";
+pub(crate) const SELECTED_TARGET_ENV: &str = "SSF_INTERNAL_SELECTED_TARGET";
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct TargetIdentity {
+    pub name: String,
+    pub transport: String,
+}
+
+struct ServiceContext {
+    route: Route,
+    identity: TargetIdentity,
+}
+
+static SERVICE_CONTEXT: OnceLock<ServiceContext> = OnceLock::new();
 
 fn default_runtime_name() -> String {
     "default".into()
 }
 
 pub(crate) fn path() -> PathBuf {
-    crate::config::config_dir().join("servers.toml")
+    crate::config::client_config_dir().join("servers.toml")
 }
 
 impl Catalog {
@@ -572,16 +587,80 @@ impl Catalog {
 
 pub(crate) fn selected_vm_context() -> Result<Option<SelectedVmContext>> {
     let Some(raw) = std::env::var_os(SELECTED_VM_ENV) else {
-        return Ok(None);
+        return Ok(SERVICE_CONTEXT
+            .get()
+            .and_then(|context| context.route.vm_context.clone()));
     };
     let context: SelectedVmContext = serde_json::from_slice(raw.as_encoded_bytes())
         .context("parsing selected VM target context")?;
     Ok(Some(context))
 }
 
+pub(crate) fn selected_target_name() -> Option<String> {
+    selected_target_identity()
+        .ok()
+        .flatten()
+        .map(|identity| identity.name)
+}
+
+pub(crate) fn selected_target_identity() -> Result<Option<TargetIdentity>> {
+    if let Some(raw) = std::env::var_os(SELECTED_TARGET_ENV) {
+        return serde_json::from_slice(raw.as_encoded_bytes())
+            .context("parsing selected server identity")
+            .map(Some);
+    }
+    Ok(SERVICE_CONTEXT
+        .get()
+        .map(|context| context.identity.clone()))
+}
+
+pub(crate) fn service_local_context() -> Option<&'static LocalContext> {
+    SERVICE_CONTEXT
+        .get()
+        .and_then(|context| context.route.local_context.as_ref())
+}
+
+pub(crate) fn service_context_is_active() -> bool {
+    SERVICE_CONTEXT.get().is_some()
+}
+
+pub(crate) fn activate_service_target(name: &str) -> Result<()> {
+    let catalog = Catalog::load()?;
+    let route = catalog.resolve(vec![name.to_owned()])?.remove(0);
+    if route.destination.is_some() {
+        bail!("server {name:?} is remote; it cannot have a service on this host");
+    }
+    let target = catalog.get(name).expect("a resolved target");
+    if matches!(target, Target::Vm { .. })
+        || matches!(
+            target,
+            Target::Local {
+                config_dir: None,
+                state_dir: None
+            }
+        )
+    {
+        catalog.validate_execution(
+            std::slice::from_ref(&route),
+            &crate::config::Config::load_from(&crate::config::config_path())?,
+        )?;
+    }
+    let transport = target.transport();
+    SERVICE_CONTEXT
+        .set(ServiceContext {
+            route,
+            identity: TargetIdentity {
+                name: name.to_owned(),
+                transport: transport.into(),
+            },
+        })
+        .map_err(|_| anyhow::anyhow!("a service target is already active in this process"))
+}
+
 pub(crate) fn effective_vm_context() -> Result<Option<SelectedVmContext>> {
     match selected_vm_context()? {
         Some(selected) => Ok(Some(selected)),
+        None if service_context_is_active() => Ok(None),
         None if !crate::vm::in_guest() => Catalog::sole_owned_vm_context(),
         None => Ok(None),
     }

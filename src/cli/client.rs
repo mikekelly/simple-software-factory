@@ -49,6 +49,17 @@ pub async fn client_main() -> Result<()> {
             routes
                 .into_iter()
                 .map(|route| dashboard::ServerRoute {
+                    identity: route
+                        .name
+                        .as_ref()
+                        .map(|name| server_catalog::TargetIdentity {
+                            name: name.clone(),
+                            transport: catalog
+                                .get(name)
+                                .expect("a resolved route")
+                                .transport()
+                                .into(),
+                        }),
                     label: route.name,
                     destination: route.destination,
                     local_context: route.local_context,
@@ -79,7 +90,18 @@ pub async fn client_main() -> Result<()> {
                 .arg("__client")
                 .args(args)
                 .env_remove("SSF_SERVER")
-                .env_remove(server_catalog::SELECTED_VM_ENV);
+                .env_remove(server_catalog::SELECTED_VM_ENV)
+                .env_remove(server_catalog::SELECTED_TARGET_ENV);
+            if let Some(name) = &route.name {
+                let transport = catalog.get(name).expect("a resolved route").transport();
+                command.env(
+                    server_catalog::SELECTED_TARGET_ENV,
+                    serde_json::to_string(&server_catalog::TargetIdentity {
+                        name: name.clone(),
+                        transport: transport.into(),
+                    })?,
+                );
+            }
             if let Some(context) = &route.local_context {
                 command
                     .env("SSF_CONFIG_DIR", &context.config_dir)
@@ -127,7 +149,6 @@ fn refuse_unsafe_global_command(route: &server_catalog::Route, command: &Command
             Command::Setup
                 | Command::VmInit { .. }
                 | Command::Vm { .. }
-                | Command::Ui { .. }
                 | Command::Uninstall { .. }
         )
     {
@@ -302,6 +323,9 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
     if shim::invoked_as_gh() {
         shim::run();
     }
+    // This internal value selects service identities. Refuse malformed
+    // inherited input before a service helper could fall back to the singleton.
+    server_catalog::selected_target_identity()?;
     let args: Vec<std::ffi::OsString> = args.into_iter().collect();
     let forwarded_args: Vec<String> = args
         .iter()
@@ -622,6 +646,9 @@ pub async fn server_main() -> Result<()> {
         return command_main(command_args).await;
     }
     let cli = ServerCli::parse();
+    if let Some(target) = &cli.target {
+        server_catalog::activate_service_target(target)?;
+    }
     let filter = EnvFilter::try_from_env("RUST_LOG")
         .or_else(|_| EnvFilter::try_new(&cli.log))
         .unwrap_or_else(|_| EnvFilter::new("info"));

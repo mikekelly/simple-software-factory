@@ -1,0 +1,17 @@
+# ssf@.service for Debian, Ubuntu and Fedora. A selected `ssf ui service
+# enable` enables one instance after validating its catalog target.
+[Unit]
+Description=Simple Software Factory server %i
+Documentation=https://github.com/mikekelly/simple-software-factory
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssf-server --target %i
+KillMode=mixed
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=15
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

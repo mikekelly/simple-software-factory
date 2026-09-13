@@ -65,6 +65,7 @@ package() {
   install -Dm755 target/release/ssf-server "$pkgdir/usr/bin/ssf-server"
   install -Dm755 bin/ssf-ui "$pkgdir/usr/bin/ssf-ui"
   install -Dm644 packaging/ssf.service "$pkgdir/usr/lib/systemd/user/ssf.service"
+  install -Dm644 'packaging/ssf@.service' "$pkgdir/usr/lib/systemd/user/ssf@.service"
   install -Dm755 packaging/package-pre-remove.sh "$pkgdir/usr/lib/ssf/package-pre-remove"
   install -Dm644 packaging/ssf-pre-remove.hook "$pkgdir/usr/share/libalpm/hooks/ssf-pre-remove.hook"
   install -Dm644 manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"

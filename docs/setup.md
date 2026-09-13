@@ -75,10 +75,12 @@ For repeat use, destinations can be assigned stable client-side names in
 `--server NAME`, with no persistent default. See the
 [server catalog](configuration.md#server-catalog). Catalog-owned managed VMs
 can also coexist when their runtime names, absolute VM directories and ports are
-distinct; select each VM lifecycle command by name. Setup, service controls and
-uninstall still refuse namespaced targets until per-target services are
-implemented, and the compatibility service refuses to guess between several
-VMs. Operate additional VMs manually during this stage.
+distinct; select each VM lifecycle command by name. The compatibility service
+refuses to guess between several VMs. Once targets are migrated, stop the legacy
+singleton and enable each
+selected service with `ssf --server NAME ui service enable`; Linux uses
+`ssf@NAME.service`, while macOS uses one launchd agent per name. `ssf setup`
+and uninstall remain installation-wide until the next setup stage.
 An established enabled VM can be adopted without rebuilding or moving it with
 `ssf server migrate-vm`; first confirm `ssf vm status` and the guest factory,
 then run the migration and confirm `ssf --server ssf-server vm status` and

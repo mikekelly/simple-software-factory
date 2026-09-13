@@ -1124,7 +1124,7 @@ fn real_state_dir() -> PathBuf {
 /// `$SSF_CONFIG_DIR`, else `~/.config/ssf` (on macOS too: the XDG place,
 /// not `~/Library/Application Support`, so the paths in the documentation
 /// and the guest hold everywhere).
-pub fn config_dir() -> PathBuf {
+pub(crate) fn client_config_dir() -> PathBuf {
     #[cfg(test)]
     {
         test_support::require("config")
@@ -1135,8 +1135,14 @@ pub fn config_dir() -> PathBuf {
     }
 }
 
+pub fn config_dir() -> PathBuf {
+    crate::server_catalog::service_local_context()
+        .map(|context| context.config_dir.clone())
+        .unwrap_or_else(client_config_dir)
+}
+
 /// `$SSF_STATE_DIR`, else `~/.local/state/ssf` (on macOS too).
-pub fn state_dir() -> PathBuf {
+pub(crate) fn client_state_dir() -> PathBuf {
     #[cfg(test)]
     {
         test_support::require("state")
@@ -1145,6 +1151,12 @@ pub fn state_dir() -> PathBuf {
     {
         real_state_dir()
     }
+}
+
+pub fn state_dir() -> PathBuf {
+    crate::server_catalog::service_local_context()
+        .map(|context| context.state_dir.clone())
+        .unwrap_or_else(client_state_dir)
 }
 
 /// The test build must never touch the real config or state directory. The

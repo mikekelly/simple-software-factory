@@ -21,6 +21,9 @@ pub(super) struct Cli {
 #[derive(Parser)]
 #[command(name = "ssf-server", version, about = "Simple Software Factory daemon")]
 pub(super) struct ServerCli {
+    /// Run the daemon for one locally owned catalog target.
+    #[arg(long, hide = true)]
+    pub(super) target: Option<String>,
     /// Log verbosity (also honours RUST_LOG).
     #[arg(long, default_value = "info", env = "SSF_LOG")]
     pub(super) log: String,
@@ -603,7 +606,7 @@ pub(super) enum UiCommand {
     },
     /// Remove the bar widget and menu entries.
     Uninstall,
-    /// Control the background service (the `ssf.service` user unit on Linux, the Homebrew service on macOS).
+    /// Control the selected server's background service.
     Service {
         #[command(subcommand)]
         command: ServiceCommand,

@@ -330,7 +330,11 @@ fn migrated_vm_configuration_drives_the_selected_endpoint() {
         .args(["server", "migrate-vm"])
         .output()
         .unwrap();
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
@@ -389,4 +393,122 @@ fn two_owned_vms_are_selected_independently() {
     assert_eq!(status["server"], "crucible");
     assert_eq!(status["transport"], "vm");
     assert_eq!(status["host_vm"]["server"], "crucible");
+
+    let output = root
+        .client()
+        .args(["--server", "crucible", "ui", "service", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "crucible");
+    assert_eq!(status["unit"], "ssf@crucible.service");
+}
+
+#[test]
+fn a_named_local_service_uses_only_its_target_unit() {
+    let root = Temp::new("target-service");
+    let config = root.0.join("factory/config");
+    let state = root.0.join("factory/state");
+    root.catalog(&format!(
+        "[servers.local]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n",
+        config, state
+    ));
+    root.use_real_server();
+    script(
+        &root.0.join("systemctl"),
+        "printf '%s\\n' \"$*\" >> \"$TEST_ROOT/systemctl-args\"\ncase \"$*\" in *is-enabled*ssf@local.service*) exit 0;; *is-active*ssf@local.service*) exit 0;; *is-failed*) exit 1;; *is-enabled*ssf.service*|*is-active*ssf.service*) exit 1;; esac",
+    );
+
+    let output = root
+        .client()
+        .args(["--server", "local", "ui", "service", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "local");
+    assert_eq!(status["unit"], "ssf@local.service");
+
+    let output = root
+        .client()
+        .args(["--server", "local", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "local");
+    assert_eq!(status["transport"], "local");
+
+    let output = root
+        .client()
+        .args(["--server", "local", "ui", "service", "enable"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let calls = std::fs::read_to_string(root.0.join("systemctl-args")).unwrap();
+    assert!(
+        calls.contains("--user enable --now ssf@local.service"),
+        "{calls}"
+    );
+    assert!(!calls.contains("enable --now ssf.service"), "{calls}");
+
+    script(
+        &root.0.join("systemctl"),
+        "printf '%s\\n' \"$*\" >> \"$TEST_ROOT/refusal-calls\"\ncase \"$*\" in *is-active*ssf.service*) exit 0;; *is-enabled*ssf.service*) exit 0;; esac",
+    );
+    let output = root
+        .client()
+        .args(["--server", "local", "ui", "service", "enable"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("legacy singleton service is still"));
+    let calls = std::fs::read_to_string(root.0.join("refusal-calls")).unwrap();
+    assert!(!calls.contains("enable --now ssf@local.service"), "{calls}");
+}
+
+#[test]
+fn server_target_is_resolved_before_factory_configuration() {
+    let root = Temp::new("server-target-context");
+    let config = root.0.join("factory/config");
+    let state = root.0.join("factory/state");
+    std::fs::create_dir_all(&config).unwrap();
+    root.catalog(&format!(
+        "[servers.local]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n\n[servers.cloud]\ntransport = \"ssh\"\ndestination = \"cloud.example\"\n",
+        config, state
+    ));
+    std::fs::write(root.0.join("config/config.toml"), "ambient = [broken").unwrap();
+    std::fs::write(config.join("config.toml"), "selected = [broken").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ssf-server"))
+        .env("SSF_CONFIG_DIR", root.0.join("config"))
+        .env("SSF_STATE_DIR", root.0.join("state"))
+        .args(["--target", "local", "--once"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains(&config.join("config.toml").to_string_lossy().to_string()),
+        "{error}"
+    );
+    assert!(!error.contains("ambient ="), "{error}");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ssf-server"))
+        .env("SSF_CONFIG_DIR", root.0.join("config"))
+        .env("SSF_STATE_DIR", root.0.join("state"))
+        .args(["--target", "cloud"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("cannot have a service on this host"));
 }

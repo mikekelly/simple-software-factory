@@ -50,10 +50,13 @@ For an established enabled VM, verify `ssf vm status` and `ssf status`, run
 before adding another target. Migration preserves the runtime and guest data;
 stop if SSF reports conflicting legacy and target-owned settings.
 VM lifecycle commands use `ssf --server NAME vm ...`. Setup, service controls
-and uninstall still refuse a namespaced target; the compatibility supervisor
-also refuses when several VMs exist. Until #261's per-target service work is
-installed, operate additional VMs manually and do not improvise background
-units.
+are selected the same way: `ssf --server NAME ui service enable|disable|status`.
+Linux uses `ssf@NAME.service`; macOS uses `dev.ssf.server.NAME` and logs to
+`~/Library/Logs/ssf/NAME.log`. Before enabling the first target service, inspect
+and stop the legacy singleton with `systemctl --user disable --now ssf.service`
+or `brew services stop ssf`; SSF refuses target enablement while it is active or
+enabled so two supervisors cannot own one factory. Setup and uninstall still
+refuse a namespaced target; do not improvise other units.
 Keyboard and mouse selection can focus a matched agent when running inside
 Herdr; matching is scoped to the Herdr server where the TUI runs, including
 its other tabs and workspaces. The optional plugin is only a launch shortcut.
