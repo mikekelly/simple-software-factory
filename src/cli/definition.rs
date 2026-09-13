@@ -302,6 +302,41 @@ pub(super) enum ServerCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Add a local, managed VM, or SSH/cloud server.
+    Add {
+        name: String,
+        /// Add an isolated factory on this computer.
+        #[arg(long, group = "server_transport", required = true)]
+        local: bool,
+        /// Add a managed VM on this computer.
+        #[arg(long, group = "server_transport", required = true)]
+        vm: bool,
+        /// Add an already-operated server reached through SSH.
+        #[arg(
+            long,
+            value_name = "DESTINATION",
+            group = "server_transport",
+            required = true
+        )]
+        ssh: Option<String>,
+        /// Local factory configuration directory (requires --local and --state-dir).
+        #[arg(long, value_name = "PATH")]
+        config_dir: Option<PathBuf>,
+        /// Local factory state directory (requires --local and --config-dir).
+        #[arg(long, value_name = "PATH")]
+        state_dir: Option<PathBuf>,
+        /// Persisted backend VM identity (requires --vm).
+        #[arg(long)]
+        runtime_name: Option<String>,
+        /// VM build/runtime base directory (requires --vm).
+        #[arg(long, value_name = "PATH")]
+        vm_dir: Option<PathBuf>,
+        /// Host SSH port for the VM (requires --vm).
+        #[arg(long)]
+        ssh_port: Option<u16>,
+    },
+    /// Forget a server without deleting its factory data or VM.
+    Remove { name: String },
     /// Adopt the existing enabled [vm] configuration as a named VM server.
     MigrateVm {
         #[arg(default_value = "ssf-server")]

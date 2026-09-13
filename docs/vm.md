@@ -22,9 +22,8 @@ either way: the same scripts provision it, the same units run in it, and
 the same `ssf vm` commands drive it.
 
 ```sh
+ssf setup                 # once: creates the sole public VM target `ssf-server`
 ssf vm build              # once: makes and provisions the guest (a few minutes); picks the backend for this machine
-ssf config set vm.enabled true
-systemctl --user restart ssf.service   # macOS: brew services start ssf; or, by hand: ssf vm start
 ssf vm status             # whether the VM runs and its daemon answers, and which harnesses are logged in there
 ssf vm login              # sign a harness in inside the guest (see below)
 ssf vm tailscale          # optional: enrol the guest in your Tailscale network
@@ -63,6 +62,8 @@ target even though its settings no longer live in the guest factory's
 Multiple catalog-owned VMs can be operated independently with the same selector:
 
 ```sh
+ssf server add crucible --vm
+ssf --server crucible vm build
 ssf --server crucible vm start
 ssf --server ssf-server vm status
 ssf --server crucible status
@@ -402,9 +403,9 @@ VM, stop the service first, since it restarts a VM that goes away under
 it:
 
 ```sh
-systemctl --user stop ssf.service    # macOS: brew services stop ssf; or `ssf vm stop` for a VM started by hand
+ssf ui service disable               # add --server NAME when several targets exist
 ssf vm grow                          # or: ssf vm grow --data-gib 200
-systemctl --user start ssf.service   # macOS: brew services start ssf; or `ssf vm start`
+ssf ui service enable                # or `ssf vm start` for a VM operated by hand
 ```
 
 `ssf vm status` shows the sizes and, with the guest reachable, the data

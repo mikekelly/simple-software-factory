@@ -31,6 +31,7 @@
 //! on the host starts the VM and watches it, so the service is unchanged.
 
 mod lima;
+pub(crate) use lima::MAX_NAME_LEN as MAX_LIMA_NAME_LEN;
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;

@@ -1,11 +1,12 @@
 # Simple Software Factory configuration (~/.config/ssf/config.toml); every key
 # is explained in docs/configuration.md.
-# Client-side named routes are separate, in ~/.config/ssf/servers.toml; they do
-# not belong in this factory-owned file.
+# Client-side named routes are separate, in ~/.config/ssf/servers.toml; create
+# them with `ssf server add`, not in this factory-owned file.
 # Most of this is written for you by `ssf repo add` or `ssf config set`
 # (the bar widget only shows state); the token is read from gh's keyring, or from
 # ~/.config/ssf/token (0600) after `ssf auth login --token`, never from here.
-# In VM mode this example spans two owners: [vm] and [dashboard] belong on the host.
+# In legacy VM mode this example spans two owners. New `ssf setup` installations
+# store [vm] through the `ssf-server` catalog target; [dashboard] remains on the host.
 # Factory settings and credentials belong in the guest persistent home.
 # Use the CLI after starting the VM: factory commands route into the guest;
 # `ssf config get|set vm.<key>` and `dashboard.<key>` stay on the host. Paths below are guest paths

@@ -53,11 +53,18 @@ and run the command for your platform (**you** for sudo):
 
 Package installation only installs SSF's files. It does not create user
 configuration, authenticate a bot, enable the service, or install the optional
-Omarchy widget. Prepare the current user explicitly after installation:
+Omarchy widget. Prepare the current user explicitly after installation. The
+recommended path creates one managed VM server named `ssf-server`, selected
+implicitly because it is the only target, and enables only its target service:
 
 ```sh
 ssf setup
 ```
+
+If you have already chosen the less-isolated host alternative, create it as the
+sole target before setup instead: `ssf server add local --local && ssf setup`.
+Do not create both merely to compare them; adding the second target intentionally
+makes unqualified commands require a selection.
 
 The package contains the `ssf` client and the `ssf-server` daemon. A local
 client executes the adjacent server-side command endpoint. From any
@@ -79,17 +86,19 @@ distinct; select each VM lifecycle command by name. The compatibility service
 refuses to guess between several VMs. Once targets are migrated, stop the legacy
 singleton and enable each
 selected service with `ssf --server NAME ui service enable`; Linux uses
-`ssf@NAME.service`, while macOS uses one launchd agent per name. `ssf setup`
-and uninstall remain installation-wide until the next setup stage.
+`ssf@NAME.service`, while macOS uses one launchd agent per name. Setup follows
+the selected target; uninstall remains installation-wide and refuses named
+local/VM targets.
 An established enabled VM can be adopted without rebuilding or moving it with
 `ssf server migrate-vm`; first confirm `ssf vm status` and the guest factory,
 then run the migration and confirm `ssf --server ssf-server vm status` and
 `ssf --server ssf-server status` before adding another target.
 
-On Linux this creates the initial configuration and enables and starts the
-user service for `default.target`. It asks before enabling systemd linger so
+On Linux this creates the conventional target and enables
+`ssf@ssf-server.service` for `default.target`. It asks before enabling systemd linger so
 the service can start at boot and remain available after logout. On macOS it
-creates the initial configuration; start the Homebrew service in step 6.
+creates the target and enables its launchd agent; step 6 builds the VM it will
+supervise.
 
 Before running the install command, supply any prerequisites the package
 cannot provide:
@@ -147,8 +156,8 @@ bot, service, driver, repositories and agent command links are expected.
 Resolve unreadable config or a missing GitHub CLI / ssf binary now. A
 missing host herdr is expected if you will use the VM.
 
-Logs: `journalctl --user -fu ssf.service` on Linux;
-`tail -f "$(brew --prefix)/var/log/ssf.log"` on macOS.
+Logs: `journalctl --user -fu ssf@ssf-server.service` on Linux;
+`tail -f ~/Library/Logs/ssf/ssf-server.log` on macOS.
 
 ## 3. Create the bot account
 
@@ -310,18 +319,12 @@ Per-repository Orca settings are ignored inside it.
 
 ```sh
 ssf vm build
-ssf config set vm.enabled true
 ```
 
-Then start the service:
-
-```sh
-systemctl --user restart ssf.service   # Linux
-# macOS: brew services start ssf
-```
-
-The service owns the VM from now on. If you previously disabled ssf with
-`ssf ui service disable`, use `ssf ui service enable` to clear that state.
+The target service enabled by setup owns the VM and retries until the build is
+available. If you previously disabled it, use
+`ssf --server ssf-server ui service enable` (or unqualified `ssf ui service
+enable` while it is the only target).
 
 `ssf vm build` selects the platform's backend, sizes the VM, and records
 those choices in `[vm]`. Existing sizes are preserved; use `--vcpus`,
@@ -340,6 +343,17 @@ See [Inside a VM](vm.md) for shared files, persistence, attaching to
 herdr, SSH access, rebuilding and resetting.
 
 ### Alternative: on the host, in herdr or in Orca
+
+Choose this shape before the first setup by creating the sole local target:
+
+```sh
+ssf server add local --local
+ssf setup
+```
+
+This uses isolated paths outside the legacy `~/.config/ssf` and
+`~/.local/state/ssf` trees. An established host-mode installation is instead
+registered in place as `local` when its next `ssf setup` runs.
 
 The `driver` key picks where workspaces and terminals live; herdr when
 unset. A `[[repo]]` can override it (`ssf repo add ... --driver orca`),
@@ -570,7 +584,7 @@ GitHub (@mentioning it, or a review request, works too).
 - **If nothing happens**: `ssf doctor` first (it names most causes:
   token, driver, harness login, allowed users), then `ssf status` (the
   repository's last error is on it), then `journalctl --user -fu
-  ssf.service` (macOS: `tail -f $(brew --prefix)/var/log/ssf.log`; in
+  ssf@NAME.service` (macOS: `tail -f ~/Library/Logs/ssf/NAME.log`; in
   the VM, `ssf vm logs` for the guest daemon). An issue
   assigned by an account without Write is logged once and ignored (step
   5).
@@ -604,10 +618,10 @@ Upgrade the package like any other: the next release's file with the
 command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst`, `sudo apt
 install ./ssf_*_amd64.deb`, `sudo dnf install ./ssf-*.x86_64.rpm`); on
 Omarchy, once ssf is in its repository, `sudo pacman -Syu`. The
-package's hook restarts `ssf.service` in every running user session (or
-tells you to, when it finds none). On macOS it is `brew upgrade ssf`,
-then `brew services restart ssf`, since Homebrew restarts nothing on its
-own; the restart takes the guest down and up with the new binary
+package's hook reloads systemd and restarts every active package-owned legacy
+or target service in each running user session. On macOS, run `brew upgrade
+ssf`, then disable and enable each selected target service so its generated
+launchd agent uses the new binary. The restart takes the guest down and up with the new binary
 (fetched from the release as the guest's `ssf-<version>-linux-<arch>`
 at that start), the same as `ssf vm restart` for a VM started by hand.
 What that restart means:

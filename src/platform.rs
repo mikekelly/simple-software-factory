@@ -260,6 +260,43 @@ pub fn legacy_service_active() -> bool {
         .is_ok_and(|status| status.success())
 }
 
+pub fn named_service_enabled_or_active(name: &str) -> Result<bool> {
+    if is_macos() {
+        let label = format!("dev.ssf.server.{name}");
+        let uid = unsafe { libc::getuid() };
+        let loaded = Command::new("launchctl")
+            .args(["print", &format!("gui/{uid}/{label}")])
+            .stdin(Stdio::null())
+            .status()
+            .context("checking the selected launchd service")?
+            .success();
+        let installed = dirs::home_dir().is_some_and(|home| {
+            home.join("Library/LaunchAgents")
+                .join(format!("{label}.plist"))
+                .is_file()
+        });
+        return Ok(loaded || installed);
+    }
+    let unit = format!("ssf@{name}.service");
+    for action in ["is-enabled", "is-active"] {
+        let output = Command::new("systemctl")
+            .args(["--user", action, "--quiet", &unit])
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| format!("checking {unit}"))?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        if !matches!(output.status.code(), Some(1 | 3 | 4)) {
+            bail!(
+                "could not inspect {unit}: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(false)
+}
+
 /// The command a person types to `start`, `stop` or `restart` the daemon's
 /// service on `os` (`linux`, `macos`).
 pub fn service_hint_for(os: &str, action: &str) -> String {

@@ -460,7 +460,7 @@ pub fn set_service_enabled(enabled: bool) -> Result<()> {
 
 /// [`set_service_enabled`], choosing what a failed service command does.
 pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> Result<()> {
-    if enabled && platform::service_target().is_some() && legacy_service_enabled_or_active() {
+    if enabled && platform::service_target().is_some() && legacy_service_enabled_or_active()? {
         let stop = if platform::is_macos() {
             platform::service_hint_for("macos", "stop")
         } else {
@@ -500,20 +500,31 @@ pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> 
     report_service(result, what, on_error)
 }
 
-fn legacy_service_enabled_or_active() -> bool {
+pub(crate) fn legacy_service_enabled_or_active() -> Result<bool> {
     if platform::is_macos() {
         let enabled = dirs::home_dir().is_some_and(|home| {
             home.join("Library/LaunchAgents/homebrew.mxcl.ssf.plist")
                 .is_file()
         });
-        return enabled || platform::legacy_service_active();
+        return Ok(enabled || platform::legacy_service_active());
     }
-    platform::legacy_service_active()
-        || Command::new("systemctl")
-            .args(["--user", "is-enabled", "--quiet", platform::SERVICE])
+    for action in ["is-enabled", "is-active"] {
+        let output = Command::new("systemctl")
+            .args(["--user", action, "--quiet", platform::SERVICE])
             .stdin(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+            .output()
+            .context("checking the legacy singleton service")?;
+        if output.status.success() {
+            return Ok(true);
+        }
+        if !matches!(output.status.code(), Some(1 | 3 | 4)) {
+            bail!(
+                "could not inspect the legacy singleton service: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(false)
 }
 
 /// Say what systemctl (or `brew services`) said when it failed. It used

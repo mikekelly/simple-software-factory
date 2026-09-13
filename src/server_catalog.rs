@@ -325,6 +325,201 @@ impl Catalog {
         self.servers.get(name)
     }
 
+    pub(crate) fn len(&self) -> usize {
+        self.servers.len()
+    }
+
+    pub(crate) fn add_local(
+        name: &str,
+        config_dir: Option<PathBuf>,
+        state_dir: Option<PathBuf>,
+    ) -> Result<Target> {
+        let (config_dir, state_dir) = match (config_dir, state_dir) {
+            (None, None) => {
+                let home = dirs::home_dir().context("no home directory for local server paths")?;
+                (
+                    home.join(".config/ssf-factories").join(name),
+                    home.join(".local/state/ssf-factories").join(name),
+                )
+            }
+            (Some(config), Some(state)) => (config, state),
+            _ => bail!("--config-dir and --state-dir must be supplied together"),
+        };
+        Self::add(
+            name,
+            Target::Local {
+                config_dir: Some(config_dir.to_string_lossy().into_owned()),
+                state_dir: Some(state_dir.to_string_lossy().into_owned()),
+            },
+        )
+    }
+
+    pub(crate) fn add_ssh(name: &str, destination: String) -> Result<Target> {
+        Self::add(name, Target::Ssh { destination })
+    }
+
+    pub(crate) fn add_vm(
+        name: &str,
+        runtime_name: Option<String>,
+        dir: Option<PathBuf>,
+        ssh_port: Option<u16>,
+    ) -> Result<Target> {
+        let catalog = Self::load()?;
+        let runtime_name = runtime_name.unwrap_or_else(|| catalog.next_runtime_name(name));
+        let dir = match dir {
+            Some(dir) => dir,
+            None => dirs::home_dir()
+                .context("no home directory for VM storage")?
+                .join(".local/share/ssf/vms")
+                .join(name),
+        };
+        let ssh_port = match ssh_port {
+            Some(port) => port,
+            None => catalog.next_vm_port()?,
+        };
+        let config = crate::config::VmConfig {
+            enabled: true,
+            name: runtime_name.clone(),
+            dir: dir.to_string_lossy().into_owned(),
+            ssh_port,
+            ..Default::default()
+        };
+        Self::add(
+            name,
+            Target::Vm {
+                runtime_name,
+                backend: None,
+                config: Some(Box::new(config)),
+            },
+        )
+    }
+
+    /// Create the recommended first VM while retaining the established
+    /// backend identity and resource defaults.
+    pub(crate) fn add_conventional_vm() -> Result<Target> {
+        let config = crate::config::VmConfig {
+            enabled: true,
+            ssh_port: Self::load()?.next_vm_port()?,
+            ..Default::default()
+        };
+        let runtime_name = config.name.clone();
+        Self::add(
+            "ssf-server",
+            Target::Vm {
+                runtime_name,
+                backend: None,
+                config: Some(Box::new(config)),
+            },
+        )
+    }
+
+    pub(crate) fn migrate_legacy_local() -> Result<Target> {
+        Self::add(
+            "local",
+            Target::Local {
+                config_dir: None,
+                state_dir: None,
+            },
+        )
+    }
+
+    fn add(name: &str, target: Target) -> Result<Target> {
+        validate_name(name)?;
+        let mut catalog = Self::load()?;
+        if catalog.servers.contains_key(name) {
+            bail!("SSF server {name:?} is already configured");
+        }
+        catalog.servers.insert(name.to_owned(), target.clone());
+        catalog.exists = true;
+        catalog.validate()?;
+        catalog.save()?;
+        Ok(target)
+    }
+
+    pub(crate) fn remove(name: &str) -> Result<Target> {
+        let mut catalog = Self::load()?;
+        let target = catalog
+            .servers
+            .remove(name)
+            .with_context(|| format!("unknown SSF server {name:?}"))?;
+        catalog.validate()?;
+        if catalog.servers.is_empty() {
+            match std::fs::remove_file(path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error).context("removing the empty server catalog"),
+            }
+        } else {
+            catalog.save()?;
+        }
+        Ok(target)
+    }
+
+    fn next_runtime_name(&self, public_name: &str) -> String {
+        let used = self
+            .servers
+            .values()
+            .filter_map(|target| match target {
+                Target::Vm { runtime_name, .. } => Some(runtime_name.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut base: String = public_name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .take(crate::vm::MAX_LIMA_NAME_LEN)
+            .collect();
+        if base.is_empty() {
+            base = "vm".into();
+        }
+        if !used.contains(base.as_str()) {
+            return base;
+        }
+        for suffix in 2..=9999 {
+            let suffix = suffix.to_string();
+            let keep = crate::vm::MAX_LIMA_NAME_LEN.saturating_sub(suffix.len());
+            let candidate = format!("{}{suffix}", base.chars().take(keep).collect::<String>());
+            if !used.contains(candidate.as_str()) {
+                return candidate;
+            }
+        }
+        unreachable!("fewer than 10,000 catalog servers have valid unique names")
+    }
+
+    fn next_vm_port(&self) -> Result<u16> {
+        let used = self
+            .servers
+            .values()
+            .filter_map(|target| match target {
+                Target::Vm {
+                    config: Some(config),
+                    ..
+                } => Some(config.ssh_port),
+                _ => None,
+            })
+            .flat_map(|port| [port, port.saturating_add(1)])
+            .collect::<std::collections::BTreeSet<_>>();
+        for port in (2222u16..65000).step_by(10) {
+            let build_port = port + 1;
+            if used.contains(&port) || used.contains(&build_port) {
+                continue;
+            }
+            let Ok(ssh) = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)) else {
+                continue;
+            };
+            let Ok(build) =
+                std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, build_port))
+            else {
+                drop(ssh);
+                continue;
+            };
+            drop((ssh, build));
+            return Ok(port);
+        }
+        bail!("could not find a free VM SSH/build port pair")
+    }
+
     /// Compatibility for an installation-wide process with no explicit target.
     /// It may supervise one owned VM, but must never guess between several.
     pub(crate) fn sole_owned_vm_context() -> Result<Option<SelectedVmContext>> {
@@ -800,6 +995,18 @@ mod tests {
             ssh_port,
             crate::config::BackendKind::Firecracker,
         )
+    }
+
+    #[test]
+    fn generated_vm_runtime_names_fit_lima_and_avoid_catalog_collisions() {
+        let mut catalog = Catalog::default();
+        catalog.servers.insert(
+            "first".into(),
+            owned_vm("crucibl", "/tmp/ssf-vms/first", 3222),
+        );
+        let generated = catalog.next_runtime_name("Crucible.Project");
+        assert_eq!(generated, "crucib2");
+        assert!(generated.len() <= crate::vm::MAX_LIMA_NAME_LEN);
     }
 
     #[test]

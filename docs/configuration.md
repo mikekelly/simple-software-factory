@@ -95,8 +95,10 @@ enable a target service while that singleton is enabled or active; stop it with
 `systemctl --user disable --now ssf.service` or `brew services stop ssf` first.
 This prevents two supervisors from owning the same factory during migration.
 
-`setup` and `uninstall` are not yet target-aware. Uninstall refuses a migrated
-VM or namespaced local target rather than applying installation-wide removal.
+`setup` is target-aware: a fresh `ssf setup` creates the conventional sole VM
+target `ssf-server`, while `ssf --server NAME setup` prepares a selected local
+or VM target. `uninstall` is not yet target-aware and refuses a migrated VM or
+namespaced local target rather than applying installation-wide removal.
 Package upgrade and removal do discover all package-owned target services:
 upgrade restarts active instances, while removal verifies, stops and disables
 each instance before removing the binaries and preserves factory data.
@@ -114,10 +116,26 @@ Selection has no configurable default:
 
 `ssf server list [--json]` and `ssf server show NAME [--json]` inspect the
 catalog. They are client-wide and ignore `SSF_SERVER`; passing `--server` to
-them is an error. `ssf server migrate-vm [NAME]` adopts the enabled legacy VM;
-`NAME` defaults to `ssf-server`. Other entries are currently added by writing
-`servers.toml`, which SSF validates in full before using any entry; CLI add/remove operations
-will arrive with the remaining target-management work.
+them is an error. Add targets without editing TOML:
+
+```sh
+ssf server add local --local
+ssf server add crucible --vm
+ssf server add cloud --ssh ssf@factory.example.com
+```
+
+Local defaults are isolated under `~/.config/ssf-factories/NAME` and
+`~/.local/state/ssf-factories/NAME`; override both together with
+`--config-dir` and `--state-dir`. VM creation persists a Lima-safe runtime
+identity, a distinct directory and a currently free SSH/build port pair;
+`--runtime-name`, `--vm-dir` and `--ssh-port` override them. Creation validates
+the entire resulting catalog before writing it.
+
+`ssf server migrate-vm [NAME]` adopts the enabled legacy VM; `NAME` defaults to
+`ssf-server`. `ssf server remove NAME` refuses while that target's service is
+enabled or active, removes only the catalog entry, and reports the local paths
+or VM resources it retained. Destroying a VM remains a separate selected
+operation.
 
 Before migration, `vm.enabled = true` makes the host own `[vm]` lifecycle
 settings. After migration those settings are the VM target's nested `config`

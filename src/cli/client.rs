@@ -146,10 +146,7 @@ fn refuse_unsafe_global_command(route: &server_catalog::Route, command: &Command
     if route.local_context.is_some()
         && matches!(
             command,
-            Command::Setup
-                | Command::VmInit { .. }
-                | Command::Vm { .. }
-                | Command::Uninstall { .. }
+            Command::VmInit { .. } | Command::Vm { .. } | Command::Uninstall { .. }
         )
     {
         bail!(
@@ -177,7 +174,7 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
             if json {
                 let rows: Vec<_> = catalog
                     .list()
-                    .map(|(name, target)| server_catalog_json(name, target))
+                    .map(|(name, target)| server_catalog_json(name, target, catalog.len() == 1))
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else if catalog.list().next().is_none() {
@@ -196,7 +193,11 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&server_catalog_json(&name, target))?
+                    serde_json::to_string_pretty(&server_catalog_json(
+                        &name,
+                        target,
+                        catalog.len() == 1,
+                    ))?
                 );
             } else {
                 println!("name:       {name}");
@@ -237,6 +238,72 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
             }
             Ok(())
         }
+        ServerCommand::Add {
+            name,
+            local,
+            vm,
+            ssh,
+            config_dir,
+            state_dir,
+            runtime_name,
+            vm_dir,
+            ssh_port,
+        } => {
+            if !local && (config_dir.is_some() || state_dir.is_some()) {
+                bail!("--config-dir and --state-dir require --local");
+            }
+            if !vm && (runtime_name.is_some() || vm_dir.is_some() || ssh_port.is_some()) {
+                bail!("--runtime-name, --vm-dir and --ssh-port require --vm");
+            }
+            let target = if local {
+                server_catalog::Catalog::add_local(&name, config_dir, state_dir)?
+            } else if vm {
+                server_catalog::Catalog::add_vm(&name, runtime_name, vm_dir, ssh_port)?
+            } else {
+                server_catalog::Catalog::add_ssh(
+                    &name,
+                    ssh.context("an SSH destination is required")?,
+                )?
+            };
+            println!("Added SSF server {name:?} ({}).", target.transport());
+            let count = server_catalog::Catalog::load()?.len();
+            if count == 1 {
+                println!("It is selected automatically while it is the only configured server.");
+            } else {
+                println!(
+                    "There are now {count} servers; target-scoped commands require `--server NAME`."
+                );
+            }
+            Ok(())
+        }
+        ServerCommand::Remove { name } => {
+            if platform::named_service_enabled_or_active(&name)? {
+                bail!(
+                    "server {name:?} still has an enabled or active service; run `ssf --server {name} ui service disable` first"
+                );
+            }
+            let target = server_catalog::Catalog::remove(&name)?;
+            println!(
+                "Removed SSF server {name:?} from the catalog; its {} data was not deleted.",
+                target.transport()
+            );
+            match target {
+                server_catalog::Target::Local {
+                    config_dir: Some(config),
+                    state_dir: Some(state),
+                } => println!("Retained {config} and {state}."),
+                server_catalog::Target::Vm {
+                    runtime_name,
+                    config: Some(config),
+                    ..
+                } => println!(
+                    "Retained VM runtime {runtime_name:?} and its resources under {}.",
+                    config.dir
+                ),
+                _ => {}
+            }
+            Ok(())
+        }
         ServerCommand::MigrateVm { name } => {
             if server_catalog::Catalog::migrate_legacy_vm(&name)? {
                 println!(
@@ -250,7 +317,11 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
     }
 }
 
-fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_json::Value {
+fn server_catalog_json(
+    name: &str,
+    target: &server_catalog::Target,
+    implicit: bool,
+) -> serde_json::Value {
     match target {
         server_catalog::Target::Local {
             config_dir,
@@ -258,6 +329,7 @@ fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_jso
         } => serde_json::json!({
             "name": name,
             "transport": "local",
+            "implicit": implicit,
             "config_dir": config_dir,
             "state_dir": state_dir,
         }),
@@ -268,6 +340,7 @@ fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_jso
         } => serde_json::json!({
             "name": name,
             "transport": "vm",
+            "implicit": implicit,
             "runtime_name": runtime_name,
             "backend": backend,
             "config": config,
@@ -275,6 +348,7 @@ fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_jso
         server_catalog::Target::Ssh { destination } => serde_json::json!({
             "name": name,
             "transport": "ssh",
+            "implicit": implicit,
             "destination": destination,
         }),
     }
