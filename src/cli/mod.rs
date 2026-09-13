@@ -50,6 +50,7 @@ pub use sessions::{
     handover_cancelled_text, handover_recorded_text, summary_quotes_a_sign_in_screen_text,
 };
 
+pub(crate) use auth::hostname;
 pub(crate) use client::remote_client_command;
 pub(crate) use launch::{client_executable, server_executable};
 pub(crate) use sessions::purge;

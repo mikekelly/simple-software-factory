@@ -32,6 +32,9 @@ The live terminal dashboard is included in the Linux and macOS client. Run
 `ssf dashboard` in any terminal, or `ssf --server HOST dashboard` /
 `SSF_SERVER=HOST ssf dashboard` for a remote factory. A local VM uses the host
 client's normal VM forwarding. No browser or Herdr installation is required.
+The dashboard keeps one `status --json --watch` stream open (and one SSH
+channel for a remote factory). Only driver-reported agents become cards;
+monitored items without an agent are listed separately.
 Keyboard and mouse selection can focus a matched agent when running inside
 Herdr; matching is scoped to the Herdr server where the TUI runs, including
 its other tabs and workspaces. The optional plugin is only a launch shortcut.

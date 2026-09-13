@@ -17,7 +17,6 @@ use unicode_width::UnicodeWidthChar;
 #[path = "dashboard_herdr.rs"]
 mod herdr;
 
-const POLL: Duration = Duration::from_secs(2);
 const STALE: Duration = Duration::from_secs(10);
 const CARD_HEIGHT: usize = 6;
 const HEADER: usize = 3;
@@ -53,16 +52,31 @@ impl Drop for Terminal {
     }
 }
 
-struct Worker(tokio::task::JoinHandle<()>);
+struct Worker(Option<tokio::task::JoinHandle<()>>);
+impl Worker {
+    fn new(handle: tokio::task::JoinHandle<()>) -> Self {
+        Self(Some(handle))
+    }
+    async fn stop(mut self) {
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
     }
 }
 
 #[derive(Default)]
 struct View {
     cards: Vec<Value>,
+    monitored_items: Vec<Value>,
+    server: String,
     selected: usize,
     first: usize,
     warning: Option<String>,
@@ -85,6 +99,18 @@ impl View {
             .unwrap_or(self.selected)
             .min(cards.len().saturating_sub(1));
         self.cards = cards.clone();
+        self.monitored_items = dashboard["monitored_items"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let hostname = payload["server"]["hostname"].as_str().unwrap_or_default();
+        let vm = payload["host_vm"]["name"].as_str().unwrap_or_default();
+        self.server = match (hostname.is_empty(), vm.is_empty()) {
+            (false, false) => format!("VM {vm} on {hostname}"),
+            (false, true) => hostname.to_owned(),
+            (true, false) => format!("VM {vm}"),
+            (true, true) => "unknown server".into(),
+        };
         self.warning = dashboard["warning"].as_str().map(str::to_owned);
         self.received = Some(Instant::now());
         self.error = None;
@@ -135,7 +161,7 @@ impl View {
     fn lines(&mut self, height: usize) -> Vec<String> {
         let count = self.visible(height);
         let mut lines = vec![
-            format!("SSF active agents ({})", self.cards.len()),
+            format!("SSF active agents ({}) — {}", self.cards.len(), self.server),
             self.status(Instant::now()),
             String::new(),
         ];
@@ -187,6 +213,17 @@ impl View {
             && self.error.is_none()
         {
             lines.push("No active agents".into());
+        }
+        if !self.monitored_items.is_empty() {
+            lines.push(format!(
+                "Monitored without an agent ({}): {}",
+                self.monitored_items.len(),
+                self.monitored_items
+                    .iter()
+                    .map(|item| text(item, "id"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         lines.truncate(height.saturating_sub(2));
         lines.resize(height.saturating_sub(2), String::new());
@@ -292,16 +329,19 @@ pub(crate) async fn run(server: Option<String>) -> Result<()> {
     let mut source = crate::dashboard_transport::StatusSource::new(server)?;
     let _terminal = Terminal::enter()?;
     let (sender, mut snapshots) = tokio::sync::mpsc::channel(1);
-    let worker = Worker(tokio::spawn(async move {
+    let worker = Worker::new(tokio::spawn(async move {
         loop {
             let result = source
-                .snapshot()
+                .next_snapshot()
                 .await
                 .map_err(|error| format!("{error:#}"));
+            let failed = result.is_err();
             if sender.send(result).await.is_err() {
                 break;
             }
-            tokio::time::sleep(POLL).await;
+            if failed {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
         }
     }));
     let (focus_sender, mut focus_results) = tokio::sync::mpsc::channel(1);
@@ -312,7 +352,7 @@ pub(crate) async fn run(server: Option<String>) -> Result<()> {
         tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
     draw(&mut view)?;
-    loop {
+    'dashboard: loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             _ = termination.recv() => break,
@@ -333,8 +373,8 @@ pub(crate) async fn run(server: Option<String>) -> Result<()> {
                     let mut activate = false;
                     match event::read()? {
                         Event::Key(key) if key.kind != event::KeyEventKind::Release => match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(()),
+                            KeyCode::Char('q') | KeyCode::Esc => break 'dashboard,
+                            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 'dashboard,
                             KeyCode::Down | KeyCode::Char('j') => view.select(1),
                             KeyCode::Up | KeyCode::Char('k') => view.select(-1),
                             KeyCode::PageDown => { let count = view.visible(height); view.select(count as isize); }
@@ -358,7 +398,7 @@ pub(crate) async fn run(server: Option<String>) -> Result<()> {
                             let harness = card["harness"].as_str().unwrap_or_default().to_owned();
                             let sender = focus_sender.clone();
                             view.notice = "Finding agent on this Herdr server…".into();
-                            focus_worker = Some(Worker(tokio::spawn(async move {
+                            focus_worker = Some(Worker::new(tokio::spawn(async move {
                                 let message = herdr::focus(&session, &harness).await.unwrap_or_else(|error| format!("{error:#}"));
                                 let _ = sender.send(message).await;
                             })));
@@ -368,7 +408,7 @@ pub(crate) async fn run(server: Option<String>) -> Result<()> {
         }
         draw(&mut view)?;
     }
-    drop(worker);
+    worker.stop().await;
     Ok(())
 }
 

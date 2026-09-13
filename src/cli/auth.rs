@@ -509,7 +509,7 @@ pub(super) fn pick_account(accounts: &[ghcli::Account]) -> Result<Option<String>
 /// This machine's name, for the label on the bot's GitHub key. Linux has
 /// `/etc/hostname`; macOS does not, and answers `scutil --get
 /// ComputerName` (the name a person gave the Mac) or `hostname`.
-pub(super) fn hostname() -> String {
+pub(crate) fn hostname() -> String {
     let ran = |program: &str, args: &[&str]| {
         std::process::Command::new(program)
             .args(args)

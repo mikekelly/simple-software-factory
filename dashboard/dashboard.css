@@ -113,6 +113,11 @@ dd { margin: 0; }
 .empty h2 { margin: 1rem 0 .25rem; color: #eef4f1; }
 .empty p { margin: 0; }
 
+.monitored { margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+.monitored h2 { font-size: 1rem; color: var(--muted); }
+.monitored ul { display: flex; flex-wrap: wrap; gap: .6rem 1.5rem; padding-left: 1.2rem; }
+.monitored a { color: #dceae4; }
+
 @media (max-width: 600px) {
   .masthead { align-items: start; flex-direction: column; padding-top: 2rem; }
   .refresh-block { width: 100%; justify-content: space-between; }

@@ -124,6 +124,10 @@ pub struct Session {
     /// binding but Orca has no such workspace), `unbound` (no workspace yet),
     /// `unknown` (Orca could not be asked).
     pub agent_state: String,
+    /// True only when the session driver reported an agent in this item's
+    /// workspace. `active` is issue monitoring state and must not be used as
+    /// evidence that an agent exists.
+    pub agent_live: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_assistant_message: Option<String>,
     /// Tool the agent is running right now, as `Name: input`.
@@ -411,6 +415,7 @@ impl Snapshot {
             })
             .collect();
         let mut payload = json!({
+            "server": {"hostname": crate::hostname(), "location": "local"},
             "bot_login": self.bot_login(),
             "token_configured": self.cfg.github_token().is_ok(),
             "service_enabled": crate::ui::service_enabled(),
@@ -628,6 +633,7 @@ fn join(
             by
         }),
         untagged_posts: item.untagged.len(),
+        agent_live: agent.is_some(),
         agent_state,
         last_assistant_message: agent.and_then(|a| a.last_assistant_message.clone()),
         tool,
@@ -930,17 +936,18 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     let rows = payload["sessions"]
         .as_array()
         .context("SSF returned status data in an unexpected format")?;
-    let active: Vec<_> = rows
+    let relevant: Vec<_> = rows
         .iter()
         .filter(|row| {
-            row["active"] == true
+            (row["active"] == true || row["agent_live"] == true)
                 && row["subscriber_only"] != true
                 && !text(row, "owner").is_empty()
         })
         .collect();
     let mut owners = Vec::new();
     let mut cards = Vec::new();
-    for row in &active {
+    let mut unattached = Vec::new();
+    for row in &relevant {
         let owner = text(row, "owner");
         if owners.contains(&owner) {
             continue;
@@ -950,16 +957,22 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             .iter()
             .find(|row| text(row, "id") == owner)
             .unwrap_or(&Value::Null);
-        let owned: Vec<_> = active
+        let owned: Vec<_> = relevant
             .iter()
             .copied()
-            .filter(|row| text(row, "owner") == owner)
+            .filter(|row| row["active"] == true && text(row, "owner") == owner)
             .collect();
-        let mut candidates = Vec::new();
-        if !primary.is_null() {
-            candidates.push(primary);
+        let mut candidates: Vec<_> = rows
+            .iter()
+            .filter(|candidate| {
+                candidate["agent_live"] == true
+                    && (text(candidate, "id") == owner || text(candidate, "owner") == owner)
+            })
+            .collect();
+        if candidates.is_empty() {
+            unattached.extend(owned.iter().map(|row| issue(row, owner)));
+            continue;
         }
-        candidates.extend(owned.iter().copied());
         candidates.sort_by(|a, b| text(b, "last_activity_at").cmp(text(a, "last_activity_at")));
         let runtime = candidates[0];
         let message = candidates
@@ -1013,7 +1026,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         None
     };
     Ok(
-        json!({"cards":cards,"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1024,8 +1037,8 @@ mod dashboard_tests {
     fn presents_server_ownership_and_latest_message_safely() {
         let snapshot = dashboard_presentation(&json!({"sessions":[
             {"id":"r#1","title":"Origin","active":false,"harness":"codex","url":"javascript:alert(1)"},
-            {"id":"r#2","owner":"r#1","active":true,"agent_state":"working","last_activity_at":"2026-09-12T12:00:00Z","last_assistant_message":" Earlier "},
-            {"id":"r#3","owner":"r#1","active":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> "},
+            {"id":"r#2","owner":"r#1","active":true,"agent_live":true,"agent_state":"working","last_activity_at":"2026-09-12T12:00:00Z","last_assistant_message":" Earlier "},
+            {"id":"r#3","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> "},
             {"id":"r#4","owner":"r#4","active":true,"subscriber_only":true}
         ]})).unwrap();
         let cards = snapshot["cards"].as_array().unwrap();
@@ -1060,7 +1073,7 @@ mod dashboard_tests {
     #[test]
     fn cards_carry_canonical_conversation_and_stale_daemon_warning() {
         let snapshot = dashboard_presentation(&json!({
-            "sessions":[{"id":"r#1", "owner":"r#1", "active":true,
+            "sessions":[{"id":"r#1", "owner":"r#1", "active":true, "agent_live":true,
                 "agent_session_id":"conversation-id"}],
             "service_active":true, "last_poll_at":"2000-01-01T00:00:00Z",
             "poll_interval_secs":10
@@ -1071,5 +1084,21 @@ mod dashboard_tests {
         let stopped =
             dashboard_presentation(&json!({"sessions":[],"service_active":false})).unwrap();
         assert!(stopped["warning"].as_str().unwrap().contains("inactive"));
+    }
+
+    #[test]
+    fn monitored_unbound_items_never_become_live_agent_cards() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#225","title":"Released origin","owner":"r#225","active":false,
+                "agent_live":false,"agent_state":"unbound","released_at":"2026-09-12T15:42:00Z"},
+            {"id":"r#226","title":"Still monitored","owner":"r#225","active":true,
+                "agent_live":false,"agent_state":"unbound"},
+            {"id":"r#227","title":"Also monitored","owner":"r#225","active":true,
+                "agent_live":false,"agent_state":"unbound"}
+        ]}))
+        .unwrap();
+        assert!(snapshot["cards"].as_array().unwrap().is_empty());
+        assert_eq!(snapshot["monitored_items"].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot["monitored_items"][0]["id"], "r#226");
     }
 }

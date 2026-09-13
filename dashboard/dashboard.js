@@ -2,6 +2,7 @@ const cardsNode = document.querySelector("#cards");
 const emptyNode = document.querySelector("#empty");
 const noticeNode = document.querySelector("#notice");
 const statusNode = document.querySelector("#refresh-status");
+const monitoredNode = document.querySelector("#monitored");
 const refreshButton = document.querySelector("#refresh");
 const template = document.querySelector("#card-template");
 let loading = false;
@@ -25,7 +26,7 @@ function activityLabel(value) {
   return `${relative} · ${date.toLocaleString()}`;
 }
 
-function render(cards) {
+function render(cards, monitoredItems) {
   const focused = cardsNode.contains(document.activeElement) && document.activeElement.matches("a")
     ? document.activeElement.dataset.issueId
     : null;
@@ -63,6 +64,19 @@ function render(cards) {
     if (replacement) replacement.focus({preventScroll: true});
   }
   emptyNode.hidden = cards.length !== 0;
+  const monitoredList = monitoredNode.querySelector("ul");
+  monitoredList.replaceChildren();
+  for (const issue of monitoredItems) {
+    const item = document.createElement("li");
+    const anchor = document.createElement("a");
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    issueLink(anchor, issue);
+    anchor.append(` — ${issue.title}`);
+    item.append(anchor);
+    monitoredList.append(item);
+  }
+  monitoredNode.hidden = monitoredItems.length === 0;
 }
 
 async function refresh() {
@@ -74,7 +88,7 @@ async function refresh() {
     const response = await fetch("api/status", {cache: "no-store"});
     const body = await response.json();
     if (!response.ok) throw new Error(body.error || `status request failed (${response.status})`);
-    render(body.cards);
+    render(body.cards, body.monitored_items || []);
     if (body.warning) emptyNode.hidden = true;
     noticeNode.textContent = body.warning ? `Status may be incomplete: ${body.warning}` : "";
     noticeNode.hidden = !body.warning;

@@ -77,6 +77,9 @@ pub(super) enum Command {
     Status {
         #[arg(long)]
         json: bool,
+        /// Keep the connection open and emit one JSON snapshot per line.
+        #[arg(long, requires = "json")]
+        watch: bool,
     },
     /// Show a live terminal dashboard (arrows/j/k, Enter to focus in Herdr, q to quit).
     Dashboard,

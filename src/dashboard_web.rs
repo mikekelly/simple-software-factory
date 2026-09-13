@@ -1,7 +1,7 @@
 //! Optional server-owned capability HTTP endpoint for canonical dashboard status.
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::{future::Future, io::Read, sync::Arc, time::Duration};
+use std::{future::Future, io::Read, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -40,14 +40,38 @@ where
         "Server web dashboard: http://{}/{token}/",
         listener.local_addr()?
     );
-    let source = Arc::new(tokio::sync::Mutex::new(
-        crate::dashboard_transport::StatusSource::new(None)?,
-    ));
+    let mut source = crate::dashboard_transport::StatusSource::new(None)?;
+    let (latest_tx, latest_rx) =
+        tokio::sync::watch::channel(None::<std::result::Result<Value, String>>);
+    let stream = async move {
+        loop {
+            let snapshot = source
+                .next_snapshot()
+                .await
+                .map_err(|error| format!("{error:#}"));
+            let failed = snapshot.is_err();
+            if latest_tx.send(Some(snapshot)).is_err() {
+                return Ok(());
+            }
+            if failed {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    };
     tokio::select! {
         result = daemon => result,
+        result = stream => result,
         result = serve(listener, token, move || {
-            let source = source.clone();
-            async move { source.lock().await.snapshot().await }
+            let mut latest = latest_rx.clone();
+            async move {
+                if latest.borrow().is_none() {
+                    latest.changed().await.context("SSF status stream stopped")?;
+                }
+                match latest.borrow().clone().context("SSF status stream has not started")? {
+                    Ok(value) => Ok(value),
+                    Err(error) => bail!(error),
+                }
+            }
         }) => result.context("server web dashboard stopped"),
     }
 }
@@ -197,6 +221,7 @@ fn presentation(payload: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn request(path: &str, host: &str, extra: &str) -> String {

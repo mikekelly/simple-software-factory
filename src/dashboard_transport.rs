@@ -7,11 +7,16 @@ use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use tokio::process::Command;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    process::{Child, ChildStdout, Command},
+};
 
 pub(crate) struct StatusSource {
     server: Option<String>,
     control_dir: Option<PathBuf>,
+    child: Option<Child>,
+    output: Option<BufReader<ChildStdout>>,
 }
 
 impl StatusSource {
@@ -31,17 +36,62 @@ impl StatusSource {
         Ok(Self {
             server,
             control_dir,
+            child: None,
+            output: None,
         })
     }
 
-    pub(crate) async fn snapshot(&mut self) -> Result<Value> {
-        let executable = crate::server_executable()?;
-        let mut command = status_command(
-            self.server.as_deref(),
-            &executable,
-            self.control_dir.as_deref(),
-        );
-        read_status(&mut command, Duration::from_secs(30)).await
+    /// Read the next snapshot from one long-running local process or SSH
+    /// channel. A reconnect creates a new stream; ordinary refreshes do not.
+    pub(crate) async fn next_snapshot(&mut self) -> Result<Value> {
+        if self.output.is_none() {
+            let executable = crate::server_executable()?;
+            let mut command = status_command(
+                self.server.as_deref(),
+                &executable,
+                self.control_dir.as_deref(),
+            );
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let mut child = command
+                .spawn()
+                .context("could not start SSF status stream")?;
+            let output = child
+                .stdout
+                .take()
+                .context("SSF status stream has no output")?;
+            self.child = Some(child);
+            self.output = Some(BufReader::new(output));
+        }
+        let mut line = String::new();
+        let read = tokio::time::timeout(
+            Duration::from_secs(30),
+            self.output.as_mut().unwrap().read_line(&mut line),
+        )
+        .await
+        .context("SSF status stream timed out")?
+        .context("reading SSF status stream")?;
+        if read == 0 {
+            self.output = None;
+            let mut child = self.child.take().context("SSF status stream stopped")?;
+            let mut detail = String::new();
+            if let Some(mut stderr) = child.stderr.take() {
+                let _ = stderr.read_to_string(&mut detail).await;
+            }
+            let status = child
+                .wait()
+                .await
+                .context("waiting for SSF status stream")?;
+            bail!(
+                "SSF status stream stopped ({status}): {}",
+                detail.trim().chars().take(2000).collect::<String>()
+            );
+        }
+        let payload: Value =
+            serde_json::from_str(line.trim()).context("SSF returned invalid status JSON")?;
+        if !payload.is_object() {
+            bail!("SSF returned status data in an unexpected format");
+        }
+        Ok(payload)
     }
 }
 
@@ -86,11 +136,12 @@ fn status_command(server: Option<&str>, executable: &Path, control_dir: Option<&
             .arg(crate::remote_client_command(&[
                 "status".into(),
                 "--json".into(),
+                "--watch".into(),
             ]));
         command
     } else {
         let mut command = Command::new(executable);
-        command.args(["__client", "status", "--json"]);
+        command.args(["__client", "status", "--json", "--watch"]);
         command
     };
     command.env_remove("SSF_SERVER");
@@ -98,6 +149,7 @@ fn status_command(server: Option<&str>, executable: &Path, control_dir: Option<&
     command
 }
 
+#[cfg(test)]
 async fn read_status(command: &mut Command, timeout: Duration) -> Result<Value> {
     let output = tokio::time::timeout(timeout, command.output())
         .await
@@ -134,7 +186,7 @@ mod tests {
     fn local_uses_canonical_server_endpoint() {
         let command = status_command(None, Path::new("/package/ssf-server"), None);
         assert_eq!(command.as_std().get_program(), "/package/ssf-server");
-        assert_eq!(args(&command), ["__client", "status", "--json"]);
+        assert_eq!(args(&command), ["__client", "status", "--json", "--watch"]);
     }
 
     #[test]
@@ -157,7 +209,7 @@ mod tests {
             [
                 "--",
                 "customer@cloud.example",
-                "ssf-server __client 'status' '--json'"
+                "ssf-server __client 'status' '--json' '--watch'"
             ]
         );
         let dir = dir.to_owned();

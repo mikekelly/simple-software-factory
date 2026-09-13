@@ -10,8 +10,9 @@ SSF_SERVER=customer@cloud.example ssf dashboard
 
 Linux and macOS clients include the TUI. No browser, Python, Omarchy or Herdr
 installation is required. Local factories, local VMs and remote factories use
-the standard SSF client/server transport. Configure SSH authentication first;
-remote polling uses noninteractive SSH and reuses one authenticated connection.
+the same long-running `ssf status --json --watch` stream. Configure SSH
+authentication first; a remote dashboard keeps one noninteractive SSH channel
+open for its lifetime rather than starting a connection on every refresh.
 
 The dashboard stays open and refreshes automatically. Use arrows or `j`/`k` to
 select a card, Enter to focus its agent in Herdr, and `q` or Ctrl-C to quit.
@@ -20,8 +21,11 @@ The terminal's normal screen and input mode are restored on exit. Issue IDs
 are hyperlinks in terminals supporting OSC8 links; use your terminal's normal
 modifier-click gesture to open them.
 
-Cards show the originating issue, additional active assigned issues, agent
-state, last activity and latest message or summary. They use the server's
+Cards are created only when the session driver reports a live agent. Open items
+that SSF still monitors but which have no agent are listed separately as
+"Monitored without an agent"; issue monitoring state is never treated as agent
+presence. Cards show the originating issue, additional active assigned issues,
+agent state, last activity and latest message or summary. They use the server's
 canonical ownership model; missing activity is shown as unknown. Connection
 errors retain the last successful cards with an explicit stale-state warning.
 VM, driver, inactive service and stale daemon states are shown as problems, not as an
