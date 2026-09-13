@@ -329,6 +329,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         && let cfg = Config::load()?
         && cfg.vm.enabled
     {
+        let selected_server = server_catalog::selected_vm_context()?.map(|context| context.name);
         let vm = factory_vm::Vm::new(&cfg);
         // Is the guest up? "No" and "could not ask" are different
         // answers: under lima the question forks `limactl`, and a fork
@@ -349,18 +350,27 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 Command::Status { json: true, watch } => {
                     if watch {
                         loop {
-                            println!("{}", vm_status_for_guest(probe_word(&probe)));
+                            println!(
+                                "{}",
+                                vm_status_for_guest(probe_word(&probe), selected_server.as_deref())
+                            );
                             std::io::Write::flush(&mut std::io::stdout())?;
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                         }
                     }
-                    println!("{}", vm_status_for_guest(probe_word(&probe)));
+                    println!(
+                        "{}",
+                        vm_status_for_guest(probe_word(&probe), selected_server.as_deref())
+                    );
                     return Ok(());
                 }
                 Command::Status { json: false, .. } => {
+                    let identity = match selected_server.as_deref() {
+                        Some(server) => format!("server {server} (runtime {})", cfg.vm.name),
+                        None => cfg.vm.name.clone(),
+                    };
                     println!(
-                        "vm:      {} is not running (`ssf vm start`, or `ssf ui service enable`)",
-                        cfg.vm.name
+                        "vm:      {identity} is not running (`ssf vm start`, or `ssf ui service enable`)"
                     );
                     return Ok(());
                 }
@@ -378,7 +388,11 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                     Command::Doctor | Command::Status { json: false, .. }
                 ) {
                     eprintln!(
-                        "host VM: {} ({backend}, {}); inspecting guest factory",
+                        "host VM{}: {} ({backend}, {}); inspecting guest factory",
+                        selected_server
+                            .as_deref()
+                            .map(|server| format!(" server {server}"))
+                            .unwrap_or_default(),
                         cfg.vm.name,
                         probe_word(&probe)
                     );
@@ -422,10 +436,15 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                                 .context("guest status returned invalid JSON")?;
                             answer["factory_location"] = "guest".into();
                             answer["factory_reachable"] = true.into();
+                            if let Some(server) = &selected_server {
+                                answer["server"] = server.clone().into();
+                                answer["transport"] = "vm".into();
+                            }
                             answer["host_vm"] = serde_json::json!({
                                 "name": cfg.vm.name, "backend": backend,
                                 "state": probe_word(&probe),
                                 "service_enabled": factory_ui::service_enabled(),
+                                "server": selected_server,
                             });
                             println!("{answer}");
                             std::process::exit(
@@ -433,7 +452,10 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                             );
                         }
                         None => {
-                            println!("{}", vm_status_for_guest(probe_word(&probe)));
+                            println!(
+                                "{}",
+                                vm_status_for_guest(probe_word(&probe), selected_server.as_deref())
+                            );
                             return Ok(());
                         }
                     }

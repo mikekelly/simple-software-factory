@@ -337,3 +337,56 @@ fn migrated_vm_configuration_drives_the_selected_endpoint() {
             .contains("already migrated")
     );
 }
+
+#[test]
+fn two_owned_vms_are_selected_independently() {
+    let root = Temp::new("two-owned-vms");
+    let crucible_dir = root.0.join("vm-crucible");
+    let factory_dir = root.0.join("vm-factory");
+    root.catalog(&format!(
+        "[servers.crucible]\ntransport = \"vm\"\nruntime_name = \"crucible\"\n[servers.crucible.config]\nenabled = true\nname = \"crucible\"\ndir = {:?}\nssh_port = 2444\n\n[servers.ssf-server]\ntransport = \"vm\"\nruntime_name = \"factory\"\n[servers.ssf-server.config]\nenabled = true\nname = \"factory\"\ndir = {:?}\nssh_port = 2555\n",
+        crucible_dir, factory_dir
+    ));
+    root.use_real_server();
+
+    let ambiguous = root
+        .client()
+        .args(["vm", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(!ambiguous.status.success());
+    assert!(
+        String::from_utf8_lossy(&ambiguous.stderr).contains("multiple SSF servers are configured")
+    );
+
+    for (server, runtime, port) in [
+        ("crucible", "crucible", 2444),
+        ("ssf-server", "factory", 2555),
+    ] {
+        let output = root
+            .client()
+            .args(["--server", server, "vm", "status", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(status["server"], server);
+        assert_eq!(status["name"], runtime);
+        assert_eq!(status["ssh_port"], port);
+    }
+
+    let output = root
+        .client()
+        .args(["--server", "crucible", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "crucible");
+    assert_eq!(status["transport"], "vm");
+    assert_eq!(status["host_vm"]["server"], "crucible");
+}

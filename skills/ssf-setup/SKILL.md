@@ -42,14 +42,18 @@ implicitly; with several, every factory command requires `--server NAME` or an
 explicit `SSF_SERVER=NAME`, and there is no persistent default. Inspect it with
 `ssf server list` / `ssf server show NAME`. The current catalog stage accepts
 namespaced local entries with distinct absolute `config_dir` and `state_dir`
-paths beside the existing factory, but it still accepts only one managed VM.
+paths beside the existing factory and several catalog-owned managed VMs. VM
+targets need unique runtime names, absolute non-overlapping VM directories and
+distinct SSH ports; Firecracker also reserves the adjacent provisioning port.
 For an established enabled VM, verify `ssf vm status` and `ssf status`, run
 `ssf server migrate-vm`, then verify both again explicitly as `ssf-server`
 before adding another target. Migration preserves the runtime and guest data;
 stop if SSF reports conflicting legacy and target-owned settings.
-Setup, service, VM lifecycle and uninstall commands refuse a namespaced target;
-do not improvise background units or attempt a second managed VM until #261's
-per-target service and VM work is installed.
+VM lifecycle commands use `ssf --server NAME vm ...`. Setup, service controls
+and uninstall still refuse a namespaced target; the compatibility supervisor
+also refuses when several VMs exist. Until #261's per-target service work is
+installed, operate additional VMs manually and do not improvise background
+units.
 Keyboard and mouse selection can focus a matched agent when running inside
 Herdr; matching is scoped to the Herdr server where the TUI runs, including
 its other tabs and workspaces. The optional plugin is only a launch shortcut.
