@@ -200,6 +200,11 @@ fn packages_leave_service_enablement_to_explicit_setup() {
         assert!(!unit.contains("ExecStartPre"));
         assert!(!unit.contains("ConditionPathExists"));
     }
+    for path in ["packaging/ssf@.service", "packaging/linux/ssf@.service"] {
+        let unit = read(path);
+        assert!(unit.contains("ExecStart=/usr/bin/ssf-server --target %i"));
+        assert!(unit.contains("WantedBy=default.target"));
+    }
     let post = read("packaging/linux/postinstall.sh");
     assert!(post.contains("ssf setup"));
     assert!(!post.contains("systemctl"));
@@ -218,13 +223,47 @@ fn removal_stops_only_the_package_owned_opted_in_unit() {
     let hook = read("packaging/linux/preremove.sh");
     assert!(hook.contains("FragmentPath"));
     assert!(hook.contains("/usr/lib/systemd/user/ssf.service"));
-    assert!(hook.contains("stop ssf.service"));
-    assert!(hook.contains("disable ssf.service"));
+    assert!(hook.contains("/usr/lib/systemd/user/ssf@.service"));
+    assert!(hook.contains("stop \"$unit\""));
+    assert!(hook.contains("disable \"$unit\""));
     assert!(hook.contains("daemon-reload"));
     assert!(hook.contains("upgrade|1) exit 0"));
     let alpm = read("packaging/ssf-pre-remove.hook");
     assert!(alpm.contains("Operation = Remove"));
     assert!(alpm.contains("AbortOnFail"));
+}
+
+#[cfg(unix)]
+#[test]
+fn removal_hook_discovers_and_stops_target_instances() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = std::env::temp_dir().join(format!("ssf-target-hook-{}", std::process::id()));
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("loginctl"), "#!/bin/sh\necho '1000 alice'\n").unwrap();
+    std::fs::write(
+        bin.join("systemctl"),
+        "#!/bin/sh\ncase \"$*\" in *is-system-running*) echo running;; *list-unit-files*) echo 'ssf@one.service enabled';; *list-units*) echo 'ssf@two.service loaded active running target';; *FragmentPath*ssf@*.service*) echo /usr/lib/systemd/user/ssf@.service;; *FragmentPath*) echo '';; *ExecStart*ssf@one.service*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --target one ; }';; *ExecStart*ssf@two.service*) echo '{ path=/usr/bin/ssf-server ; argv[]=/usr/bin/ssf-server --target two ; }';; *is-active*) exit 1;; *) echo \"$*\" >>\"$SSF_HOOK_LOG\";; esac\n",
+    )
+    .unwrap();
+    for name in ["loginctl", "systemctl"] {
+        std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let log = root.join("calls");
+    let status = Command::new("sh")
+        .arg(repo().join("packaging/linux/preremove.sh"))
+        .arg("0")
+        .env("PATH", format!("{}:/usr/bin", bin.display()))
+        .env("SSF_HOOK_LOG", &log)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let calls = std::fs::read_to_string(log).unwrap();
+    assert!(calls.contains("stop ssf@one.service"), "{calls}");
+    assert!(calls.contains("disable ssf@one.service"), "{calls}");
+    assert!(calls.contains("stop ssf@two.service"), "{calls}");
+    assert!(calls.contains("disable ssf@two.service"), "{calls}");
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[cfg(unix)]

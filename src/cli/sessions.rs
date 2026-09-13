@@ -1,17 +1,28 @@
 use super::prelude::*;
 
 pub(super) async fn status(json: bool, watch: bool) -> Result<()> {
+    let identity = server_catalog::selected_target_identity()?;
+    let qualify = |mut value: serde_json::Value| {
+        if let Some(identity) = &identity {
+            value["server"] = identity.name.clone().into();
+            value["transport"] = identity.transport.clone().into();
+        }
+        value
+    };
     if watch {
         loop {
             let snap = status::Snapshot::collect(Config::load()?).await?;
-            println!("{}", serde_json::to_string(&snap.to_json())?);
+            println!("{}", serde_json::to_string(&qualify(snap.to_json()))?);
             std::io::Write::flush(&mut std::io::stdout())?;
             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     } else {
         let snap = status::Snapshot::collect(Config::load()?).await?;
         if json {
-            println!("{}", serde_json::to_string_pretty(&snap.to_json())?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&qualify(snap.to_json()))?
+            );
         } else {
             print!("{}", status::render_status(&snap));
         }

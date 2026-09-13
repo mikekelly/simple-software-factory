@@ -75,7 +75,23 @@ while the whole catalog is loaded, before a lifecycle mutation. VM status names
 both the public server and backend runtime; a refused `vm destroy` names the
 public server and resolved directory. See the
 [server catalog](configuration.md#server-catalog) for a complete example and
-current service limitation.
+service setup.
+
+Each named VM can have its own supervisor. After stopping the legacy singleton,
+enable the selected services independently:
+
+```sh
+systemctl --user disable --now ssf.service       # macOS: brew services stop ssf
+ssf --server crucible ui service enable
+ssf --server ssf-server ui service enable
+ssf --server crucible ui service status
+```
+
+Linux uses `ssf@crucible.service` and `ssf@ssf-server.service`, with separate
+journals (`journalctl --user -fu ssf@crucible.service`). macOS creates separate
+launchd agents and logs under `~/Library/Logs/ssf/`. The explicit singleton
+shutdown is a one-time migration boundary: SSF refuses to start a target unit
+while the singleton could still be supervising that same VM.
 
 ## Backends
 

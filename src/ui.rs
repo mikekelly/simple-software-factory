@@ -415,19 +415,24 @@ pub fn remove_menu_text(existing: &str) -> Option<String> {
 
 pub fn service_enabled() -> bool {
     if platform::is_macos() {
+        if platform::service_target().is_some() {
+            return platform::target_launchd_plist().is_some_and(|path| path.is_file());
+        }
         return service_active();
     }
+    let unit = platform::service_unit();
     Command::new("systemctl")
-        .args(["--user", "is-enabled", "--quiet", platform::SERVICE])
+        .args(["--user", "is-enabled", "--quiet", &unit])
         .stdin(std::process::Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
 }
 
 pub fn service_failed() -> bool {
+    let unit = platform::service_unit();
     !platform::is_macos()
         && Command::new("systemctl")
-            .args(["--user", "is-failed", "--quiet", platform::SERVICE])
+            .args(["--user", "is-failed", "--quiet", &unit])
             .stdin(std::process::Stdio::null())
             .status()
             .is_ok_and(|status| status.success())
@@ -455,6 +460,16 @@ pub fn set_service_enabled(enabled: bool) -> Result<()> {
 
 /// [`set_service_enabled`], choosing what a failed service command does.
 pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> Result<()> {
+    if enabled && platform::service_target().is_some() && legacy_service_enabled_or_active() {
+        let stop = if platform::is_macos() {
+            platform::service_hint_for("macos", "stop")
+        } else {
+            "systemctl --user disable --now ssf.service".into()
+        };
+        bail!(
+            "the legacy singleton service is still enabled or active; stop it first with `{stop}`, then enable the selected target service"
+        );
+    }
     let (result, what) = if platform::is_macos() {
         if enabled {
             (crate::platform::service_start(), "start")
@@ -463,8 +478,9 @@ pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> 
         }
     } else {
         let action = if enabled { "enable" } else { "disable" };
+        let unit = platform::service_unit();
         let out = Command::new("systemctl")
-            .args(["--user", action, "--now", platform::SERVICE])
+            .args(["--user", action, "--now", &unit])
             .stdin(std::process::Stdio::null())
             .output()
             .context("running systemctl")
@@ -474,7 +490,7 @@ pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> 
                 } else {
                     bail!(
                         "`systemctl --user {action} --now {}` failed: {}",
-                        platform::SERVICE,
+                        unit,
                         String::from_utf8_lossy(&out.stderr).trim()
                     )
                 }
@@ -482,6 +498,22 @@ pub fn set_service_enabled_on_error(enabled: bool, on_error: OnServiceError) -> 
         (out, action)
     };
     report_service(result, what, on_error)
+}
+
+fn legacy_service_enabled_or_active() -> bool {
+    if platform::is_macos() {
+        let enabled = dirs::home_dir().is_some_and(|home| {
+            home.join("Library/LaunchAgents/homebrew.mxcl.ssf.plist")
+                .is_file()
+        });
+        return enabled || platform::legacy_service_active();
+    }
+    platform::legacy_service_active()
+        || Command::new("systemctl")
+            .args(["--user", "is-enabled", "--quiet", platform::SERVICE])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 /// Say what systemctl (or `brew services`) said when it failed. It used

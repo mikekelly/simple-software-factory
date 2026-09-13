@@ -218,11 +218,46 @@ pub const LAUNCHD_LABEL: &str = "homebrew.mxcl.ssf";
 /// The Homebrew formula (`brew services <action> ssf`).
 pub const BREW_FORMULA: &str = "ssf";
 
+pub fn service_target() -> Option<String> {
+    crate::server_catalog::selected_target_name()
+}
+
+pub fn service_unit() -> String {
+    service_target()
+        .map(|target| format!("ssf@{target}.service"))
+        .unwrap_or_else(|| SERVICE.into())
+}
+
+fn launchd_label() -> String {
+    service_target()
+        .map(|target| format!("dev.ssf.server.{target}"))
+        .unwrap_or_else(|| LAUNCHD_LABEL.into())
+}
+
 /// `gui/<uid>/homebrew.mxcl.ssf`: the service in the user's login session.
 fn launchd_target() -> String {
     // SAFETY: getuid cannot fail.
     let uid = unsafe { libc::getuid() };
-    format!("gui/{uid}/{LAUNCHD_LABEL}")
+    format!("gui/{uid}/{}", launchd_label())
+}
+
+pub fn legacy_service_active() -> bool {
+    if is_macos() && !crate::vm::in_guest() {
+        let uid = unsafe { libc::getuid() };
+        return Command::new("launchctl")
+            .args(["print", &format!("gui/{uid}/{LAUNCHD_LABEL}")])
+            .stdin(Stdio::null())
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && launchctl_says_running(&String::from_utf8_lossy(&output.stdout))
+            });
+    }
+    Command::new("systemctl")
+        .args(["--user", "is-active", "--quiet", SERVICE])
+        .stdin(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// The command a person types to `start`, `stop` or `restart` the daemon's
@@ -237,6 +272,20 @@ pub fn service_hint_for(os: &str, action: &str) -> String {
 
 /// `service_hint_for` on this machine.
 pub fn service_hint(action: &str) -> String {
+    if let Some(target) = service_target() {
+        return if is_macos() {
+            format!(
+                "ssf --server {target} ui service {}",
+                match action {
+                    "start" => "enable",
+                    "stop" => "disable",
+                    other => other,
+                }
+            )
+        } else {
+            format!("systemctl --user {action} ssf@{target}.service")
+        };
+    }
     service_hint_for(std::env::consts::OS, action)
 }
 
@@ -276,7 +325,7 @@ pub fn service_active() -> bool {
     if !crate::vm::in_guest() {
         cmd.arg("--user");
     }
-    cmd.args(["is-active", "--quiet", SERVICE])
+    cmd.args(["is-active", "--quiet", &service_unit()])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -308,13 +357,17 @@ pub fn service_restart() -> Result<()> {
 /// the launchd agent (a `launchctl kill` alone would not hold: the agent
 /// is `keep_alive`, so launchd would start `ssf-server` again).
 fn service_action(action: &str) -> Result<()> {
+    let unit = service_unit();
     let mut cmd = if is_macos() {
+        if service_target().is_some() {
+            return target_launchd_action(action);
+        }
         let mut c = Command::new("brew");
         c.args(["services", action, BREW_FORMULA]);
         c
     } else {
         let mut c = Command::new("systemctl");
-        c.args(["--user", action, SERVICE]);
+        c.args(["--user", action, &unit]);
         c
     };
     let out = cmd
@@ -325,6 +378,116 @@ fn service_action(action: &str) -> Result<()> {
         bail!(
             "`{}` failed: {}",
             service_hint(action),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub fn target_launchd_plist() -> Option<PathBuf> {
+    let target = service_target()?;
+    dirs::home_dir().map(|home| {
+        home.join("Library/LaunchAgents")
+            .join(format!("dev.ssf.server.{target}.plist"))
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn target_launchd_plist() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn target_launchd_plist_body(label: &str, server: &Path, target: &str, log: &Path) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n<key>Label</key><string>{}</string>\n<key>ProgramArguments</key><array><string>{}</string><string>--target</string><string>{}</string></array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n<key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string>\n</dict></plist>\n",
+        xml_escape(label),
+        xml_escape(&server.to_string_lossy()),
+        xml_escape(target),
+        xml_escape(&log.to_string_lossy()),
+        xml_escape(&log.to_string_lossy()),
+    )
+}
+
+#[cfg(not(target_os = "macos"))]
+fn target_launchd_action(_action: &str) -> Result<()> {
+    unreachable!()
+}
+
+#[cfg(target_os = "macos")]
+fn target_launchd_action(action: &str) -> Result<()> {
+    let target = service_target().context("no selected service target")?;
+    let plist = target_launchd_plist().context("no home directory for launchd agent")?;
+    let domain = format!("gui/{}", unsafe { libc::getuid() });
+    let registered = || -> Result<bool> {
+        Ok(Command::new("launchctl")
+            .args(["print", &launchd_target()])
+            .stdin(Stdio::null())
+            .output()
+            .context("running launchctl")?
+            .status
+            .success())
+    };
+    if action == "stop" {
+        if !registered()? {
+            let _ = std::fs::remove_file(&plist);
+            return Ok(());
+        }
+        let out = Command::new("launchctl")
+            .args(["bootout", &launchd_target()])
+            .output()
+            .context("running launchctl")?;
+        if !out.status.success() {
+            bail!(
+                "`launchctl bootout` failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        let _ = std::fs::remove_file(&plist);
+        return Ok(());
+    }
+    if action == "restart" && registered()? {
+        let out = Command::new("launchctl")
+            .args(["kickstart", "-k", &launchd_target()])
+            .output()
+            .context("running launchctl")?;
+        if !out.status.success() {
+            bail!(
+                "`launchctl kickstart` failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
+        return Ok(());
+    }
+    let server = crate::server_executable()?;
+    let logs = dirs::home_dir()
+        .context("no home directory for launchd logs")?
+        .join("Library/Logs/ssf");
+    std::fs::create_dir_all(plist.parent().expect("LaunchAgents parent"))?;
+    std::fs::create_dir_all(&logs)?;
+    let log = logs.join(format!("{target}.log"));
+    let body = target_launchd_plist_body(&launchd_label(), &server, &target, &log);
+    crate::config::write_atomic(&plist, body.as_bytes(), 0o600)?;
+    let mut command = Command::new("launchctl");
+    if registered()? {
+        command.args(["kickstart", "-k", &launchd_target()]);
+    } else {
+        command.args(["bootstrap", &domain]).arg(&plist);
+    }
+    let out = command.output().context("running launchctl")?;
+    if !out.status.success() {
+        bail!(
+            "launching the target service failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -559,5 +722,19 @@ mod tests {
         assert!(!launchctl_says_running(""));
         assert!(launchd_target().ends_with("/homebrew.mxcl.ssf"));
         assert!(launchd_target().starts_with("gui/"));
+    }
+
+    #[test]
+    fn target_launchd_agent_has_one_explicit_target_and_private_log() {
+        let body = target_launchd_plist_body(
+            "dev.ssf.server.one",
+            Path::new("/opt/a&b/ssf-server"),
+            "one",
+            Path::new("/Users/me/Library/Logs/ssf/one.log"),
+        );
+        assert!(body.contains("<string>--target</string><string>one</string>"));
+        assert!(body.contains("/opt/a&amp;b/ssf-server"));
+        assert_eq!(body.matches("<key>Label</key>").count(), 1);
+        assert_eq!(body.matches("one.log").count(), 2);
     }
 }

@@ -16,6 +16,7 @@ pub(crate) struct StatusSource {
     server: Option<String>,
     local_context: Option<crate::server_catalog::LocalContext>,
     vm_context: Option<crate::server_catalog::SelectedVmContext>,
+    identity: Option<crate::server_catalog::TargetIdentity>,
     control_dir: Option<PathBuf>,
     child: Option<Child>,
     output: Option<BufReader<ChildStdout>>,
@@ -23,13 +24,14 @@ pub(crate) struct StatusSource {
 
 impl StatusSource {
     pub(crate) fn new(server: Option<String>) -> Result<Self> {
-        Self::new_with_context(server, None, None)
+        Self::new_with_context(server, None, None, None)
     }
 
     pub(crate) fn new_with_context(
         server: Option<String>,
         local_context: Option<crate::server_catalog::LocalContext>,
         vm_context: Option<crate::server_catalog::SelectedVmContext>,
+        identity: Option<crate::server_catalog::TargetIdentity>,
     ) -> Result<Self> {
         let control_dir = if server.is_some() {
             // Short path also fits macOS's Unix socket path limit. Atomic
@@ -47,6 +49,7 @@ impl StatusSource {
             server,
             local_context,
             vm_context,
+            identity,
             control_dir,
             child: None,
             output: None,
@@ -64,6 +67,7 @@ impl StatusSource {
                 self.control_dir.as_deref(),
                 self.local_context.as_ref(),
                 self.vm_context.as_ref(),
+                self.identity.as_ref(),
             );
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = command
@@ -126,6 +130,7 @@ fn status_command(
     control_dir: Option<&Path>,
     local_context: Option<&crate::server_catalog::LocalContext>,
     vm_context: Option<&crate::server_catalog::SelectedVmContext>,
+    identity: Option<&crate::server_catalog::TargetIdentity>,
 ) -> Command {
     let mut command = if let Some(host) = server {
         let mut command = Command::new("ssh");
@@ -173,7 +178,16 @@ fn status_command(
     }
     command
         .env_remove("SSF_SERVER")
-        .env_remove(crate::server_catalog::SELECTED_VM_ENV);
+        .env_remove(crate::server_catalog::SELECTED_VM_ENV)
+        .env_remove(crate::server_catalog::SELECTED_TARGET_ENV);
+    if server.is_none()
+        && let Some(identity) = identity
+    {
+        command.env(
+            crate::server_catalog::SELECTED_TARGET_ENV,
+            serde_json::to_string(identity).expect("serializing selected target identity"),
+        );
+    }
     if server.is_none()
         && let Some(context) = vm_context
     {
@@ -221,7 +235,14 @@ mod tests {
 
     #[test]
     fn local_uses_canonical_server_endpoint() {
-        let command = status_command(None, Path::new("/package/ssf-server"), None, None, None);
+        let command = status_command(
+            None,
+            Path::new("/package/ssf-server"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(command.as_std().get_program(), "/package/ssf-server");
         assert_eq!(args(&command), ["__client", "status", "--json", "--watch"]);
     }
@@ -232,12 +253,17 @@ mod tests {
             config_dir: "/factory/one/config".into(),
             state_dir: "/factory/one/state".into(),
         };
+        let identity = crate::server_catalog::TargetIdentity {
+            name: "one".into(),
+            transport: "local".into(),
+        };
         let command = status_command(
             None,
             Path::new("/package/ssf-server"),
             None,
             Some(&context),
             None,
+            Some(&identity),
         );
         let environment: std::collections::BTreeMap<_, _> = command
             .as_std()
@@ -258,6 +284,12 @@ mod tests {
             Some(&Some("/factory/one/state".into()))
         );
         assert_eq!(environment.get("SSF_SERVER"), Some(&None));
+        let encoded = environment
+            .get(crate::server_catalog::SELECTED_TARGET_ENV)
+            .and_then(Option::as_ref)
+            .unwrap();
+        let decoded: crate::server_catalog::TargetIdentity = serde_json::from_str(encoded).unwrap();
+        assert_eq!(decoded, identity);
     }
 
     #[test]
@@ -278,6 +310,7 @@ mod tests {
             None,
             None,
             Some(&context),
+            None,
         );
         let encoded = command
             .as_std()
@@ -305,11 +338,13 @@ mod tests {
             Some(dir),
             None,
             None,
+            None,
         );
         let second = status_command(
             source.server.as_deref(),
             Path::new("unused"),
             Some(dir),
+            None,
             None,
             None,
         );

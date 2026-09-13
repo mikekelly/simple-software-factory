@@ -391,9 +391,11 @@ targets can coexist with the existing local or VM factory. `ssf server
 migrate-vm` adopts an existing VM in place as `ssf-server`, moving only its
 host-side settings into the catalog after verification. Multiple owned VMs can
 then be operated with `ssf --server NAME vm ...` when their runtime names,
-directories and ports are distinct. Background service controls remain
-installation-wide and refuse namespaced targets; per-target services are
-tracked in [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+directories and ports are distinct. Background service controls are
+target-qualified too: `ssf --server NAME ui service enable` supervises only
+that local or VM target. Stop the legacy singleton before enabling the first
+target service. Setup and target-aware uninstall remain tracked in
+[#261](https://github.com/mikekelly/simple-software-factory/issues/261).
 
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the

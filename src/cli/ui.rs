@@ -37,11 +37,15 @@ pub(super) fn ui_cmd(command: UiCommand) -> Result<()> {
                 if json {
                     println!(
                         "{}",
-                        json!({"enabled": enabled, "active": active, "failed": failed, "configured": configured})
+                        json!({"server": server_catalog::selected_target_name(), "unit": platform::service_unit(), "enabled": enabled, "active": active, "failed": failed, "configured": configured})
                     );
                 } else {
+                    if let Some(server) = server_catalog::selected_target_name() {
+                        println!("server:     {server}");
+                    }
                     println!(
-                        "configured: {configured}\nenabled:    {enabled}\nactive:     {active}\nfailed:     {failed}"
+                        "unit:       {}\nconfigured: {configured}\nenabled:    {enabled}\nactive:     {active}\nfailed:     {failed}",
+                        platform::service_unit()
                     );
                 }
                 Ok(())

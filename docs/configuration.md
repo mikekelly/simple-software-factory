@@ -85,15 +85,21 @@ or overlap another namespaced target's paths. They must also be outside the
 legacy `~/.config/ssf` and `~/.local/state/ssf` trees so a legacy uninstall
 cannot recursively remove another factory.
 
-VM lifecycle commands are target-aware, but background service controls,
-`setup` and `uninstall` remain installation-wide and refuse namespaced local
-targets; uninstall also refuses a migrated VM until removal is target-aware.
-The compatibility service supervises a sole migrated VM, but fails closed when
-several owned VMs exist rather than choosing one. Operate additional VMs
-manually until per-target services land. Run namespaced daemons explicitly with
-matching `SSF_CONFIG_DIR` and `SSF_STATE_DIR` only for development; normal
-per-target services remain tracked in
-[#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+VM lifecycle and background service commands are target-aware. On Linux,
+`ssf --server NAME ui service enable` enables `ssf@NAME.service`; on macOS it
+creates a private `dev.ssf.server.NAME` launchd agent. Each daemon resolves its
+catalog target before reading configuration or state, and each service has its
+own systemd journal or `~/Library/Logs/ssf/NAME.log`. The old `ssf.service` /
+Homebrew singleton remains only for unmigrated installations. SSF refuses to
+enable a target service while that singleton is enabled or active; stop it with
+`systemctl --user disable --now ssf.service` or `brew services stop ssf` first.
+This prevents two supervisors from owning the same factory during migration.
+
+`setup` and `uninstall` are not yet target-aware. Uninstall refuses a migrated
+VM or namespaced local target rather than applying installation-wide removal.
+Package upgrade and removal do discover all package-owned target services:
+upgrade restarts active instances, while removal verifies, stops and disables
+each instance before removing the binaries and preserves factory data.
 
 Selection has no configurable default:
 

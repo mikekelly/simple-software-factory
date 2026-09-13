@@ -75,6 +75,13 @@ The installed service runs the last package installed, so a change is
 verified with unit tests and scratch runs rather than by expecting to see
 it live.
 
+Named installed services run `ssf-server --target NAME`. Linux uses the
+package-owned `ssf@NAME.service`; macOS uses a generated launchd agent. Do not
+point a target unit at a scratch catalog: its startup deliberately resolves the
+real client catalog before switching to target paths. Keep using an explicitly
+isolated `SSF_CONFIG_DIR`/`SSF_STATE_DIR` and a foreground process for scratch
+work.
+
 ## Tests write nowhere but a temporary directory
 
 A test must not write outside a temporary directory it made itself:

@@ -28,6 +28,16 @@ both `SSF_CONFIG_DIR` and `SSF_STATE_DIR` on its endpoint process and dashboard
 stream; an `ssh` entry supplies its configured destination. Without a catalog,
 omitted and explicit destinations preserve the legacy local/SSH behavior.
 
+A target-qualified daemon starts as `ssf-server --target NAME`. It loads and
+validates the client catalog first, refuses SSH targets, then pins the local
+config/state context or owned VM context for the life of the process. Linux's
+package-owned `ssf@.service` supplies the instance name; macOS writes one
+user-owned launchd plist with the same explicit argument per enabled target.
+The singleton service is retained for legacy installations but cannot be
+enabled alongside a target instance through SSF. Package removal enumerates
+instances and accepts only the package template with the matching target
+argument before stopping anything.
+
 ## Dashboards
 
 `ssf dashboard` runs a Ratatui terminal UI on the client over one long-running

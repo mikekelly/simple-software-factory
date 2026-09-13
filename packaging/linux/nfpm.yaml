@@ -112,6 +112,10 @@ contents:
     dst: /usr/lib/systemd/user/ssf.service
     file_info:
       mode: 0644
+  - src: packaging/linux/ssf@.service
+    dst: /usr/lib/systemd/user/ssf@.service
+    file_info:
+      mode: 0644
   - src: manifest.json
     dst: /usr/share/ssf/omarchy-plugin/manifest.json
     file_info:
