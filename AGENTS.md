@@ -14,3 +14,5 @@
   changes, and `skills/ssf-setup/SKILL.md` when its setup or operating guidance
   changes. Test daemon behavior in isolation; see `docs/development.md`
   before running scratch instances.
+- Prefer the smallest change that solves the issue. Treat data loss, startup,
+  installation and workspace safety as high-risk boundaries during review.

@@ -1,6 +1,6 @@
 ---
 name: ssf-setup
-description: Setup runbook for Simple Software Factory (ssf), the daemon for Linux (Omarchy, Arch, Debian/Ubuntu, Fedora) and macOS that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf", when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, and who commits), when running the factory in the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (its gauntlet, scope, plan and delegation rules), when choosing a repository's harness, model and effort level, project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the `ssf` blocks the daemon posts on an issue (daemon.event_comments).
+description: Setup runbook for Simple Software Factory (ssf), the daemon for Linux (Omarchy, Arch, Debian/Ubuntu, Fedora) and macOS that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf", when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, and who commits), when running the factory in the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (its issue ownership, communication, board workflow, delegation, review and completion rules), when choosing a repository's harness, model and effort level, project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the `ssf` blocks the daemon posts on an issue (daemon.event_comments).
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
@@ -190,17 +190,23 @@ reflect transcript writes, and missing activity times remain unknown.
     A reinstall uses `ssf setup` for the user and adds the widget separately;
     preserved configuration, state, clones and worktrees are reused unless the
     person explicitly chose `--data`.
-11. **Keep project review bounded** when writing
-    `SSF.md`. Keep shared guidance there (or in `repo.prompt_file`). Optional
+11. **Keep SSF-agent guidance distinct from repository policy** when writing
+    `SSF.md`. Put issue ownership and communication, board choices and status
+    mappings, delegation and handoffs, bounded review, completion and merge
+    authority there (or in `repo.prompt_file`). Put repository-wide build,
+    test, implementation, architecture, domain and safety policy in
+    `AGENTS.md`. SSF injects its file into the issue-owning main session, not
+    harness-created subagents, so it can define orchestration without polluting
+    delegated task contexts. Optional
     `SSF.<harness>.md` files at the checkout root add instructions only for the
-    selected harness, including handovers; for example, put Codex-specific
-    subagent guidance in `SSF.codex.md`. They do not replace the shared notes.
+    selected harness's main session, including handovers; for example, put
+    Codex-specific subagent orchestration guidance in `SSF.codex.md`. They do
+    not replace the shared SSF guidance.
     Use the [boilerplate](../../SSF.example.md) and
     [gauntlet guidance](../../docs/sessions.md#second-opinions-the-gauntlet)
     for one behavior review and at most one focused follow-up for substantive
     fixes. Unresolved defects require simplification or a maintainer decision;
-    wording changes do not restart review. Match validation to the change,
-    with package builds for packaging/installation changes. Keep one outcome
+    wording changes do not restart review. Keep one outcome
     per issue and implementation tasks within it. Use `Refs #N` for ongoing
     management/tracking work; reserve `Closes #N` for complete delivery.
     State completion and merge authority explicitly: the owning issue agent

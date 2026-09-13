@@ -461,7 +461,7 @@ pub(super) enum RepoCommand {
         /// Extra instructions appended to the initial prompt for this repo.
         #[arg(long)]
         instructions: Option<String>,
-        /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
+        /// SSF agent guidance appended to the main session, relative to the worktree unless absolute (default: SSF.md).
         #[arg(long, value_name = "PATH")]
         prompt_file: Option<String>,
         /// Logins that may drive this repository, comma-separated, replacing daemon.allowed_users
@@ -503,7 +503,7 @@ pub(super) enum RepoCommand {
         effort: Option<String>,
         #[arg(long)]
         instructions: Option<String>,
-        /// File appended to the initial prompt, relative to the worktree unless absolute (default: SSF.md).
+        /// SSF agent guidance appended to the main session, relative to the worktree unless absolute (default: SSF.md).
         #[arg(long, value_name = "PATH")]
         prompt_file: Option<String>,
         /// Logins that may drive this repository, comma-separated, replacing daemon.allowed_users;

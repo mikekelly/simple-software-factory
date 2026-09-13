@@ -306,7 +306,7 @@ pub(super) async fn doctor() -> Result<()> {
         let bin = cmd.split_whitespace().next().unwrap_or("");
         let ok = which(bin).is_some() || installed.iter().any(|a| a.id == r.harness && a.installed);
         check(ok, format!("{}: harness `{}` installed", r.name, r.harness));
-        // The project notes (`SSF.md`, or `repo.prompt_file`): looked for
+        // The SSF agent guidance (`SSF.md`, or `repo.prompt_file`): looked for
         // on GitHub, on the branch the agents start from (`repo.base_branch`,
         // else the default branch), so no clone is needed; a machine path
         // is looked for here.
@@ -317,7 +317,7 @@ pub(super) async fn doctor() -> Result<()> {
             check(
                 present,
                 format!(
-                    "{}: project notes at {} {}",
+                    "{}: SSF agent guidance at {} {}",
                     r.name,
                     notes_path.display(),
                     if present {
@@ -334,7 +334,9 @@ pub(super) async fn doctor() -> Result<()> {
                         .has_file(owner, name, notes, r.base_branch.as_deref())
                         .await
                     {
-                        Ok(true) => check(true, format!("{}: project notes ({notes})", r.name)),
+                        Ok(true) => {
+                            check(true, format!("{}: SSF agent guidance ({notes})", r.name))
+                        }
                         Ok(false) => check(
                             false,
                             format!(
@@ -350,7 +352,7 @@ pub(super) async fn doctor() -> Result<()> {
                         Err(e) => check(
                             false,
                             format!(
-                                "{}: project notes ({notes}) could not be checked: {e:#}",
+                                "{}: SSF agent guidance ({notes}) could not be checked: {e:#}",
                                 r.name
                             ),
                         ),
@@ -359,7 +361,7 @@ pub(super) async fn doctor() -> Result<()> {
                 _ => check(
                     false,
                     format!(
-                        "{}: project notes ({notes}) cannot be checked without a token",
+                        "{}: SSF agent guidance ({notes}) cannot be checked without a token",
                         r.name
                     ),
                 ),

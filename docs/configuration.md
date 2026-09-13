@@ -1,6 +1,6 @@
 # Configuration
 
-Every key in `~/.config/ssf/config.toml`, the per-project prompt file, model and effort settings, the permission-free commands each agent is started with, and who may drive the factory. For whoever sets up or tunes a factory; agents need none of it.
+Every key in `~/.config/ssf/config.toml`, the SSF agent guidance file, model and effort settings, the permission-free commands each agent is started with, and who may drive the factory. For whoever sets up or tunes a factory; agents need none of it.
 
 `~/.config/ssf/config.toml` is mostly written for you by `ssf repo add` and
 `ssf config set` (the bar widget only shows the state of the factory);
@@ -102,7 +102,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories (the bot's enrolled key is used) |
 | `repo.base_branch` | the driver's default base for the repository | Base ref for issue worktrees, e.g. `origin/main` |
 | `repo.instructions` | | Extra instructions appended to this repository's initial prompts, after `daemon.instructions`; a line or two, anything longer belongs in the prompt file |
-| `repo.prompt_file` | `SSF.md` | The per-project prompt file (below), relative to the worktree unless absolute or `~/` |
+| `repo.prompt_file` | `SSF.md` | The SSF agent guidance file (below), relative to the worktree unless absolute or `~/` |
 | `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
 | `repo.event_comments` | `daemon.event_comments` | Whether the daemon posts its events on this repository's items (`ssf repo set <owner/name> --event-comments false`) |
@@ -128,17 +128,23 @@ move), `ORCA_CLI_COMMAND` and `HERDR_COMMAND` (the driver binaries),
 source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
 `--log` reads).
 
-## The per-project prompt file
+## The SSF agent guidance file
 
-Notes that only matter to ssf agents, and so do not belong in `CLAUDE.md` or
-`AGENTS.md` (which conventions the project boards use, who to ask about what,
-how the humans want PRs written up, ...), go in an `SSF.md` at the root of
-the repository. When an agent is started for an item, ssf reads the file from
+The operating contract that only applies to an ssf-spawned agent goes in an
+`SSF.md` at the repository root: issue ownership and communication, project
+board choices and status mappings, delegation and handoffs, bounded review,
+completion and merge authority. Repository-wide build, test, implementation,
+architecture, domain and safety policy belongs in `AGENTS.md`, where it applies
+regardless of how an agent was started. SSF injects this guidance into the
+issue-owning main session, not into subagents the harness creates, so it can
+define the main agent's orchestration role without spending subagent context on
+workflow that does not apply to them. When an agent is started for an item, ssf
+reads `SSF.md` from
 the item's own checkout (so a PR branch that changes it is seen with its own
-version) and appends it to the initial prompt under a "Project notes" heading,
+version) and appends it to the initial prompt under an "SSF agent guidance" heading,
 after `daemon.instructions` and `repo.instructions`. The same text is included
 when an agent is started again from scratch. No file, or an empty one, adds
-nothing, and `ssf doctor` reports a repository whose notes are missing
+nothing, and `ssf doctor` reports a repository whose SSF guidance is missing
 (`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`;
 on a Mac the message names the Homebrew copy instead, under
 `$(brew --prefix)/share/ssf/`, since ssf looks beside its own binary
@@ -147,28 +153,30 @@ contents API on `repo.base_branch`
 (else the default branch), so no clone is needed; an absolute or `~/`
 `prompt_file` is looked for on the machine instead. `repo.prompt_file` names another
 file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
-path for notes you would rather not commit.
+path for SSF guidance you would rather not commit.
 
 For additional instructions specific to a harness, add `SSF.<harness>.md` at
 the checkout root, for example `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md`.
 Use the harness identifier from the configuration. ssf appends this file after
-the shared notes, under its own "Project notes" heading. It uses the harness
+the shared SSF guidance, under its own "Harness guidance" heading. It uses the harness
 actually starting the session, including after a handover or restart, and
 includes no other harness's file. These optional files are independent of
-`repo.prompt_file`: changing the shared notes path does not change their
+`repo.prompt_file`: changing the shared guidance path does not change their
 location. Missing, empty, or HTML-comment-only files add nothing; HTML
-comments are filtered just as in the shared notes. `ssf doctor` checks the
-shared notes only.
+comments are filtered just as in the shared guidance. `ssf doctor` checks the
+shared SSF guidance only.
+Harness guidance is also appended only to the issue-owning main session, not
+automatically to subagents that harness creates.
 
-Put project working preferences here (see [What the agent is told](prompts.md)).
+Put only SSF-session working preferences here (see [What the agent is told](prompts.md)).
 `repo.model` selects the session's model, not its subagents' models. Optional
-subagent preferences belong in these notes or `repo.instructions` and depend
+subagent preferences belong in this guidance or `repo.instructions` and depend
 on what the harness supports; they are not daemon-enforced settings (see
 [Choosing the harness and the model](setup.md#choosing-the-harness-and-the-model)).
 [`SSF.example.md`](../SSF.example.md) (installed as
 `/usr/share/ssf/SSF.example.md`, and on macOS as
-`$(brew --prefix)/share/ssf/SSF.example.md`) is a starting point with
-project preferences: one independently valuable outcome per issue, a short
+`$(brew --prefix)/share/ssf/SSF.example.md`) is a starting point for the SSF
+operating contract: one independently valuable outcome per issue, a short
 plan, useful delegation and concise delivery evidence. Implementation tasks
 stay on their owning issue; separate issues are for independently prioritized
 outcomes outside its scope. Use non-closing PR references for ongoing tracking
@@ -178,7 +186,8 @@ fixes. Unresolved defects mean simplifying or holding delivery, not extending
 the review loop. Validation matches the change; package builds are not a
 per-round requirement (see [Second
 opinions](sessions.md#second-opinions-the-gauntlet)).
-This repository's own [`SSF.md`](../SSF.md) supplies its current preferences.
+This repository's own [`SSF.md`](../SSF.md) supplies its SSF-session guidance;
+[`AGENTS.md`](../AGENTS.md) supplies its repository-wide policy.
 
 ## Models and effort levels
 
@@ -293,9 +302,8 @@ ssf repo set acme/widgets --command "claude --dangerously-skip-permissions --dis
 ssf repo set acme/widgets --clear command      # back to the default
 ```
 
-Behavioural limits (do not merge, do not
-close issues) belong in the [per-project prompt
-file](#the-per-project-prompt-file), not in the command. ssf has no
+SSF-session limits (do not merge, do not close issues) belong in the [SSF agent
+guidance file](#the-ssf-agent-guidance-file), not in the command. ssf has no
 tool allow/deny list of its own; who may *drive* the agents is the next
 section.
 

@@ -610,7 +610,7 @@ impl GitHub {
 
     /// Whether `path` exists in the repository, on `branch` or the default
     /// branch, through the contents API: one request, no clone (`ssf
-    /// doctor` looks for the project notes this way). A 404 is `false`.
+    /// doctor` looks for the SSF agent guidance this way). A 404 is `false`.
     pub async fn has_file(
         &self,
         owner: &str,

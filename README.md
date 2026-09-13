@@ -4,7 +4,7 @@ Assign a GitHub issue to a bot account and a coding agent picks it up on your
 machine: it gets a workspace of its own, works on the issue, opens a pull
 request, answers the review, and reports back on the issue. Every issue gets
 its own agent. The agents know about each other, about the project board, and
-about the notes your repository keeps for them.
+about the SSF operating guidance your repository keeps for them.
 
 ssf is a small daemon for Linux, packaged for [Omarchy](https://omarchy.org/),
 Arch, Debian/Ubuntu and Fedora. It runs the
@@ -125,8 +125,12 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   agent, or a person, says it can go.
 - **Agents know the project.** An agent is told the issue, everything that
   has happened on it, the project boards it is on and their columns, and
-  the notes your repository keeps in `SSF.md` (how you want work done,
-  who to ask, what the columns mean). It can see who else is working on the
+  the SSF operating contract your repository keeps in `SSF.md` (how it owns
+  and communicates work, who to ask, what the columns mean). Repository-wide
+  build, test and implementation policy remains in `AGENTS.md`. `SSF.md` is
+  injected into the issue-owning main agent, not its harness-created subagents,
+  so it can define an orchestration role without spending their context. The
+  main agent can see who else is working on the
   repository, follow other issues, hand work off by opening an issue
   assigned to the bot, and is expected to put its own work through a
   gauntlet (a fresh agent it arranges itself) before calling it done: one
@@ -229,7 +233,7 @@ The Linux packages install the same paths on every distribution:
 | `/usr/bin/ssf-server` | daemon and the server-side command endpoint |
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
 | `/usr/lib/systemd/user/ssf.service` | background user service, enabled for `default.target` by explicit `ssf setup` |
-| `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` |
+| `/usr/share/ssf/SSF.example.md` | a starting point for your repository's SSF-agent operating contract in `SSF.md` |
 | `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
 | `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
 | `/usr/share/doc/ssf/` | this file and `docs/`, [Setup](docs/setup.md) among them |
@@ -275,8 +279,9 @@ the short form after that explicit setup is:
    fable --effort medium` (the *harness* is the agent program: `claude`,
    `codex`, `gemini`, ...; `ssf agents` lists them, and the model and
    effort are worth choosing rather than leaving to the harness — not
-   every harness has both), and an `SSF.md` at its root telling agents
-   how you want work done, starting from
+   every harness has both), and an `SSF.md` at its root telling SSF-spawned
+   agents how to own and communicate work, manage the board, review and
+   complete it, starting from
    [`SSF.example.md`](SSF.example.md).
 
 `ssf doctor` after each step says what is still missing; the document
@@ -319,8 +324,8 @@ ssf doctor                        # token and scopes, drivers, harness logins, g
 If the commits should carry your own name rather than the bot's, a
 `[git]` table in the config says so while `gh` stays the bot (see
 [Committing as a person](docs/identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)).
-The per-project notes are described in [The per-project prompt
-file](docs/configuration.md#the-per-project-prompt-file); this
+The SSF agent guidance is described in [The SSF agent guidance
+file](docs/configuration.md#the-ssf-agent-guidance-file); this
 repository's own [`SSF.md`](SSF.md) is what produced the comments quoted
 above.
 
@@ -431,10 +436,10 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`
 | Read | When you want to know |
 |------|-----------------------|
 | [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository and the harness and model it runs on, upgrading, uninstalling |
-| [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` prompt file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
+| [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` agent-guidance file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
 | [Drivers](docs/drivers.md) | Orca versus herdr, and what each one does with workspaces and terminals |
 | [Inside a VM](docs/vm.md) | running the whole factory in a VM, Firecracker on Linux or lima on macOS: the backends, the image, what gets in, reaching it, what persists |
-| [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and what is left to `SSF.md` |
+| [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and the boundary between `SSF.md` and `AGENTS.md` |
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |
 | [Sessions](docs/sessions.md) | which session owns an item, second opinions, following and messaging other sessions, release and purge |
 | [Under the hood](docs/internals.md) | polling, delivery, resume and restarts; the `ssf status --json` fields; known limits |

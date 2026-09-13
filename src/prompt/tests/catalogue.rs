@@ -67,12 +67,12 @@ fn prompt_catalogue() {
     }];
     let notes = ProjectPrompt {
             source: "SSF.md".into(),
-            text: "# Notes for ssf agents\n\n\
-- Work on the issue's branch and open a PR that references the issue.\n\
-- Keep `cargo test` green and run `cargo fmt` and `cargo clippy` before pushing.\n\
-- Update `README.md` and `config.example.toml` for any user-visible behaviour.\n\
-- Rebuild the package with `cd packaging && makepkg -fd` before calling something done; commit the `pkgver` bump makepkg makes to `packaging/PKGBUILD`.\n\
-- The installed service runs the last package the maintainer installed, so verify daemon behaviour with unit tests and scratch `SSF_CONFIG_DIR`/`SSF_STATE_DIR` runs rather than expecting to see your change live."
+            text: "# SSF agent guidance\n\n\
+- Own the issue through delivery and keep its project-board status current.\n\
+- Post when starting, blocked and delivering; put decisions where collaborators can see them.\n\
+- Preserve the main session's context for orchestration and give subagents only their bounded tasks.\n\
+- Run a proportionate, bounded review and merge once validation and required review are complete.\n\
+- If completion is outside your authority, mention the person who must act and name the exact action."
                 .into(),
         };
     let back = LoginBack {

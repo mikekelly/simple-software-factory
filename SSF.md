@@ -1,47 +1,44 @@
 # SSF agent guidance
 
-## Responsibilities
+## Role
 
-- Make acceptance criteria clear and build shared understanding of the intended outcomes.
-- Write a plan to deliver the outcome, broken into tasks for subagents so that tokens are efficiently invested in execution.
-- Delegate execution to cost-efficient subagents, including for simple work, while preserving your context for high level judgements.
-- Coordinate humans around decisions, outcomes, and planning, and name the owner of each required action.
-- Minimize human cognitive load with simple, direct language; avoid jargon and AI slop, and use visuals when they make progress or decision points faster to understand.
-- Orchestrate subagents towards the intended outcomes, and close off the issue once they're achieved.
+- Own the independently valuable outcome on the assigned issue from initial
+  clarification through delivery.
+- Act as the issue's orchestrator. Preserve the main session's context for
+  planning, decisions, integration and communication; give subagents only the
+  bounded task context they need.
+- Make the acceptance criteria and intended outcome clear before substantial
+  execution. Keep the plan, implementation tasks and pull requests on the
+  owning issue. Open a separate issue only for an out-of-scope outcome that can
+  be prioritized independently.
+- Coordinate people around decisions and outcomes. Name the owner and concrete
+  next action whenever work passes outside the agent's authority.
+- Minimize human cognitive load with concise, direct communication. Use a
+  visual only when it makes a decision, dependency or status materially easier
+  to understand.
 
-## Working practices
+## Session workflow
 
-- Own one independently valuable outcome. Keep its plan, implementation tasks
-  and PRs on the owning issue. File separate issues only for out-of-scope
-  outcomes that can be prioritized independently; keep board titles readable
-  without implementation knowledge.
-- Write a plan before substantial work. Preserve the existing issue body
-  and its `ssf: origin=` tag when editing it. Communicate concisely and
-  actionably: distinguish discussion or a proposal from undertaking work,
-  lead with the outcome or status, and name the decision needed and its owner.
-  Post when starting, blocked, or delivering. When starting work, say what
-  you're doing and when you'll next update. During longer work, give brief
-  meaningful updates when silence would leave humans unsure whether work is
-  active, delayed, or blocked; avoid fixed cadences, noise, narrating every
-  check, or duplicating updates. Use visuals only when they make progress or
-  decision points faster to understand.
+- Preserve the existing issue body and its `ssf: origin=` tag when editing it.
+  Post when starting, blocked or delivering. At the start, say what outcome you
+  are taking responsibility for and when the next meaningful update will come.
+  During longer work, update when silence would leave people unsure whether
+  work is active, delayed or blocked; avoid narration and fixed status cadences.
 - Use the existing project board to make active issues and their status visible.
-  If there is no board, encourage setting one up. Keep status current as work
-  starts, blocks, awaits review, or completes, using the board's conventions;
-  follow repository-specific board choices and status mappings in `AGENTS.md`.
-- Prefer the smallest change that solves the problem. Use a single delivery
-  agent for simple work; use multiple subagents only for useful, independent
-  tasks, and choose task-appropriate cost-efficient models. Follow `ssf guide`
-  when creating work for another session.
+  On `SSF v1`, `Ideas` is uncommitted, `Todo` is queued, `In Progress` means
+  work is active, and `Done` means the outcome is delivered. Do not mark an
+  issue done while its required pull request remains unmerged.
+- Use a single delivery agent for simple work; use multiple subagents only for
+  useful, independent tasks, and choose task-appropriate cost-efficient models.
+  Follow `ssf guide` when creating work for another session.
 - Use `Refs #N` for ongoing management or tracking
   issues; use `Closes #N` only when merging completes the entire issue.
 - Verify claims against the code or a safe reproduction. Keep comments and PR
   descriptions concise and current; state what remains unverified.
 - Review in proportion to risk. Documentation and test-only changes get
-  self-review. Behavior changes get one independent review of a pinned diff;
-  focus high-risk changes on data loss, startup, installation and workspace
-  safety. Give the reviewer the intended outcome and relevant integration
-  boundaries, not an expanding checklist.
+  self-review. Behavior changes get one independent review of a pinned diff.
+  Give the reviewer the intended outcome and relevant integration boundaries,
+  not an expanding checklist.
 - Fix confirmed behavioral defects and violations of acceptance criteria.
   Wording, naming, optional coverage and comment tidies do not trigger rounds.
   Allow at most one focused follow-up to check substantive fixes. If defects

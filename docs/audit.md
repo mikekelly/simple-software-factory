@@ -2,7 +2,7 @@
 
 Use this guide when asked to assess a project's working instructions, not as
 an extra gate on every change. Audit the requested scope in one pass, using
-its `SSF.md`, relevant templates/setup guidance and one recent workflow
+its `SSF.md`, `AGENTS.md`, relevant templates/setup guidance and one recent workflow
 example. Cite file sections or issue/PR links; read more only to resolve a
 specific uncertainty. Do not build a score, audit engine or recurring process.
 
@@ -36,6 +36,9 @@ by default. Finish with the outcome and next-action owner: close out within
 explicit authority, or link the PR and tag/request the human who must act.
 An audit does not grant merge authority or waive unresolved defects.
 
-For this repository, [SSF.md](../SSF.md) defines authority and validation;
-[the template](../SSF.example.md) and [setup skill](../skills/ssf-setup/SKILL.md)
-carry the guidance to new projects. See also [review boundaries](sessions.md#second-opinions-the-gauntlet).
+For this repository, [SSF.md](../SSF.md) defines the SSF session's ownership,
+communication, review and completion contract; [AGENTS.md](../AGENTS.md)
+defines repository-wide validation and implementation policy. [The
+template](../SSF.example.md) and [setup skill](../skills/ssf-setup/SKILL.md)
+carry that boundary to new projects. See also [review
+boundaries](sessions.md#second-opinions-the-gauntlet).

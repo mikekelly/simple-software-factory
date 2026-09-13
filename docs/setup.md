@@ -465,8 +465,9 @@ for IDs, aliases and harness-specific restrictions.
 - **`path`:** uses an existing host checkout; the VM clones for itself.
 - **`clone_url`, `base_branch`:** override the clone URL and issue
   worktree base. SSH uses the bot's enrolled key; HTTPS uses a token.
-- **`instructions`:** short additions to initial prompts. Put project
-  working rules in `SSF.md`.
+- **`instructions`:** short additions to initial prompts. Put SSF-session
+  workflow and board rules in `SSF.md`; put repository-wide working rules in
+  `AGENTS.md`.
 
 `ssf repo add` writes `[[repo]]` entries in the active factory's
 `~/.config/ssf/config.toml`: inside the guest in VM mode, locally in host
@@ -483,22 +484,28 @@ is normal before the first issue. The `gh` and `ssf` command links are
 created when the first agent starts, so that failure can remain until
 step 10.
 
-## 9. Project notes and boards
+## 9. SSF agent guidance and boards
 
-**`SSF.md`.** Project working preferences belong in this file at the
-repository root. ssf appends it to the initial prompt; keep it short.
+**`SSF.md`.** The operating contract for ssf-spawned agents belongs in this
+file at the repository root: issue ownership and communication, board workflow,
+delegation and handoffs, bounded review, completion and merge authority. ssf
+appends it to the initial prompt; keep it short. Repository-wide build, test,
+implementation, architecture, domain and safety policy belongs in `AGENTS.md`.
+SSF injects `SSF.md` into the issue-owning main session only, not harness-created
+subagents, so use it to define that agent's orchestration and completion role
+without polluting delegated task contexts.
 Add optional `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md` at the root
 for instructions appended only when that harness starts the session.
-Describe one outcome per issue, where the plan lives, relevant validation,
-and who may merge. Keep implementation tasks on that issue. Use `Refs #N`
+Describe one outcome per issue, where the plan lives, and who may merge. Keep
+implementation tasks on that issue. Use `Refs #N`
 for ongoing tracking and `Closes #N` only for complete delivery.
 
 Start from `/usr/share/ssf/SSF.example.md` (macOS:
 `$(brew --prefix)/share/ssf/SSF.example.md`) and adapt it. `CLAUDE.md` and
-`AGENTS.md` remain the place for instructions shared by other repository
-users. `ssf doctor` reports missing project notes through the GitHub API;
-no clone is needed. See [The per-project prompt
-file](configuration.md#the-per-project-prompt-file).
+`AGENTS.md` remain the place for repository policy shared by every agent,
+whether or not ssf started it. `ssf doctor` reports missing SSF guidance
+through the GitHub API; no clone is needed. See [The SSF agent guidance
+file](configuration.md#the-ssf-agent-guidance-file).
 
 **Review.** ssf does not start a separate reviewer session for an agent’s
 own PR. The template uses self-review for documentation/tests and one
@@ -518,8 +525,8 @@ only when an independent task warrants it.
 **Boards.** No setup: if the item is on a GitHub project (v2) board, the
 agent's prompt lists the board, the card's Status and the command that
 changes it, and the agent is told to keep it accurate. ssf never moves
-cards; put the conventions in `SSF.md`. The bot needs access to the board
-(step 3b).
+cards; put board choices and status mappings in `SSF.md`. The bot needs access
+to the board (step 3b).
 
 ## 10. The first issue, and what to expect
 
@@ -660,5 +667,6 @@ cleanup sequence and disk-recovery cases.
 - VM and guest daemon are running, or the chosen host driver is ready.
 - Harness is installed and signed in where sessions run.
 - Repository is configured with a deliberate harness/model choice.
-- `SSF.md` describes scope, validation and merge authority.
+- `SSF.md` describes SSF issue ownership, board workflow, review and merge
+  authority; `AGENTS.md` holds repository-wide working policy.
 - First assigned issue produces an agent comment; `ssf doctor` is clean.

@@ -1,6 +1,6 @@
 # What the agent is told
 
-The prompts ssf writes: the first message an agent gets, the follow-ups, the project boards section, and what is deliberately left to the repository's own notes. For whoever wonders why an agent behaves as it does, or is writing an `SSF.md`.
+The prompts ssf writes: the first message an agent gets, the follow-ups, the project boards section, and what is deliberately left to repository-owned guidance. For whoever wonders why an agent behaves as it does, or is writing an `SSF.md`.
 
 ssf's own prompting is the bare functional minimum. The initial prompt is
 the item (title, description, boards, everything that has happened on it)
@@ -61,12 +61,16 @@ itself whether to stay on the branch ssf created, switch, or add worktrees
 of its own (for subagents, say). ssf binds a pull request to a session by
 the origin tag first and by the head branch second, so a PR from any branch
 still routes to the session that opened it, and `ssf release`/`ssf purge`
-only ever remove the session's own worktree. Anything about *how* the agent
-should work (comment when it starts and finishes, ask rather than guess,
-commit as it goes, open a PR that references the issue, do not close or
-merge, the gauntlet before calling work done) is the repository's to say, in its
-[prompt file](configuration.md#the-per-project-prompt-file); ssf does not
-repeat it on every message.
+only ever remove the session's own worktree. The SSF-specific operating
+contract (issue communication and ownership, board workflow, delegation,
+handoffs, review and completion authority) belongs in the repository's
+[`SSF.md`](configuration.md#the-ssf-agent-guidance-file). Repository-wide
+build, test, implementation, architecture, domain and safety policy belongs in
+`AGENTS.md`. SSF appends `SSF.md` only to the issue-owning main session; subagents
+created inside that harness receive only what their parent or harness gives
+them. This makes `SSF.md` suitable for orchestration guidance without adding
+irrelevant workflow to every delegated task. ssf does not repeat either file on
+every message.
 
 ## The messages an agent receives
 
@@ -112,8 +116,8 @@ offers, and the `gh project item-edit` command (with the project, item,
 field and option ids filled in) that changes it. The agent is told to keep
 the card's Status accurate and that which column fits is its call. ssf
 itself never moves cards and prescribes no mapping from events to columns;
-put any repository-specific conventions about columns in the per-project
-prompt file. The lookup is one GraphQL query per onboarding and delivery,
+put any repository-specific conventions about columns in `SSF.md`. The lookup
+is one GraphQL query per onboarding and delivery,
 using the bot token's `project` scope; if it fails the prompt simply
 carries no boards section and the daemon logs why. Closed boards are left
 out.
