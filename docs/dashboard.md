@@ -17,7 +17,11 @@ open for its lifetime rather than starting a connection on every refresh. Repeat
 `--server` to group several factories in one dashboard. Each server has its own
 watch stream, heading, freshness and error state, so one failed connection does
 not make the others look unavailable. `SSF_SERVER` remains the single-server
-default when no explicit destination is supplied.
+selection when no explicit destination is supplied. When a client-side
+[`servers.toml`](configuration.md#server-catalog) exists, these values are
+configured names; without one they retain their legacy meaning as SSH
+destinations. A catalog with several entries still requires explicit repeated
+selection: the dashboard does not contact them all automatically.
 
 The Ratatui dashboard stays open and refreshes automatically. Agent cards use
 one, two or three columns as terminal width permits and fall back to a compact

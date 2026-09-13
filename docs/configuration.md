@@ -15,6 +15,46 @@ In VM mode, browser login and credential storage run inside the guest.
 `ssf auth login` for that. Changes are picked up on the next poll; no
 restart needed, except `[dashboard]` listener settings require a server restart.
 
+## Server catalog
+
+`config.toml` belongs to one factory. Optional client-side routing belongs in a
+separate `~/.config/ssf/servers.toml` file:
+
+```toml
+[servers.local]
+transport = "local"
+
+[servers.cloud]
+transport = "ssh"
+destination = "ssf@factory.example.com"
+```
+
+Use `transport = "vm"` for the existing locally managed VM. Its optional
+`runtime_name` defaults to `default` and must match the current `[vm].name`; an
+optional `backend` is `firecracker` or `lima` and must match the current VM
+backend. In this first catalog stage, at most one `local` or `vm` entry is
+accepted because those transports still use the existing single config, state
+and service paths. Any number of SSH entries can coexist. Multiple independent
+local factories and VMs require the target-isolation work tracked in
+[#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+
+Selection has no configurable default:
+
+- No catalog preserves existing behavior: an unqualified command uses the
+  local endpoint, while `--server HOST` and `SSF_SERVER=HOST` are raw SSH
+  destinations.
+- One catalog entry is selected automatically.
+- More than one entry makes an unqualified factory command refuse and list the
+  names. Use `--server NAME` or `SSF_SERVER=NAME`.
+- A command-line selector overrides the environment. Unknown catalog names are
+  errors and are never tried as SSH hosts.
+
+`ssf server list [--json]` and `ssf server show NAME [--json]` inspect the
+catalog. They are client-wide and ignore `SSF_SERVER`; passing `--server` to
+them is an error. Catalog entries are currently added by writing `servers.toml`,
+which SSF validates in full before using any entry; CLI add/remove operations
+will arrive with the remaining target-management work.
+
 With `vm.enabled = true`, the host owns `[vm]` lifecycle and `[dashboard]` web listener settings
 and the SSH credential used to administer the guest. Repositories,
 `[github]`, `[git]`, `[daemon]` and driver settings belong to the guest.

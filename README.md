@@ -381,6 +381,16 @@ and remote commands share parsing, validation, and the daemon's local Unix
 socket path. The remote account therefore needs permission to operate that
 factory; SSF exposes no network listener of its own.
 
+The client can instead give factories stable names in
+`~/.config/ssf/servers.toml`; see [Server catalog](docs/configuration.md#server-catalog).
+With one entry it is selected automatically. With several, an unqualified
+factory command refuses and lists the names, and `--server` / `SSF_SERVER`
+select a name rather than a raw SSH destination. `ssf server list` and
+`ssf server show NAME` inspect the client-owned catalog. This first catalog
+stage supports any number of SSH targets but only one locally managed `local`
+or `vm` target; concurrent local factories and managed VMs are tracked in
+[#261](https://github.com/mikekelly/simple-software-factory/issues/261).
+
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the
 guest; they fail if it is stopped or unreachable. Start it and retry.

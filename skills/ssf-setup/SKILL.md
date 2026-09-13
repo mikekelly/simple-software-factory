@@ -36,6 +36,14 @@ uses the host client's normal VM forwarding. No browser or Herdr installation
 is required. The dashboard keeps one `status --json --watch` stream open per
 server (and one SSH channel per remote factory). Only driver-reported agents become cards;
 monitored items without an agent are listed separately.
+An optional client-owned `~/.config/ssf/servers.toml` gives local, existing VM
+and SSH factories stable names. With one catalog entry commands select it
+implicitly; with several, every factory command requires `--server NAME` or an
+explicit `SSF_SERVER=NAME`, and there is no persistent default. Inspect it with
+`ssf server list` / `ssf server show NAME`. The current catalog stage accepts
+only one locally managed `local` or `vm` entry, so do not attempt to configure a
+second local factory or managed VM until #261's isolation and per-target service
+work is installed.
 Keyboard and mouse selection can focus a matched agent when running inside
 Herdr; matching is scoped to the Herdr server where the TUI runs, including
 its other tabs and workspaces. The optional plugin is only a launch shortcut.
