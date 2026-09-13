@@ -47,8 +47,10 @@ impl Engine {
                 prefix.push_str(&format!("{var}={} ", shell_quote(&v)));
             }
         }
+        let server =
+            launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
         format!(
-            "{prefix}{} launch --repo {} --issue {} --issue-url {} -- {}",
+            "{prefix}{}{server} launch --repo {} --issue {} --issue-url {} -- {}",
             shell_quote(&me),
             shell_quote(&repo.name),
             number,
@@ -686,4 +688,25 @@ impl Engine {
     }
 
     // ---- handovers ------------------------------------------------------
+}
+
+fn launch_server_argument(server: Option<&str>) -> String {
+    server
+        .map(|name| format!(" --server {}", shell_quote(name)))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod launch_command_tests {
+    use super::launch_server_argument;
+
+    #[test]
+    fn selected_server_is_forwarded_to_the_launch_wrapper() {
+        assert_eq!(launch_server_argument(Some("local")), " --server 'local'");
+        assert_eq!(
+            launch_server_argument(Some("local factory")),
+            " --server 'local factory'"
+        );
+        assert_eq!(launch_server_argument(None), "");
+    }
 }
