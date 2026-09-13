@@ -43,6 +43,10 @@ explicit `SSF_SERVER=NAME`, and there is no persistent default. Inspect it with
 `ssf server list` / `ssf server show NAME`. The current catalog stage accepts
 namespaced local entries with distinct absolute `config_dir` and `state_dir`
 paths beside the existing factory, but it still accepts only one managed VM.
+For an established enabled VM, verify `ssf vm status` and `ssf status`, run
+`ssf server migrate-vm`, then verify both again explicitly as `ssf-server`
+before adding another target. Migration preserves the runtime and guest data;
+stop if SSF reports conflicting legacy and target-owned settings.
 Setup, service, VM lifecycle and uninstall commands refuse a namespaced target;
 do not improvise background units or attempt a second managed VM until #261's
 per-target service and VM work is installed.

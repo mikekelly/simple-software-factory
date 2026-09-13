@@ -387,7 +387,9 @@ With one entry it is selected automatically. With several, an unqualified
 factory command refuses and lists the names, and `--server` / `SSF_SERVER`
 select a name rather than a raw SSH destination. `ssf server list` and
 `ssf server show NAME` inspect the client-owned catalog. Namespaced local
-targets can coexist with the existing local or VM factory, but background
+targets can coexist with the existing local or VM factory. `ssf server
+migrate-vm` adopts an existing VM in place as `ssf-server`, moving only its
+host-side settings into the catalog after verification. Background
 services and VM lifecycle remain installation-wide: those commands refuse for
 a namespaced target. Multiple managed VMs and per-target services are tracked
 in [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
@@ -395,7 +397,8 @@ in [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
 Factory config changes are picked up on the next poll; no restart needed.
 In VM mode, repository, factory config and bot auth commands operate in the
 guest; they fail if it is stopped or unreachable. Start it and retry.
-Only `ssf vm ...` and `ssf config get|set vm.<key>` manage host VM settings.
+Only `ssf vm ...` and `ssf config get|set vm.<key>` manage host VM settings,
+whether they are still in legacy `[vm]` or owned by a migrated target.
 Use `ssf vm status` for host VM health, and `ssf status` / `ssf doctor`
 for guest factory health. There is no routine config sync. Every
 key, with its default, is in [Configuration](docs/configuration.md).

@@ -22,6 +22,7 @@ pub async fn client_main() -> Result<()> {
     }
     let catalog = server_catalog::Catalog::load()?;
     let routes = catalog.resolve(servers)?;
+    validate_command_targets(&catalog, &routes, &cli.command)?;
     if routes.iter().any(|route| {
         route
             .name
@@ -38,12 +39,10 @@ pub async fn client_main() -> Result<()> {
                 )
             })
     }) {
-        catalog.validate_execution(&routes, &Config::load()?)?;
+        catalog.validate_execution(&routes, &Config::load_from(&config::config_path())?)?;
     }
-    if let [route] = routes.as_slice()
-        && route.local_context.is_some()
-    {
-        refuse_global_command_for_namespaced_target(&cli.command)?;
+    if let [route] = routes.as_slice() {
+        refuse_unsafe_global_command(route, &cli.command)?;
     }
     if let Command::Dashboard = cli.command {
         return dashboard::run(
@@ -53,6 +52,7 @@ pub async fn client_main() -> Result<()> {
                     label: route.name,
                     destination: route.destination,
                     local_context: route.local_context,
+                    vm_context: route.vm_context,
                 })
                 .collect(),
         )
@@ -75,11 +75,21 @@ pub async fn client_main() -> Result<()> {
         }
         None => {
             let mut command = std::process::Command::new(server_executable()?);
-            command.arg("__client").args(args).env_remove("SSF_SERVER");
+            command
+                .arg("__client")
+                .args(args)
+                .env_remove("SSF_SERVER")
+                .env_remove(server_catalog::SELECTED_VM_ENV);
             if let Some(context) = &route.local_context {
                 command
                     .env("SSF_CONFIG_DIR", &context.config_dir)
                     .env("SSF_STATE_DIR", &context.state_dir);
+            }
+            if let Some(context) = &route.vm_context {
+                command.env(
+                    server_catalog::SELECTED_VM_ENV,
+                    serde_json::to_string(context)?,
+                );
             }
             command.exec()
         }
@@ -87,17 +97,47 @@ pub async fn client_main() -> Result<()> {
     Err(anyhow::Error::from(err).context("starting ssf-server"))
 }
 
-fn refuse_global_command_for_namespaced_target(command: &Command) -> Result<()> {
-    if matches!(
-        command,
-        Command::Setup
-            | Command::VmInit { .. }
-            | Command::Vm { .. }
-            | Command::Ui { .. }
-            | Command::Uninstall { .. }
-    ) {
+fn validate_command_targets(
+    catalog: &server_catalog::Catalog,
+    routes: &[server_catalog::Route],
+    command: &Command,
+) -> Result<()> {
+    if !matches!(command, Command::Vm { .. }) {
+        return Ok(());
+    }
+    for route in routes {
+        let Some(name) = route.name.as_deref() else {
+            continue;
+        };
+        let target = catalog.get(name).expect("a resolved named route");
+        if !matches!(target, server_catalog::Target::Vm { .. }) {
+            bail!(
+                "server {name:?} uses the {} transport, not a managed VM",
+                target.transport()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn refuse_unsafe_global_command(route: &server_catalog::Route, command: &Command) -> Result<()> {
+    if route.local_context.is_some()
+        && matches!(
+            command,
+            Command::Setup
+                | Command::VmInit { .. }
+                | Command::Vm { .. }
+                | Command::Ui { .. }
+                | Command::Uninstall { .. }
+        )
+    {
         bail!(
             "this command still manages the installation-wide service or VM; it is not yet supported for a namespaced local server"
+        );
+    }
+    if route.vm_context.is_some() && matches!(command, Command::Uninstall { .. }) {
+        bail!(
+            "uninstall is not yet target-aware; refusing to apply installation-wide removal to a named VM server"
         );
     }
     Ok(())
@@ -144,10 +184,18 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
                     server_catalog::Target::Vm {
                         runtime_name,
                         backend,
+                        config,
                     } => {
                         println!("runtime:    {runtime_name}");
                         if let Some(backend) = backend {
                             println!("backend:    {backend}");
+                        }
+                        if let Some(config) = config {
+                            println!("settings:   catalog");
+                            println!("directory:  {}", config.dir);
+                            println!("ssh port:   {}", config.ssh_port);
+                        } else {
+                            println!("settings:   legacy [vm]");
                         }
                     }
                     server_catalog::Target::Ssh { destination } => {
@@ -168,6 +216,16 @@ fn server_catalog_command(command: ServerCommand) -> Result<()> {
             }
             Ok(())
         }
+        ServerCommand::MigrateVm { name } => {
+            if server_catalog::Catalog::migrate_legacy_vm(&name)? {
+                println!(
+                    "Migrated the existing VM in place as server {name:?}; its runtime resources and guest data were not moved."
+                );
+            } else {
+                println!("VM server {name:?} was already migrated; nothing changed.");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -185,11 +243,13 @@ fn server_catalog_json(name: &str, target: &server_catalog::Target) -> serde_jso
         server_catalog::Target::Vm {
             runtime_name,
             backend,
+            config,
         } => serde_json::json!({
             "name": name,
             "transport": "vm",
             "runtime_name": runtime_name,
             "backend": backend,
+            "config": config,
         }),
         server_catalog::Target::Ssh { destination } => serde_json::json!({
             "name": name,

@@ -122,6 +122,7 @@ pub(crate) struct ServerRoute {
     pub label: Option<String>,
     pub destination: Option<String>,
     pub local_context: Option<crate::server_catalog::LocalContext>,
+    pub vm_context: Option<crate::server_catalog::SelectedVmContext>,
 }
 
 impl Drop for Worker {
@@ -710,6 +711,7 @@ pub(crate) async fn run(servers: Vec<ServerRoute>) -> Result<()> {
             label: None,
             destination: None,
             local_context: None,
+            vm_context: None,
         }]
     } else {
         servers
@@ -721,6 +723,7 @@ pub(crate) async fn run(servers: Vec<ServerRoute>) -> Result<()> {
         let mut source = crate::dashboard_transport::StatusSource::new_with_context(
             route.destination.clone(),
             route.local_context.clone(),
+            route.vm_context.clone(),
         )?;
         let sender = sender.clone();
         workers.push(Worker::new(tokio::spawn(async move {

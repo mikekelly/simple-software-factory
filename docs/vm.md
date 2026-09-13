@@ -41,12 +41,32 @@ binaries and images to use instead of the downloaded ones:
 belongs to neither backend: both seed that Linux `ssf` into the guest,
 and it is only on a Mac that it cannot be this binary.
 
+An existing enabled `[vm]` can be made the conventional named target without
+changing the VM itself:
+
+```sh
+ssf vm status
+ssf status
+ssf server migrate-vm              # public name: ssf-server
+ssf --server ssf-server vm status
+ssf --server ssf-server status
+```
+
+Migration copies and verifies the host-owned settings in `servers.toml` before
+removing `[vm]` from `config.toml`. It does not rename the runtime, recreate the
+instance or disk, or touch the guest data. Retrying is safe. If both copies
+exist but differ, SSF retains both and refuses until the conflict is corrected.
+After migration, `ssf config get|set vm.<key>` keeps operating on the selected
+target even though its settings no longer live in the guest factory's
+`config.toml`.
+
 ## Backends
 
 `[vm] backend` is `firecracker` or `lima`. Unset, it means Firecracker on
-Linux and lima on macOS, and `ssf vm build` writes the choice to
-`config.toml` next to the sizes (`VM backend: lima (for this machine)` in
-its output), so a VM keeps its backend once built. `ssf vm status` names
+Linux and lima on macOS, and `ssf vm build` writes the choice to the selected
+VM target (legacy `config.toml` before migration) next to the sizes (`VM
+backend: lima (for this machine)` in its output), so a VM keeps its backend
+once built. `ssf vm status` names
 it on its `backend:` line, and `--json` carries it as `backend` next to
 `instance` and `lima_dir` (the lima instance's name and the directory lima
 keeps it in; both null under Firecracker). A `limactl list` that does not

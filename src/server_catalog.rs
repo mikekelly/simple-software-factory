@@ -28,6 +28,9 @@ pub(crate) enum Target {
         runtime_name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backend: Option<String>,
+        /// Present after the legacy host `[vm]` table has been adopted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config: Option<Box<crate::config::VmConfig>>,
     },
     Ssh {
         destination: String,
@@ -49,6 +52,7 @@ pub(crate) struct Route {
     pub name: Option<String>,
     pub destination: Option<String>,
     pub local_context: Option<LocalContext>,
+    pub vm_context: Option<SelectedVmContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +60,14 @@ pub(crate) struct LocalContext {
     pub config_dir: PathBuf,
     pub state_dir: PathBuf,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct SelectedVmContext {
+    pub name: String,
+    pub config: crate::config::VmConfig,
+}
+
+pub(crate) const SELECTED_VM_ENV: &str = "SSF_INTERNAL_SELECTED_VM";
 
 fn default_runtime_name() -> String {
     "default".into()
@@ -84,7 +96,9 @@ impl Catalog {
 
     fn validate(&self) -> Result<()> {
         let mut legacy_managed = Vec::new();
+        let mut legacy_local = Vec::new();
         let mut vm_targets = Vec::new();
+        let mut owned_vm = Vec::new();
         let mut config_dirs: BTreeMap<PathBuf, &str> = BTreeMap::new();
         let mut state_dirs: BTreeMap<PathBuf, &str> = BTreeMap::new();
         for (name, target) in &self.servers {
@@ -94,7 +108,10 @@ impl Catalog {
                     config_dir,
                     state_dir,
                 } => match (config_dir, state_dir) {
-                    (None, None) => legacy_managed.push(name.as_str()),
+                    (None, None) => {
+                        legacy_managed.push(name.as_str());
+                        legacy_local.push(name.as_str());
+                    }
                     (Some(config_dir), Some(state_dir)) => {
                         let config_dir = validate_owned_dir(name, "config_dir", config_dir)?;
                         let state_dir = validate_owned_dir(name, "state_dir", state_dir)?;
@@ -113,6 +130,7 @@ impl Catalog {
                 Target::Vm {
                     runtime_name,
                     backend,
+                    config,
                 } => {
                     validate_runtime_name(name, runtime_name)?;
                     if let Some(backend) = backend
@@ -122,7 +140,32 @@ impl Catalog {
                             "server {name:?} has unknown VM backend {backend:?}; expected `firecracker` or `lima`"
                         );
                     }
-                    legacy_managed.push(name.as_str());
+                    if let Some(config) = config {
+                        if !config.enabled {
+                            bail!("server {name:?} owned VM config must have enabled = true");
+                        }
+                        config.validate()?;
+                        if runtime_name != &config.name {
+                            bail!(
+                                "server {name:?} runtime_name {runtime_name:?} does not match its owned VM name {:?}",
+                                config.name
+                            );
+                        }
+                        if let Some(backend) = backend {
+                            let configured = config
+                                .backend
+                                .unwrap_or_else(crate::config::BackendKind::platform_default)
+                                .to_string();
+                            if backend != &configured {
+                                bail!(
+                                    "server {name:?} backend {backend:?} does not match its owned VM backend {configured:?}"
+                                );
+                            }
+                        }
+                        owned_vm.push(name.as_str());
+                    } else {
+                        legacy_managed.push(name.as_str());
+                    }
                     vm_targets.push(name.as_str());
                 }
                 Target::Ssh { destination } => {
@@ -142,6 +185,13 @@ impl Catalog {
             bail!(
                 "servers {} would share the legacy config and state paths; give local targets explicit config_dir and state_dir paths",
                 legacy_managed.join(", ")
+            );
+        }
+        if !legacy_local.is_empty() && !owned_vm.is_empty() {
+            bail!(
+                "legacy local server {} would share the installation-wide supervisor with managed VM {}; give the local target explicit config_dir and state_dir paths",
+                legacy_local.join(", "),
+                owned_vm.join(", ")
             );
         }
         for (config_dir, config_owner) in &config_dirs {
@@ -197,6 +247,26 @@ impl Catalog {
         self.servers.get(name)
     }
 
+    /// Compatibility for the one installation-wide service: after migration
+    /// it continues supervising the sole managed VM until services themselves
+    /// become target-qualified.
+    pub(crate) fn sole_owned_vm_context() -> Result<Option<SelectedVmContext>> {
+        let catalog = Self::load()?;
+        Ok(catalog
+            .servers
+            .iter()
+            .find_map(|(name, target)| match target {
+                Target::Vm {
+                    config: Some(config),
+                    ..
+                } => Some(SelectedVmContext {
+                    name: name.clone(),
+                    config: config.as_ref().clone(),
+                }),
+                _ => None,
+            }))
+    }
+
     /// Legacy local and VM routes must still describe the factory selected by
     /// the installation-wide config. Namespaced local routes carry their own
     /// context and deliberately do not consult that config.
@@ -219,6 +289,7 @@ impl Catalog {
                 Target::Vm {
                     runtime_name,
                     backend,
+                    config: None,
                 } => {
                     if !config.vm.enabled {
                         bail!(
@@ -240,6 +311,18 @@ impl Catalog {
                         }
                     }
                 }
+                Target::Vm {
+                    config: Some(owned),
+                    ..
+                } => {
+                    if let Some(legacy) = crate::config::Config::legacy_vm_settings()?
+                        && legacy != **owned
+                    {
+                        bail!(
+                            "server {name:?} has owned VM settings that conflict with legacy [vm]; both were retained"
+                        );
+                    }
+                }
                 Target::Local { .. } | Target::Ssh { .. } => {}
             }
         }
@@ -257,6 +340,7 @@ impl Catalog {
                         name: None,
                         destination: Some(destination),
                         local_context: None,
+                        vm_context: None,
                     })
                     .collect());
             }
@@ -271,6 +355,7 @@ impl Catalog {
                 name: None,
                 destination: None,
                 local_context: None,
+                vm_context: None,
             }]),
             1 => {
                 let name = self.servers.keys().next().expect("one server");
@@ -312,8 +397,145 @@ impl Catalog {
                 }),
                 _ => None,
             },
+            vm_context: match target {
+                Target::Vm {
+                    config: Some(config),
+                    ..
+                } => Some(SelectedVmContext {
+                    name: name.to_owned(),
+                    config: config.as_ref().clone(),
+                }),
+                _ => None,
+            },
         })
     }
+
+    fn save(&self) -> Result<()> {
+        let path = path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        crate::config::write_atomic(&path, toml::to_string_pretty(self)?.as_bytes(), 0o600)
+            .with_context(|| format!("writing server catalog {}", path.display()))
+    }
+
+    pub(crate) fn migrate_legacy_vm(name: &str) -> Result<bool> {
+        validate_name(name)?;
+        let mut catalog = Self::load()?;
+        let Some(legacy) = crate::config::Config::legacy_vm_settings()? else {
+            return match catalog.servers.get(name) {
+                Some(Target::Vm {
+                    config: Some(_), ..
+                }) => Ok(false),
+                _ => bail!("no legacy [vm] settings to migrate"),
+            };
+        };
+        if !legacy.enabled {
+            bail!("legacy [vm] enabled is false; there is no active managed VM to migrate");
+        }
+        legacy.validate()?;
+        match catalog.servers.get(name) {
+            Some(Target::Vm {
+                config: Some(owned),
+                ..
+            }) if owned.as_ref() == &legacy => {}
+            Some(Target::Vm {
+                runtime_name,
+                backend,
+                config: None,
+            }) => {
+                if runtime_name != &legacy.name {
+                    bail!(
+                        "server {name:?} names VM runtime {runtime_name:?}, but legacy [vm] names {:?}",
+                        legacy.name
+                    );
+                }
+                if let Some(backend) = backend {
+                    let legacy_backend = legacy
+                        .backend
+                        .unwrap_or_else(crate::config::BackendKind::platform_default)
+                        .to_string();
+                    if backend != &legacy_backend {
+                        bail!(
+                            "server {name:?} selects backend {backend:?}, but legacy [vm] selects {legacy_backend:?}"
+                        );
+                    }
+                }
+            }
+            Some(Target::Vm { .. }) => bail!(
+                "server {name:?} has owned VM settings that conflict with legacy [vm]; both were retained"
+            ),
+            Some(other) => bail!(
+                "server {name:?} is {}, not a managed VM; nothing was changed",
+                other.transport()
+            ),
+            None => {}
+        }
+        catalog.servers.insert(
+            name.to_owned(),
+            Target::Vm {
+                runtime_name: legacy.name.clone(),
+                backend: legacy.backend.map(|backend| backend.to_string()),
+                config: Some(Box::new(legacy.clone())),
+            },
+        );
+        catalog.exists = true;
+        catalog.validate()?;
+        catalog.save()?;
+
+        let written = Self::load()?;
+        let Some(Target::Vm {
+            config: Some(owned),
+            ..
+        }) = written.servers.get(name)
+        else {
+            bail!("written server catalog did not retain VM target {name:?}");
+        };
+        if owned.as_ref() != &legacy {
+            bail!("written VM settings did not verify; legacy [vm] was retained");
+        }
+        crate::config::Config::remove_legacy_vm_settings(&legacy)?;
+        Ok(true)
+    }
+}
+
+pub(crate) fn selected_vm_context() -> Result<Option<SelectedVmContext>> {
+    let Some(raw) = std::env::var_os(SELECTED_VM_ENV) else {
+        return Ok(None);
+    };
+    let context: SelectedVmContext = serde_json::from_slice(raw.as_encoded_bytes())
+        .context("parsing selected VM target context")?;
+    Ok(Some(context))
+}
+
+pub(crate) fn effective_vm_context() -> Result<Option<SelectedVmContext>> {
+    match selected_vm_context()? {
+        Some(selected) => Ok(Some(selected)),
+        None if !crate::vm::in_guest() => Catalog::sole_owned_vm_context(),
+        None => Ok(None),
+    }
+}
+
+pub(crate) fn save_selected_vm(name: &str, config: &crate::config::VmConfig) -> Result<()> {
+    let mut catalog = Catalog::load()?;
+    let target = catalog
+        .servers
+        .get_mut(name)
+        .with_context(|| format!("selected VM server {name:?} is no longer configured"))?;
+    let Target::Vm {
+        runtime_name,
+        backend,
+        config: owned,
+    } = target
+    else {
+        bail!("selected server {name:?} is no longer a managed VM");
+    };
+    *runtime_name = config.name.clone();
+    *backend = config.backend.map(|backend| backend.to_string());
+    *owned = Some(Box::new(config.clone()));
+    catalog.validate()?;
+    catalog.save()
 }
 
 fn overlaps(one: &std::path::Path, two: &std::path::Path) -> bool {
@@ -480,6 +702,72 @@ mod tests {
                 config_dir: "/tmp/ssf-two-config".into(),
                 state_dir: "/tmp/ssf-two-state".into(),
             })
+        );
+    }
+
+    #[test]
+    fn legacy_vm_migration_is_in_place_idempotent_and_conflict_safe() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let legacy = crate::config::Config {
+            vm: crate::config::VmConfig {
+                enabled: true,
+                name: "existing".into(),
+                dir: "/var/lib/ssf-existing".into(),
+                backend: Some(crate::config::BackendKind::Lima),
+                ssh_port: 2244,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        legacy.save().unwrap();
+        crate::config::write_atomic(
+            &path(),
+            b"[servers.ssf-server]\ntransport = \"vm\"\nruntime_name = \"existing\"\nbackend = \"lima\"\n",
+            0o600,
+        )
+        .unwrap();
+
+        assert!(Catalog::migrate_legacy_vm("ssf-server").unwrap());
+        assert!(
+            crate::config::Config::legacy_vm_settings()
+                .unwrap()
+                .is_none()
+        );
+        let supervised = crate::config::Config::load().unwrap();
+        assert!(supervised.vm.enabled);
+        assert_eq!(supervised.vm.name, "existing");
+        assert_eq!(supervised.vm.ssh_port, 2244);
+        let catalog = Catalog::load().unwrap();
+        let route = catalog
+            .resolve(vec!["ssf-server".into()])
+            .unwrap()
+            .remove(0);
+        assert_eq!(route.vm_context.as_ref().unwrap().config, legacy.vm);
+        assert!(!Catalog::migrate_legacy_vm("ssf-server").unwrap());
+
+        let mut conflicting = legacy.clone();
+        conflicting.vm.ssh_port = 2255;
+        conflicting.save().unwrap();
+        let error = Catalog::migrate_legacy_vm("ssf-server")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("conflict"), "{error}");
+        assert!(
+            crate::config::Config::legacy_vm_settings()
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            Catalog::load()
+                .unwrap()
+                .resolve(vec!["ssf-server".into()])
+                .unwrap()
+                .remove(0)
+                .vm_context
+                .unwrap()
+                .config
+                .ssh_port,
+            2244
         );
     }
 }

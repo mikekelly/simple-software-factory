@@ -299,6 +299,11 @@ pub(super) enum ServerCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Adopt the existing enabled [vm] configuration as a named VM server.
+    MigrateVm {
+        #[arg(default_value = "ssf-server")]
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -310,13 +315,13 @@ pub(super) enum VmCommand {
     /// lima (the default on macOS): creates the `ssf-<name>` instance and
     /// its data disk from a cloud image and boots it once. No root needed.
     ///
-    /// Every `[vm]` size key left unset is chosen from the host, printed
-    /// and written to config.toml: `vcpus` is the CPUs minus one (at least
+    /// Every VM size key left unset is chosen from the host, printed
+    /// and written to the selected target (legacy config.toml before migration): `vcpus` is the CPUs minus one (at least
     /// 2), `mem_mib` half the RAM (at least 4096), `data_gib` half the
     /// free space of the filesystem the data disk lands on (at least 20;
     /// the disk is sparse, so this reserves nothing) -- `[vm] dir` under
     /// Firecracker, lima's own disk directory under lima, and the line
-    /// printed says which was measured. A key already in `[vm]` is kept;
+    /// printed says which was measured. A VM key already set is kept;
     /// a flag below writes a value of your own.
     Build {
         /// Make a new image even if one exists.

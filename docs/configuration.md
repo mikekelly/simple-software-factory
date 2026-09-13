@@ -31,10 +31,16 @@ transport = "ssh"
 destination = "ssf@factory.example.com"
 ```
 
-Use `transport = "vm"` for the existing locally managed VM. Its optional
-`runtime_name` defaults to `default` and must match the current `[vm].name`; an
-optional `backend` is `firecracker` or `lima` and must match the current VM
-backend. A `local` entry with no paths wraps the existing host factory and
+Use `transport = "vm"` for an existing locally managed VM. A legacy wrapper's
+optional `runtime_name` defaults to `default` and must match `[vm].name`; its
+optional `backend` must likewise match. Once the existing VM is healthy, run
+`ssf server migrate-vm` (or add a public name argument) to copy those host-owned
+settings into that target, verify the copy, and remove the legacy `[vm]` table.
+The VM instance, disk, guest configuration, credentials and workspaces are not
+moved or rebuilt. The operation is idempotent; conflicting old and new settings
+are both retained and reported rather than resolved by recency.
+
+A `local` entry with no paths wraps the existing host factory and
 therefore cannot coexist with the legacy VM target. A namespaced local entry
 must set both absolute paths. SSF passes them explicitly to the local endpoint,
 so several local factories can coexist with distinct configuration, tokens,
@@ -43,10 +49,12 @@ or overlap another namespaced target's paths. They must also be outside the
 legacy `~/.config/ssf` and `~/.local/state/ssf` trees so a legacy uninstall
 cannot recursively remove another factory.
 
-The current target-context stage still permits only one managed VM. Background
+The current VM-ownership stage still permits only one managed VM. Background
 service controls, `setup`, VM lifecycle and `uninstall` remain installation-wide
-and refuse for namespaced local targets. Run namespaced daemons explicitly with
-matching `SSF_CONFIG_DIR` and `SSF_STATE_DIR` only for development; normal
+and refuse for namespaced local targets; uninstall also refuses a migrated VM
+until removal is target-aware. The existing service safely supervises the sole
+migrated VM during this compatibility stage. Run namespaced daemons explicitly
+with matching `SSF_CONFIG_DIR` and `SSF_STATE_DIR` only for development; normal
 per-target services and multiple managed VMs remain tracked in
 [#261](https://github.com/mikekelly/simple-software-factory/issues/261).
 
@@ -63,12 +71,17 @@ Selection has no configurable default:
 
 `ssf server list [--json]` and `ssf server show NAME [--json]` inspect the
 catalog. They are client-wide and ignore `SSF_SERVER`; passing `--server` to
-them is an error. Catalog entries are currently added by writing `servers.toml`,
-which SSF validates in full before using any entry; CLI add/remove operations
+them is an error. `ssf server migrate-vm [NAME]` adopts the enabled legacy VM;
+`NAME` defaults to `ssf-server`. Other entries are currently added by writing
+`servers.toml`, which SSF validates in full before using any entry; CLI add/remove operations
 will arrive with the remaining target-management work.
 
-With `vm.enabled = true`, the host owns `[vm]` lifecycle and `[dashboard]` web listener settings
-and the SSH credential used to administer the guest. Repositories,
+Before migration, `vm.enabled = true` makes the host own `[vm]` lifecycle
+settings. After migration those settings are the VM target's nested `config`
+table in `servers.toml`; continue to read or change them with
+`ssf --server NAME config get|set vm.<key>`. The host also owns the
+`[dashboard]` web listener settings and the SSH credential used to administer
+the guest. Repositories,
 `[github]`, `[git]`, `[daemon]` and driver settings belong to the guest.
 Repository commands, factory `ssf config get|set`, and `ssf auth`
 commands run there over SSH; paths in their arguments refer to guest files.
