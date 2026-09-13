@@ -21,8 +21,8 @@ use tracing::{debug, info, warn};
 
 use crate::config::HerdrConfig;
 use crate::driver::{
-    self, Relaunch, add_local_worktree, checkout_of_worktree, find_local_worktree, number_of_name,
-    remove_local_worktree,
+    self, FirstPrompt, Relaunch, add_local_worktree, checkout_of_worktree, find_local_worktree,
+    number_of_name, remove_local_worktree,
 };
 use crate::orca::{AgentInfo, Delivery, WorkspaceInfo, Worktree};
 
@@ -345,44 +345,66 @@ pub enum AfterStall {
     /// A first-run dialog swallowed the paste: answer it with these keys
     /// and send the prompt again.
     Retry(driver::TrustAnswer),
-    /// Nothing on the screen says the prompt was lost, so it is taken as
-    /// delivered.
-    Accept,
+    /// The prompt is on the screen: submit the existing text, never paste it
+    /// for a second time.
+    Submit,
+    /// The screen has neither a known dialog nor enough of the prompt to say
+    /// where delivery got to. Observe the agent before doing anything else.
+    Observe,
 }
 
-/// How much of the prompt's opening line identifies it on a screen.
-const PROMPT_OPENING_CHARS: usize = 60;
+/// How much of each early prompt line identifies even a collapsed composer
+/// card (OMP renders `# GitHub is…` and `https://git…`). Two matches are
+/// required when the prompt supplies them, so prose that merely quotes a
+/// dialog does not masquerade as the whole prompt.
+const PROMPT_MARKER_CHARS: usize = 10;
+
+pub fn prompt_on_screen(screen: &str, prompt: &str) -> bool {
+    // Composer input is at the bottom of every supported harness. Restricting
+    // the match to that area keeps the same prompt in conversation history
+    // from looking like unsent input after a fast completed turn.
+    let tail = screen.lines().rev().take(24).collect::<Vec<_>>().join("\n");
+    let mut markers = Vec::new();
+    for line in prompt.lines().map(str::trim).filter(|line| {
+        !line.is_empty()
+            && !(line.starts_with('<') && line.ends_with('>'))
+            && line.chars().count() >= PROMPT_MARKER_CHARS
+    }) {
+        let marker: String = line.chars().take(PROMPT_MARKER_CHARS).collect();
+        if !markers.contains(&marker) {
+            markers.push(marker);
+        }
+        if markers.len() == 6 {
+            break;
+        }
+    }
+    let required = markers.len().min(2);
+    required != 0
+        && markers
+            .iter()
+            .filter(|marker| tail.contains(*marker))
+            .count()
+            >= required
+}
 
 /// What [`Herdr::send_first_prompt`] does when herdr reports the prompt
 /// stalled. A stall means only that herdr saw no state change within its
-/// five seconds, which happens both when a dialog ate the paste and when
-/// herdr has no state manifest for the harness at all -- it pins Oh My Pi
-/// `idle` (`manifest_source: null`, `default_known_agent_idle_fallback`),
-/// so `--until working` can never come true there. So a dialog on the
-/// screen is retried and everything else is accepted, which leaves a
-/// harness herdr cannot narrate behaving as it did before #121.
+/// five seconds. The text may have been swallowed by a first-run dialog,
+/// may be waiting in the composer because its submit key was lost, or may
+/// have started while state detection lagged. Only the screen-local actions
+/// are decided here; the caller observes ambiguous cases before acting.
 ///
-/// The screen has to be read carefully here: what it usually shows after
-/// a stall is ssf's own prompt sitting in the composer, and ssf's prompts
-/// quote the dialog wording in this repository. So a match counts as a
-/// dialog only when the prompt's own opening line is not on the screen.
+/// The screen has to be read carefully here: ssf's own prompt may quote a
+/// dialog, and OMP collapses a long paste to short ellipsized lines. Several
+/// early prompt markers distinguish that composer card from quoted prose.
 pub fn after_stall(screen: &str, prompt: &str) -> AfterStall {
-    let Some(answer) = driver::trust_dialog(screen) else {
-        return AfterStall::Accept;
-    };
-    let opening: String = prompt
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or_default()
-        .chars()
-        .take(PROMPT_OPENING_CHARS)
-        .collect();
-    let opening = opening.trim();
-    if !opening.is_empty() && screen.contains(opening) {
-        return AfterStall::Accept;
+    if prompt_on_screen(screen, prompt) {
+        return AfterStall::Submit;
     }
-    AfterStall::Retry(answer)
+    match driver::trust_dialog(screen) {
+        Some(answer) => AfterStall::Retry(answer),
+        None => AfterStall::Observe,
+    }
 }
 
 impl Herdr {
@@ -722,9 +744,19 @@ impl Herdr {
 
     /// Rendered screen of a pane, as lines.
     pub async fn screen(&self, pane_id: &str) -> Result<Vec<String>> {
+        self.screen_from(pane_id, "visible").await
+    }
+
+    /// Recent logical lines retain more of a collapsed or scrolled composer
+    /// than the visible viewport, which is what prompt recovery needs.
+    async fn recent_screen(&self, pane_id: &str) -> Result<Vec<String>> {
+        self.screen_from(pane_id, "recent-unwrapped").await
+    }
+
+    async fn screen_from(&self, pane_id: &str, source: &str) -> Result<Vec<String>> {
         let text = self
             .run_raw(&[
-                "pane", "read", pane_id, "--source", "visible", "--format", "text",
+                "pane", "read", pane_id, "--source", source, "--format", "text",
             ])
             .await?;
         Ok(text.lines().map(str::to_string).collect())
@@ -957,13 +989,10 @@ impl Herdr {
     /// swallowed (#121). A stall with a trust dialog on the screen is that
     /// dialog: it is answered and the prompt sent once more.
     ///
-    /// A stall with no dialog on the screen is not treated as a failure,
-    /// because it need not be one: herdr has no state manifest for every
-    /// harness it recognises, and a harness it cannot narrate is pinned
-    /// `idle` forever, so `--until working` always stalls there however
-    /// well the prompt landed ([`after_stall`]). The send is then taken on
-    /// trust, as it was before #121, with a `warn!` saying so; where herdr
-    /// can tell, the first prompt stays confirmed.
+    /// A stall with no dialog is observed once more before anything is sent.
+    /// If the prompt is sitting in the composer, only Enter is sent and the
+    /// agent must then reach a state proving that the turn started. The body
+    /// is never resent after an ambiguous submission (#279).
     pub async fn send_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         let mut answered_dialog = false;
         loop {
@@ -976,26 +1005,110 @@ impl Herdr {
                 // the way Orca does and let the harness queue it.
                 PromptFailure::Blocked => return self.paste_raw(pane_id, text).await,
                 PromptFailure::Stalled => {
-                    let screen = self.screen(pane_id).await.unwrap_or_default().join("\n");
+                    let screen = self
+                        .recent_screen(pane_id)
+                        .await
+                        .unwrap_or_default()
+                        .join("\n");
                     match after_stall(&screen, text) {
                         AfterStall::Retry(answer) if !answered_dialog => {
                             info!(pane_id, "the first prompt met a trust dialog; answering it");
                             self.answer_trust(pane_id, answer).await?;
                             answered_dialog = true;
                         }
-                        _ => {
+                        AfterStall::Submit => {
                             warn!(
                                 pane_id,
-                                "herdr saw no state change after the first prompt; taking it as \
-delivered"
+                                "the first prompt is still in the composer; submitting it again"
                             );
-                            return Ok(());
+                            return self.submit_existing_prompt(pane_id).await;
+                        }
+                        AfterStall::Observe => {
+                            warn!(pane_id, "first prompt stalled; observing before recovery");
+                            if self.wait_for_prompt_start(pane_id).await.is_ok() {
+                                return Ok(());
+                            }
+                            let later = self
+                                .recent_screen(pane_id)
+                                .await
+                                .unwrap_or_default()
+                                .join("\n");
+                            match after_stall(&later, text) {
+                                AfterStall::Submit => {
+                                    return self.submit_existing_prompt(pane_id).await;
+                                }
+                                AfterStall::Retry(answer) if !answered_dialog => {
+                                    info!(pane_id, "a first-run dialog appeared after the stall");
+                                    self.answer_trust(pane_id, answer).await?;
+                                    answered_dialog = true;
+                                }
+                                _ => bail!(
+                                    "first prompt in {pane_id} remains unconfirmed; its text was \
+not sent again"
+                                ),
+                            }
+                        }
+                        AfterStall::Retry(_) => {
+                            bail!("first prompt in {pane_id} met the trust dialog again")
                         }
                     }
                 }
                 PromptFailure::Other => return Err(e),
             }
         }
+    }
+
+    /// Recover a first prompt after the daemon saw the harness but did not
+    /// record the session as seeded. Text already on the screen is submitted
+    /// in place; only a screen with no trace of it gets a fresh delivery.
+    async fn recover_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
+        if self.agent_started_prompt(pane_id).await? {
+            return Ok(());
+        }
+        let screen = self
+            .recent_screen(pane_id)
+            .await
+            .unwrap_or_default()
+            .join("\n");
+        match after_stall(&screen, text) {
+            AfterStall::Submit => self.submit_existing_prompt(pane_id).await,
+            AfterStall::Retry(answer) => {
+                self.answer_trust(pane_id, answer).await?;
+                self.send_first_prompt(pane_id, text).await
+            }
+            AfterStall::Observe => self.send_first_prompt(pane_id, text).await,
+        }
+    }
+
+    async fn agent_started_prompt(&self, pane_id: &str) -> Result<bool> {
+        Ok(self
+            .agents()
+            .await?
+            .iter()
+            .any(|agent| agent.pane_id == pane_id && agent.status == "working"))
+    }
+
+    async fn submit_existing_prompt(&self, pane_id: &str) -> Result<()> {
+        self.run(&["agent", "send-keys", pane_id, "enter"]).await?;
+        self.wait_for_prompt_start(pane_id).await.with_context(|| {
+            format!("the prompt in {pane_id}'s composer still did not start after Enter")
+        })
+    }
+
+    async fn wait_for_prompt_start(&self, pane_id: &str) -> Result<()> {
+        self.run(&[
+            "agent",
+            "wait",
+            pane_id,
+            "--until",
+            "working",
+            "--until",
+            "blocked",
+            "--timeout",
+            FIRST_PROMPT_TIMEOUT_MS,
+        ])
+        .await
+        .map(|_| ())
     }
 
     /// `agent prompt`, waiting only until the harness starts working on it.
@@ -1030,7 +1143,11 @@ delivered"
             .or_else(|| live.first())
             .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
-            self.send_prompt(&handle, text).await?;
+            match relaunch.first_prompt {
+                FirstPrompt::No => self.send_prompt(&handle, text).await?,
+                FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
+                FirstPrompt::Recover => self.recover_first_prompt(&handle, text).await?,
+            }
             return Ok(Delivery {
                 handle,
                 relaunched: false,

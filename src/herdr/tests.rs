@@ -214,6 +214,50 @@ async fn herdr_live_first_prompt() {
         screen.to_lowercase().contains("pong"),
         "the first prompt was not answered"
     );
+    // Reproduce #279 directly: the body made it into a collapsed composer
+    // card but its submitting Enter did not. Recovery must submit that body
+    // in place, not paste another copy over it.
+    let stranded = format!(
+        "<attachment>\n\
+# GitHub issue #14: Phase 1a — Compatibility spike\n\
+https://github.com/mikekelly/inception/issues/14\n\
+Opened by @MikeKellyBot for a delivery recovery test.\n\
+{}\n\
+</attachment>\n\
+Reply with the single token RECOVERED-279 and nothing else.",
+        (0..125)
+            .map(|n| format!("Evidence line {n}: preserve the host-side record."))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let pasted = format!("{PASTE_START}{}{PASTE_END}", stranded.trim_end());
+    h.run(&["pane", "send-text", &handle, &pasted])
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // OMP asks how a large paste should be represented. This is the one
+    // Enter Herdr sends: it chooses the default wrapped attachment but does
+    // not submit the resulting composer card.
+    h.run(&["agent", "send-keys", &handle, "enter"])
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let waiting = h.recent_screen(&handle).await.unwrap().join("\n");
+    eprintln!("stranded composer:\n{waiting}");
+    assert!(
+        prompt_on_screen(&waiting, &stranded),
+        "the stranded prompt was not identifiable"
+    );
+    h.recover_first_prompt(&handle, &stranded).await.unwrap();
+    h.run(&["agent", "wait", &handle, "--timeout", "60000"])
+        .await
+        .unwrap();
+    let recovered = h.screen(&handle).await.unwrap().join("\n");
+    eprintln!("recovered screen:\n{recovered}");
+    assert!(
+        recovered.contains("RECOVERED-279"),
+        "the stranded prompt was not answered"
+    );
     h.remove_worktree(&wt.id).await.unwrap();
     if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
         && let Some(src) = v
@@ -283,11 +327,37 @@ Do you trust the contents of this directory? is what Codex asks.";
     // text, not a dialog, so the send is taken as delivered.
     let pasted = "▌ You are working on mikekelly/simple-software-factory#121.\n\
 ▌ Do you trust the contents of this directory? is what Codex asks.";
-    assert_eq!(after_stall(pasted, prompt), AfterStall::Accept);
-    // A harness herdr cannot narrate, sitting at a ready composer: the
-    // stall says nothing, so the prompt is taken as delivered.
+    assert_eq!(after_stall(pasted, prompt), AfterStall::Submit);
+    // A ready composer says nothing about where the submission got to, so
+    // it is observed and never accepted merely because the wait stalled.
     let ready = "  Oh My Pi\n\n▌ Ask anything";
-    assert_eq!(after_stall(ready, prompt), AfterStall::Accept);
+    assert_eq!(after_stall(ready, prompt), AfterStall::Observe);
+}
+
+#[test]
+fn a_collapsed_omp_card_identifies_the_prompt() {
+    let prompt = "<attachment>\n\
+# GitHub issue #14: Phase 1a — Compatibility spike\n\
+https://github.com/mikekelly/inception/issues/14\n\
+\n\
+Opened by @MikeKellyBot on 2026-09-13.\n\
+</attachment>";
+    let screen = "╭─── file #1 ───╮\n\
+│# GitHub is…   │\n\
+│https://git…   │\n\
+│               │\n\
+│Opened by @…   │\n\
+╰ +125 lines ───╯";
+    assert!(prompt_on_screen(screen, prompt));
+    assert_eq!(after_stall(screen, prompt), AfterStall::Submit);
+    let history = format!(
+        "{screen}\n{}",
+        (0..30)
+            .map(|n| format!("assistant response line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(!prompt_on_screen(&history, prompt));
 }
 
 #[test]

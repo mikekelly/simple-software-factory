@@ -222,7 +222,11 @@ impl Engine {
                     let e = self.entry(repo, issue.number);
                     e.launched_at = Some(now_iso());
                     e.agent_session_id = None;
+                    e.first_prompt_attempted = true;
                 }
+                self.state
+                    .save()
+                    .context("recording the first prompt before delivery")?;
                 let eff = self.effective(repo, issue.number);
                 let title = format!("{} · #{}", eff.harness, issue.number);
                 let cmd = self.launch_command(
@@ -267,6 +271,7 @@ impl Engine {
         e.updated_at = Some(issue.updated_at.clone());
         e.seen = diff.seen;
         e.seeded = true;
+        e.first_prompt_attempted = false;
         e.active = true;
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());
@@ -318,6 +323,7 @@ impl Engine {
         e.updated_at = Some(issue.updated_at.clone());
         e.seen = diff.seen;
         e.seeded = true;
+        e.first_prompt_attempted = false;
         e.active = true;
         e.bound_at = Some(now_iso());
         e.last_prompt_at = Some(now_iso());

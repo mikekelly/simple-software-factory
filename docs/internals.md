@@ -138,6 +138,14 @@ checks, and a restrictive content security policy. See
   their flags; ssf answers all of them so unattended launches do not stall.
   Approval prompts never appear because of the [default
   commands](configuration.md#permissions).
+- **First-prompt confirmation.** Herdr waits for a fresh harness to start
+  working before ssf records its session as seeded. A long OMP paste first
+  opens OMP's attachment choice; Herdr's Enter accepts that choice but can
+  leave the resulting attachment in the composer. On a stalled delivery ssf
+  identifies that original prompt, sends only the missing Enter and waits for
+  `working` or `blocked`. It never accepts an ambiguous stall or pastes over
+  an identifiable copy of the body. An unseeded live harness found on a later
+  pass follows the same recovery path.
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. A machine restart takes the terminals with it, so the
