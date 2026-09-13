@@ -10,7 +10,7 @@
 _repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$_repo/packaging/release/PKGBUILD"
 
-pkgver=0.6.0.r594.g3d6fa61
+pkgver=0.6.0.r595.gd7e919f
 pkgrel=1
 source=()
 sha256sums=()
