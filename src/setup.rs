@@ -201,15 +201,31 @@ pub fn run() -> Result<()> {
     if migrate_legacy_runtime()? {
         println!("migrated the legacy marketplace runtime");
     }
+    let target_already_selected = crate::server_catalog::selected_target_identity()?.is_some();
     let target = prepare_target()?;
-    if let Some(name) = &target {
-        crate::server_catalog::activate_service_target(name)?;
-    }
+    activate_prepared_target(
+        target.as_deref(),
+        target_already_selected,
+        crate::server_catalog::activate_service_target,
+    )?;
     verify_package()?;
     if target.is_some() {
         stop_legacy_service()?;
     }
     finish_setup()
+}
+
+fn activate_prepared_target(
+    target: Option<&str>,
+    already_selected: bool,
+    activate: impl FnOnce(&str) -> Result<()>,
+) -> Result<()> {
+    if let Some(name) = target
+        && !already_selected
+    {
+        activate(name)?;
+    }
+    Ok(())
 }
 
 fn prepare_target() -> Result<Option<String>> {
@@ -411,6 +427,24 @@ mod tests {
         assert_eq!(runtime_name, "kept");
         assert_eq!(actual.as_ref(), &expected);
         assert!(Config::legacy_vm_settings().unwrap().is_none());
+    }
+
+    #[test]
+    fn setup_does_not_reopen_the_client_catalog_after_a_target_is_selected() {
+        let mut activated = false;
+        activate_prepared_target(Some("local"), true, |_| {
+            activated = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!activated);
+
+        activate_prepared_target(Some("ssf-server"), false, |_| {
+            activated = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(activated);
     }
 
     #[test]
