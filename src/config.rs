@@ -922,9 +922,9 @@ pub struct RepoConfig {
     /// Repo-specific instructions appended to the initial prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
-    /// File whose contents are appended to the initial prompt, relative to
-    /// the worktree unless absolute or `~/`-prefixed. Defaults to `SSF.md`
-    /// in the repository; a missing file is simply not mentioned.
+    /// SSF agent guidance appended to the main session's initial prompt,
+    /// relative to the worktree unless absolute or `~/`-prefixed. Defaults to
+    /// `SSF.md` in the repository; a missing file is simply not mentioned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_file: Option<String>,
     /// Logins that may drive this repository, replacing
@@ -945,7 +945,7 @@ pub struct RepoConfig {
     pub git: GitConfig,
 }
 
-/// Name of the per-project prompt file when `repo.prompt_file` is not set.
+/// Name of the SSF agent guidance file when `repo.prompt_file` is not set.
 pub const DEFAULT_PROMPT_FILE: &str = "SSF.md";
 
 impl RepoConfig {
@@ -959,7 +959,7 @@ impl RepoConfig {
             .unwrap_or_else(|| format!("https://github.com/{}.git", self.name))
     }
 
-    /// The configured prompt file, as given (`SSF.md` by default).
+    /// The configured SSF agent guidance file, as given (`SSF.md` by default).
     pub fn prompt_file(&self) -> &str {
         self.prompt_file
             .as_deref()
@@ -968,7 +968,7 @@ impl RepoConfig {
             .unwrap_or(DEFAULT_PROMPT_FILE)
     }
 
-    /// Where the prompt file lives for a checkout at `worktree`: an absolute
+    /// Where the SSF guidance lives for a checkout at `worktree`: an absolute
     /// or `~/` path stands on its own, anything else is inside the worktree.
     pub fn prompt_file_path(&self, worktree: &Path) -> PathBuf {
         let p = expand_tilde(self.prompt_file());

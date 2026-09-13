@@ -39,7 +39,7 @@ pub struct PromptContext<'a> {
     pub handed_over_from: Option<&'a str>,
     /// Open project boards the item is on.
     pub projects: &'a [ProjectCard],
-    /// The repository's own prompt file, when the worktree has one.
+    /// The repository's SSF agent guidance, when the worktree has it.
     pub project_prompt: Option<ProjectPrompt>,
     /// Additional notes for the harness actually running this session.
     pub harness_prompt: Option<ProjectPrompt>,
@@ -50,8 +50,8 @@ pub struct PromptContext<'a> {
     pub pushes_as: Option<String>,
 }
 
-/// Contents of the per-project prompt file (`SSF.md` by default): notes the
-/// humans on a repository keep for ssf agents, outside CLAUDE.md/AGENTS.md.
+/// Contents of the SSF agent guidance file (`SSF.md` by default): the operating
+/// contract humans on a repository give the issue-owning main session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectPrompt {
     /// The file as configured (`SSF.md`, `.ssf/prompt.md`, `~/notes/x.md`).
@@ -60,14 +60,14 @@ pub struct ProjectPrompt {
 }
 
 impl ProjectPrompt {
-    /// Read the repository's prompt file from the checkout at `worktree`.
+    /// Read the repository's SSF agent guidance from the checkout at `worktree`.
     /// A missing or empty file yields nothing; an unreadable one is logged.
     pub fn load(repo: &RepoConfig, worktree: &Path) -> Option<Self> {
         Self::load_file(repo, &repo.prompt_file_path(worktree), repo.prompt_file())
     }
 
     /// Harness notes always live at the checkout root, independently of
-    /// the shared prompt file configured by the repository.
+    /// the shared SSF guidance file configured by the repository.
     pub fn load_harness(repo: &RepoConfig, worktree: &Path, harness: &str) -> Option<Self> {
         let source = format!("SSF.{harness}.md");
         Self::load_file(repo, &worktree.join(&source), &source)
@@ -81,7 +81,7 @@ impl ProjectPrompt {
                 warn!(
                     repo = repo.name,
                     path = %path.display(),
-                    "cannot read the project prompt file: {e}"
+                    "cannot read the SSF agent guidance file: {e}"
                 );
                 return None;
             }
@@ -92,7 +92,7 @@ impl ProjectPrompt {
                 repo = repo.name,
                 path = %path.display(),
                 line,
-                "the project notes open an HTML comment that never closes; everything after it is left out of the prompt"
+                "the SSF agent guidance opens an HTML comment that never closes; everything after it is left out of the prompt"
             );
         }
         if text.is_empty() {
@@ -478,11 +478,13 @@ fn extras(ctx: &PromptContext) -> String {
         s.push_str(extra.trim());
         s.push('\n');
     }
-    for pp in [ctx.project_prompt.as_ref(), ctx.harness_prompt.as_ref()]
-        .into_iter()
-        .flatten()
-    {
-        s.push_str(&format!("\n## Project notes (`{}`)\n\n", pp.source));
+    if let Some(pp) = ctx.project_prompt.as_ref() {
+        s.push_str(&format!("\n## SSF agent guidance (`{}`)\n\n", pp.source));
+        s.push_str(&pp.text);
+        s.push('\n');
+    }
+    if let Some(pp) = ctx.harness_prompt.as_ref() {
+        s.push_str(&format!("\n## Harness guidance (`{}`)\n\n", pp.source));
         s.push_str(&pp.text);
         s.push('\n');
     }

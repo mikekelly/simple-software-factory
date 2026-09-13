@@ -117,9 +117,9 @@ to choose a smaller scope; do not start an unbounded loop or merge known
 defects. Run relevant validation on the final change, not a package build
 for every round. State the tested commit and remaining limitations in the PR.
 
-The repository's notes decide who merges. Use `Refs #N` for ongoing
+The repository's SSF guidance decides who merges. Use `Refs #N` for ongoing
 management or tracking issues; `Closes #N` is appropriate only when the PR
-completes the entire issue. `ssf doctor` reports missing project notes.
+completes the entire issue. `ssf doctor` reports missing SSF agent guidance.
 
 A PR the bot did not write (a human's PR the bot is asked to review, or
 one assigned to it without a session of its own on the branch) is

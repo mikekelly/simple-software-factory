@@ -139,7 +139,7 @@ machine.\n"
             "{moved} belongs in the guide, not the prompt"
         );
     }
-    // Advice about how to work is the repository's to give (SSF.md).
+    // Advice about how to work is the repository's to give (SSF.md or AGENTS.md).
     for advice in [
         "commit as you go",
         "Post a short comment",
@@ -161,7 +161,7 @@ machine.\n"
         ..ctx
     };
     let p = initial_prompt(&issue, &[], &ctx);
-    assert!(p.contains("Run the tests.\n\n## Project notes (`SSF.md`)\n\nCards go to Review"));
+    assert!(p.contains("Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"));
     assert!(!p.contains("They say"));
     let ctx = PromptContext {
         harness_prompt: Some(ProjectPrompt {
@@ -171,7 +171,7 @@ machine.\n"
         ..ctx
     };
     let p = initial_prompt(&issue, &[], &ctx);
-    assert!(p.contains("Cards go to Review when a PR is open.\n\n## Project notes (`SSF.codex.md`)\n\nUse native subagents."));
+    assert!(p.contains("Cards go to Review when a PR is open.\n\n## Harness guidance (`SSF.codex.md`)\n\nUse native subagents."));
     let harness_only = PromptContext {
         project_prompt: None,
         ..ctx.clone()

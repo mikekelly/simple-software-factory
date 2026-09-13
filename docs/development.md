@@ -344,5 +344,7 @@ command or responsibility above, then read its tests as needed; a production-cod
 change need not load the whole suite. The config/state isolation guards live in
 `src/config/test_support.rs`.
 
-This repository is built by ssf itself: [`SSF.md`](../SSF.md) is what its
-agents are told.
+This repository is built by ssf itself: [`SSF.md`](../SSF.md) gives the
+issue-owning main session its SSF workflow and orchestration contract;
+[`AGENTS.md`](../AGENTS.md) gives every agent the repository-wide development
+policy.

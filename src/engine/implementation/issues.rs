@@ -7,7 +7,7 @@ impl Engine {
         repo: &'a RepoConfig,
         st: &'a IssueState,
     ) -> PromptContext<'a> {
-        // The repository's prompt file is read from the item's own checkout,
+        // The repository's SSF agent guidance is read from the item's own checkout,
         // so a PR branch that changes it is seen as the branch has it.
         let project_prompt = st
             .worktree_path
@@ -37,7 +37,7 @@ impl Engine {
     }
 
     /// The full first message for an item, built once its workspace is
-    /// known so the prompt file in that checkout can be included.
+    /// known so the SSF agent guidance in that checkout can be included.
     pub(in crate::engine) fn initial_text(
         &mut self,
         repo: &RepoConfig,
