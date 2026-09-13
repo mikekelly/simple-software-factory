@@ -878,6 +878,14 @@ fn default_startup_driver_wait() -> u64 {
 pub struct RepoConfig {
     /// `owner/name` on GitHub.
     pub name: String,
+    /// GitHub's immutable database id. The daemon fills this on its first
+    /// successful identity check and uses it to follow renames and transfers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_id: Option<u64>,
+    /// Former names retained so origin tags written before a rename still
+    /// identify this repository.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
     /// Agent id launched in each issue workspace (`claude`, `codex`, ...).
     pub harness: String,
     /// Driver for this repository's sessions; the top-level `driver` when
@@ -949,6 +957,11 @@ pub struct RepoConfig {
 pub const DEFAULT_PROMPT_FILE: &str = "SSF.md";
 
 impl RepoConfig {
+    pub fn matches_name(&self, name: &str) -> bool {
+        self.name.eq_ignore_ascii_case(name)
+            || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    }
+
     pub fn split(&self) -> Result<(&str, &str)> {
         split_repo_name(&self.name)
     }
@@ -1206,8 +1219,21 @@ impl Config {
         }
         self.git.validate("git")?;
         self.git.validate_merged("[git]")?;
+        let mut repository_ids = std::collections::BTreeSet::new();
+        let mut repository_names = std::collections::BTreeSet::new();
         for r in &self.repos {
             r.split()?;
+            for name in std::iter::once(&r.name).chain(&r.aliases) {
+                split_repo_name(name)?;
+                if !repository_names.insert(name.to_ascii_lowercase()) {
+                    bail!("repository name or alias {name} is configured more than once");
+                }
+            }
+            if let Some(id) = r.github_id
+                && !repository_ids.insert(id)
+            {
+                bail!("GitHub repository id {id} is configured more than once");
+            }
             if r.harness.trim().is_empty() {
                 bail!("repo {}: harness must not be empty", r.name);
             }

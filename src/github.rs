@@ -29,6 +29,16 @@ pub struct User {
     pub email: Option<String>,
 }
 
+/// Stable identity plus the mutable canonical name and clone URLs of a
+/// GitHub repository.
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct RepositoryIdentity {
+    pub id: u64,
+    pub full_name: String,
+    pub clone_url: String,
+    pub ssh_url: String,
+}
+
 impl User {
     /// Address GitHub attributes commits to even when the profile email is private.
     pub fn noreply_email(&self) -> String {
@@ -388,6 +398,28 @@ impl GitHub {
             .context("GET /user")?;
         let resp = Self::check(resp, "fetching bot identity").await?;
         resp.json::<User>().await.context("decoding /user")
+    }
+
+    pub async fn repository(&self, owner: &str, repo: &str) -> Result<RepositoryIdentity> {
+        let url = self.url(&format!("repos/{owner}/{repo}"));
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let resp = Self::check(resp, &format!("resolving repository {owner}/{repo}")).await?;
+        resp.json().await.context("decoding repository identity")
+    }
+
+    pub async fn repository_by_id(&self, id: u64) -> Result<RepositoryIdentity> {
+        let url = self.url(&format!("repositories/{id}"));
+        let resp = self
+            .get(&url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        let resp = Self::check(resp, &format!("resolving repository id {id}")).await?;
+        resp.json().await.context("decoding repository identity")
     }
 
     /// Open issues and pull requests matching one list filter

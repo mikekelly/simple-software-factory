@@ -93,6 +93,8 @@ instructions = "Run `make test` before opening a PR."
 | `vm.guest_binary` | this client on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` client to seed into the guest; its matching `ssf-server` build must be beside it (`ssf-server`, or the corresponding versioned release-asset name) |
 | `vm.herdr` | the host's own `herdr` on a Linux host, else herdr's latest Linux release downloaded by the guest while provisioning | lima only: a Linux herdr binary for the guest; installed when the guest is provisioned, so a change needs `ssf vm reset` |
 | `repo.name` | | `owner/name` on GitHub (required) |
+| `repo.github_id` | enrolled by ssf | GitHub's immutable repository database id; ssf uses it to discover renames and transfers |
+| `repo.aliases` | `[]` | Previous `owner/name` values retained by ssf so historical session origin tags still route correctly |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
 | `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
@@ -119,6 +121,13 @@ of those, sets `--git-name`, `--git-email`, `--git-signing-key` and
 <dotted.key> [value]` for everything else. A value that starts with `[`
 or `{` is read as TOML, so `ssf config set git '{ name = "Ann Person",
 email = "ann@example.com" }'` sets both halves of an identity at once.
+
+The daemon enrolls `repo.github_id` on its first successful pass. Every five
+minutes it resolves that immutable id through GitHub. If GitHub reports a new
+canonical `owner/name`, ssf repairs `repo.name`, retains the former name in
+`repo.aliases`, migrates its session state, and updates SSF-managed checkout
+remotes before polling the repository again. Rename or transfer repositories
+through GitHub normally; no SSF-side rename command is required.
 
 Environment overrides: `SSF_GITHUB_TOKEN` (the token), `SSF_CONFIG_DIR`
 and `SSF_STATE_DIR` (where config and state live; a scratch factory uses

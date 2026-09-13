@@ -129,7 +129,7 @@ impl Engine {
             if tag.is_delegate() {
                 return None;
             }
-            if !tag.origin.repo.eq_ignore_ascii_case(&repo.name) {
+            if !repo.matches_name(&tag.origin.repo) {
                 info!(
                     repo = repo.name,
                     issue = issue.number,

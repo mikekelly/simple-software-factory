@@ -10,6 +10,8 @@ fn first_prompt_names_the_driver() {
     .unwrap();
     let repo = RepoConfig {
         name: "o/r".into(),
+        github_id: None,
+        aliases: Vec::new(),
         harness: "claude".into(),
         ..Default::default()
     };
@@ -46,6 +48,8 @@ fn initial_prompt_mentions_bot_and_issue() {
     let repo = RepoConfig {
         name: "o/r".into(),
         harness: "claude".into(),
+        github_id: None,
+        aliases: Vec::new(),
         driver: None,
         model: None,
         effort: None,
