@@ -405,6 +405,9 @@ ssf repo list --json
 Replace the uppercase placeholders; omit `--effort` for a harness that
 has no effort setting. `model` is optional too. The bot needs Write
 access, and the harness must be installed and signed in where it runs.
+The daemon records GitHub's immutable repository id on its first pass. Later
+renames and transfers should happen through GitHub as usual; ssf periodically
+detects the new canonical name and repairs its configuration and checkouts.
 
 Use `ssf repo set OWNER/NAME` with the same options to change settings.
 Changing the harness clears the previous model and effort. Changes apply

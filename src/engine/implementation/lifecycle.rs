@@ -90,7 +90,7 @@ impl Engine {
         } else {
             Vec::new()
         };
-        Ok(Self {
+        let mut engine = Self {
             cfg,
             gh,
             drivers,
@@ -109,8 +109,11 @@ impl Engine {
             onboarding: None,
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
+            identity_checked_at: None,
             _state_lock: Some(state_lock),
-        })
+        };
+        engine.reconcile_repo_identities(true).await;
+        Ok(engine)
     }
 
     /// Who may drive a repository: its configured list, else the instance

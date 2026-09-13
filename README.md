@@ -136,6 +136,10 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   the session that made it. The one exception is `ssf tell`, a message
   typed straight into an agent's terminal, kept for nudges that would be
   noise on the item.
+- **Repository renames reconnect.** ssf records GitHub's immutable repository
+  id and periodically resolves its current name. Rename or transfer a watched
+  repository through GitHub and ssf repairs its configuration, session state,
+  historical origin aliases and managed checkout remotes before polling it.
 - **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
   in Orca (or herdr), and starts the agents you have installed, with the
   bot's credentials, so what the agents do on GitHub is done as the bot.

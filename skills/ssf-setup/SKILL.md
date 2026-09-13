@@ -229,6 +229,12 @@ reflect transcript writes, and missing activity times remain unknown.
     Test totals need the base too; equal warning counts alone do not prove
     that a change adds no warnings.
 
+14. **Let GitHub own repository renames and transfers.** Do not remove and
+    re-add an established watched repository merely because its `owner/name`
+    changed. ssf records GitHub's immutable repository id, periodically repairs
+    its canonical name, state and managed checkout remotes, and retains prior
+    names for historical origin tags. Use `ssf doctor` to verify reconciliation.
+
 ## GitHub body handling
 
 The session’s gh shim stamps explicit bodies, reading only the last repeated
