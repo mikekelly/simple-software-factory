@@ -464,33 +464,40 @@ impl State {
     /// Move a repository's state and canonicalise stored session references.
     /// Old names remain readable through `RepoConfig::aliases`; rewriting the
     /// cache keeps status and future writes consistent with the canonical name.
-    pub fn rename_repo(&mut self, old: &str, new: &str) -> Result<()> {
+    pub fn rename_repo(&mut self, old: &str, new: &str) -> Result<bool> {
         if old.eq_ignore_ascii_case(new) {
-            return Ok(());
+            return Ok(false);
         }
+        let mut changed = false;
         if let Some(repo) = self.repos.remove(old) {
             if self.repos.contains_key(new) {
                 self.repos.insert(old.to_string(), repo);
                 anyhow::bail!("state contains both repositories {old} and {new}");
             }
+            let mut repo = repo;
+            repo.issues_etag = None;
+            repo.mentioned_etag = None;
+            repo.pulls_etag = None;
+            repo.created_etag = None;
             self.repos.insert(new.to_string(), repo);
+            changed = true;
         }
         for repo in self.repos.values_mut() {
             for item in repo.issues.values_mut() {
-                rewrite_session(&mut item.origin, old, new);
-                rewrite_session(&mut item.delegated_by, old, new);
+                changed |= rewrite_session(&mut item.origin, old, new);
+                changed |= rewrite_session(&mut item.delegated_by, old, new);
                 if let Some(h) = &mut item.handover {
-                    rewrite_session(&mut h.by, old, new);
+                    changed |= rewrite_session(&mut h.by, old, new);
                 }
                 for origin in item.origins.values_mut() {
-                    *origin = renamed_session(origin, old, new);
+                    changed |= rewrite_session_value(origin, old, new);
                 }
                 for subscriber in &mut item.subscribers {
-                    *subscriber = renamed_session(subscriber, old, new);
+                    changed |= rewrite_session_value(subscriber, old, new);
                 }
             }
         }
-        Ok(())
+        Ok(changed)
     }
 
     pub fn load() -> Result<Self> {
@@ -594,19 +601,21 @@ impl State {
     }
 }
 
-fn rewrite_session(value: &mut Option<String>, old: &str, new: &str) {
+fn rewrite_session(value: &mut Option<String>, old: &str, new: &str) -> bool {
     if let Some(value) = value {
-        *value = renamed_session(value, old, new);
+        return rewrite_session_value(value, old, new);
     }
+    false
 }
 
-fn renamed_session(value: &str, old: &str, new: &str) -> String {
+fn rewrite_session_value(value: &mut String, old: &str, new: &str) -> bool {
     match crate::origin::Origin::parse(value) {
         Some(mut origin) if origin.repo.eq_ignore_ascii_case(old) => {
             origin.repo = new.to_string();
-            origin.to_string()
+            *value = origin.to_string();
+            true
         }
-        _ => value.to_string(),
+        _ => false,
     }
 }
 

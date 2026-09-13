@@ -112,7 +112,9 @@ impl Engine {
             identity_checked_at: None,
             _state_lock: Some(state_lock),
         };
-        engine.reconcile_repo_identities(true).await;
+        if !engine.reconcile_repo_identities(true).await {
+            anyhow::bail!("repository identity repair could not be saved");
+        }
         Ok(engine)
     }
 
