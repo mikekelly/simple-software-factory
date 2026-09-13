@@ -5,9 +5,8 @@ use super::*;
 /// a device code), the file it writes under the guest home, and a status
 /// command where it has one. `ssf vm login` runs `argv` over ssh with a
 /// tty; `ssf vm status` (and `doctor`) use `check()` to say who is logged
-/// in. Every harness has such a flow, so nothing is port-forwarded: the
-/// browser-callback variants bind the guest's loopback on random ports
-/// (Codex's is 1455) and are their defaults on a desktop only.
+/// in. Most harnesses use device codes or pasted replies; OMP can instead
+/// use a loopback callback, which `ssf vm login omp` forwards over SSH.
 #[derive(Debug, Clone, Copy)]
 pub struct Login {
     pub harness: &'static str,
@@ -86,11 +85,11 @@ pub const LOGINS: &[Login] = &[
     Login {
         harness: "omp",
         argv: &["omp"],
-        credential: ".omp/agent/auth.json",
+        credential: ".omp/agent/agent.db",
         must_contain: None,
         status: &[],
         open_url: false,
-        hint: "Oh My Pi starts: type /login, pick the method and provider, open the URL it prints, paste the code back, then ctrl+d",
+        hint: "Oh My Pi starts: type /login and pick the provider; for loopback OAuth wait for ssf forwarding, open the short /launch URL, authorize in your browser, then exit OMP",
     },
     Login {
         harness: "grok",
@@ -121,6 +120,9 @@ impl Login {
     /// A shell test that succeeds when the credential is in place, run in
     /// the guest home.
     pub fn check(&self) -> String {
+        if self.harness == "omp" {
+            return "env -u SSF_SERVER ssf login-probe omp".into();
+        }
         let file = shell_join(&[self.credential.to_string()]);
         match self.must_contain {
             Some(s) => format!("grep -qs {} {file}", shell_join(&[s.to_string()])),

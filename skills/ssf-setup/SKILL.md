@@ -48,7 +48,15 @@ reflect transcript writes, and missing activity times remain unknown.
    sign in in a browser, approve a token or scopes, sign a harness in.
    Give the exact command or URL, say what they will see, and wait;
    carry on when they say it is done. Everything else is for the agent
-   to run. In Claude Code, a command the person must type themselves can
+   to run. For OMP VM enrollment, have the person run `ssf vm login omp`
+   on the computer running their browser, select `/login` and the provider,
+   then open the short loopback `/launch` URL after ssf establishes its SSH
+   forwarding. Keep that terminal open through authorization; exit OMP to
+   check the result. If forwarding fails because a loopback port is occupied,
+   free the port and retry. Do not ask for callback URLs, codes, or tokens in
+   chat or replay them from another shell. Current OMP stores credentials in
+   `~/.omp/agent/agent.db`; missing `auth.json` alone is not a sign-out.
+   In Claude Code, a command the person must type themselves can
    be run as `! <command>` from the prompt.
 2. **If ssf is already installed, run `ssf doctor` and `ssf status` first**
    and read them before changing anything; most setup problems show up

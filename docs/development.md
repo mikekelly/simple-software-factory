@@ -163,6 +163,24 @@ suite also reproduces a committed ext4 journal transaction that restores legacy
 script content despite a successful pre-recovery readback; that regression needs
 `mkfs.ext4`, `debugfs` and `e2fsck`, but no KVM or mount privileges.
 
+## Isolated OMP VM-login regression
+
+On Linux with `sudo`, OpenSSH client/server, `ip`, `unshare`, `nsenter`, and
+Python 3 installed, run as the existing `ssf` account with passwordless
+`sudo` (the script does not create an account):
+
+```sh
+cargo build
+python3 scripts/test-omp-vm-login.py target/debug/ssf
+```
+
+The script runs the VM-login command against a temporary SSH server and a
+synthetic OAuth listener in a private network namespace. It checks callback
+delivery, the login result, tunnel cleanup, port-conflict failure, and terminal
+restoration. Keys and guest credentials are temporary; it does not contact the
+factory, boot a VM, or authorize against a real provider. Real macOS browser
+and provider enrollment remains a separate manual check.
+
 ## A dev build as the service
 
 `packaging/dev-install.sh` builds `target/release/ssf` and `ssf-server`, writes the
