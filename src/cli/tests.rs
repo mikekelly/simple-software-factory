@@ -3,21 +3,21 @@ use super::prelude::*;
 use super::*;
 
 #[test]
-fn client_target_is_the_only_local_remote_difference() {
+fn client_targets_are_removed_from_forwarded_arguments() {
     let args = vec!["status".into(), "--json".into()];
-    assert_eq!(client_target(args.clone(), None).unwrap(), (None, args));
+    assert_eq!(client_targets(args.clone(), None).unwrap(), (vec![], args));
 
-    let (server, args) = client_target(
+    let (servers, args) = client_targets(
         vec!["status".into(), "--server".into(), "bot@factory".into()],
         Some("configured".into()),
     )
     .unwrap();
-    assert_eq!(server.as_deref(), Some("bot@factory"));
+    assert_eq!(servers, ["bot@factory"]);
     assert_eq!(args, ["status"]);
 
-    let (server, args) =
-        client_target(vec!["--server=factory-alias".into(), "doctor".into()], None).unwrap();
-    assert_eq!(server.as_deref(), Some("factory-alias"));
+    let (servers, args) =
+        client_targets(vec!["--server=factory-alias".into(), "doctor".into()], None).unwrap();
+    assert_eq!(servers, ["factory-alias"]);
     assert_eq!(args, ["doctor"]);
 
     let trailing = vec![
@@ -28,14 +28,27 @@ fn client_target_is_the_only_local_remote_difference() {
         "tool-value".into(),
     ];
     assert_eq!(
-        client_target(trailing.clone(), None).unwrap(),
-        (None, trailing)
+        client_targets(trailing.clone(), None).unwrap(),
+        (vec![], trailing)
     );
+
+    let (servers, args) = client_targets(
+        vec![
+            "dashboard".into(),
+            "--server".into(),
+            "one".into(),
+            "--server=two".into(),
+        ],
+        None,
+    )
+    .unwrap();
+    assert_eq!(servers, ["one", "two"]);
+    assert_eq!(args, ["dashboard"]);
 }
 
 #[test]
 fn client_target_requires_a_destination() {
-    assert!(client_target(vec!["status".into(), "--server".into()], None).is_err());
+    assert!(client_targets(vec!["status".into(), "--server".into()], None).is_err());
 }
 
 #[test]

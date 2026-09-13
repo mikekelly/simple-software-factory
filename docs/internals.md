@@ -12,8 +12,10 @@ daemon exposes no network socket by default.
 
 ## Dashboards
 
-`ssf dashboard` runs a terminal UI on the client over one long-running
-`status --json --watch` stream. The server's status model builds
+`ssf dashboard` runs a Ratatui terminal UI on the client over one long-running
+`status --json --watch` stream per selected server. Repeated `--server` options
+produce independently updated server groups; a failed stream retains only that
+server's last successful cards and error state. The server's status model builds
 `dashboard.cards` only from driver-reported live agents, including the origin,
 additional assigned issues, agent session ID, state, activity and latest message.
 Active monitored items without an agent are exposed as
@@ -28,6 +30,12 @@ keeps one noninteractive SSH channel open for the watch stream. Canonical VM
 status forwarding uses the same stream, including when the host is remote. Each
 snapshot has a 30-second deadline. The TUI keeps processing input while status
 updates arrive.
+
+Layout rendering is a pure function over the canonical status model and terminal
+rectangle. Headless `TestBackend` tests cover card states, server grouping,
+one/two/three-column breakpoints, compact terminals, resizing, selection,
+Unicode and control-character handling. PTY tests cover the real Crossterm
+session, status streams and terminal restoration.
 
 Inside Herdr, the TUI matches the canonical `agent_session_id` to Herdr's
 agent list and focuses the corresponding pane using `herdr agent focus`.

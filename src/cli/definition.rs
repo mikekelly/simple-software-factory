@@ -8,7 +8,7 @@ use super::prelude::*;
     about = "Simple Software Factory: GitHub issues -> agent workspaces in herdr or Orca"
 )]
 pub(super) struct Cli {
-    /// Run the command on this SSH destination instead of this machine.
+    /// Run on this SSH destination; repeat to group servers in the dashboard.
     #[arg(long, global = true, env = "SSF_SERVER")]
     pub(super) _server: Option<String>,
     /// Log verbosity (also honours RUST_LOG).

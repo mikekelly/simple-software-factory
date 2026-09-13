@@ -146,8 +146,9 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
 
 Run `ssf dashboard` for the [session dashboard](docs/dashboard.md): active
 agents in a live terminal view, originating and assigned issues, activity and summaries.
-Use `ssf --server HOST dashboard` (or `SSF_SERVER`) for a remote factory;
-the TUI runs in your terminal. Herdr panes optionally support agent navigation,
+Use `ssf --server HOST dashboard` (or `SSF_SERVER`) for a remote factory, or
+repeat `--server` to group several factories; the adaptive card TUI runs in your
+terminal. Herdr panes optionally support agent navigation,
 and local VM factories use normal forwarding. The server can also serve an
 [optional browser dashboard](docs/dashboard.md#optional-server-web-dashboard), disabled by default.
 
