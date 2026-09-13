@@ -258,8 +258,12 @@ Cutting a release:
    `ssf-X.Y.Z-linux-x86_64` (a musl build via `packaging/linux/build.sh`
    and nfpm), `ssf-X.Y.Z-1-x86_64.pkg.tar.zst` (from
    `packaging/release/PKGBUILD` in an Arch container, the PKGBUILD
-   Omarchy's repository builds) and, best effort, `ssf-X.Y.Z-linux-aarch64`.
-   x86_64 only, like the microVM image. A run started by hand
+   Omarchy's repository builds) and, best effort, the bare aarch64 client and
+   server binaries. The aarch64 job runs natively on GitHub's ARM runner and
+   uses its musl compiler so bundled C dependencies and Rust use the same libc
+   target and architecture. The packages remain x86_64 only, like the
+   microVM image. A run
+   started by hand
    (`workflow_dispatch`) builds the same from the working tree and leaves
    workflow artifacts, no release. Locally, `packaging/linux/build.sh`
    builds the .deb, .rpm and the bare binary into `packaging/linux/dist/`

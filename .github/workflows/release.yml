@@ -53,21 +53,24 @@ jobs:
           path: packaging/linux/dist/*
           if-no-files-found: error
 
-  # Bare static aarch64 client/server binaries, cross-compiled; no aarch64
-  # packages. Best effort: a failure here never blocks the release.
+  # Bare static aarch64 client/server binaries, built natively on GitHub's
+  # ARM runner; no aarch64 packages. Best effort: a failure here never blocks
+  # the release.
   linux-aarch64-binary:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
         run: |
           rustup target add aarch64-unknown-linux-musl
-          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
         env:
-          CC_aarch64_unknown_linux_musl: aarch64-linux-gnu-gcc
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
+          # This runner is natively aarch64, so Ubuntu's musl-gcc compiles
+          # bundled SQLite and links Rust for the same libc and architecture.
+          CC_aarch64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_PROFILE_RELEASE_STRIP: "true"
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then VERSION="${GITHUB_REF_NAME#v}"; else
@@ -75,6 +78,9 @@ jobs:
           cargo build --locked --release --target aarch64-unknown-linux-musl
           mkdir -p dist && install -m755 target/aarch64-unknown-linux-musl/release/ssf "dist/ssf-$VERSION-linux-aarch64"
           install -m755 target/aarch64-unknown-linux-musl/release/ssf-server "dist/ssf-server-$VERSION-linux-aarch64"
+          file dist/* | tee /tmp/aarch64-file-output
+          test "$(grep -Fc 'ARM aarch64' /tmp/aarch64-file-output)" -eq 2
+          test "$(grep -Fc 'statically linked' /tmp/aarch64-file-output)" -eq 2
       - uses: actions/upload-artifact@v4
         with:
           name: linux-aarch64-binary
