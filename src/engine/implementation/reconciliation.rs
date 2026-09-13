@@ -191,6 +191,8 @@ impl Engine {
             self.clear_etags(repo);
         }
         let rs = self.state.repo_mut(&repo.name).clone();
+        let discovering =
+            repo.enrolled_at.is_some() && rs.enrollment_seen.as_ref() != repo.enrolled_at.as_ref();
 
         // Four listings, one per trigger. Each carries its own ETag; a 304
         // means that listing (and every item on it) is exactly as last time,
@@ -204,7 +206,11 @@ impl Engine {
                 name,
                 "assignee",
                 &self.login,
-                rs.issues_etag.as_deref(),
+                if discovering {
+                    None
+                } else {
+                    rs.issues_etag.as_deref()
+                },
             )
             .await?;
         let mentioned = self
@@ -214,12 +220,25 @@ impl Engine {
                 name,
                 "mentioned",
                 &self.login,
-                rs.mentioned_etag.as_deref(),
+                if discovering {
+                    None
+                } else {
+                    rs.mentioned_etag.as_deref()
+                },
             )
             .await?;
         let reviews = self
             .gh
-            .review_requested(owner, name, &self.login, rs.pulls_etag.as_deref())
+            .review_requested(
+                owner,
+                name,
+                &self.login,
+                if discovering {
+                    None
+                } else {
+                    rs.pulls_etag.as_deref()
+                },
+            )
             .await?;
         let created = self
             .gh
@@ -228,7 +247,11 @@ impl Engine {
                 name,
                 "creator",
                 &self.login,
-                rs.created_etag.as_deref(),
+                if discovering {
+                    None
+                } else {
+                    rs.created_etag.as_deref()
+                },
             )
             .await?;
         if matches!(assigned, Conditional::NotModified)
@@ -320,6 +343,43 @@ impl Engine {
             count = items.len(),
             "open items involving the bot"
         );
+
+        if discovering {
+            let rs = self.state.repo_mut(&repo.name);
+            for (number, (issue, _, triggers)) in &items {
+                if triggers.iter().all(|trigger| trigger == "created") {
+                    continue;
+                }
+                let Some(issue) = issue else {
+                    continue;
+                };
+                rs.adoption_candidates.insert(
+                    *number,
+                    AdoptionCandidate {
+                        number: *number,
+                        title: issue.title.clone(),
+                        html_url: issue.html_url.clone(),
+                        updated_at: issue.updated_at.clone(),
+                        kind: if issue.is_pull_request() {
+                            "pull_request".into()
+                        } else {
+                            "issue".into()
+                        },
+                        triggers: triggers.clone(),
+                    },
+                );
+                // Re-enrollment may find retained state from an earlier
+                // factory target. Keep its workspace, but detach its old
+                // conversation so adoption starts fresh from GitHub history.
+                if let Some(st) = rs.issues.get_mut(number) {
+                    st.seeded = false;
+                    st.active = false;
+                    st.cleanup_pending = false;
+                    st.release_pending = false;
+                }
+            }
+            rs.enrollment_seen = repo.enrolled_at.clone();
+        }
 
         let mut all_ok = true;
         let present: BTreeSet<u64> = items.keys().copied().collect();
@@ -453,6 +513,14 @@ impl Engine {
         fresh: Option<&Issue>,
         triggers: &[String],
     ) -> bool {
+        if self
+            .state
+            .repos
+            .get(&repo.name)
+            .is_some_and(|rs| rs.adoption_candidates.contains_key(&number))
+        {
+            return false;
+        }
         let tracked = self
             .state
             .repos

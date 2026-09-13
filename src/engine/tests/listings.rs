@@ -1,5 +1,104 @@
 use super::*;
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_new_repo_enrollment_lists_existing_allocations_without_starting_them() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    let listed = assigned_item(3, "alice", "u1");
+    stub.set_assigned(vec![listed.clone()]);
+
+    // Retained state from another enrollment is detached, but its checkout
+    // remains available for an explicit adoption to reuse.
+    {
+        let st = e.entry(&r, 3);
+        st.seeded = true;
+        st.active = true;
+        st.worktree_id = Some("w3".into());
+        st.worktree_path = Some("/worktrees/w3".into());
+        st.terminal_handle = Some("old-terminal".into());
+        st.agent_session_id = Some("old-conversation".into());
+    }
+    e.tick_repo(&r).await.unwrap();
+
+    let rs = &e.state.repos[&r.name];
+    assert_eq!(rs.enrollment_seen.as_deref(), Some("generation-1"));
+    assert_eq!(rs.adoption_candidates[&3].triggers, vec!["assigned"]);
+    assert!(!rs.issues[&3].seeded && !rs.issues[&3].active);
+    assert_eq!(rs.issues[&3].worktree_id.as_deref(), Some("w3"));
+    assert_eq!(
+        rs.issues[&3].terminal_handle.as_deref(),
+        Some("old-terminal")
+    );
+    assert_eq!(
+        rs.issues[&3].agent_session_id.as_deref(),
+        Some("old-conversation")
+    );
+    assert!(d.launches().is_empty(), "discovery must not start an agent");
+
+    // A later listing change still cannot start the candidate implicitly.
+    stub.set_assigned(vec![assigned_item(3, "alice", "u2")]);
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.launches().is_empty());
+    assert!(e.state.repos[&r.name].adoption_candidates.contains_key(&3));
+}
+
+#[tokio::test]
+async fn explicit_adoption_starts_fresh_with_the_complete_github_story() {
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    let listed = assigned_item(3, "alice", "u1");
+    stub.set_assigned(vec![listed.clone()]);
+    stub.set_issue(3, listed);
+    stub.set_timeline(
+        3,
+        vec![
+            assigned_by(1, "alice"),
+            comment(2, "alice", "the historical detail adoption must replay"),
+        ],
+    );
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty());
+    {
+        let st = e.entry(&r, 3);
+        st.worktree_id = Some("w3".into());
+        st.worktree_path = Some("/worktrees/w3".into());
+        st.terminal_handle = Some("old-terminal".into());
+        st.agent_session_id = Some("old-conversation".into());
+    }
+    d.seed("w3", "old-terminal", READY_SCREEN);
+
+    let response = e
+        .handle_request(Request::Adopt {
+            items: vec!["o/r#3".into()],
+        })
+        .await;
+    assert!(response.ok, "{:?}", response.error);
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("the historical detail adoption must replay"));
+    let log = d.log();
+    assert_eq!(log[0], "stop:old-terminal", "{log:?}");
+    assert!(
+        log.iter().any(|entry| entry == "relaunch:w3:false"),
+        "adoption starts fresh rather than resuming: {log:?}"
+    );
+    assert!(e.state.repos[&r.name].adoption_candidates.is_empty());
+    let st = &e.state.repos[&r.name].issues[&3];
+    assert!(st.seeded && st.active, "{st:?}");
+    assert!(e.refetch.contains(&r.name));
+}
+
 #[tokio::test]
 async fn ignored_items_are_not_fetched_on_a_full_listing_or_after_a_restart() {
     let stub = GitHubStub::start().await;

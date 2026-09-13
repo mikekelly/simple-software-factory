@@ -114,6 +114,14 @@ reflect transcript writes, and missing activity times remain unknown.
    file; `ssf config set` refuses it on purpose. `ssf auth login` and
    `ssf auth logout` change credentials and config only; they do not edit
    the daemon's live `state.json` for bot identity.
+   The first successful poll after `ssf repo add` quarantines allocations that
+   already involve the bot instead of starting them. Inspect them with
+   `ssf candidates [--repo OWNER/NAME]`; after verifying that no other local,
+   VM or cloud factory owns the work, opt in only explicit references with
+   `ssf adopt OWNER/NAME#N [...]`. Never adopt all candidates implicitly.
+   Adoption starts a fresh harness conversation from the complete GitHub
+   history; do not copy a private harness transcript between servers. New
+   allocations after enrollment and normal daemon restarts remain automatic.
 4. **Raise the harness and the model; do not silently take the
    defaults.** Follow [Choosing the harness and the
    model](../../docs/setup.md#choosing-the-harness-and-the-model): it

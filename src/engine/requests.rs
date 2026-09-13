@@ -37,6 +37,14 @@ impl Engine {
     pub async fn handle_request(&mut self, req: Request) -> Response {
         match req {
             Request::Ping => Response::ok(serde_json::json!({"login": self.login})),
+            Request::Candidates { repo } => match self.candidates(repo.as_deref()) {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
+            Request::Adopt { items } => match self.adopt(&items).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
             Request::Sub { from, target } => match self.subscribe(&from, &target).await {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
@@ -89,6 +97,111 @@ impl Engine {
                 Err(e) => Response::err(format!("{e:#}")),
             },
         }
+    }
+
+    fn candidates(&self, filter: Option<&str>) -> Result<Value> {
+        if let Some(name) = filter
+            && !self.cfg.repos.iter().any(|r| r.matches_name(name))
+        {
+            anyhow::bail!("{name} is not a watched repository (see `ssf repo list`)");
+        }
+        let mut rows = Vec::new();
+        for repo in &self.cfg.repos {
+            if filter.is_some_and(|name| !repo.matches_name(name)) {
+                continue;
+            }
+            let Some(rs) = self.state.repos.get(&repo.name) else {
+                continue;
+            };
+            for candidate in rs.adoption_candidates.values() {
+                rows.push(serde_json::json!({
+                    "item": session_id(&repo.name, candidate.number),
+                    "title": candidate.title,
+                    "url": candidate.html_url,
+                    "kind": candidate.kind,
+                    "triggers": candidate.triggers,
+                    "updated_at": candidate.updated_at,
+                }));
+            }
+        }
+        Ok(Value::Array(rows))
+    }
+
+    async fn adopt(&mut self, items: &[String]) -> Result<Value> {
+        if items.is_empty() {
+            anyhow::bail!("name at least one candidate as owner/repo#N");
+        }
+        let mut selected = Vec::new();
+        for item in items {
+            let (repo, number) = self.locate(item)?;
+            let candidate = self
+                .state
+                .repos
+                .get(&repo.name)
+                .and_then(|rs| rs.adoption_candidates.get(&number))
+                .cloned()
+                .with_context(|| {
+                    format!("{item} is not waiting for adoption (see `ssf candidates`)")
+                })?;
+            if selected
+                .iter()
+                .any(|(r, n, _): &(RepoConfig, u64, _)| r.name == repo.name && *n == number)
+            {
+                anyhow::bail!("{item} was named more than once");
+            }
+            selected.push((repo, number, candidate));
+        }
+
+        let mut rows = Vec::new();
+        for (repo, number, candidate) in selected {
+            let (owner, name) = repo.split()?;
+            let prior = self.peek(&repo, number).cloned();
+            if let Some(worktree) = prior.as_ref().and_then(|st| st.worktree_id.as_deref())
+                && self.driver(&repo).has_live_agent(worktree).await?
+            {
+                let handle = prior
+                    .as_ref()
+                    .and_then(|st| st.terminal_handle.as_deref())
+                    .with_context(|| {
+                        format!(
+                            "{} has a live agent SSF cannot identify; stop it before adoption",
+                            session_id(&repo.name, number)
+                        )
+                    })?;
+                self.driver(&repo).stop_agent(worktree, handle).await?;
+            }
+            {
+                let st = self.entry(&repo, number);
+                st.terminal_handle = None;
+                st.agent_session_id = None;
+            }
+            self.refresh_collaborators(&repo, owner, name).await?;
+            let issue = self.gh.issue(owner, name, number).await?;
+            let pr = if issue.is_pull_request() {
+                Some(self.gh.pull(owner, name, number).await?)
+            } else {
+                None
+            };
+            self.reconcile_issue(&repo, owner, name, &issue, pr, candidate.triggers.clone())
+                .await?;
+            if !self.peek(&repo, number).is_some_and(|st| st.seeded) {
+                anyhow::bail!(
+                    "{} was not eligible for a session in its current GitHub state; it remains a candidate",
+                    session_id(&repo.name, number)
+                );
+            }
+            let rs = self.state.repo_mut(&repo.name);
+            rs.adoption_candidates.remove(&number);
+            // Items created by this issue may have been seen before their
+            // parent was adopted. Reconsider them now that their origin can bind.
+            rs.ignored.clear();
+            self.forget_etags(&repo);
+            rows.push(serde_json::json!({
+                "item": session_id(&repo.name, number),
+                "title": issue.title,
+            }));
+        }
+        Ok(Value::Array(rows))
     }
 
     /// A watched repository and an item number out of `owner/repo#N` (a

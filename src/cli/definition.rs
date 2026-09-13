@@ -104,6 +104,24 @@ pub(super) enum Command {
         #[arg(long)]
         all: bool,
     },
+    /// List allocations that pre-date this factory's enrollment of a
+    /// repository. They remain idle until explicitly adopted.
+    Candidates {
+        #[arg(long)]
+        json: bool,
+        /// Repository (owner/name) to list; defaults to every watched repository.
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Start selected pre-existing allocations on this factory, replaying
+    /// their complete GitHub history into fresh agent sessions.
+    Adopt {
+        /// One or more explicit owner/repo#N candidate references.
+        #[arg(required = true)]
+        items: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Follow an item without working on it: its activity arrives in this
     /// session as `[ssf] FYI` messages. Needs the running daemon.
     Sub {

@@ -319,6 +319,8 @@ printf '%s' "$TOKEN" | ssf auth login --token   # a pasted token instead of gh
 ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
 ssf repo add acme/widgets --harness claude
+ssf candidates                    # existing allocations waiting for explicit adoption; starts nothing
+ssf adopt acme/widgets#12          # start one here with its complete GitHub history
 ssf vm login claude               # sign the harness in inside the guest
 ssf config set driver orca        # host mode only: sessions in Orca instead of herdr
 ssf status
@@ -342,6 +344,8 @@ can reconfigure the factory:
 ```sh
 ssf repo list --json
 ssf repo add acme/widgets --harness codex --instructions "Run make test before opening a PR."
+ssf candidates [--repo acme/widgets] [--json]
+ssf adopt acme/widgets#12 [acme/widgets#15 ...] [--json]
 ssf repo set acme/widgets --model opus --effort high    # ids: ssf models <agent>; choosing: docs/setup.md
 ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
 ssf repo set acme/widgets --clear model --clear effort

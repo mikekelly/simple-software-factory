@@ -52,6 +52,14 @@ pub fn socket_path() -> PathBuf {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// List pre-existing allocations waiting for explicit adoption.
+    Candidates {
+        repo: Option<String>,
+    },
+    /// Adopt explicitly named pre-existing allocations on this factory.
+    Adopt {
+        items: Vec<String>,
+    },
     /// `from` (a session, `owner/repo#N`) wants to hear about `target`.
     Sub {
         from: String,
@@ -237,6 +245,12 @@ mod tests {
         let j = serde_json::to_string(&c).unwrap();
         assert!(j.contains("\"op\":\"cancel_handover\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), c);
+        let a = Request::Adopt {
+            items: vec!["o/r#3".into(), "x/y#4".into()],
+        };
+        let j = serde_json::to_string(&a).unwrap();
+        assert!(j.contains("\"op\":\"adopt\""));
+        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), a);
         let e = serde_json::to_string(&Response::err("nope")).unwrap();
         let back: Response = serde_json::from_str(&e).unwrap();
         assert!(!back.ok);

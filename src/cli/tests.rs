@@ -554,6 +554,8 @@ fn repo_add_and_set_switch_event_comments_and_clear_puts_it_back() {
     let loaded = || Config::load_from(&path).unwrap();
     // Unset by default: the instance decides, and nothing is written.
     repo_at(&path, add(None)).unwrap();
+    let enrollment = loaded().repos[0].enrolled_at.clone();
+    assert!(enrollment.is_some(), "repo add records a new enrollment");
     assert_eq!(loaded().repos[0].event_comments, None);
     assert!(loaded().event_comments(&loaded().repos[0]));
     let text = std::fs::read_to_string(&path).unwrap();
@@ -578,6 +580,11 @@ fn repo_add_and_set_switch_event_comments_and_clear_puts_it_back() {
     // `repo add` over an existing entry takes the flag too.
     repo_at(&path, add(Some(false))).unwrap();
     assert_eq!(loaded().repos[0].event_comments, Some(false));
+    assert_eq!(
+        loaded().repos[0].enrolled_at,
+        enrollment,
+        "updating settings is not a new enrollment"
+    );
     std::fs::remove_dir_all(&dir).ok();
 }
 

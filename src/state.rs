@@ -26,6 +26,11 @@ pub struct State {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RepoState {
+    /// The repository enrollment generation whose pre-existing allocations
+    /// have been discovered. A different value means `repo add` enrolled the
+    /// repository again and its current allocations need explicit adoption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrollment_seen: Option<String>,
     /// ETags and contents of the last successful listings, per trigger.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub issues_etag: Option<String>,
@@ -55,11 +60,26 @@ pub struct RepoState {
     /// each of them (issue and timeline) again to find nothing new.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub ignored: BTreeMap<u64, Ignored>,
+    /// Allocations that already existed when this factory first enrolled the
+    /// repository. They do not own a workspace until a person adopts them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub adoption_candidates: BTreeMap<u64, AdoptionCandidate>,
     /// Reviewer sessions from before #115 (a second workspace per pull
     /// request, gone since): read so an old file still loads, dropped with
     /// one log line by [`State::load_from`], never written back.
     #[serde(default, rename = "reviewers", skip_serializing)]
     pub legacy_reviewers: BTreeMap<u64, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdoptionCandidate {
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub updated_at: String,
+    pub kind: String,
+    #[serde(default)]
+    pub triggers: Vec<String>,
 }
 
 /// What an ignored item looked like when it was last examined: GitHub's

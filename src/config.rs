@@ -904,6 +904,11 @@ fn default_startup_driver_wait() -> u64 {
 pub struct RepoConfig {
     /// `owner/name` on GitHub.
     pub name: String,
+    /// Enrollment generation written by `ssf repo add`. A daemon that has
+    /// not seen this value snapshots pre-existing allocations as adoption
+    /// candidates instead of starting them automatically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enrolled_at: Option<String>,
     /// GitHub's immutable database id. The daemon fills this on its first
     /// successful identity check and uses it to follow renames and transfers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
