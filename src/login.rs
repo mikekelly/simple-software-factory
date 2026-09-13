@@ -89,12 +89,25 @@ fn key_in_env(harness: &str) -> Option<&'static str> {
 /// Size and mtime of the credential file, or `None` without one.
 pub fn fingerprint(harness: &str) -> Option<String> {
     let path = credential_path(harness)?;
-    let meta = std::fs::metadata(&path).ok()?;
+    if harness == "omp" {
+        return omp_fingerprint(&path);
+    }
+    file_fingerprint(&path, false)
+}
+
+fn file_fingerprint(path: &Path, precise: bool) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
     let mtime = meta
         .modified()
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
+        .map(|d| {
+            if precise {
+                d.as_nanos()
+            } else {
+                u128::from(d.as_secs())
+            }
+        })
         .unwrap_or(0);
     Some(format!("{}:{mtime}", meta.len()))
 }
@@ -346,6 +359,99 @@ fn probe_file(harness: &str) -> Probe {
     }
 }
 
+/// OMP 18 stores credentials alongside settings in agent.db. Database
+/// existence alone is not a login, and disabled rows are not usable. Open
+/// read-only and return only a boolean; never put credential data in output.
+fn omp_database_state(path: &Path) -> rusqlite::Result<bool> {
+    let db = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(Duration::from_millis(250))?;
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM auth_credentials
+         WHERE disabled_cause IS NULL AND json_valid(data)
+         AND CASE WHEN credential_type = 'api_key'
+           THEN json_type(data, '$.key') = 'text'
+             AND length(trim(json_extract(data, '$.key'))) > 0
+           WHEN credential_type = 'oauth'
+           THEN (json_type(data, '$.access') = 'text'
+             AND length(trim(json_extract(data, '$.access'))) > 0)
+             OR (json_type(data, '$.refresh') = 'text'
+             AND length(trim(json_extract(data, '$.refresh'))) > 0)
+           ELSE 0 END)",
+        [],
+        |row| row.get(0),
+    )
+}
+
+fn omp_legacy_state(path: &Path) -> Option<bool> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(_) => return None,
+    };
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let entries = value.as_object()?;
+    Some(entries.values().any(|entry| {
+        let populated = |field| {
+            entry
+                .get(field)
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.trim().is_empty())
+        };
+        match entry.get("type").and_then(|v| v.as_str()) {
+            Some("api_key") => populated("key"),
+            Some("oauth") => populated("access") || populated("refresh"),
+            _ => false,
+        }
+    }))
+}
+
+fn omp_fingerprint(path: &Path) -> Option<String> {
+    // WAL commits need not change the main database until checkpointing.
+    // These are file metadata only, never token values or token hashes.
+    let paths = [
+        path.to_path_buf(),
+        path.with_file_name("agent.db-wal"),
+        path.with_file_name("auth.json"),
+    ];
+    let parts: Vec<_> = paths
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| file_fingerprint(p, true).map(|f| format!("{i}:{f}")))
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(";"))
+}
+
+fn probe_omp_at(path: &Path, key: Option<&str>) -> Probe {
+    let legacy = path.with_file_name("auth.json");
+    // Once migrated, the database is authoritative. A leftover auth.json
+    // must not resurrect credentials disabled or removed from the database.
+    let (present, shown) = match path.try_exists() {
+        Ok(true) => (omp_database_state(path).ok(), tilde(path)),
+        Ok(false) => (omp_legacy_state(&legacy), tilde(&legacy)),
+        Err(_) => (None, tilde(path)),
+    };
+    let (state, detail) = match (present, key) {
+        (_, Some(var)) => (LoginState::SignedIn, format!("{var} set")),
+        (Some(true), _) => (LoginState::SignedIn, format!("{shown}: stored credentials")),
+        (Some(false), _) => (
+            LoginState::SignedOut,
+            format!("{shown}: no stored credentials"),
+        ),
+        (None, _) => (
+            LoginState::Unknown,
+            format!("{shown}: could not read credential storage"),
+        ),
+    };
+    Probe {
+        state,
+        detail,
+        fingerprint: omp_fingerprint(path),
+    }
+}
+
 fn tilde(p: &Path) -> String {
     let s = p.to_string_lossy().to_string();
     match home().to_str() {
@@ -359,6 +465,10 @@ pub fn probe(harness: &str) -> Probe {
     match harness {
         "claude" => probe_claude(),
         "codex" => probe_codex(),
+        "omp" => probe_omp_at(
+            &credential_path("omp").expect("known harness"),
+            key_in_env("omp"),
+        ),
         // Copilot keeps its login in the keyring where there is one (the
         // host); the file in the table is its fallback (the guest).
         "copilot" => match (probe_file("copilot"), crate::vm::in_guest()) {
@@ -427,6 +537,105 @@ pub fn display_name(harness: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct OmpFixture(PathBuf);
+
+    impl OmpFixture {
+        fn new() -> Self {
+            static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "ssf-omp-probe-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> PathBuf {
+            self.0.join("agent.db")
+        }
+
+        fn database(&self) -> rusqlite::Connection {
+            let db = rusqlite::Connection::open(self.path()).unwrap();
+            db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT);").unwrap();
+            db
+        }
+
+        fn probe(&self) -> Probe {
+            probe_omp_at(&self.path(), None)
+        }
+    }
+
+    impl Drop for OmpFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn omp_database_checks_active_credentials_and_wal_updates() {
+        let fixture = OmpFixture::new();
+        assert_eq!(fixture.probe().state, LoginState::SignedOut);
+        assert!(!fixture.path().exists(), "a probe must not create storage");
+        let db = fixture.database();
+        assert_eq!(fixture.probe().state, LoginState::SignedOut);
+        let before = fixture.probe().fingerprint;
+        db.execute(
+            "INSERT INTO auth_credentials VALUES (1, 'zai', 'oauth', ?1, NULL)",
+            [r#"{"access":"private-access","refresh":"private-refresh"}"#],
+        )
+        .unwrap();
+        let probe = fixture.probe();
+        assert_eq!(probe.state, LoginState::SignedIn);
+        assert_ne!(
+            before, probe.fingerprint,
+            "uncheckpointed login must change fingerprint"
+        );
+        assert!(!format!("{probe:?}").contains("private-"));
+        db.execute("UPDATE auth_credentials SET disabled_cause = 'revoked'", [])
+            .unwrap();
+        assert_eq!(fixture.probe().state, LoginState::SignedOut);
+        db.execute("UPDATE auth_credentials SET disabled_cause = NULL, credential_type = 'api_key', data = ?1", [r#"{"key":"private-key"}"#]).unwrap();
+        assert_eq!(fixture.probe().state, LoginState::SignedIn);
+        for data in ["not json", "{}", r#"{"key":"  "}"#, r#"{"key":123}"#] {
+            db.execute("UPDATE auth_credentials SET data = ?1", [data])
+                .unwrap();
+            assert_eq!(fixture.probe().state, LoginState::SignedOut);
+        }
+        db.execute("DELETE FROM auth_credentials", []).unwrap();
+        assert_eq!(fixture.probe().state, LoginState::SignedOut);
+    }
+
+    #[test]
+    fn omp_legacy_storage_and_unreadable_database_are_distinguished() {
+        let fixture = OmpFixture::new();
+        let legacy = fixture.0.join("auth.json");
+        std::fs::write(
+            &legacy,
+            r#"{"zai":{"type":"oauth","refresh":"legacy-token"}}"#,
+        )
+        .unwrap();
+        assert_eq!(fixture.probe().state, LoginState::SignedIn);
+        let db = fixture.database();
+        assert_eq!(
+            fixture.probe().state,
+            LoginState::SignedOut,
+            "database supersedes stale legacy credentials"
+        );
+        drop(db);
+        std::fs::write(fixture.path(), "not a database").unwrap();
+        assert_eq!(fixture.probe().state, LoginState::Unknown);
+        assert_eq!(
+            probe_omp_at(&fixture.path(), Some("OPENAI_API_KEY")).state,
+            LoginState::SignedIn
+        );
+        std::fs::remove_file(fixture.path()).unwrap();
+        std::fs::write(&legacy, "{}").unwrap();
+        assert_eq!(fixture.probe().state, LoginState::SignedOut);
+        std::fs::write(&legacy, "not json").unwrap();
+        assert_eq!(fixture.probe().state, LoginState::Unknown);
+    }
 
     #[test]
     fn credential_paths_follow_the_harness_homes() {

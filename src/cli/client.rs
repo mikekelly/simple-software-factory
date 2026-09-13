@@ -206,6 +206,11 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
     }
 
     match cli.command {
+        Command::LoginProbe { harness } => {
+            std::process::exit(i32::from(
+                login::probe(&harness).state != login::LoginState::SignedIn,
+            ));
+        }
         Command::VmInit { seed } => {
             factory_vm::initialize_guest_factory(&seed, &config::config_dir())
         }

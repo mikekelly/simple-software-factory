@@ -801,11 +801,16 @@ impl Vm {
             l.hint
         );
         let mut cmd = self.ssh(&remote, true);
-        let status = if l.open_url && host_has_display() {
+        let omp = l.harness == "omp";
+        let status = if omp || (l.open_url && host_has_display()) {
             // ssh keeps the terminal raw and the remote pty from stdin;
             // its output passes through here to be watched for the URL.
-            let mut child = cmd.stdout(Stdio::piped()).spawn().context("running ssh")?;
-            let mut pipe = child.stdout.take().expect("piped stdout");
+            let _terminal = oauth::TerminalRestore::capture();
+            let mut child =
+                oauth::SessionProcess(cmd.stdout(Stdio::piped()).spawn().context("running ssh")?);
+            let mut pipe = child.0.stdout.take().expect("piped stdout");
+            let mut launch = oauth::LaunchScanner::default();
+            let mut tunnel: Option<oauth::CallbackTunnel> = None;
             let mut out = std::io::stdout().lock();
             let mut scan = UrlScanner::default();
             let mut buf = [0u8; 4096];
@@ -814,9 +819,21 @@ impl Vm {
                 if n == 0 {
                     break;
                 }
+                if omp {
+                    if let Some(active) = tunnel.as_mut() {
+                        active.check()?;
+                    }
+                    for port in launch.feed(&buf[..n]) {
+                        if tunnel.as_ref().is_none_or(|active| active.port() != port) {
+                            drop(tunnel.take());
+                            tunnel = Some(oauth::CallbackTunnel::start(self, port)?);
+                        }
+                    }
+                }
                 std::io::Write::write_all(&mut out, &buf[..n])?;
                 std::io::Write::flush(&mut out)?;
-                if let Some(url) = scan.feed(&buf[..n])
+                if !omp
+                    && let Some(url) = scan.feed(&buf[..n])
                     && open_in_browser(&url)
                 {
                     // The terminal is raw while ssh runs.
@@ -826,7 +843,7 @@ impl Vm {
                     );
                 }
             }
-            child.wait()?
+            child.0.wait()?
         } else {
             cmd.status().context("running ssh")?
         };

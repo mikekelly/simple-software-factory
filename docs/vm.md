@@ -429,15 +429,14 @@ The agents in the guest need their own sign-in: the guest has no keyring,
 no browser and none of your home directory. `ssf vm login [<harness>]`
 runs the harness's login inside the guest, in your terminal, using the
 flow that works without a browser next to it: a page to open here and a
-code to paste back (Claude Code, Gemini, OpenCode, Pi, Oh My Pi) or a
-device code (Codex, Copilot, Grok, Crush). ssf opens the page in your
+code to paste back (Claude Code, Gemini, OpenCode, Pi), a loopback OAuth
+callback (Oh My Pi), or a device code (Codex, Copilot, Grok, Crush). ssf opens the page in your
 browser when it can (`xdg-open` on Linux, `open` on macOS; the URL is
 printed either way) and, once the login
 exits, says whether the credential landed. Without a harness it lists
 those installed in the guest and asks which. Nothing is copied from this
-machine and nothing is port-forwarded; the harnesses' browser-callback
-variants are their desktop defaults only. The credential stays in the
-guest's home, on the data disk: `ssf vm reset` keeps it, `ssf vm destroy`
+machine. For OMP, ssf forwards the loopback OAuth port over SSH while
+the login command runs. The credential stays in the guest's home, on the data disk: `ssf vm reset` keeps it, `ssf vm destroy`
 removes it with everything else. `ssf vm status` shows one entry per
 harness (`logins:`, and `logins` in `--json` with `installed` and
 `logged_in`).
@@ -450,9 +449,30 @@ harness (`logins:`, and `logins` in `--json` with `installed` and
 | copilot | `copilot login --device-code` | enter the code on the page | `.copilot/config.json` |
 | opencode | `opencode auth login` | pick provider and method; OAuth prints a URL and takes the code | `.local/share/opencode/auth.json` |
 | pi | `pi`, then `/login` | pick method and provider, open the URL, paste the code or redirect URL | `.pi/agent/auth.json` |
-| omp | `omp`, then `/login` | as Pi | `.omp/agent/auth.json` |
+| omp | `omp`, then `/login` | pick provider and method; open the loopback `/launch` URL after ssf establishes forwarding, finish in the host browser, then exit OMP | `.omp/agent/agent.db` (older releases: `auth.json`) |
 | grok | `grok login --device-auth` | confirm the code on the page | `.grok/auth.json` |
 | crush | `crush login copilot` | Enter, then the code on the page | `.config/github-copilot/apps.json` |
+
+For OMP 18.1.18, run `ssf vm login omp` on the computer running your
+browser. Type `/login`, choose the provider (including Z.ai/GLM OAuth),
+and open OMP's short `http://localhost:<port>/launch` URL. ssf detects
+that link and forwards the same port from host loopback to guest loopback;
+the browser's callback then reaches OMP automatically. Keep the login
+terminal open until enrollment finishes, then exit OMP to check the result.
+The tunnel closes when the login command exits. ssf forwards bytes without
+logging or saving callback URLs, authorization codes, or tokens.
+
+Forwarding binds only host `127.0.0.1` and `::1`. If either address cannot
+be bound (for example, another application uses the port), ssf stops the
+login with an error; free the port and retry. Running the command on a
+remote SSH host does not forward to the computer running your browser.
+Providers using device codes or pasted API keys continue to use those flows.
+
+OMP credential checks read enabled API-key or OAuth records from
+`agent.db`, including uncheckpointed SQLite WAL updates; an empty database
+does not count as a login. Older `auth.json` credentials are supported when
+no database exists; once present, the database is authoritative.
+This checks stored credentials, not whether the provider will accept them.
 
 Copilot's and Crush's files are what their documentation names; the
 others were watched being written. API keys go through the same commands

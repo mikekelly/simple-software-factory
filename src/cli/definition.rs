@@ -32,6 +32,9 @@ pub(super) struct ServerCli {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(super) enum Command {
+    /// Check local harness credentials without printing their contents.
+    #[command(hide = true)]
+    LoginProbe { harness: String },
     /// Initialize persistent guest factory state (called by the guest boot service).
     #[command(hide = true)]
     VmInit { seed: PathBuf },

@@ -366,16 +366,23 @@ Optionally, `ssf vm tailscale` installs Tailscale only inside the running guest
 and starts its browser enrolment flow. See [Optional Tailscale
 enrolment](vm.md#optional-tailscale-enrolment).
 
-It runs the harness's own browser-less login inside the guest, in your
-terminal: a page to open here and a code to paste back (Claude Code,
-Gemini, OpenCode, Pi, Oh My Pi) or a device code (Codex, Copilot, Grok,
-Crush); the exact flow per harness is the table under [Harness
+It runs the harness's own login inside the guest, in your terminal:
+a page to open here and a code to paste back (Claude Code, Gemini,
+OpenCode, Pi), a loopback OAuth callback (Oh My Pi), or a device code
+(Codex, Copilot, Grok, Crush); the exact flow per harness is the table under [Harness
 logins](vm.md#harness-logins). The credential lives on the guest's data
 disk (`ssf vm reset` keeps it, `ssf vm destroy` removes it). API keys go
 through the same commands (each offers the option). The alternative,
 copying an existing login in with `vm.files`, makes the guest share
 *your* session: a logout on either side, or Claude Code's token rotation,
 ends both, so prefer `ssf vm login`.
+
+For OMP, run `ssf vm login omp` on the computer with your browser, type
+`/login`, and select the provider. Open OMP's short loopback `/launch` URL
+after ssf establishes forwarding. Complete authorization in the host
+browser and exit OMP; ssf carries the callback into the guest automatically.
+Keep that terminal open throughout enrollment. OMP 18.1.18 stores its
+credentials in `~/.omp/agent/agent.db`; a missing `auth.json` is normal.
 
 **On the host**, use the harness's own login (`claude auth login`, `codex
 login`, ...), which opens a browser.

@@ -84,6 +84,7 @@ fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
         vec!["ssf", "config", "set", "dashboard.enabled", "true"],
         vec!["ssf", "config", "set", "vm.enabled", "false"],
         vec!["ssf", "vm", "start"],
+        vec!["ssf", "login-probe", "omp"],
     ] {
         let cli = Cli::try_parse_from(&args).unwrap();
         assert_eq!(forwarded_name(&cli.command), None, "{args:?}");
