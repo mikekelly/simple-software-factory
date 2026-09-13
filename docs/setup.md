@@ -77,6 +77,10 @@ For repeat use, destinations can be assigned stable client-side names in
 allows several SSH and namespaced local targets beside the existing factory,
 but only one managed VM. Setup, service, VM lifecycle and uninstall commands
 refuse for namespaced targets until per-target services are implemented.
+An established enabled VM can be adopted without rebuilding or moving it with
+`ssf server migrate-vm`; first confirm `ssf vm status` and the guest factory,
+then run the migration and confirm `ssf --server ssf-server vm status` and
+`ssf --server ssf-server status` before adding another target.
 
 On Linux this creates the initial configuration and enables and starts the
 user service for `default.target`. It asks before enabling systemd linger so

@@ -141,8 +141,8 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
                 cfg.vm.data_gib = Some(n);
                 cfg.save_vm_settings()?;
                 println!(
-                    "[vm] data_gib = {n} written to {}",
-                    config::config_path().display()
+                    "vm.data_gib = {n} written to {}",
+                    vm_settings_destination()?
                 );
             }
             Ok(())
@@ -320,10 +320,9 @@ pub(super) fn exit_with(st: std::process::ExitStatus) -> Result<()> {
 }
 
 /// `ssf vm build`'s sizing: a `--vcpus/--mem-mib/--data-gib` flag is
-/// written to `[vm]`; a key set there stays; a key set nowhere gets the
-/// rule for this machine and is written too. The choice is printed with
-/// where each value came from. `[vm] backend` is settled the same way
-/// (the platform's default, written once).
+/// written to the selected VM target (or legacy `[vm]`); a key already
+/// set stays, while an unset key gets the rule for this machine. Backend
+/// selection follows the same rule and is written once.
 pub(super) fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) -> Result<()> {
     let (backend, backend_from, backend_changed) =
         factory_vm::choose_backend(&mut cfg.vm, factory_vm::BackendKind::platform_default());
@@ -354,9 +353,20 @@ pub(super) fn size_vm(cfg: &mut Config, base: &Path, flags: [Option<u32>; 3]) ->
     if chosen.changed {
         cfg.save_vm_settings()?;
         println!(
-            "written to {} under [vm] (backend, vcpus, mem_mib, data_gib); edit them there. The data disk itself is made once and only enlarged by `ssf vm grow`",
-            config::config_path().display()
+            "written to {} (backend, vcpus, mem_mib, data_gib); use `ssf config set vm.<key>` to edit them. The data disk itself is made once and only enlarged by `ssf vm grow`",
+            vm_settings_destination()?
         );
     }
     Ok(())
+}
+
+fn vm_settings_destination() -> Result<String> {
+    Ok(match server_catalog::selected_vm_context()? {
+        Some(selected) => format!(
+            "server {:?} in {}",
+            selected.name,
+            server_catalog::path().display()
+        ),
+        None => format!("[vm] in {}", config::config_path().display()),
+    })
 }

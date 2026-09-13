@@ -15,6 +15,7 @@ use tokio::{
 pub(crate) struct StatusSource {
     server: Option<String>,
     local_context: Option<crate::server_catalog::LocalContext>,
+    vm_context: Option<crate::server_catalog::SelectedVmContext>,
     control_dir: Option<PathBuf>,
     child: Option<Child>,
     output: Option<BufReader<ChildStdout>>,
@@ -22,12 +23,13 @@ pub(crate) struct StatusSource {
 
 impl StatusSource {
     pub(crate) fn new(server: Option<String>) -> Result<Self> {
-        Self::new_with_context(server, None)
+        Self::new_with_context(server, None, None)
     }
 
     pub(crate) fn new_with_context(
         server: Option<String>,
         local_context: Option<crate::server_catalog::LocalContext>,
+        vm_context: Option<crate::server_catalog::SelectedVmContext>,
     ) -> Result<Self> {
         let control_dir = if server.is_some() {
             // Short path also fits macOS's Unix socket path limit. Atomic
@@ -44,6 +46,7 @@ impl StatusSource {
         Ok(Self {
             server,
             local_context,
+            vm_context,
             control_dir,
             child: None,
             output: None,
@@ -60,6 +63,7 @@ impl StatusSource {
                 &executable,
                 self.control_dir.as_deref(),
                 self.local_context.as_ref(),
+                self.vm_context.as_ref(),
             );
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = command
@@ -121,6 +125,7 @@ fn status_command(
     executable: &Path,
     control_dir: Option<&Path>,
     local_context: Option<&crate::server_catalog::LocalContext>,
+    vm_context: Option<&crate::server_catalog::SelectedVmContext>,
 ) -> Command {
     let mut command = if let Some(host) = server {
         let mut command = Command::new("ssh");
@@ -166,7 +171,17 @@ fn status_command(
             .env("SSF_CONFIG_DIR", &context.config_dir)
             .env("SSF_STATE_DIR", &context.state_dir);
     }
-    command.env_remove("SSF_SERVER");
+    command
+        .env_remove("SSF_SERVER")
+        .env_remove(crate::server_catalog::SELECTED_VM_ENV);
+    if server.is_none()
+        && let Some(context) = vm_context
+    {
+        command.env(
+            crate::server_catalog::SELECTED_VM_ENV,
+            serde_json::to_string(context).expect("serializing selected VM context"),
+        );
+    }
     command.stdin(Stdio::null()).kill_on_drop(true);
     command
 }
@@ -206,7 +221,7 @@ mod tests {
 
     #[test]
     fn local_uses_canonical_server_endpoint() {
-        let command = status_command(None, Path::new("/package/ssf-server"), None, None);
+        let command = status_command(None, Path::new("/package/ssf-server"), None, None, None);
         assert_eq!(command.as_std().get_program(), "/package/ssf-server");
         assert_eq!(args(&command), ["__client", "status", "--json", "--watch"]);
     }
@@ -217,7 +232,13 @@ mod tests {
             config_dir: "/factory/one/config".into(),
             state_dir: "/factory/one/state".into(),
         };
-        let command = status_command(None, Path::new("/package/ssf-server"), None, Some(&context));
+        let command = status_command(
+            None,
+            Path::new("/package/ssf-server"),
+            None,
+            Some(&context),
+            None,
+        );
         let environment: std::collections::BTreeMap<_, _> = command
             .as_std()
             .get_envs()
@@ -240,6 +261,36 @@ mod tests {
     }
 
     #[test]
+    fn named_vm_status_uses_its_owned_vm_configuration() {
+        let config = crate::config::VmConfig {
+            enabled: true,
+            name: "crucible".into(),
+            ssh_port: 2444,
+            ..Default::default()
+        };
+        let context = crate::server_catalog::SelectedVmContext {
+            name: "ssf-server".into(),
+            config,
+        };
+        let command = status_command(
+            None,
+            Path::new("/package/ssf-server"),
+            None,
+            None,
+            Some(&context),
+        );
+        let encoded = command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == crate::server_catalog::SELECTED_VM_ENV)
+            .and_then(|(_, value)| value)
+            .unwrap();
+        let decoded: crate::server_catalog::SelectedVmContext =
+            serde_json::from_slice(encoded.as_encoded_bytes()).unwrap();
+        assert_eq!(decoded, context);
+    }
+
+    #[test]
     fn remote_reuses_one_private_control_path_and_passes_host_as_argument() {
         use std::os::unix::fs::PermissionsExt;
         let source = StatusSource::new(Some("customer@cloud.example".into())).unwrap();
@@ -253,11 +304,13 @@ mod tests {
             Path::new("unused"),
             Some(dir),
             None,
+            None,
         );
         let second = status_command(
             source.server.as_deref(),
             Path::new("unused"),
             Some(dir),
+            None,
             None,
         );
         assert_eq!(args(&first), args(&second));

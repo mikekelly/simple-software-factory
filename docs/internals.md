@@ -13,7 +13,12 @@ daemon exposes no network socket by default.
 If `~/.config/ssf/servers.toml` exists, the client first resolves `--server` or
 `SSF_SERVER` as a catalog name. One entry is implicit; several make an omitted
 selector an error. A legacy `local` or `vm` entry enters the existing local
-endpoint and is validated against `vm.enabled`. A namespaced `local` entry sets
+endpoint and is validated against `vm.enabled`. `ssf server migrate-vm` copies
+the enabled legacy VM settings into the named target, verifies them, and only
+then removes `[vm]`; equal duplicate representations make an interrupted retry
+safe, while differences stop. The selected VM context is passed to the endpoint
+and the existing sole service supervisor reads that same owned context. A
+namespaced `local` entry sets
 both `SSF_CONFIG_DIR` and `SSF_STATE_DIR` on its endpoint process and dashboard
 stream; an `ssh` entry supplies its configured destination. Without a catalog,
 omitted and explicit destinations preserve the legacy local/SSH behavior.

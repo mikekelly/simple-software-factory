@@ -612,7 +612,7 @@ impl std::str::FromStr for BackendKind {
 /// `[vm]`: the daemon, herdr and the sessions inside a VM (a Firecracker
 /// microVM, or a lima instance) instead of on this machine. The host keeps
 /// only what builds, starts, stops and reaches the guest (`ssf vm ...`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmConfig {
     /// Run the factory in the VM: `ssf-server` on the host starts and watches
@@ -717,6 +717,32 @@ impl Default for VmConfig {
             ssh_port: default_vm_ssh_port(),
             files: Vec::new(),
         }
+    }
+}
+
+impl VmConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        use std::path::Component;
+        let name = std::path::Path::new(&self.name);
+        let bad = if self.name.is_empty() {
+            Some("is empty")
+        } else if name.is_absolute() {
+            Some("is an absolute path")
+        } else if name.components().any(|c| c == Component::ParentDir) {
+            Some("contains `..`")
+        } else if name.components().all(|c| c == Component::CurDir) {
+            Some("names no directory")
+        } else {
+            None
+        };
+        if let Some(why) = bad {
+            bail!(
+                "[vm] name {:?} {why}; it must name a directory under [vm] dir, \
+                 which `ssf vm destroy` and `ssf uninstall` remove whole",
+                self.name
+            );
+        }
+        Ok(())
     }
 }
 
@@ -1159,7 +1185,13 @@ pub fn expand_tilde(p: &str) -> PathBuf {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        Self::load_from(&config_path())
+        let mut config = Self::load_from(&config_path())?;
+        let selected = crate::server_catalog::effective_vm_context()?;
+        if let Some(selected) = selected {
+            config.vm = selected.config;
+            config.validate()?;
+        }
+        Ok(config)
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
@@ -1192,31 +1224,7 @@ impl Config {
                 crate::allow::RISK_KEY
             );
         }
-        // `[vm] name` is joined onto `[vm] dir`, and `ssf vm destroy`
-        // and `ssf uninstall` remove the result whole. It has to name a
-        // new directory under `[vm] dir`; nested names are fine.
-        {
-            use std::path::Component;
-            let name = std::path::Path::new(&self.vm.name);
-            let bad = if self.vm.name.is_empty() {
-                Some("is empty")
-            } else if name.is_absolute() {
-                Some("is an absolute path")
-            } else if name.components().any(|c| c == Component::ParentDir) {
-                Some("contains `..`")
-            } else if name.components().all(|c| c == Component::CurDir) {
-                Some("names no directory")
-            } else {
-                None
-            };
-            if let Some(why) = bad {
-                bail!(
-                    "[vm] name {:?} {why}; it must name a directory under [vm] dir, \
-                     which `ssf vm destroy` and `ssf uninstall` remove whole",
-                    self.vm.name
-                );
-            }
-        }
+        self.vm.validate()?;
         self.git.validate("git")?;
         self.git.validate_merged("[git]")?;
         let mut repository_ids = std::collections::BTreeSet::new();
@@ -1327,6 +1335,9 @@ impl Config {
     /// VM infrastructure changes replace only [vm]. Ownership adoption is the
     /// sole operation allowed to archive and remove host factory settings.
     pub fn save_vm_settings(&self) -> Result<()> {
+        if let Some(selected) = crate::server_catalog::effective_vm_context()? {
+            return crate::server_catalog::save_selected_vm(&selected.name, &self.vm);
+        }
         let path = config_path();
         let mut table: toml::Table = match std::fs::read_to_string(&path) {
             Ok(raw) => toml::from_str(&raw).context("parsing host config")?,
@@ -1337,6 +1348,42 @@ impl Config {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        write_atomic(&path, toml::to_string_pretty(&table)?.as_bytes(), 0o600)
+    }
+
+    pub(crate) fn legacy_vm_settings() -> Result<Option<VmConfig>> {
+        let path = config_path();
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).with_context(|| format!("reading {}", path.display())),
+        };
+        let table: toml::Table =
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        table
+            .get("vm")
+            .cloned()
+            .map(VmConfig::deserialize)
+            .transpose()
+            .context("parsing legacy [vm] settings")
+    }
+
+    pub(crate) fn remove_legacy_vm_settings(expected: &VmConfig) -> Result<()> {
+        let path = config_path();
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let mut table: toml::Table =
+            toml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
+        let Some(value) = table.get("vm").cloned() else {
+            return Ok(());
+        };
+        let found = VmConfig::deserialize(value).context("parsing legacy [vm] settings")?;
+        if &found != expected {
+            bail!(
+                "legacy [vm] settings changed during migration; both representations were retained"
+            );
+        }
+        table.remove("vm");
         write_atomic(&path, toml::to_string_pretty(&table)?.as_bytes(), 0o600)
     }
 

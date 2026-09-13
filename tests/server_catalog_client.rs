@@ -132,6 +132,27 @@ fn several_servers_require_selection_before_starting_a_transport() {
     assert!(!root.0.join("local-ran").exists());
     assert!(!root.0.join("ssh-ran").exists());
 
+    let output = root
+        .client()
+        .args(["--server", "cloud", "vm", "status"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("not a managed VM")
+    );
+    assert!(!root.0.join("ssh-ran").exists());
+
+    let output = root
+        .client()
+        .args(["--server", "local", "vm", "status"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!root.0.join("local-ran").exists());
+
     let status = root
         .client()
         .args(["--server", "local", "status"])
@@ -222,6 +243,97 @@ fn namespaced_local_servers_pass_distinct_config_and_state_contexts() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("installation-wide service or VM")
+            .contains("not a managed VM")
+    );
+}
+
+#[test]
+fn migrated_vm_configuration_drives_the_selected_endpoint() {
+    let root = Temp::new("vm-migration");
+    let vm_dir = root.0.join("vm-storage");
+    std::fs::write(
+        root.0.join("config/config.toml"),
+        format!(
+            "[vm]\nenabled = true\nname = \"crucible\"\ndir = {:?}\nbackend = \"firecracker\"\nssh_port = 2444\n",
+            vm_dir
+        ),
+    )
+    .unwrap();
+    root.use_real_server();
+
+    let output = root
+        .client()
+        .args(["server", "migrate-vm"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let factory_config = std::fs::read_to_string(root.0.join("config/config.toml")).unwrap();
+    assert!(!factory_config.contains("[vm]"), "{factory_config}");
+    let catalog = std::fs::read_to_string(root.0.join("config/servers.toml")).unwrap();
+    assert!(catalog.contains("[servers.ssf-server.config]"), "{catalog}");
+    assert!(catalog.contains("ssh_port = 2444"), "{catalog}");
+
+    let output = root
+        .client()
+        .args(["--server", "ssf-server", "vm", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["name"], "crucible");
+    assert_eq!(status["ssh_port"], 2444);
+
+    let output = root
+        .client()
+        .args([
+            "--server",
+            "ssf-server",
+            "config",
+            "set",
+            "vm.ssh_port",
+            "2555",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let factory_config = std::fs::read_to_string(root.0.join("config/config.toml")).unwrap();
+    assert!(!factory_config.contains("[vm]"), "{factory_config}");
+    let catalog = std::fs::read_to_string(root.0.join("config/servers.toml")).unwrap();
+    assert!(catalog.contains("ssh_port = 2555"), "{catalog}");
+
+    let output = root
+        .client()
+        .args(["--server", "ssf-server", "uninstall", "--report"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("uninstall is not yet target-aware")
+    );
+
+    let output = root
+        .client()
+        .args(["server", "migrate-vm"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("already migrated")
     );
 }

@@ -415,8 +415,53 @@ pub(super) fn config_cmd(command: ConfigCommand) -> Result<()> {
             key,
             value,
             accept_anyone_risk,
-        } => config_set_at(&config::config_path(), &key, &value, accept_anyone_risk),
+        } => {
+            if server_catalog::selected_vm_context()?.is_some()
+                && (key == "vm" || key.starts_with("vm."))
+            {
+                config_set_selected_vm(&key, &value)
+            } else {
+                config_set_at(&config::config_path(), &key, &value, accept_anyone_risk)
+            }
+        }
     }
+}
+
+fn config_set_selected_vm(key: &str, value: &str) -> Result<()> {
+    if key == "vm.enabled" {
+        bail!(
+            "a named VM target is enabled by being in the server catalog; vm.enabled cannot be changed"
+        )
+    }
+    let mut cfg = Config::load()?;
+    let parsed = parse_toml_scalar(value);
+    let vm_value = if key == "vm" {
+        if !parsed.is_table() {
+            bail!("vm takes an inline table of VM settings")
+        }
+        parsed
+    } else {
+        let field = key
+            .strip_prefix("vm.")
+            .filter(|field| !field.is_empty() && !field.contains('.'))
+            .with_context(|| format!("unknown setting {key}"))?;
+        let mut table = toml::Value::try_from(&cfg.vm)?
+            .as_table()
+            .expect("VM config serializes as a table")
+            .clone();
+        table.insert(field.to_owned(), parsed);
+        toml::Value::Table(table)
+    };
+    let updated = <crate::config::VmConfig as serde::Deserialize>::deserialize(vm_value)
+        .with_context(|| format!("{key} is not a valid VM setting"))?;
+    if !updated.enabled {
+        bail!("a named VM target must remain enabled while it is in the server catalog")
+    }
+    updated.validate()?;
+    cfg.vm = updated;
+    cfg.save_vm_settings()?;
+    println!("{key} = {value}");
+    Ok(())
 }
 
 /// `ssf config set`: one key in the file at `path`, validated before it is
