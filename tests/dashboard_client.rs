@@ -7,7 +7,7 @@ use std::os::{
 };
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 fn script(path: &Path, body: &str) {
     std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -16,8 +16,14 @@ fn script(path: &Path, body: &str) {
 struct Temp(std::path::PathBuf);
 impl Temp {
     fn new(name: &str) -> Self {
-        let path =
-            std::env::temp_dir().join(format!("ssf-dashboard-{name}-{}", std::process::id()));
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ssf-dashboard-{name}-{}-{nonce}",
+            std::process::id()
+        ));
         std::fs::create_dir(&path).unwrap();
         std::fs::copy(env!("CARGO_BIN_EXE_ssf"), path.join("ssf")).unwrap();
         Self(path)
@@ -67,12 +73,22 @@ impl Pty {
         unsafe {
             libc::fcntl(master.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
         }
-        let child = command
+        command
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave.try_clone().unwrap()))
-            .spawn()
-            .unwrap();
+            .stderr(Stdio::from(slave.try_clone().unwrap()));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ETXTBSY) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("could not start PTY client: {error}"),
+            }
+        };
         Self {
             master,
             slave,
