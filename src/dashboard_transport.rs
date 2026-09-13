@@ -14,6 +14,7 @@ use tokio::{
 
 pub(crate) struct StatusSource {
     server: Option<String>,
+    local_context: Option<crate::server_catalog::LocalContext>,
     control_dir: Option<PathBuf>,
     child: Option<Child>,
     output: Option<BufReader<ChildStdout>>,
@@ -21,6 +22,13 @@ pub(crate) struct StatusSource {
 
 impl StatusSource {
     pub(crate) fn new(server: Option<String>) -> Result<Self> {
+        Self::new_with_context(server, None)
+    }
+
+    pub(crate) fn new_with_context(
+        server: Option<String>,
+        local_context: Option<crate::server_catalog::LocalContext>,
+    ) -> Result<Self> {
         let control_dir = if server.is_some() {
             // Short path also fits macOS's Unix socket path limit. Atomic
             // creation and mode 0700 prevent another local user taking it over.
@@ -35,6 +43,7 @@ impl StatusSource {
         };
         Ok(Self {
             server,
+            local_context,
             control_dir,
             child: None,
             output: None,
@@ -50,6 +59,7 @@ impl StatusSource {
                 self.server.as_deref(),
                 &executable,
                 self.control_dir.as_deref(),
+                self.local_context.as_ref(),
             );
             command.stdout(Stdio::piped()).stderr(Stdio::piped());
             let mut child = command
@@ -106,7 +116,12 @@ impl Drop for StatusSource {
     }
 }
 
-fn status_command(server: Option<&str>, executable: &Path, control_dir: Option<&Path>) -> Command {
+fn status_command(
+    server: Option<&str>,
+    executable: &Path,
+    control_dir: Option<&Path>,
+    local_context: Option<&crate::server_catalog::LocalContext>,
+) -> Command {
     let mut command = if let Some(host) = server {
         let mut command = Command::new("ssh");
         command.args([
@@ -144,6 +159,13 @@ fn status_command(server: Option<&str>, executable: &Path, control_dir: Option<&
         command.args(["__client", "status", "--json", "--watch"]);
         command
     };
+    if server.is_none()
+        && let Some(context) = local_context
+    {
+        command
+            .env("SSF_CONFIG_DIR", &context.config_dir)
+            .env("SSF_STATE_DIR", &context.state_dir);
+    }
     command.env_remove("SSF_SERVER");
     command.stdin(Stdio::null()).kill_on_drop(true);
     command
@@ -184,9 +206,37 @@ mod tests {
 
     #[test]
     fn local_uses_canonical_server_endpoint() {
-        let command = status_command(None, Path::new("/package/ssf-server"), None);
+        let command = status_command(None, Path::new("/package/ssf-server"), None, None);
         assert_eq!(command.as_std().get_program(), "/package/ssf-server");
         assert_eq!(args(&command), ["__client", "status", "--json", "--watch"]);
+    }
+
+    #[test]
+    fn named_local_status_uses_its_own_config_and_state() {
+        let context = crate::server_catalog::LocalContext {
+            config_dir: "/factory/one/config".into(),
+            state_dir: "/factory/one/state".into(),
+        };
+        let command = status_command(None, Path::new("/package/ssf-server"), None, Some(&context));
+        let environment: std::collections::BTreeMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            environment.get("SSF_CONFIG_DIR"),
+            Some(&Some("/factory/one/config".into()))
+        );
+        assert_eq!(
+            environment.get("SSF_STATE_DIR"),
+            Some(&Some("/factory/one/state".into()))
+        );
+        assert_eq!(environment.get("SSF_SERVER"), Some(&None));
     }
 
     #[test]
@@ -198,8 +248,18 @@ mod tests {
             std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
             0o700
         );
-        let first = status_command(source.server.as_deref(), Path::new("unused"), Some(dir));
-        let second = status_command(source.server.as_deref(), Path::new("unused"), Some(dir));
+        let first = status_command(
+            source.server.as_deref(),
+            Path::new("unused"),
+            Some(dir),
+            None,
+        );
+        let second = status_command(
+            source.server.as_deref(),
+            Path::new("unused"),
+            Some(dir),
+            None,
+        );
         assert_eq!(args(&first), args(&second));
         let arguments = args(&first);
         assert!(arguments.contains(&"ControlMaster=auto".into()));

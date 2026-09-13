@@ -35,6 +35,10 @@ impl Temp {
     fn catalog(&self, body: &str) {
         std::fs::write(self.0.join("config/servers.toml"), body).unwrap();
     }
+
+    fn use_real_server(&self) {
+        std::fs::hard_link(env!("CARGO_BIN_EXE_ssf-server"), self.0.join("ssf-server")).unwrap();
+    }
 }
 
 impl Drop for Temp {
@@ -155,4 +159,69 @@ fn unknown_catalog_names_are_not_used_as_ssh_destinations() {
             .contains("unknown SSF server")
     );
     assert!(!root.0.join("ssh-ran").exists());
+}
+
+#[test]
+fn namespaced_local_servers_pass_distinct_config_and_state_contexts() {
+    let root = Temp::new("local-context");
+    let one_config = root.0.join("one/config");
+    let one_state = root.0.join("one/state");
+    let two_config = root.0.join("two/config");
+    let two_state = root.0.join("two/state");
+    root.catalog(&format!(
+        "[servers.one]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n\n[servers.two]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n",
+        one_config, one_state, two_config, two_state
+    ));
+    // The selected target must not parse or fall back to the ambient factory.
+    std::fs::write(root.0.join("config/config.toml"), "not = [valid").unwrap();
+    root.use_real_server();
+
+    for (name, expected) in [("one", &one_config), ("two", &two_config)] {
+        let output = root
+            .client()
+            .args(["--server", name, "config", "path"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            expected.join("config.toml").to_string_lossy()
+        );
+    }
+
+    let output = root
+        .client()
+        .args([
+            "--server",
+            "one",
+            "config",
+            "set",
+            "daemon.poll_interval_secs",
+            "31",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(one_config.join("config.toml").is_file());
+    assert!(!two_config.join("config.toml").exists());
+
+    let output = root
+        .client()
+        .args(["--server", "one", "vm", "status"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("installation-wide service or VM")
+    );
 }

@@ -74,7 +74,9 @@ For repeat use, destinations can be assigned stable client-side names in
 `~/.config/ssf/servers.toml`. One configured name is implicit; several require
 `--server NAME`, with no persistent default. See the
 [server catalog](configuration.md#server-catalog). This initial catalog support
-allows several SSH targets but only one locally managed host or VM target.
+allows several SSH and namespaced local targets beside the existing factory,
+but only one managed VM. Setup, service, VM lifecycle and uninstall commands
+refuse for namespaced targets until per-target services are implemented.
 
 On Linux this creates the initial configuration and enables and starts the
 user service for `default.target`. It asks before enabling systemd linger so
