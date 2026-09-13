@@ -458,6 +458,13 @@ async fn github_rename_repairs_config_state_and_historical_session_names() {
     let saved = Config::load().unwrap();
     assert_eq!(saved.repos[0].name, "o/new-name");
     assert!(saved.repos[0].matches_name("o/r"));
+
+    e.refetch.clear();
+    assert!(e.reconcile_repo_identities(true).await);
+    assert!(
+        e.refetch.is_empty(),
+        "historical aliases do not re-arm refetch"
+    );
 }
 
 #[tokio::test]
@@ -516,6 +523,32 @@ async fn failed_state_commit_stops_polling_and_restart_finishes_repair() {
     assert!(State::load().unwrap().repos.contains_key("o/new-name"));
 
     drop(sandbox);
+}
+
+#[tokio::test]
+async fn interrupted_commit_recovers_state_while_github_is_unavailable() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let mut r = repo();
+    r.name = "o/new-name".into();
+    r.github_id = Some(999);
+    r.aliases = vec!["o/r".into()];
+    e.cfg.repos.push(r);
+    e.state.repo_mut("o/r").issues.insert(
+        7,
+        crate::state::IssueState {
+            number: 7,
+            ..Default::default()
+        },
+    );
+
+    assert!(e.reconcile_repo_identities(true).await);
+
+    assert!(!e.state.repos.contains_key("o/r"));
+    assert!(e.state.repos["o/new-name"].issues.contains_key(&7));
+    assert!(State::load().unwrap().repos.contains_key("o/new-name"));
+    assert_eq!(stub.hits(), ["/repositories/999"]);
 }
 
 #[tokio::test]

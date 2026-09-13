@@ -20,6 +20,32 @@ impl Engine {
         let mut resolved = Vec::new();
         let mut config_changed = false;
         let mut state_changed = false;
+        // A prior pass may have durably written canonical config and then
+        // failed before state. Finish that local half-commit before asking
+        // GitHub, so an API outage cannot let canonical polling create a
+        // second state entry beside the aliased one.
+        for repo in &configured {
+            let mut repaired = false;
+            for alias in &repo.aliases {
+                let moved = match self.state.rename_repo(alias, &repo.name) {
+                    Ok(moved) => moved,
+                    Err(e) => {
+                        warn!(repo = repo.name, "repository state recovery failed: {e:#}");
+                        snapshot.restore(self);
+                        self.identity_checked_at = None;
+                        return false;
+                    }
+                };
+                repaired |= moved;
+                if moved {
+                    self.rename_runtime_keys(alias, &repo.name);
+                }
+            }
+            if repaired {
+                self.refetch.insert(repo.name.clone());
+                state_changed = true;
+            }
+        }
         for repo in configured {
             let identity = match repo.github_id {
                 Some(id) => self.gh.repository_by_id(id).await,
@@ -44,7 +70,8 @@ impl Engine {
                 Err(e) => {
                     warn!(repo = repo.name, "repository identity repair failed: {e:#}");
                     snapshot.restore(self);
-                    return true;
+                    self.identity_checked_at = None;
+                    return false;
                 }
             }
         }
@@ -52,7 +79,8 @@ impl Engine {
         if let Err(e) = self.cfg.validate() {
             warn!("repository identity repair produced invalid configuration: {e:#}");
             snapshot.restore(self);
-            return true;
+            self.identity_checked_at = None;
+            return false;
         }
         // Config is the recoverable transaction marker: once it contains the
         // canonical name and former-name alias, startup can migrate an older
@@ -160,7 +188,7 @@ impl Engine {
             state_changed |= self.state.rename_repo(alias, canonical)?;
             self.rename_runtime_keys(alias, canonical);
         }
-        if state_changed {
+        if state_changed || renamed {
             self.refetch.insert(canonical.to_string());
         }
         Ok(IdentityChanges {
@@ -178,11 +206,7 @@ impl Engine {
         if repo.path.is_some() {
             return;
         }
-        let mut ids = BTreeSet::new();
-        if let Some(state) = self.state.repos.get(&repo.name) {
-            ids.extend(state.issues.values().filter_map(|i| i.repo_id.clone()));
-        }
-        for id in ids {
+        for id in checkout_repo_ids(&self.state, repo, identity) {
             let root = match self.driver(repo).repo_path(&id).await {
                 Ok(root) => root,
                 Err(e) => {
@@ -208,7 +232,6 @@ impl Engine {
         self.collaborators.remove(old);
         self.collaborators.remove(new);
         self.refetch.remove(old);
-        self.refetch.insert(new.to_string());
         self.failures = std::mem::take(&mut self.failures)
             .into_iter()
             .map(|((repo, n), count)| ((renamed_key(repo, old, new), n), count))
@@ -222,6 +245,23 @@ impl Engine {
             .map(|((repo, branch), pair)| ((renamed_key(repo, old, new), branch), pair))
             .collect();
     }
+}
+
+fn checkout_repo_ids(
+    state: &State,
+    repo: &RepoConfig,
+    identity: &RepositoryIdentity,
+) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for name in std::iter::once(identity.full_name.as_str())
+        .chain(std::iter::once(repo.name.as_str()))
+        .chain(repo.aliases.iter().map(String::as_str))
+    {
+        if let Some(repo_state) = state.repos.get(name) {
+            ids.extend(repo_state.issues.values().filter_map(|i| i.repo_id.clone()));
+        }
+    }
+    ids
 }
 
 #[derive(Clone, Copy)]
@@ -373,6 +413,34 @@ mod tests {
         assert_eq!(
             url_for_style("https://github.com/old/place.git", &id),
             id.clone_url
+        );
+    }
+
+    #[test]
+    fn checkout_ids_are_found_under_the_already_migrated_state_name() {
+        let repo = RepoConfig {
+            name: "old/place".into(),
+            ..Default::default()
+        };
+        let identity = RepositoryIdentity {
+            id: 7,
+            full_name: "new/place".into(),
+            clone_url: "https://github.com/new/place.git".into(),
+            ssh_url: "git@github.com:new/place.git".into(),
+        };
+        let mut state = State::default();
+        state.repo_mut("new/place").issues.insert(
+            1,
+            crate::state::IssueState {
+                number: 1,
+                repo_id: Some("managed-id".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(
+            checkout_repo_ids(&state, &repo, &identity),
+            BTreeSet::from(["managed-id".to_string()])
         );
     }
 
