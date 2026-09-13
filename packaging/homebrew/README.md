@@ -41,12 +41,16 @@ the Linux guest. It comes from release.yml's `linux-aarch64-binary` job,
 which is `continue-on-error: true` so a cross-compilation failure never
 blocks the release: a release can exist, and the formula installs cleanly,
 with that asset missing, and `ssf vm build` then fails on the download.
-Build it as that job does (it sets the cross-linker environment variables;
-read the job) and attach it by hand when that happens:
+Build it as that job does with a real aarch64-musl compiler (never
+`aarch64-linux-gnu-gcc`, which emits glibc references), and attach it by hand
+when that happens:
 
 ```sh
 rustup target add aarch64-unknown-linux-musl
-cargo build --locked --release --target aarch64-unknown-linux-musl
+musl_cc=/path/to/aarch64-linux-musl-gcc
+CC_aarch64_unknown_linux_musl="$musl_cc" \
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$musl_cc" \
+  cargo build --locked --release --target aarch64-unknown-linux-musl
 install -m755 target/aarch64-unknown-linux-musl/release/ssf ssf-0.2.0-linux-aarch64
 gh release upload v0.2.0 ssf-0.2.0-linux-aarch64 \
   --repo mikekelly/simple-software-factory
