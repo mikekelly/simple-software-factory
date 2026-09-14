@@ -226,6 +226,11 @@ pub(super) enum Command {
     /// following items, hand-offs and second opinions work. The initial
     /// prompt points here.
     Guide,
+    /// Print bundled, version-matched guidance locally (no server connection).
+    Skill {
+        #[command(subcommand)]
+        topic: Option<super::skill::SkillTopic>,
+    },
     /// Check that GitHub, the drivers in use and the configured harnesses are usable.
     Doctor,
     /// Omarchy desktop integration: bar widget, menu entries, background service.

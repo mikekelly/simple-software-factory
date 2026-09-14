@@ -39,6 +39,6 @@ An audit does not grant merge authority or waive unresolved defects.
 For this repository, [SSF.md](../SSF.md) defines the SSF session's ownership,
 communication, review and completion contract; [AGENTS.md](../AGENTS.md)
 defines repository-wide validation and implementation policy. [The
-template](../SSF.example.md) and [setup skill](../skills/ssf-setup/SKILL.md)
+template](../SSF.example.md) and [agent operating guidance](agent-guidance.md)
 carry that boundary to new projects. See also [review
 boundaries](sessions.md#second-opinions-the-gauntlet).

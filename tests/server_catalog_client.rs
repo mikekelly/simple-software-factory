@@ -638,3 +638,77 @@ fn server_target_is_resolved_before_factory_configuration() {
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot have a service on this host"));
 }
+
+#[test]
+fn skill_topics_work_without_server_binary_or_valid_configuration() {
+    let root = Temp::new("skill-offline");
+    root.catalog("invalid catalog TOML [");
+    std::fs::write(root.0.join("config/config.toml"), "invalid config [").unwrap();
+    for topic in [
+        "",
+        "setup",
+        "agent",
+        "client-cli",
+        "server",
+        "config",
+        "vm",
+        "headless",
+        "install-binaries",
+        "drivers",
+        "sessions",
+        "dashboard",
+        "uninstall",
+    ] {
+        let mut command = root.client();
+        command
+            .env("SSF_SERVER", "unreachable.example")
+            .arg("skill");
+        if !topic.is_empty() {
+            command.arg(topic);
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{topic}: {:?}", output);
+        let text = String::from_utf8(output.stdout).unwrap();
+        assert!(text.starts_with(&format!("SSF {}", env!("CARGO_PKG_VERSION"))));
+        assert!(text.contains("\n# "), "{topic} has no document");
+        assert!(output.stderr.is_empty());
+    }
+    assert!(!root.0.join("state").exists());
+}
+
+#[test]
+fn skill_is_local_even_with_explicit_multiple_servers() {
+    let root = Temp::new("skill-explicit");
+    let plain = root.client().arg("skill").output().unwrap();
+    let selected = root
+        .client()
+        .args(["--server", "one", "skill", "--server", "two"])
+        .output()
+        .unwrap();
+    assert!(plain.status.success());
+    assert!(selected.status.success(), "{selected:?}");
+    assert_eq!(plain.stdout, selected.stdout);
+}
+
+#[test]
+fn skill_help_and_invalid_topics_are_handled_before_catalog_loading() {
+    let root = Temp::new("skill-help");
+    root.catalog("invalid catalog [");
+    let help = root.client().args(["skill", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    for topic in ["setup", "client-cli", "server"] {
+        assert!(text.contains(topic));
+    }
+    let invalid = root
+        .client()
+        .args(["skill", "missing-topic"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(
+        String::from_utf8(invalid.stderr)
+            .unwrap()
+            .contains("unrecognized subcommand")
+    );
+}

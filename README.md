@@ -180,6 +180,22 @@ collaborators with push access (GitHub's Write role or higher), or a list
 you set (see
 [Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
 
+## Agent skills
+
+Agents can discover SSF through the [skills CLI](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add mikekelly/simple-software-factory
+```
+
+The `ssf-setup` skill links to installation instructions, then directs agents
+to `ssf skill`. The binary bundles a command overview and deeper topics such as
+`ssf skill setup`, `ssf skill client-cli`, `ssf skill server`, and
+`ssf skill config`. These print locally without configuration, a daemon, or
+network access; `--server` and `SSF_SERVER` do not select documentation from a
+remote factory. Guidance matches the executing binary. Use `ssf guide` inside
+a factory session for its session-specific collaboration reference.
+
 ## Install
 
 Choose the installation for the machine:
