@@ -180,6 +180,7 @@ instructions = "Run `make test` before opening a PR."
 |-----|---------|---------|
 | `github.api_url` | `https://api.github.com` | GitHub Enterprise: `https://ghe.example.com/api/v3` |
 | `github.login`, `github.email`, `github.ssh_key_path`, `github.ssh_key_id`, `github.signing_key_id` | set by `ssf auth login` | The bot's login, commit email, enrolled key and the ids of its two entries on GitHub (so `ssf auth logout` can revoke them); edit `email` if the bot has a public address |
+| `github.auto_accept_invitations_from` | `[]` | GitHub logins whose pending repository invitations the server accepts automatically, matched case-insensitively (an optional leading `@` is ignored). Acceptance only grants account access: it does not add a `[[repo]]`, select a named server, or enable a service |
 | `git.name`, `git.email` | the bot's login and email | Author and committer of the agents' commits, when a person rather than the bot (see [Committing as a person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)); both or neither. `gh` stays the bot |
 | `git.signing_key` | the bot's key for the bot, unsigned for a person | SSH key to sign commits and tags with (a path), or `false` for unsigned |
 | `git.credential` | `bot` | Who pushes over HTTPS: `bot` (the bot's token), `token:<login>` (the token gh holds for that account where the agents run), `file:<path>` (a token file), or a git credential helper string used as `credential.helper`. SSH remotes always use the bot's key |

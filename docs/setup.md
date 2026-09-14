@@ -224,6 +224,18 @@ Alternatively accept in the bot's browser from the invitation email or
 [notifications](https://github.com/notifications). See GitHub's
 [invitation API](https://docs.github.com/en/rest/collaborators/invitations).
 
+A server can instead accept invitations from trusted repository owners on each
+poll:
+
+```sh
+ssf config set github.auto_accept_invitations_from '["OWNER"]'
+```
+
+The login match is case-insensitive. This only accepts the GitHub invitation;
+it does not add the repository to the factory, select a named server, or enable
+its service. Configure the intended factory separately with `ssf repo add`,
+which is important when the same bot account is shared by multiple servers.
+
 **3d. Project owner grants board access** (**you**). For each Projects (v2)
 board, open **Settings → Manage access** and grant the bot **Write** (directly
 or through a team). Repository Write alone does not authorize board moves;

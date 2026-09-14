@@ -218,6 +218,10 @@ struct GitHubStub {
     /// Comments posted (`/repos/o/r/issues/N/comments`), in order:
     /// the path and the comment body.
     posts: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    /// Pending repository invitations and the ids accepted through PATCH.
+    invitations: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    accepted_invitations: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    rejected_invitations: std::sync::Arc<std::sync::Mutex<BTreeSet<u64>>>,
     identity: std::sync::Arc<std::sync::Mutex<RepositoryIdentity>>,
 }
 
@@ -240,6 +244,9 @@ impl GitHubStub {
         let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
         let collab_version = Arc::new(AtomicU32::new(1));
         let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let invitations: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let accepted_invitations: Arc<Mutex<Vec<u64>>> = Arc::default();
+        let rejected_invitations: Arc<Mutex<BTreeSet<u64>>> = Arc::default();
         let identity = Arc::new(Mutex::new(RepositoryIdentity {
             id: 1,
             full_name: "o/r".into(),
@@ -257,6 +264,9 @@ impl GitHubStub {
         );
         let i = issues.clone();
         let pl = pulls.clone();
+        let inv = invitations.clone();
+        let accepted = accepted_invitations.clone();
+        let rejected = rejected_invitations.clone();
         let ri = identity.clone();
         tokio::spawn(async move {
             let other_etags = AtomicU32::new(1);
@@ -319,6 +329,27 @@ impl GitHubStub {
                         "\"repo\"".to_string(),
                         serde_json::to_string(&*ri.lock().unwrap()).unwrap(),
                     )
+                } else if method == "GET" && path == "/user/repository_invitations" {
+                    (
+                        "200 OK",
+                        "\"invitations\"".to_string(),
+                        Value::Array(inv.lock().unwrap().clone()).to_string(),
+                    )
+                } else if method == "PATCH" && path.starts_with("/user/repository_invitations/") {
+                    let id = path
+                        .trim_start_matches("/user/repository_invitations/")
+                        .parse::<u64>()
+                        .unwrap();
+                    if rejected.lock().unwrap().contains(&id) {
+                        (
+                            "403 Forbidden",
+                            "\"rejected\"".to_string(),
+                            r#"{"message":"acceptance refused"}"#.to_string(),
+                        )
+                    } else {
+                        accepted.lock().unwrap().push(id);
+                        ("204 No Content", "\"accepted\"".to_string(), String::new())
+                    }
                 } else if method == "POST" && path.ends_with("/comments") {
                     let comment = serde_json::from_str::<Value>(&sent)
                         .ok()
@@ -421,6 +452,9 @@ impl GitHubStub {
             collaborators,
             collab_version,
             posts,
+            invitations,
+            accepted_invitations,
+            rejected_invitations,
             identity,
         }
     }
@@ -446,6 +480,18 @@ impl GitHubStub {
         *self.collaborators.lock().unwrap() = list;
         self.collab_version
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn set_invitations(&self, list: Vec<Value>) {
+        *self.invitations.lock().unwrap() = list;
+    }
+
+    fn accepted_invitations(&self) -> Vec<u64> {
+        std::mem::take(&mut *self.accepted_invitations.lock().unwrap())
+    }
+
+    fn reject_invitation(&self, id: u64) {
+        self.rejected_invitations.lock().unwrap().insert(id);
     }
 
     /// Serve one item by number, for the paths that read it directly.
@@ -878,6 +924,7 @@ mod access_and_conflicts;
 #[path = "events/mod.rs"]
 mod event_tests;
 mod handovers;
+mod invitations;
 mod listings;
 #[path = "login.rs"]
 mod login_tests;

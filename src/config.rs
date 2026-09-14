@@ -365,6 +365,11 @@ pub struct GithubConfig {
     pub ssh_key_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signing_key_id: Option<u64>,
+    /// GitHub logins whose repository invitations the daemon accepts
+    /// automatically. Matching is case-insensitive; an empty list accepts
+    /// nothing. Accepting an invitation does not configure or enable a repo.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub auto_accept_invitations_from: Vec<String>,
 }
 
 impl Default for GithubConfig {
@@ -377,6 +382,7 @@ impl Default for GithubConfig {
             ssh_key_path: None,
             ssh_key_id: None,
             signing_key_id: None,
+            auto_accept_invitations_from: Vec::new(),
         }
     }
 }
