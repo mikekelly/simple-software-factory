@@ -50,14 +50,7 @@ impl Engine {
         }
         let server =
             launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
-        format!(
-            "{prefix}{}{server} launch --repo {} --issue {} --issue-url {} -- {}",
-            shell_quote(&me),
-            shell_quote(&repo.name),
-            number,
-            shell_quote(url),
-            shell_quote(inner)
-        )
+        render_launch_command(&prefix, &me, &server, repo, number, url, inner)
     }
 
     /// Deliver a prompt to the agent that acts on an item (its own session,
@@ -662,17 +655,58 @@ fn launch_server_argument(server: Option<&str>) -> String {
         .unwrap_or_default()
 }
 
+fn render_launch_command(
+    prefix: &str,
+    executable: &str,
+    server: &str,
+    repo: &RepoConfig,
+    number: u64,
+    url: &str,
+    inner: &str,
+) -> String {
+    format!(
+        "{prefix}{}{server} launch --repo {} --issue {} --issue-url {} -- {}",
+        shell_quote(executable),
+        shell_quote(&repo.name),
+        number,
+        shell_quote(url),
+        shell_quote(inner)
+    )
+}
+
 #[cfg(test)]
 mod launch_command_tests {
-    use super::launch_server_argument;
+    use super::{launch_server_argument, render_launch_command};
 
     #[test]
     fn selected_server_is_forwarded_to_the_launch_wrapper() {
-        assert_eq!(launch_server_argument(Some("local")), " --server 'local'");
+        let repo = crate::config::RepoConfig {
+            name: "owner/repo".into(),
+            ..Default::default()
+        };
         assert_eq!(
-            launch_server_argument(Some("local factory")),
-            " --server 'local factory'"
+            render_launch_command(
+                "",
+                "/bin/ssf",
+                &launch_server_argument(Some("local")),
+                &repo,
+                42,
+                "https://example.test/owner/repo/issues/42",
+                "agent --flag"
+            ),
+            "'/bin/ssf' --server 'local' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent --flag'"
         );
-        assert_eq!(launch_server_argument(None), "");
+        assert_eq!(
+            render_launch_command(
+                "",
+                "/bin/ssf",
+                &launch_server_argument(None),
+                &repo,
+                42,
+                "https://example.test/owner/repo/issues/42",
+                "agent"
+            ),
+            "'/bin/ssf' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent'"
+        );
     }
 }
