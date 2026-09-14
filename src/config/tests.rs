@@ -228,7 +228,6 @@ driver = "herdr"
     assert_eq!(empty.default_driver(), DriverKind::Herdr);
     assert_eq!(empty.drivers_in_use(), vec![DriverKind::Herdr]);
     assert_eq!("Herdr".parse::<DriverKind>().unwrap(), DriverKind::Herdr);
-    assert!("orca".parse::<DriverKind>().is_err());
     // The per-repo choice round-trips through the file.
     let text = toml::to_string(&cfg).unwrap();
     assert!(text.contains("driver = \"herdr\""));
@@ -242,17 +241,6 @@ fn startup_wait_uses_the_driver_name() {
     let new: Config = toml::from_str("[daemon]\nstartup_driver_wait_secs = 9\n").unwrap();
     assert_eq!(new.daemon.startup_driver_wait_secs, 9);
     assert_eq!(Config::default().daemon.startup_driver_wait_secs, 120);
-    let old: Config = toml::from_str("[daemon]\nstartup_orca_wait_secs = 7\n").unwrap();
-    assert_eq!(old.daemon.startup_driver_wait_secs, 7);
-    let text = toml::to_string(&old).unwrap();
-    assert!(text.contains("startup_driver_wait_secs = 7"));
-    assert!(!text.contains("startup_orca_wait_secs"));
-}
-
-#[test]
-fn removed_driver_configuration_is_rejected() {
-    assert!(toml::from_str::<Config>("driver = \"orca\"\n").is_err());
-    assert!(toml::from_str::<Config>("[orca]\nprojects_dir = \"~/projects\"\n").is_err());
 }
 
 fn parse(toml_src: &str) -> Result<Config> {

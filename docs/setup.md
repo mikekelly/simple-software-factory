@@ -678,13 +678,6 @@ their own reference from `ssf guide`.
 
 ## 11. Upgrading
 
-Before upgrading an installation that selected Orca, finish and push any work
-held only in its worktrees. Remove `driver = "orca"`, per-repository Orca
-overrides, and the `[orca]` table from `config.toml`; the new version rejects
-those removed settings. The next session pass creates herdr workspaces from
-the configured checkout or a fresh clone, and does not delete the old Orca
-projects.
-
 Upgrade the package like any other: the next release's file with the
 command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst`, `sudo apt
 install ./ssf_*_amd64.deb`, `sudo dnf install ./ssf-*.x86_64.rpm`); on
@@ -716,9 +709,8 @@ Reset alone reuses the old image. For Lima, run `ssf vm reset`, then
 migration for an explicit choice; do not delete either config to force
 an upgrade through.
 
-Your config, state, keys and the VM's disks are preserved by an upgrade. Renamed
-non-driver settings, such as `startup_orca_wait_secs`, keep loading under their
-old names. `ssf doctor` after the upgrade should look as it did before.
+Your config, state, keys and the VM's disks are preserved by an upgrade. After
+the upgrade, `ssf doctor` should look as it did before.
 
 ## 12. Stopping and uninstalling
 

@@ -48,6 +48,4 @@ Closing a herdr tab does not remove its git worktree; `ssf doctor` reports
 stranded work that may need recovery.
 
 The `driver = "herdr"` setting remains available as an explicit declaration,
-but herdr is currently the only supported driver. Configuration that selects
-the removed Orca driver is rejected at load time; remove `driver = "orca"`,
-per-repository Orca overrides, and the `[orca]` table before upgrading.
+but herdr is currently the only supported driver.

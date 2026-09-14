@@ -595,16 +595,6 @@ fn untagged_listed(n: u64, state: &str) -> Value {
 // to call that "already gone" and forget the record, leaving the
 // directory, and whatever only it held, for nobody to find.
 
-// ---- a driver switch --------------------------------------------------
-
-// Replays issue #105: after `driver` went from Orca to herdr, an item
-// from before the switch still carried Orca's repo id, which the herdr
-// driver took for a checkout path. Each delivery failed on it, and the
-// item recovered only once five failures had it re-onboarded. Now the
-// first delivery re-creates the workspace on the current driver.
-
-// A record from before the driver was written down whose repo id fits
-// the current driver is left alone: no re-creation for its own sake.
 // ---- sessions blocked on a login ------------------------------------
 
 const LOGIN_SCREEN: &[&str] = &[

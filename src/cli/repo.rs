@@ -472,13 +472,6 @@ pub(super) fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool)
         bail!("invalid key {key}");
     }
     let parsed = parse_toml_scalar(value);
-    // This daemon setting was renamed while Orca was still supported. Keep
-    // accepting its old spelling as an input, but only write the current one.
-    let parts: Vec<&str> = if key == "daemon.startup_orca_wait_secs" {
-        vec!["daemon", "startup_driver_wait_secs"]
-    } else {
-        parts
-    };
     let key = parts.join(".");
     let key = key.as_str();
     let mut cur: &mut toml::Table = &mut table;
@@ -520,9 +513,6 @@ pub(super) fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool)
             toml::Value::Array(logins.into_iter().map(toml::Value::String).collect()),
         );
     } else {
-        if key == "daemon.startup_driver_wait_secs" {
-            cur.remove("startup_orca_wait_secs");
-        }
         cur.insert(parts[parts.len() - 1].to_string(), parsed);
     }
     let text = toml::to_string_pretty(&table)?;

@@ -92,7 +92,7 @@
 # review_label = "review"                      # no longer used: the label started a reviewer session until #115; ssf runs one session per item (the SSF.md gauntlet rule replaces it); `ssf doctor` says so while the line stays
 # cleanup_grace_secs = 900                     # no longer used (it timed those reviewer sessions out); still accepted so old files load
 # resume_on_start = true                       # after a reboot, start again the sessions whose terminals are gone (running ones are left alone)
-# startup_driver_wait_secs = 120               # wait this long for herdr at daemon start (every 10 s) before the first poll; the old name startup_orca_wait_secs still loads
+# startup_driver_wait_secs = 120               # wait this long for herdr at daemon start (every 10 s) before the first poll
 # Who may drive the factory: only these GitHub logins' assignments, mentions,
 # review requests, labels and comments count (case-insensitive; the bot
 # itself always does). Unset: each repository's collaborators with push

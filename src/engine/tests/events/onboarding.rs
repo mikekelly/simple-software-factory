@@ -94,7 +94,6 @@ async fn a_session_opened_issue_waits_for_assignment_then_gets_its_own_session()
         st.worktree_path = Some("/w/1".into());
         st.terminal_handle = Some("t1".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("herdr".into());
     }
     d.seed("w1", "t1", READY_SCREEN);
     let opened = json!({
@@ -329,7 +328,7 @@ async fn giving_up_on_a_binding_posts_gave_up_once() {
     e.cfg.repos = vec![r.clone()];
     seeded(&mut e, 5, Some("bot/issue-5"), true);
     e.entry(&r, 5).terminal_handle = Some("t5".into());
-    let err = anyhow::anyhow!("no such terminal\n  (it was closed)").context("delivering to orca");
+    let err = anyhow::anyhow!("no such terminal\n  (it was closed)").context("driver delivery");
     for n in 1..MAX_DELIVERY_FAILURES {
         e.note_failure(&r, 5, &err).await;
         assert_eq!(e.failures[&("o/r".to_string(), 5)], n);
@@ -348,7 +347,7 @@ async fn giving_up_on_a_binding_posts_gave_up_once() {
              ```ssf\n\
              ssf giving up on agent binding for issue:\n\
              failures: 5\n\
-             last error: delivering to orca: no such terminal (it was closed)\n\
+             last error: driver delivery: no such terminal (it was closed)\n\
              next: re-onboarding the item\n\
              ```"
     );
@@ -373,8 +372,8 @@ async fn giving_up_on_a_binding_posts_gave_up_once() {
     assert!(stub.posts().is_empty());
     // A sign-in phrase in an error is cut out; the rest is kept.
     assert_eq!(
-        safe_error("orca: the screen said: Login expired · Please run /login"),
-        "orca: the screen said: […] · Please […]"
+        safe_error("driver: the screen said: Login expired · Please run /login"),
+        "driver: the screen said: […] · Please […]"
     );
     assert_eq!(
         safe_error("gh: You are not logged into any GitHub hosts. Run gh auth login."),
@@ -426,7 +425,6 @@ async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
         st.worktree_id = Some("w5".into());
         st.worktree_path = Some("/w/5".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("herdr".into());
     }
     seeded(&mut e, 8, None, true);
     {
@@ -476,7 +474,6 @@ async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
         st.worktree_path = Some("/w/5".into());
         st.worktree_name = Some("issue-5-t".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("herdr".into());
     }
     d.with(|s| {
         s.worktrees.insert("w5".into());
@@ -535,7 +532,6 @@ async fn a_gone_workspace_is_re_created_and_the_item_told() {
         st.html_url = "https://gh/5".into();
         st.worktree_name = Some("issue-5-fix-the-widget".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("herdr".into());
         st.worktree_id = Some("stub::/stub.worktrees/issue-5-fix-the-widget".into());
         st.worktree_path = Some("/stub.worktrees/issue-5-fix-the-widget".into());
         st.agent_session_id = Some("sess-5".into());

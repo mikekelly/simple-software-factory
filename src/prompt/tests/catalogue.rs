@@ -19,7 +19,7 @@ fn prompt_catalogue() {
     let issue18: Issue = serde_json::from_value(json!({
             "number": 18,
             "title": "Resume sessions after a machine restart: startup reconciliation pass",
-            "body": "After a reboot Orca's terminals are gone and ssf only notices when the next GitHub event arrives.\n\nProposal: a startup reconciliation pass that resumes every active session whose worktree exists but has no live agent terminal.",
+            "body": "After a reboot the driver terminals are gone and ssf only notices when the next GitHub event arrives.\n\nProposal: a startup reconciliation pass that resumes every active session whose worktree exists but has no live agent terminal.",
             "html_url": format!("{base}/issues/18"), "state": "open", "state_reason": "completed",
             "user": {"login": bot}, "labels": [{"name": "daemon"}],
             "created_at": "2026-09-04T13:56:29Z", "updated_at": "2026-09-04T17:29:10Z"
@@ -275,7 +275,7 @@ fn prompt_catalogue() {
                 Some(
                     "Branch `bot/issue-18-resume-sessions` is pushed and PR #22 is open \
 against it. The startup pass and its tests are done; what is left is the \
-`startup_orca_wait_secs` option and the README section. `cargo test` is green; the packaging \
+startup wait option and the README section. `cargo test` is green; the packaging \
 bump is not done.",
                 ),
                 &initial_prompt(&issue18, &[added.clone(), assigned.clone()], &handed_over),

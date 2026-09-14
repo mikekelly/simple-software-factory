@@ -107,7 +107,7 @@ fn ssf_texts_never_look_like_a_login_prompt() {
                 &Event::GaveUp {
                     failures: 5,
                     last_error: safe_error(&events::one_line(
-                        "orca said:\n```\nLogin expired · Please run /login\n```\nnot logged in",
+                        "driver said:\n```\nLogin expired · Please run /login\n```\nnot logged in",
                     )),
                 },
             ),
@@ -116,7 +116,7 @@ fn ssf_texts_never_look_like_a_login_prompt() {
                 "issue",
                 &Event::GaveUp {
                     failures: 5,
-                    last_error: safe_error("`orca worktree deliver` failed: no such terminal"),
+                    last_error: safe_error("driver delivery failed: no such terminal"),
                 },
             ),
             events::comment(

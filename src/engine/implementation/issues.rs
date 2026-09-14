@@ -105,7 +105,6 @@ impl Engine {
         e.worktree_id = o.worktree_id;
         e.worktree_path = o.worktree_path;
         e.repo_id = o.repo_id;
-        e.driver = o.driver;
         e.branch = o.branch;
         e.terminal_handle = o.terminal_handle;
         e.agent_session_id = o.agent_session_id;
@@ -356,11 +355,9 @@ impl Engine {
         number: u64,
         wt: &Worktree,
     ) {
-        let driver = self.cfg.driver_for(repo);
         let e = self.entry(repo, number);
         e.worktree_id = Some(wt.id.clone());
         e.worktree_path = Some(wt.path.clone());
-        e.driver = Some(driver.id().into());
         if let Some((r, _)) = wt.id.split_once("::") {
             e.repo_id = Some(r.to_string());
         }
