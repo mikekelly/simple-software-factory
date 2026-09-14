@@ -48,8 +48,9 @@ async fn a_new_repo_enrollment_lists_existing_allocations_without_starting_them(
     assert!(e.state.repos[&r.name].adoption_candidates.contains_key(&3));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn explicit_adoption_starts_fresh_with_the_complete_github_story() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Orca);
