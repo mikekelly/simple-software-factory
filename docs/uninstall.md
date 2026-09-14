@@ -1,5 +1,9 @@
 # Uninstall reference
 
+Supported release packages are for Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu). macOS support is planned next;
+macOS-specific removal notes below document work in progress.
+
 For the normal removal sequence, see [Stopping and uninstalling](setup.md#12-stopping-and-uninstalling).
 This page details work-preservation checks, recovery cases and retained data.
 
@@ -40,11 +44,8 @@ still selected, only when that data loss is explicitly intended.
    stop leaves the machine as it was and tells you to stop it by hand
    (`systemctl --user stop ssf.service`, or `brew services stop ssf`)
    and run `ssf uninstall` again.
-2. `sudo pacman -R ssf`, `sudo apt remove ssf` or `sudo dnf remove ssf`
-   (**you**: sudo; nothing in ssf runs it); on macOS `brew uninstall
-   ssf`, then `brew untap mikekelly/ssf` (`gh` and `lima` stay unless
-   you `brew uninstall` them). The command prints the one for this
-   machine last.
+2. `sudo pacman -R ssf` or `sudo apt remove ssf` (**you**: sudo; nothing
+   in ssf runs it). The command prints the one for this machine last.
 
 What stops it: a workspace with uncommitted or unpushed work (an open
 item's too), one that cannot be checked (no origin, a git error), or a

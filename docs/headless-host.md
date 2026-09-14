@@ -1,7 +1,8 @@
-# Grok Bot / headless-host installation
+# VPS / headless-host installation
 
-Use **standalone Linux binaries + host mode** on a Grok Bot computer or a
-stripped Debian container without usable KVM or a systemd user session. This
+Use **standalone Linux binaries + host mode** on a dedicated VPS, such as a
+Grok Bot or Meta Muse machine or a Hetzner server, or in a stripped Debian
+container without usable KVM or a systemd user session. This
 path runs herdr and the factory directly as your Unix user; agents can access
 that user's files and credentials. No VM, linger, `ssf setup`, or Omarchy
 widget is needed.

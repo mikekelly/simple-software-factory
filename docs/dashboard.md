@@ -9,7 +9,8 @@ ssf --server factory-one --server factory-two dashboard
 SSF_SERVER=customer@cloud.example ssf dashboard
 ```
 
-Linux and macOS clients include the TUI. No browser, Python, Omarchy or Herdr
+The supported Linux client includes the TUI. The macOS client is work in
+progress. No browser, Python, Omarchy or Herdr
 installation is required. Local factories, local VMs and remote factories use
 the same long-running `ssf status --json --watch` stream. Configure SSH
 authentication first; a remote dashboard keeps one noninteractive SSH channel

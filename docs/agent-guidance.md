@@ -4,8 +4,15 @@ Read `ssf skill setup` for the setup procedure; this topic preserves the
 agent-specific operating rules. Use `ssf skill` to find bundled reference
 topics.
 
-For Grok Bot computers or stripped Linux containers without KVM / a systemd
-user session, use `docs/headless-host.md` first: standalone binaries, host mode,
+Supported release packages are for Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu). macOS support is planned next but is
+not supported yet; macOS-specific notes below describe work in progress. The
+two main deployments are a factory running directly on a VPS (such as a Grok
+Bot or Meta Muse machine, or a Hetzner server) and a local factory isolated
+inside a microVM.
+
+For a VPS or stripped Linux container without KVM / a systemd user session,
+use `docs/headless-host.md` first: standalone binaries, host mode,
 `herdr server`, and foreground `ssf-server`. Keep the fresh server catalog empty
 so client and daemon share paths; skip package setup and linger. Refresh apt
 lists and install OpenSSH before key enrollment. Follow its older-gh device
@@ -21,26 +28,23 @@ installation. Package installation leaves the service disabled; explicit setup
 enables it and asks about linger for boot/logout operation.
 
 The setup document is `docs/setup.md`: `/usr/share/doc/ssf/docs/setup.md`
-once the package is installed on Omarchy,
-`$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS, or
-`docs/setup.md` in a checkout of the repository. Read it and follow it,
+once the Linux package is installed, or `docs/setup.md` in a checkout of the
+repository. Read it and follow it,
 for a first install (in VM mode complete step 6 before step 4, then its
 checklist), or the one step that matches what the person asked for on an
 installed factory. It has the prerequisites, the package, the bot
-account, the sign-in, who may drive the factory, the VM (the default:
-Firecracker on Linux, lima on macOS) and the host alternatives, the
+account, the sign-in, who may drive the factory, the default Firecracker
+microVM and the host alternatives, the
 harness login, the first repository and the harness and model it runs
 on, `SSF.md`, the first issue, upgrading, stopping and uninstalling,
-with `ssf doctor` checkpoints after each step and which
-commands differ on a Mac. There is
-no second copy of the steps here. The README next to it
-(`/usr/share/doc/ssf/README.md`, or `$(brew --prefix)/share/doc/ssf/README.md`)
-has the everyday commands, and the rest of `docs/` is the reference the
+with `ssf doctor` checkpoints after each step. There is no second copy of the
+steps here. The README next to it (`/usr/share/doc/ssf/README.md`) has the
+everyday commands, and the rest of `docs/` is the reference the
 document links to.
 
 ## Rules for an agent following it
 
-The live terminal dashboard is included in the Linux and macOS client. Run
+The live terminal dashboard is included in the Linux client. Run
 `ssf dashboard` in any terminal, or `ssf --server HOST dashboard` /
 `SSF_SERVER=HOST ssf dashboard` for a remote factory. Repeat `--server` to show
 several factories as independently updated groups in one dashboard. Without
@@ -88,7 +92,7 @@ Herdr's terminal title is a status summary; Claude Code/Codex activity times
 reflect transcript writes, and missing activity times remain unknown.
 
 1. **Stop where only the person can act.** The document marks them
-   **you**: type a sudo password (`pacman`, `apt`, `dnf`), create a GitHub account,
+   **you**: type a sudo password (`pacman`, `apt`), create a GitHub account,
    sign in in a browser, approve a token or scopes, sign a harness in.
    Give the exact command or URL, say what they will see, and wait;
    carry on when they say it is done. Everything else is for the agent
@@ -169,8 +173,7 @@ reflect transcript writes, and missing activity times remain unknown.
 7. **For a stripped headless container, prefer the host path above. Otherwise
    take the default path** (the factory inside the VM, herdr inside
    it) unless the person asks for an alternative or the machine cannot
-   run the VM at all (on macOS the VM is lima and needs macOS 13.5 or
-   later). A Linux machine without a usable `/dev/kvm`, or one that is
+   run the VM at all. A Linux machine without a usable `/dev/kvm`, or one that is
    not x86_64, cannot run the Firecracker backend, but it can still run
    the VM: set `[vm] backend = "lima"`, which uses qemu there (slower,
    and it needs `qemu-system-<arch>` installed). The lima backend needs
@@ -179,7 +182,7 @@ reflect transcript writes, and missing activity times remain unknown.
    letting it fail at the first boot, so a distribution shipping an old
    lima means lima's release tarball or `[vm] limactl` pointing at a
    newer one. The document says where the alternatives branch off. On
-   Debian, Ubuntu and Fedora the package does not bring host herdr; install it
+   Debian and Ubuntu the package does not bring host herdr; install it
    as the document's step 2 says for host sessions. The VM supplies its own.
    When reading `ssf vm status --json`, treat `running =
    null` as an unanswered lima probe, not a stopped VM; `probe_error`
@@ -245,9 +248,8 @@ reflect transcript writes, and missing activity times remain unknown.
     to put `[vm] backend` back rather than any lima command. Do not add `--force` on the
     person's behalf: show them the report and let them settle the work
     or decide; `--data` (config, the bot's key, state) is also theirs to
-    ask for. The package removal that follows (`sudo pacman -R ssf`,
-    `sudo apt remove ssf`, `sudo dnf remove ssf`, or on macOS `brew
-    uninstall ssf` and then `brew untap mikekelly/ssf`; the command
+    ask for. The package removal that follows (`sudo pacman -R ssf` or
+    `sudo apt remove ssf`; the command
     prints the one for the machine) is **you**.
     On Omarchy the optional widget is independent: `omarchy plugin remove
     ssf.factory` removes only its checkout and leaves the service running.

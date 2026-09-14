@@ -1,10 +1,11 @@
 # Install standalone binaries
 
-For a Grok Bot computer or Linux container without KVM / a systemd user
-session, follow [Grok Bot / headless host](headless-host.md): standalone binaries
+For a VPS or Linux container without KVM / a systemd user session, follow
+[VPS / headless host](headless-host.md): standalone binaries
 and host mode run a complete factory without package services. Otherwise use
-the packages for Omarchy, Ubuntu and Debian 13 (Trixie), or Homebrew for
-macOS; see [Setup](setup.md#2-install-the-package). The Linux package
+the packages for Arch-family Linux (including Omarchy) or Debian-family Linux
+(including Ubuntu); see [Setup](setup.md#2-install-the-package). macOS support
+is planned next but is not supported yet. The Linux package
 named `ssf` includes both the `ssf` client and `ssf-server` daemon. There are no
 separate client and server packages. Neither package installation nor copying a
 binary enables a background service.
@@ -19,8 +20,8 @@ also provide these standalone **Linux** executables:
 
 These are static musl builds. ARM64 builds are best effort; check that the
 selected release has both assets before installing a local factory. Packages
-are x86_64 only. Linux binaries do not run on macOS or other Unix kernels;
-use Homebrew on macOS. Other operating systems and architectures have no
+are x86_64 only. Linux binaries do not run on macOS or other Unix kernels.
+Other operating systems and architectures have no
 prebuilt binaries in this release workflow.
 
 ## Download and install on Linux

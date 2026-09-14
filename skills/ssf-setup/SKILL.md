@@ -10,6 +10,12 @@ factory; VM setup supplies it in the guest. Orca is not a supported driver.
 Before upgrading an older Orca-based installation, push any work held only in
 Orca worktrees and remove its driver settings from `config.toml`.
 
+SSF release packages support Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu). macOS support is planned next but is
+not supported yet. Run a Linux factory either directly on a VPS (for example a
+Grok Bot or Meta Muse machine, or a Hetzner server) or, for the recommended
+local setup, inside a microVM.
+
 For installation, follow the [repository instructions](https://github.com/mikekelly/simple-software-factory#install).
 
 On a Bot-dedicated-VPS where Grok Bot should be the user's liaison for
