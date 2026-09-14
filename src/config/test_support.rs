@@ -132,6 +132,16 @@ pub(crate) fn home() -> PathBuf {
     require("home")
 }
 
+/// The sandbox's stand-in for `$HOME`, or nothing when a test that only reads
+/// optional home-directory state did not establish a sandbox.
+pub(crate) fn optional_home() -> Option<PathBuf> {
+    ACTIVE.with(|s| match s.borrow().last() {
+        Some(Dirs::Sandbox(root)) => Some(root.join("home")),
+        Some(Dirs::Machine) => dirs::home_dir(),
+        None => None,
+    })
+}
+
 /// The sandbox's `which` subdirectory for the calling thread, or a
 /// panic naming what the test has to do about it.
 pub(super) fn require(which: &str) -> PathBuf {

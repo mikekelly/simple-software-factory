@@ -28,6 +28,8 @@ fn first_prompt_names_the_driver() {
         delegated_by: None,
         handed_over_from: None,
         projects: &[],
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,
@@ -75,6 +77,8 @@ fn initial_prompt_mentions_bot_and_issue() {
         delegated_by: None,
         handed_over_from: None,
         projects: &[],
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,
@@ -158,6 +162,14 @@ machine.\n"
     assert!(p.trim_end().ends_with("Run the tests."));
 
     let ctx = PromptContext {
+        global_prompt: Some(ProjectPrompt {
+            source: "~/.ssf/SSF.md".into(),
+            text: "This machine is private.".into(),
+        }),
+        global_harness_prompt: Some(ProjectPrompt {
+            source: "~/.ssf/SSF.claude.md".into(),
+            text: "Use the machine Claude account.".into(),
+        }),
         project_prompt: Some(ProjectPrompt {
             source: "SSF.md".into(),
             text: "Cards go to Review when a PR is open.".into(),
@@ -167,7 +179,11 @@ machine.\n"
         ..ctx
     };
     let p = initial_prompt(&issue, &[], &ctx);
-    assert!(p.contains("Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"));
+    assert!(p.contains(
+        "## Global SSF agent guidance (`~/.ssf/SSF.md`)\n\nThis machine is private.\n\n\
+## Global harness guidance (`~/.ssf/SSF.claude.md`)\n\nUse the machine Claude account.\n\n\
+Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"
+    ));
     assert!(!p.contains("They say"));
     let ctx = PromptContext {
         harness_prompt: Some(ProjectPrompt {
@@ -246,6 +262,8 @@ fn initial_prompt_is_the_bare_minimum() {
         delegated_by: None,
         handed_over_from: None,
         projects: &boards,
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,
@@ -296,6 +314,8 @@ fn a_person_credential_names_who_pushes() {
         delegated_by: None,
         handed_over_from: None,
         projects: &[],
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,
@@ -360,6 +380,8 @@ fn vm_guest_gets_one_line_about_root() {
         delegated_by: None,
         handed_over_from: None,
         projects: &[],
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,
@@ -475,6 +497,8 @@ fn initial_prompt_lists_project_boards_without_prescribing_columns() {
         delegated_by: None,
         handed_over_from: None,
         projects: &boards,
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,
@@ -577,6 +601,43 @@ fn project_prompt_is_read_from_the_worktree() {
     );
     assert_eq!(ProjectPrompt::load_harness(&repo, &dir, "pi"), None);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn global_prompts_are_read_from_the_factory_home() {
+    let sandbox = crate::config::test_support::sandbox();
+    let directory = sandbox.home().join(".ssf");
+    std::fs::create_dir_all(&directory).unwrap();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "codex".into(),
+        ..Default::default()
+    };
+
+    assert_eq!(ProjectPrompt::load_global(&repo), None);
+    std::fs::write(directory.join("SSF.md"), "Machine guidance.").unwrap();
+    std::fs::write(
+        directory.join("SSF.codex.md"),
+        "<!-- note -->\nCodex guidance.",
+    )
+    .unwrap();
+    std::fs::write(directory.join("SSF.claude.md"), "Claude guidance.").unwrap();
+
+    assert_eq!(
+        ProjectPrompt::load_global(&repo),
+        Some(ProjectPrompt {
+            source: "~/.ssf/SSF.md".into(),
+            text: "Machine guidance.".into(),
+        })
+    );
+    assert_eq!(
+        ProjectPrompt::load_global_harness(&repo, "codex"),
+        Some(ProjectPrompt {
+            source: "~/.ssf/SSF.codex.md".into(),
+            text: "Codex guidance.".into(),
+        })
+    );
+    assert_eq!(ProjectPrompt::load_global_harness(&repo, "pi"), None);
 }
 
 #[test]

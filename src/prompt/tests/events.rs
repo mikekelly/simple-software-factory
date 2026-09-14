@@ -173,6 +173,8 @@ fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
         delegated_by: None,
         handed_over_from: None,
         projects: &[],
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: None,
         harness_prompt: None,
         vm_guest: false,

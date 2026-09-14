@@ -261,6 +261,13 @@ source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
 
 ## The SSF agent guidance file
 
+Optional machine-wide context belongs in `~/.ssf/SSF.md`. For example, it can
+tell every SSF session how this factory machine is networked or which local
+services are available. `~/.ssf/SSF.<harness>.md` adds machine-wide context
+only for the selected harness, such as `~/.ssf/SSF.codex.md`. In VM mode these
+paths are in the guest user's home; in host mode they are in the host user's
+home.
+
 The operating contract that only applies to an ssf-spawned agent goes in an
 `SSF.md` at the repository root: issue ownership and communication, project
 board choices and status mappings, delegation and handoffs, bounded review,
@@ -272,8 +279,10 @@ define the main agent's orchestration role without spending subagent context on
 workflow that does not apply to them. When an agent is started for an item, ssf
 reads `SSF.md` from
 the item's own checkout (so a PR branch that changes it is seen with its own
-version) and appends it to the initial prompt under an "SSF agent guidance" heading,
-after `daemon.instructions` and `repo.instructions`. The same text is included
+version) and appends it to the initial prompt under an "SSF agent guidance" heading.
+The complete instruction order is `daemon.instructions`, global shared and
+global harness guidance, `repo.instructions`, repository shared guidance, then
+repository harness guidance. The same text is included
 when an agent is started again from scratch. No file, or an empty one, adds
 nothing, and `ssf doctor` reports a repository whose SSF guidance is missing
 (`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`;
@@ -298,6 +307,12 @@ comments are filtered just as in the shared guidance. `ssf doctor` checks the
 shared SSF guidance only.
 Harness guidance is also appended only to the issue-owning main session, not
 automatically to subagents that harness creates.
+
+The global files follow the same missing, empty, HTML-comment filtering,
+restart, and handover rules. They are optional and `ssf doctor` does not require
+or inspect them. A handover selects the new harness's global and repository
+harness files. Repository guidance comes later in the prompt so it can refine
+the broader machine context.
 
 Put only SSF-session working preferences here (see [What the agent is told](prompts.md)).
 `repo.model` selects the session's model, not its subagents' models. Optional

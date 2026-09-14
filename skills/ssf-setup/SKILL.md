@@ -15,5 +15,11 @@ For installation, follow the [repository instructions](https://github.com/mikeke
 Once installed, run `ssf skill` for authoritative guidance bundled with your
 binary, then follow its `ssf skill <topic>` commands for details.
 
+Optional factory-wide agent context goes in `~/.ssf/SSF.md`, with
+`~/.ssf/SSF.<harness>.md` for harness-specific additions. These files are read
+from the guest user's home in VM mode or the host user's home in host mode,
+before repository-specific instructions, and `ssf doctor` does not require
+them.
+
 For OMP on headless/herdr hosts, read `ssf skill headless` for one-time
 interactive setup and pane credential guidance before spawning sessions.

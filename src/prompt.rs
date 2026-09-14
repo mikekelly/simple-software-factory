@@ -17,6 +17,16 @@ use timeline::today_utc;
 pub use timeline::{Rendered, actor_of, event_key, render_event};
 use timeline::{fmt_when, quote};
 
+#[cfg(not(test))]
+fn global_prompt_dir() -> Option<std::path::PathBuf> {
+    dirs::home_dir().map(|home| home.join(".ssf"))
+}
+
+#[cfg(test)]
+fn global_prompt_dir() -> Option<std::path::PathBuf> {
+    crate::config::test_support::optional_home().map(|home| home.join(".ssf"))
+}
+
 #[derive(Clone)]
 pub struct PromptContext<'a> {
     pub repo: &'a RepoConfig,
@@ -39,6 +49,10 @@ pub struct PromptContext<'a> {
     pub handed_over_from: Option<&'a str>,
     /// Open project boards the item is on.
     pub projects: &'a [ProjectCard],
+    /// Machine-wide SSF agent guidance, when `~/.ssf/SSF.md` exists.
+    pub global_prompt: Option<ProjectPrompt>,
+    /// Machine-wide notes for the harness actually running this session.
+    pub global_harness_prompt: Option<ProjectPrompt>,
     /// The repository's SSF agent guidance, when the worktree has it.
     pub project_prompt: Option<ProjectPrompt>,
     /// Additional notes for the harness actually running this session.
@@ -50,8 +64,7 @@ pub struct PromptContext<'a> {
     pub pushes_as: Option<String>,
 }
 
-/// Contents of the SSF agent guidance file (`SSF.md` by default): the operating
-/// contract humans on a repository give the issue-owning main session.
+/// Contents of an SSF guidance file for the issue-owning main session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectPrompt {
     /// The file as configured (`SSF.md`, `.ssf/prompt.md`, `~/notes/x.md`).
@@ -60,6 +73,22 @@ pub struct ProjectPrompt {
 }
 
 impl ProjectPrompt {
+    /// Read optional machine-wide SSF guidance from `~/.ssf`.
+    pub fn load_global(repo: &RepoConfig) -> Option<Self> {
+        Self::load_global_from(repo, &global_prompt_dir()?, "SSF.md")
+    }
+
+    /// Read optional machine-wide guidance for the selected harness.
+    pub fn load_global_harness(repo: &RepoConfig, harness: &str) -> Option<Self> {
+        let filename = format!("SSF.{harness}.md");
+        Self::load_global_from(repo, &global_prompt_dir()?, &filename)
+    }
+
+    fn load_global_from(repo: &RepoConfig, directory: &Path, filename: &str) -> Option<Self> {
+        let source = format!("~/.ssf/{filename}");
+        Self::load_file(repo, &directory.join(filename), &source)
+    }
+
     /// Read the repository's SSF agent guidance from the checkout at `worktree`.
     /// A missing or empty file yields nothing; an unreadable one is logged.
     pub fn load(repo: &RepoConfig, worktree: &Path) -> Option<Self> {
@@ -472,6 +501,22 @@ fn extras(ctx: &PromptContext) -> String {
     if let Some(extra) = ctx.daemon.instructions.as_deref() {
         s.push('\n');
         s.push_str(extra.trim());
+        s.push('\n');
+    }
+    if let Some(pp) = ctx.global_prompt.as_ref() {
+        s.push_str(&format!(
+            "\n## Global SSF agent guidance (`{}`)\n\n",
+            pp.source
+        ));
+        s.push_str(&pp.text);
+        s.push('\n');
+    }
+    if let Some(pp) = ctx.global_harness_prompt.as_ref() {
+        s.push_str(&format!(
+            "\n## Global harness guidance (`{}`)\n\n",
+            pp.source
+        ));
+        s.push_str(&pp.text);
         s.push('\n');
     }
     if let Some(extra) = ctx.repo.instructions.as_deref() {

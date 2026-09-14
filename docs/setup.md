@@ -586,6 +586,11 @@ implementation, architecture, domain and safety policy belongs in `AGENTS.md`.
 SSF injects `SSF.md` into the issue-owning main session only, not harness-created
 subagents, so use it to define that agent's orchestration and completion role
 without polluting delegated task contexts.
+For optional context shared by every watched repository on this factory, add
+`~/.ssf/SSF.md`; add `~/.ssf/SSF.codex.md`, `~/.ssf/SSF.claude.md`, or the
+corresponding harness name for machine-wide harness-specific context. These
+files live inside the guest in VM mode and on the host in host mode. They are
+read before repository guidance and are not required by `ssf doctor`.
 Add optional `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md` at the root
 for instructions appended only when that harness starts the session.
 Describe one outcome per issue, where the plan lives, and who may merge. Keep

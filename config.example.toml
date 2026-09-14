@@ -118,6 +118,7 @@ effort = "high"                              # effort/thinking level (claude: lo
 # path = "~/code/name"                         # use an existing checkout instead of cloning
 # base_branch = "origin/main"                 # branch new worktrees start from (default: origin's default branch); `ssf doctor` counts a worktree's commits beyond it
 # instructions = "Run `make test` before opening a PR."
+# Optional ~/.ssf/SSF.md and ~/.ssf/SSF.<harness>.md apply machine-wide before repository guidance.
 # Optional SSF.<harness>.md at the worktree root adds harness-specific main-session guidance.
 # prompt_file = "SSF.md"                       # SSF agent guidance appended to the main session's initial prompt (see SSF.example.md); relative to the worktree unless absolute
 # allowed_users = ["alice"]                    # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)

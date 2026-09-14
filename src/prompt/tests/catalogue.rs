@@ -156,6 +156,8 @@ fn prompt_catalogue() {
         delegated_by: None,
         handed_over_from: None,
         projects: &boards,
+        global_prompt: None,
+        global_harness_prompt: None,
         project_prompt: Some(notes.clone()),
         harness_prompt: None,
         vm_guest: false,
