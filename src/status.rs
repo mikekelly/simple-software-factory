@@ -446,10 +446,7 @@ impl Snapshot {
             // Sessions whose harness is not signed in (the widget shows an
             // urgent line per one).
             "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
-            "driver": driver_status.clone(),
-            // Compatibility for independently installed older panel versions.
-            // New consumers should use `driver`.
-            "orca": driver_status,
+            "driver": driver_status,
             "sessions": sessions,
             "repos": repos,
         });

@@ -6,9 +6,7 @@ description: How to use ssf / Simple Software Factory, including setup, configur
 # Simple Software Factory (ssf)
 
 SSF is built on top of herdr. Herdr must be installed and running on a host
-factory; VM setup supplies it in the guest. Orca is not a supported driver.
-Before upgrading an older Orca-based installation, push any work held only in
-Orca worktrees and remove its driver settings from `config.toml`.
+factory; VM setup supplies it in the guest.
 
 For installation, follow the [repository instructions](https://github.com/mikekelly/simple-software-factory#install).
 

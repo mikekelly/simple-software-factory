@@ -44,24 +44,6 @@ async fn worktree_listing_refuses_a_repo_id_that_is_no_directory() {
 }
 
 #[test]
-fn a_repo_id_names_the_driver_that_wrote_it() {
-    assert_eq!(
-        DriverKind::of_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"),
-        None
-    );
-    assert_eq!(
-        DriverKind::of_repo_id("/home/me/ssf/projects/widgets"),
-        Some(DriverKind::Herdr)
-    );
-    assert_eq!(DriverKind::of_repo_id(""), None);
-    assert_eq!(DriverKind::of_repo_id("relative/path"), None);
-    let stub = Driver::Stub(StubDriver::new(DriverKind::Herdr));
-    assert!(stub.owns_repo_id("stub"));
-    assert!(stub.owns_repo_id("/home/me/ssf/projects/widgets"));
-    assert!(!stub.owns_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"));
-}
-
-#[test]
 fn repo_root_tolerates_compound_ids() {
     assert_eq!(repo_root("/p/widgets::w7"), "/p/widgets");
     assert_eq!(repo_root("/p/widgets"), "/p/widgets");

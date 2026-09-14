@@ -460,21 +460,6 @@ impl Driver {
         self.kind().label()
     }
 
-    /// Could this driver have written `repo_id`? A record that says which
-    /// driver made its workspace is not judged by this; one from before
-    /// that was kept is (see `Engine::drop_foreign_binding`).
-    pub fn owns_repo_id(&self, repo_id: &str) -> bool {
-        match self {
-            // The stub's own id, or a real driver's shape for the kind the
-            // stub stands in for.
-            #[cfg(test)]
-            Driver::Stub(_) => {
-                repo_id == "stub" || DriverKind::of_repo_id(repo_id) == Some(self.kind())
-            }
-            _ => DriverKind::of_repo_id(repo_id) == Some(self.kind()),
-        }
-    }
-
     /// The executable the driver runs.
     pub fn command(&self) -> &str {
         match self {

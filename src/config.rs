@@ -23,15 +23,6 @@ impl DriverKind {
         "herdr"
     }
 
-    /// Whether `repo_id` has the path form used by herdr.
-    pub fn of_repo_id(repo_id: &str) -> Option<DriverKind> {
-        if std::path::Path::new(repo_id).is_absolute() {
-            Some(DriverKind::Herdr)
-        } else {
-            None
-        }
-    }
-
     /// How the driver is called in messages.
     pub fn label(self) -> &'static str {
         "herdr"
@@ -748,10 +739,7 @@ pub struct DaemonConfig {
     /// seconds) before polling begins, since herdr may still be coming
     /// up in the same login. If it is not ready by then, polling starts anyway
     /// and the startup pass runs on the first poll that finds the driver ready.
-    #[serde(
-        default = "default_startup_driver_wait",
-        alias = "startup_orca_wait_secs"
-    )]
+    #[serde(default = "default_startup_driver_wait")]
     pub startup_driver_wait_secs: u64,
     /// Post the daemon's essential events on the item as short `ssf`
     /// blocks by the bot (a session attached, resumed, held for a login,

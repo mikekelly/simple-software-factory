@@ -113,10 +113,6 @@ pub struct IssueState {
     /// The checkout path for the repository the workspace belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_id: Option<String>,
-    /// The driver that made the workspace and wrote `repo_id` and
-    /// `worktree_id`. Older records may omit it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub driver: Option<String>,
     /// Name the workspace was created with, reused when it is re-created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_name: Option<String>,

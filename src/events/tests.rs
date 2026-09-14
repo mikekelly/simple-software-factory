@@ -151,7 +151,7 @@ fn bound_names_the_owning_session() {
 fn re_created_says_why_and_how_the_conversation_went() {
     let ev = Event::Attached(Attach::ReCreated {
         launch: launch(Some("bot/issue-12-fix")),
-        reason: "driver switch",
+        reason: "workspace gone",
         conversation: Conversation::of(false),
     });
     let text = comment(&o(), "issue", &ev);
@@ -165,7 +165,7 @@ fn re_created_says_why_and_how_the_conversation_went() {
              effort: high\n\
              driver: herdr\n\
              branch: bot/issue-12-fix\n\
-             re-created: driver switch\n\
+             re-created: workspace gone\n\
              conversation: fresh\n\
              ```"
     );

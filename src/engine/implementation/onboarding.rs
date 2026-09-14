@@ -59,13 +59,11 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.worktree_name.clone())
             .unwrap_or_else(|| prompt::worktree_name_for(issue.number, &issue.title, is_pr));
-        let driver = self.cfg.driver_for(repo);
         {
             let e = self.entry(repo, issue.number);
             e.title = issue.title.clone();
             e.html_url = issue.html_url.clone();
             e.repo_id = Some(setup.repo_id.clone());
-            e.driver = Some(driver.id().into());
             e.worktree_name = Some(wt_name.clone());
             e.kind = Some(if is_pr {
                 "pull_request".into()

@@ -453,9 +453,8 @@ pub(super) async fn doctor() -> Result<()> {
                         ),
                         None => String::new(),
                     };
-                    // Every driver's workspaces, not only this repository's
-                    // driver's: after a driver switch the old driver may
-                    // still have an agent on a worktree here.
+                    // All listed workspaces are considered so agents sharing
+                    // this checkout are not mistaken for stranded work.
                     let rows: Vec<&driver::WorkspaceInfo> = open_workspaces
                         .values()
                         .filter_map(|r| r.as_ref().ok())

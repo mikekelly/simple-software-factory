@@ -195,7 +195,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_grace_secs` | | No longer used: it timed the reviewer sessions out, which went with #115 (see [Second opinions](sessions.md#second-opinions-the-gauntlet)); still accepted so old files load, and `ssf doctor` says so while it stays |
 | `daemon.review_label` | | No longer used: the label started a reviewer session until #115; ssf reacts to no label now. Still accepted so old files load; `ssf doctor` says so while it stays |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
-| `daemon.startup_driver_wait_secs` | `120` | How long to wait for herdr at daemon start before the first poll; the old name `startup_orca_wait_secs` still loads |
+| `daemon.startup_driver_wait_secs` | `120` | How long to wait for herdr at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |

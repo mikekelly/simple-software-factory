@@ -467,10 +467,6 @@ fn config_set_updates_the_startup_wait() {
             .startup_driver_wait_secs,
         30
     );
-    config_set_at(&path, "daemon.startup_orca_wait_secs", "45", false).unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains("startup_driver_wait_secs = 45"), "{text}");
-    assert!(!text.contains("startup_orca_wait_secs"), "{text}");
     std::fs::remove_dir_all(&dir).ok();
 }
 

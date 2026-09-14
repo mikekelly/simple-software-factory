@@ -267,50 +267,6 @@ impl Engine {
         Ok(d)
     }
 
-    /// A binding written by a driver other than the one the repository runs
-    /// in now (`driver` changed since the workspace was made) is dropped
-    /// before the workspace is looked for, so the item goes through the
-    /// current driver's project setup as a new one would, rather than the
-    /// old driver's repo id being handed to the new driver as its own. The
-    /// workspace name and branch stay, so the branch is picked up as the
-    /// base as for any re-created workspace. A record from before the
-    /// driver was written down is judged by the shape of its repo id.
-    /// Says whether a binding was dropped.
-    pub(in crate::engine) fn drop_foreign_binding(
-        &mut self,
-        repo: &RepoConfig,
-        number: u64,
-    ) -> bool {
-        let current = self.cfg.driver_for(repo);
-        let st = self.entry(repo, number).clone();
-        let Some(repo_id) = st.repo_id.as_deref() else {
-            return false;
-        };
-        let made_by = match st.driver.as_deref() {
-            Some(d) => d.to_string(),
-            None if self.driver(repo).owns_repo_id(repo_id) => return false,
-            None => DriverKind::of_repo_id(repo_id)
-                .map(|k| k.id().to_string())
-                .unwrap_or_else(|| "another driver".into()),
-        };
-        if made_by == current.id() {
-            return false;
-        }
-        info!(
-            repo = repo.name,
-            session = session_id(&repo.name, number),
-            "workspace was made by {made_by}; re-creating it on {}",
-            current.id()
-        );
-        let e = self.entry(repo, number);
-        e.repo_id = None;
-        e.driver = None;
-        e.worktree_id = None;
-        e.worktree_path = None;
-        e.terminal_handle = None;
-        true
-    }
-
     /// The current driver's id for the repository, from the record when
     /// it has one and from the driver's project setup otherwise; written
     /// back so the next look does not set the project up again.
@@ -337,22 +293,18 @@ impl Engine {
             .repo_id;
         let e = self.entry(repo, number);
         e.repo_id = Some(repo_id.clone());
-        e.driver = Some(driver.id().into());
         Ok(repo_id)
     }
 
     /// Re-create the workspace for an issue whose worktree is gone,
     /// starting from its old branch when that still exists. Says why it
-    /// was re-created (`workspace gone`, or `driver switch` when a binding
-    /// made by another driver was dropped first), or `None` when the
-    /// driver already had a workspace linked to the issue and nothing was
-    /// made.
+    /// was re-created (`workspace gone`), or `None` when the driver already
+    /// had a workspace linked to the issue and nothing was made.
     pub(in crate::engine) async fn rehydrate(
         &mut self,
         repo: &RepoConfig,
         number: u64,
     ) -> Result<Option<&'static str>> {
-        let switched = self.drop_foreign_binding(repo, number);
         let repo_id = self.repo_id_for(repo, number).await?;
         let st = self.entry(repo, number).clone();
         if let Some(existing) = self
@@ -455,11 +407,7 @@ impl Engine {
         let e = self.entry(repo, number);
         e.terminal_handle = None;
         e.worktree_name = Some(name);
-        Ok(Some(if switched {
-            "driver switch"
-        } else {
-            "workspace gone"
-        }))
+        Ok(Some("workspace gone"))
     }
 
     /// Record harness session ids for workspaces that do not have one yet.
@@ -548,31 +496,6 @@ impl Engine {
             self.mark_released(repo, st.number);
             return;
         };
-        let current = self.cfg.driver_for(repo);
-        let foreign = st.driver.as_deref().map_or_else(
-            || {
-                st.repo_id
-                    .as_deref()
-                    .is_some_and(|repo_id| !self.driver(repo).owns_repo_id(repo_id))
-            },
-            |made_by| made_by != current.id(),
-        );
-        // The current driver cannot tell whether a removed driver's workspace
-        // still exists. Inspect its recorded checkout before treating it as
-        // gone, so work added after release approval is never forgotten.
-        if foreign && !st.release_forced {
-            let problems = match st.worktree_path.as_deref() {
-                Some(path) => release::inspect(path)
-                    .await
-                    .map(|check| check.problems())
-                    .unwrap_or_else(|e| vec![format!("{e:#}")]),
-                None => vec!["no workspace path recorded".into()],
-            };
-            if !problems.is_empty() {
-                self.refuse_release(repo, &st, problems).await;
-                return;
-            }
-        }
         if !self.driver(repo).worktree_exists(&id).await.unwrap_or(true) {
             info!(session, "workspace is already gone");
             self.mark_released(repo, st.number);
