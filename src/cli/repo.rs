@@ -51,6 +51,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 git: config::GitConfig::default(),
             };
             entry.validate_launch_prefs()?;
+            entry.require_launch_prefs()?;
             // herdr runs only the agents it recognises, so warn for a
             // repository that ends up there, by its own choice or the default.
             if cfg.driver_for(&entry) == config::DriverKind::Herdr {
@@ -107,15 +108,8 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             if let Some(h) = harness {
                 check_harness(&h);
                 if h != entry.harness {
-                    // Model ids and effort levels belong to a harness; a new
-                    // harness starts from its defaults unless told otherwise.
-                    if (entry.model.is_some() && model.is_none())
-                        || (entry.effort.is_some() && effort.is_none())
-                    {
-                        eprintln!(
-                            "note: model/effort reset to the defaults of {h}; set them again with --model/--effort"
-                        );
-                    }
+                    // Model ids and effort levels belong to a harness;
+                    // switching requires a fresh explicit selection.
                     entry.model = None;
                     entry.effort = None;
                 }
@@ -194,6 +188,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 }
             }
             entry.validate_launch_prefs()?;
+            entry.require_launch_prefs()?;
             let updated = entry.name.clone();
             cfg.validate()?;
             let identity = cfg.git_identity(cfg.repos.get(pos));
@@ -224,7 +219,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             }
             if cfg.repos.is_empty() {
                 println!(
-                    "No repositories configured. Add one with: ssf repo add owner/name --harness claude"
+                    "No repositories configured. Add one with: ssf repo add owner/name --harness claude --model MODEL --effort EFFORT"
                 );
             }
             for r in &cfg.repos {

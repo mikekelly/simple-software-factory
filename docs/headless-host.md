@@ -168,11 +168,11 @@ will not reach a later daemon or herdr launch. Stop the SSF daemon before
 replacing either binary; restart the driver and daemon with credentials loaded.
 
 In a third terminal, load the same PATH and environment file, then configure
-the repository (replace OWNER/NAME and MODEL with your selected values):
+the repository (replace OWNER/NAME, MODEL and EFFORT with the human operator’s choices):
 
 ```sh
 ssf models omp
-ssf repo add OWNER/NAME --harness omp --model MODEL
+ssf repo add OWNER/NAME --harness omp --model MODEL --effort EFFORT
 ssf auth status
 ssf status
 ssf doctor

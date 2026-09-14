@@ -143,7 +143,14 @@ reflect transcript writes, and missing activity times remain unknown.
    Capability/cost comparisons can supplement this; API prices do not measure
    subscription allowance. Propose a model and effort per repository and
    explain the tradeoff. If numbers cannot be verified, say so and let the
-   person choose, or explicitly leave model and effort unset. ssf sets the
+   person choose. **Before adding a watched repository or changing its
+   harness/model/effort, obtain the person's explicit choice for each supported
+   setting.** A choice already provided in this setup conversation counts;
+   examples, recommendations, silence and installer defaults do not. If no
+   choice is available, pause that step and ask; do not invent values or write
+   an incomplete repo directly to TOML. The CLI requires supported settings
+   on add/set, and doctor fails for missing legacy settings. Existing values
+   alone do not establish human consent. ssf sets the
    main session's model; optional subagents follow harness configuration and
    project instructions. Do not impose a delegation hierarchy on simple work.
 5. **Never sign in as the person** or use their token, key or account for

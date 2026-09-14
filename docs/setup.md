@@ -495,14 +495,17 @@ ssf repo list --json
 ```
 
 Replace the uppercase placeholders; omit `--effort` for a harness that
-has no effort setting. `model` is optional too. The bot needs Write
+has no effort setting, and `--model` only for a harness without model support.
+Both are required when supported. The bot needs Write
 access, and the harness must be installed and signed in where it runs.
 The daemon records GitHub's immutable repository id on its first pass. Later
 renames and transfers should happen through GitHub as usual; ssf periodically
 detects the new canonical name and repairs its configuration and checkouts.
 
 Use `ssf repo set OWNER/NAME` with the same options to change settings.
-Changing the harness clears the previous model and effort. Changes apply
+Changing the harness requires a fresh model and effort selection where supported.
+Other edits retain existing selections; incomplete legacy entries must be completed
+before `repo set` can save. Changes apply
 to the next started or resumed session; an already running session keeps
 its selection. A [per-item handover](configuration.md#per-item-overrides)
 takes precedence until that item's workspace is released.
@@ -536,7 +539,9 @@ limits. [Artificial Analysis](https://artificialanalysis.ai/models)
 can supplement this with capability and cost-per-task comparisons;
 API costs do not measure consumption of a subscription allowance. If you
 cannot verify a recommendation, say what remains unknown and let the
-person choose, or leave model and effort unset explicitly.
+person choose. Before adding a repository, obtain their explicit choice of
+model and effort (where supported). An agent must pause this setup step
+until the person answers; examples and recommendations are not consent.
 
 ssf selects the main session's model and effort. Optional subagents are
 configured by the harness or requested through `SSF.md`; they may inherit
@@ -545,7 +550,10 @@ it, and check the harness's model-selection rules before budgeting for
 subagents. There is no required three-tier agent hierarchy.
 
 Keep model and effort out of `repo.command`: ssf appends those flags
-itself. Use `--clear model --clear effort` to restore harness defaults.
+itself. Clearing a supported model or effort setting is rejected.
+Existing files with missing settings still load and run, but `ssf doctor`
+fails with a repair command. SSF cannot establish who chose values already
+present in a config file; setup agents must obtain human confirmation.
 Unknown model IDs are passed through to the harness, rather than checked
 against a fixed catalogue. See [Models and effort levels](configuration.md#models-and-effort-levels)
 for IDs, aliases and harness-specific restrictions.

@@ -262,6 +262,13 @@ pub(super) async fn doctor() -> Result<()> {
     // /usr/share/ssf, Homebrew under its own prefix.
     let example_notes = platform::share_file("SSF.example.md");
     for r in &cfg.repos {
+        match r.require_launch_prefs() {
+            Ok(()) => check(
+                true,
+                format!("{}: supported model/effort settings explicit", r.name),
+            ),
+            Err(e) => check(false, e.to_string()),
+        }
         match (&gh, r.github_id) {
             (Some(gh), Some(id)) => match gh.repository_by_id(id).await {
                 Ok(identity) if identity.full_name.eq_ignore_ascii_case(&r.name) => {

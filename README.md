@@ -298,8 +298,8 @@ the short form after that explicit setup is:
 3. **A repository**: `ssf repo add owner/name --harness claude --model
    fable --effort medium` (the *harness* is the agent program: `claude`,
    `codex`, `gemini`, ...; `ssf agents` lists them, and the model and
-   effort are worth choosing rather than leaving to the harness — not
-   every harness has both), and an `SSF.md` at its root telling SSF-spawned
+   effort require an explicit choice when the harness supports them), and
+   an `SSF.md` at its root telling SSF-spawned
    agents how to own and communicate work, manage the board, review and
    complete it, starting from
    [`SSF.example.md`](SSF.example.md).
@@ -333,12 +333,12 @@ ssf auth login --user acme-bot    # guest device flow checks this login; host mo
 printf '%s' "$TOKEN" | ssf auth login --token   # a pasted token instead of gh
 ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
-ssf repo add acme/widgets --harness claude
+ssf repo add acme/widgets --harness claude --model opus --effort high
 ssf vm login claude               # sign the harness in inside the guest
 ssf config set driver orca        # host mode only: sessions in Orca instead of herdr
 ssf status
 ssf peers                         # the agent sessions and what each is doing
-ssf doctor                        # token and scopes, drivers, harness logins, gh wrapper, daemon socket, worktrees holding work with no agent on them
+ssf doctor                        # explicit model/effort, token and scopes, drivers, harness logins, gh wrapper, daemon socket, worktrees holding work with no agent on them
 ```
 
 If the commits should carry your own name rather than the bot's, a
@@ -356,10 +356,9 @@ can reconfigure the factory:
 
 ```sh
 ssf repo list --json
-ssf repo add acme/widgets --harness codex --instructions "Run make test before opening a PR."
-ssf repo set acme/widgets --model opus --effort high    # ids: ssf models <agent>; choosing: docs/setup.md
+ssf repo add acme/widgets --harness codex --model gpt-5.5 --effort high --instructions "Run make test before opening a PR."
+ssf repo set acme/widgets --model gpt-5.5 --effort high    # ids: ssf models <agent>; choosing: docs/setup.md
 ssf repo set acme/widgets --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
-ssf repo set acme/widgets --clear model --clear effort
 ssf repo set acme/widgets --allowed-users alice,bob     # who may drive this repository
 ssf repo remove acme/widgets
 ssf config get daemon.poll_interval_secs
