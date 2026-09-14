@@ -244,14 +244,12 @@ fn startup_wait_uses_the_driver_name() {
 }
 
 fn parse(toml_src: &str) -> Result<Config> {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!("ssf-config-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(format!(
         "{}.toml",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     std::fs::write(&path, toml_src).unwrap();
     let r = Config::load_from(&path);

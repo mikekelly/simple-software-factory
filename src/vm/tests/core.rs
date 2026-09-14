@@ -62,10 +62,11 @@ fn disabled_vm_management_preserves_host_factory_and_credentials() {
     config.github.token = Some("host-only-token".into());
     config.github.ssh_key_path = Some("/missing-host-key".into());
     config.vm.dir = sandbox.root().join("vm").to_string_lossy().into_owned();
+    let client = sandbox.root().join("ssf");
+    config.vm.guest_binary = Some(client.to_string_lossy().into_owned());
     config.save().unwrap();
     let original = std::fs::read(crate::config::config_path()).unwrap();
     let mut vm = Vm::new(&config);
-    let client = sandbox.root().join("ssf");
     std::fs::write(&client, "client").unwrap();
     std::fs::write(companion_server_path(&client), "server").unwrap();
     vm.binary = Some(client);
@@ -105,8 +106,9 @@ fn established_vm_seed_never_resolves_or_copies_bot_credentials() {
     config.vm.dir = sandbox.root().join("vm").to_string_lossy().into_owned();
     config.github.token = Some("must-not-be-seeded".into());
     config.github.ssh_key_path = Some("/missing-host-key".into());
-    let mut vm = Vm::new(&config);
     let client = sandbox.root().join("ssf");
+    config.vm.guest_binary = Some(client.to_string_lossy().into_owned());
+    let mut vm = Vm::new(&config);
     std::fs::write(&client, "client").unwrap();
     std::fs::write(companion_server_path(&client), "server").unwrap();
     vm.binary = Some(client);
