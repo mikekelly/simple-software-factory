@@ -1,6 +1,7 @@
 //! Explicit per-user setup for the package-owned SSF installation.
 
 use anyhow::{Context, Result, bail};
+#[cfg(target_os = "linux")]
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -134,6 +135,7 @@ fn verify_package() -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn effective_exec_is_owned(exec: &str, target: Option<&str>) -> bool {
     exec.matches("path=").count() == 1
         && exec.contains("path=/usr/bin/ssf-server ;")

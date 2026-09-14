@@ -216,6 +216,7 @@ fn guest_binary_comes_from_the_config_the_host_or_the_release() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn pid_files_name_the_program() {
     assert!(pid_runs(std::process::id(), "ssf") || pid_runs(std::process::id(), "vm"));

@@ -83,8 +83,9 @@ fn invalid_utf8_and_stdin_read_errors_fail_closed() {
     );
     use std::os::fd::AsRawFd;
     let file = body_file("test").unwrap();
-    use std::io::Write;
+    use std::io::{Seek, Write};
     (&file).write_all(&[0xff]).unwrap();
+    (&file).rewind().unwrap();
     assert_eq!(
         read_body_file(&format!("/dev/fd/{}", file.as_raw_fd()))
             .unwrap_err()
