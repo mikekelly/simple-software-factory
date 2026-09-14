@@ -435,7 +435,7 @@ therefore starts every agent with the flags that let it run unattended:
 | `gemini` | `gemini --yolo --skip-trust` | nothing (without `--skip-trust`, a trust dialog ssf answers) |
 | `grok` | `grok --always-approve` | nothing |
 | `pi` | `pi --approve` (Pi has no tool approvals; the flag trusts the repository's `.pi/` files) | nothing (without `--approve`, a trust dialog ssf answers) |
-| `omp` | `omp --auto-approve` | nothing |
+| `omp` | `PI_STREAM_IDLE_TIMEOUT_MS=900000 omp --auto-approve` (the longer stream-idle window is explained in [Workspaces and terminals](drivers.md)) | nothing |
 | `opencode` | `opencode --auto` | nothing |
 | `copilot` | `copilot --allow-all` | nothing (the flag trusts the folder too) |
 | `crush` | `crush --yolo` | an offer to create `AGENTS.md`, which the first prompt dismisses |

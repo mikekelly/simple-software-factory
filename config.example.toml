@@ -110,6 +110,7 @@ name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
 # driver = "herdr"                             # default: the top-level `driver`
 # command = "claude --permission-mode acceptEdits"    # how the agent is started; default: its permission-free command (`ssf agents --json`), run via `ssf launch`
+#                                                     # OMP's default also sets PI_STREAM_IDLE_TIMEOUT_MS=900000; a custom command replaces that default
 # Choose model and effort with the operator before watching this repository.
 # Required by repo add/set when supported; doctor fails if missing in legacy config.
 model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush (`ssf models <agent>`); choosing one: docs/setup.md

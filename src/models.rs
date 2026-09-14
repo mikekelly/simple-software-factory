@@ -223,6 +223,13 @@ const UNATTENDED_FLAGS: &[(&str, &str)] = &[
     ("crush", "--yolo"),
 ];
 
+/// OMP's normal five-minute inter-event watchdog can end a healthy, long
+/// reasoning turn. It retries before any visible output, but deliberately
+/// stops after partial output because replay could duplicate work. Factory
+/// sessions are unattended, so give them the longer timeout OMP recommends
+/// for this workload (#322). A configured `repo.command` remains authoritative.
+const OMP_DEFAULT_COMMAND: &str = "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp --auto-approve";
+
 /// The flags that let `harness` run unattended, if ssf knows them.
 pub fn unattended_flags(harness: &str) -> Option<&'static str> {
     UNATTENDED_FLAGS
@@ -235,6 +242,9 @@ pub fn unattended_flags(harness: &str) -> Option<&'static str> {
 /// harness id plus its unattended flags, or the bare id for a harness ssf
 /// does not know.
 pub fn default_command(harness: &str) -> String {
+    if harness == "omp" {
+        return OMP_DEFAULT_COMMAND.into();
+    }
     match unattended_flags(harness) {
         Some(flags) => format!("{harness} {flags}"),
         None => harness.to_string(),
@@ -480,7 +490,10 @@ mod tests {
         assert_eq!(default_command("gemini"), "gemini --yolo --skip-trust");
         assert_eq!(default_command("grok"), "grok --always-approve");
         assert_eq!(default_command("pi"), "pi --approve");
-        assert_eq!(default_command("omp"), "omp --auto-approve");
+        assert_eq!(
+            default_command("omp"),
+            "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp --auto-approve"
+        );
         assert_eq!(default_command("opencode"), "opencode --auto");
         assert_eq!(default_command("copilot"), "copilot --allow-all");
         assert_eq!(default_command("crush"), "crush --yolo");

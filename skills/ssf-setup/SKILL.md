@@ -37,3 +37,9 @@ them.
 
 For OMP on headless/herdr hosts, read `ssf skill headless` for one-time
 interactive setup and pane credential guidance before spawning sessions.
+SSF's default OMP command uses a 15-minute provider-stream idle timeout because
+long unattended turns can exceed OMP's normal five-minute window. A custom
+repository `command` replaces that default; include
+`PI_STREAM_IDLE_TIMEOUT_MS=900000` in a custom OMP command to keep the same
+behavior. Setting it to `0` disables stall detection and can leave a genuinely
+wedged stream waiting forever.

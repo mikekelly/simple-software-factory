@@ -41,6 +41,17 @@ Herdr can only launch agents it recognises (`herdr agent start --help` lists
 them). `ssf repo add` warns about an unsupported harness, and a start that never
 produces an agent gives up after `herdr.tui_idle_timeout_ms`.
 
+OMP aborts a provider stream after five minutes without an event. It can retry
+before output is visible, but a stall after partial output ends the turn rather
+than risk replaying side effects; Herdr correctly reports that terminal as
+`done`, indistinguishable from an ordinary completed turn. SSF's default OMP
+command sets `PI_STREAM_IDLE_TIMEOUT_MS=900000` (15 minutes), the upstream
+recommendation for long agentic workloads. A repository `command` replaces the
+whole default, so include that environment setting there too if a custom OMP
+command should retain the longer window. Set a different value deliberately to
+tune the tradeoff; `0` disables the watchdog and can leave a genuinely wedged
+stream waiting forever.
+
 Workspace ids stored by SSF combine herdr's workspace id with the checkout
 path, such as `w7@/home/you/ssf/projects/widgets.worktrees/issue-42-fix`. The
 path lets SSF verify ownership before delivering input or removing a workspace.
