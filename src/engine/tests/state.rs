@@ -44,34 +44,42 @@ fn owner_follows_bindings_and_survives_cycles() {
     assert!(cyclic == 4 || cyclic == 5);
 }
 #[test]
-fn origin_tag_binds_to_the_opening_session() {
+fn origin_tag_is_attribution_for_issues_and_ownership_for_pull_requests() {
     let mut e = engine();
     let r = repo();
     seeded(&mut e, 1, Some("bot/issue-1"), true);
     let tagged = issue(7, "bot", Some("<!-- ssf: origin=o/r#1 -->\n\nchild"));
     let scan = origin::scan(&tagged, &[], "bot");
-    assert_eq!(e.find_owner(&r, &tagged, None, &scan), Some(1));
-    // Through a chain: the PR was bound to the issue, a comment-opened
-    // issue from the PR's session lands on the issue's session too.
+    assert_eq!(e.find_owner(&r, &tagged, None, &scan), None);
+    // An issue's origin remains attribution even through a known binding;
+    // it does not make another issue share that workspace.
     e.entry(&r, 7).seeded = true;
     e.entry(&r, 7).shares_workspace_of = Some(1);
     let grandchild = issue(8, "bot", Some("<!-- ssf: origin=o/r#7 -->"));
     let scan = origin::scan(&grandchild, &[], "bot");
-    assert_eq!(e.find_owner(&r, &grandchild, None, &scan), Some(1));
+    assert_eq!(e.find_owner(&r, &grandchild, None, &scan), None);
+    // Pull requests still belong to the opening session, independently of
+    // assignment, so reviews and comments return to the coding session.
+    let mut opened_pr = issue(10, "bot", Some("<!-- ssf: origin=o/r#7 -->"));
+    opened_pr.pull_request = Some(json!({}));
+    let scan = origin::scan(&opened_pr, &[], "bot");
+    assert_eq!(e.find_owner(&r, &opened_pr, None, &scan), Some(1));
     // A hand-off is not bound.
     let delegated = issue(9, "bot", Some("<!-- ssf: origin=o/r#1 mode=delegate -->"));
     let scan = origin::scan(&delegated, &[], "bot");
     assert_eq!(e.find_owner(&r, &delegated, None, &scan), None);
     assert!(scan.origin_tag.unwrap().is_delegate());
     // A human's body with a pasted tag is not an origin.
-    let human = issue(10, "alice", Some("<!-- ssf: origin=o/r#1 -->"));
+    let human = issue(11, "alice", Some("<!-- ssf: origin=o/r#1 -->"));
     let scan = origin::scan(&human, &[], "bot");
     assert_eq!(e.find_owner(&r, &human, None, &scan), None);
     // Another repository's session, or one ssf never tracked: no binding.
-    let elsewhere = issue(11, "bot", Some("<!-- ssf: origin=x/y#1 -->"));
+    let mut elsewhere = issue(12, "bot", Some("<!-- ssf: origin=x/y#1 -->"));
+    elsewhere.pull_request = Some(json!({}));
     let scan = origin::scan(&elsewhere, &[], "bot");
     assert_eq!(e.find_owner(&r, &elsewhere, None, &scan), None);
-    let unknown = issue(12, "bot", Some("<!-- ssf: origin=o/r#99 -->"));
+    let mut unknown = issue(13, "bot", Some("<!-- ssf: origin=o/r#99 -->"));
+    unknown.pull_request = Some(json!({}));
     let scan = origin::scan(&unknown, &[], "bot");
     assert_eq!(e.find_owner(&r, &unknown, None, &scan), None);
 }

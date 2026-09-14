@@ -78,7 +78,7 @@ async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
     assert!(stub.posts().is_empty());
 }
 #[tokio::test]
-async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
+async fn a_session_opened_issue_waits_for_assignment_then_gets_its_own_session() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
@@ -86,7 +86,7 @@ async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
-    // Session 1 is live on w1; item 7 was opened by it.
+    // Session 1 is live on w1; item 7 was opened by it without assignment.
     seeded(&mut e, 1, Some("bot/issue-1"), true);
     {
         let st = e.entry(&r, 1);
@@ -100,16 +100,29 @@ async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
     let opened = json!({
         "number": 7, "title": "child", "body": "🤖#1 says: <!-- ssf: origin=o/r#1 -->\n\nfollow-up",
         "html_url": "https://gh/7", "state": "open", "user": {"login": "bot"},
-        "assignees": [{"login": "bot"}], "created_at": "x", "updated_at": "u1"
+        "assignees": [], "created_at": "x", "updated_at": "u1"
     });
-    stub.set_assigned(vec![opened]);
+    *stub.created.lock().unwrap() = vec![opened.clone()];
+    stub.set_timeline(7, vec![]);
+    e.tick_repo(&r).await.unwrap();
+    assert!(e.state.repos[&r.name].ignored.contains_key(&7));
+    assert!(d.log().is_empty(), "an unassigned issue started work");
+    assert!(stub.posts().is_empty());
+
+    // Assigning the same issue later is an action trigger. Its origin tag is
+    // attribution, not ownership, so it starts a fresh session on #7.
+    let mut assigned = opened;
+    assigned["assignees"] = json!([{"login": "bot"}]);
+    stub.set_assigned(vec![assigned]);
     stub.set_timeline(7, vec![assigned_by(1, "bot")]);
     e.tick_repo(&r).await.unwrap();
     let st = e.entry(&r, 7).clone();
-    assert_eq!(st.shares_workspace_of, Some(1), "{st:?}");
+    assert!(st.seeded && st.active, "{st:?}");
+    assert!(st.shares_workspace_of.is_none(), "{st:?}");
+    assert!(st.delegated_by.is_none(), "{st:?}");
     let log = d.log();
     assert!(
-        log[0].starts_with("deliver:w1:[ssf] Now tracking issue #7"),
+        log[0].starts_with("start:stub::/stub.worktrees/issue-7-child:"),
         "{log:?}"
     );
     let posts = stub.post_bodies();
@@ -120,8 +133,11 @@ async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
         "🤖 ssf <!-- ssf: origin=o/r#7 event=attached -->\n\n\
              ```ssf\n\
              ssf attaching agent to issue:\n\
-             session: o/r#1\n\
-             shares: workspace of #1\n\
+             harness: Claude Code\n\
+             model: the harness's default\n\
+             effort: the harness's default\n\
+             driver: herdr\n\
+             branch: bot/issue-7-child\n\
              ```"
     );
 }

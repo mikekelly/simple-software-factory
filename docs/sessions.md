@@ -10,25 +10,25 @@ to the one that wrote it. ssf instead binds every item to at most one
 owning session, decided once when the item is first discovered (first
 binding wins):
 
-- **Opened by a session.** An issue or PR whose body carries a session's
-  origin tag belongs to that session. The bot's own open items are polled
-  (a fourth listing, `creator=<bot>`), so a session hears about the PR it
-  opened without anyone assigning or mentioning the bot: it gets one
+- **Opened by a session.** A PR whose body carries a session's origin tag
+  belongs to that session. The bot's own open items are polled (a fourth
+  listing, `creator=<bot>`), so a session hears about the PR it opened without
+  anyone assigning or mentioning the bot: it gets one
   message saying the item is now tracked for it, then every later comment,
   review, review request, assignment and the closure, all into the same
-  agent, with `SSF_ISSUE` unchanged. The agent's own posts on it are
-  filtered out as usual.
+  agent, with `SSF_ISSUE` unchanged. An issue opened without assigning the bot
+  remains unbound; its origin tag records attribution only. Assigning or
+  mentioning the bot later starts a fresh session for that issue. The agent's
+  own posts are filtered out as usual. On upgrade, ssf detaches issue bindings
+  written under the older authorship rule; already assigned or mentioned
+  issues get a fresh session on the next pass.
 - **A PR on a session's branch.** A same-repo pull request whose head branch
   is the branch of a tracked workspace belongs to that workspace's session,
   tag or no tag (this is what a PR opened by hand from an agent's branch, or
   with `gh pr create --fill`, falls back to).
 - **Triggers go to the owner.** Assigning or mentioning the bot on an owned
   item is delivered to the owner's agent as activity, never to a new
-  session. When an issue a session filed itself is assigned to the bot, that
-  activity ends with one line saying the issue is the session's to work on
-  and that nobody else is spawned for it (an assignment otherwise reads as
-  bookkeeping, and the session waits for a second session that never
-  comes). If the owner has been retired or its workspace removed, it is
+  session. If the owner has been retired or its workspace removed, it is
   brought back the way any lost session is (workspace re-created from its
   branch, conversation resumed), rather than replaced. A retired owner's
   workspace cannot be released or purged while items bound to it are still
@@ -43,11 +43,11 @@ binding wins):
   message with the outcome and the child's final comment (the last comment
   the bot left on it). The child is told it was handed off and to leave a
   clear final comment. `ssf guide` explains this rule to agents, so an
-  agent that wants a separate worker uses `--assignee`, and one that wants
-  to keep an item simply opens it.
-- **Nothing to bind to.** A bot-opened item with no usable tag, no branch
-  match and no human trigger is left alone (logged once) rather than given
-  a session nobody asked for; assigning or mentioning the bot on it later
+  agent that wants a separate worker uses `--assignee`. Opening an unassigned
+  issue instead creates a placeholder with no session.
+- **Nothing to bind to.** A bot-opened issue with no human trigger, or an item
+  with no usable tag or branch match, is left alone (logged once) rather than
+  given a session nobody asked for; assigning or mentioning the bot on it later
   starts one as usual. It is looked at again when it changes on GitHub *or*
   when it shows up on another listing (assigned, mentioned, review
   requested), whichever comes first: an assignment made just before the
@@ -220,7 +220,7 @@ The events, and nothing else:
 | Event | When | Lines |
 |-------|------|-------|
 | `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` when the session was started by a handover (below); on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
-| `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
+| `attached` | a pull request bound to another item's session rather than given one of its own | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
 | `blocked` | deliveries are held because the harness is at its sign-in prompt (below), because OMP setup is incomplete, or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched); a harness that would not start and is not signed in where the daemon runs is recorded as the sign-in block it really is, since that is the thing to fix | `harness`; `reason: not signed in` with `fix:` the command that signs it in, `reason: setup incomplete` with Esc setup guidance, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |

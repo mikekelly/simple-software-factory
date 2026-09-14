@@ -89,11 +89,33 @@ impl Engine {
         let scan = self.record_origins(repo, issue, &timeline);
         let by_bot = issue.author().eq_ignore_ascii_case(&self.login);
 
-        // Who acts on this item. An item a session opened belongs to that
-        // session (first binding wins: it never spawns a second one), unless
-        // the session handed it off, in which case it gets its own session
-        // and the parent hears about it once, when it closes.
-        if let Some(tag) = scan
+        // Who acts on this item. Opening an issue does not ask ssf to act:
+        // leave it unbound until it is assigned, mentioned or otherwise
+        // triggered. A create-time assignment is a hand-off, so it gets its
+        // own session and the parent hears about it once, when it closes.
+        if triggers.iter().all(|t| t == "created") {
+            // Pull requests retain their established coding-session binding,
+            // whether it comes from their origin tag or head branch.
+            if let Some(owner) = self.find_owner(repo, issue, pr.as_ref(), &scan) {
+                return self
+                    .bind_to(repo, issue, owner, diff, triggers, since_prior)
+                    .await;
+            }
+            info!(
+                repo = repo.name,
+                issue = issue.number,
+                "opened by the bot without an action trigger; ignoring until it changes"
+            );
+            self.state
+                .repo_mut(&repo.name)
+                .ignored
+                .insert(issue.number, Ignored::new(issue, &triggers));
+            // Still polled for whoever subscribed to it.
+            if prior.as_ref().is_some_and(|p| p.subscriber_only) {
+                self.entry(repo, issue.number).subscriber_only = true;
+            }
+            return Ok(());
+        } else if let Some(tag) = scan
             .origin_tag
             .as_ref()
             .filter(|t| t.is_delegate() && by_bot)
@@ -119,23 +141,6 @@ impl Engine {
             return self
                 .bind_to(repo, issue, owner, diff, triggers, since_prior)
                 .await;
-        } else if triggers.iter().all(|t| t == "created") {
-            // Opened by the bot, but from nowhere ssf can name and with no
-            // human asking for it: not worth a session.
-            info!(
-                repo = repo.name,
-                issue = issue.number,
-                "opened by the bot without a usable origin tag; ignoring until it changes"
-            );
-            self.state
-                .repo_mut(&repo.name)
-                .ignored
-                .insert(issue.number, Ignored::new(issue, &triggers));
-            // Still polled for whoever subscribed to it.
-            if prior.as_ref().is_some_and(|p| p.subscriber_only) {
-                self.entry(repo, issue.number).subscriber_only = true;
-            }
-            return Ok(());
         }
         self.refresh_projects(repo, owner, name, issue.number).await;
         let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, issue.number));
