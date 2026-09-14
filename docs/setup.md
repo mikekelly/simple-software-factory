@@ -140,7 +140,8 @@ The widget never installs, upgrades, starts, or removes the SSF package.
 
 For a live terminal view of active agents, run `ssf dashboard` in any terminal.
 The Linux and macOS clients include it; no plugin or Python installation is
-needed. For a remote factory, use `ssf --server HOST dashboard` or set
+needed. Without `--server` or `SSF_SERVER`, it connects to all configured servers.
+For a remote factory, use `ssf --server HOST dashboard` or set
 `SSF_SERVER=HOST`. For a local VM, run the client on the host. See the
 [dashboard guide](dashboard.md) for keyboard/mouse navigation, optional Herdr pane
 focus, and explicitly enabling the server browser UI. The browser UI is off by

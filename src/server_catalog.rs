@@ -609,6 +609,18 @@ impl Catalog {
         Ok(())
     }
 
+    /// The dashboard defaults to every catalog entry; selectors still narrow it.
+    pub(crate) fn resolve_dashboard(&self, requested: Vec<String>) -> Result<Vec<Route>> {
+        if requested.is_empty() && !self.servers.is_empty() {
+            return self
+                .servers
+                .keys()
+                .map(|name| self.named_route(name))
+                .collect();
+        }
+        self.resolve(requested)
+    }
+
     /// Resolve explicit selectors, or apply the zero/one/many rule. With no
     /// catalog, explicit values retain their legacy meaning as raw SSH routes.
     pub(crate) fn resolve(&self, requested: Vec<String>) -> Result<Vec<Route>> {
@@ -1036,6 +1048,54 @@ mod tests {
                 .as_deref(),
             Some("cloud.example")
         );
+    }
+
+    #[test]
+    fn dashboard_defaults_to_all_routes_and_preserves_selection() {
+        for catalog in [
+            Catalog::default(),
+            load("").unwrap(),
+            load("[servers.only]\ntransport = \"local\"\n").unwrap(),
+        ] {
+            assert_eq!(
+                catalog.resolve_dashboard(vec![]).unwrap(),
+                catalog.resolve(vec![]).unwrap()
+            );
+        }
+        let legacy = Catalog::default();
+        assert_eq!(
+            legacy.resolve_dashboard(vec!["user@host".into()]).unwrap(),
+            legacy.resolve(vec!["user@host".into()]).unwrap()
+        );
+        let mut catalog = load(
+            r#"
+[servers.cloud]
+transport = "ssh"
+destination = "cloud.example"
+[servers.local]
+transport = "local"
+config_dir = "/tmp/dashboard-local/config"
+state_dir = "/tmp/dashboard-local/state"
+"#,
+        )
+        .unwrap();
+        catalog
+            .servers
+            .insert("vm".into(), owned_vm("dashvm", "/tmp/dashboard-vm", 3222));
+        let names = vec!["cloud".into(), "local".into(), "vm".into()];
+        assert_eq!(
+            catalog.resolve_dashboard(vec![]).unwrap(),
+            catalog.resolve(names).unwrap()
+        );
+        // Both --server and SSF_SERVER arrive as requested selectors.
+        for requested in [vec!["local".into()], vec!["vm".into(), "cloud".into()]] {
+            assert_eq!(
+                catalog.resolve_dashboard(requested.clone()).unwrap(),
+                catalog.resolve(requested).unwrap()
+            );
+        }
+        assert!(catalog.resolve_dashboard(vec!["unknown".into()]).is_err());
+        assert!(catalog.resolve(vec![]).is_err());
     }
 
     #[test]

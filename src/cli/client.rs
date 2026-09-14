@@ -21,7 +21,11 @@ pub async fn client_main() -> Result<()> {
         return server_catalog_command(command);
     }
     let catalog = server_catalog::Catalog::load()?;
-    let routes = catalog.resolve(servers)?;
+    let routes = if matches!(cli.command, Command::Dashboard) {
+        catalog.resolve_dashboard(servers)?
+    } else {
+        catalog.resolve(servers)?
+    };
     validate_command_targets(&catalog, &routes, &cli.command)?;
     if routes.iter().any(|route| {
         route

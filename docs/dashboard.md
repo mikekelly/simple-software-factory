@@ -20,8 +20,9 @@ not make the others look unavailable. `SSF_SERVER` remains the single-server
 selection when no explicit destination is supplied. When a client-side
 [`servers.toml`](configuration.md#server-catalog) exists, these values are
 configured names; without one they retain their legacy meaning as SSH
-destinations. A catalog with several entries still requires explicit repeated
-selection: the dashboard does not contact them all automatically.
+destinations. With no `--server` or `SSF_SERVER` selection, the dashboard connects
+to all catalog entries automatically. An absent or empty catalog uses the local
+endpoint.
 
 The Ratatui dashboard stays open and refreshes automatically. Agent cards use
 one, two or three columns as terminal width permits and fall back to a compact
