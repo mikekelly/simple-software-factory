@@ -55,8 +55,8 @@ pub(super) async fn peers(json: bool, repo: Option<String>, all: bool) -> Result
             "{}",
             serde_json::to_string_pretty(&json!({
                 "me": me,
-                "orca_available": snap.available(),
-                "orca_error": snap.error(),
+                "driver_available": snap.available(),
+                "driver_error": snap.error(),
                 "sessions": sessions,
             }))?
         );

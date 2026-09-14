@@ -7,10 +7,10 @@ its own agent. The agents know about each other, about the project board, and
 about the SSF operating guidance your repository keeps for them.
 
 ssf is a small daemon for Linux, packaged for [Omarchy](https://omarchy.org/),
-Arch, Debian/Ubuntu and Fedora. It runs the
-agents in [herdr](https://herdr.dev/) by default, or in
-[Orca](https://onorca.dev/), so you can watch them work, take over, or
-nudge them at any time (see [Drivers](docs/drivers.md)). Nothing
+Arch, Debian/Ubuntu and Fedora. It is built on top of
+[herdr](https://herdr.dev/), which runs the agent workspaces and terminals so
+you can watch them work, take over, or nudge them at any time (see
+[Workspaces and terminals](docs/drivers.md)). Nothing
 runs in the cloud: the daemon polls GitHub and drives the multiplexer, and
 the agents are the ones you already have installed (Claude Code, Codex,
 ...). If you would rather keep the agents off your machine altogether, the
@@ -26,8 +26,7 @@ timestamps are UTC.
 
 **20:24 — the issue is assigned to the bot** (for the second time; the
 first assignment at 20:21 was undone and redone). Within a minute a workspace
-named after the issue appears in the driver (Orca on that day; herdr by
-default now) and an agent starts in it. Two minutes after the assignment
+named after the issue appears in herdr and an agent starts in it. Two minutes after the assignment
 it posts:
 
 > **OverlayBot** commented at 20:26
@@ -35,11 +34,11 @@ it posts:
 > Starting on this. Plan, following the decisions from #16:
 >
 > - A startup pass in the engine: for every active session that owns its
->   workspace (...) if the Orca workspace still exists but has no live agent
+>   workspace (...) if the workspace still exists but has no live agent
 >   terminal, relaunch it through the existing delivery path (...)
 > - Relaunches are sequential; each waits for the harness to settle before
 >   the next starts.
-> - At daemon start, `orca status` is retried every 10 s for up to two
+> - At daemon start, driver status is retried every 10 s for up to two
 >   minutes (configurable). (...)
 > - README and config example updated (...)
 >
@@ -53,7 +52,7 @@ is opened by the bot from the issue's branch. Its description starts with
 >
 > Done in #29 (https://github.com/mikekelly/simple-software-factory/pull/29).
 >
-> Summary: a startup pass runs once when Orca first answers and starts again
+> Summary: a startup pass runs once when the driver first answers and starts again
 > every active session that owns its workspace (...). README and
 > `config.example.toml` updated; package rebuilt and pkgver bumped.
 >
@@ -118,7 +117,7 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
 ## The key ideas
 
 - **One agent per issue or pull request.** Each gets its own workspace
-  (a git worktree on its own branch, in Orca or herdr) and its own agent
+  (a git worktree on its own branch, in herdr) and its own agent
   session, from the moment the bot is assigned, @mentioned, or asked to
   review until the item is closed. Comment on the issue and the agent hears
   it. Close the issue and the agent wraps up; its workspace stays until the
@@ -145,7 +144,7 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   repository through GitHub and ssf repairs its configuration, session state,
   historical origin aliases and managed checkout remotes before polling it.
 - **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
-  in Orca (or herdr), and starts the agents you have installed, with the
+  in herdr, and starts the agents you have installed, with the
   bot's credentials, so what the agents do on GitHub is done as the bot.
   On your own machine that is a default rather than a wall (the agents run
   as you); the [VM](docs/vm.md) is the wall.
@@ -162,8 +161,7 @@ and local VM factories use normal forwarding. The server can also serve an
 [optional browser dashboard](docs/dashboard.md#optional-server-web-dashboard), disabled by default.
 
 Every few seconds ssf asks GitHub for the open issues and pull requests that
-involve the bot. For a new one it creates a workspace (in Orca or in herdr,
-depending on the [driver](docs/drivers.md)), checked out on a
+involve the bot. For a new one it creates a workspace in herdr, checked out on a
 branch for the issue (or on the pull request's branch, so pushes update
 the pull request), and starts the agent there with the whole story so far.
 From then on every new comment, review, label or push on the item is pasted
@@ -309,8 +307,7 @@ the short form after that explicit setup is:
    the guest: approve the printed code in a browser signed in as the bot.
    Its token and signing key stay on the guest data disk. Run
    `ssf vm login <harness>` to sign your coding agent in there too.
-   The alternative is host mode, in herdr or Orca
-   (`ssf config set driver orca`), with bot and harness login on the host.
+   The alternative is host mode in herdr, with bot and harness login on the host.
 3. **A repository**: `ssf repo add owner/name --harness claude --model
    fable --effort medium` (the *harness* is the agent program: `claude`,
    `codex`, `gemini`, ...; `ssf agents` lists them, and the model and
@@ -351,7 +348,6 @@ ssf auth status
 ssf agents                        # which agents Omarchy knows and which are installed
 ssf repo add acme/widgets --harness claude --model opus --effort high
 ssf vm login claude               # sign the harness in inside the guest
-ssf config set driver orca        # host mode only: sessions in Orca instead of herdr
 ssf status
 ssf peers                         # the agent sessions and what each is doing
 ssf doctor                        # explicit model/effort, token and scopes, drivers, harness logins, gh wrapper, daemon socket, worktrees holding work with no agent on them
@@ -455,7 +451,7 @@ Things to know when operating it:
 - ssf never removes a workspace on its own. Closing an item tells the agent
   to push, comment and run `ssf release`; `ssf purge` is your sweep for what
   was left. Both refuse when anything is not on origin unless `--force`.
-- A workspace closed by hand (a herdr tab, an Orca worktree) leaves its git
+- A workspace closed by hand (a herdr tab) leaves its git
   checkout behind. `ssf doctor` warns, per repository, about every such
   checkout holding commits that are on no other branch and not on origin, or
   uncommitted changes, with no agent on it. `ssf tell` to an active item
@@ -503,7 +499,7 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`
 |------|-----------------------|
 | [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository and the harness and model it runs on, upgrading, uninstalling |
 | [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` agent-guidance file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
-| [Drivers](docs/drivers.md) | Orca versus herdr, and what each one does with workspaces and terminals |
+| [Workspaces and terminals](docs/drivers.md) | how SSF uses herdr for workspaces, terminals and agent state |
 | [Inside a VM](docs/vm.md) | running the whole factory in a VM, Firecracker on Linux or lima on macOS: the backends, the image, what gets in, reaching it, what persists |
 | [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and the boundary between `SSF.md` and `AGENTS.md` |
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |

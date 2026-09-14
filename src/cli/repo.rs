@@ -351,11 +351,6 @@ pub(super) fn config_cmd(command: ConfigCommand) -> Result<()> {
             } else {
                 println!("# {}", config::config_path().display());
                 print!("{}", toml::to_string_pretty(&cfg)?);
-                if let Some(note) = cfg.driver_note() {
-                    println!();
-                    println!("# driver in effect: {}", cfg.default_driver());
-                    println!("#   {note}");
-                }
                 // Who may drive each repository, resolved from the file
                 // alone (the collaborator default is fetched by the daemon;
                 // `ssf doctor` shows it).
@@ -477,8 +472,8 @@ pub(super) fn config_set_at(path: &Path, key: &str, value: &str, accepted: bool)
         bail!("invalid key {key}");
     }
     let parsed = parse_toml_scalar(value);
-    // The startup wait was renamed; the file may hold either spelling, and
-    // serde reads them as one field, so write the new name and drop the old.
+    // This daemon setting was renamed while Orca was still supported. Keep
+    // accepting its old spelling as an input, but only write the current one.
     let parts: Vec<&str> = if key == "daemon.startup_orca_wait_secs" {
         vec!["daemon", "startup_driver_wait_secs"]
     } else {

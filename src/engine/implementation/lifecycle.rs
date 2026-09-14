@@ -259,8 +259,8 @@ impl Engine {
             socket = %crate::ipc::socket_path().display(),
             "ssf daemon started"
         );
-        // Orca may still be coming up in the same login (the unit starts with
-        // the graphical session), and the startup pass needs it: wait a
+        // Herdr may still be coming up in the same login, and the startup pass
+        // needs it: wait a
         // bounded while before the first poll rather than skipping passes.
         let mut stop = false;
         if !self.startup_pending.is_empty() {

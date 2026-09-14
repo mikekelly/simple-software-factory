@@ -4,41 +4,29 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-pub const DEFAULT_ORCA_COMMAND: &str = "/usr/lib/orca-ide/bin/orca-ide";
-
 /// What runs the agents: the multiplexer that holds the workspaces and
 /// terminals ssf creates and delivers prompts into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum DriverKind {
-    /// The Orca desktop app and CLI (`orca-ide`).
-    Orca,
-    /// The herdr terminal workspace manager (`herdr`); the default since
-    /// 2026-09-06 (it was Orca before, see `Config::driver_note`).
+    /// The herdr terminal workspace manager (`herdr`).
     #[default]
     Herdr,
 }
 
 impl DriverKind {
     #[cfg(test)]
-    pub const ALL: [DriverKind; 2] = [DriverKind::Orca, DriverKind::Herdr];
+    pub const ALL: [DriverKind; 1] = [DriverKind::Herdr];
 
-    /// The config value (`orca`, `herdr`).
+    /// The config value (`herdr`).
     pub fn id(self) -> &'static str {
-        match self {
-            DriverKind::Orca => "orca",
-            DriverKind::Herdr => "herdr",
-        }
+        "herdr"
     }
 
-    /// The driver whose repo ids look like `repo_id`: herdr's is the path
-    /// of the checkout, Orca's is a uuid. For records from before the
-    /// driver was written down next to the id.
+    /// Whether `repo_id` has the path form used by herdr.
     pub fn of_repo_id(repo_id: &str) -> Option<DriverKind> {
         if std::path::Path::new(repo_id).is_absolute() {
             Some(DriverKind::Herdr)
-        } else if !repo_id.is_empty() && !repo_id.contains('/') {
-            Some(DriverKind::Orca)
         } else {
             None
         }
@@ -46,10 +34,7 @@ impl DriverKind {
 
     /// How the driver is called in messages.
     pub fn label(self) -> &'static str {
-        match self {
-            DriverKind::Orca => "Orca",
-            DriverKind::Herdr => "herdr",
-        }
+        "herdr"
     }
 }
 
@@ -58,9 +43,8 @@ impl std::str::FromStr for DriverKind {
 
     fn from_str(s: &str) -> Result<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "orca" => Ok(DriverKind::Orca),
             "herdr" => Ok(DriverKind::Herdr),
-            other => bail!("unknown driver {other:?}; use orca or herdr"),
+            other => bail!("unknown driver {other:?}; use herdr"),
         }
     }
 }
@@ -77,13 +61,11 @@ pub struct Config {
     /// Driver that repositories use unless they set their own; herdr when
     /// not set (`default_driver`). Kept optional so a file that never set
     /// it stays that way through `ssf config set` / `ssf repo add`, and
-    /// `driver_note` can say the default is what is in effect.
+    /// commands can preserve whether it was explicitly configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<DriverKind>,
     #[serde(default)]
     pub github: GithubConfig,
-    #[serde(default)]
-    pub orca: OrcaConfig,
     #[serde(default)]
     pub herdr: HerdrConfig,
     #[serde(default)]
@@ -433,51 +415,6 @@ fn default_api_url() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct OrcaConfig {
-    /// Path to the Orca CLI binary. Must be the CLI entry point, not the
-    /// desktop launcher (`/usr/bin/orca-ide` starts the app).
-    #[serde(default = "default_orca_command")]
-    pub command: String,
-    /// Orca host id to create projects and worktrees on.
-    #[serde(default = "default_host")]
-    pub host: String,
-    /// Parent directory that new project clones are placed in.
-    #[serde(default = "default_projects_dir")]
-    pub projects_dir: String,
-    /// How long to wait for a project clone to become ready.
-    #[serde(default = "default_setup_timeout")]
-    pub setup_timeout_secs: u64,
-    /// How long to wait for a freshly launched agent TUI to become idle.
-    #[serde(default = "default_tui_timeout")]
-    pub tui_idle_timeout_ms: u64,
-}
-
-impl Default for OrcaConfig {
-    fn default() -> Self {
-        Self {
-            command: default_orca_command(),
-            host: default_host(),
-            projects_dir: default_projects_dir(),
-            setup_timeout_secs: default_setup_timeout(),
-            tui_idle_timeout_ms: default_tui_timeout(),
-        }
-    }
-}
-
-fn default_orca_command() -> String {
-    std::env::var("ORCA_CLI_COMMAND").unwrap_or_else(|_| DEFAULT_ORCA_COMMAND.to_string())
-}
-fn default_host() -> String {
-    "local".to_string()
-}
-fn default_projects_dir() -> String {
-    "~/orca/projects".to_string()
-}
-fn default_setup_timeout() -> u64 {
-    900
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HerdrConfig {
     /// The herdr CLI; it talks to the running herdr server over its socket.
     #[serde(default = "default_herdr_command")]
@@ -800,7 +737,7 @@ pub struct DaemonConfig {
     #[serde(default, skip_serializing)]
     pub review_label: Option<String>,
     /// Resume interrupted sessions when the daemon starts. After a machine
-    /// restart Orca's terminals are gone: every active session whose
+    /// restart herdr's terminals may be gone: every active session whose
     /// workspace still exists but has no live agent is started again
     /// (resuming its conversation when possible) with a note that it was
     /// interrupted. Sessions that are still running are never touched, so a
@@ -808,11 +745,9 @@ pub struct DaemonConfig {
     #[serde(default = "default_true")]
     pub resume_on_start: bool,
     /// How long to wait for the driver at daemon start (checking every ten
-    /// seconds) before polling begins, since herdr or Orca may still be coming
+    /// seconds) before polling begins, since herdr may still be coming
     /// up in the same login. If it is not ready by then, polling starts anyway
     /// and the startup pass runs on the first poll that finds the driver ready.
-    /// (`startup_orca_wait_secs`, its name from when Orca was the only
-    /// driver, is still read.)
     #[serde(
         default = "default_startup_driver_wait",
         alias = "startup_orca_wait_secs"
@@ -928,24 +863,22 @@ pub struct RepoConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub command: Option<String>,
-    /// Model the harness runs with: an Orca model id (`opus`, `gpt-5.5`, ...)
-    /// for claude, codex, gemini and grok, `provider/model` for pi, omp,
-    /// opencode and copilot; appended to the command as the harness's model
-    /// flag.
+    /// Model the harness runs with; appended to the command as the harness's
+    /// model flag.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// Effort (reasoning) level for the model, one the harness accepts
     /// (`low`, `medium`, `high`, `xhigh`, ...); see `ssf agents --json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// Clone URL used when Orca has no project for this repo yet.
+    /// Clone URL used when ssf has no checkout for this repo yet.
     /// Defaults to `https://github.com/owner/name.git`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clone_url: Option<String>,
     /// Existing local checkout to import instead of cloning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Base ref for issue worktrees (defaults to the repo's Orca base ref).
+    /// Base ref for issue worktrees (defaults to the checkout's remote HEAD).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
     /// How often this repository's active session branches are checked for
@@ -1545,11 +1478,8 @@ impl Config {
     }
 
     /// Where a driver clones repositories that have no checkout yet.
-    pub fn projects_dir(&self, driver: DriverKind) -> PathBuf {
-        expand_tilde(match driver {
-            DriverKind::Orca => &self.orca.projects_dir,
-            DriverKind::Herdr => &self.herdr.projects_dir,
-        })
+    pub fn projects_dir(&self, _driver: DriverKind) -> PathBuf {
+        expand_tilde(&self.herdr.projects_dir)
     }
 
     /// The instance-wide driver: the top-level `driver`, or herdr when the
@@ -1573,33 +1503,6 @@ impl Config {
         out.sort();
         out.dedup();
         out
-    }
-
-    /// Why repositories run where they do when the file leaves `driver`
-    /// unset: the default moved from Orca to herdr on 2026-09-06, so an
-    /// install that relied on the old default changes driver on upgrade
-    /// without any edit of its own. `None` when `driver` is set or every
-    /// repository picks its own.
-    pub fn driver_note(&self) -> Option<String> {
-        if self.driver.is_some() {
-            return None;
-        }
-        let relying: Vec<&str> = self
-            .repos
-            .iter()
-            .filter(|r| r.driver.is_none())
-            .map(|r| r.name.as_str())
-            .collect();
-        if relying.is_empty() {
-            return None;
-        }
-        Some(format!(
-            "`driver` is not set in config.toml, so {} run{} in {} (the default; it was Orca until 2026-09-06). \
-             Keep Orca with `ssf config set driver orca`, or make herdr explicit with `ssf config set driver herdr`.",
-            relying.join(", "),
-            if relying.len() == 1 { "s" } else { "" },
-            DriverKind::default().label()
-        ))
     }
 }
 

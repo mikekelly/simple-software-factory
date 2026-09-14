@@ -1,4 +1,4 @@
-//! Persistent daemon state: which issues are bound to which Orca workspaces,
+//! Persistent daemon state: which issues are bound to which herdr workspaces,
 //! and which timeline events have already been delivered.
 
 use anyhow::{Context, Result, bail};
@@ -101,7 +101,7 @@ pub struct IssueState {
     pub title: String,
     #[serde(default)]
     pub html_url: String,
-    /// Full Orca worktree id (`<repoId>::<path>`).
+    /// Full driver workspace id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,15 +109,11 @@ pub struct IssueState {
     /// Last known terminal handle running the harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal_handle: Option<String>,
-    /// The driver's id for the repository the workspace belongs to: Orca's
-    /// repo id (the first half of the worktree id) or, for herdr, the path
-    /// of the checkout. Only meaningful to the driver named in `driver`.
+    /// The checkout path for the repository the workspace belongs to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo_id: Option<String>,
-    /// The driver (`orca`, `herdr`) that made the workspace and wrote
-    /// `repo_id` and `worktree_id`. A record from before this was kept has
-    /// none, and is judged by the shape of its `repo_id` when the driver of
-    /// the repository has changed since (see `Engine::drop_foreign_binding`).
+    /// The driver that made the workspace and wrote `repo_id` and
+    /// `worktree_id`. Older records may omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<String>,
     /// Name the workspace was created with, reused when it is re-created.

@@ -17,7 +17,7 @@
 # `service` block below is the launchd agent), and no herdr dependency: the
 # factory runs in a lima VM on macOS and herdr lives in the guest.
 class Ssf < Formula
-  desc "GitHub issues assigned to a bot become coding-agent sessions in herdr or Orca"
+  desc "GitHub issues assigned to a bot become coding-agent sessions in herdr"
   homepage "https://github.com/mikekelly/simple-software-factory"
   url "https://github.com/mikekelly/simple-software-factory/archive/refs/tags/v0.1.0.tar.gz"
   # Placeholder: filled in by .github/workflows/homebrew.yml on each tag.

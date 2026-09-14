@@ -482,7 +482,7 @@ fn blocked_and_unblocked() {
 fn gave_up_keeps_the_error_on_one_line() {
     let ev = Event::GaveUp {
         failures: 5,
-        last_error: "orca worktree deliver failed:\n  exit status 1\n\tno such terminal".into(),
+        last_error: "driver delivery failed:\n  exit status 1\n\tno such terminal".into(),
     };
     let text = comment(&o(), "issue", &ev);
     check_shape(&text, "gave-up");
@@ -492,7 +492,7 @@ fn gave_up_keeps_the_error_on_one_line() {
              ```ssf\n\
              ssf giving up on agent binding for issue:\n\
              failures: 5\n\
-             last error: orca worktree deliver failed: exit status 1 no such terminal\n\
+             last error: driver delivery failed: exit status 1 no such terminal\n\
              next: re-onboarding the item\n\
              ```"
     );

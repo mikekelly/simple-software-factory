@@ -551,7 +551,7 @@ impl Engine {
                 }
             );
         };
-        // Orca not answering is not a reason to refuse: the pass checks
+        // The driver not answering is not a reason to refuse: the pass checks
         // again before removing anything.
         if !self
             .driver(&repo)

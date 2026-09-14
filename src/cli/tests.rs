@@ -447,7 +447,7 @@ fn the_wildcard_is_refused_without_consent() {
 }
 
 #[test]
-fn config_set_replaces_the_old_startup_wait_key_with_the_new_one() {
+fn config_set_updates_the_startup_wait() {
     let dir = std::env::temp_dir().join(format!(
         "ssf-config-set-rename-test-{}-{}",
         std::process::id(),
@@ -458,11 +458,8 @@ fn config_set_replaces_the_old_startup_wait_key_with_the_new_one() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
-    std::fs::write(&path, "[daemon]\nstartup_orca_wait_secs = 60\n").unwrap();
-    // The new name over a file holding the old one.
+    std::fs::write(&path, "[daemon]\nstartup_driver_wait_secs = 60\n").unwrap();
     config_set_at(&path, "daemon.startup_driver_wait_secs", "30", false).unwrap();
-    let text = std::fs::read_to_string(&path).unwrap();
-    assert!(!text.contains("startup_orca_wait_secs"), "{text}");
     assert_eq!(
         Config::load_from(&path)
             .unwrap()
@@ -470,18 +467,10 @@ fn config_set_replaces_the_old_startup_wait_key_with_the_new_one() {
             .startup_driver_wait_secs,
         30
     );
-    // The old name is still accepted and lands under the new one.
     config_set_at(&path, "daemon.startup_orca_wait_secs", "45", false).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("startup_driver_wait_secs = 45"), "{text}");
     assert!(!text.contains("startup_orca_wait_secs"), "{text}");
-    assert_eq!(
-        Config::load_from(&path)
-            .unwrap()
-            .daemon
-            .startup_driver_wait_secs,
-        45
-    );
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -1102,8 +1091,16 @@ fn repo_launch_choices_required_without_partial_writes() {
         "provider/model",
     ])
     .unwrap();
-    run(&["add", "o/custom", "--harness", "custom", "--driver", "orca"]).unwrap();
-    run(&["add", "o/crush", "--harness", "crush", "--driver", "orca"]).unwrap();
+    run(&[
+        "add",
+        "o/custom",
+        "--harness",
+        "custom",
+        "--driver",
+        "herdr",
+    ])
+    .unwrap();
+    run(&["add", "o/crush", "--harness", "crush", "--driver", "herdr"]).unwrap();
     // Legacy files remain loadable; the check used by doctor diagnoses them.
     std::fs::write(&path, "[[repo]]\nname = 'o/legacy'\nharness = 'omp'\n").unwrap();
     let cfg = Config::load_from(&path).unwrap();

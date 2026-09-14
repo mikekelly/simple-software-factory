@@ -3,16 +3,16 @@ use super::*;
 #[test]
 fn drivers_follow_the_config() {
     let mut e = engine();
-    let orca = repo();
+    let inherited = repo();
     let mut herdr = repo();
     herdr.name = "o/h".into();
     herdr.driver = Some(DriverKind::Herdr);
-    e.cfg.repos = vec![orca.clone(), herdr.clone()];
+    e.cfg.repos = vec![inherited.clone(), herdr.clone()];
     // What a reloaded config that added a herdr repo does.
     e.sync_drivers();
-    assert_eq!(e.driver(&orca).kind(), DriverKind::Orca);
+    assert_eq!(e.driver(&inherited).kind(), DriverKind::Herdr);
     assert_eq!(e.driver(&herdr).kind(), DriverKind::Herdr);
-    // And the other way: the default switched, Orca no longer used.
+    // The explicit and inherited settings resolve to the same driver.
     e.cfg.driver = Some(DriverKind::Herdr);
     e.cfg.repos = vec![herdr.clone()];
     e.sync_drivers();

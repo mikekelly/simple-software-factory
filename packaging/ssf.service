@@ -1,5 +1,5 @@
 [Unit]
-Description=Simple Software Factory: GitHub issues assigned to the bot become agent workspaces in herdr or Orca
+Description=Simple Software Factory: GitHub issues assigned to the bot become agent workspaces in herdr
 Documentation=https://github.com/mikekelly/simple-software-factory
 
 [Service]

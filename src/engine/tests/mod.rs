@@ -8,14 +8,13 @@ pub(super) fn engine() -> Engine {
     let mut cfg = Config::default();
     cfg.daemon.allowed_users = Some(vec!["*".into()]);
     cfg.daemon.accepted_anyone_risk = true;
-    // The stand-in driver below is Orca; herdr is the default now.
-    cfg.driver = Some(DriverKind::Orca);
+    cfg.driver = Some(DriverKind::Herdr);
     Engine {
         cfg,
         gh: GitHub::new("https://api.github.invalid", "t").unwrap(),
-        drivers: Drivers::from_list(vec![Driver::Orca(crate::orca::Orca::new(
-            crate::config::OrcaConfig {
-                command: "/nonexistent/orca-for-ssf-tests".into(),
+        drivers: Drivers::from_list(vec![Driver::Herdr(crate::herdr::Herdr::new(
+            crate::config::HerdrConfig {
+                command: "/nonexistent/herdr-for-ssf-tests".into(),
                 ..Default::default()
             },
         ))]),
@@ -94,7 +93,7 @@ async fn conflict_fixture(
     sh(&s.work, &["update-ref", "-d", "refs/remotes/origin/main"]).await;
 
     let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.daemon.conflict_check_interval_secs = 1;
     let mut r = repo();
@@ -624,7 +623,7 @@ const PI_LOGIN_SCREEN: &[&str] = &["  Use /login to log into a provider", "❯ "
 // its agent live in terminal `t5` showing `screen`.
 fn blocked_setup(stub: &GitHubStub, screen: &[&str]) -> (Engine, crate::driver::StubDriver) {
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![repo()];
     seeded(&mut e, 5, Some("bot/issue-5"), true);

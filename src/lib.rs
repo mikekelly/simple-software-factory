@@ -1,7 +1,7 @@
 //! Shared implementation of the `ssf` client and `ssf-server` daemon.
 //!
 //! Watches GitHub repos for issues assigned to a bot account and turns each one
-//! into a workspace (in herdr or Orca) running a coding agent, feeding later issue activity
+//! into a workspace in herdr running a coding agent, feeding later issue activity
 //! into that agent.
 
 mod agents;
@@ -20,7 +20,6 @@ mod ipc;
 mod keys;
 mod login;
 mod models;
-mod orca;
 mod origin;
 mod platform;
 mod prompt;

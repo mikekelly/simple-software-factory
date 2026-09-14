@@ -18,14 +18,6 @@ pub(super) async fn run_factory(cfg: Config, once: bool) -> Result<()> {
     if cfg.repos.is_empty() && once {
         bail!("no repositories configured; run `ssf repo add owner/name --harness claude` first");
     }
-    // An install from before herdr became the default, still without a
-    // `driver` line, changes driver on this upgrade: say so once, where
-    // Orca is around to have been the one in use.
-    if let Some(note) = cfg.driver_note()
-        && std::path::Path::new(&cfg.orca.command).exists()
-    {
-        tracing::warn!("{note}");
-    }
     let engine = engine::Engine::new(cfg).await?;
     if once {
         let mut engine = engine;

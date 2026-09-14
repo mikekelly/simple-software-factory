@@ -91,7 +91,7 @@ async fn the_overrides_outlive_the_handover_pass() {
         s.live.remove("w5");
     });
     e.entry(&repo(), 5).agent_session_id = Some("sess-5".into());
-    e.resume_interrupted(&[DriverKind::Orca]).await;
+    e.resume_interrupted(&[DriverKind::Herdr]).await;
     let launched = d.launches();
     assert_eq!(launched.len(), 1, "{launched:?}");
     assert!(

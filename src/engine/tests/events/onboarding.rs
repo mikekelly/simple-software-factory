@@ -6,7 +6,7 @@ async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let mut r = repo();
     r.model = Some("fable-5.1".into());
@@ -34,7 +34,7 @@ async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
              harness: Claude Code\n\
              model: fable-5.1\n\
              effort: high\n\
-             driver: orca\n\
+             driver: herdr\n\
              branch: bot/issue-5-t\n\
              ```"
     );
@@ -82,7 +82,7 @@ async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -94,7 +94,7 @@ async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
         st.worktree_path = Some("/w/1".into());
         st.terminal_handle = Some("t1".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("orca".into());
+        st.driver = Some("herdr".into());
     }
     d.seed("w1", "t1", READY_SCREEN);
     let opened = json!({
@@ -128,7 +128,7 @@ async fn binding_to_an_owning_session_posts_attached_on_the_bound_item() {
 #[tokio::test]
 async fn event_posts_are_not_delivered_or_fanned_out() {
     let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos.push(r.clone());
@@ -179,7 +179,7 @@ async fn event_comments_can_be_switched_off() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     e.cfg.daemon.event_comments = false;
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -224,7 +224,7 @@ async fn event_comments_can_be_switched_off() {
 async fn releasing_or_purging_a_workspace_posts_released() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -399,7 +399,7 @@ async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -410,7 +410,7 @@ async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
         st.worktree_id = Some("w5".into());
         st.worktree_path = Some("/w/5".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("orca".into());
+        st.driver = Some("herdr".into());
     }
     seeded(&mut e, 8, None, true);
     {
@@ -446,7 +446,7 @@ async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -460,7 +460,7 @@ async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
         st.worktree_path = Some("/w/5".into());
         st.worktree_name = Some("issue-5-t".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("orca".into());
+        st.driver = Some("herdr".into());
     }
     d.with(|s| {
         s.worktrees.insert("w5".into());
@@ -484,7 +484,7 @@ async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
              harness: Claude Code\n\
              model: the harness's default\n\
              effort: the harness's default\n\
-             driver: orca\n\
+             driver: herdr\n\
              branch: bot/issue-5-t\n\
              workspace: kept\n\
              conversation: fresh\n\
@@ -509,7 +509,7 @@ async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
 async fn a_gone_workspace_is_re_created_and_the_item_told() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![repo()];
     seeded(&mut e, 5, Some("bot/issue-5-fix-the-widget"), true);
@@ -519,7 +519,7 @@ async fn a_gone_workspace_is_re_created_and_the_item_told() {
         st.html_url = "https://gh/5".into();
         st.worktree_name = Some("issue-5-fix-the-widget".into());
         st.repo_id = Some("stub".into());
-        st.driver = Some("orca".into());
+        st.driver = Some("herdr".into());
         st.worktree_id = Some("stub::/stub.worktrees/issue-5-fix-the-widget".into());
         st.worktree_path = Some("/stub.worktrees/issue-5-fix-the-widget".into());
         st.agent_session_id = Some("sess-5".into());
@@ -541,7 +541,7 @@ async fn a_gone_workspace_is_re_created_and_the_item_told() {
              harness: Claude Code\n\
              model: the harness's default\n\
              effort: the harness's default\n\
-             driver: orca\n\
+             driver: herdr\n\
              branch: bot/issue-5-fix-the-widget\n\
              re-created: workspace gone\n\
              conversation: resumed\n\
@@ -552,7 +552,7 @@ async fn a_gone_workspace_is_re_created_and_the_item_told() {
 async fn a_bound_pull_request_is_attached_as_one() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -593,7 +593,7 @@ async fn a_delegated_item_is_attached_with_its_parent_named() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -616,7 +616,7 @@ async fn a_delegated_item_is_attached_with_its_parent_named() {
     assert!(
         posts[0]
             .1
-            .ends_with("driver: orca\nbranch: bot/issue-7-child\nhanded off from: o/r#1\n```"),
+            .ends_with("driver: herdr\nbranch: bot/issue-7-child\nhanded off from: o/r#1\n```"),
         "{}",
         posts[0].1
     );
@@ -732,7 +732,7 @@ async fn a_relaunch_posts_resumed_with_why() {
     d.with(|s| s.live.clear());
     e.entry(&repo(), 5).agent_session_id = None;
     stub.set_collaborators(Some(vec![]));
-    e.resume_interrupted(&[DriverKind::Orca]).await;
+    e.resume_interrupted(&[DriverKind::Herdr]).await;
     assert!(!e.startup_pass);
     let log = d.log();
     assert_eq!(log[0], "relaunch:w5:false", "{log:?}");

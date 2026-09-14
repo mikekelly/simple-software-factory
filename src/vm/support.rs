@@ -209,8 +209,7 @@ pub(in crate::vm) fn migration_files(root: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// The host config as the guest runs it: herdr only (Orca is a desktop
-/// app; the guest has no display), paths on the data disk, no host
+/// The host config as the guest runs it: paths on the data disk, no host
 /// checkouts, and the VM section off so nothing forwards again.
 pub fn guest_config(host: &Config) -> Config {
     let mut g = host.clone();
@@ -325,16 +324,6 @@ pub(in crate::vm) fn place(
     set_mode(&dir.join(&name), 0o600)?;
     copied.insert(src.to_path_buf(), name.clone());
     Ok(name)
-}
-
-/// Repositories the host config runs in Orca: worth a warning, since the
-/// guest runs them all in herdr.
-pub fn orca_repos(host: &Config) -> Vec<String> {
-    host.repos
-        .iter()
-        .filter(|r| host.driver_for(r) == DriverKind::Orca)
-        .map(|r| r.name.clone())
-        .collect()
 }
 
 /// `src` or `src:dest` from `[vm] files`: the host file and where it goes

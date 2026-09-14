@@ -271,8 +271,7 @@ impl Engine {
     /// in now (`driver` changed since the workspace was made) is dropped
     /// before the workspace is looked for, so the item goes through the
     /// current driver's project setup as a new one would, rather than the
-    /// old driver's repo id being handed to the new driver as its own (an
-    /// Orca uuid taken for a checkout path, or the other way round). The
+    /// old driver's repo id being handed to the new driver as its own. The
     /// workspace name and branch stay, so the branch is picked up as the
     /// base as for any re-created workspace. A record from before the
     /// driver was written down is judged by the shape of its repo id.
@@ -549,6 +548,31 @@ impl Engine {
             self.mark_released(repo, st.number);
             return;
         };
+        let current = self.cfg.driver_for(repo);
+        let foreign = st.driver.as_deref().map_or_else(
+            || {
+                st.repo_id
+                    .as_deref()
+                    .is_some_and(|repo_id| !self.driver(repo).owns_repo_id(repo_id))
+            },
+            |made_by| made_by != current.id(),
+        );
+        // The current driver cannot tell whether a removed driver's workspace
+        // still exists. Inspect its recorded checkout before treating it as
+        // gone, so work added after release approval is never forgotten.
+        if foreign && !st.release_forced {
+            let problems = match st.worktree_path.as_deref() {
+                Some(path) => release::inspect(path)
+                    .await
+                    .map(|check| check.problems())
+                    .unwrap_or_else(|e| vec![format!("{e:#}")]),
+                None => vec!["no workspace path recorded".into()],
+            };
+            if !problems.is_empty() {
+                self.refuse_release(repo, &st, problems).await;
+                return;
+            }
+        }
         if !self.driver(repo).worktree_exists(&id).await.unwrap_or(true) {
             info!(session, "workspace is already gone");
             self.mark_released(repo, st.number);

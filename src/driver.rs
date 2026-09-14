@@ -1,25 +1,96 @@
 //! The driver boundary: everything the engine asks of whatever runs the
-//! agents. Orca was the only such thing; now it is one of two, chosen per
-//! repository (`driver = "orca" | "herdr"`).
+//! agents. SSF currently runs them in herdr.
 //!
 //! A driver owns three things. A *project*: a checkout of the repository on
-//! this machine (Orca keeps its own registry of those; the others clone
-//! into `projects_dir`). A *workspace* per item: a git worktree on the
+//! this machine, cloned into `projects_dir`. A *workspace* per item: a git worktree on the
 //! item's branch, with an id the engine stores and hands back. And the
 //! *agent* in it: started with a command, given prompts, asked whether it
 //! is alive or busy. The engine never looks behind the ids.
 //!
-//! The git side that the non-Orca drivers share (clone, worktree add and
-//! remove, branch lookup) lives here too.
+//! The git side (clone, worktree add and remove, branch lookup) lives here too.
 
 use anyhow::{Context, Result, anyhow, bail};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tracing::info;
 
 use crate::config::{Config, DriverKind};
 use crate::herdr::Herdr;
-use crate::orca::{Delivery, Orca, ProjectSetup, WorkspaceInfo, Worktree};
 use crate::release::git;
+
+#[derive(Debug, Clone)]
+pub struct ProjectSetup {
+    pub repo_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Worktree {
+    pub id: String,
+    pub path: String,
+    pub branch: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Delivery {
+    pub handle: String,
+    pub relaunched: bool,
+    pub resumed: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct WorkspaceInfo {
+    pub worktree_id: String,
+    pub repo_id: String,
+    pub path: String,
+    pub display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    pub is_archived: bool,
+    pub live_terminals: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_issue: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub linked_pr: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<String>,
+    pub agents: Vec<AgentInfo>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+pub struct AgentInfo {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_assistant_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_input: Option<String>,
+    pub interrupted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_since: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<String>,
+}
+
+impl WorkspaceInfo {
+    pub fn primary_agent(&self) -> Option<&AgentInfo> {
+        self.agents
+            .iter()
+            .find(|a| a.state == "working")
+            .or_else(|| self.agents.iter().max_by_key(|a| a.updated_at.clone()))
+    }
+
+    pub fn is_working(&self) -> bool {
+        self.agents.iter().any(|a| a.state == "working")
+            || self.status.as_deref() == Some("working")
+    }
+}
 
 /// How many lines at the bottom of the screen a trust dialog is looked
 /// for in. Twelve covers the tallest of them (Claude Code's question, its
@@ -296,7 +367,6 @@ fn login_dialog_in(harness: &str, screen: &str) -> Option<String> {
 /// One configured driver.
 #[derive(Clone)]
 pub enum Driver {
-    Orca(Orca),
     Herdr(Herdr),
     /// For tests: a driver whose workspaces, agents and screens are set by
     /// the test (see `StubDriver`).
@@ -374,15 +444,12 @@ pub fn redacted_args(args: &[&str]) -> Vec<String> {
 
 impl Driver {
     pub fn new(kind: DriverKind, cfg: &Config) -> Self {
-        match kind {
-            DriverKind::Orca => Driver::Orca(Orca::new(cfg.orca.clone())),
-            DriverKind::Herdr => Driver::Herdr(Herdr::new(cfg.herdr.clone())),
-        }
+        let _ = kind;
+        Driver::Herdr(Herdr::new(cfg.herdr.clone()))
     }
 
     pub fn kind(&self) -> DriverKind {
         match self {
-            Driver::Orca(_) => DriverKind::Orca,
             Driver::Herdr(_) => DriverKind::Herdr,
             #[cfg(test)]
             Driver::Stub(d) => d.kind,
@@ -411,7 +478,6 @@ impl Driver {
     /// The executable the driver runs.
     pub fn command(&self) -> &str {
         match self {
-            Driver::Orca(d) => d.command(),
             Driver::Herdr(d) => d.command(),
             #[cfg(test)]
             Driver::Stub(_) => "stub",
@@ -421,7 +487,6 @@ impl Driver {
     /// Is the driver there and ready to take commands?
     pub async fn status(&self) -> Result<()> {
         match self {
-            Driver::Orca(d) => d.status().await.map(|_| ()),
             Driver::Herdr(d) => d.status().await,
             #[cfg(test)]
             Driver::Stub(_) => Ok(()),
@@ -432,17 +497,13 @@ impl Driver {
     /// cloning it or importing `existing_path` when it has none.
     pub async fn ensure_project(
         &self,
-        owner: &str,
+        _owner: &str,
         repo: &str,
         clone_url: &str,
         existing_path: Option<&str>,
         projects_dir: &Path,
     ) -> Result<ProjectSetup> {
         match self {
-            Driver::Orca(d) => {
-                d.ensure_project(owner, repo, clone_url, existing_path, projects_dir)
-                    .await
-            }
             Driver::Herdr(_) => {
                 ensure_local_checkout(repo, clone_url, existing_path, projects_dir).await
             }
@@ -459,7 +520,6 @@ impl Driver {
         number: u64,
     ) -> Result<Option<Worktree>> {
         match self {
-            Driver::Orca(d) => d.find_worktree_for_issue(repo_id, number).await,
             Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, repo, number).await,
             // The stub fails on a checkout it does not own, as the real
             // drivers do on another driver's id.
@@ -486,10 +546,6 @@ impl Driver {
         base_branch: Option<&str>,
     ) -> Result<Worktree> {
         match self {
-            Driver::Orca(d) => {
-                d.create_worktree(repo_id, name, number, None, comment, base_branch)
-                    .await
-            }
             Driver::Herdr(d) => {
                 d.create_worktree(repo_id, repo, name, number, comment, base_branch)
                     .await
@@ -502,7 +558,6 @@ impl Driver {
     /// Filesystem path of the repository's main checkout.
     pub async fn repo_path(&self, repo_id: &str) -> Result<String> {
         match self {
-            Driver::Orca(d) => d.repo_path(repo_id).await,
             Driver::Herdr(_) => Ok(repo_root(repo_id).to_string()),
             #[cfg(test)]
             Driver::Stub(_) => Ok("/stub".into()),
@@ -527,13 +582,6 @@ impl Driver {
         text: &str,
     ) -> Result<String> {
         match self {
-            Driver::Orca(d) => {
-                let handle = d
-                    .launch_in_worktree(worktree_id, command, title, harness)
-                    .await?;
-                d.send_prompt(&handle, text).await?;
-                Ok(handle)
-            }
             Driver::Herdr(d) => {
                 let handle = d.launch(worktree_id, command, title, harness).await?;
                 d.send_first_prompt(&handle, text).await?;
@@ -547,7 +595,6 @@ impl Driver {
     /// Whether the workspace still exists.
     pub async fn worktree_exists(&self, worktree_id: &str) -> Result<bool> {
         match self {
-            Driver::Orca(d) => d.worktree_exists(worktree_id).await,
             Driver::Herdr(d) => d.worktree_exists(worktree_id).await,
             #[cfg(test)]
             Driver::Stub(d) => Ok(d.worktree_exists(worktree_id)),
@@ -557,7 +604,6 @@ impl Driver {
     /// Every workspace the driver knows about, with the agents in it.
     pub async fn ps(&self) -> Result<Vec<WorkspaceInfo>> {
         match self {
-            Driver::Orca(d) => d.ps().await,
             Driver::Herdr(d) => d.ps().await,
             #[cfg(test)]
             Driver::Stub(d) => Ok(d.ps()),
@@ -567,7 +613,6 @@ impl Driver {
     /// Stop the workspace's agent and remove the workspace.
     pub async fn remove_worktree(&self, worktree_id: &str) -> Result<()> {
         match self {
-            Driver::Orca(d) => d.remove_worktree(worktree_id).await,
             Driver::Herdr(d) => d.remove_worktree(worktree_id).await,
             #[cfg(test)]
             Driver::Stub(d) => {
@@ -580,7 +625,6 @@ impl Driver {
     /// A note on the workspace for people looking at the driver's UI.
     pub async fn set_comment(&self, worktree_id: &str, comment: &str) -> Result<()> {
         match self {
-            Driver::Orca(d) => d.set_comment(worktree_id, comment).await,
             Driver::Herdr(d) => d.set_comment(worktree_id, comment).await,
             #[cfg(test)]
             Driver::Stub(_) => Ok(()),
@@ -590,7 +634,6 @@ impl Driver {
     /// Board column (`in-progress`, `completed`) where the driver has one.
     pub async fn set_status(&self, worktree_id: &str, status: &str) -> Result<()> {
         match self {
-            Driver::Orca(d) => d.set_status(worktree_id, status).await,
             Driver::Herdr(d) => d.set_status(worktree_id, status).await,
             #[cfg(test)]
             Driver::Stub(_) => Ok(()),
@@ -601,7 +644,6 @@ impl Driver {
     /// starting one?
     pub async fn has_live_agent(&self, worktree_id: &str) -> Result<bool> {
         match self {
-            Driver::Orca(d) => d.has_live_agent(worktree_id).await,
             Driver::Herdr(d) => d.has_live_agent(worktree_id).await,
             #[cfg(test)]
             Driver::Stub(d) => Ok(d.live_handle(worktree_id).is_some()),
@@ -617,7 +659,6 @@ impl Driver {
         preferred: Option<&str>,
     ) -> Result<Option<String>> {
         match self {
-            Driver::Orca(d) => d.live_handle(worktree_id, preferred).await,
             Driver::Herdr(d) => d.live_handle(worktree_id, preferred).await,
             #[cfg(test)]
             Driver::Stub(d) => Ok(d.live_handle(worktree_id)),
@@ -627,7 +668,6 @@ impl Driver {
     /// The rendered screen of a terminal, as lines.
     pub async fn screen(&self, handle: &str) -> Result<Vec<String>> {
         match self {
-            Driver::Orca(d) => d.screen(handle).await,
             Driver::Herdr(d) => d.screen(handle).await,
             #[cfg(test)]
             Driver::Stub(d) => Ok(d.screen(handle)),
@@ -638,7 +678,6 @@ impl Driver {
     /// say) so the next delivery starts it again. The workspace stays.
     pub async fn stop_agent(&self, worktree_id: &str, handle: &str) -> Result<()> {
         match self {
-            Driver::Orca(d) => d.stop_agent(worktree_id, handle).await,
             Driver::Herdr(d) => d.stop_agent(worktree_id, handle).await,
             #[cfg(test)]
             Driver::Stub(d) => {
@@ -658,19 +697,6 @@ impl Driver {
         text: &str,
     ) -> Result<Delivery> {
         match self {
-            Driver::Orca(d) => {
-                d.deliver(
-                    worktree_id,
-                    preferred_handle,
-                    relaunch.command,
-                    relaunch.resume_command,
-                    relaunch.harness,
-                    relaunch.title,
-                    text,
-                    relaunch.text,
-                )
-                .await
-            }
             Driver::Herdr(d) => {
                 d.deliver(worktree_id, preferred_handle, &relaunch, text)
                     .await
@@ -775,6 +801,8 @@ pub struct StubState {
     /// The whole text of every start and every delivery (the `log` keeps
     /// only its first line), for the tests about what a session is told.
     pub prompts: Vec<String>,
+    /// When set, the next workspace creation fails with this message.
+    pub create_error: Option<String>,
     /// When set, the next `start` fails with this message: a harness that
     /// cannot be started at all.
     pub start_error: Option<String>,
@@ -827,13 +855,18 @@ impl StubDriver {
     fn ensure_project(&self) -> Result<ProjectSetup> {
         Ok(ProjectSetup {
             repo_id: "stub".into(),
-            path: "/stub".into(),
         })
     }
 
     fn create_worktree(&self, name: &str) -> Result<Worktree> {
         let id = format!("stub::/stub.worktrees/{name}");
-        self.with(|s| s.worktrees.insert(id.clone()));
+        self.with(|s| {
+            if let Some(why) = s.create_error.take() {
+                bail!("{why}");
+            }
+            s.worktrees.insert(id.clone());
+            Ok(())
+        })?;
         Ok(Worktree {
             path: format!("/stub.worktrees/{name}"),
             branch: Some(format!("refs/heads/{}", branch_for(name))),
@@ -879,7 +912,7 @@ impl StubDriver {
                     agents: s
                         .live
                         .get(id)
-                        .map(|_| crate::orca::AgentInfo {
+                        .map(|_| AgentInfo {
                             state: if s.working.contains(id) {
                                 "working".into()
                             } else {
@@ -978,8 +1011,7 @@ fn first_line(text: &str) -> String {
 
 // ---- the git side shared by the drivers that keep checkouts themselves ----
 
-/// The checkout a repo id names (a plain path for the non-Orca drivers;
-/// tolerant of Orca's `<repo>::<path>` form).
+/// The checkout a repo id names, tolerant of the legacy `<repo>::<path>` form.
 pub fn repo_root(id: &str) -> &str {
     id.split_once("::").map(|(r, _)| r).unwrap_or(id)
 }
@@ -1065,10 +1097,7 @@ pub async fn ensure_local_checkout(
         .unwrap_or(path)
         .to_string_lossy()
         .to_string();
-    Ok(ProjectSetup {
-        repo_id: path.clone(),
-        path,
-    })
+    Ok(ProjectSetup { repo_id: path })
 }
 
 /// The local branch if it exists, else its remote-tracking copy.
@@ -1232,8 +1261,8 @@ pub fn parse_worktree_list(text: &str) -> Vec<LocalWorktree> {
 /// The linked worktrees of the checkout (not the checkout itself).
 pub async fn local_worktrees(repo_root: &str) -> Result<Vec<LocalWorktree>> {
     // Said plainly rather than left to git's "cannot change to": the
-    // usual way to get here is a repo id another driver wrote (an Orca
-    // uuid) taken for a checkout path.
+    // usual way to get here is a repo id another driver wrote and was
+    // mistaken for a checkout path.
     if !Path::new(repo_root).is_dir() {
         bail!("checkout {repo_root} is not a directory (a repo id from another driver?)");
     }

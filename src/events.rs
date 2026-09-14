@@ -27,7 +27,7 @@ pub struct Launch {
     /// The configured command that starts the harness, when there is one:
     /// then an unset model or effort is whatever that command says.
     pub command: Option<String>,
-    /// The driver id the workspace was made under (`orca`, `herdr`).
+    /// The driver id the workspace was made under.
     pub driver: String,
     /// The workspace's branch, when known.
     pub branch: Option<String>,

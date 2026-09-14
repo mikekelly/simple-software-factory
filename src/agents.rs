@@ -6,7 +6,7 @@ use std::process::Command;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Agent {
-    /// Orca agent id / Omarchy agent id (`claude`, `codex`, ...).
+    /// Agent id used by herdr and Omarchy (`claude`, `codex`, ...).
     pub id: String,
     pub name: String,
     /// Executable expected on PATH.
@@ -19,8 +19,7 @@ pub struct Agent {
     pub default: bool,
     /// Whether the agent takes a model setting (`ssf models <id>` lists ids).
     pub takes_model: bool,
-    /// Model ids the agent is known to take without asking it (Orca
-    /// identifiers where Orca has them; more may work).
+    /// Model ids the agent is known to take without asking it; more may work.
     pub models: Vec<String>,
     /// Effort levels the agent accepts, lowest first; empty when it has none.
     pub effort_levels: Vec<String>,

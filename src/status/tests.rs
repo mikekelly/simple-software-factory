@@ -1,5 +1,5 @@
 use super::*;
-use crate::orca::AgentInfo;
+use crate::driver::AgentInfo;
 use crate::state::RepoState;
 
 fn cfg() -> Config {
@@ -106,7 +106,7 @@ fn joins_by_worktree_id() {
 }
 
 #[test]
-fn falls_back_to_orca_link_when_binding_is_stale() {
+fn falls_back_to_driver_link_when_binding_is_stale() {
     let st = state_with(vec![item(7, Some("r1::/w/gone"))]);
     let ws = vec![workspace("r1::/w/seven", Some(7), None)];
     let s = sessions(&cfg(), &st, Some(&ws));
@@ -115,12 +115,12 @@ fn falls_back_to_orca_link_when_binding_is_stale() {
 }
 
 #[test]
-fn reports_missing_workspace_and_unavailable_orca() {
+fn reports_missing_workspace_and_unavailable_driver() {
     let st = state_with(vec![item(1, Some("r1::/w/one")), item(2, None)]);
     let s = sessions(&cfg(), &st, Some(&[]));
     assert_eq!(s[0].agent_state, "no-workspace");
     assert_eq!(s[1].agent_state, "unbound");
-    // Without Orca the binding's own branch still shows, without the ref prefix.
+    // Without the driver, the binding's own branch still shows without the ref prefix.
     let s = sessions(&cfg(), &st, None);
     assert_eq!(s[0].agent_state, "unknown");
     assert_eq!(s[0].branch.as_deref(), Some("bot/issue-1"));
@@ -150,20 +150,21 @@ fn pr_joining_an_issue_workspace_is_owned_by_that_session() {
 }
 
 #[test]
-fn json_keeps_the_old_issue_fields() {
+fn json_keeps_the_issue_fields() {
     let _sandbox = crate::config::test_support::sandbox();
     let mut cfg = cfg();
-    cfg.driver = Some(DriverKind::Orca);
+    cfg.driver = Some(DriverKind::Herdr);
     let snap = Snapshot {
         cfg,
         state: state_with(vec![item(1, Some("r1::/w/one"))]),
         workspaces: Vec::new(),
-        down: vec![DriverKind::Orca],
+        down: vec![DriverKind::Herdr],
         errors: vec!["not running".into()],
     };
     let v = snap.to_json();
-    assert_eq!(v["orca"]["available"], false);
-    assert_eq!(v["orca"]["error"], "not running");
+    assert_eq!(v["driver"]["available"], false);
+    assert_eq!(v["driver"]["error"], "not running");
+    assert_eq!(v["orca"], v["driver"], "older panels retain status data");
     let issue = &v["repos"][0]["issues"][0];
     for key in [
         "number",

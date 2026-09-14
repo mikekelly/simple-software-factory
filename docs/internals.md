@@ -100,8 +100,8 @@ checks, and a restrictive content security policy. See
   branch and the agent is told it cannot push to the fork.
 - **One workspace per issue.** The binding lives in
   `~/.local/state/ssf/state.json` and is also recoverable from the driver
-  (Orca links the worktree to the issue number; herdr names it after
-  it), so a lost state file re-attaches instead of creating a second
+  (herdr names it after the repository and issue number), so a lost state file
+  re-attaches instead of creating a second
   workspace.
 - **One engine per state directory.** `state.lock` is an exclusive
   process-held lock beside `state.json`; both `ssf-server` and `ssf-server --once`
@@ -201,8 +201,8 @@ checks, and a restrictive content security policy. See
 ## `ssf status --json`
 
 `ssf status --json` joins what ssf knows about every tracked item with what
-the driver reports about the workspace working on it (`orca worktree ps`,
-or herdr's workspace and agent lists), so nothing else has to talk to the
+herdr reports about the workspace working on it (its workspace and agent
+lists), so nothing else has to talk to the
 driver. Its `sessions` array has one entry per item:
 
 | Field | From |
@@ -215,13 +215,14 @@ driver. Its `sessions` array has one entry per item:
 | `workspace_state`, `released_at` | on a retired item: `kept` (the workspace is still on disk), `released` (removed by `ssf release`/`ssf purge`, at `released_at`), `pending` (release accepted, removal on the next pass), `given-up` (kept after the daemon refused the agent's release three times) or `gone` (removed some other way) |
 | `origin`, `posts_by_session`, `untagged_posts` | attribution (see [Identity and bylines](identity-and-bylines.md)): the session that opened the item, how many posts each session made on it, and how many bot posts carry no tag (the daemon's own `🤖 ssf` event posts count in neither) |
 | `blocked` | set while the session cannot take prompts: its harness is at a login prompt (`reason` is `login`) or could not be started at all (`reason` is `start`, after a handover to a harness that will not run). `harness`, `harness_name` (for people), `detail` (what the screen or the driver said), `since`, `fix` (what a person does about it); `blocked_sessions` at the top lists the ids (see [A harness that is not signed in](sessions.md#a-harness-that-is-not-signed-in)) |
-| `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | the driver. `agent_state` is the driver's own (Orca: `working`, `waiting`, `done`, `open`; herdr: `idle`, `working`, `blocked`, `done`) or `no-agent`, `no-workspace`, `unbound`, `unknown` (driver not running); `workspace` is the raw workspace row |
+| `agent_state`, `last_assistant_message`, `tool`, `last_activity_at`, `column`, `branch`, `worktree_id`, `worktree_path`, `workspace` | herdr. `agent_state` is `idle`, `working`, `blocked`, `done`, or SSF's `no-agent`, `no-workspace`, `unbound`, `unknown` (herdr not running); `workspace` is the normalized workspace row |
 
 `repos[].issues[]` carries the same objects, `repos[].allowed_users` says
 who may drive each repository (`anyone_allowed` at the top is whether the
-wildcard is on anywhere; the bar widget warns while it is), and the `orca`
-key (`available`, `error`, `workspaces`, `down`) says whether the drivers
-answered, whichever drivers are in use, for the bar widget's sake.
+wildcard is on anywhere; the bar widget warns while it is), and the `driver`
+key (`available`, `error`, `workspaces`, `down`) says whether herdr answered.
+The deprecated `orca` key currently mirrors it for independently updated older
+Omarchy panels and is not a second driver.
 `ssf peers` prints the same data as a terminal table: by default the
 active sessions on `$SSF_REPO` (so an agent sees who else is on its
 repository, and itself marked "(you)"), or on every watched repository

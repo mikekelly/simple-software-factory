@@ -202,7 +202,7 @@ fn vm_backend_keys_round_trip_and_stay_unset_by_default() {
 }
 
 #[test]
-fn drivers_come_from_the_top_level_and_per_repo() {
+fn herdr_is_the_only_driver() {
     let cfg: Config = toml::from_str(
         r#"
 driver = "herdr"
@@ -214,111 +214,45 @@ harness = "claude"
 [[repo]]
 name = "c/d"
 harness = "claude"
-driver = "orca"
+driver = "herdr"
 "#,
     )
     .unwrap();
     assert_eq!(cfg.driver, Some(DriverKind::Herdr));
     assert_eq!(cfg.driver_for(&cfg.repos[0]), DriverKind::Herdr);
-    assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Orca);
-    assert_eq!(
-        cfg.drivers_in_use(),
-        vec![DriverKind::Orca, DriverKind::Herdr]
-    );
+    assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Herdr);
+    assert_eq!(cfg.drivers_in_use(), vec![DriverKind::Herdr]);
     assert!(cfg.projects_dir(DriverKind::Herdr).ends_with("work"));
-    assert!(
-        cfg.projects_dir(DriverKind::Orca)
-            .ends_with("orca/projects")
-    );
     let empty = Config::default();
     assert_eq!(empty.driver, None);
     assert_eq!(empty.default_driver(), DriverKind::Herdr);
     assert_eq!(empty.drivers_in_use(), vec![DriverKind::Herdr]);
     assert_eq!("Herdr".parse::<DriverKind>().unwrap(), DriverKind::Herdr);
-    assert!("tmux".parse::<DriverKind>().is_err());
+    assert!("orca".parse::<DriverKind>().is_err());
     // The per-repo choice round-trips through the file.
     let text = toml::to_string(&cfg).unwrap();
-    assert!(text.contains("driver = \"orca\""));
+    assert!(text.contains("driver = \"herdr\""));
     let again: Config = toml::from_str(&text).unwrap();
-    assert_eq!(again.repos[1].driver, Some(DriverKind::Orca));
+    assert_eq!(again.repos[1].driver, Some(DriverKind::Herdr));
     assert_eq!(again.repos[0].driver, None);
 }
 
 #[test]
-fn startup_wait_reads_its_old_orca_name_and_writes_the_new_one() {
-    let old: Config = toml::from_str("[daemon]\nstartup_orca_wait_secs = 7\n").unwrap();
-    assert_eq!(old.daemon.startup_driver_wait_secs, 7);
+fn startup_wait_uses_the_driver_name() {
     let new: Config = toml::from_str("[daemon]\nstartup_driver_wait_secs = 9\n").unwrap();
     assert_eq!(new.daemon.startup_driver_wait_secs, 9);
     assert_eq!(Config::default().daemon.startup_driver_wait_secs, 120);
+    let old: Config = toml::from_str("[daemon]\nstartup_orca_wait_secs = 7\n").unwrap();
+    assert_eq!(old.daemon.startup_driver_wait_secs, 7);
     let text = toml::to_string(&old).unwrap();
     assert!(text.contains("startup_driver_wait_secs = 7"));
     assert!(!text.contains("startup_orca_wait_secs"));
 }
 
 #[test]
-fn herdr_is_the_default_driver_and_repos_fall_back_to_it() {
-    let cfg: Config = toml::from_str(
-        r#"
-[orca]
-projects_dir = "~/orca/projects"
-[[repo]]
-name = "a/b"
-harness = "claude"
-[[repo]]
-name = "c/d"
-harness = "claude"
-driver = "orca"
-"#,
-    )
-    .unwrap();
-    assert_eq!(DriverKind::default(), DriverKind::Herdr);
-    assert_eq!(cfg.driver, None);
-    assert_eq!(cfg.default_driver(), DriverKind::Herdr);
-    assert_eq!(cfg.driver_for(&cfg.repos[0]), DriverKind::Herdr);
-    assert_eq!(cfg.driver_for(&cfg.repos[1]), DriverKind::Orca);
-    assert_eq!(
-        cfg.drivers_in_use(),
-        vec![DriverKind::Orca, DriverKind::Herdr]
-    );
-    // The unset key stays unset through a save, so a later
-    // `ssf repo add` does not silently pin the new default.
-    let text = toml::to_string(&cfg).unwrap();
-    assert!(!text.starts_with("driver"), "{text}");
-    assert!(!text.contains("\ndriver = \"herdr\""), "{text}");
-    let again: Config = toml::from_str(&text).unwrap();
-    assert_eq!(again.driver, None);
-}
-
-#[test]
-fn driver_note_only_when_a_repo_relies_on_the_unset_default() {
-    let mut cfg: Config = toml::from_str(
-        r#"
-[[repo]]
-name = "a/b"
-harness = "claude"
-[[repo]]
-name = "c/d"
-harness = "claude"
-driver = "orca"
-"#,
-    )
-    .unwrap();
-    let note = cfg.driver_note().expect("a/b relies on the default");
-    assert!(note.contains("a/b runs in herdr"), "{note}");
-    assert!(!note.contains("c/d"), "{note}");
-    assert!(note.contains("ssf config set driver orca"), "{note}");
-    // Set explicitly (either way): nothing to say.
-    cfg.driver = Some(DriverKind::Orca);
-    assert_eq!(cfg.driver_note(), None);
-    cfg.driver = Some(DriverKind::Herdr);
-    assert_eq!(cfg.driver_note(), None);
-    // Unset, but every repository picks its own: nothing to say.
-    cfg.driver = None;
-    cfg.repos[0].driver = Some(DriverKind::Herdr);
-    assert_eq!(cfg.driver_note(), None);
-    // No repositories at all: nothing runs anywhere yet.
-    assert_eq!(Config::default().driver_note(), None);
+fn removed_driver_configuration_is_rejected() {
+    assert!(toml::from_str::<Config>("driver = \"orca\"\n").is_err());
+    assert!(toml::from_str::<Config>("[orca]\nprojects_dir = \"~/projects\"\n").is_err());
 }
 
 fn parse(toml_src: &str) -> Result<Config> {

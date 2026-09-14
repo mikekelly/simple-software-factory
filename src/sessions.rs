@@ -271,8 +271,8 @@ mod tests {
 
     #[test]
     fn claude_dir_encoding_matches_observed_layout() {
-        let d = claude_project_dir("/home/mk/orca/workspaces/x/issue-1");
-        assert!(d.ends_with(".claude/projects/-home-mk-orca-workspaces-x-issue-1"));
+        let d = claude_project_dir("/home/mk/ssf/workspaces/x/issue-1");
+        assert!(d.ends_with(".claude/projects/-home-mk-ssf-workspaces-x-issue-1"));
         // Dots (herdr worktrees live in `<clone>.worktrees/`), underscores
         // and anything else non-alphanumeric become dashes too (seen on
         // disk during the #56 smoke test).

@@ -5,7 +5,7 @@ use super::prelude::*;
     name = "ssf",
     bin_name = "ssf",
     version,
-    about = "Simple Software Factory: GitHub issues -> agent workspaces in herdr or Orca"
+    about = "Simple Software Factory: GitHub issues -> agent workspaces in herdr"
 )]
 pub(super) struct Cli {
     /// Select a configured server; without a server catalog, an SSH destination.
@@ -506,7 +506,7 @@ pub(super) enum RepoCommand {
         /// Agent id to run in each issue workspace (see `ssf agents`).
         #[arg(long)]
         harness: String,
-        /// Where this repository's sessions run: orca or herdr (default: the top-level `driver`).
+        /// Where this repository's sessions run: herdr (default: the top-level `driver`).
         #[arg(long)]
         driver: Option<String>,
         /// Existing local checkout to use instead of cloning.
@@ -521,8 +521,8 @@ pub(super) enum RepoCommand {
         /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
-        /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
-        /// and grok; provider/model for pi, omp and opencode; `auto` or a model
+        /// Model the harness runs with: a model id accepted by the harness; provider/model for
+        /// pi, omp and opencode; `auto` or a model
         /// name for copilot. Required in the resulting config when supported; ask the operator to choose.
         /// `ssf models <harness>` lists them.
         #[arg(long)]
@@ -553,7 +553,7 @@ pub(super) enum RepoCommand {
         name: String,
         #[arg(long)]
         harness: Option<String>,
-        /// orca or herdr.
+        /// herdr.
         #[arg(long)]
         driver: Option<String>,
         #[arg(long)]
@@ -565,8 +565,8 @@ pub(super) enum RepoCommand {
         /// Command that starts the harness (default: its permission-free command, shown by `ssf agents --json`).
         #[arg(long)]
         command: Option<String>,
-        /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
-        /// and grok; provider/model for pi, omp and opencode; `auto` or a model
+        /// Model the harness runs with: a model id accepted by the harness; provider/model for
+        /// pi, omp and opencode; `auto` or a model
         /// name for copilot. Required in the resulting config when supported; ask the operator to choose.
         /// `ssf models <harness>` lists them.
         #[arg(long)]

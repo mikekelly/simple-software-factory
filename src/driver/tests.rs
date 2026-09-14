@@ -47,7 +47,7 @@ async fn worktree_listing_refuses_a_repo_id_that_is_no_directory() {
 fn a_repo_id_names_the_driver_that_wrote_it() {
     assert_eq!(
         DriverKind::of_repo_id("1b790ad2-4421-43dc-9f46-f7c09d0c321f"),
-        Some(DriverKind::Orca)
+        None
     );
     assert_eq!(
         DriverKind::of_repo_id("/home/me/ssf/projects/widgets"),
@@ -62,9 +62,45 @@ fn a_repo_id_names_the_driver_that_wrote_it() {
 }
 
 #[test]
-fn repo_root_tolerates_orca_ids() {
+fn repo_root_tolerates_compound_ids() {
     assert_eq!(repo_root("/p/widgets::w7"), "/p/widgets");
     assert_eq!(repo_root("/p/widgets"), "/p/widgets");
+}
+
+#[test]
+fn primary_agent_prefers_working_then_newest() {
+    let workspace = WorkspaceInfo {
+        agents: vec![
+            AgentInfo {
+                state: "done".into(),
+                updated_at: Some("2026-01-01T00:00:02Z".into()),
+                ..Default::default()
+            },
+            AgentInfo {
+                state: "open".into(),
+                updated_at: Some("2026-01-01T00:00:01Z".into()),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(workspace.primary_agent().unwrap().state, "done");
+
+    let workspace = WorkspaceInfo {
+        agents: vec![
+            AgentInfo {
+                state: "done".into(),
+                updated_at: Some("2026-01-01T00:00:02Z".into()),
+                ..Default::default()
+            },
+            AgentInfo {
+                state: "working".into(),
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    };
+    assert_eq!(workspace.primary_agent().unwrap().state, "working");
 }
 
 #[test]

@@ -65,10 +65,10 @@ impl Engine {
         }
     }
 
-    /// The startup pass. A daemon restart is invisible to agents (Orca keeps
-    /// their terminals), but after a machine restart every session's
+    /// The startup pass. A daemon restart is invisible to agents, but after a
+    /// machine restart every session's
     /// terminal is gone, and nothing would bring one back until the next
-    /// GitHub event for its item. So, once, when Orca first answers: every
+    /// GitHub event for its item. So, once, when herdr first answers: every
     /// active session that owns its workspace is looked at, and one whose
     /// workspace still exists but has no live agent is started again through
     /// the normal delivery path (resuming its conversation when a session
@@ -76,7 +76,8 @@ impl Engine {
     /// message saying it was interrupted. One at a time, each waiting for
     /// its harness to settle. Live sessions are not touched, and a missing
     /// workspace is left to rehydration on the next event rather than
-    /// re-created on boot.
+    /// re-created on boot. A binding from a removed driver is the exception:
+    /// it is re-created now so an unchanged GitHub listing cannot strand it.
     pub(in crate::engine) async fn resume_interrupted(&mut self, kinds: &[DriverKind]) {
         self.startup_pass = true;
         for repo in self.cfg.repos.clone() {
@@ -99,31 +100,35 @@ impl Engine {
             }
             let candidates = self.resume_candidates(&repo);
             for number in candidates {
+                let prior = self.entry(&repo, number).clone();
+                let foreign = self.drop_foreign_binding(&repo, number);
                 let st = self.entry(&repo, number).clone();
-                let Some(worktree_id) = st.worktree_id.clone() else {
-                    continue;
-                };
                 let session = session_id(&repo.name, number);
-                match self.driver(&repo).worktree_exists(&worktree_id).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        debug!(session, "workspace is gone; left to rehydration");
+                if !foreign {
+                    let Some(worktree_id) = st.worktree_id.clone() else {
                         continue;
+                    };
+                    match self.driver(&repo).worktree_exists(&worktree_id).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            debug!(session, "workspace is gone; left to rehydration");
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(session, "could not check the workspace: {e:#}");
+                            continue;
+                        }
                     }
-                    Err(e) => {
-                        warn!(session, "could not check the workspace: {e:#}");
-                        continue;
-                    }
-                }
-                match self.driver(&repo).has_live_agent(&worktree_id).await {
-                    Ok(true) => {
-                        debug!(session, "agent is live; nothing to do");
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        warn!(session, "could not list the workspace's terminals: {e:#}");
-                        continue;
+                    match self.driver(&repo).has_live_agent(&worktree_id).await {
+                        Ok(true) => {
+                            debug!(session, "agent is live; nothing to do");
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(session, "could not list the workspace's terminals: {e:#}");
+                            continue;
+                        }
                     }
                 }
                 let text = prompt::interrupted_prompt(&prompt::Interrupted {
@@ -141,7 +146,21 @@ impl Engine {
                         e.last_prompt_at = Some(now_iso());
                         e.prompts_sent += 1;
                     }
-                    Err(e) => warn!(session, "could not start the session again: {e:#}"),
+                    Err(e) => {
+                        // Project/worktree creation can fail transiently. Keep
+                        // the legacy recovery pointer until a replacement
+                        // workspace has actually been recorded, so the next
+                        // startup pass can retry even when GitHub is unchanged.
+                        if foreign && self.entry(&repo, number).worktree_id.as_deref().is_none() {
+                            let current = self.entry(&repo, number);
+                            current.repo_id = prior.repo_id;
+                            current.driver = prior.driver;
+                            current.worktree_id = prior.worktree_id;
+                            current.worktree_path = prior.worktree_path;
+                            current.terminal_handle = prior.terminal_handle;
+                        }
+                        warn!(session, "could not start the session again: {e:#}");
+                    }
                 }
                 if let Err(e) = self.state.save() {
                     error!("saving state: {e:#}");

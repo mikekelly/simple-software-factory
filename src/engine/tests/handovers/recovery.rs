@@ -162,7 +162,7 @@ async fn the_startup_pass_knows_the_collaborators_before_it_resumes_anything() {
     e.entry(&r, 1).worktree_id = Some("wt1".into());
     // No answer from GitHub: the repository is skipped, nothing is
     // resumed on a guess.
-    e.resume_interrupted(&[DriverKind::Orca]).await;
+    e.resume_interrupted(&[DriverKind::Herdr]).await;
     assert!(stub.hits().iter().any(|h| h.contains("/collaborators")));
     assert!(!e.allow_list(&r).allows("alice"));
     // With an answer, the list is in place before any session is
@@ -171,7 +171,7 @@ async fn the_startup_pass_knows_the_collaborators_before_it_resumes_anything() {
     stub.set_collaborators(Some(vec![
         json!({"login": "alice", "permissions": {"push": true}}),
     ]));
-    e.resume_interrupted(&[DriverKind::Orca]).await;
+    e.resume_interrupted(&[DriverKind::Herdr]).await;
     assert!(e.allow_list(&r).allows("alice"));
     assert_eq!(e.allow_list(&r).source, Source::Collaborators);
 }
@@ -241,7 +241,7 @@ async fn a_mention_still_in_the_item_holds_the_session_through_an_empty_listing(
     // The stub's mentioned listing is always empty, which is the
     // listing that retired this session on the live factory.
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![r.clone()];
     seeded(&mut e, 5, Some("bot/issue-5"), true);
@@ -329,7 +329,7 @@ async fn a_hold_on_the_item_itself_leaves_no_pacing_behind() {
     let stub = GitHubStub::start().await;
     let r = repo();
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![r.clone()];
     seeded(&mut e, 5, Some("bot/issue-5"), true);
@@ -409,7 +409,7 @@ async fn a_hold_paces_the_re_read_without_delaying_a_close_or_outliving_the_cloc
     // hold only ever paces the mention re-check, which a closed item
     // never reaches.
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![r.clone()];
     held_session(&mut e, &now_iso());
@@ -449,7 +449,7 @@ async fn an_item_back_on_a_listing_clears_the_hold_it_left_behind() {
     let stub = GitHubStub::start().await;
     let r = repo();
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![r.clone()];
     seeded(&mut e, 5, Some("bot/issue-5"), true);
@@ -488,7 +488,7 @@ async fn a_review_request_still_on_the_pull_request_holds_the_session() {
         }),
     );
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.repos = vec![r.clone()];
     seeded(&mut e, 7, Some("bot/issue-7"), true);

@@ -1,8 +1,8 @@
 //! The joined view behind `ssf status`, `ssf peers` and the bar widget: what
 //! ssf knows about each item (issue or PR, GitHub state, triggers, prompts,
-//! session id) next to what Orca reports about the workspace working on it
+//! session id) next to what herdr reports about the workspace working on it
 //! (agent state, last assistant message, current tool, last activity, board
-//! column, branch). The widget reads this and never talks to Orca itself.
+//! column, branch). The widget reads this and never talks to herdr itself.
 
 use anyhow::Context;
 use serde::Serialize;
@@ -11,10 +11,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::config::{Config, DriverKind, RepoConfig};
-use crate::driver::Drivers;
+use crate::driver::{Drivers, WorkspaceInfo};
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
-use crate::orca::WorkspaceInfo;
 use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
@@ -119,10 +118,10 @@ pub struct Session {
     pub posts_by_session: BTreeMap<String, usize>,
     /// Posts by the bot that carried no origin tag.
     pub untagged_posts: usize,
-    /// Orca's agent state (`working`, `done`, `open`, `waiting`, ...), or
+    /// The driver's agent state (`idle`, `working`, `blocked`, `done`), or
     /// `no-agent` (workspace without an agent), `no-workspace` (ssf has a
-    /// binding but Orca has no such workspace), `unbound` (no workspace yet),
-    /// `unknown` (Orca could not be asked).
+    /// binding but herdr has no such workspace), `unbound` (no workspace yet),
+    /// `unknown` (herdr could not be asked).
     pub agent_state: String,
     /// True only when the session driver reported an agent in this item's
     /// workspace. `active` is issue monitoring state and must not be used as
@@ -135,10 +134,10 @@ pub struct Session {
     pub tool: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity_at: Option<String>,
-    /// Orca board column.
+    /// Driver board column, when available.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub column: Option<String>,
-    /// The matching `orca worktree ps` row, verbatim.
+    /// The matching driver workspace row.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceInfo>,
     /// The session cannot take prompts: its harness is at a login prompt
@@ -425,6 +424,12 @@ impl Snapshot {
                 })
             })
             .collect();
+        let driver_status = json!({
+            "available": self.available(),
+            "error": self.error(),
+            "workspaces": self.workspaces.len(),
+            "down": self.down.iter().map(|k| k.id()).collect::<Vec<_>>(),
+        });
         let mut payload = json!({
             "server": {"hostname": crate::hostname(), "location": "local"},
             "bot_login": self.bot_login(),
@@ -441,13 +446,10 @@ impl Snapshot {
             // Sessions whose harness is not signed in (the widget shows an
             // urgent line per one).
             "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
-            // Keyed `orca` from when it was the only driver; the widget reads it.
-            "orca": {
-                "available": self.available(),
-                "error": self.error(),
-                "workspaces": self.workspaces.len(),
-                "down": self.down.iter().map(|k| k.id()).collect::<Vec<_>>(),
-            },
+            "driver": driver_status.clone(),
+            // Compatibility for independently installed older panel versions.
+            // New consumers should use `driver`.
+            "orca": driver_status,
             "sessions": sessions,
             "repos": repos,
         });
@@ -503,7 +505,7 @@ pub fn sessions_with(
     out
 }
 
-/// The Orca workspace of a record: by id, else by Orca's own link to the
+/// The driver workspace of a record: by id, else by its link to the
 /// item number (the state file may be behind, or lost).
 fn find_workspace<'a>(list: &'a [WorkspaceInfo], item: &IssueState) -> Option<&'a WorkspaceInfo> {
     if let Some(id) = &item.worktree_id {
@@ -533,7 +535,7 @@ fn strip_ref(branch: &str) -> String {
 fn workspace_state(
     item: &IssueState,
     ws: Option<&WorkspaceInfo>,
-    orca_available: bool,
+    driver_available: bool,
 ) -> Option<String> {
     if item.active || item.subscriber_only {
         return None;
@@ -551,7 +553,7 @@ fn workspace_state(
             "released"
         } else if item.worktree_id.is_none() {
             "gone"
-        } else if ws.is_some() || !orca_available {
+        } else if ws.is_some() || !driver_available {
             "kept"
         } else {
             "gone"
@@ -568,14 +570,14 @@ fn join(
     owner: u64,
     overrides: Option<&Overrides>,
     ws: Option<&WorkspaceInfo>,
-    orca_available: bool,
+    driver_available: bool,
 ) -> Session {
     let eff = repo.with_overrides(overrides);
     let agent = ws.and_then(WorkspaceInfo::primary_agent);
     let agent_state = match (ws, agent) {
         (Some(_), Some(a)) => a.state.clone(),
         (Some(_), None) => "no-agent".into(),
-        (None, _) if !orca_available => "unknown".into(),
+        (None, _) if !driver_available => "unknown".into(),
         (None, _) if item.worktree_id.is_some() => "no-workspace".into(),
         (None, _) => "unbound".into(),
     };
@@ -636,7 +638,7 @@ fn join(
         retired_at: item.retired_at.clone(),
         retirement_held_at: item.retirement_held_at.clone(),
         released_at: item.released_at.clone(),
-        workspace_state: workspace_state(item, ws, orca_available),
+        workspace_state: workspace_state(item, ws, driver_available),
         pr: item.pr.clone(),
         origin: item.origin.clone(),
         posts_by_session: item.origins.values().fold(BTreeMap::new(), |mut by, o| {
@@ -1011,8 +1013,8 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
                 format!(" (VM {state})")
             }
         ))
-    } else if payload["orca"]["available"] == false {
-        let detail = text(&payload["orca"], "error").trim();
+    } else if payload["driver"]["available"] == false {
+        let detail = text(&payload["driver"], "error").trim();
         Some(
             if detail.is_empty() {
                 "SSF could not reach one or more session drivers"
@@ -1073,7 +1075,7 @@ mod dashboard_tests {
         .unwrap();
         assert!(snapshot["warning"].as_str().unwrap().contains("VM stopped"));
         let snapshot = dashboard_presentation(
-            &json!({"sessions":[],"orca":{"available":false,"error":"driver unavailable"}}),
+            &json!({"sessions":[],"driver":{"available":false,"error":"driver unavailable"}}),
         )
         .unwrap();
         assert_eq!(snapshot["warning"], "driver unavailable");

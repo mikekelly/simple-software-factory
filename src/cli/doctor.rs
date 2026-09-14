@@ -102,9 +102,6 @@ pub(super) async fn doctor() -> Result<()> {
             }
         }
     }
-    if let Some(note) = cfg.driver_note() {
-        println!("note {note}");
-    }
     let retired = cfg.daemon.retired_keys();
     if !retired.is_empty() {
         println!(
@@ -264,7 +261,7 @@ pub(super) async fn doctor() -> Result<()> {
     // is what those report.
     let mut open_workspaces: std::collections::BTreeMap<
         config::DriverKind,
-        Result<Vec<orca::WorkspaceInfo>>,
+        Result<Vec<driver::WorkspaceInfo>>,
     > = Default::default();
     for d in driver::Drivers::from_config(&cfg).iter() {
         open_workspaces.insert(d.kind(), d.ps().await);
@@ -459,7 +456,7 @@ pub(super) async fn doctor() -> Result<()> {
                     // Every driver's workspaces, not only this repository's
                     // driver's: after a driver switch the old driver may
                     // still have an agent on a worktree here.
-                    let rows: Vec<&orca::WorkspaceInfo> = open_workspaces
+                    let rows: Vec<&driver::WorkspaceInfo> = open_workspaces
                         .values()
                         .filter_map(|r| r.as_ref().ok())
                         .flatten()

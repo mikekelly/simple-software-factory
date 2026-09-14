@@ -153,16 +153,7 @@ pub(super) async fn vm_cmd(command: VmCommand) -> Result<()> {
             }
             Ok(())
         }
-        VmCommand::Start => {
-            let orca = factory_vm::orca_repos(&cfg);
-            if !orca.is_empty() {
-                eprintln!(
-                    "note: {} run in herdr inside the VM (Orca needs a desktop)",
-                    orca.join(", ")
-                );
-            }
-            vm.start(&cfg).await
-        }
+        VmCommand::Start => vm.start(&cfg).await,
         VmCommand::Stop => vm.stop().await,
         VmCommand::Restart => {
             vm.stop().await?;

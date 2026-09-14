@@ -71,7 +71,7 @@ ssf config show
 Keep `ssf` and `ssf-server` together in the same directory: local client
 commands invoke the server-side endpoint. Supply GitHub CLI 2.40+, Git,
 OpenSSH, jq, and your selected driver and coding harness separately. Follow
-[Setup's host alternative](setup.md#alternative-on-the-host-in-herdr-or-in-orca)
+[Setup's host alternative](setup.md#alternative-on-the-host-in-herdr)
 for driver configuration, bot authentication and repository setup. Skip its
 `ssf server add local` and `ssf setup` commands for this standalone path: on a
 fresh installation, leave the server catalog empty so the client and foreground

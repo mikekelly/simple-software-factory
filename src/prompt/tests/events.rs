@@ -166,7 +166,7 @@ fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
         repo: &repo,
         daemon: &d,
         bot_login: "bot",
-        driver: DriverKind::Orca,
+        driver: DriverKind::Herdr,
         pr: None,
         triggers: &[],
         owner: None,
