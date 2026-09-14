@@ -258,8 +258,10 @@ fn short_ref(issue: &Issue, ctx: &PromptContext) -> String {
     }
 }
 
-/// The header of a first message: the item, named once with its URL, and
-/// the facts about it that the rest of the message does not repeat.
+/// The header of a first message: the `[ssf]` event marker, the item named
+/// once with its URL, and the facts that the rest of the message does not
+/// repeat. Keeping the marker first also prevents a Markdown heading from
+/// being interpreted as a harness prompt action.
 fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
     // The header keeps the full date: it is the anchor for the day-less
@@ -275,7 +277,7 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
         .unwrap_or_default();
     let mut s = match ctx.pr {
         Some(pr) => format!(
-            "# GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{}{session} on {opened}.",
+            "[ssf] GitHub pull request #{}: {}\n{}\n\nBranch `{}` into `{}`{}{}. Opened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,
@@ -290,7 +292,7 @@ fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
             issue.author(),
         ),
         None => format!(
-            "# GitHub issue #{}: {}\n{}\n\nOpened by @{}{session} on {opened}.",
+            "[ssf] GitHub issue #{}: {}\n{}\n\nOpened by @{}{session} on {opened}.",
             issue.number,
             issue.title,
             issue.html_url,

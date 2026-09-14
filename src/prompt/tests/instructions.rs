@@ -84,8 +84,12 @@ fn initial_prompt_mentions_bot_and_issue() {
     };
     let p = initial_prompt(&issue, &[], &ctx);
     assert!(p.starts_with(
-            "# GitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
+            "[ssf] GitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
         ), "{p}");
+    assert!(
+        !p.starts_with('#'),
+        "a leading # is a prompt action in OMP: {p}"
+    );
     // The item is named once: the header has the URL, the reason has `#3`.
     assert_eq!(p.matches("https://gh/3").count(), 1);
     assert!(!p.contains("o/r#3"));
