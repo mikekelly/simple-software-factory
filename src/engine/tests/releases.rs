@@ -429,6 +429,20 @@ async fn startup_re_creates_an_active_workspace_from_the_removed_driver() {
         st.worktree_path = Some("/old/issue-5-fix-the-widget".into());
     }
 
+    d.with(|state| state.create_error = Some("herdr temporarily unavailable".into()));
+    e.resume_interrupted(&[DriverKind::Herdr]).await;
+    let st = e.entry(&repo(), 5).clone();
+    assert_eq!(st.driver, None);
+    assert_eq!(st.repo_id.as_deref(), Some(OLD_REPO));
+    assert_eq!(
+        st.worktree_id.as_deref(),
+        Some("1b790ad2-4421-43dc-9f46-f7c09d0c321f::/old/issue-5-fix-the-widget")
+    );
+    assert_eq!(
+        st.worktree_path.as_deref(),
+        Some("/old/issue-5-fix-the-widget")
+    );
+
     e.resume_interrupted(&[DriverKind::Herdr]).await;
 
     let st = e.entry(&repo(), 5).clone();

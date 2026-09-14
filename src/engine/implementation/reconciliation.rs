@@ -100,6 +100,7 @@ impl Engine {
             }
             let candidates = self.resume_candidates(&repo);
             for number in candidates {
+                let prior = self.entry(&repo, number).clone();
                 let foreign = self.drop_foreign_binding(&repo, number);
                 let st = self.entry(&repo, number).clone();
                 let session = session_id(&repo.name, number);
@@ -145,7 +146,21 @@ impl Engine {
                         e.last_prompt_at = Some(now_iso());
                         e.prompts_sent += 1;
                     }
-                    Err(e) => warn!(session, "could not start the session again: {e:#}"),
+                    Err(e) => {
+                        // Project/worktree creation can fail transiently. Keep
+                        // the legacy recovery pointer until a replacement
+                        // workspace has actually been recorded, so the next
+                        // startup pass can retry even when GitHub is unchanged.
+                        if foreign && self.entry(&repo, number).worktree_id.as_deref().is_none() {
+                            let current = self.entry(&repo, number);
+                            current.repo_id = prior.repo_id;
+                            current.driver = prior.driver;
+                            current.worktree_id = prior.worktree_id;
+                            current.worktree_path = prior.worktree_path;
+                            current.terminal_handle = prior.terminal_handle;
+                        }
+                        warn!(session, "could not start the session again: {e:#}");
+                    }
                 }
                 if let Err(e) = self.state.save() {
                     error!("saving state: {e:#}");

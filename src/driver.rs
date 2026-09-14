@@ -801,6 +801,8 @@ pub struct StubState {
     /// The whole text of every start and every delivery (the `log` keeps
     /// only its first line), for the tests about what a session is told.
     pub prompts: Vec<String>,
+    /// When set, the next workspace creation fails with this message.
+    pub create_error: Option<String>,
     /// When set, the next `start` fails with this message: a harness that
     /// cannot be started at all.
     pub start_error: Option<String>,
@@ -858,7 +860,13 @@ impl StubDriver {
 
     fn create_worktree(&self, name: &str) -> Result<Worktree> {
         let id = format!("stub::/stub.worktrees/{name}");
-        self.with(|s| s.worktrees.insert(id.clone()));
+        self.with(|s| {
+            if let Some(why) = s.create_error.take() {
+                bail!("{why}");
+            }
+            s.worktrees.insert(id.clone());
+            Ok(())
+        })?;
         Ok(Worktree {
             path: format!("/stub.worktrees/{name}"),
             branch: Some(format!("refs/heads/{}", branch_for(name))),
