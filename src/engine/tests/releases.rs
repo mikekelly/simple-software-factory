@@ -407,6 +407,79 @@ async fn a_workspace_made_by_the_old_driver_is_re_created_on_the_new_one() {
         Some("stub::/stub.worktrees/issue-5-fix-the-widget")
     );
 }
+
+#[tokio::test]
+async fn startup_re_creates_an_active_workspace_from_the_removed_driver() {
+    const OLD_REPO: &str = "1b790ad2-4421-43dc-9f46-f7c09d0c321f";
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    e.cfg.repos = vec![repo()];
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    seeded(&mut e, 5, Some("bot/issue-5-fix-the-widget"), true);
+    {
+        let st = e.entry(&repo(), 5);
+        st.title = "Fix the widget".into();
+        st.html_url = "https://gh/5".into();
+        st.worktree_name = Some("issue-5-fix-the-widget".into());
+        st.repo_id = Some(OLD_REPO.into());
+        st.worktree_id = Some(format!("{OLD_REPO}::/old/issue-5-fix-the-widget"));
+        st.worktree_path = Some("/old/issue-5-fix-the-widget".into());
+    }
+
+    e.resume_interrupted(&[DriverKind::Herdr]).await;
+
+    let st = e.entry(&repo(), 5).clone();
+    assert_eq!(st.driver.as_deref(), Some("herdr"));
+    assert_eq!(st.repo_id.as_deref(), Some("stub"));
+    assert_eq!(
+        st.worktree_id.as_deref(),
+        Some("stub::/stub.worktrees/issue-5-fix-the-widget")
+    );
+    assert_eq!(st.prompts_sent, 1);
+    assert!(
+        d.log()[0].starts_with("relaunch:stub::/stub.worktrees/issue-5-fix-the-widget:"),
+        "{:?}",
+        d.log()
+    );
+}
+
+#[tokio::test]
+async fn pending_release_inspects_a_removed_driver_checkout_before_forgetting_it() {
+    use crate::release::testkit::scratch;
+
+    let checkout = scratch("removed-driver-pending-release").await;
+    std::fs::write(
+        std::path::Path::new(&checkout.work).join("uncommitted.txt"),
+        "keep me\n",
+    )
+    .unwrap();
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d)]);
+    let r = repo();
+    e.cfg.repos.push(r.clone());
+    seeded(&mut e, 5, Some("bot/issue-5"), false);
+    {
+        let st = e.entry(&r, 5);
+        st.driver = Some("orca".into());
+        st.repo_id = Some("1b790ad2-4421-43dc-9f46-f7c09d0c321f".into());
+        st.worktree_id = Some(format!("legacy::{}", checkout.work));
+        st.worktree_path = Some(checkout.work.clone());
+        st.release_pending = true;
+    }
+
+    e.run_cleanups(&r).await;
+
+    let st = e.entry(&r, 5).clone();
+    assert!(!st.release_pending);
+    assert_eq!(st.release_refusals, 1);
+    assert!(st.worktree_id.is_some());
+    assert!(st.released_at.is_none());
+}
+
 #[tokio::test]
 async fn a_binding_that_fits_the_current_driver_is_kept() {
     let stub = GitHubStub::start().await;

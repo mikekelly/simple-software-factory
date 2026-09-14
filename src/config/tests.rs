@@ -242,8 +242,11 @@ fn startup_wait_uses_the_driver_name() {
     let new: Config = toml::from_str("[daemon]\nstartup_driver_wait_secs = 9\n").unwrap();
     assert_eq!(new.daemon.startup_driver_wait_secs, 9);
     assert_eq!(Config::default().daemon.startup_driver_wait_secs, 120);
-    let old = toml::from_str::<Config>("[daemon]\nstartup_orca_wait_secs = 7\n");
-    assert!(old.is_err());
+    let old: Config = toml::from_str("[daemon]\nstartup_orca_wait_secs = 7\n").unwrap();
+    assert_eq!(old.daemon.startup_driver_wait_secs, 7);
+    let text = toml::to_string(&old).unwrap();
+    assert!(text.contains("startup_driver_wait_secs = 7"));
+    assert!(!text.contains("startup_orca_wait_secs"));
 }
 
 #[test]

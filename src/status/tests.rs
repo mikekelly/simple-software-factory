@@ -164,6 +164,7 @@ fn json_keeps_the_issue_fields() {
     let v = snap.to_json();
     assert_eq!(v["driver"]["available"], false);
     assert_eq!(v["driver"]["error"], "not running");
+    assert_eq!(v["orca"], v["driver"], "older panels retain status data");
     let issue = &v["repos"][0]["issues"][0];
     for key in [
         "number",

@@ -42,6 +42,7 @@ fn widget_probes_the_packaged_application_without_bootstrapping_it() {
         "[root.applicationPath, \"ui\", \"service\", \"status\", \"--json\"]",
         "[root.applicationPath, \"status\", \"--json\"]",
         "root.serviceStatus.configured !== true",
+        "status.driver || status.orca",
         "missing-package",
         "missing-configuration",
         "service-failed",

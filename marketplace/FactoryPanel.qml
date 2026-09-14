@@ -44,7 +44,8 @@ Panel {
   readonly property var blockedSessions: status && status.blocked_sessions instanceof Array ? status.blocked_sessions : []
   readonly property int blockedCount: blockedSessions.length
   readonly property var repos: status && status.repos instanceof Array ? status.repos : []
-  readonly property bool driverAvailable: !status || !status.driver || status.driver.available !== false
+  readonly property var driverStatus: status ? (status.driver || status.orca) : null
+  readonly property bool driverAvailable: !driverStatus || driverStatus.available !== false
   readonly property var sessions: liveSessions()
   readonly property int workingCount: countState("working")
   readonly property int waitingCount: countState("waiting")

@@ -548,6 +548,31 @@ impl Engine {
             self.mark_released(repo, st.number);
             return;
         };
+        let current = self.cfg.driver_for(repo);
+        let foreign = st.driver.as_deref().map_or_else(
+            || {
+                st.repo_id
+                    .as_deref()
+                    .is_some_and(|repo_id| !self.driver(repo).owns_repo_id(repo_id))
+            },
+            |made_by| made_by != current.id(),
+        );
+        // The current driver cannot tell whether a removed driver's workspace
+        // still exists. Inspect its recorded checkout before treating it as
+        // gone, so work added after release approval is never forgotten.
+        if foreign && !st.release_forced {
+            let problems = match st.worktree_path.as_deref() {
+                Some(path) => release::inspect(path)
+                    .await
+                    .map(|check| check.problems())
+                    .unwrap_or_else(|e| vec![format!("{e:#}")]),
+                None => vec!["no workspace path recorded".into()],
+            };
+            if !problems.is_empty() {
+                self.refuse_release(repo, &st, problems).await;
+                return;
+            }
+        }
         if !self.driver(repo).worktree_exists(&id).await.unwrap_or(true) {
             info!(session, "workspace is already gone");
             self.mark_released(repo, st.number);

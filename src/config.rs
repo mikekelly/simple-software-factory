@@ -748,7 +748,10 @@ pub struct DaemonConfig {
     /// seconds) before polling begins, since herdr may still be coming
     /// up in the same login. If it is not ready by then, polling starts anyway
     /// and the startup pass runs on the first poll that finds the driver ready.
-    #[serde(default = "default_startup_driver_wait")]
+    #[serde(
+        default = "default_startup_driver_wait",
+        alias = "startup_orca_wait_secs"
+    )]
     pub startup_driver_wait_secs: u64,
     /// Post the daemon's essential events on the item as short `ssf`
     /// blocks by the bot (a session attached, resumed, held for a login,

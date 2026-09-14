@@ -76,7 +76,8 @@ impl Engine {
     /// message saying it was interrupted. One at a time, each waiting for
     /// its harness to settle. Live sessions are not touched, and a missing
     /// workspace is left to rehydration on the next event rather than
-    /// re-created on boot.
+    /// re-created on boot. A binding from a removed driver is the exception:
+    /// it is re-created now so an unchanged GitHub listing cannot strand it.
     pub(in crate::engine) async fn resume_interrupted(&mut self, kinds: &[DriverKind]) {
         self.startup_pass = true;
         for repo in self.cfg.repos.clone() {
@@ -99,31 +100,34 @@ impl Engine {
             }
             let candidates = self.resume_candidates(&repo);
             for number in candidates {
+                let foreign = self.drop_foreign_binding(&repo, number);
                 let st = self.entry(&repo, number).clone();
-                let Some(worktree_id) = st.worktree_id.clone() else {
-                    continue;
-                };
                 let session = session_id(&repo.name, number);
-                match self.driver(&repo).worktree_exists(&worktree_id).await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        debug!(session, "workspace is gone; left to rehydration");
+                if !foreign {
+                    let Some(worktree_id) = st.worktree_id.clone() else {
                         continue;
+                    };
+                    match self.driver(&repo).worktree_exists(&worktree_id).await {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            debug!(session, "workspace is gone; left to rehydration");
+                            continue;
+                        }
+                        Err(e) => {
+                            warn!(session, "could not check the workspace: {e:#}");
+                            continue;
+                        }
                     }
-                    Err(e) => {
-                        warn!(session, "could not check the workspace: {e:#}");
-                        continue;
-                    }
-                }
-                match self.driver(&repo).has_live_agent(&worktree_id).await {
-                    Ok(true) => {
-                        debug!(session, "agent is live; nothing to do");
-                        continue;
-                    }
-                    Ok(false) => {}
-                    Err(e) => {
-                        warn!(session, "could not list the workspace's terminals: {e:#}");
-                        continue;
+                    match self.driver(&repo).has_live_agent(&worktree_id).await {
+                        Ok(true) => {
+                            debug!(session, "agent is live; nothing to do");
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            warn!(session, "could not list the workspace's terminals: {e:#}");
+                            continue;
+                        }
                     }
                 }
                 let text = prompt::interrupted_prompt(&prompt::Interrupted {

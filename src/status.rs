@@ -424,6 +424,12 @@ impl Snapshot {
                 })
             })
             .collect();
+        let driver_status = json!({
+            "available": self.available(),
+            "error": self.error(),
+            "workspaces": self.workspaces.len(),
+            "down": self.down.iter().map(|k| k.id()).collect::<Vec<_>>(),
+        });
         let mut payload = json!({
             "server": {"hostname": crate::hostname(), "location": "local"},
             "bot_login": self.bot_login(),
@@ -440,12 +446,10 @@ impl Snapshot {
             // Sessions whose harness is not signed in (the widget shows an
             // urgent line per one).
             "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
-            "driver": {
-                "available": self.available(),
-                "error": self.error(),
-                "workspaces": self.workspaces.len(),
-                "down": self.down.iter().map(|k| k.id()).collect::<Vec<_>>(),
-            },
+            "driver": driver_status.clone(),
+            // Compatibility for independently installed older panel versions.
+            // New consumers should use `driver`.
+            "orca": driver_status,
             "sessions": sessions,
             "repos": repos,
         });

@@ -715,8 +715,9 @@ Reset alone reuses the old image. For Lima, run `ssf vm reset`, then
 migration for an explicit choice; do not delete either config to force
 an upgrade through.
 
-Your config, state, keys and the VM's disks are preserved by an upgrade.
-`ssf doctor` after the upgrade should look as it did before.
+Your config, state, keys and the VM's disks are preserved by an upgrade. Renamed
+non-driver settings, such as `startup_orca_wait_secs`, keep loading under their
+old names. `ssf doctor` after the upgrade should look as it did before.
 
 ## 12. Stopping and uninstalling
 

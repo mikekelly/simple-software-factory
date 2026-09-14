@@ -221,6 +221,8 @@ driver. Its `sessions` array has one entry per item:
 who may drive each repository (`anyone_allowed` at the top is whether the
 wildcard is on anywhere; the bar widget warns while it is), and the `driver`
 key (`available`, `error`, `workspaces`, `down`) says whether herdr answered.
+The deprecated `orca` key currently mirrors it for independently updated older
+Omarchy panels and is not a second driver.
 `ssf peers` prints the same data as a terminal table: by default the
 active sessions on `$SSF_REPO` (so an agent sees who else is on its
 repository, and itself marked "(you)"), or on every watched repository
