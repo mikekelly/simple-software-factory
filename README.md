@@ -208,6 +208,12 @@ Choose the installation for the machine:
 - **Only controlling an existing factory over SSH:** install the
   [standalone client](docs/install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
 
+If the Grok Bot computer is a **Bot-dedicated-VPS** that should also act as
+your always-on, human-facing assistant, continue with the
+[Grok Bot liaison guide](docs/bot-dedicated-vps.md) after installing the
+factory. It covers the separate Cursor GitHub enrollment required for event
+wakes; the factory bot enrollment alone does not provide it.
+
 Until ssf is published in Omarchy's package repository, download the current
 Arch package and install it with pacman. This is a normal package-manager
 install: pacman resolves `github-cli` and `herdr` from Omarchy's configured

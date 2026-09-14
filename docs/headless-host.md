@@ -6,6 +6,12 @@ path runs herdr and the factory directly as your Unix user; agents can access
 that user's files and credentials. No VM, linger, `ssf setup`, or Omarchy
 widget is needed.
 
+This guide installs the factory only. If this machine is a
+**Bot-dedicated-VPS** whose Grok Bot should also watch SSF-tracked work and act
+as the user's liaison, complete this guide and then follow the separate
+[Bot-dedicated-VPS liaison guide](bot-dedicated-vps.md). Its Cursor GitHub
+connection is a second enrollment, not part of `ssf auth`.
+
 The [September 2026 install report](https://github.com/mikekelly/simple-software-factory/issues/287)
 observed Debian 13, `/.dockerenv`, PID 1 `tini`, and no usable KVM for `box`.
 Use what the computer actually exposes when choosing installation steps;
