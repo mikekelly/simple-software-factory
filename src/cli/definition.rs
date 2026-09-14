@@ -144,9 +144,10 @@ pub(super) enum Command {
         json: bool,
     },
     /// Give a session's workspace back once everything is on origin: the
-    /// daemon checks the tree is clean, the branch is on origin with nothing
-    /// unpushed and no stash was made on it, and refuses otherwise. Inside a
-    /// session it is this session's workspace; from a shell name the item.
+    /// daemon checks the tree is clean, every commit at HEAD is reachable from
+    /// a remote-tracking ref and no stash was made on the branch, and refuses
+    /// otherwise. Inside a session it is this session's workspace; from a
+    /// shell name the item.
     Release {
         /// Item number on this session's repository, or owner/repo#N.
         item: Option<String>,

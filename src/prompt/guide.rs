@@ -111,8 +111,8 @@ closed.\n\n\
 When your item closes, or you are no longer assigned, ssf says so and leaves the workspace \
 exactly as it is: nothing on disk is ever removed on that signal. Commit what is worth \
 keeping, push, leave a final comment, and then, only if everything is on origin, run \
-`ssf release`: the daemon checks that the tree is clean, the branch is on origin with no \
-unpushed commits and no stash was made on it, and removes the workspace (with this terminal) \
+`ssf release`: the daemon checks that the tree is clean, every commit at HEAD is reachable \
+from a remote-tracking ref and no stash was made on the branch, and removes the workspace (with this terminal) \
 on its next pass. If anything would be lost it says what and refuses; leave the workspace \
 then, a kept workspace costs nothing, and a person cleans up with `ssf purge`. If the daemon's \
 own re-check on that pass finds work instead, you get one `[ssf] Release ... refused` message \
