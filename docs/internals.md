@@ -142,10 +142,14 @@ checks, and a restrictive content security policy. See
   working before ssf records its session as seeded. A long OMP paste first
   opens OMP's attachment choice; Herdr's Enter accepts that choice but can
   leave the resulting attachment in the composer. On a stalled delivery ssf
-  identifies that original prompt, sends only the missing Enter and waits for
-  `working` or `blocked`. It never accepts an ambiguous stall or pastes over
-  an identifiable copy of the body. An unseeded live harness found on a later
-  pass follows the same recovery path.
+  identifies that original prompt and sends only the missing Enter. A state
+  transition to `working` or `blocked` confirms it, but a harness Herdr cannot
+  narrate is accepted after the successful Enter so later passes never submit
+  the assignment again. It never accepts an ambiguous stall or pastes over an
+  identifiable copy of the body during the original send. An unseeded live
+  harness found on a later pass submits an identifiable stranded prompt and
+  resends only after a positively identified first-run dialog; an ambiguous
+  screen is accepted so a consumed prompt cannot become a steering message.
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. A machine restart takes the terminals with it, so the

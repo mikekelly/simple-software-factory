@@ -86,9 +86,14 @@ and unidentified conversations have no reported time; the dashboard shows
 The first prompt is not recorded as delivered merely because its bytes reached
 the terminal. With herdr, ssf waits for the harness to start handling it. If a
 long OMP paste has become a collapsed attachment in the composer but has not
-started, ssf submits that existing attachment and waits again; it does not paste
-a second copy. A daemon pass that finds an unseeded live harness uses the same
-recovery path.
+started, ssf submits that existing attachment; it does not paste a second copy.
+Herdr's state after that Enter is only observational: if it cannot see the
+harness start working, ssf accepts the successful key delivery rather than
+submitting the assignment again on every pass. A daemon pass that finds an
+unseeded live harness uses the same recovery path. If that later screen shows
+neither the prompt nor a first-run dialog, ssf accepts the durable delivery
+attempt instead of risking an initial prompt that was already consumed being
+sent again as a steering message.
 
 ## Second opinions: the gauntlet
 

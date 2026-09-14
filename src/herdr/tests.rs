@@ -371,6 +371,215 @@ Opened by @MikeKellyBot on 2026-09-13.\n\
     assert!(!prompt_on_screen(&history, prompt));
 }
 
+/// #317: once the durable attempt marker exists, an idle session whose
+/// screen no longer shows the prompt may already have consumed it. Recovery
+/// must not turn the original assignment into a steering interjection.
+#[tokio::test]
+async fn ambiguous_first_prompt_recovery_does_not_resend() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!(
+        "ssf-herdr-first-prompt-recovery-ambiguous-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+case "$1 $2" in
+  "agent list")
+    echo '{"agents":[{"agent":"codex","agent_status":"idle","pane_id":"w7:p1","workspace_id":"w7"}]}'
+    ;;
+  "pane read")
+    printf '%s\n' 'Finished the requested work.' '▌ Ask Codex to do anything'
+    ;;
+  "agent prompt")
+    echo 'the initial prompt was sent again' >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+
+    h.recover_first_prompt(
+        "w7:p1",
+        "# GitHub issue #317\nhttps://github.com/example/repo/issues/317",
+    )
+    .await
+    .unwrap();
+
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("agent list"), "{calls}");
+    assert!(calls.contains("pane read"), "{calls}");
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Recovery must not turn a failed observation into a successful seed: the
+/// next pass needs to retry once the pane can be inspected safely.
+#[tokio::test]
+async fn unreadable_first_prompt_recovery_is_not_accepted_or_resent() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!(
+        "ssf-herdr-first-prompt-recovery-unreadable-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+case "$1 $2" in
+  "agent list")
+    echo '{"agents":[{"agent":"codex","agent_status":"idle","pane_id":"w7:p1","workspace_id":"w7"}]}'
+    ;;
+  "pane read")
+    echo '[unavailable] pane cannot be read' >&2
+    exit 1
+    ;;
+  "agent prompt")
+    echo 'the initial prompt was sent again' >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+
+    let error = h
+        .recover_first_prompt(
+            "w7:p1",
+            "# GitHub issue #317\nhttps://github.com/example/repo/issues/317",
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("pane cannot be read"),
+        "{error:#}"
+    );
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("agent list"), "{calls}");
+    assert!(calls.contains("pane read"), "{calls}");
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// #317's observed OMP sequence: the composer is identifiable and Enter is
+/// delivered, but Herdr keeps reporting `idle`. The successful submission is
+/// accepted so the next onboarding pass cannot submit the assignment again.
+#[tokio::test]
+async fn submitted_first_prompt_is_accepted_when_working_cannot_be_observed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!(
+        "ssf-herdr-first-prompt-recovery-unobserved-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+case "$1 $2" in
+  "agent list")
+    echo '{"agents":[{"agent":"omp","agent_status":"idle","pane_id":"w6:p1","workspace_id":"w6"}]}'
+    ;;
+  "pane read")
+    printf '%s\n' '▌ # GitHub issue #317' '▌ https://github.com/example/repo/issues/317'
+    ;;
+  "agent send-keys")
+    ;;
+  "agent wait")
+    echo '{"error":{"code":"timeout","message":"timed out waiting for agent status"}}' >&2
+    exit 1
+    ;;
+  "agent prompt")
+    echo 'the initial prompt was sent again' >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+
+    h.recover_first_prompt(
+        "w6:p1",
+        "# GitHub issue #317\nhttps://github.com/example/repo/issues/317",
+    )
+    .await
+    .unwrap();
+
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert_eq!(
+        calls.matches("agent send-keys w6:p1 enter").count(),
+        1,
+        "{calls}"
+    );
+    assert_eq!(calls.matches("agent wait w6:p1").count(), 1, "{calls}");
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[tokio::test]
+async fn submitted_first_prompt_propagates_operational_wait_failure() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!(
+        "ssf-herdr-first-prompt-recovery-failed-wait-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+case "$1 $2" in
+  "agent send-keys")
+    ;;
+  "agent wait")
+    echo '{"error":{"code":"not_found","message":"no such pane"}}' >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+
+    let error = h.submit_existing_prompt("w6:p1").await.unwrap_err();
+    assert!(
+        error.to_string().contains("[not_found] no such pane"),
+        "{error:#}"
+    );
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 #[test]
 fn agent_prompt_failures_are_told_apart() {
     // herdr sent nothing: the agent is at a question.
