@@ -31,7 +31,8 @@ document links to.
 The live terminal dashboard is included in the Linux and macOS client. Run
 `ssf dashboard` in any terminal, or `ssf --server HOST dashboard` /
 `SSF_SERVER=HOST ssf dashboard` for a remote factory. Repeat `--server` to show
-several factories as independently updated groups in one dashboard. A local VM
+several factories as independently updated groups in one dashboard. Without
+`--server` or `SSF_SERVER`, the dashboard connects to all catalog entries. A local VM
 uses the host client's normal VM forwarding. No browser or Herdr installation
 is required. The dashboard keeps one `status --json --watch` stream open per
 server (and one SSH channel per remote factory). Only driver-reported agents become cards;
@@ -39,7 +40,8 @@ monitored items without an agent are listed separately.
 An optional client-owned `~/.config/ssf/servers.toml` gives local, existing VM
 and SSH factories stable names. With one catalog entry commands select it
 implicitly; with several, every factory command requires `--server NAME` or an
-explicit `SSF_SERVER=NAME`, and there is no persistent default. Inspect it with
+explicit `SSF_SERVER=NAME`, except `ssf dashboard`, which defaults to all entries.
+There is no persistent default. Inspect it with
 `ssf server list` / `ssf server show NAME`. A fresh `ssf setup` creates the
 recommended sole VM target `ssf-server`; it stays implicit while it is the only
 entry. Use `ssf server add local --local`, `ssf server add NAME --vm`, or

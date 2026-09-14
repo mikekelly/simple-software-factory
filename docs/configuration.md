@@ -110,7 +110,8 @@ Selection has no configurable default:
   destinations.
 - One catalog entry is selected automatically.
 - More than one entry makes an unqualified factory command refuse and list the
-  names. Use `--server NAME` or `SSF_SERVER=NAME`.
+  names. Use `--server NAME` or `SSF_SERVER=NAME`. The exception is
+  `ssf dashboard`, which connects to all entries when neither selector is set.
 - A command-line selector overrides the environment. Unknown catalog names are
   errors and are never tried as SSH hosts.
 

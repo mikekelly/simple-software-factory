@@ -128,11 +128,9 @@ The dashboard keeps repeated explicit selection:
 ssf --server local --server crucible --server cloud dashboard
 ```
 
-With one configured target, `ssf dashboard` shows it. With several targets,
-`ssf dashboard` reports the same ambiguity as other commands; it does not assume
-that the person intended to contact every factory. An `--all-servers` convenience
-can be considered separately after its connection and authentication behavior is
-specified.
+With no `--server` or `SSF_SERVER` selection, `ssf dashboard` connects to all
+configured targets (updated by #283). Explicit selectors narrow the dashboard
+to the requested targets. With no catalog entries, it uses the local endpoint.
 
 ## Client catalog
 
