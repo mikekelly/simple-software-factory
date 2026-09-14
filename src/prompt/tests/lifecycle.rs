@@ -73,15 +73,14 @@ fn the_first_message_of_a_handed_over_session_says_who_handed_it_over() {
 }
 
 #[test]
-fn followup_says_a_filed_issue_is_yours_when_assigned() {
-    // #83: the session on #81 filed it; the project manager assigned
-    // the bot. Read as bookkeeping, the session waited for a second
-    // session that creator ownership never starts.
+fn followup_says_a_bound_pull_request_is_yours_when_assigned() {
+    // #83: the session on #81 opened this pull request, so its origin tag
+    // binds it to that coding session independently of later assignment.
     let filed: Issue = serde_json::from_value(json!({
         "number": 83, "title": "VM: omp does not run",
         "body": "🤖#81 says: <!-- ssf: origin=o/r#81 -->\n\nThe guest's omp binary fails.",
         "html_url": "https://gh/83", "state": "open", "user": {"login": "bot"},
-        "created_at": "t", "updated_at": "t"
+        "pull_request": {}, "created_at": "t", "updated_at": "t"
     }))
     .unwrap();
     let repo = RepoConfig {

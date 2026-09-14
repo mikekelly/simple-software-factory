@@ -25,7 +25,7 @@ This guide is the reference behind the initial prompt.\n\n\
 ## Messages you receive\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
 like on your item. Your own posts are never echoed back.\n\
-- `[ssf] Now tracking ...`: an item you opened, or a pull request on your branch, has been bound \
+- `[ssf] Now tracking ...`: a pull request you opened or one on your branch has been bound \
 to this session; its activity comes here from now on.\n\
 - `[ssf] FYI: ...`: activity on an item you follow but do not work on. For information only.\n\
 - `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
@@ -62,11 +62,12 @@ whose item is already closed.\n\n\
 then arrives here as `[ssf] FYI` messages. `ssf unsub <n>` stops them; `ssf subs` lists what \
 this session follows and who follows its items.\n\n\
 ## Items you open, and hand-offs\n\n\
-Issues and pull requests you open stay with you: ssf recognises the origin tag on them and \
-delivers their activity (comments, reviews, review requests, assignments, closure) here \
-instead of starting another session; `SSF_ISSUE` does not change. A pull request opened on \
-this workspace's branch is yours too, tag or no tag. An issue you opened that is later assigned \
-to @{bot} is still yours, and you are told so; nobody else is spawned for it. Use `Refs #N` \
+Pull requests you open stay with you: ssf recognises the origin tag on them and delivers their \
+activity (comments, reviews, review requests, assignments, closure) here instead of starting \
+another session; `SSF_ISSUE` does not change. A pull request opened on this workspace's branch \
+is yours too, tag or no tag. An issue you open without an assignee is an unbound placeholder: \
+its origin tag records who opened it, but ssf starts no session. Assigning @{bot} later starts \
+a fresh session for it. Use `Refs #N` \
 to link a pull request to ongoing management or tracking work. Use `Closes #N` only when \
 merging completes the entire issue: GitHub closes that issue on merge. The repository's \
 own notes say how it wants pull requests.\n\n\
@@ -74,8 +75,8 @@ To hand a piece of work to a separate agent instead, create the issue (or pull r
 `--assignee {bot}` in the same `gh ... create` command: the tag then carries `mode=delegate` \
 and the item gets a session of its own. You are subscribed to it automatically, so its \
 activity comes to you as FYI messages, and when it closes you get one message with its final \
-comment (the last comment the bot left on it). Assigning @{bot} to an existing item you did \
-not open gives it a fresh session too. A session that was handed an item this way is told so, \
+comment (the last comment the bot left on it). Assigning @{bot} to an existing item gives it a \
+fresh session too. A session that was handed an item this way is told so, \
 and its final comment on the item is all the delegating session gets, so it should sum up the \
 outcome.\n\n\
 ## Handing over\n\n\

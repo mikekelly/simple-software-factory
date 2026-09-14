@@ -15,6 +15,10 @@ For installation, follow the [repository instructions](https://github.com/mikeke
 Once installed, run `ssf skill` for authoritative guidance bundled with your
 binary, then follow its `ssf skill <topic>` commands for details.
 
+An issue opened by an agent without assigning the bot is an unbound
+placeholder. Create it with `--assignee <bot>` to hand it to a fresh session;
+assigning the bot later also starts a fresh session.
+
 Optional factory-wide agent context goes in `~/.ssf/SSF.md`, with
 `~/.ssf/SSF.<harness>.md` for harness-specific additions. These files are read
 from the guest user's home in VM mode or the host user's home in host mode,

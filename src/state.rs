@@ -46,8 +46,9 @@ pub struct RepoState {
     pub created_numbers: Vec<u64>,
     #[serde(default)]
     pub issues: BTreeMap<u64, IssueState>,
-    /// Items the bot opened that nothing binds to a session (no origin
-    /// tag, no branch match, no human trigger), keyed by number, with what
+    /// Items the bot opened that nothing binds to a session (an unassigned
+    /// issue, or no origin tag, branch match or human trigger), keyed by
+    /// number, with what
     /// they were last looked at with (see [`Ignored`]). Kept here rather
     /// than in memory so a daemon restart does not queue a walk of every
     /// such item: the listing ETags survive a restart, so the first pass
@@ -226,10 +227,11 @@ pub struct IssueState {
     /// Open project boards the item is on, as of the last lookup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<crate::github::ProjectCard>,
-    /// This item is owned by that item's session (same repo): it was opened
-    /// from that session, or its PR branch is that session's branch. Every
-    /// prompt about this item goes to the owner's agent, and the workspace
-    /// lifecycle belongs to the owner.
+    /// This pull request is owned by that item's session (same repo): it was
+    /// opened from that session, or its branch is that session's branch.
+    /// Every prompt about it goes to the owner's agent, and the workspace
+    /// lifecycle belongs to the owner. Older state may contain issues here;
+    /// [`State::load_from`] detaches those legacy authorship bindings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shares_workspace_of: Option<u64>,
     /// Session (`owner/repo#N`) that opened this item as a hand-off
@@ -516,7 +518,76 @@ impl State {
         let mut st: Self =
             serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         st.drop_legacy_reviewers();
+        st.drop_legacy_issue_bindings();
         Ok(st)
+    }
+
+    /// Before #305, an issue carrying a session origin tag shared the
+    /// opener's workspace. Issues now use that tag only for attribution, so
+    /// detach those persisted bindings on upgrade. An assigned or mentioned
+    /// item is deliberately remembered as created-only: its additional
+    /// listing membership then makes the next pass onboard a fresh session.
+    fn drop_legacy_issue_bindings(&mut self) {
+        for (repo, rs) in self.repos.iter_mut() {
+            let numbers: Vec<u64> = rs
+                .issues
+                .values()
+                .filter(|st| {
+                    st.kind.as_deref() == Some("issue") && st.shares_workspace_of.is_some()
+                })
+                .map(|st| st.number)
+                .collect();
+            if numbers.is_empty() {
+                continue;
+            }
+            info!(
+                repo,
+                ?numbers,
+                "detaching issue bindings created by an older ssf"
+            );
+            // The first pass after upgrading must receive full listings. If
+            // all four returned 304 against the old cache, reconciliation
+            // would return before comparing assigned/mentioned membership
+            // with the created-only ignore records below.
+            rs.issues_etag = None;
+            rs.mentioned_etag = None;
+            rs.pulls_etag = None;
+            rs.created_etag = None;
+            for number in &numbers {
+                let Some(st) = rs.issues.remove(number) else {
+                    continue;
+                };
+                rs.ignored.insert(
+                    *number,
+                    Ignored {
+                        updated_at: st.updated_at.clone().unwrap_or_default(),
+                        triggers: vec!["created".into()],
+                        ..Default::default()
+                    },
+                );
+                if !st.subscribers.is_empty() {
+                    rs.issues.insert(
+                        *number,
+                        IssueState {
+                            number: *number,
+                            title: st.title,
+                            html_url: st.html_url,
+                            kind: st.kind,
+                            github_state: st.github_state,
+                            projects: st.projects,
+                            updated_at: st.updated_at,
+                            seen: st.seen,
+                            origin: st.origin,
+                            origins: st.origins,
+                            untagged: st.untagged,
+                            subscribers: st.subscribers,
+                            subscriber_only: true,
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+        }
     }
 
     /// Forget the reviewer records an older daemon wrote (see
@@ -705,6 +776,43 @@ mod tests {
             written["repos"]["mikekelly/overlay-mono"]["ignored"]["337"],
             serde_json::json!({"updated_at": "2026-09-03T00:19:46Z", "triggers": ["created"]})
         );
+    }
+
+    #[test]
+    fn loading_detaches_legacy_issue_bindings_but_keeps_prs_and_subscribers() {
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.state_dir().join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"repos":{"o/r":{"issues_etag":"a","mentioned_etag":"m","pulls_etag":"p","created_etag":"c","issues":{
+                "7":{"number":7,"title":"assigned placeholder","kind":"issue","seeded":true,"active":true,"shares_workspace_of":1,"worktree_id":"w1","updated_at":"u7","triggers":["assigned","created"]},
+                "8":{"number":8,"title":"followed placeholder","kind":"issue","seeded":true,"active":true,"shares_workspace_of":1,"worktree_id":"w1","updated_at":"u8","triggers":["created"],"subscribers":["o/r#2"]},
+                "9":{"number":9,"title":"pull request","kind":"pull_request","seeded":true,"active":true,"shares_workspace_of":1,"worktree_id":"w1","updated_at":"u9","triggers":["created"]}
+            }}}}"#,
+        )
+        .unwrap();
+
+        let st = State::load_from(&path).unwrap();
+        let rs = &st.repos["o/r"];
+        assert!(
+            rs.issues_etag.is_none()
+                && rs.mentioned_etag.is_none()
+                && rs.pulls_etag.is_none()
+                && rs.created_etag.is_none(),
+            "the first upgraded pass must fetch every listing in full"
+        );
+        assert!(!rs.issues.contains_key(&7), "unfollowed issue is unbound");
+        let followed = &rs.issues[&8];
+        assert!(followed.subscriber_only && !followed.seeded && !followed.active);
+        assert_eq!(followed.subscribers, vec!["o/r#2"]);
+        assert!(followed.worktree_id.is_none());
+        assert_eq!(rs.issues[&9].shares_workspace_of, Some(1), "PR stays bound");
+        for (number, updated_at) in [(7, "u7"), (8, "u8")] {
+            let ignored = &rs.ignored[&number];
+            assert_eq!(ignored.updated_at, updated_at);
+            assert_eq!(ignored.triggers, vec!["created"]);
+        }
     }
 
     #[test]

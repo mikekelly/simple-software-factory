@@ -116,11 +116,12 @@ impl Engine {
         e.released_at = o.released_at;
     }
 
-    /// The session an item being discovered belongs to, if any. First the
-    /// origin tag in its body (the session that opened it, unless that was
-    /// a hand-off), then, for a same-repo pull request, the session whose
-    /// workspace is on the PR's branch. A retired session still counts: it
-    /// is brought back rather than duplicated.
+    /// The session a pull request being discovered belongs to, if any. First
+    /// the origin tag in its body (the session that opened it, unless that
+    /// was a hand-off), then the session whose workspace is on its same-repo
+    /// branch. Issues are never bound by authorship: an assignment, mention
+    /// or other action trigger gives them their own session. A retired PR
+    /// owner still counts: it is brought back rather than duplicated.
     pub(in crate::engine) fn find_owner(
         &self,
         repo: &RepoConfig,
@@ -129,7 +130,9 @@ impl Engine {
         scan: &origin::Scan,
     ) -> Option<u64> {
         let issues = &self.state.repos.get(&repo.name)?.issues;
-        if let Some(tag) = &scan.origin_tag {
+        if issue.is_pull_request()
+            && let Some(tag) = &scan.origin_tag
+        {
             if tag.is_delegate() {
                 return None;
             }
