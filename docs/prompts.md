@@ -2,9 +2,11 @@
 
 The prompts ssf writes: the first message an agent gets, the follow-ups, the project boards section, and what is deliberately left to repository-owned guidance. For whoever wonders why an agent behaves as it does, or is writing an `SSF.md`.
 
-ssf's own prompting is the bare functional minimum. The initial prompt is
-the item (title, description, boards, everything that has happened on it)
-followed by "How to work on this", which says only what ssf owns:
+ssf's own prompting is the bare functional minimum. Like later event
+deliveries, the initial prompt starts with `[ssf]`; this keeps item Markdown
+from colliding with harness composer shortcuts. It contains the item (title,
+description, boards, everything that has happened on it) followed by "How to
+work on this", which says only what ssf owns:
 
 ```
 You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, because #16 was assigned to @bot.
