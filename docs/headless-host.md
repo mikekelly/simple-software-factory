@@ -128,18 +128,34 @@ chmod 600 "$HOME/.config/ssf/harness.env"
 ```
 
 **You:** edit that file locally to contain `export OPENROUTER_API_KEY='your-key'`.
-Then load it and run OMP once to choose an OpenRouter model and verify a request:
+Then load it and run one interactive OMP on the host, as the same Unix user
+and HOME that will run herdr, before letting SSF spawn sessions:
 
 ```sh
 . "$HOME/.config/ssf/harness.env"
 omp
 ```
 
+After OpenRouter authentication, finish the one-time wizard or press **Esc**
+through the remaining “Setup step 1 of 5” screens to complete/skip it. A provider
+row saying “OpenRouter ● logged in (api key)” means authentication is already
+present; “Select provider to login” in that wizard does not call for another
+`/login`. Completion persists `setupVersion` in `~/.omp/agent/config.yml`.
+Then choose an OpenRouter model and verify a request.
+
 OMP can also save provider credentials through its own login/settings UI in
 `~/.omp/agent/agent.db`; missing `auth.json` alone does not mean signed out.
 Do not edit the database directly. Preserve the credential file/database across
 host restarts. SSF recognizes a nonempty `OPENROUTER_API_KEY` as signed in, but
 that check does not prove the key is valid or has credit: the OMP request does.
+
+A key in the host shell or `ssf-server` environment does **not** establish the
+environment of herdr-launched panes. SSF does not forward that key to panes
+and has no built-in loader for `omp.env` or `harness.env`; the shell commands
+here load the example file explicitly. Save OpenRouter credentials through
+OMP's UI in the shared `~/.omp` home, or ensure the actual pane environment
+receives the key, and verify a request there. A passing `ssf doctor` or
+non-interactive `omp models` does not prove interactive setup is complete.
 
 ## 6. Start both processes and watch a repository
 

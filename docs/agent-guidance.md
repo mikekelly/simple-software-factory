@@ -100,6 +100,14 @@ reflect transcript writes, and missing activity times remain unknown.
    free the port and retry. Do not ask for callback URLs, codes, or tokens in
    chat or replay them from another shell. Current OMP stores credentials in
    `~/.omp/agent/agent.db`; missing `auth.json` alone is not a sign-out.
+   For headless/herdr OMP, after OpenRouter auth run one interactive `omp`
+   as the factory's Unix user on the host and finish or Esc through the
+   first-run wizard before spawning sessions. An already-logged-in provider
+   under setup needs completion/skipping, not another `/login`; completion
+   persists `setupVersion` in `~/.omp/agent/config.yml`. A key in the daemon
+   environment is not forwarded to herdr panes; SSF has no `omp.env` loader.
+   Use OMP's saved credentials in the shared home or verify the actual pane
+   environment and a request there. Doctor success alone does not verify setup.
    In Claude Code, a command the person must type themselves can
    be run as `! <command>` from the prompt.
 2. **If ssf is already installed, inspect `ssf server list` first, then run

@@ -356,16 +356,17 @@ pub struct HandoverNote {
 }
 
 /// Why a session cannot take prompts, and what has been done about it.
-/// Two reasons: the harness is not signed in (its login expired, was
+/// The harness is not signed in (its login expired, was
 /// revoked, or was never there), or the harness could not be started at
-/// all (a handover to a harness that exits the moment it is launched).
+/// all (a handover to a harness that exits the moment it is launched),
+/// or OMP first-run setup is incomplete despite a logged-in provider.
 /// The record keeps what the screen or the driver said, when it was
 /// seen, whether the item has been told, the credential file's identity
 /// at the time (a new login rewrites it) and when the harness was last
 /// started again to check.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Blocked {
-    /// `login` or `start`.
+    /// `login`, `start`, or `setup`.
     pub reason: String,
     /// The harness that showed the prompt, or would not start.
     #[serde(default)]
@@ -400,6 +401,7 @@ pub struct Blocked {
 }
 
 impl Blocked {
+    pub const SETUP: &'static str = "setup";
     pub const LOGIN: &'static str = "login";
     /// The harness could not be started in the workspace at all.
     pub const START: &'static str = "start";

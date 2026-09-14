@@ -9,3 +9,6 @@ For installation, follow the [repository instructions](https://github.com/mikeke
 
 Once installed, run `ssf skill` for authoritative guidance bundled with your
 binary, then follow its `ssf skill <topic>` commands for details.
+
+For OMP on headless/herdr hosts, read `ssf skill headless` for one-time
+interactive setup and pane credential guidance before spawning sessions.

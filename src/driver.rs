@@ -82,6 +82,9 @@ pub fn trust_dialog(screen: &str) -> Option<TrustAnswer> {
 /// words in a file it is reading scrolls past above.
 const LOGIN_TAIL_LINES: usize = 15;
 
+// OMP's wizard includes tabs, ten provider rows, and a search/footer area.
+const SETUP_TAIL_LINES: usize = 32;
+
 /// If `screen` shows `harness` asking for a login (an expired session, a
 /// revoked token, or a fresh machine with no credential), what it says.
 /// A session whose screen shows this is blocked on auth, not idle:
@@ -101,7 +104,62 @@ const LOGIN_TAIL_LINES: usize = 15;
 /// `unblocked` event posts, `BlockedView::describe`, `SessionBlocked`),
 /// which `engine::tests::ssf_texts_never_look_like_a_login_prompt` pins.
 pub fn login_dialog(harness: &str, screen: &str) -> Option<String> {
+    let candidates = dialog_candidates(screen, SETUP_TAIL_LINES);
+    if omp_setup(harness, &candidates) {
+        return None;
+    }
     login_dialog_in(harness, screen)
+}
+
+/// A pane that cannot take deliveries, including authenticated OMP setup.
+pub fn blocking_dialog(harness: &str, screen: &str) -> Option<(&'static str, String)> {
+    if omp_setup(harness, &dialog_candidates(screen, SETUP_TAIL_LINES)) {
+        return Some((
+            crate::state::Blocked::SETUP,
+            "OMP first-run setup incomplete".into(),
+        ));
+    }
+    login_dialog(harness, screen).map(|detail| (crate::state::Blocked::LOGIN, detail))
+}
+
+fn omp_setup(harness: &str, candidates: &[&str]) -> bool {
+    let text = candidates.join("\n").to_lowercase();
+    harness == "omp"
+        && text.contains("setup step ")
+        && candidates.iter().rev().take(3).any(|line| {
+            let line = line.to_lowercase();
+            line.contains("esc skip") || line.contains("press esc when you're done")
+        })
+        && (text.contains("● logged in")
+            || (2..=5).any(|step| text.contains(&format!("setup step {step} of 5"))))
+}
+
+fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
+    let tail: Vec<&str> = screen
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = tail.len().saturating_sub(limit);
+    let mut in_echo = false;
+    // Read echo boundaries before trimming the window: a long echoed
+    // wizard can put its [ssf] marker above the login tail.
+    tail.iter()
+        .copied()
+        .enumerate()
+        .filter(|(index, l)| {
+            if l.contains("[ssf]") {
+                in_echo = true;
+                return false;
+            }
+            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
+                return false;
+            }
+            in_echo = false;
+            *index >= start
+        })
+        .map(|(_, line)| line)
+        .collect()
 }
 
 /// The harnesses `login_dialog` knows the sign-in prompts of.
@@ -218,28 +276,7 @@ pub fn redact_login_phrases(text: &str) -> String {
 }
 
 fn login_dialog_in(harness: &str, screen: &str) -> Option<String> {
-    let tail: Vec<&str> = screen
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
-    let start = tail.len().saturating_sub(LOGIN_TAIL_LINES);
-    let mut in_echo = false;
-    let candidates: Vec<&str> = tail[start..]
-        .iter()
-        .copied()
-        .filter(|l| {
-            if l.contains("[ssf]") {
-                in_echo = true;
-                return false;
-            }
-            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
-                return false;
-            }
-            in_echo = false;
-            true
-        })
-        .collect();
+    let candidates = dialog_candidates(screen, LOGIN_TAIL_LINES);
     let text = candidates.join("\n").to_lowercase();
     let common = COMMON_LOGIN_PHRASES;
     let own = login_phrases(harness);

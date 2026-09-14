@@ -110,8 +110,8 @@ pub enum Event {
         conversation: Conversation,
         after: &'static str,
     },
-    /// Deliveries are held: the harness is not signed in, or could not
-    /// be started at all. `reason` says which (`not signed in`, `could
+    /// Deliveries are held: login, setup, or startup needs attention.
+    /// `reason` says which (`not signed in`, `setup incomplete`, `could
     /// not be started: <error>`), `fix` what a person does about it.
     Blocked {
         harness: String,

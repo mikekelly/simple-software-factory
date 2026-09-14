@@ -386,3 +386,87 @@ async fn a_blocked_harness_that_is_gone_is_judged_by_its_restart() {
     assert_eq!(posts.len(), 1, "{posts:?}");
     assert!(posts[0].1.contains("event=unblocked -->"), "{}", posts[0].1);
 }
+
+#[tokio::test]
+async fn omp_setup_is_held_with_correct_remediation_and_recovers() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let screen = [
+        "Setup step 1 of 5",
+        "Select provider to login",
+        "OpenRouter ● logged in (api key)",
+        "Press Esc when you're done.",
+    ];
+    let (mut e, d) = blocked_setup(&stub, &screen);
+    let mut r = repo();
+    r.harness = "omp".into();
+    e.cfg.repos = vec![r.clone()];
+    probe_returning(&mut e, LoginState::SignedIn, Some("same-credential"));
+    stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    e.tick_repo(&r).await.unwrap();
+    let b = e.entry(&r, 5).blocked.clone().expect("setup held");
+    assert_eq!(b.reason, Blocked::SETUP);
+    let posts = stub.post_bodies();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].1.contains("reason: setup incomplete"), "{posts:?}");
+    assert!(posts[0].1.contains("press Esc"), "{posts:?}");
+    assert!(!posts[0].1.contains("/login"));
+    assert!(!crate::driver::quotes_login_prompt(&posts[0].1));
+    let err = e.deliver_to(&r, 5, "hello", None).await.unwrap_err();
+    assert!(err.to_string().contains("has incomplete setup"));
+    assert!(
+        crate::status::BlockedView::from_blocked(&b)
+            .describe()
+            .contains("setup incomplete")
+    );
+    assert!(d.log().is_empty());
+    d.seed(
+        "w5",
+        "t5",
+        &["Setup step 2 of 5", "Choose a theme", "esc skip"],
+    );
+    e.tick_repo(&r).await.unwrap();
+    assert!(e.entry(&r, 5).blocked.is_some());
+    assert!(d.log().is_empty());
+    // Old false-positive records are corrected without waiting for a retry.
+    e.entry(&r, 5).blocked.as_mut().unwrap().reason = Blocked::LOGIN.into();
+    d.seed("w5", "t5", &screen);
+    e.tick_repo(&r).await.unwrap();
+    assert_eq!(
+        e.entry(&r, 5).blocked.as_ref().unwrap().reason,
+        Blocked::SETUP
+    );
+    assert!(stub.post_bodies()[0].1.contains("reason: setup incomplete"));
+    d.seed("w5", "t5", READY_SCREEN);
+    e.tick_repo(&r).await.unwrap();
+    assert!(e.entry(&r, 5).blocked.is_none());
+    assert!(!d.log().iter().any(|l| l.starts_with("stop:")));
+}
+
+#[tokio::test]
+async fn changed_block_reason_after_relaunch_is_reported_again() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, _) = blocked_setup(&stub, LOGIN_SCREEN);
+    let mut r = repo();
+    r.harness = "omp".into();
+    e.cfg.repos = vec![r.clone()];
+    probe_returning(&mut e, LoginState::SignedIn, Some("same"));
+    e.set_blocked_for(&r, 5, Blocked::LOGIN, "login".into())
+        .await;
+    e.report_blocked(&r, 5).await;
+    stub.post_bodies();
+    e.set_blocked_for(
+        &r,
+        5,
+        Blocked::SETUP,
+        "OMP first-run setup incomplete".into(),
+    )
+    .await;
+    e.report_blocked(&r, 5).await;
+    let posts = stub.post_bodies();
+    assert_eq!(posts.len(), 1);
+    assert!(posts[0].1.contains("reason: setup incomplete"));
+    assert!(posts[0].1.contains("press Esc"));
+}

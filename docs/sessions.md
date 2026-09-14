@@ -222,7 +222,7 @@ The events, and nothing else:
 | `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` when the session was started by a handover (below); on a re-creation `re-created: workspace gone` or `re-created: driver switch`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
 | `attached` | an item bound to another item's session rather than given one of its own (a pull request from a session's branch, an issue a session opened and kept) | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
-| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched); a harness that would not start and is not signed in where the daemon runs is recorded as the sign-in block it really is, since that is the thing to fix | `harness`; `reason: not signed in` with `fix:` the command that signs it in, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
+| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), because OMP setup is incomplete, or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched); a harness that would not start and is not signed in where the daemon runs is recorded as the sign-in block it really is, since that is the thing to fix | `harness`; `reason: not signed in` with `fix:` the command that signs it in, `reason: setup incomplete` with Esc setup guidance, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
@@ -301,6 +301,13 @@ not produce duplicate notices, and blocked sessions or sessions awaiting
 handover are skipped. Only sessions with a live agent are selected for
 checking. If an active agent exits during the check, normal event delivery
 may resume it to deliver the notice.
+
+OMP first-run setup with a logged-in provider is held as `setup incomplete`.
+Run `omp` interactively as the factory user on the host (inside the guest in
+VM mode) and finish or press Esc through setup. SSF resumes deliveries when
+the pane leaves setup, or checks again on its normal restart backoff after
+setup is completed in another terminal. See the
+[headless setup guide](headless-host.md#5-give-the-harness-persistent-credentials).
 
 ## A harness that is not signed in
 
