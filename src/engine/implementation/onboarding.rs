@@ -156,7 +156,7 @@ impl Engine {
         if existing.is_none() {
             existing = self
                 .driver(repo)
-                .find_worktree_for_issue(&setup.repo_id, issue.number)
+                .find_worktree_for_issue(&setup.repo_id, &repo.name, issue.number)
                 .await?;
         }
 
@@ -539,7 +539,14 @@ impl Engine {
         }
         let created = match self
             .driver(repo)
-            .create_worktree(repo_id, wt_name, number, comment, base.as_deref())
+            .create_worktree(
+                repo_id,
+                &repo.name,
+                wt_name,
+                number,
+                comment,
+                base.as_deref(),
+            )
             .await
         {
             Ok(w) => w,
@@ -553,6 +560,7 @@ impl Engine {
                 self.driver(repo)
                     .create_worktree(
                         repo_id,
+                        &repo.name,
                         wt_name,
                         number,
                         comment,

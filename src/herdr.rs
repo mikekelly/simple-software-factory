@@ -26,6 +26,12 @@ use crate::driver::{
 };
 use crate::orca::{AgentInfo, Delivery, WorkspaceInfo, Worktree};
 
+/// Human-readable label; checkout names remain the recovery key.
+fn workspace_label(repo: &str, number: u64) -> String {
+    let name = repo.rsplit('/').next().unwrap_or(repo);
+    format!("{name}-{number}")
+}
+
 const PASTE_START: &str = "\x1b[200~";
 const PASTE_END: &str = "\x1b[201~";
 
@@ -580,15 +586,13 @@ impl Herdr {
     pub async fn find_worktree_for_issue(
         &self,
         repo_root: &str,
+        repo: &str,
         number: u64,
     ) -> Result<Option<Worktree>> {
         let Some(w) = find_local_worktree(repo_root, number).await? else {
             return Ok(None);
         };
-        let label = Path::new(&w.path)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("issue-{number}"));
+        let label = workspace_label(repo, number);
         let ws = self.open(repo_root, &w.path, &label).await?;
         Ok(Some(Worktree {
             id: make_id(&ws, &w.path),
@@ -597,15 +601,19 @@ impl Herdr {
         }))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_worktree(
         &self,
         repo_root: &str,
+        repo: &str,
         name: &str,
+        number: u64,
         comment: &str,
         base_branch: Option<&str>,
     ) -> Result<Worktree> {
         let (path, branch) = add_local_worktree(repo_root, name, base_branch).await?;
-        let ws = match self.open(repo_root, &path, name).await {
+        let label = workspace_label(repo, number);
+        let ws = match self.open(repo_root, &path, &label).await {
             Ok(ws) => ws,
             Err(e) => {
                 let _ = remove_local_worktree(repo_root, &path).await;

@@ -66,6 +66,11 @@ clones the repository itself under `herdr.projects_dir` (or uses
 `repo.path`), makes a git worktree per item in `<name>.worktrees/` next to
 the clone, opens it as a herdr workspace and runs the agent in the
 workspace's root pane through the same `ssf launch` wrapper as with Orca.
+New and reopened workspaces are labelled `<repo>-<issue-number>` (for
+example, `simple-software-factory-282`), using the GitHub repository name
+even when `repo.path` has a different directory name. Already open
+workspaces keep their labels until reopened. Git worktree paths and branch
+names still include the issue number and title for recovery.
 herdr recognises the agent in the pane and reports its state (`idle`,
 `working`, `blocked`, `done`); messages go in with `herdr agent prompt`,
 which pastes and submits them.
