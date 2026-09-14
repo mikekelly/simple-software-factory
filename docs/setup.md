@@ -23,8 +23,8 @@ The bar widget and **Factory** menu are available only on Omarchy.
 For everyday commands see the [README](../README.md#everyday-commands).
 The installed guide is `/usr/share/doc/ssf/docs/setup.md` on Linux or
 `$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS. The
-`ssf-setup` skill points here rather than keeping
-another copy of the instructions.
+`ssf-setup` skill points to `ssf skill`; `ssf skill setup` prints this
+document from the running binary. Agents should also read `ssf skill agent`.
 
 ## 1. Before you start
 

@@ -346,7 +346,7 @@ from the release either way.
 | `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
 | `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-tap` |
-| `skills/ssf-setup/` | the `ssf-setup` agent skill: a pointer at `docs/setup.md` plus the rules for an agent following it |
+| `skills/ssf-setup/` | the thin installable agent skill: installation link and `ssf skill` entrypoint |
 | `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
 
 Large unit-test suites live beside their implementation under `src/<module>/tests.rs`
@@ -359,3 +359,11 @@ This repository is built by ssf itself: [`SSF.md`](../SSF.md) gives the
 issue-owning main session its SSF workflow and orchestration contract;
 [`AGENTS.md`](../AGENTS.md) gives every agent the repository-wide development
 policy.
+
+## Bundled agent documentation
+
+`src/cli/skill.rs` embeds the topic documents with `include_str!`. Update the
+source document when behavior changes; it is also the text printed by the
+binary. Keep `skills/ssf-setup/SKILL.md` as a thin installation/discovery pointer.
+Agent operating rules live in `docs/agent-guidance.md` (`ssf skill agent`).
+Add new topics to the CLI enum and the root overview in `docs/skills/root.md`.

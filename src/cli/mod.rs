@@ -11,6 +11,7 @@ mod doctor;
 mod launch;
 mod repo;
 mod sessions;
+mod skill;
 mod ui;
 mod vm;
 

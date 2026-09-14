@@ -20,6 +20,9 @@ pub async fn client_main() -> Result<()> {
         }
         return server_catalog_command(command);
     }
+    if let Command::Skill { topic } = cli.command {
+        return super::skill::print(topic);
+    }
     let catalog = server_catalog::Catalog::load()?;
     let routes = if matches!(cli.command, Command::Dashboard) {
         catalog.resolve_dashboard(servers)?
@@ -676,6 +679,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             force,
             json,
         } => purge(dry_run, older_than, force, json).await,
+        Command::Skill { topic } => super::skill::print(topic),
         Command::Guide => {
             let state_bot = state::State::load().ok().and_then(|state| state.bot_login);
             let config_bot = Config::load().ok().and_then(|cfg| cfg.github.login);
