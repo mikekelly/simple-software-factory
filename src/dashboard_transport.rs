@@ -158,11 +158,11 @@ fn status_command(
         command
             .arg("--")
             .arg(host)
-            .arg(crate::remote_client_command(&[
-                "status".into(),
-                "--json".into(),
-                "--watch".into(),
-            ]));
+            .arg(crate::remote_client_command(
+                &["status".into(), "--json".into(), "--watch".into()],
+                None,
+                None,
+            ));
         command
     } else {
         let mut command = Command::new(executable);

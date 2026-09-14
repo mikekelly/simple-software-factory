@@ -53,5 +53,6 @@ pub use sessions::{
 
 pub(crate) use auth::hostname;
 pub(crate) use client::remote_client_command;
+pub(crate) use client::{CLIENT_VERSION_ENV, VERSION_REPORTED_ENV};
 pub(crate) use launch::{client_executable, server_executable};
 pub(crate) use sessions::purge;

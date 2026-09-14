@@ -444,7 +444,33 @@ impl Vm {
     /// command in there knows it is the factory and does not forward
     /// again, and the arguments as given.
     pub(in crate::vm) fn ssf_remote(&self, args: &[String]) -> Vec<String> {
+        self.ssf_remote_with_client_context(
+            args,
+            std::env::var_os(crate::cli::CLIENT_VERSION_ENV).as_deref(),
+            std::env::var_os(crate::cli::VERSION_REPORTED_ENV).is_some(),
+        )
+    }
+
+    pub(in crate::vm) fn ssf_remote_with_client_context(
+        &self,
+        args: &[String],
+        client_version: Option<&std::ffi::OsStr>,
+        version_reported: bool,
+    ) -> Vec<String> {
         let mut remote = vec![format!("{GUEST_ENV}=1"), "ssf".to_string()];
+        if let Some(version) = client_version {
+            remote.insert(
+                1,
+                format!(
+                    "{}={}",
+                    crate::cli::CLIENT_VERSION_ENV,
+                    version.to_string_lossy()
+                ),
+            );
+        }
+        if version_reported {
+            remote.insert(1, format!("{}=1", crate::cli::VERSION_REPORTED_ENV));
+        }
         remote.extend(args.iter().cloned());
         remote
     }

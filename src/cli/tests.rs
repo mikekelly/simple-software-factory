@@ -52,6 +52,14 @@ fn client_target_requires_a_destination() {
 }
 
 #[test]
+fn remote_doctor_carries_client_version_without_the_client_local_alias() {
+    assert_eq!(
+        remote_client_command(&["doctor".into()], Some("0.7.0"), None),
+        "SSF_INTERNAL_VERSION_REPORTED=1 SSF_INTERNAL_CLIENT_VERSION='0.7.0' ssf-server __client 'doctor'"
+    );
+}
+
+#[test]
 fn release_asset_binaries_find_their_companions() {
     assert_eq!(
         companion_client_path(Path::new("/tmp/ssf-server-0.4.0-linux-x86_64")),
