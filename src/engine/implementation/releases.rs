@@ -357,7 +357,7 @@ impl Engine {
         let st = self.entry(repo, number).clone();
         if let Some(existing) = self
             .driver(repo)
-            .find_worktree_for_issue(&repo_id, number)
+            .find_worktree_for_issue(&repo_id, &repo.name, number)
             .await?
         {
             info!(
@@ -403,7 +403,14 @@ impl Engine {
         );
         let created = match self
             .driver(repo)
-            .create_worktree(&repo_id, &name, number, &comment, base.as_deref())
+            .create_worktree(
+                &repo_id,
+                &repo.name,
+                &name,
+                number,
+                &comment,
+                base.as_deref(),
+            )
             .await
         {
             Ok(w) => w,
@@ -416,6 +423,7 @@ impl Engine {
                 self.driver(repo)
                     .create_worktree(
                         &repo_id,
+                        &repo.name,
                         &name,
                         number,
                         &comment,

@@ -37,13 +37,17 @@ async fn herdr_live() {
     let h = Herdr::new(HerdrConfig::default());
     h.status().await.unwrap();
     let wt = h
-        .create_worktree(&root, "issue-3-x", "ssf: test", None)
+        .create_worktree(&root, "owner/widgets", "issue-3-x", 3, "ssf: test", None)
         .await
         .unwrap();
     eprintln!("workspace {} at {}", wt.id, wt.path);
     assert!(h.worktree_exists(&wt.id).await.unwrap());
     assert!(!h.has_live_agent(&wt.id).await.unwrap());
-    let found = h.find_worktree_for_issue(&root, 3).await.unwrap().unwrap();
+    let found = h
+        .find_worktree_for_issue(&root, "owner/widgets", 3)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(found.id, wt.id);
     // A shell that leaves the checkout does not move the workspace (#50):
     // herdr's own binding, not a pane's cwd, says it is still ours.
@@ -186,7 +190,14 @@ async fn herdr_live_first_prompt() {
     let h = Herdr::new(HerdrConfig::default());
     h.status().await.unwrap();
     let wt = h
-        .create_worktree(&root, "issue-121-x", "ssf: test", None)
+        .create_worktree(
+            &root,
+            "owner/widgets",
+            "issue-121-x",
+            121,
+            "ssf: test",
+            None,
+        )
         .await
         .unwrap();
     eprintln!("workspace {} at {}", wt.id, wt.path);
@@ -600,4 +611,87 @@ fn joins_workspaces_panes_and_agents() {
     assert_eq!(rows[1].linked_issue, None);
     assert!(!rows[1].is_working());
     assert!(rows[1].primary_agent().is_none());
+}
+
+/// Exercise creation and recovery without connecting to a herdr server.
+#[tokio::test]
+async fn workspace_labels_use_github_repo_and_number_on_create_and_reopen() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!("ssf-herdr-labels-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let root = base.join("custom-checkout");
+    std::fs::create_dir_all(&root).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "master"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+case "$1 $2" in
+  "worktree list") echo '{"worktrees": []}' ;;
+  "worktree open")
+    printf '%s\n' "$@" >> "$(dirname "$0")/args"
+    echo '{"workspace":{"workspace_id":"w7"}}' ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+    let root = root.to_str().unwrap();
+    let created = h
+        .create_worktree(
+            root,
+            "owner/widgets",
+            "issue-282-long-title",
+            282,
+            "ssf: test",
+            None,
+        )
+        .await
+        .unwrap();
+    let reopened = h
+        .find_worktree_for_issue(root, "owner/widgets", 282)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(created.id, reopened.id);
+    assert!(created.path.ends_with("/issue-282-long-title"));
+    assert_eq!(
+        created.branch.as_deref(),
+        Some("refs/heads/bot/issue-282-long-title")
+    );
+    let args = std::fs::read_to_string(base.join("args")).unwrap();
+    assert_eq!(
+        args.matches("--label\nwidgets-282\n--no-focus").count(),
+        2,
+        "{args}"
+    );
+    std::fs::remove_dir_all(base).unwrap();
 }

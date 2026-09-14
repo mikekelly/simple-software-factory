@@ -155,6 +155,8 @@ reflect transcript writes, and missing activity times remain unknown.
    null` as an unanswered lima probe, not a stopped VM; `probe_error`
    names why the host could not ask. Use `ssf vm status` to inspect host
    infrastructure and `ssf status` / `ssf doctor` for guest factory health.
+   New and reopened herdr workspaces use `<repo>-<issue-number>` labels
+   (GitHub repository name); already open workspaces keep their labels.
    Before upgrading an old copied-config VM, read the migration/recovery
    section in `docs/vm.md`. Firecracker uses an Ubuntu 24.04 LTS guest on
    every Linux host. Legacy Firecracker roots, including the former Arch

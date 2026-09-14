@@ -418,11 +418,12 @@ impl Driver {
     pub async fn find_worktree_for_issue(
         &self,
         repo_id: &str,
+        repo: &str,
         number: u64,
     ) -> Result<Option<Worktree>> {
         match self {
             Driver::Orca(d) => d.find_worktree_for_issue(repo_id, number).await,
-            Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, number).await,
+            Driver::Herdr(d) => d.find_worktree_for_issue(repo_id, repo, number).await,
             // The stub fails on a checkout it does not own, as the real
             // drivers do on another driver's id.
             #[cfg(test)]
@@ -437,9 +438,11 @@ impl Driver {
 
     /// Create the workspace for an item: a checkout named `name` on a branch
     /// of its own, from `base_branch` (the driver's default base without).
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_worktree(
         &self,
         repo_id: &str,
+        repo: &str,
         name: &str,
         number: u64,
         comment: &str,
@@ -450,7 +453,10 @@ impl Driver {
                 d.create_worktree(repo_id, name, number, None, comment, base_branch)
                     .await
             }
-            Driver::Herdr(d) => d.create_worktree(repo_id, name, comment, base_branch).await,
+            Driver::Herdr(d) => {
+                d.create_worktree(repo_id, repo, name, number, comment, base_branch)
+                    .await
+            }
             #[cfg(test)]
             Driver::Stub(d) => d.create_worktree(name),
         }

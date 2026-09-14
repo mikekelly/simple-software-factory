@@ -568,7 +568,7 @@ names what to run before opening a pull request. Assign it to the bot on
 GitHub (@mentioning it, or a review request, works too).
 
 - **Within a poll interval** (10 s) `ssf status` lists the item and a
-  workspace named after it appears in herdr (`ssf vm attach` shows the
+  workspace labelled `<repo>-<issue-number>` appears in herdr (`ssf vm attach` shows the
   guest's herdr; on the host, your own herdr or Orca). The clone happens
   first, so the first item on a repository takes a little longer.
 - **Within a couple of minutes** the agent comments on the issue with
