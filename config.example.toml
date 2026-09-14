@@ -120,8 +120,10 @@ name = "owner/name"
 harness = "claude"                             # agent id: see `ssf agents`
 # driver = "herdr"                             # orca | herdr (default: the top-level `driver`)
 # command = "claude --permission-mode acceptEdits"    # how the agent is started; default: its permission-free command (`ssf agents --json`), run via `ssf launch`
-# model = "opus"                               # the session's own model, not its subagents'; Orca model id for claude/codex/gemini/grok, provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush (`ssf models <agent>`); choosing one: docs/setup.md
-# effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
+# Choose model and effort with the operator before watching this repository.
+# Required by repo add/set when supported; doctor fails if missing in legacy config.
+model = "opus"                               # the session's own model, not its subagents'; Orca model id for claude/codex/gemini/grok, provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush (`ssf models <agent>`); choosing one: docs/setup.md
+effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
 # path = "~/code/name"                         # use an existing checkout instead of cloning
 # base_branch = "origin/main"                 # branch new worktrees start from (default: origin's default branch); `ssf doctor` counts a worktree's commits beyond it

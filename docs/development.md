@@ -8,7 +8,7 @@ cargo fmt && cargo clippy
 export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token)
 ./target/debug/ssf config set driver herdr            # or orca; a fresh config names none
 ./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
-./target/debug/ssf repo add you/sandbox --harness claude   # a repository the real factory does not watch
+./target/debug/ssf repo add you/sandbox --harness claude --model opus --effort high   # a repository the real factory does not watch
 ./target/debug/ssf-server --once  # one pass; agents launched by this run read the same SSF_* locations
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest shell, restore SSF_STATE_DIR=/var/lib/ssf/state
 SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy

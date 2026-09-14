@@ -225,8 +225,8 @@ instructions = "Run `make test` before opening a PR."
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
 | `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
 | `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
-| `repo.model` | the agent's default | Model: an Orca model id for `claude`, `codex`, `gemini` and `grok`, the agent's own `provider/model` for `pi`, `omp`, `opencode` and `copilot` (`ssf models <agent>` lists them; other ids pass through) |
-| `repo.effort` | the agent's default | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
+| `repo.model` | required by repo add/set when supported | Model: an Orca model id for `claude`, `codex`, `gemini` and `grok`, the agent's own `provider/model` for `pi`, `omp`, `opencode` and `copilot` (`ssf models <agent>` lists them; other ids pass through) |
+| `repo.effort` | required by repo add/set when supported | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.path` | | Register an existing checkout instead of cloning |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories (the bot's enrolled key is used) |
 | `repo.base_branch` | the driver's default base for the repository | Base ref for issue worktrees, e.g. `origin/main` |
@@ -366,7 +366,14 @@ terminal interface, so ssf refuses a model for it. Model ids are passed
 through as given, so a model the list does not mention works as long as the
 agent knows it; effort levels must be ones the agent accepts (a wrong one
 is refused when the config loads). Changing the agent of a repository
-resets both, since the ids belong to the agent. Keep `--model`/`--effort`
+requires a fresh selection of both supported settings, since the ids belong
+to the agent. Other `repo set` edits keep existing values, but reject a result
+with missing supported settings (including `--clear model/effort`). Legacy
+files still load and run with harness defaults; `ssf doctor` fails and gives
+a repair command when settings are missing. Values in `repo.command` do not
+count: store the operator's choices in the dedicated keys. SSF cannot verify
+human confirmation of values already written into a file. Setup agents must
+ask the operator before selecting values. Keep `--model`/`--effort`
 out of `repo.command` when you set them here, or the agent sees the flag
 twice.
 

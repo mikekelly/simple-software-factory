@@ -1058,6 +1058,34 @@ impl RepoConfig {
         }
     }
 
+    /// Require deliberate launch preferences at CLI write and doctor boundaries.
+    /// Loading legacy config remains supported so unrelated repositories can run.
+    pub fn require_launch_prefs(&self) -> Result<()> {
+        let mut missing = Vec::new();
+        if crate::models::supports_model(&self.harness)
+            && self.model.as_deref().is_none_or(|m| m.trim().is_empty())
+        {
+            missing.push("--model MODEL");
+        }
+        if !crate::models::effort_levels(&self.harness).is_empty()
+            && self.effort.as_deref().is_none_or(|e| e.trim().is_empty())
+        {
+            missing.push("--effort EFFORT");
+        }
+        if !missing.is_empty() {
+            bail!(
+                "repo {}: explicit {} required for {}; ask the operator to choose, then run `ssf repo set {} {}` (choices: `ssf models {}`); harness defaults are not a confirmed choice",
+                self.name,
+                missing.join(" and "),
+                self.harness,
+                self.name,
+                missing.join(" "),
+                self.harness,
+            );
+        }
+        Ok(())
+    }
+
     /// Check that the model and effort settings fit the harness.
     pub fn validate_launch_prefs(&self) -> Result<()> {
         crate::models::validate(&self.harness, self.model.as_deref(), self.effort.as_deref())

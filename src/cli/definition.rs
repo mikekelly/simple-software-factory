@@ -518,10 +518,11 @@ pub(super) enum RepoCommand {
         command: Option<String>,
         /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
         /// and grok; provider/model for pi, omp and opencode; `auto` or a model
-        /// name for copilot. `ssf models <harness>` lists them.
+        /// name for copilot. Required in the resulting config when supported; ask the operator to choose.
+        /// `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
-        /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
+        /// Effort level, required in the resulting config when supported (levels: `ssf agents --json`).
         #[arg(long)]
         effort: Option<String>,
         /// Extra instructions appended to the initial prompt for this repo.
@@ -561,10 +562,11 @@ pub(super) enum RepoCommand {
         command: Option<String>,
         /// Model the harness runs with: an Orca model id (e.g. opus, sonnet, gpt-5.5) for claude, codex, gemini
         /// and grok; provider/model for pi, omp and opencode; `auto` or a model
-        /// name for copilot. `ssf models <harness>` lists them.
+        /// name for copilot. Required in the resulting config when supported; ask the operator to choose.
+        /// `ssf models <harness>` lists them.
         #[arg(long)]
         model: Option<String>,
-        /// Effort level for the model, one the harness accepts (e.g. low, medium, high, xhigh, max; `ssf agents --json` lists them).
+        /// Effort level, required in the resulting config when supported (levels: `ssf agents --json`).
         #[arg(long)]
         effort: Option<String>,
         #[arg(long)]

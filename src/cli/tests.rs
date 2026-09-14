@@ -522,8 +522,8 @@ fn repo_add_and_set_switch_event_comments_and_clear_puts_it_back() {
         clone_url: None,
         base_branch: None,
         command: None,
-        model: None,
-        effort: None,
+        model: Some("opus".into()),
+        effort: Some("high".into()),
         instructions: None,
         prompt_file: None,
         allowed_users: None,
@@ -1009,4 +1009,109 @@ async fn auth_does_not_rewrite_the_live_daemon_snapshot() {
         Some("live-conversation")
     );
     assert!(session.active);
+}
+
+#[test]
+fn repo_launch_choices_required_without_partial_writes() {
+    let _sandbox = config::test_support::sandbox();
+    let path = config::config_path();
+    let run = |args: &[&str]| {
+        let cli =
+            Cli::try_parse_from(["ssf", "repo"].into_iter().chain(args.iter().copied())).unwrap();
+        let Command::Repo { command } = cli.command else {
+            panic!("expected repo")
+        };
+        repo_at(&path, command)
+    };
+    for options in [
+        vec![],
+        vec!["--model", "opus"],
+        vec!["--effort", "high"],
+        vec!["--model", " ", "--effort", "high"],
+        vec!["--command", "claude --model opus --effort high"],
+    ] {
+        let args: Vec<_> = ["add", "o/r", "--harness", "claude"]
+            .into_iter()
+            .chain(options)
+            .collect();
+        assert!(run(&args).is_err());
+        assert!(!path.exists(), "failed add must not write config");
+    }
+    run(&[
+        "add",
+        "o/r",
+        "--harness",
+        "claude",
+        "--model",
+        "opus",
+        "--effort",
+        "high",
+    ])
+    .unwrap();
+    run(&["set", "o/r", "--instructions", "Run tests"]).unwrap();
+    let original = std::fs::read(&path).unwrap();
+    for options in [
+        vec!["--clear", "model"],
+        vec!["--clear", "effort"],
+        vec!["--harness", "omp"],
+        vec!["--harness", "omp", "--model", "provider/model"],
+    ] {
+        let args: Vec<_> = ["set", "o/r"].into_iter().chain(options).collect();
+        assert!(run(&args).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+    }
+    // Re-adding an existing repository must not erase its choices.
+    assert!(run(&["add", "o/r", "--harness", "claude"]).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    run(&[
+        "set",
+        "o/r",
+        "--harness",
+        "omp",
+        "--model",
+        "provider/model",
+        "--effort",
+        "high",
+    ])
+    .unwrap();
+    run(&[
+        "set",
+        "o/r",
+        "--harness",
+        "gemini",
+        "--model",
+        "gemini-test",
+    ])
+    .unwrap();
+    let cfg = Config::load_from(&path).unwrap();
+    assert!(cfg.repos[0].effort.is_none());
+    run(&[
+        "add",
+        "o/open",
+        "--harness",
+        "opencode",
+        "--model",
+        "provider/model",
+    ])
+    .unwrap();
+    run(&["add", "o/custom", "--harness", "custom", "--driver", "orca"]).unwrap();
+    run(&["add", "o/crush", "--harness", "crush", "--driver", "orca"]).unwrap();
+    // Legacy files remain loadable; the check used by doctor diagnoses them.
+    std::fs::write(&path, "[[repo]]\nname = 'o/legacy'\nharness = 'omp'\n").unwrap();
+    let cfg = Config::load_from(&path).unwrap();
+    let error = cfg.repos[0].require_launch_prefs().unwrap_err().to_string();
+    assert!(error.contains("ssf repo set o/legacy --model MODEL --effort EFFORT"));
+    assert!(run(&["set", "o/legacy", "--instructions", "Run tests"]).is_err());
+    run(&[
+        "set",
+        "o/legacy",
+        "--model",
+        "provider/model",
+        "--effort",
+        "high",
+    ])
+    .unwrap();
+    Config::load_from(&path).unwrap().repos[0]
+        .require_launch_prefs()
+        .unwrap();
 }
