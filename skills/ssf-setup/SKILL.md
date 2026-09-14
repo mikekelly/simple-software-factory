@@ -8,6 +8,12 @@ description: How to use ssf / Simple Software Factory, including setup, configur
 SSF is built on top of herdr. Herdr must be installed and running on a host
 factory; VM setup supplies it in the guest.
 
+SSF release packages support Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu). macOS support is planned next but is
+not supported yet. Run a Linux factory either directly on a VPS (for example a
+Grok Bot or Meta Muse machine, or a Hetzner server) or, for the recommended
+local setup, inside a microVM.
+
 For installation, follow the [repository instructions](https://github.com/mikekelly/simple-software-factory#install).
 
 On a Bot-dedicated-VPS where Grok Bot should be the user's liaison for

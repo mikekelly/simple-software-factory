@@ -7,22 +7,26 @@ browser sign-in, or sudo password.
 
 **Choose your path first:**
 
-- **Grok Bot / stripped Debian container / no KVM or systemd user session:**
+- **A VPS**, such as a Grok Bot or Meta Muse machine or a Hetzner server (and
+  stripped Debian containers or hosts without KVM / a systemd user session):
   use the [headless-host guide](headless-host.md), which replaces the VM and
   package-service steps below with standalone binaries and foreground processes.
-- **Omarchy or a host with VM and service support:** follow the package steps below.
+- **Your local Linux machine, inside a microVM:** follow the package steps below.
 - **Client-only SSH access to an existing factory:** use the
   [standalone client](install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
 
-The recommended setup runs the daemon, herdr and agents inside a VM:
-Firecracker on Linux, lima on macOS. Agents on the host run as your Unix
-user and can access your home directory and credentials. The host
-alternative is in [step 6](#alternative-on-the-host-in-herdr).
+SSF release packages support Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu), on x86_64. macOS support is planned
+next but is not supported yet. macOS-specific notes later in this guide describe
+work in progress, not a supported installation path. The recommended local
+setup runs the daemon, herdr and agents inside a Firecracker microVM. In the
+host alternative, agents run as your Unix user and can access your home
+directory and credentials. That alternative is in
+[step 6](#alternative-on-the-host-in-herdr).
 The bar widget and **Factory** menu are available only on Omarchy.
 
 For everyday commands see the [README](../README.md#everyday-commands).
-The installed guide is `/usr/share/doc/ssf/docs/setup.md` on Linux or
-`$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS. The
+The installed guide is `/usr/share/doc/ssf/docs/setup.md`. The
 `ssf-setup` skill points to `ssf skill`; `ssf skill setup` prints this
 document from the running binary. Agents should also read `ssf skill agent`.
 
@@ -30,8 +34,7 @@ document from the running binary. Agents should also read `ssf skill agent`.
 
 | Platform | Requirements for the recommended VM setup |
 |----------|-------------------------------------------|
-| Linux x86_64 | Omarchy, Arch, Debian 12+, Ubuntu 24.04+, or Fedora; a systemd user session and usable `/dev/kvm` |
-| macOS | Homebrew, macOS 13.5+, and lima 2.0.1+; Apple silicon and Intel are supported |
+| Linux x86_64 | Omarchy, Arch, Debian 12+, or Ubuntu 24.04+; a systemd user session and usable `/dev/kvm` |
 
 On Linux, check KVM access with `test -r /dev/kvm && test -w /dev/kvm`.
 If access is missing, check the device permissions; on Debian/Ubuntu an
@@ -57,8 +60,6 @@ and run the command for your platform (**you** for sudo):
 |----------|---------|
 | Omarchy / Arch | `sudo pacman -U ssf-*.pkg.tar.zst` |
 | Debian / Ubuntu | `sudo apt install ./ssf_*_amd64.deb` |
-| Fedora | `sudo dnf install ./ssf-*.x86_64.rpm` |
-| macOS | `brew install mikekelly/tap/ssf` |
 
 On Debian/Ubuntu, run `sudo apt update` before installing packages, including
 on minimal images with stale or absent apt lists. The `.deb` depends on
@@ -107,9 +108,8 @@ distinct; select each VM lifecycle command by name. The compatibility service
 refuses to guess between several VMs. Once targets are migrated, stop the legacy
 singleton and enable each
 selected service with `ssf --server NAME ui service enable`; Linux uses
-`ssf@NAME.service`, while macOS uses one launchd agent per name. Setup follows
-the selected target; uninstall remains installation-wide and refuses named
-local/VM targets.
+`ssf@NAME.service`. Setup follows the selected target; uninstall remains
+installation-wide and refuses named local/VM targets.
 An established enabled VM can be adopted without rebuilding or moving it with
 `ssf server migrate-vm`; first confirm `ssf vm status` and the guest factory,
 then run the migration and confirm `ssf --server ssf-server vm status` and
@@ -117,9 +117,7 @@ then run the migration and confirm `ssf --server ssf-server vm status` and
 
 On Linux this creates the conventional target and enables
 `ssf@ssf-server.service` for `default.target`. It asks before enabling systemd linger so
-the service can start at boot and remain available after logout. On macOS it
-creates the target and enables its launchd agent; step 6 builds the VM it will
-supervise.
+the service can start at boot and remain available after logout.
 
 Before running the install command, supply any prerequisites the package
 cannot provide:
@@ -128,19 +126,15 @@ cannot provide:
   repositories supply herdr.
 - **Debian 12:** install GitHub CLI 2.40+ from [GitHub's apt repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)
   before ssf; Debian 12's bundled version is too old.
-- **Debian, Ubuntu and Fedora:** herdr is not a package dependency. For
+- **Debian and Ubuntu:** herdr is not a package dependency. For
   host sessions, install it with `curl -fsSL https://herdr.dev/install.sh | sh`.
   ssf also searches `~/.local/bin`. The VM installs its own herdr.
 - **Linux VM image tools:** if `ssf vm build` reports a missing tool,
   install `fakeroot`, `curl`, e2fsprogs and libarchive's `bsdtar`:
   `sudo pacman -S --needed fakeroot libarchive e2fsprogs curl`,
-  `sudo apt install fakeroot libarchive-tools e2fsprogs curl`, or
-  `sudo dnf install fakeroot bsdtar e2fsprogs curl`.
+  or `sudo apt install fakeroot libarchive-tools e2fsprogs curl`.
   The Firecracker guest is Ubuntu 24.04 LTS on every supported Linux host;
   the host does not need to run Ubuntu.
-
-Homebrew supplies `gh` and `lima`. Host herdr on macOS is optional
-(`brew install herdr`); the VM supplies its own.
 
 ### Service and optional Omarchy widget
 
@@ -159,7 +153,7 @@ omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --en
 The widget never installs, upgrades, starts, or removes the SSF package.
 
 For a live terminal view of active agents, run `ssf dashboard` in any terminal.
-The Linux and macOS clients include it; no plugin or Python installation is
+The Linux client includes it; no plugin or Python installation is
 needed. Without `--server` or `SSF_SERVER`, it connects to all configured servers.
 For a remote factory, use `ssf --server HOST dashboard` or set
 `SSF_SERVER=HOST`. For a local VM, run the client on the host. See the
@@ -169,16 +163,14 @@ default and requires a server restart after changing its configuration.
 
 Config and credentials live in `~/.config/ssf`, state in
 `~/.local/state/ssf`, and VM files in `~/.local/share/ssf/vm` (lima also
-uses `~/.lima`). These paths apply on both platforms. Package examples
-are in `/usr/share/ssf`, or `$(brew --prefix)/share/ssf` on macOS.
+uses `~/.lima`). Package examples are in `/usr/share/ssf`.
 
 **Check:** run `ssf doctor`. Before setup is complete, failures for the
 bot, service, driver, repositories and agent command links are expected.
 Resolve unreadable config or a missing GitHub CLI / ssf binary now. A
 missing host herdr is expected if you will use the VM.
 
-Logs: `journalctl --user -fu ssf@ssf-server.service` on Linux;
-`tail -f ~/Library/Logs/ssf/ssf-server.log` on macOS.
+Logs: `journalctl --user -fu ssf@ssf-server.service`.
 
 ## 3. Create the bot account
 
@@ -301,8 +293,7 @@ configuration edits need no restart.
 `ssf auth logout` revokes the keys and forgets the bot; the gh sign-in
 itself stays where gh holds the account. `ssf token` prints the token for anything else that needs
 it. The daemon authenticates on its next retry now that there is a token. VM
-users already started the host service before this step; host-mode macOS users
-start it in step 6. `ssf status` names the configured
+users already started the host service before this step. `ssf status` names the configured
 account before the daemon first starts, then the account the daemon last
 authenticated as. Removing the credential makes status report not signed in.
 
@@ -593,8 +584,8 @@ Describe one outcome per issue, where the plan lives, and who may merge. Keep
 implementation tasks on that issue. Use `Refs #N`
 for ongoing tracking and `Closes #N` only for complete delivery.
 
-Start from `/usr/share/ssf/SSF.example.md` (macOS:
-`$(brew --prefix)/share/ssf/SSF.example.md`) and adapt it, or use the checkout’s [SSF.example.md](../SSF.example.md)
+Start from `/usr/share/ssf/SSF.example.md` and adapt it, or use the checkout’s
+[SSF.example.md](../SSF.example.md)
 for a standalone installation. Commit it as `SSF.md` at the root of the
 repository’s **default branch** before checking `ssf doctor`. `CLAUDE.md` and
 `AGENTS.md` remain the place for repository policy shared by every agent,
@@ -648,8 +639,7 @@ GitHub (@mentioning it, or a review request, works too).
 - **If nothing happens**: `ssf doctor` first (it names most causes:
   token, driver, harness login, allowed users), then `ssf status` (the
   repository's last error is on it), then `journalctl --user -fu
-  ssf@NAME.service` (macOS: `tail -f ~/Library/Logs/ssf/NAME.log`; in
-  the VM, `ssf vm logs` for the guest daemon). An issue
+  ssf@NAME.service` (in the VM, `ssf vm logs` for the guest daemon). An issue
   assigned by an account without Write is logged once and ignored (step
   5).
 - **A workspace was closed by hand** (a herdr tab):
@@ -679,13 +669,12 @@ their own reference from `ssf guide`.
 ## 11. Upgrading
 
 Upgrade the package like any other: the next release's file with the
-command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst`, `sudo apt
-install ./ssf_*_amd64.deb`, `sudo dnf install ./ssf-*.x86_64.rpm`); on
+command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst` or `sudo apt
+install ./ssf_*_amd64.deb`); on
 Omarchy, once ssf is in its repository, `sudo pacman -Syu`. The
 package's hook reloads systemd and restarts every active package-owned legacy
-or target service in each running user session. On macOS, run `brew upgrade
-ssf`, then disable and enable each selected target service so its generated
-launchd agent uses the new binary. The restart takes the guest down and up with the new binary
+or target service in each running user session. The restart takes the guest
+down and up with the new binary
 (fetched from the release as the guest's `ssf-<version>-linux-<arch>`
 at that start), the same as `ssf vm restart` for a VM started by hand.
 What that restart means:
@@ -717,8 +706,8 @@ the upgrade, `ssf doctor` should look as it did before.
 ### Stop or restart later
 
 `ssf ui service disable` stops the service and keeps it stopped across
-logins. `ssf ui service enable` enables it again. Both work on Linux and
-macOS, including machines without the Omarchy widget.
+logins. `ssf ui service enable` enables it again on Linux, including machines
+without the Omarchy widget.
 
 Host agent terminals survive a daemon stop; activity is delivered when
 the daemon returns. In VM mode, stopping the host service shuts down the
@@ -731,8 +720,7 @@ guest too, and interrupted sessions resume when it starts again.
    Omarchy UI, revokes the bot's enrolled keys, forgets its credential,
    and destroys the VM instance and its data disk.
 2. Remove the package with the command it prints (**you** for sudo):
-   `sudo pacman -R ssf`, `sudo apt remove ssf`, `sudo dnf remove ssf`, or
-   `brew uninstall ssf` followed by `brew untap mikekelly/ssf`.
+   `sudo pacman -R ssf` or `sudo apt remove ssf`.
 
 Uninstall refuses if workspaces contain uncommitted or unpushed work,
 or if VM work cannot be checked. Follow the refusal's specific remedy:

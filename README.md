@@ -6,15 +6,29 @@ request, answers the review, and reports back on the issue. Every issue gets
 its own agent. The agents know about each other, about the project board, and
 about the SSF operating guidance your repository keeps for them.
 
-ssf is a small daemon for Linux, packaged for [Omarchy](https://omarchy.org/),
-Arch, Debian/Ubuntu and Fedora. It is built on top of
+ssf is a small daemon for Linux. Release packages support the Arch family
+(including [Omarchy](https://omarchy.org/)) and the Debian family (including
+Ubuntu). macOS support is next on the roadmap, but is not supported yet.
+
+It is built on top of
 [herdr](https://herdr.dev/), which runs the agent workspaces and terminals so
 you can watch them work, take over, or nudge them at any time (see
-[Workspaces and terminals](docs/drivers.md)). Nothing
-runs in the cloud: the daemon polls GitHub and drives the multiplexer, and
+[Workspaces and terminals](docs/drivers.md)). The daemon polls GitHub and drives
+the multiplexer, and
 the agents are the ones you already have installed (Claude Code, Codex,
 ...). If you would rather keep the agents off your machine altogether, the
-whole factory can run [inside a VM](docs/vm.md).
+whole factory can run [inside a microVM](docs/vm.md).
+
+## Where to run a factory
+
+There are two main ways to run an ssf factory on Linux:
+
+- **On a VPS:** run the factory directly on a dedicated Linux host, such as a
+  Grok Bot or Meta Muse machine, or a VPS from Hetzner. Start with the
+  [headless-host guide](docs/headless-host.md).
+- **On your local machine, inside a microVM:** keep the daemon, herdr and coding
+  agents isolated from your host. This is the recommended local setup; start
+  with [Setup](docs/setup.md).
 
 ## One issue, start to finish
 
@@ -198,12 +212,12 @@ a factory session for its session-specific collaboration reference.
 
 ## Install
 
-Choose the installation for the machine:
+Choose the installation for the Linux machine:
 
-- **Grok Bot, a stripped container, or Linux without KVM / a systemd user
-  session:** follow [Grok Bot / headless host](docs/headless-host.md) for
+- **A VPS, stripped container, or Linux without KVM / a systemd user
+  session:** follow [VPS / headless host](docs/headless-host.md) for
   standalone binaries and host mode, from prerequisites to a watching factory.
-- **Omarchy or another supported desktop/server with VM and service support:**
+- **Omarchy, Arch, Debian or Ubuntu with VM and service support:**
   use the packages below and [Setup](docs/setup.md).
 - **Only controlling an existing factory over SSH:** install the
   [standalone client](docs/install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
@@ -241,8 +255,11 @@ removing it never builds, installs, upgrades, starts or removes ssf. If the
 package or setup is missing, the widget shows the command needed to fix that
 state. `mise` is used only by developers building ssf from source.
 
-Arch, Debian/Ubuntu and Fedora (x86_64) remain available as packages, and
-macOS through Homebrew; every release carries the Linux packages.
+Release packages are available for x86_64 Arch-family systems (including
+Omarchy) and Debian-family systems (including Ubuntu). macOS support is planned
+next, but there is no supported macOS package yet.
+Any macOS-specific notes elsewhere in the documentation describe the
+work-in-progress implementation, not a supported installation path.
 
 - **Omarchy**: use a release newer than `v0.1.0` and
   install `ssf-<version>-1-x86_64.pkg.tar.zst` with `sudo pacman -U
@@ -255,14 +272,6 @@ macOS through Homebrew; every release carries the Linux packages.
   repositories (Debian 12 needs GitHub's apt repository for a new enough
   `gh`), and herdr is installed by hand ([Setup, step
   1](docs/setup.md#1-before-you-start)).
-- **Fedora**: `ssf-<version>-1.x86_64.rpm`, `sudo dnf install
-  ./ssf-*.x86_64.rpm`; herdr by hand, as above.
-- **macOS**: `brew install mikekelly/tap/ssf`; the formula pulls in `gh`
-  and `lima`. The factory runs inside a [lima](https://lima-vm.io) VM
-  (`ssf setup`, then `ssf vm build`); the formula installs
-  `ssf`, `ssf-server`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
-  documentation under `$(brew --prefix)/share/doc/ssf`.
-
 Separate static Linux x86_64 and ARM64 client/server binaries are also release
 assets; see [standalone installation](docs/install-binaries.md) for client-only
 SSH use and installation without a package. ARM64 assets are best effort.
@@ -400,7 +409,7 @@ ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspace
 ssf guide                         # the reference for agents (the initial prompt points at it)
 ssf ui service disable|enable|toggle|status
 ssf uninstall [--yes] [--force] [--data]   # clean up the service/account safely; then remove its package
-journalctl --user -fu ssf@ssf-server.service   # macOS: tail -f ~/Library/Logs/ssf/ssf-server.log
+journalctl --user -fu ssf@ssf-server.service
 ```
 
 Every command can target another machine that has SSF installed:
@@ -496,21 +505,20 @@ poll do the work.
 **Upgrading and uninstalling** are in [Setup](docs/setup.md#11-upgrading):
 Upgrade ssf with its package manager. An active, already configured service is
 restarted on package upgrade; installing the widget never upgrades it. For
-complete removal run `ssf uninstall`, then remove the package with pacman, apt,
-dnf or brew. Remove the Omarchy widget separately if it is installed.
+complete removal run `ssf uninstall`, then remove the package with pacman or
+apt. Remove the Omarchy widget separately if it is installed.
 
 ## The rest of the story
 
 The reference, one file per area. Each starts with a line saying what it
-covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`
-(`$(brew --prefix)/share/doc/ssf/docs/` on macOS).
+covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
 
 | Read | When you want to know |
 |------|-----------------------|
 | [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot account, the microVM or the host, the first repository and the harness and model it runs on, upgrading, uninstalling |
 | [Configuration](docs/configuration.md) | every key in `config.toml`; the `SSF.md` agent-guidance file; models and effort levels; the permission-free command each agent is started with; who may drive the factory |
 | [Workspaces and terminals](docs/drivers.md) | how SSF uses herdr for workspaces, terminals and agent state |
-| [Inside a VM](docs/vm.md) | running the whole factory in a VM, Firecracker on Linux or lima on macOS: the backends, the image, what gets in, reaching it, what persists |
+| [Inside a VM](docs/vm.md) | running the whole factory in a Firecracker microVM on Linux; also documents the work-in-progress lima backend for macOS |
 | [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and the boundary between `SSF.md` and `AGENTS.md` |
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |
 | [Sessions](docs/sessions.md) | which session owns an item, second opinions, following and messaging other sessions, release and purge |

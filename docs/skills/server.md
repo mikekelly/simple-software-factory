@@ -1,5 +1,9 @@
 # Server operation
 
+Supported release packages are for Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu). macOS support is planned next;
+macOS-specific service details below document work in progress.
+
 `ssf-server` runs the factory engine. The `ssf` client invokes its command
 endpoint locally or over SSH; managed VMs run the engine in the guest.
 Use `ssf skill setup` for packaged setup, `ssf skill headless` for foreground

@@ -3,7 +3,13 @@
 For the proposed additional Docker Sandboxes backend, see the
 [feasibility report](plans/docker-sandboxes.md). It is not implemented or enabled.
 
-How `ssf vm` runs the whole factory inside a VM (a Firecracker microVM on Linux, a lima instance on macOS), what gets into the guest, how to reach it and what persists. For whoever wants the agents kept off their own machine; agents only need to know they have `sudo` there, which their first prompt says.
+How `ssf vm` runs the whole factory inside a Firecracker microVM on Linux, what
+gets into the guest, how to reach it and what persists. This is the recommended
+way to run a factory on your local machine. Release packages support
+Arch-family Linux (including Omarchy) and Debian-family Linux (including
+Ubuntu). macOS support is planned next but is not supported yet; the lima
+details below describe work in progress. Agents only need to know they have
+`sudo` in the guest, which their first prompt says.
 
 Without it, everything runs on your machine as you: the agents can read
 your home directory, your keyring and whatever else you have open.

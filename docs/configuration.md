@@ -1,5 +1,9 @@
 # Configuration
 
+Supported release packages are for Arch-family Linux (including Omarchy) and
+Debian-family Linux (including Ubuntu). macOS support is planned next;
+macOS-specific settings below document work in progress.
+
 Every key in `~/.config/ssf/config.toml`, the SSF agent guidance file, model and effort settings, the permission-free commands each agent is started with, and who may drive the factory. For whoever sets up or tunes a factory; agents need none of it.
 
 `~/.config/ssf/config.toml` is mostly written for you by `ssf repo add` and
