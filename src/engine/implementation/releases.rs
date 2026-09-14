@@ -23,8 +23,9 @@ impl Engine {
 
     /// `ssf launch ...` wrapper that puts the bot credentials and issue
     /// identity into the harness's environment. The daemon's own config and
-    /// state locations are passed along so the wrapper reads the same files,
-    /// and the VM guest flag so `ssf guide` in the session knows where it is.
+    /// state locations and selected target are passed along so the wrapper
+    /// reads the same factory, and the VM guest flag so `ssf guide` in the
+    /// session knows where it is.
     pub(in crate::engine) fn launch_command(
         &self,
         repo: &RepoConfig,
@@ -47,14 +48,9 @@ impl Engine {
                 prefix.push_str(&format!("{var}={} ", shell_quote(&v)));
             }
         }
-        format!(
-            "{prefix}{} launch --repo {} --issue {} --issue-url {} -- {}",
-            shell_quote(&me),
-            shell_quote(&repo.name),
-            number,
-            shell_quote(url),
-            shell_quote(inner)
-        )
+        let server =
+            launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
+        render_launch_command(&prefix, &me, &server, repo, number, url, inner)
     }
 
     /// Deliver a prompt to the agent that acts on an item (its own session,
@@ -651,4 +647,66 @@ impl Engine {
     }
 
     // ---- handovers ------------------------------------------------------
+}
+
+fn launch_server_argument(server: Option<&str>) -> String {
+    server
+        .map(|name| format!(" --server {}", shell_quote(name)))
+        .unwrap_or_default()
+}
+
+fn render_launch_command(
+    prefix: &str,
+    executable: &str,
+    server: &str,
+    repo: &RepoConfig,
+    number: u64,
+    url: &str,
+    inner: &str,
+) -> String {
+    format!(
+        "{prefix}{}{server} launch --repo {} --issue {} --issue-url {} -- {}",
+        shell_quote(executable),
+        shell_quote(&repo.name),
+        number,
+        shell_quote(url),
+        shell_quote(inner)
+    )
+}
+
+#[cfg(test)]
+mod launch_command_tests {
+    use super::{launch_server_argument, render_launch_command};
+
+    #[test]
+    fn selected_server_is_forwarded_to_the_launch_wrapper() {
+        let repo = crate::config::RepoConfig {
+            name: "owner/repo".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            render_launch_command(
+                "",
+                "/bin/ssf",
+                &launch_server_argument(Some("local")),
+                &repo,
+                42,
+                "https://example.test/owner/repo/issues/42",
+                "agent --flag"
+            ),
+            "'/bin/ssf' --server 'local' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent --flag'"
+        );
+        assert_eq!(
+            render_launch_command(
+                "",
+                "/bin/ssf",
+                &launch_server_argument(None),
+                &repo,
+                42,
+                "https://example.test/owner/repo/issues/42",
+                "agent"
+            ),
+            "'/bin/ssf' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent'"
+        );
+    }
 }
