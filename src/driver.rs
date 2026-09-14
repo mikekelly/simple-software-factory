@@ -1265,13 +1265,23 @@ pub async fn local_worktrees(repo_root: &str) -> Result<Vec<LocalWorktree>> {
 /// The worktree made for item `number` under `repo_root`, by its name.
 pub async fn find_local_worktree(repo_root: &str, number: u64) -> Result<Option<LocalWorktree>> {
     let dir = worktrees_dir(repo_root);
-    for w in local_worktrees(repo_root).await? {
+    // Git reports canonical worktree paths. On macOS `/var` is a symlink to
+    // `/private/var`, so compare against the canonical parent as well.
+    let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+    for mut w in local_worktrees(repo_root).await? {
         let p = Path::new(&w.path);
-        if p.parent() != Some(dir.as_path()) {
+        if p.parent() != Some(dir.as_path()) && p.parent() != Some(canonical_dir.as_path()) {
             continue;
         }
         let name = p.file_name().map(|n| n.to_string_lossy().to_string());
         if name.as_deref().and_then(number_of_name) == Some(number) {
+            // Keep the checkout spelling supplied by the caller. Workspace ids
+            // created through /var or another symlink must not change after a
+            // `git worktree list` round trip returns the canonical path.
+            w.path = dir
+                .join(name.expect("matched worktree has a name"))
+                .to_string_lossy()
+                .into_owned();
             return Ok(Some(w));
         }
     }

@@ -26,6 +26,12 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 marker=/etc/ssf-image-built
 log=/var/log/ssf-provision.log
 guest=/mnt/ssf/guest
+# v0.8.0 enabled Firecracker's ttyS0 getty in lima guests too. VZ exposes that
+# device but does not use it as the active kernel console, so repair an existing
+# guest once this hook runs; otherwise later boots wait for the device timeout.
+if ! grep -qw ttyS0 /sys/class/tty/console/active; then
+    systemctl disable serial-getty@ttyS0.service 2>/dev/null || true
+fi
 if [ -f "$marker" ]; then
     exit 0
 fi

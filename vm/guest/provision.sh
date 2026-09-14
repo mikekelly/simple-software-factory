@@ -266,8 +266,13 @@ if [ "$backend" = firecracker ]; then
 else
     systemctl enable ssf-seed.service "$sshd_unit" herdr-server.service ssf.service
 fi
-# The serial console gets a login prompt for debugging from `ssf vm console`.
-systemctl enable serial-getty@ttyS0.service
+# Firecracker uses ttyS0 as its serial console. lima's VZ driver exposes a
+# ttyS0 device too, but does not use it as the active kernel console; enabling
+# a getty for it makes systemd hold getty.target for its device timeout on
+# every later boot. lima/systemd already starts a getty for the active console.
+if grep -qw ttyS0 /sys/class/tty/console/active; then
+    systemctl enable serial-getty@ttyS0.service
+fi
 mkdir -p /var/lib/ssf /seed
 chown ssf:ssf /var/lib/ssf
 rm -f /usr/local/lib/ssf/provision-init.sh

@@ -14,6 +14,7 @@
 //! `type: dir` entry for every directory under `vm/`.
 
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
 use std::process::Command;
 
 fn repo() -> PathBuf {
@@ -233,7 +234,7 @@ fn removal_stops_only_the_package_owned_opted_in_unit() {
     assert!(alpm.contains("AbortOnFail"));
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn removal_hook_discovers_and_stops_target_instances() {
     use std::os::unix::fs::PermissionsExt;
@@ -266,7 +267,7 @@ fn removal_hook_discovers_and_stops_target_instances() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn removal_hook_stops_an_owned_active_unit_even_when_disabled() {
     use std::os::unix::fs::PermissionsExt;
@@ -294,7 +295,7 @@ fn removal_hook_stops_an_owned_active_unit_even_when_disabled() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn removal_hook_fails_when_the_owned_service_cannot_stop() {
     use std::os::unix::fs::PermissionsExt;
@@ -319,7 +320,7 @@ fn removal_hook_fails_when_the_owned_service_cannot_stop() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn removal_discovery_fails_closed_and_skips_confirmed_unrelated_units() {
     use std::os::unix::fs::PermissionsExt;

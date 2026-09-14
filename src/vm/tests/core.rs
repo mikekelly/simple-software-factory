@@ -1,6 +1,30 @@
 use super::*;
 
 #[test]
+fn guest_does_not_enable_a_getty_for_an_inactive_serial_console() {
+    let provision = include_str!("../../../vm/guest/provision.sh");
+    let lima_boot = include_str!("../../../vm/guest/lima-boot.sh");
+
+    assert!(
+        provision.contains(
+            "if grep -qw ttyS0 /sys/class/tty/console/active; then\n    systemctl enable serial-getty@ttyS0.service\nfi"
+        ),
+        "provisioning must not make getty.target wait for an inactive serial device"
+    );
+    assert!(
+        lima_boot.contains(
+            "if ! grep -qw ttyS0 /sys/class/tty/console/active; then\n    systemctl disable serial-getty@ttyS0.service 2>/dev/null || true\nfi"
+        ),
+        "the lima boot hook must repair guests provisioned by v0.8.0"
+    );
+    assert!(
+        lima_boot.find("systemctl disable serial-getty@ttyS0.service")
+            < lima_boot.find("if [ -f \"$marker\" ]; then"),
+        "the repair must run on already-provisioned guests before the marker returns"
+    );
+}
+
+#[test]
 fn tailscale_is_an_explicit_guest_action_with_a_stable_requested_name() {
     let provision = include_str!("../../../vm/guest/provision.sh");
     let enrol = include_str!("../../../vm/guest/tailscale.sh");

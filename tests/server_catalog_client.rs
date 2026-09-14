@@ -89,7 +89,10 @@ fn catalog_commands_are_client_wide_and_sorted() {
 #[test]
 fn catalog_adds_isolated_targets_and_remove_only_forgets_them() {
     let root = Temp::new("catalog-mutations");
+    #[cfg(target_os = "linux")]
     script(&root.0.join("systemctl"), "exit 1");
+    #[cfg(target_os = "macos")]
+    script(&root.0.join("launchctl"), "exit 1");
 
     let output = root
         .client()
@@ -180,6 +183,7 @@ fn catalog_adds_isolated_targets_and_remove_only_forgets_them() {
     assert_eq!(list[0]["implicit"], true);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn catalog_remove_refuses_a_live_target_service() {
     let root = Temp::new("catalog-remove-live");
@@ -198,6 +202,7 @@ fn catalog_remove_refuses_a_live_target_service() {
     assert!(root.0.join("config/servers.toml").exists());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn catalog_remove_fails_closed_when_service_state_cannot_be_inspected() {
     let root = Temp::new("catalog-remove-uninspectable");
@@ -605,6 +610,7 @@ fn two_owned_vms_are_selected_independently() {
     assert_eq!(status["unit"], "ssf@crucible.service");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn a_named_local_service_uses_only_its_target_unit() {
     let root = Temp::new("target-service");

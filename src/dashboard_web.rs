@@ -224,6 +224,16 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    async fn assert_listener_closed(address: std::net::SocketAddr) {
+        timeout(Duration::from_secs(1), async {
+            while TcpStream::connect(address).await.is_ok() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dashboard listener remained open after the daemon stopped");
+    }
+
     fn request(path: &str, host: &str, extra: &str) -> String {
         format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{extra}\r\n")
     }
@@ -372,7 +382,7 @@ mod tests {
         assert!(!task.is_finished());
         finish.send(()).unwrap();
         task.await.unwrap().unwrap();
-        assert!(TcpStream::connect(address).await.is_err());
+        assert_listener_closed(address).await;
     }
 
     #[tokio::test]
@@ -383,7 +393,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let result = with_daemon(Some(listener), async { bail!("daemon failed") }).await;
         assert!(result.unwrap_err().to_string().contains("daemon failed"));
-        assert!(TcpStream::connect(address).await.is_err());
+        assert_listener_closed(address).await;
     }
 
     #[tokio::test]
