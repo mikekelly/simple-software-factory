@@ -115,10 +115,6 @@ An established enabled VM can be adopted without rebuilding or moving it with
 then run the migration and confirm `ssf --server ssf-server vm status` and
 `ssf --server ssf-server status` before adding another target.
 
-The published v0.7.0 package predates named target setup and enables the
-legacy `ssf.service` instead. The target setup described here applies to newer
-source builds; both require explicit setup and use linger for boot without login.
-
 On Linux this creates the conventional target and enables
 `ssf@ssf-server.service` for `default.target`. It asks before enabling systemd linger so
 the service can start at boot and remain available after logout. On macOS it
