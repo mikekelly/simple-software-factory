@@ -74,6 +74,14 @@ impl Engine {
     ) -> Result<Delivery> {
         let target = self.owner_of(repo, number);
         let st = self.entry(repo, target).clone();
+        let first_prompt =
+            crate::driver::FirstPrompt::for_state(st.seeded, st.first_prompt_attempted);
+        if first_prompt == crate::driver::FirstPrompt::Send {
+            self.entry(repo, target).first_prompt_attempted = true;
+            self.state
+                .save()
+                .context("recording the first prompt before delivery")?;
+        }
         let alive = match st.worktree_id.as_deref() {
             Some(id) => self.driver(repo).worktree_exists(id).await?,
             None => false,
@@ -165,6 +173,7 @@ impl Engine {
                     harness: &eff.harness,
                     title: &title,
                     text: relaunch_text,
+                    first_prompt,
                 },
                 text,
             )

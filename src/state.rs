@@ -220,6 +220,11 @@ pub struct IssueState {
     /// The initial prompt has been delivered.
     #[serde(default)]
     pub seeded: bool,
+    /// Terminal input for the initial prompt may already have been sent. This
+    /// is committed before that external write and cleared only once delivery
+    /// is confirmed, so restart recovery never pastes over a stranded prompt.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_prompt_attempted: bool,
     /// Still assigned and open as of the last poll.
     #[serde(default)]
     pub active: bool,

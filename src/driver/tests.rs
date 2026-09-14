@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn first_prompt_delivery_distinguishes_send_recovery_and_seeded_sessions() {
+    assert_eq!(FirstPrompt::for_state(false, false), FirstPrompt::Send);
+    assert_eq!(FirstPrompt::for_state(false, true), FirstPrompt::Recover);
+    assert_eq!(FirstPrompt::for_state(true, false), FirstPrompt::No);
+    assert_eq!(FirstPrompt::for_state(true, true), FirstPrompt::No);
+}
+
+#[test]
 fn log_lines_never_carry_the_token() {
     let wrapper = "SSF_CONFIG_DIR='/c' SSF_STATE_DIR='/s' SSF_GITHUB_TOKEN='gho_abc123' '/bin/ssf' launch --repo 'o/r' -- 'claude'";
     assert_eq!(

@@ -267,6 +267,28 @@ pub enum Driver {
     Stub(StubDriver),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstPrompt {
+    /// This is an ordinary delivery to a seeded session.
+    No,
+    /// The session is unseeded and no earlier first-prompt attempt is known.
+    Send,
+    /// An earlier attempt may have left the prompt in the composer.
+    Recover,
+}
+
+impl FirstPrompt {
+    pub fn for_state(seeded: bool, attempted: bool) -> Self {
+        if seeded {
+            Self::No
+        } else if attempted {
+            Self::Recover
+        } else {
+            Self::Send
+        }
+    }
+}
+
 /// How a prompt is delivered when the agent has to be started again: the
 /// commands to start fresh or to resume, and what to send in each case.
 pub struct Relaunch<'a> {
@@ -279,6 +301,7 @@ pub struct Relaunch<'a> {
     pub title: &'a str,
     /// What a fresh harness gets instead of the prompt (the whole story).
     pub text: Option<&'a str>,
+    pub first_prompt: FirstPrompt,
 }
 
 /// A launch command fit for a log line: the bot token that

@@ -396,6 +396,7 @@ async fn giving_up_on_a_binding_posts_gave_up_once() {
 }
 #[tokio::test]
 async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Orca);
@@ -442,6 +443,7 @@ async fn a_given_up_owner_relaunched_for_a_dependent_posts_resumed() {
 }
 #[tokio::test]
 async fn onboarding_onto_a_kept_workspace_posts_attached_again() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Orca);
@@ -588,6 +590,7 @@ async fn a_bound_pull_request_is_attached_as_one() {
 }
 #[tokio::test]
 async fn a_delegated_item_is_attached_with_its_parent_named() {
+    let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Orca);
