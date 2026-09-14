@@ -51,6 +51,10 @@ and run the command for your platform (**you** for sudo):
 | Fedora | `sudo dnf install ./ssf-*.x86_64.rpm` |
 | macOS | `brew install mikekelly/tap/ssf` |
 
+Ubuntu 24.04 and Debian 13 (Trixie) use the same amd64 `.deb`; their standard
+repositories provide a sufficiently recent GitHub CLI. Debian 12 needs the
+additional GitHub apt repository described below.
+
 Package installation only installs SSF's files. It does not create user
 configuration, authenticate a bot, enable the service, or install the optional
 Omarchy widget. Prepare the current user explicitly after installation. The

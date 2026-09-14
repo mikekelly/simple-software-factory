@@ -1,7 +1,7 @@
 # Install standalone binaries
 
-Use the packages for Omarchy and Ubuntu, or Homebrew for macOS, when running a
-complete factory; see [Setup](setup.md#2-install-the-package). The Linux package
+Use the packages for Omarchy, Ubuntu and Debian 13 (Trixie), or Homebrew for
+macOS, when running a complete factory; see [Setup](setup.md#2-install-the-package). The Linux package
 named `ssf` includes both the `ssf` client and `ssf-server` daemon. There are no
 separate client and server packages. Neither package installation nor copying a
 binary enables a background service.
