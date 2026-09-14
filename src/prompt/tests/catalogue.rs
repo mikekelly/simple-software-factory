@@ -149,7 +149,7 @@ fn prompt_catalogue() {
         repo: &repo,
         daemon: &d,
         bot_login: bot,
-        driver: DriverKind::Orca,
+        driver: DriverKind::Herdr,
         pr: None,
         triggers: &assigned_t,
         owner: None,

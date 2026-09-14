@@ -93,7 +93,7 @@ that disk removes them; a retained host `[vm]` config cannot restore the
 factory. Export any needed guest files before confirming VM destruction.
 
 What it keeps, and lists at the end: the clones and worktrees under
-`~/ssf/projects` (or Orca's projects; may hold unpushed work), the `[vm]
+`~/ssf/projects` (may hold unpushed work), the `[vm]
 dir` (the image and downloads; retained -- ssf does not look inside it,
 so inspect it before removing it), and, unless you pass
 `--data`, `~/.config/ssf` (host configuration and any legacy or host-mode

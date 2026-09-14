@@ -399,7 +399,6 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let bot = ctx.bot_login;
     let kind = ctx.kind();
     let multiplexer = match ctx.driver {
-        DriverKind::Orca => "the Orca multiplexer",
         DriverKind::Herdr => "the herdr multiplexer",
     };
     // Pushes go out as the bot unless `[git].credential` says someone
@@ -779,7 +778,7 @@ pub struct Interrupted<'a> {
 }
 
 /// The one message a session gets when the factory finds it interrupted at
-/// startup: the machine (or Orca) restarted, its terminal is gone, and it
+/// startup: the machine or herdr restarted, its terminal is gone, and it
 /// has just been started again. A resumed harness has its memory; a fresh
 /// one gets the item's story ahead of this.
 pub fn interrupted_prompt(it: &Interrupted) -> String {

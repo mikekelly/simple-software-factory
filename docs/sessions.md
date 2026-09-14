@@ -81,7 +81,7 @@ local transcript (including prompts and tool activity). SSF reads file metadata,
 not transcript contents. It uses `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set,
 otherwise the usual home directories. Other harnesses, missing transcripts,
 and unidentified conversations have no reported time; the dashboard shows
-“Unknown”. Orca continues to supply its own activity timestamps.
+“Unknown”.
 
 The first prompt is not recorded as delivered merely because its bytes reached
 the terminal. With herdr, ssf waits for the harness to start handling it. If a
@@ -655,8 +655,8 @@ mentioned item rather than to unassign one that has no assignee.
   (`repo.base_branch`, else origin's default branch) and beyond origin.
   A worktree holding commits that are on no other branch and not on
   origin, uncommitted changes, or a stash entry made on its branch, with
-  no agent in its workspace (or no workspace at all: a herdr tab or an
-  Orca worktree closed by hand leaves the checkout behind), gets a `WARN`
+  no agent in its workspace (or no workspace at all: a herdr tab closed by
+  hand leaves the checkout behind), gets a `WARN`
   line naming it, what it holds (`6 commits ahead of master, not on
   origin`), whether its workspace is open, and whether its item is active
   on the record. For an active item `ssf tell <item> "..."` brings the

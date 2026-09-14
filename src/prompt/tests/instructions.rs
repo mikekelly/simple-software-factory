@@ -17,7 +17,7 @@ fn first_prompt_names_the_driver() {
     };
     let d = DaemonConfig::default();
     let triggers = vec!["assigned".to_string()];
-    let mut ctx = PromptContext {
+    let ctx = PromptContext {
         repo: &repo,
         daemon: &d,
         bot_login: "bot",
@@ -34,8 +34,6 @@ fn first_prompt_names_the_driver() {
         pushes_as: None,
     };
     assert!(instructions(&issue, &ctx).contains("through the herdr multiplexer"));
-    ctx.driver = DriverKind::Orca;
-    assert!(instructions(&issue, &ctx).contains("through the Orca multiplexer"));
 }
 
 #[test]
@@ -70,7 +68,7 @@ fn initial_prompt_mentions_bot_and_issue() {
         repo: &repo,
         daemon: &d,
         bot_login: "bot",
-        driver: DriverKind::Orca,
+        driver: DriverKind::Herdr,
         pr: None,
         triggers: &[],
         owner: None,
@@ -93,7 +91,7 @@ fn initial_prompt_mentions_bot_and_issue() {
     assert!(
         p.contains(
             "## How to work on this\n\nYou are an automatically spawned coding agent for the \
-GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, \
+GitHub account @bot. Simple Software Factory (ssf) spawned you, through the herdr multiplexer, \
 in a worktree of this repository, because #3 was assigned to @bot.\n\n\
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
 explains the rest.\n\n\
@@ -237,7 +235,7 @@ fn initial_prompt_is_the_bare_minimum() {
         repo: &repo,
         daemon: &d,
         bot_login: "OverlayBot",
-        driver: DriverKind::Orca,
+        driver: DriverKind::Herdr,
         pr: None,
         triggers: &triggers,
         owner: None,
@@ -466,7 +464,7 @@ fn initial_prompt_lists_project_boards_without_prescribing_columns() {
         repo: &repo,
         daemon: &d,
         bot_login: "bot",
-        driver: DriverKind::Orca,
+        driver: DriverKind::Herdr,
         pr: None,
         triggers: &[],
         owner: None,

@@ -44,7 +44,7 @@ Panel {
   readonly property var blockedSessions: status && status.blocked_sessions instanceof Array ? status.blocked_sessions : []
   readonly property int blockedCount: blockedSessions.length
   readonly property var repos: status && status.repos instanceof Array ? status.repos : []
-  readonly property bool orcaAvailable: !status || !status.orca || status.orca.available !== false
+  readonly property bool driverAvailable: !status || !status.driver || status.driver.available !== false
   readonly property var sessions: liveSessions()
   readonly property int workingCount: countState("working")
   readonly property int waitingCount: countState("waiting")
@@ -124,7 +124,7 @@ Panel {
       case "no-agent": return "no agent"
       case "no-workspace": return "no workspace"
       case "unbound": return "starting"
-      case "unknown": return orcaAvailable ? "?" : "orca off"
+      case "unknown": return driverAvailable ? "?" : "herdr off"
       default: return String(s.agent_state || "")
     }
   }
@@ -189,7 +189,7 @@ Panel {
   }
 
   function sessionTooltip(s) {
-    var lines = [String(s.id || ""), "click: open the Orca workspace", "title or right-click: open on GitHub"]
+    var lines = [String(s.id || ""), "click: open the herdr workspace", "title or right-click: open on GitHub"]
     if (s.triggers instanceof Array && s.triggers.length > 0) lines.push("via " + s.triggers.join(", "))
     if (s.column) lines.push("column: " + String(s.column))
     lines.push(String(s.prompts_sent || 0) + " prompts")
@@ -219,7 +219,7 @@ Panel {
     var parts = [n + (n === 1 ? " session" : " sessions")]
     if (workingCount > 0) parts.push(workingCount + " working")
     if (waitingCount > 0) parts.push(waitingCount + " waiting")
-    if (!orcaAvailable) parts.push("Orca not running")
+    if (!driverAvailable) parts.push("herdr not running")
     return parts.join(" · ")
   }
 
@@ -602,9 +602,9 @@ Panel {
         }
 
         Text {
-          visible: root.loaded && root.sessions.length > 0 && !root.orcaAvailable
+          visible: root.loaded && root.sessions.length > 0 && !root.driverAvailable
           width: parent.width
-          text: "Orca is not running, so agent states are unknown."
+          text: "herdr is not running, so agent states are unknown."
           color: root.dim
           wrapMode: Text.Wrap
           font.family: root.fontFamily
@@ -673,7 +673,7 @@ Panel {
 
   // One agent session: the item as a link with its GitHub state, the agent's
   // state, what it last said (or is running), and where it lives. Clicking the
-  // row opens the Orca workspace; the title (or a right-click) opens GitHub.
+  // row opens the herdr workspace; the title (or a right-click) opens GitHub.
   component SessionRow: BorderSurface {
     id: row
     property var session: null

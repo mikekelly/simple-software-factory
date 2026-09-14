@@ -65,10 +65,10 @@ impl Engine {
         }
     }
 
-    /// The startup pass. A daemon restart is invisible to agents (Orca keeps
-    /// their terminals), but after a machine restart every session's
+    /// The startup pass. A daemon restart is invisible to agents, but after a
+    /// machine restart every session's
     /// terminal is gone, and nothing would bring one back until the next
-    /// GitHub event for its item. So, once, when Orca first answers: every
+    /// GitHub event for its item. So, once, when herdr first answers: every
     /// active session that owns its workspace is looked at, and one whose
     /// workspace still exists but has no live agent is started again through
     /// the normal delivery path (resuming its conversation when a session

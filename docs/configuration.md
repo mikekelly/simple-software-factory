@@ -179,12 +179,7 @@ instructions = "Run `make test` before opening a PR."
 | `git.name`, `git.email` | the bot's login and email | Author and committer of the agents' commits, when a person rather than the bot (see [Committing as a person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)); both or neither. `gh` stays the bot |
 | `git.signing_key` | the bot's key for the bot, unsigned for a person | SSH key to sign commits and tags with (a path), or `false` for unsigned |
 | `git.credential` | `bot` | Who pushes over HTTPS: `bot` (the bot's token), `token:<login>` (the token gh holds for that account where the agents run), `file:<path>` (a token file), or a git credential helper string used as `credential.helper`. SSH remotes always use the bot's key |
-| `driver` | `herdr` | What runs the agents: `herdr` or `orca` (see [Drivers](drivers.md)). Unset, `ssf config show` and `ssf doctor` say which is in effect; the default was `orca` until 2026-09-06, so an older file that never set it now runs in herdr unless it says `driver = "orca"` |
-| `orca.command` | `/usr/lib/orca-ide/bin/orca-ide` | Orca CLI binary (`/usr/bin/orca-ide` launches the app, not the CLI) |
-| `orca.host` | `local` | The Orca host projects and worktrees are created on |
-| `orca.projects_dir` | `~/orca/projects` | Where repositories are cloned when Orca has no project for them |
-| `orca.setup_timeout_secs` | `900` | How long to wait for a project clone to be ready |
-| `orca.tui_idle_timeout_ms` | `90000` | How long a freshly started agent gets to show up and go idle in its terminal |
+| `driver` | `herdr` | What runs the agents. Herdr is currently the only supported value (see [Workspaces and terminals](drivers.md)); the key may be left unset |
 | `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
 | `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
 | `herdr.tui_idle_timeout_ms` | `90000` | How long a freshly started agent gets to show up in its pane |
@@ -200,7 +195,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_grace_secs` | | No longer used: it timed the reviewer sessions out, which went with #115 (see [Second opinions](sessions.md#second-opinions-the-gauntlet)); still accepted so old files load, and `ssf doctor` says so while it stays |
 | `daemon.review_label` | | No longer used: the label started a reviewer session until #115; ssf reacts to no label now. Still accepted so old files load; `ssf doctor` says so while it stays |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
-| `daemon.startup_driver_wait_secs` | `120` | How long to wait for the driver (herdr or Orca) at daemon start before the first poll; the old name `startup_orca_wait_secs` still loads |
+| `daemon.startup_driver_wait_secs` | `120` | How long to wait for herdr at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
@@ -223,9 +218,9 @@ instructions = "Run `make test` before opening a PR."
 | `repo.github_id` | enrolled by ssf | GitHub's immutable repository database id; ssf uses it to discover renames and transfers |
 | `repo.aliases` | `[]` | Previous `owner/name` values retained by ssf so historical session origin tags still route correctly |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
-| `repo.driver` | the top-level `driver` | This repository's driver, so one daemon can run some repositories in Orca and others in herdr |
+| `repo.driver` | the top-level `driver` | Optional per-repository declaration; herdr is currently the only supported value |
 | `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
-| `repo.model` | required by repo add/set when supported | Model: an Orca model id for `claude`, `codex`, `gemini` and `grok`, the agent's own `provider/model` for `pi`, `omp`, `opencode` and `copilot` (`ssf models <agent>` lists them; other ids pass through) |
+| `repo.model` | required by repo add/set when supported | Model id accepted by the agent; `provider/model` for `pi`, `omp` and `opencode`, and `auto` or a model name for `copilot` (`ssf models <agent>` lists known values; other ids pass through) |
 | `repo.effort` | required by repo add/set when supported | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.path` | | Register an existing checkout instead of cloning |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories (the bot's enrolled key is used) |
@@ -259,7 +254,7 @@ through GitHub normally; no SSF-side rename command is required.
 Environment overrides: `SSF_GITHUB_TOKEN` (the token), `SSF_CONFIG_DIR`
 and `SSF_STATE_DIR` (where config and state live; a scratch factory uses
 its own, and [Development](development.md) says what they do and do not
-move), `ORCA_CLI_COMMAND` and `HERDR_COMMAND` (the driver binaries),
+move), `HERDR_COMMAND` (the herdr CLI),
 `SSF_VM_DIR` (the VM image scripts), `SSF_PLUGIN_DIR` (the bar widget's
 source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
 `--log` reads).
@@ -339,14 +334,11 @@ from what the person can run and what a task costs, is [Choosing the
 harness and the model](setup.md#choosing-the-harness-and-the-model) in
 the setup document; the rest of this section is the mechanics.
 
-For the agents Orca has a model catalogue for, `repo.model` and `repo.effort`
-use the same identifiers as Orca's own `--model`/`--effort` options (`orca
-orchestration worker-start`). Pi, Oh My Pi, OpenCode and Copilot are not in
-Orca's catalogue; they take their own `provider/model` ids (Pi and Oh My Pi
-reach many providers, OpenRouter among them) and their own thinking or
-reasoning levels. Either way ssf turns the setting into the agent's
-command-line flags when it starts the agent, including when it resumes a
-session:
+`repo.model` and `repo.effort` use identifiers accepted by the selected
+agent. Pi, Oh My Pi and OpenCode take their own `provider/model` ids (Pi and
+Oh My Pi reach many providers, OpenRouter among them) and their own thinking
+or reasoning levels. SSF turns the setting into the agent's command-line flags
+when it starts the agent, including when it resumes a session:
 
 | Agent | Model ids | Effort levels | What is appended to the command |
 |-------|-----------|---------------|---------------------------------|

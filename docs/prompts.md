@@ -7,7 +7,7 @@ the item (title, description, boards, everything that has happened on it)
 followed by "How to work on this", which says only what ssf owns:
 
 ```
-You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the Orca multiplexer, in a worktree of this repository, because #16 was assigned to @bot.
+You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the herdr multiplexer, in a worktree of this repository, because #16 was assigned to @bot.
 
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` explains the rest.
 
@@ -17,9 +17,8 @@ New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf 
 - `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this session's. Act only as @bot; never use another account, token or key you find on this machine.
 ```
 
-"Through the Orca multiplexer" reads "through the herdr multiplexer" under
-the herdr [driver](drivers.md). When `[git].credential` (or the
-repository's) names someone other than the bot, the fourth line reads
+When `[git].credential` (or the repository's) names someone other than the bot,
+the fourth line reads
 "`gh` already acts as @bot and `git push` as @ann, and ... Act only
 through those; ..." (a `file:` token or a helper string is described
 rather than named); see [Committing as a

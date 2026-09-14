@@ -370,7 +370,7 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
              harness: Pi\n\
              model: openai/gpt-6\n\
              effort: high\n\
-             driver: orca\n\
+             driver: herdr\n\
              branch: bot/issue-5\n\
              handed over from: Claude Code\n\
              ```"

@@ -17,7 +17,7 @@ browser sign-in, or sudo password.
 The recommended setup runs the daemon, herdr and agents inside a VM:
 Firecracker on Linux, lima on macOS. Agents on the host run as your Unix
 user and can access your home directory and credentials. The host
-alternative is in [step 6](#alternative-on-the-host-in-herdr-or-in-orca).
+alternative is in [step 6](#alternative-on-the-host-in-herdr).
 The bar widget and **Factory** menu are available only on Omarchy.
 
 For everyday commands see the [README](../README.md#everyday-commands).
@@ -144,8 +144,7 @@ cannot provide:
   the host does not need to run Ubuntu.
 
 Homebrew supplies `gh` and `lima`. Host herdr on macOS is optional
-(`brew install herdr`); the VM supplies its own. Orca is installed
-separately if you choose it in step 6.
+(`brew install herdr`); the VM supplies its own.
 
 ### Service and optional Omarchy widget
 
@@ -371,7 +370,6 @@ factory](configuration.md#who-may-drive-the-factory).
 
 The VM runs its own daemon and herdr. Sessions run as the guest's `ssf`
 user with passwordless sudo; the VM is the isolation boundary.
-Per-repository Orca settings are ignored inside it.
 
 ```sh
 ssf vm build
@@ -398,7 +396,7 @@ can remain. Use `ssf vm status` to diagnose host VM tooling and
 See [Inside a VM](vm.md) for shared files, persistence, attaching to
 herdr, SSH access, rebuilding and resetting.
 
-### Alternative: on the host, in herdr or in Orca
+### Alternative: on the host, in herdr
 
 With a package and a working user service manager, choose this shape before
 the first setup by creating the sole local target:
@@ -417,10 +415,8 @@ on a fresh standalone install leave the server catalog empty, skip `ssf setup`,
 and run `ssf-server` in the foreground under the same Unix user and environment
 as the client. Keep it running in a separate terminal, or use your host supervisor.
 
-The `driver` key picks where workspaces and terminals live; herdr when
-unset. A `[[repo]]` can override it (`ssf repo add ... --driver orca`),
-so one daemon can run some repositories in Orca and others in herdr; the
-per-repository driver is ignored in the VM.
+SSF is built on top of herdr, which provides its workspaces and terminals.
+The optional `driver = "herdr"` setting makes that choice explicit.
 
 - **herdr** (the default): needs a running herdr server: start `herdr server`
   for headless operation, or interactive `herdr` in a terminal and leave it
@@ -429,16 +425,9 @@ per-repository driver is ignored in the VM.
   next to the clone. herdr only runs the agents it recognises (`herdr
   agent start --help`; `crush` is not among them), and `ssf repo add`
   warns about one it does not.
-- **Orca**: needs `orca-ide-bin` installed (not in the Omarchy
-  repository), signed in and running; `ssf config set driver orca`. The
-  daemon waits for it at start. Workspaces are Orca worktrees linked to
-  the issue number. `orca.command` defaults to
-  `/usr/lib/orca-ide/bin/orca-ide` (the CLI; `/usr/bin/orca-ide` launches
-  the app, so do not point at that).
-
 On the host, the default launch commands bypass harness permission prompts;
 ssf adds no isolation boundary. Check: `ssf doctor` says `herdr reachable and
-ready` (or `orca reachable and ready`). Details: [Drivers](drivers.md).
+ready`. Details: [Workspaces and terminals](drivers.md).
 
 ## 7. Sign in the harness where the agents run
 
@@ -564,7 +553,7 @@ for IDs, aliases and harness-specific restrictions.
   prompts, because terminals are unattended. See `ssf agents --json`
   and [Permissions](configuration.md#permissions) before changing it;
   an interactive approval prompt can leave a session waiting indefinitely.
-- **`driver`:** overrides herdr/Orca for one repository on the host.
+- **`driver`:** optionally declares `herdr` for one repository.
 - **`path`:** uses an existing host checkout; the VM clones for itself.
 - **`clone_url`, `base_branch`:** override the clone URL and issue
   worktree base. SSH uses the bot's enrolled key; HTTPS uses a token.
@@ -643,7 +632,7 @@ GitHub (@mentioning it, or a review request, works too).
 
 - **Within a poll interval** (10 s) `ssf status` lists the item and a
   workspace labelled `<repo>-<issue-number>` appears in herdr (`ssf vm attach` shows the
-  guest's herdr; on the host, your own herdr or Orca). The clone happens
+  guest's herdr; on the host, your own herdr). The clone happens
   first, so the first item on a repository takes a little longer.
 - **Within a couple of minutes** the agent comments on the issue with
   what it is about to do, under a `🤖#N says:` byline. That comment is
@@ -662,7 +651,7 @@ GitHub (@mentioning it, or a review request, works too).
   the VM, `ssf vm logs` for the guest daemon). An issue
   assigned by an account without Write is logged once and ignored (step
   5).
-- **A workspace was closed by hand** (a herdr tab, an Orca worktree):
+- **A workspace was closed by hand** (a herdr tab):
   the git checkout under `<checkout>.worktrees/` survives, and so does
   whatever it holds. `ssf doctor` prints a `WARN` line per repository
   naming every such checkout with commits on no other branch and not on
@@ -687,6 +676,13 @@ The everyday commands (`status`, `peers`, `tell`, `sub`, `release`,
 their own reference from `ssf guide`.
 
 ## 11. Upgrading
+
+Before upgrading an installation that selected Orca, finish and push any work
+held only in its worktrees. Remove `driver = "orca"`, per-repository Orca
+overrides, and the `[orca]` table from `config.toml`; the new version rejects
+those removed settings. The next session pass creates herdr workspaces from
+the configured checkout or a fresh clone, and does not delete the old Orca
+projects.
 
 Upgrade the package like any other: the next release's file with the
 command from step 2 (`sudo pacman -U ssf-*.pkg.tar.zst`, `sudo apt
@@ -719,9 +715,8 @@ Reset alone reuses the old image. For Lima, run `ssf vm reset`, then
 migration for an explicit choice; do not delete either config to force
 an upgrade through.
 
-Your config, state, keys and the VM's disks are preserved by an upgrade;
-a renamed key keeps loading under its old name. `ssf doctor` after the
-upgrade should look as it did before.
+Your config, state, keys and the VM's disks are preserved by an upgrade.
+`ssf doctor` after the upgrade should look as it did before.
 
 ## 12. Stopping and uninstalling
 
@@ -770,7 +765,7 @@ cleanup sequence and disk-recovery cases.
 - Package installed; `ssf doctor` can read config and find GitHub CLI.
 - Bot account has repository Write access and any required board access.
 - `ssf auth status` names the bot; commit identity is intentional.
-- VM and guest daemon are running, or the chosen host driver is ready.
+- VM and guest daemon are running, or host herdr is ready.
 - Harness is installed and signed in where sessions run.
 - Repository is configured with a deliberate harness/model choice.
 - `SSF.md` describes SSF issue ownership, board workflow, review and merge

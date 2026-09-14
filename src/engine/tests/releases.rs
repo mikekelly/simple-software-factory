@@ -61,7 +61,7 @@ async fn forced_release_removes_a_workspace_with_open_bound_items() {
     let clean = scratch("force-bound-release").await;
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -205,7 +205,7 @@ async fn daemon_side_refusals_are_capped_and_give_the_workspace_up() {
         st.worktree_path = Some("/nonexistent/ssf-w1".into());
         st.github_state = Some("closed".into());
     }
-    // The fake Orca cannot be asked, so the workspace counts as still
+    // The fake driver cannot be asked, so the workspace counts as still
     // there and no agent is live to tell; the refusal is counted all
     // the same.
     for n in 1..=MAX_RELEASE_REFUSALS {
@@ -270,7 +270,7 @@ fn release_refused_prompt_names_the_work_and_the_last_warning() {
 #[tokio::test]
 async fn a_release_is_off_once_the_item_is_live_again() {
     let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos.push(r.clone());
@@ -405,39 +405,6 @@ async fn a_workspace_made_by_the_old_driver_is_re_created_on_the_new_one() {
     assert_eq!(
         e.entry(&repo(), 5).worktree_id.as_deref(),
         Some("stub::/stub.worktrees/issue-5-fix-the-widget")
-    );
-
-    // And the other way round: a record that says herdr, with the
-    // checkout path as its repo id, once the repository runs in Orca.
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
-    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
-    e.cfg.driver = Some(DriverKind::Orca);
-    {
-        let st = e.entry(&repo(), 5);
-        st.driver = Some("herdr".into());
-        st.repo_id = Some("/home/me/ssf/projects/r".into());
-        st.worktree_id = Some("w7@/home/me/ssf/projects/r.worktrees/issue-5-fix-the-widget".into());
-        st.worktree_path = Some("/home/me/ssf/projects/r.worktrees/issue-5-fix-the-widget".into());
-    }
-    e.deliver_to(&repo(), 5, "hello", None).await.unwrap();
-    let st = e.entry(&repo(), 5).clone();
-    assert_eq!(st.repo_id.as_deref(), Some("stub"));
-    assert_eq!(st.driver.as_deref(), Some("orca"));
-    assert_eq!(
-        st.worktree_id.as_deref(),
-        Some("stub::/stub.worktrees/issue-5-fix-the-widget")
-    );
-    assert!(e.failures.is_empty());
-    assert_eq!(
-        d.log()[0],
-        "relaunch:stub::/stub.worktrees/issue-5-fix-the-widget:false"
-    );
-    let posts = stub.post_bodies();
-    assert_eq!(posts.len(), 1, "{posts:?}");
-    assert!(
-        posts[0].1.contains("driver: orca\n") && posts[0].1.contains("re-created: driver switch\n"),
-        "{}",
-        posts[0].1
     );
 }
 #[tokio::test]

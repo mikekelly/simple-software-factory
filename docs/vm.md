@@ -9,9 +9,8 @@ Without it, everything runs on your machine as you: the agents can read
 your home directory, your keyring and whatever else you have open.
 `ssf vm` moves the whole factory (the daemon, herdr and every agent
 session) into a VM, and leaves the host only what builds, starts, stops
-and reaches the guest. The drivers are untouched; the guest runs herdr
-(Orca is a desktop app and needs a display the guest does not have, so a
-repository that says `driver = "orca"` runs in herdr there). Two backends
+and reaches the guest. The guest runs the same herdr-based workspace stack as
+host mode. Two backends
 run the guest, chosen by `[vm] backend` (see [Backends](#backends)):
 [Firecracker](https://firecracker-microvm.github.io/), the original, on
 Linux with KVM, and [lima](https://lima-vm.io), on macOS and on Linux

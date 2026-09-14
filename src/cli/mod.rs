@@ -40,8 +40,8 @@ mod prelude {
     pub(crate) use crate::config::{self, Config, RepoConfig, split_repo_name};
     pub(crate) use crate::{
         agents, allow, dashboard, dashboard_web, driver, engine, ghcli, github, ipc, keys, login,
-        models, orca, origin, platform, prompt, release, server_catalog, setup, shim, state,
-        status, ui as factory_ui, uninstall, vm as factory_vm,
+        models, origin, platform, prompt, release, server_catalog, setup, shim, state, status,
+        ui as factory_ui, uninstall, vm as factory_vm,
     };
 }
 

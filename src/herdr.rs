@@ -21,10 +21,9 @@ use tracing::{debug, info, warn};
 
 use crate::config::HerdrConfig;
 use crate::driver::{
-    self, FirstPrompt, Relaunch, add_local_worktree, checkout_of_worktree, find_local_worktree,
-    number_of_name, remove_local_worktree,
+    self, AgentInfo, Delivery, FirstPrompt, Relaunch, WorkspaceInfo, Worktree, add_local_worktree,
+    checkout_of_worktree, find_local_worktree, number_of_name, remove_local_worktree,
 };
-use crate::orca::{AgentInfo, Delivery, WorkspaceInfo, Worktree};
 
 /// Human-readable label; checkout names remain the recovery key.
 fn workspace_label(repo: &str, number: u64) -> String {
@@ -825,8 +824,7 @@ impl Herdr {
                     continue;
                 }
                 Settle::AskAnyway => {
-                    // Some other question: the prompt goes in anyway, as
-                    // with Orca.
+                    // Some other question: the prompt goes in anyway.
                     warn!(pane_id, "{harness} is at a question ssf does not know");
                     return Ok(state);
                 }
@@ -959,7 +957,7 @@ impl Herdr {
 
     /// Give the agent in a pane a prompt. `agent prompt` pastes for us; if
     /// it refuses because the agent is at a question, the text is pasted
-    /// raw like Orca does (the harness queues it).
+    /// raw so the harness can queue it.
     pub async fn send_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         match self
             .run(&["agent", "prompt", pane_id, text.trim_end()])
@@ -973,8 +971,7 @@ impl Herdr {
         }
     }
 
-    /// Paste a prompt into the pane ourselves and submit it, as Orca does,
-    /// for when herdr will not.
+    /// Paste a prompt into the pane ourselves and submit it when herdr will not.
     async fn paste_raw(&self, pane_id: &str, text: &str) -> Result<()> {
         warn!(
             pane_id,
@@ -1010,7 +1007,7 @@ impl Herdr {
             };
             match prompt_failure(&e.to_string()) {
                 // Sent nothing: the harness is at a question, so paste it in
-                // the way Orca does and let the harness queue it.
+                // and let the harness queue it.
                 PromptFailure::Blocked => return self.paste_raw(pane_id, text).await,
                 PromptFailure::Stalled => {
                     let screen = self

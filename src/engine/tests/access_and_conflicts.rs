@@ -44,7 +44,7 @@ async fn conflict_check_notifies_once_and_guards_stale_branch_state() {
     sh(&s.work, &["push", "-q", "origin", "main"]).await;
 
     let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.daemon.conflict_check_interval_secs = 1;
     let mut r = repo();
@@ -110,7 +110,7 @@ async fn conflict_notice_survives_reload_even_with_an_empty_merge_cache() {
     let saved = serde_json::to_string(&e.state).unwrap();
     let mut restarted = engine();
     restarted.cfg.daemon.conflict_check_interval_secs = 1;
-    let d2 = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d2 = crate::driver::StubDriver::new(DriverKind::Herdr);
     restarted.drivers = Drivers::from_list(vec![Driver::Stub(d2.clone())]);
     d2.seed("w6", "t6", READY_SCREEN);
     restarted.state = serde_json::from_str(&saved).unwrap();
@@ -154,7 +154,7 @@ async fn changed_branch_or_base_commit_is_a_new_conflict_notice() {
 #[tokio::test]
 async fn inactive_session_states_do_not_fetch_or_notify() {
     let mut e = engine();
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     e.cfg.daemon.conflict_check_interval_secs = 1;
     let mut r = repo();

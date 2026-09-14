@@ -6,8 +6,8 @@ Building ssf from source, running a scratch factory, running a dev build as the 
 cargo build && cargo test
 cargo fmt && cargo clippy
 export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$(gh auth token)
-./target/debug/ssf config set driver herdr            # or orca; a fresh config names none
-./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects   # or orca.projects_dir
+./target/debug/ssf config set driver herdr
+./target/debug/ssf config set herdr.projects_dir /tmp/ssf-dev/projects
 ./target/debug/ssf repo add you/sandbox --harness claude --model opus --effort high   # a repository the real factory does not watch
 ./target/debug/ssf-server --once  # one pass; agents launched by this run read the same SSF_* locations
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest shell, restore SSF_STATE_DIR=/var/lib/ssf/state
@@ -329,7 +329,7 @@ from the release either way.
 | `src/github.rs` | REST and GraphQL client (listings, timelines, boards, collaborators) |
 | `src/prompt.rs`, `src/prompt/timeline.rs`, `src/prompt/guide.rs` | prompt templates, timeline event rendering, and the on-demand `ssf guide` reference |
 | `src/config.rs`, `src/state.rs` | `config.toml` and `state.json` |
-| `src/driver.rs`, `src/orca.rs`, `src/herdr.rs` | the driver interface and the two drivers |
+| `src/driver.rs`, `src/herdr.rs` | the driver interface and the herdr implementation |
 | `src/vm.rs`, `src/vm/`, `vm/` | VM interface and constants; backend, guest, sizing, and support components; guest scripts and units |
 | `src/platform.rs` | what differs per host OS: the systemd user unit on Linux, the Homebrew launchd service on macOS |
 | `src/sessions.rs` | agent session capture and resume |

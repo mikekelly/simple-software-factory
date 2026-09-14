@@ -1,4 +1,4 @@
-//! The reconciliation loop: GitHub assigned issues -> Orca workspaces -> agent prompts.
+//! The reconciliation loop: GitHub assigned issues -> herdr workspaces -> agent prompts.
 
 mod requests;
 
@@ -11,13 +11,12 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::allow::{self, AllowList, Source};
 use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
-use crate::driver::{Driver, Drivers, Relaunch};
+use crate::driver::{Delivery, Driver, Drivers, Relaunch, Worktree};
 use crate::events::{self, Attach, Conversation, Event};
 use crate::github::{Conditional, GitHub, Issue, PrInfo, RepositoryIdentity};
 #[cfg(test)]
 use crate::ipc::Request;
 use crate::login::{self, LoginState, Probe};
-use crate::orca::{Delivery, Worktree};
 use crate::origin::{self, Origin};
 use crate::prompt::{
     self, FinalComment, Fyi, ProjectPrompt, PromptContext, Rendered, actor_of, event_key,

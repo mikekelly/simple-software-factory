@@ -644,18 +644,18 @@ fn firecracker_config_lists_drives_in_order() {
 }
 
 #[test]
-fn guest_config_is_herdr_only_on_the_data_disk() {
+fn guest_config_uses_the_data_disk() {
     let mut host = Config::default();
     host.dashboard.enabled = true;
     host.dashboard.port = 9090;
-    host.driver = Some(DriverKind::Orca);
+    host.driver = Some(DriverKind::Herdr);
     host.vm.enabled = true;
     host.vm.files = vec!["~/.claude/.credentials.json".into()];
     host.herdr.projects_dir = "~/ssf/projects".into();
     host.repos.push(RepoConfig {
         name: "o/r".into(),
         harness: "claude".into(),
-        driver: Some(DriverKind::Orca),
+        driver: Some(DriverKind::Herdr),
         path: Some("/home/me/r".into()),
         ..RepoConfig::default()
     });
@@ -664,10 +664,6 @@ fn guest_config_is_herdr_only_on_the_data_disk() {
         harness: "codex".into(),
         ..RepoConfig::default()
     });
-    assert_eq!(
-        orca_repos(&host),
-        vec!["o/r".to_string(), "o/s".to_string()]
-    );
     let g = guest_config(&host);
     assert_eq!(g.driver, Some(DriverKind::Herdr));
     assert!(!g.dashboard.enabled);

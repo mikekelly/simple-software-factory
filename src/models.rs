@@ -1,16 +1,13 @@
 //! Per-harness model and effort launch preferences.
 //!
-//! For the agents Orca has a model catalogue for (Claude Code, Codex, Gemini,
-//! Grok) the identifiers are the ones Orca uses (`orca orchestration
-//! worker-start --model <id> --effort <level>`): a model id is passed to the
-//! harness as-is (Claude Code family aliases such as `opus`, Codex ids such
-//! as `gpt-5.5`), and an effort level is one of the levels the harness
-//! accepts. Pi, Oh My Pi, OpenCode and Copilot have no Orca catalogue; they
-//! take their own `provider/model` ids (Pi and Oh My Pi reach many providers,
+//! A model id is passed to the harness as-is (Claude Code family aliases such
+//! as `opus`, Codex ids such as `gpt-5.5`), and an effort level is one of the
+//! levels the harness accepts. Pi, Oh My Pi and OpenCode take their own
+//! `provider/model` ids (Pi and Oh My Pi reach many providers,
 //! OpenRouter among them) and, where they have one, a thinking or reasoning
 //! level. This module knows how each harness takes those on its command
 //! line, seeds or lists the model ids shown by the menus, and validates
-//! effort levels; unknown model ids still pass through, as they do in Orca.
+//! effort levels; unknown model ids still pass through to the harness.
 
 use anyhow::{Context, Result, bail};
 use std::process::Command;
@@ -148,7 +145,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: grok_effort,
         list_models: None,
     },
-    // No Orca catalogue from here on: ids are the agent's own `provider/model`.
+    // These agents use their own `provider/model` identifiers.
     Catalogue {
         harness: "pi",
         model_flag: "--model",

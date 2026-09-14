@@ -24,7 +24,7 @@ async fn ignored_items_are_not_fetched_on_a_full_listing_or_after_a_restart() {
 
     // Pass 1: no ETags yet, so a full creator listing carrying both,
     // unchanged. Nothing is fetched, and nothing is onboarded (which
-    // would fail at Orca here and be counted as a failure).
+    // would fail at the driver here and be counted as a failure).
     e.tick_repo(&r).await.unwrap();
     assert_listings_only(&stub.hits());
     assert!(e.failures.is_empty(), "{:?}", e.failures);
@@ -185,7 +185,7 @@ async fn tick_preserves_one_owed_full_fetch_across_the_pass_boundary() {
     })];
     let mut e = engine_at(&stub.base);
     e.drivers = Drivers::from_list(vec![Driver::Stub(crate::driver::StubDriver::new(
-        DriverKind::Orca,
+        DriverKind::Herdr,
     ))]);
     e.cfg.github.api_url = stub.base.clone();
     e.cfg.repos = vec![r.clone()];
@@ -307,7 +307,7 @@ async fn an_unblock_after_the_listings_were_read_makes_the_next_pass_full() {
 async fn a_rejected_bot_opened_item_is_not_onboarded_again() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -350,7 +350,7 @@ async fn a_rejected_bot_opened_item_is_not_onboarded_again() {
 async fn a_short_listing_does_not_throw_away_ignore_records() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
@@ -381,7 +381,7 @@ async fn a_short_listing_does_not_throw_away_ignore_records() {
 async fn an_ignored_item_is_asked_about_once_and_forgotten_when_it_is_gone() {
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
-    let d = crate::driver::StubDriver::new(DriverKind::Orca);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];

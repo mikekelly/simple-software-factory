@@ -271,8 +271,7 @@ impl Engine {
     /// in now (`driver` changed since the workspace was made) is dropped
     /// before the workspace is looked for, so the item goes through the
     /// current driver's project setup as a new one would, rather than the
-    /// old driver's repo id being handed to the new driver as its own (an
-    /// Orca uuid taken for a checkout path, or the other way round). The
+    /// old driver's repo id being handed to the new driver as its own. The
     /// workspace name and branch stay, so the branch is picked up as the
     /// base as for any re-created workspace. A record from before the
     /// driver was written down is judged by the shape of its repo id.

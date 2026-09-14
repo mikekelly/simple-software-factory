@@ -17,10 +17,10 @@ vendor: https://github.com/mikekelly/simple-software-factory
 homepage: https://github.com/mikekelly/simple-software-factory
 license: MIT
 description: |
-  GitHub issues assigned to a bot become coding-agent sessions in herdr or Orca
+  GitHub issues assigned to a bot become coding-agent sessions in herdr
   Simple Software Factory watches the repositories you point it at; an issue
   assigned to the bot account, or a pull request it is asked to review, becomes
-  a coding-agent workspace in herdr (by default inside a microVM) or in Orca.
+  a coding-agent workspace in herdr (by default inside a microVM).
   The agent reports back on GitHub. herdr, the default driver, is not packaged
   for Debian or Fedora and is installed separately (docs/setup.md, step 1).
 
