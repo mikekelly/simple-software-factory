@@ -140,6 +140,10 @@ impl Engine {
                 .bind_to(repo, issue, owner, diff, triggers, since_prior)
                 .await;
         }
+        // This is GitHub involvement state, not a delivery receipt. Keep a
+        // failed first-prompt attempt visible as active while its durable
+        // delivery record is recovered on this or a later pass.
+        self.entry(repo, issue.number).active = true;
         self.refresh_projects(repo, owner, name, issue.number).await;
         let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, issue.number));
 
@@ -239,10 +243,31 @@ impl Engine {
                     &eff.harness_command(),
                 );
                 let text = self.initial_text(repo, issue, &mine);
-                let handle = self
+                let handle = match self
                     .driver(repo)
                     .start(&created.id, &cmd, &title, &eff.harness, &text)
-                    .await?;
+                    .await
+                {
+                    Ok(handle) => handle,
+                    Err(start_error)
+                        if self
+                            .driver(repo)
+                            .has_live_agent(&created.id)
+                            .await
+                            .unwrap_or(false) =>
+                    {
+                        warn!(
+                            repo = repo.name,
+                            issue = issue.number,
+                            "the first prompt failed after the harness started; recovering it: \
+{start_error:#}"
+                        );
+                        self.deliver_to(repo, issue.number, &text, None)
+                            .await?
+                            .handle
+                    }
+                    Err(start_error) => return Err(start_error),
+                };
                 info!(
                     repo = repo.name,
                     issue = issue.number,

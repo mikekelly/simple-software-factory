@@ -89,11 +89,13 @@ long OMP paste has become a collapsed attachment in the composer but has not
 started, ssf submits that existing attachment; it does not paste a second copy.
 Herdr's state after that Enter is only observational: if it cannot see the
 harness start working, ssf accepts the successful key delivery rather than
-submitting the assignment again on every pass. A daemon pass that finds an
-unseeded live harness uses the same recovery path. If that later screen shows
-neither the prompt nor a first-run dialog, ssf accepts the durable delivery
-attempt instead of risking an initial prompt that was already consumed being
-sent again as a steering message.
+submitting the assignment again on every pass. If initial delivery reports an
+error but the newly launched harness is alive, ssf immediately uses that same
+recovery path; the open item remains active while recovery is pending rather
+than appearing retired. A later daemon pass that finds an unseeded live harness
+does the same. If that later screen shows neither the prompt nor a first-run
+dialog, ssf accepts the durable delivery attempt instead of risking an initial
+prompt that was already consumed being sent again as a steering message.
 
 ## Second opinions: the gauntlet
 

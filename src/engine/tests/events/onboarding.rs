@@ -77,6 +77,71 @@ async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
     assert!(d.log().is_empty(), "{:?}", d.log());
     assert!(stub.posts().is_empty());
 }
+
+#[tokio::test]
+async fn a_delegated_first_prompt_failure_on_a_live_harness_is_recovered_immediately() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    d.with(|s| {
+        s.start_delivery_error = Some("first prompt was not confirmed".into());
+    });
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    seeded(&mut e, 1, Some("bot/issue-1"), true);
+    let delegated = json!({
+        "number": 7, "title": "child",
+        "body": "🤖#1 says: <!-- ssf: origin=o/r#1 mode=delegate -->\n\nover to you",
+        "html_url": "https://gh/7", "state": "open", "user": {"login": "bot"},
+        "assignees": [{"login": "bot"}], "created_at": "x", "updated_at": "u1"
+    });
+    stub.set_assigned(vec![delegated]);
+    stub.set_timeline(7, vec![assigned_by(1, "bot")]);
+
+    e.tick_repo(&r).await.unwrap();
+
+    let st = e.entry(&r, 7).clone();
+    assert!(st.active && st.seeded, "{st:?}");
+    assert_eq!(st.delegated_by.as_deref(), Some("o/r#1"));
+    assert_eq!(st.prompts_sent, 1, "one confirmed initial delivery");
+    assert_eq!(st.terminal_handle.as_deref(), Some("t1"));
+    assert!(!st.first_prompt_attempted);
+    assert!(e.failures.is_empty(), "{:?}", e.failures);
+    let log = d.log();
+    assert!(log[0].starts_with("start:"), "{log:?}");
+    assert!(log[1].starts_with("deliver:"), "{log:?}");
+    let posts = stub.post_bodies();
+    assert_eq!(posts.len(), 1, "{posts:?}");
+    assert!(posts[0].1.contains("event=attached"), "{}", posts[0].1);
+}
+
+#[tokio::test]
+async fn a_failed_new_harness_stays_active_while_waiting_for_retry() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    d.with(|s| s.start_error = Some("harness exited".into()));
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d)]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+
+    e.tick_repo(&r).await.unwrap();
+
+    let st = e.entry(&r, 5).clone();
+    assert!(
+        st.active,
+        "the open assigned item must not look retired: {st:?}"
+    );
+    assert!(!st.seeded);
+    assert_eq!(st.prompts_sent, 0);
+    assert!(st.first_prompt_attempted);
+    assert_eq!(e.failures[&("o/r".to_string(), 5)], 1);
+}
 #[tokio::test]
 async fn a_session_opened_issue_waits_for_assignment_then_gets_its_own_session() {
     let _sandbox = crate::config::test_support::sandbox();
