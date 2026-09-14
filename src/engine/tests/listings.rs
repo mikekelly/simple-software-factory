@@ -675,6 +675,9 @@ async fn purge_judges_a_checkout_whose_workspace_is_gone_by_the_checkout() {
     let (path, _) = crate::driver::add_local_worktree(&s.work, "issue-1-x", None)
         .await
         .unwrap();
+    std::fs::write(Path::new(&path).join("only-here.txt"), "only here\n").unwrap();
+    sh(&path, &["add", "."]).await;
+    sh(&path, &["commit", "-q", "-m", "only here"]).await;
     let stub = GitHubStub::start().await;
     let mut e = engine_at(&stub.base);
     let d = crate::driver::StubDriver::new(DriverKind::Herdr);

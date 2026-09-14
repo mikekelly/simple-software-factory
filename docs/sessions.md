@@ -613,8 +613,10 @@ mentioned item rather than to unassign one that has no assignee.
   `--as owner/repo#12` from a shell) asks the daemon to remove the
   session's workspace after checking, in the worktree, that the tree is
   clean (no modified or untracked files; ignored build artefacts do not
-  count), that the checked-out branch is on origin with no unpushed
-  commits, and that no stash entry was made on that branch. If any check
+  count), that every commit at HEAD is reachable from a remote-tracking
+  ref, and that no stash entry was made on that branch. The same-named
+  remote branch need not still exist after its commits have been merged
+  elsewhere. If any check
   fails it prints what would be lost and refuses; nothing is removed.
   A person who has looked can pass `--force` (from a shell, not inside the
   session). The daemon removes the workspace, and its terminal, on its next

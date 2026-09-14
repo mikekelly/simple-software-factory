@@ -2,8 +2,9 @@
 //! `ssf release` and `ssf purge`, run with git inside the worktree.
 //!
 //! A workspace is safe to remove when its tree is clean (no modified or
-//! untracked files; ignored build artefacts do not count), its branch is on
-//! origin with nothing unpushed, and no stash entry was made on it. Anything
+//! untracked files; ignored build artefacts do not count), every commit at
+//! HEAD is reachable from a remote-tracking ref, and no stash entry was made
+//! on its branch. Anything
 //! git cannot answer (a detached head, an unreachable origin, a missing
 //! directory) counts as unknown, which is unsafe.
 
@@ -39,9 +40,9 @@ pub struct Check {
     pub branch: Option<String>,
     /// `git status --porcelain` lines: modified, staged and untracked files.
     pub dirty: Vec<String>,
-    /// The branch exists on origin.
+    /// Every commit at HEAD is reachable from a remote-tracking ref.
     pub on_origin: bool,
-    /// Commits on the branch that origin does not have.
+    /// Commits at HEAD not reachable from any remote-tracking ref.
     pub unpushed: u64,
     /// Stash entries made on the branch.
     pub stashes: Vec<String>,
@@ -70,11 +71,9 @@ impl Check {
             Some(b) => {
                 if let Some(e) = &self.fetch_error {
                     out.push(format!("could not fetch origin to compare {b}: {e}"));
-                } else if !self.on_origin {
-                    out.push(format!("branch {b} is not on origin"));
                 } else if self.unpushed > 0 {
                     out.push(format!(
-                        "{} commit{} on {b} not pushed to origin",
+                        "{} commit{} on {b} not reachable from any remote-tracking branch",
                         self.unpushed,
                         if self.unpushed == 1 { "" } else { "s" }
                     ));
@@ -146,31 +145,12 @@ pub async fn inspect(path: &str) -> Result<Check> {
         .ok()
         .filter(|b| !b.is_empty());
     if let Some(branch) = check.branch.clone() {
-        if let Err(e) = git(path, &["fetch", "--quiet", "origin", &branch]).await {
-            // A branch that was never pushed makes the fetch fail too; that
-            // is "not on origin", not an unreachable origin. `ls-remote
-            // --exit-code` exits 2 and says nothing when the ref is missing,
-            // and complains when origin cannot be reached.
-            match git(
-                path,
-                &["ls-remote", "--exit-code", "--heads", "origin", &branch],
-            )
-            .await
-            {
-                Ok(_) => check.fetch_error = Some(e.to_string()),
-                Err(le) if !le.to_string().trim_end().ends_with("failed:") => {
-                    check.fetch_error = Some(le.to_string())
-                }
-                Err(_) => {}
-            }
-        }
-        let remote = format!("refs/remotes/origin/{branch}");
-        check.on_origin = git(path, &["rev-parse", "--verify", "--quiet", &remote])
-            .await
-            .is_ok();
-        if check.on_origin {
-            let n = git(path, &["rev-list", "--count", &format!("{remote}..HEAD")]).await?;
-            check.unpushed = n.parse().unwrap_or(0);
+        if let Err(e) = git(path, &["fetch", "--quiet", "origin"]).await {
+            check.fetch_error = Some(e.to_string());
+        } else {
+            check.unpushed =
+                count(path, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await?;
+            check.on_origin = check.unpushed == 0;
         }
         let needle = format!("on {}:", branch.to_lowercase());
         check.stashes = git(path, &["stash", "list", "--format=%gd %gs"])
@@ -684,35 +664,91 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpushed_commits_and_unpushed_branches_are_reported() {
+    async fn unpushed_commits_are_reported() {
         let s = scratch("unpushed").await;
         std::fs::write(std::path::Path::new(&s.work).join("a.txt"), "two\n").unwrap();
         sh(&s.work, &["commit", "-q", "-am", "two"]).await;
         let c = inspect(&s.work).await.unwrap();
         assert!(c.dirty.is_empty());
-        assert!(c.on_origin);
+        assert!(!c.on_origin);
         assert_eq!(c.unpushed, 1);
         assert!(!c.safe());
         assert_eq!(c.state(), "unpushed commits");
-        assert!(c.problems()[0].contains("1 commit on main not pushed"));
+        assert!(c.problems()[0].contains("1 commit on main not reachable"));
         // Pushing settles it.
         sh(&s.work, &["push", "-q", "origin", "main"]).await;
         assert!(inspect(&s.work).await.unwrap().safe());
-        // A branch origin has never seen.
+        // A branch origin has never seen is safe while its HEAD is still
+        // reachable from origin/main.
         sh(&s.work, &["checkout", "-q", "-b", "feature"]).await;
+        assert!(inspect(&s.work).await.unwrap().safe());
+        // A new commit on that branch exists nowhere else and is unsafe.
+        std::fs::write(std::path::Path::new(&s.work).join("b.txt"), "b\n").unwrap();
+        sh(&s.work, &["add", "."]).await;
+        sh(&s.work, &["commit", "-q", "-m", "feature work"]).await;
         let c = inspect(&s.work).await.unwrap();
         assert_eq!(c.branch.as_deref(), Some("feature"));
         assert!(!c.on_origin);
+        assert_eq!(c.unpushed, 1);
         assert!(c.fetch_error.is_none(), "{:?}", c.fetch_error);
         assert!(!c.safe());
         assert_eq!(c.state(), "unpushed commits");
-        assert!(c.problems()[0].contains("feature is not on origin"));
+        assert!(c.problems()[0].contains("1 commit on feature not reachable"));
         // Dirty on top of that.
         std::fs::write(std::path::Path::new(&s.work).join("x.txt"), "x\n").unwrap();
         assert_eq!(
             inspect(&s.work).await.unwrap().state(),
             "dirty, unpushed commits"
         );
+    }
+
+    #[tokio::test]
+    async fn merged_head_is_safe_after_its_remote_branch_is_deleted() {
+        let s = scratch("merged-deleted").await;
+        sh(&s.work, &["checkout", "-q", "-b", "feature"]).await;
+        std::fs::write(std::path::Path::new(&s.work).join("b.txt"), "b\n").unwrap();
+        sh(&s.work, &["add", "."]).await;
+        sh(&s.work, &["commit", "-q", "-m", "feature work"]).await;
+        sh(&s.work, &["push", "-q", "-u", "origin", "feature"]).await;
+
+        let other = s.dir.join("other");
+        let other_s = other.to_string_lossy().to_string();
+        let origin = s.dir.join("origin.git").to_string_lossy().to_string();
+        sh(
+            &s.dir.to_string_lossy(),
+            &["clone", "-q", &origin, &other_s],
+        )
+        .await;
+        sh(
+            &other_s,
+            &[
+                "merge",
+                "-q",
+                "--no-ff",
+                "origin/feature",
+                "-m",
+                "merge feature",
+            ],
+        )
+        .await;
+        sh(&other_s, &["push", "-q", "origin", "main"]).await;
+        sh(&other_s, &["push", "-q", "origin", "--delete", "feature"]).await;
+        sh(&s.work, &["fetch", "-q", "--prune", "origin"]).await;
+
+        assert!(
+            git(
+                &s.work,
+                &["rev-parse", "--verify", "--quiet", "origin/feature"]
+            )
+            .await
+            .is_err()
+        );
+        let c = inspect(&s.work).await.unwrap();
+        assert_eq!(c.branch.as_deref(), Some("feature"));
+        assert!(c.on_origin);
+        assert_eq!(c.unpushed, 0);
+        assert!(c.fetch_error.is_none(), "{:?}", c.fetch_error);
+        assert!(c.safe(), "{:?}", c.problems());
     }
 
     #[tokio::test]
