@@ -23,8 +23,9 @@ impl Engine {
 
     /// `ssf launch ...` wrapper that puts the bot credentials and issue
     /// identity into the harness's environment. The daemon's own config and
-    /// state locations are passed along so the wrapper reads the same files,
-    /// and the VM guest flag so `ssf guide` in the session knows where it is.
+    /// state locations and selected target are passed along so the wrapper
+    /// reads the same factory, and the VM guest flag so `ssf guide` in the
+    /// session knows where it is.
     pub(in crate::engine) fn launch_command(
         &self,
         repo: &RepoConfig,
@@ -47,8 +48,10 @@ impl Engine {
                 prefix.push_str(&format!("{var}={} ", shell_quote(&v)));
             }
         }
+        let server =
+            launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
         format!(
-            "{prefix}{} launch --repo {} --issue {} --issue-url {} -- {}",
+            "{prefix}{}{server} launch --repo {} --issue {} --issue-url {} -- {}",
             shell_quote(&me),
             shell_quote(&repo.name),
             number,
@@ -651,4 +654,25 @@ impl Engine {
     }
 
     // ---- handovers ------------------------------------------------------
+}
+
+fn launch_server_argument(server: Option<&str>) -> String {
+    server
+        .map(|name| format!(" --server {}", shell_quote(name)))
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod launch_command_tests {
+    use super::launch_server_argument;
+
+    #[test]
+    fn selected_server_is_forwarded_to_the_launch_wrapper() {
+        assert_eq!(launch_server_argument(Some("local")), " --server 'local'");
+        assert_eq!(
+            launch_server_argument(Some("local factory")),
+            " --server 'local factory'"
+        );
+        assert_eq!(launch_server_argument(None), "");
+    }
 }
