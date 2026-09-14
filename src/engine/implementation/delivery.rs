@@ -272,9 +272,11 @@ impl Engine {
                 continue;
             };
             let harness = self.effective(repo, number).harness;
-            if let Some(detail) = crate::driver::login_dialog(&harness, &screen.join("\n")) {
+            if let Some((reason, detail)) =
+                crate::driver::blocking_dialog(&harness, &screen.join("\n"))
+            {
                 self.entry(repo, number).terminal_handle = Some(handle);
-                self.set_blocked(repo, number, detail).await;
+                self.set_blocked_for(repo, number, reason, detail).await;
                 self.report_blocked(repo, number).await;
             }
         }
@@ -303,28 +305,12 @@ impl Engine {
         p
     }
 
-    /// Record that the session's harness is at a login prompt. Nothing is
+    /// Record a login, setup, or startup block. Nothing is
     /// delivered to it from now on; the item is told once (see
     /// `report_blocked`) and the login is checked every pass. On a record
     /// that already exists (the harness was started again and came back
     /// to the prompt) only the attempt is noted, so the item is not told
     /// twice and the next attempt waits longer.
-    pub(in crate::engine) async fn set_blocked(
-        &mut self,
-        repo: &RepoConfig,
-        number: u64,
-        detail: String,
-    ) -> Blocked {
-        self.set_blocked_for(repo, number, Blocked::LOGIN, detail)
-            .await
-    }
-
-    /// [`set_blocked`](Self::set_blocked) for a harness that could not be
-    /// started at all (`Blocked::START`): the item is held the same way,
-    /// and `recover` starts it again with the same backoff. A harness
-    /// that would not start and is not signed in where the daemon runs is
-    /// recorded as the login block it really is, so the item is told the
-    /// thing worth fixing.
     pub(in crate::engine) async fn set_blocked_for(
         &mut self,
         repo: &RepoConfig,
@@ -342,6 +328,9 @@ impl Engine {
         };
         let e = self.entry(repo, number);
         if let Some(cur) = e.blocked.as_mut() {
+            if cur.reason != reason {
+                cur.reported = false;
+            }
             cur.reason = reason.to_string();
             cur.detail = detail;
             cur.credential = probe.fingerprint;
@@ -378,6 +367,8 @@ impl Engine {
             login::display_name(&harness),
             if reason == Blocked::START {
                 "could not be started"
+            } else if reason == Blocked::SETUP {
+                "has incomplete setup"
             } else {
                 "is at its sign-in prompt"
             },
@@ -405,6 +396,8 @@ impl Engine {
                 "could not be started: {}",
                 safe_error(&events::one_line(&b.detail))
             )
+        } else if b.reason == Blocked::SETUP {
+            "setup incomplete".to_string()
         } else {
             "not signed in".to_string()
         };
@@ -553,11 +546,22 @@ impl Engine {
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };
-            if crate::driver::login_dialog(&harness, &screen.join("\n")).is_none() {
-                if b.reason == Blocked::LOGIN && !owed {
+            let dialog = crate::driver::blocking_dialog(&harness, &screen.join("\n"));
+            if let Some((reason, detail)) = &dialog
+                && *reason != b.reason
+            {
+                let cur = self.entry(repo, number).blocked.as_mut().unwrap();
+                cur.reason = reason.to_string();
+                cur.detail = detail.clone();
+                cur.reported = false;
+                self.report_blocked(repo, number).await;
+                return;
+            }
+            if dialog.is_none() {
+                if (b.reason == Blocked::LOGIN || b.reason == Blocked::SETUP) && !owed {
                     info!(
                         session,
-                        "the harness is past its sign-in prompt; deliveries resume"
+                        "the harness is past its blocking dialog; deliveries resume"
                     );
                     self.unblock(repo, number, &b, Conversation::Kept).await;
                     return;
@@ -605,7 +609,12 @@ impl Engine {
             }
             return;
         }
-        let text = if b.reason == Blocked::START {
+        let text = if b.reason == Blocked::SETUP {
+            format!(
+                "[ssf] Your {} setup was incomplete; the session has been started again.",
+                login::display_name(&harness)
+            )
+        } else if b.reason == Blocked::START {
             prompt::start_again_prompt(&prompt::LoginBack {
                 harness: &login::display_name(&harness),
                 since: &b.since,

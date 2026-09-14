@@ -266,3 +266,72 @@ worktree /p/widgets.worktrees/tmp\nHEAD 123\ndetached\n";
     assert_eq!(list[1].branch.as_deref(), Some("refs/heads/bot/issue-3"));
     assert_eq!(list[2].branch, None);
 }
+
+#[test]
+fn omp_authenticated_setup_is_not_a_login_prompt() {
+    let screen = "Setup step 1 of 5\nSet up your providers\nSelect provider to login\nAnthropic ○ not logged in\nOpenRouter ● logged in (api key)\nPress Esc when you're done.";
+    assert_eq!(login_dialog("omp", screen), None);
+    assert_eq!(
+        blocking_dialog("omp", screen).unwrap().0,
+        crate::state::Blocked::SETUP
+    );
+    assert!(
+        login_dialog(
+            "omp",
+            &screen.replace("● logged in (api key)", "○ not logged in")
+        )
+        .is_some()
+    );
+    assert!(login_dialog("pi", screen).is_some());
+    assert!(
+        login_dialog(
+            "omp",
+            "Select provider to login\nOpenRouter ● logged in (api key)"
+        )
+        .is_some()
+    );
+    assert_eq!(
+        blocking_dialog("omp", "Setup step 2 of 5\nChoose a theme\nesc skip")
+            .unwrap()
+            .0,
+        crate::state::Blocked::SETUP
+    );
+    let echoed = format!("[ssf] activity\n> {}", screen.replace('\n', "\n> "));
+    assert_eq!(blocking_dialog("omp", &echoed), None);
+    let old = format!("{screen}{}", "\nordinary output".repeat(16));
+    assert_eq!(blocking_dialog("omp", &old), None);
+}
+
+#[test]
+fn omp_full_height_setup_keeps_header_context() {
+    let screen = [
+        "Setup step 1 of 5",
+        "Set up your providers",
+        "Sign in and pick a web search provider. Press Esc when you're done.",
+        "Providers",
+        "Select provider to login",
+        "Anthropic",
+        "OpenAI",
+        "GitHub Copilot",
+        "Google",
+        "Google Gemini CLI",
+        "Google Antigravity",
+        "OpenAI Codex",
+        "OpenRouter ● logged in (api key)",
+        "Vercel AI Gateway",
+        "Z.AI",
+        "Type to search",
+        "↑/↓ select · enter confirm · esc skip · ctrl+c exit setup",
+    ]
+    .join("\n");
+    assert_eq!(login_dialog("omp", &screen), None);
+    assert_eq!(
+        blocking_dialog("omp", &screen).unwrap().0,
+        crate::state::Blocked::SETUP
+    );
+    assert!(login_dialog("omp", &screen.replace("● logged in (api key)", "")).is_some());
+    let stale = format!("{screen}{}", "\nordinary output".repeat(16));
+    assert_eq!(blocking_dialog("omp", &stale), None);
+    let echoed = format!("[ssf] activity\n> {}", screen.replace('\n', "\n> "));
+    assert_eq!(blocking_dialog("omp", &echoed), None);
+}

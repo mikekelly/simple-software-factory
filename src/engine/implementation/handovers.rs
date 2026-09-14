@@ -397,9 +397,10 @@ impl Engine {
         // sign-in prompt instead of taking the message: the new session is
         // blocked from here, and the old one is not brought back.
         if let Ok(screen) = self.driver(repo).screen(&handle).await
-            && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
+            && let Some((reason, detail)) =
+                crate::driver::blocking_dialog(&eff.harness, &screen.join("\n"))
         {
-            self.set_blocked(repo, number, detail).await;
+            self.set_blocked_for(repo, number, reason, detail).await;
             self.report_blocked(repo, number).await;
             return;
         }

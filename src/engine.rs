@@ -102,6 +102,8 @@ impl std::fmt::Display for SessionBlocked {
         let name = login::display_name(&self.blocked.harness);
         let what = if self.blocked.reason == Blocked::START {
             "could not be started".to_string()
+        } else if self.blocked.reason == Blocked::SETUP {
+            "has incomplete setup".to_string()
         } else {
             "has been at its sign-in prompt".to_string()
         };

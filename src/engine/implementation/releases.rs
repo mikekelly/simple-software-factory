@@ -214,7 +214,8 @@ impl Engine {
         // blocked from here, and the prompt is held for later.
         if d.relaunched
             && let Ok(screen) = self.driver(repo).screen(&d.handle).await
-            && let Some(detail) = crate::driver::login_dialog(&eff.harness, &screen.join("\n"))
+            && let Some((reason, detail)) =
+                crate::driver::blocking_dialog(&eff.harness, &screen.join("\n"))
         {
             // The message that carried the note went into a sign-in
             // screen, so no session has read it: it waits on the item for
@@ -222,7 +223,7 @@ impl Engine {
             if let Some(note) = spent_note {
                 self.entry(repo, target).handover_note = Some(note);
             }
-            let b = self.set_blocked(repo, target, detail).await;
+            let b = self.set_blocked_for(repo, target, reason, detail).await;
             return Err(SessionBlocked {
                 session: session_id(&repo.name, target),
                 blocked: b,
