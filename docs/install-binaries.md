@@ -1,7 +1,10 @@
 # Install standalone binaries
 
-Use the packages for Omarchy, Ubuntu and Debian 13 (Trixie), or Homebrew for
-macOS, when running a complete factory; see [Setup](setup.md#2-install-the-package). The Linux package
+For a Grok Bot computer or Linux container without KVM / a systemd user
+session, follow [Grok Bot / headless host](headless-host.md): standalone binaries
+and host mode run a complete factory without package services. Otherwise use
+the packages for Omarchy, Ubuntu and Debian 13 (Trixie), or Homebrew for
+macOS; see [Setup](setup.md#2-install-the-package). The Linux package
 named `ssf` includes both the `ssf` client and `ssf-server` daemon. There are no
 separate client and server packages. Neither package installation nor copying a
 binary enables a background service.

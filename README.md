@@ -182,6 +182,16 @@ you set (see
 
 ## Install
 
+Choose the installation for the machine:
+
+- **Grok Bot, a stripped container, or Linux without KVM / a systemd user
+  session:** follow [Grok Bot / headless host](docs/headless-host.md) for
+  standalone binaries and host mode, from prerequisites to a watching factory.
+- **Omarchy or another supported desktop/server with VM and service support:**
+  use the packages below and [Setup](docs/setup.md).
+- **Only controlling an existing factory over SSH:** install the
+  [standalone client](docs/install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
+
 Until ssf is published in Omarchy's package repository, download the current
 Arch package and install it with pacman. This is a normal package-manager
 install: pacman resolves `github-cli` and `herdr` from Omarchy's configured
@@ -218,7 +228,7 @@ macOS through Homebrew; every release carries the Linux packages.
 - **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
   `herdr` or `herdr-bin` (AUR), which it depends on. Without a Wayland
   session (X11, a server), see [Setup](docs/setup.md) step 2.
-- **Debian 12 and 13 (Trixie), Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
+- **Debian 12 and 13 (Trixie), Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt update`, then `sudo apt
   install ./ssf_*_amd64.deb`; `gh`, `git` and `jq` come from the
   repositories (Debian 12 needs GitHub's apt repository for a new enough
   `gh`), and herdr is installed by hand ([Setup, step
