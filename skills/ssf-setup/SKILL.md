@@ -8,6 +8,12 @@ metadata:
 
 # Setting up Simple Software Factory (ssf)
 
+For standalone Linux binaries or a client-only SSH installation, follow
+`docs/install-binaries.md`. Packages bundle client and server; bare binaries
+ship neither service units nor VM scripts, and `ssf setup` requires the packaged
+installation. Package installation leaves the service disabled; explicit setup
+enables it and asks about linger for boot/logout operation.
+
 The setup document is `docs/setup.md`: `/usr/share/doc/ssf/docs/setup.md`
 once the package is installed on Omarchy,
 `$(brew --prefix)/share/doc/ssf/docs/setup.md` on macOS, or

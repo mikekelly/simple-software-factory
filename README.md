@@ -230,6 +230,10 @@ macOS through Homebrew; every release carries the Linux packages.
   `ssf`, `ssf-server`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
   documentation under `$(brew --prefix)/share/doc/ssf`.
 
+Separate static Linux x86_64 and ARM64 client/server binaries are also release
+assets; see [standalone installation](docs/install-binaries.md) for client-only
+SSH use and installation without a package. ARM64 assets are best effort.
+
 The Linux packages install the same paths on every distribution:
 
 | Path | What |

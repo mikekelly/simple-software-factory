@@ -66,7 +66,9 @@ sole target before setup instead: `ssf server add local --local && ssf setup`.
 Do not create both merely to compare them; adding the second target intentionally
 makes unqualified commands require a selection.
 
-The package contains the `ssf` client and the `ssf-server` daemon. A local
+The package contains the `ssf` client and the `ssf-server` daemon; there are no
+separate client/server packages. For a client-only SSH installation or a Linux
+platform without a package, see [standalone binaries](install-binaries.md). A local
 client executes the adjacent server-side command endpoint. From any
 machine with the package and SSH access to the factory account, add
 `--server HOST` to the same command (or set `SSF_SERVER=HOST`):
@@ -93,6 +95,10 @@ An established enabled VM can be adopted without rebuilding or moving it with
 `ssf server migrate-vm`; first confirm `ssf vm status` and the guest factory,
 then run the migration and confirm `ssf --server ssf-server vm status` and
 `ssf --server ssf-server status` before adding another target.
+
+The published v0.7.0 package predates named target setup and enables the
+legacy `ssf.service` instead. The target setup described here applies to newer
+source builds; both require explicit setup and use linger for boot without login.
 
 On Linux this creates the conventional target and enables
 `ssf@ssf-server.service` for `default.target`. It asks before enabling systemd linger so
