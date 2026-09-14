@@ -83,6 +83,13 @@ otherwise the usual home directories. Other harnesses, missing transcripts,
 and unidentified conversations have no reported time; the dashboard shows
 “Unknown”. Orca continues to supply its own activity timestamps.
 
+The first prompt is not recorded as delivered merely because its bytes reached
+the terminal. With herdr, ssf waits for the harness to start handling it. If a
+long OMP paste has become a collapsed attachment in the composer but has not
+started, ssf submits that existing attachment and waits again; it does not paste
+a second copy. A daemon pass that finds an unseeded live harness uses the same
+recovery path.
+
 ## Second opinions: the gauntlet
 
 ssf runs one session per item and starts no second session on a pull
