@@ -995,9 +995,10 @@ impl Herdr {
     /// dialog: it is answered and the prompt sent once more.
     ///
     /// A stall with no dialog is observed once more before anything is sent.
-    /// If the prompt is sitting in the composer, only Enter is sent and the
-    /// agent must then reach a state proving that the turn started. The body
-    /// is never resent after an ambiguous submission (#279).
+    /// If the prompt is sitting in the composer, only Enter is sent. A
+    /// successful key delivery is accepted even when the harness's state
+    /// never changes: retrying Enter can turn the assignment into repeated
+    /// steering messages when Herdr cannot narrate the agent (#317).
     pub async fn send_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         let mut answered_dialog = false;
         loop {
@@ -1065,23 +1066,29 @@ not sent again"
 
     /// Recover a first prompt after the daemon saw the harness but did not
     /// record the session as seeded. Text already on the screen is submitted
-    /// in place; only a screen with no trace of it gets a fresh delivery.
+    /// in place, and a known first-run dialog is answered before a fresh
+    /// delivery. An ambiguous screen is accepted: the attempt was recorded
+    /// before terminal input, so sending again could steer a session that
+    /// already consumed the prompt.
     async fn recover_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         if self.agent_started_prompt(pane_id).await? {
             return Ok(());
         }
-        let screen = self
-            .recent_screen(pane_id)
-            .await
-            .unwrap_or_default()
-            .join("\n");
+        let screen = self.recent_screen(pane_id).await?.join("\n");
         match after_stall(&screen, text) {
             AfterStall::Submit => self.submit_existing_prompt(pane_id).await,
             AfterStall::Retry(answer) => {
                 self.answer_trust(pane_id, answer).await?;
                 self.send_first_prompt(pane_id, text).await
             }
-            AfterStall::Observe => self.send_first_prompt(pane_id, text).await,
+            AfterStall::Observe => {
+                warn!(
+                    pane_id,
+                    "an earlier first-prompt attempt is no longer visible; accepting it without \
+resending"
+                );
+                Ok(())
+            }
         }
     }
 
@@ -1095,9 +1102,18 @@ not sent again"
 
     async fn submit_existing_prompt(&self, pane_id: &str) -> Result<()> {
         self.run(&["agent", "send-keys", pane_id, "enter"]).await?;
-        self.wait_for_prompt_start(pane_id).await.with_context(|| {
-            format!("the prompt in {pane_id}'s composer still did not start after Enter")
-        })
+        if let Err(e) = self.wait_for_prompt_start(pane_id).await {
+            if prompt_failure(&e.to_string()) == PromptFailure::Stalled {
+                warn!(
+                    pane_id,
+                    "the harness did not report starting after the prompt was submitted; \
+accepting the successful Enter without retrying: {e:#}"
+                );
+            } else {
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 
     async fn wait_for_prompt_start(&self, pane_id: &str) -> Result<()> {
