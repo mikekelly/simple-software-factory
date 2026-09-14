@@ -27,6 +27,21 @@ fn web_dashboard_defaults_and_security() {
 use super::*;
 
 #[test]
+fn invitation_auto_acceptance_is_opt_in_and_round_trips() {
+    let default: Config = toml::from_str("").unwrap();
+    assert!(default.github.auto_accept_invitations_from.is_empty());
+    let cfg: Config =
+        toml::from_str("[github]\nauto_accept_invitations_from = ['Alice', 'acme-admin']\n")
+            .unwrap();
+    assert_eq!(
+        cfg.github.auto_accept_invitations_from,
+        ["Alice", "acme-admin"]
+    );
+    let out = toml::to_string_pretty(&cfg).unwrap();
+    assert!(out.contains("auto_accept_invitations_from"), "{out}");
+}
+
+#[test]
 fn vm_infrastructure_updates_preserve_host_factory_and_vm_only_layouts() {
     let _sandbox = test_support::sandbox();
     for source in [

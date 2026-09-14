@@ -21,6 +21,10 @@
 # ssh_key_path = "~/.config/ssf/keys/acme-bot_ed25519"   # enrolled for SSH pushes and commit signing
 # ssh_key_id = 0
 # signing_key_id = 0
+# Accept pending repository invitations sent by these GitHub users. Matching is
+# case-insensitive. This grants the bot access only: it does not add a [[repo]],
+# select a server, or enable its service.
+# auto_accept_invitations_from = ["alice", "acme-admin"]
 
 # Who the agents' commits are by, when not the bot: gh, the API and the
 # daemon stay the bot; only the commit author/committer (and, if you say

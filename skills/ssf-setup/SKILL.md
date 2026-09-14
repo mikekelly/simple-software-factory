@@ -35,6 +35,13 @@ from the guest user's home in VM mode or the host user's home in host mode,
 before repository-specific instructions, and `ssf doctor` does not require
 them.
 
+To let a server accept pending repository invitations from trusted GitHub
+users automatically, run `ssf config set github.auto_accept_invitations_from
+'["OWNER"]'`. The login match is case-insensitive. Acceptance grants the bot
+account access but deliberately does not add a `[[repo]]`, select a named
+server, or enable its service; use `ssf repo add` separately on the intended
+server.
+
 For OMP on headless/herdr hosts, read `ssf skill headless` for one-time
 interactive setup and pane credential guidance before spawning sessions.
 SSF's default OMP command uses a 15-minute provider-stream idle timeout because

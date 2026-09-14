@@ -4,6 +4,9 @@ use tracing::{debug, error, info, warn};
 impl Engine {
     pub async fn tick(&mut self) {
         self.reload_config();
+        if let Err(e) = self.accept_repository_invitations().await {
+            warn!("repository invitations could not be processed: {e:#}");
+        }
         if !self.reconcile_repo_identities(false).await {
             warn!("skipping this pass until repository identity repair is durable");
             return;

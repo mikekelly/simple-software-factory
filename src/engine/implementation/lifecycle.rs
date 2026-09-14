@@ -2,6 +2,59 @@ use super::super::*;
 use tracing::{debug, info, warn};
 
 impl Engine {
+    /// Accept invitations from explicitly trusted inviters. This is deliberately
+    /// account-wide and separate from repository enrollment: accepting access
+    /// never adds a `[[repo]]` or selects/enables a server target.
+    pub(in crate::engine) async fn accept_repository_invitations(&self) -> Result<()> {
+        let allowed = &self.cfg.github.auto_accept_invitations_from;
+        if allowed.is_empty() {
+            return Ok(());
+        }
+        let mut failures = Vec::new();
+        for invitation in self.gh.repository_invitations().await? {
+            let Some(inviter) = invitation.inviter else {
+                debug!(
+                    repository = invitation.repository.full_name,
+                    "leaving repository invitation pending: inviter is unavailable"
+                );
+                continue;
+            };
+            if !allowed.iter().any(|login| {
+                login
+                    .trim()
+                    .trim_start_matches('@')
+                    .eq_ignore_ascii_case(&inviter.login)
+            }) {
+                debug!(
+                    repository = invitation.repository.full_name,
+                    inviter = inviter.login,
+                    "leaving repository invitation pending: inviter is not allowed"
+                );
+                continue;
+            }
+            if let Err(e) = self.gh.accept_repository_invitation(invitation.id).await {
+                failures.push(format!(
+                    "{} from @{}: {e:#}",
+                    invitation.repository.full_name, inviter.login
+                ));
+                continue;
+            }
+            info!(
+                repository = invitation.repository.full_name,
+                inviter = inviter.login,
+                "accepted repository invitation"
+            );
+        }
+        if !failures.is_empty() {
+            anyhow::bail!(
+                "could not accept {} repository invitation(s): {}",
+                failures.len(),
+                failures.join("; ")
+            );
+        }
+        Ok(())
+    }
+
     pub(in crate::engine) fn driver(&self, repo: &RepoConfig) -> &Driver {
         let kind = self.cfg.driver_for(repo);
         self.drivers

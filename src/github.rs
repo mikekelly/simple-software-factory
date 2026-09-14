@@ -53,6 +53,13 @@ pub struct KeyRecord {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct RepositoryInvitation {
+    pub id: u64,
+    pub repository: RepositoryIdentity,
+    pub inviter: Option<User>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Label {
     pub name: String,
 }
@@ -398,6 +405,52 @@ impl GitHub {
             .context("GET /user")?;
         let resp = Self::check(resp, "fetching bot identity").await?;
         resp.json::<User>().await.context("decoding /user")
+    }
+
+    /// Pending repository invitations for the authenticated user, across all
+    /// pages. These are account-wide rather than scoped to a configured repo.
+    pub async fn repository_invitations(&self) -> Result<Vec<RepositoryInvitation>> {
+        let mut url = Some(format!(
+            "{}?per_page=100",
+            self.url("user/repository_invitations")
+        ));
+        let mut invitations = Vec::new();
+        let mut pages = 0;
+        while let Some(u) = url.take() {
+            pages += 1;
+            if pages > 50 {
+                bail!("repository invitations exceed 50 pages; giving up");
+            }
+            let resp = self
+                .get(&u)
+                .send()
+                .await
+                .with_context(|| format!("GET {u}"))?;
+            let resp = Self::check(resp, "listing repository invitations").await?;
+            url = next_link(&resp);
+            let page: Vec<RepositoryInvitation> = resp
+                .json()
+                .await
+                .context("decoding repository invitations")?;
+            invitations.extend(page);
+        }
+        Ok(invitations)
+    }
+
+    pub async fn accept_repository_invitation(&self, id: u64) -> Result<()> {
+        let url = self.url(&format!("user/repository_invitations/{id}"));
+        let resp = self
+            .client
+            .patch(&url)
+            .header(USER_AGENT, concat!("ssf/", env!("CARGO_PKG_VERSION")))
+            .header(ACCEPT, "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", API_VERSION)
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
+            .send()
+            .await
+            .with_context(|| format!("PATCH {url}"))?;
+        Self::check(resp, &format!("accepting repository invitation {id}")).await?;
+        Ok(())
     }
 
     pub async fn repository(&self, owner: &str, repo: &str) -> Result<RepositoryIdentity> {
