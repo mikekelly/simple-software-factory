@@ -791,6 +791,9 @@ pub struct StubState {
     /// When set, the next `start` fails with this message: a harness that
     /// cannot be started at all.
     pub start_error: Option<String>,
+    /// When set, the next `start` leaves a live harness behind but reports
+    /// this message: terminal startup succeeded and first delivery failed.
+    pub start_delivery_error: Option<String>,
     /// When set, the next prompt delivery fails with this message. Tests use
     /// this to exercise the daemon's retry bookkeeping without changing a
     /// real driver's delivery semantics.
@@ -878,6 +881,9 @@ impl StubDriver {
             s.launches.push(format!("{harness}:{command}"));
             s.log
                 .push(format!("start:{worktree_id}:{}", first_line(text)));
+            if let Some(why) = s.start_delivery_error.take() {
+                bail!("{why}");
+            }
             Ok(h)
         })
     }
