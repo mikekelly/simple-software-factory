@@ -1,12 +1,22 @@
 ---
 name: ssf-setup
-description: Setup runbook for Simple Software Factory (ssf), the daemon for Linux (Omarchy, Arch, Debian/Ubuntu, Fedora) and macOS that turns GitHub issues assigned to a bot account into coding-agent sessions in herdr or Orca. Use when a person says "install ssf" or "set up ssf", when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, and who commits), when running the factory in the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on the host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (its issue ownership, communication, board workflow, delegation, review and completion rules), when choosing a repository's harness, model and effort level, project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the `ssf` blocks the daemon posts on an issue (daemon.event_comments).
+description: Setup runbook for Simple Software Factory (ssf), the Linux/macOS daemon that turns GitHub issues assigned to a bot into agent sessions. Use when a person says "install ssf" or "set up ssf", when creating or signing in the bot GitHub account (a fresh account or an organisation's machine user, its access, token scopes and keys, and who commits), when running the factory in the VM (Firecracker or lima; ssf vm build, vm.enabled, ssf vm login) or on a Grok Bot/headless host, when writing ~/.config/ssf/config.toml or a repository's SSF.md (its issue ownership, communication, board workflow, delegation, review and completion rules), when choosing a repository's harness, model and effort level, project board conventions, upgrading or uninstalling ssf (ssf uninstall, then the package), or operating a factory (ssf status, doctor, tell, sub, handover, release, purge), including a session blocked on an expired harness login and the `ssf` blocks the daemon posts on an issue (daemon.event_comments).
 license: MIT
 metadata:
   source: https://github.com/mikekelly/simple-software-factory
 ---
 
 # Setting up Simple Software Factory (ssf)
+
+For Grok Bot computers or stripped Linux containers without KVM / a systemd
+user session, use `docs/headless-host.md` first: standalone binaries, host mode,
+`herdr server`, and foreground `ssf-server`. Keep the fresh server catalog empty
+so client and daemon share paths; skip package setup and linger. Refresh apt
+lists and install OpenSSH before key enrollment. Follow its older-gh device
+flow/token handoff and load harness credentials into both processes at restart.
+Setup steps 3b–3e explicitly separate owner invitation, bot acceptance, project
+owner board access, and `SSF.md` on the default branch. Do not skip acceptance
+or infer board access from repository Write.
 
 For standalone Linux binaries or a client-only SSH installation, follow
 `docs/install-binaries.md`. Packages bundle client and server; bare binaries
@@ -145,7 +155,8 @@ reflect transcript writes, and missing activity times remain unknown.
 6. **Never pass `--accept-anyone-risk`** on the person's behalf, and do
    not set `allowed_users` to `"*"` for them; say what it means and let
    them decide.
-7. **Take the default path** (the factory inside the VM, herdr inside
+7. **For a stripped headless container, prefer the host path above. Otherwise
+   take the default path** (the factory inside the VM, herdr inside
    it) unless the person asks for an alternative or the machine cannot
    run the VM at all (on macOS the VM is lima and needs macOS 13.5 or
    later). A Linux machine without a usable `/dev/kvm`, or one that is

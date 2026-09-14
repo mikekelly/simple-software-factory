@@ -5,6 +5,15 @@ issue. Follow steps 1–10 for a first installation; use steps 11–12 for
 upgrades and removal. Commands marked **you** require your account,
 browser sign-in, or sudo password.
 
+**Choose your path first:**
+
+- **Grok Bot / stripped Debian container / no KVM or systemd user session:**
+  use the [headless-host guide](headless-host.md), which replaces the VM and
+  package-service steps below with standalone binaries and foreground processes.
+- **Omarchy or a host with VM and service support:** follow the package steps below.
+- **Client-only SSH access to an existing factory:** use the
+  [standalone client](install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
+
 The recommended setup runs the daemon, herdr and agents inside a VM:
 Firecracker on Linux, lima on macOS. Agents on the host run as your Unix
 user and can access your home directory and credentials. The host
@@ -50,6 +59,12 @@ and run the command for your platform (**you** for sudo):
 | Debian / Ubuntu | `sudo apt install ./ssf_*_amd64.deb` |
 | Fedora | `sudo dnf install ./ssf-*.x86_64.rpm` |
 | macOS | `brew install mikekelly/tap/ssf` |
+
+On Debian/Ubuntu, run `sudo apt update` before installing packages, including
+on minimal images with stale or absent apt lists. The `.deb` depends on
+`systemd`; installing that package does not make it PID 1 or create a working
+systemd user session in a container running `tini`. Use
+[standalone + host mode](headless-host.md) there.
 
 Ubuntu 24.04 and Debian 13 (Trixie) use the same amd64 `.deb`; their standard
 repositories provide a sufficiently recent GitHub CLI. Debian 12 needs the
@@ -195,18 +210,41 @@ turn on two-factor authentication (GitHub requires it for accounts that
 contribute code). Nothing else: no repositories, no keys, ssf enrolls
 what it needs. Note the login; the next steps use it.
 
-**3b. Give it access** (**you**). On each repository the factory should
-watch, **Settings → Collaborators** (or the organisation's teams), add
-the bot with **Write**: it pushes branches and opens pull requests. Give
-it access to
-any project board it should keep up to date (step 9). Accept the
-invitation as the bot, in the private window, at
-`https://github.com/notifications` or from the invitation email. Check,
-with your own `gh`:
+**3b. Owner invites the bot — on every watched repository** (**you**, using
+an owner/admin session on your own computer). Under **Settings → Collaborators**,
+invite the bot with **Write**, or run:
 
 ```sh
-gh api repos/OWNER/NAME/collaborators/BOT/permission --jq .permission   # write or admin
+gh api repos/OWNER/NAME/collaborators/BOT -X PUT -f permission=push
 ```
+
+**3c. Bot accepts — an invitation is not access.** After signing the bot in
+(step 4), use a **bot-authenticated gh session** to list invitations, choose
+the ID for the intended repository, and accept it. Verify `gh api user --jq
+.login` names BOT first: SSF login may leave ordinary host gh using your own
+account, and VM credentials stay in the guest. If you have no bot gh session,
+use the bot's browser acceptance below instead:
+
+```sh
+gh api user/repository_invitations --jq '.[] | {id, repository: .repository.full_name}'
+gh api user/repository_invitations/ID -X PATCH
+gh api repos/OWNER/NAME --jq '{repository: .full_name, push: .permissions.push}'
+```
+
+The last command must show the intended repository and `push: true`. A pending
+invitation can make private repositories return **404**, as if they were missing.
+Alternatively accept in the bot's browser from the invitation email or
+[notifications](https://github.com/notifications). See GitHub's
+[invitation API](https://docs.github.com/en/rest/collaborators/invitations).
+
+**3d. Project owner grants board access** (**you**). For each Projects (v2)
+board, open **Settings → Manage access** and grant the bot **Write** (directly
+or through a team). Repository Write alone does not authorize board moves;
+the bot token also needs the `project` scope. See step 9 for board conventions.
+
+**3e. Repository owner adds `SSF.md` on the default branch.** Follow step 9
+before expecting a clean `ssf doctor`; a file only on a local or feature branch
+is not enough.
 
 ## 4. Sign the bot in
 
@@ -240,6 +278,13 @@ A stopped or unreachable VM returns an error; start it and retry.
   `printf '%s' "$TOKEN" | ssf auth login --token`. It is stored in
   `~/.config/ssf/token` (mode 0600). Choose this when the organisation
   forbids OAuth apps.
+
+**Older gh compatibility (host mode).** If `ssf auth login --web` fails with
+`unknown flag: --skip-ssh-key` (reported with gh 2.46), or SSF cannot pick up the
+account after login, use the [direct gh device flow and token handoff](headless-host.md#3-sign-in-as-the-bot).
+`--skip-ssh-key` is a gh option SSF passes internally; SSF's `--no-keys` skips
+SSF key enrollment, but does not remove that gh flag from the web flow. Install
+`openssh-client` on Debian/Ubuntu before enrolling keys (`ssh-keygen`).
 
 **Scopes** the token needs: `repo` (issues, PRs, pushes), `project`
 (boards), `admin:public_key` and `admin:ssh_signing_key` (key
@@ -355,7 +400,8 @@ herdr, SSH access, rebuilding and resetting.
 
 ### Alternative: on the host, in herdr or in Orca
 
-Choose this shape before the first setup by creating the sole local target:
+With a package and a working user service manager, choose this shape before
+the first setup by creating the sole local target:
 
 ```sh
 ssf server add local --local
@@ -366,13 +412,19 @@ This uses isolated paths outside the legacy `~/.config/ssf` and
 `~/.local/state/ssf` trees. An established host-mode installation is instead
 registered in place as `local` when its next `ssf setup` runs.
 
+On Linux without systemd user units, follow [the headless-host guide](headless-host.md):
+on a fresh standalone install leave the server catalog empty, skip `ssf setup`,
+and run `ssf-server` in the foreground under the same Unix user and environment
+as the client. Keep it running in a separate terminal, or use your host supervisor.
+
 The `driver` key picks where workspaces and terminals live; herdr when
 unset. A `[[repo]]` can override it (`ssf repo add ... --driver orca`),
 so one daemon can run some repositories in Orca and others in herdr; the
 per-repository driver is ignored in the VM.
 
-- **herdr** (the default): needs a running herdr session (start `herdr`
-  in a terminal and leave it; where herdr comes from is in step 1). ssf clones under `herdr.projects_dir`
+- **herdr** (the default): needs a running herdr server: start `herdr server`
+  for headless operation, or interactive `herdr` in a terminal and leave it
+  running (installation is in step 2). ssf clones under `herdr.projects_dir`
   (`~/ssf/projects`) and makes a worktree per item in `<name>.worktrees/`
   next to the clone. herdr only runs the agents it recognises (`herdr
   agent start --help`; `crush` is not among them), and `ssf repo add`
@@ -544,7 +596,9 @@ implementation tasks on that issue. Use `Refs #N`
 for ongoing tracking and `Closes #N` only for complete delivery.
 
 Start from `/usr/share/ssf/SSF.example.md` (macOS:
-`$(brew --prefix)/share/ssf/SSF.example.md`) and adapt it. `CLAUDE.md` and
+`$(brew --prefix)/share/ssf/SSF.example.md`) and adapt it, or use the checkout’s [SSF.example.md](../SSF.example.md)
+for a standalone installation. Commit it as `SSF.md` at the root of the
+repository’s **default branch** before checking `ssf doctor`. `CLAUDE.md` and
 `AGENTS.md` remain the place for repository policy shared by every agent,
 whether or not ssf started it. `ssf doctor` reports missing SSF guidance
 through the GitHub API; no clone is needed. See [The SSF agent guidance
@@ -565,11 +619,12 @@ when the agent cannot complete the next action, it must explicitly request a
 human collaborator's review or decision. Delegation is optional and useful
 only when an independent task warrants it.
 
-**Boards.** No setup: if the item is on a GitHub project (v2) board, the
+**Boards.** First complete the separate board access grant in step 3d; repo
+Write alone is insufficient. If the item is on a GitHub project (v2) board, the
 agent's prompt lists the board, the card's Status and the command that
 changes it, and the agent is told to keep it accurate. ssf never moves
 cards; put board choices and status mappings in `SSF.md`. The bot needs access
-to the board (step 3b).
+to the board and a token with `project` scope.
 
 ## 10. The first issue, and what to expect
 
