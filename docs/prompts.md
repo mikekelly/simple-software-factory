@@ -69,9 +69,11 @@ handoffs, review and completion authority) belongs in the repository's
 build, test, implementation, architecture, domain and safety policy belongs in
 `AGENTS.md`. SSF appends `SSF.md` only to the issue-owning main session; subagents
 created inside that harness receive only what their parent or harness gives
-them. This makes `SSF.md` suitable for orchestration guidance without adding
-irrelevant workflow to every delegated task. ssf does not repeat either file on
-every message.
+them. Optional `~/.ssf/SSF.md` and `~/.ssf/SSF.<harness>.md` files prepend
+machine-wide and harness-specific context to the configured repository
+instructions. This makes `SSF.md` suitable for orchestration guidance without
+adding irrelevant workflow to every delegated task. ssf does not repeat any of
+these files on every message.
 
 ## The messages an agent receives
 

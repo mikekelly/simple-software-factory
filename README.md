@@ -128,8 +128,10 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   and communicates work, who to ask, what the columns mean). Repository-wide
   build, test and implementation policy remains in `AGENTS.md`. `SSF.md` is
   injected into the issue-owning main agent, not its harness-created subagents,
-  so it can define an orchestration role without spending their context. The
-  main agent can see who else is working on the
+  so it can define an orchestration role without spending their context.
+  Optional `~/.ssf/SSF.md` and `~/.ssf/SSF.<harness>.md` files give every
+  session on one factory machine shared context before those repository files.
+  The main agent can see who else is working on the
   repository, follow other issues, hand work off by opening an issue
   assigned to the bot, and is expected to put its own work through a
   gauntlet (a fresh agent it arranges itself) before calling it done: one
@@ -316,6 +318,8 @@ the short form after that explicit setup is:
    agents how to own and communicate work, manage the board, review and
    complete it, starting from
    [`SSF.example.md`](SSF.example.md).
+   Machine-wide context can optionally go in `~/.ssf/SSF.md`, with
+   harness-specific additions in `~/.ssf/SSF.<harness>.md`.
 
 `ssf doctor` after each step says what is still missing; the document
 shows what a healthy one looks like. Then assign an issue or pull request

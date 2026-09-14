@@ -401,6 +401,7 @@ impl Engine {
             ..self.ctx(repo, &st)
         };
         if let Some(harness) = target_harness {
+            ctx.global_harness_prompt = ProjectPrompt::load_global_harness(repo, harness);
             ctx.harness_prompt = st
                 .worktree_path
                 .as_deref()

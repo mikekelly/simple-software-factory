@@ -14,6 +14,8 @@ impl Engine {
             .as_deref()
             .and_then(|p| ProjectPrompt::load(repo, Path::new(p)));
         let harness = self.effective(repo, st.number).harness;
+        let global_prompt = ProjectPrompt::load_global(repo);
+        let global_harness_prompt = ProjectPrompt::load_global_harness(repo, &harness);
         let harness_prompt = st
             .worktree_path
             .as_deref()
@@ -29,6 +31,8 @@ impl Engine {
             delegated_by: st.delegated_by.as_deref(),
             handed_over_from: None,
             projects: &st.projects,
+            global_prompt,
+            global_harness_prompt,
             project_prompt,
             harness_prompt,
             vm_guest: crate::vm::in_guest(),

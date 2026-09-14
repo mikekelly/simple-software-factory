@@ -227,6 +227,15 @@ fn ssf_texts_never_look_like_a_login_prompt() {
 #[tokio::test]
 async fn harness_notes_follow_the_session_through_handover_and_restart() {
     let sandbox = crate::config::test_support::sandbox();
+    let global = sandbox.home().join(".ssf");
+    std::fs::create_dir_all(&global).unwrap();
+    for (file, text) in [
+        ("SSF.md", "Global shared guidance."),
+        ("SSF.claude.md", "Global Claude guidance."),
+        ("SSF.codex.md", "Global Codex guidance."),
+    ] {
+        std::fs::write(global.join(file), text).unwrap();
+    }
     let worktree = sandbox.root().join("worktree");
     std::fs::create_dir_all(&worktree).unwrap();
     for (file, text) in [
@@ -242,6 +251,9 @@ async fn harness_notes_follow_the_session_through_handover_and_restart() {
     e.entry(&r, 5).worktree_path = Some(worktree.to_string_lossy().into_owned());
     let issue: Issue = serde_json::from_value(assigned_item(5, "alice", "u1")).unwrap();
     let initial = e.initial_text(&r, &issue, &[]);
+    assert!(initial.contains("Global shared guidance."));
+    assert!(initial.contains("Global Claude guidance."));
+    assert!(!initial.contains("Global Codex guidance."));
     assert!(initial.contains("Shared project guidance."));
     assert!(initial.contains("Claude-only guidance."));
     assert!(!initial.contains("Codex-only guidance."));
@@ -253,12 +265,18 @@ async fn harness_notes_follow_the_session_through_handover_and_restart() {
     let prompts = d.prompts();
     assert_eq!(prompts.len(), 1, "{prompts:?}");
     assert!(prompts[0].contains("Shared project guidance."));
+    assert!(prompts[0].contains("Global shared guidance."));
+    assert!(prompts[0].contains("Global Codex guidance."));
+    assert!(!prompts[0].contains("Global Claude guidance."));
     assert!(prompts[0].contains("Codex-only guidance."));
     assert!(!prompts[0].contains("Claude-only guidance."));
 
     // A fresh session after the handover uses the persisted override.
     let restarted = e.first_message(&r, 5).await.unwrap().text;
     assert!(restarted.contains("Shared project guidance."));
+    assert!(restarted.contains("Global shared guidance."));
+    assert!(restarted.contains("Global Codex guidance."));
+    assert!(!restarted.contains("Global Claude guidance."));
     assert!(restarted.contains("Codex-only guidance."));
     assert!(!restarted.contains("Claude-only guidance."));
 }
