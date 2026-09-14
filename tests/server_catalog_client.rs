@@ -239,6 +239,80 @@ fn one_named_ssh_server_is_implicit_and_an_explicit_name_overrides_the_environme
 }
 
 #[test]
+fn doctor_reports_the_invoking_client_and_selected_server_versions() {
+    let root = Temp::new("doctor-version");
+    let config = root.0.join("factory/config");
+    let state = root.0.join("factory/state");
+    root.catalog(&format!(
+        "[servers.work]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n",
+        config, state
+    ));
+    root.use_real_server();
+
+    let output = root
+        .client()
+        .args(["--server", "work", "doctor"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "ok   client version {}; server \"work\" version {}\n",
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{text}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ssf-server"))
+        .env("PATH", &root.0)
+        .env("SSF_CONFIG_DIR", &config)
+        .env("SSF_STATE_DIR", &state)
+        .env("SSF_INTERNAL_CLIENT_VERSION", "0.6.9")
+        .env(
+            "SSF_INTERNAL_SELECTED_TARGET",
+            r#"{"name":"work","transport":"local"}"#,
+        )
+        .args(["__client", "doctor"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "FAIL client version 0.6.9; server \"work\" version {}; update the client or server to the same release and restart the server",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{text}"
+    );
+}
+
+#[test]
+fn doctor_detects_a_server_from_before_the_version_exchange() {
+    let root = Temp::new("old-doctor-version");
+    root.catalog("[servers.old]\ntransport = \"local\"\n");
+    script(
+        &root.0.join("ssf-server"),
+        "case \"${1:-}\" in\n  __target-version) echo \"unknown argument __target-version\" >&2; exit 2 ;;\n  --version) echo 'ssf-server 0.6.9' ;;\n  __client) echo 'all good' ;;\nesac",
+    );
+
+    let output = root
+        .client()
+        .args(["--server", "old", "doctor"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.starts_with(&format!(
+            "FAIL client version {}; server \"old\" version 0.6.9;",
+            env!("CARGO_PKG_VERSION")
+        )),
+        "{text}"
+    );
+    assert!(text.ends_with("all good\n"), "{text}");
+}
+
+#[test]
 fn several_servers_require_selection_before_starting_a_transport() {
     let root = Temp::new("ambiguous");
     root.catalog(

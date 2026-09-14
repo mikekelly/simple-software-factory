@@ -753,6 +753,22 @@ fn captured_status_reuses_only_its_factory_connection() {
 }
 
 #[test]
+fn the_invoking_client_version_crosses_the_vm_guest_boundary() {
+    let vm = vm();
+    let args = vec!["doctor".into()];
+    assert_eq!(
+        vm.ssf_remote_with_client_context(&args, Some(std::ffi::OsStr::new("0.6.4")), true),
+        [
+            "SSF_VM_GUEST=1",
+            "SSF_INTERNAL_VERSION_REPORTED=1",
+            "SSF_INTERNAL_CLIENT_VERSION=0.6.4",
+            "ssf",
+            "doctor",
+        ]
+    );
+}
+
+#[test]
 fn status_control_directory_rejects_shared_and_symlink_paths() {
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
     let sandbox = crate::config::test_support::sandbox();

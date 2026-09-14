@@ -13,6 +13,13 @@ commands. One healthy target says nothing about another. `ssf doctor` checks
 configuration, authentication, drivers and harness readiness; follow the named
 remedy and rerun it after the relevant change.
 
+Doctor also reports the invoking client and selected server versions. Exact
+versions pass. A patch-only difference within the same major and minor release
+is a warning; a major or minor difference fails the check. Update either side
+to the same release and restart the server (or `ssf vm restart` for a managed
+VM), then run doctor again. With multiple catalog targets, select and check
+each name independently.
+
 The client catalog is separate from factory configuration. Local defaults use
 isolated config/state trees; VM targets own their VM resources. Repository
 settings are picked up on the next poll. Service and VM changes can require a

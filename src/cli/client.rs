@@ -81,10 +81,14 @@ pub async fn client_main() -> Result<()> {
         [route] => route,
         _ => bail!("multiple --server destinations are supported only by `ssf dashboard`"),
     };
+    let doctor = matches!(cli.command, Command::Doctor);
+    if doctor {
+        return run_doctor_client(route, &catalog, &args);
+    }
 
     let err = match &route.destination {
         Some(host) => {
-            let command = remote_client_command(&args);
+            let command = remote_client_command(&args, None, None);
             std::process::Command::new("ssh")
                 .arg("--")
                 .arg(host)
@@ -124,6 +128,172 @@ pub async fn client_main() -> Result<()> {
         }
     };
     Err(anyhow::Error::from(err).context("starting ssf-server"))
+}
+
+fn run_doctor_client(
+    route: &server_catalog::Route,
+    catalog: &server_catalog::Catalog,
+    args: &[String],
+) -> Result<()> {
+    let client_version =
+        std::env::var(CLIENT_VERSION_ENV).unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
+    let already_reported = std::env::var_os(VERSION_REPORTED_ENV).is_some();
+    let identity = route
+        .name
+        .as_ref()
+        .map(|name| server_catalog::TargetIdentity {
+            name: name.clone(),
+            transport: route
+                .name
+                .as_deref()
+                .and_then(|name| catalog.get(name))
+                .map_or("ssh", server_catalog::Target::transport)
+                .into(),
+        });
+    // An SSH catalog name belongs to this client. Sending it to the remote
+    // host would make doctor inspect an unrelated `ssf@NAME` service there.
+    let endpoint_identity = if route.destination.is_none() {
+        identity.as_ref()
+    } else {
+        None
+    };
+    let incompatible = if already_reported {
+        false
+    } else {
+        let server_version = probe_target_version(route, endpoint_identity)?;
+        super::doctor::report_versions(
+            Some(&client_version),
+            server_version.as_deref(),
+            route.name.as_deref(),
+        )
+    };
+    let status = match &route.destination {
+        Some(host) => std::process::Command::new("ssh")
+            .arg("--")
+            .arg(host)
+            .arg(remote_client_command(args, Some(&client_version), None))
+            .status(),
+        None => {
+            let mut command = std::process::Command::new(server_executable()?);
+            command.arg("__client").args(args);
+            apply_local_route(&mut command, route, endpoint_identity)?;
+            command
+                .env(CLIENT_VERSION_ENV, &client_version)
+                .env(VERSION_REPORTED_ENV, "1")
+                .status()
+        }
+    }
+    .context("running doctor on the selected server")?;
+    std::process::exit(if incompatible {
+        1
+    } else {
+        status.code().unwrap_or(1)
+    });
+}
+
+fn probe_target_version(
+    route: &server_catalog::Route,
+    identity: Option<&server_catalog::TargetIdentity>,
+) -> Result<Option<String>> {
+    let output = match &route.destination {
+        Some(host) => std::process::Command::new("ssh")
+            .arg("--")
+            .arg(host)
+            .arg(remote_version_command(identity, true))
+            .output(),
+        None => {
+            let mut command = std::process::Command::new(server_executable()?);
+            command.arg("__target-version");
+            apply_local_route(&mut command, route, identity)?;
+            command.output()
+        }
+    }
+    .context("asking the selected server for its version")?;
+    if output.status.success()
+        && let Some(version) = parse_program_version(&output.stdout)
+    {
+        return Ok(Some(version));
+    }
+    let unsupported = output.status.code() == Some(2)
+        && String::from_utf8_lossy(&output.stderr).contains("__target-version");
+    if !unsupported {
+        return Ok(None);
+    }
+
+    let fallback = match &route.destination {
+        Some(host) => std::process::Command::new("ssh")
+            .arg("--")
+            .arg(host)
+            .arg(remote_version_command(None, false))
+            .output(),
+        None => std::process::Command::new(server_executable()?)
+            .arg("--version")
+            .output(),
+    }
+    .context("asking the server executable for its version")?;
+    Ok(fallback
+        .status
+        .success()
+        .then(|| parse_program_version(&fallback.stdout))
+        .flatten())
+}
+
+fn apply_local_route(
+    command: &mut std::process::Command,
+    route: &server_catalog::Route,
+    identity: Option<&server_catalog::TargetIdentity>,
+) -> Result<()> {
+    command
+        .env_remove("SSF_SERVER")
+        .env_remove(server_catalog::SELECTED_VM_ENV)
+        .env_remove(server_catalog::SELECTED_TARGET_ENV);
+    if let Some(identity) = identity {
+        command.env(
+            server_catalog::SELECTED_TARGET_ENV,
+            serde_json::to_string(identity)?,
+        );
+    }
+    if let Some(context) = &route.local_context {
+        command
+            .env("SSF_CONFIG_DIR", &context.config_dir)
+            .env("SSF_STATE_DIR", &context.state_dir);
+    }
+    if let Some(context) = &route.vm_context {
+        command.env(
+            server_catalog::SELECTED_VM_ENV,
+            serde_json::to_string(context)?,
+        );
+    }
+    Ok(())
+}
+
+fn remote_version_command(
+    identity: Option<&server_catalog::TargetIdentity>,
+    target: bool,
+) -> String {
+    let command = if target {
+        "ssf-server __target-version"
+    } else {
+        "ssf-server --version"
+    };
+    identity.map_or_else(
+        || command.into(),
+        |identity| {
+            format!(
+                "{}={} {command}",
+                server_catalog::SELECTED_TARGET_ENV,
+                shell_quote(&serde_json::to_string(identity).expect("target identity serializes"))
+            )
+        },
+    )
+}
+
+fn parse_program_version(stdout: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stdout)
+        .split_whitespace()
+        .last()
+        .filter(|version| !version.is_empty())
+        .map(str::to_owned)
 }
 
 fn validate_command_targets(
@@ -361,14 +531,36 @@ fn server_catalog_json(
     }
 }
 
-pub(crate) fn remote_client_command(args: &[String]) -> String {
+pub(crate) fn remote_client_command(
+    args: &[String],
+    client_version: Option<&str>,
+    identity: Option<&server_catalog::TargetIdentity>,
+) -> String {
     let mut command = String::from("ssf-server __client");
+    if let Some(version) = client_version {
+        command = format!("{CLIENT_VERSION_ENV}={} {command}", shell_quote(version));
+        command = format!("{VERSION_REPORTED_ENV}=1 {command}");
+    }
+    if let Some(identity) = identity {
+        command = format!(
+            "{}={} {command}",
+            server_catalog::SELECTED_TARGET_ENV,
+            shell_quote(&serde_json::to_string(identity).expect("target identity serializes"))
+        );
+    }
     for arg in args {
         command.push(' ');
         command.push_str(&shell_quote(arg));
     }
     command
 }
+
+/// Passed through the command transport so `doctor`, which runs at the
+/// selected factory, can compare the binary answering there with the binary
+/// that the person invoked. This is deliberately not a public configuration
+/// variable.
+pub(crate) const CLIENT_VERSION_ENV: &str = "SSF_INTERNAL_CLIENT_VERSION";
+pub(crate) const VERSION_REPORTED_ENV: &str = "SSF_INTERNAL_VERSION_REPORTED";
 
 pub(super) fn client_targets(
     mut args: Vec<String>,
@@ -722,6 +914,20 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
 /// Run the `ssf-server` daemon.
 pub async fn server_main() -> Result<()> {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "__target-version") {
+        server_catalog::selected_target_identity()?;
+        let cfg = Config::load()?;
+        if !factory_vm::in_guest() && cfg.vm.enabled {
+            let vm = factory_vm::Vm::new(&cfg);
+            println!(
+                "ssf-server {}",
+                vm.ssh_output(&["ssf-server", "--version"])?
+            );
+        } else {
+            println!("ssf-server {}", env!("CARGO_PKG_VERSION"));
+        }
+        return Ok(());
+    }
     if args.get(1).is_some_and(|arg| arg == "__client") {
         let command_args =
             std::iter::once(std::ffi::OsString::from("ssf")).chain(args.into_iter().skip(2));

@@ -2,13 +2,24 @@ use super::prelude::*;
 use super::*;
 
 pub(super) async fn doctor() -> Result<()> {
-    let mut problems = 0;
-    let mut check = |ok: bool, msg: String| {
+    let problems = std::cell::Cell::new(0);
+    let check = |ok: bool, msg: String| {
         println!("{} {}", if ok { "ok  " } else { "FAIL" }, msg);
         if !ok {
-            problems += 1;
+            problems.set(problems.get() + 1);
         }
     };
+    if std::env::var_os(VERSION_REPORTED_ENV).is_none() {
+        let client_version = std::env::var(CLIENT_VERSION_ENV).ok();
+        let target = server_catalog::selected_target_identity()?.map(|target| target.name);
+        if report_versions(
+            client_version.as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+            target.as_deref(),
+        ) {
+            problems.set(problems.get() + 1);
+        }
+    }
     let cfg = match Config::load() {
         Ok(c) => {
             check(
@@ -728,11 +739,79 @@ pub(super) async fn doctor() -> Result<()> {
             cfg.projects_dir(cfg.default_driver()).display()
         ),
     );
-    if problems > 0 {
-        bail!("{problems} problem(s) found");
+    if problems.get() > 0 {
+        bail!("{} problem(s) found", problems.get());
     }
     println!("all good");
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum VersionCompatibility {
+    Exact,
+    Patch,
+    Incompatible,
+}
+
+/// Print the version portion of a doctor report. Returns true when it makes
+/// doctor fail. The transport client calls this before invoking an old server;
+/// the server calls it as a fail-closed fallback for direct endpoint use.
+pub(super) fn report_versions(
+    client: Option<&str>,
+    server: Option<&str>,
+    target: Option<&str>,
+) -> bool {
+    let client = client.unwrap_or("unknown");
+    let server_version = server.unwrap_or("unknown");
+    let server = target
+        .map(|target| format!("server {target:?} version"))
+        .unwrap_or_else(|| "server version".into());
+    match version_compatibility(client, server_version) {
+        VersionCompatibility::Exact => {
+            println!("ok   client version {client}; {server} {server_version}");
+            false
+        }
+        VersionCompatibility::Patch => {
+            println!(
+                "WARN client version {client}; {server} {server_version}; patch-level differences are compatible, but update the client or server to the same release and restart the server"
+            );
+            false
+        }
+        VersionCompatibility::Incompatible => {
+            println!(
+                "FAIL client version {client}; {server} {server_version}; update the client or server to the same release and restart the server (or run `ssf vm restart` for a VM)"
+            );
+            true
+        }
+    }
+}
+
+/// SSF's client/server command surface may change at a minor release. Builds
+/// on the same major and minor version are therefore compatible; differing
+/// patch versions remain visible but do not make an otherwise healthy doctor
+/// fail. Pre-release/build suffixes still differ and receive the patch warning
+/// when their numeric release is the same.
+fn version_compatibility(client: &str, server: &str) -> VersionCompatibility {
+    if client == server {
+        return VersionCompatibility::Exact;
+    }
+    match (version_line(client), version_line(server)) {
+        (Some((client_major, client_minor)), Some((server_major, server_minor)))
+            if (client_major, client_minor) == (server_major, server_minor) =>
+        {
+            VersionCompatibility::Patch
+        }
+        _ => VersionCompatibility::Incompatible,
+    }
+}
+
+fn version_line(version: &str) -> Option<(u64, u64)> {
+    let release = version.split(['-', '+']).next()?;
+    let mut parts = release.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let _patch: u64 = parts.next()?.parse().ok()?;
+    parts.next().is_none().then_some((major, minor))
 }
 
 /// The checkout `ssf doctor` looks for a repository's worktrees next to:
@@ -782,4 +861,40 @@ pub(super) fn which(bin: &str) -> Option<std::path::PathBuf> {
     std::env::split_paths(&path)
         .map(|d| d.join(bin))
         .find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn exact_versions_are_healthy_and_patch_differences_are_warnings() {
+        assert_eq!(
+            version_compatibility("0.7.0", "0.7.0"),
+            VersionCompatibility::Exact
+        );
+        assert_eq!(
+            version_compatibility("0.7.1", "0.7.9"),
+            VersionCompatibility::Patch
+        );
+        assert_eq!(
+            version_compatibility("1.2.3-dev", "1.2.3"),
+            VersionCompatibility::Patch
+        );
+    }
+
+    #[test]
+    fn minor_major_and_unknown_versions_are_incompatible() {
+        for (client, server) in [
+            ("0.7.0", "0.6.9"),
+            ("1.7.0", "0.7.0"),
+            ("development", "0.7.0"),
+        ] {
+            assert_eq!(
+                version_compatibility(client, server),
+                VersionCompatibility::Incompatible,
+                "{client} against {server}"
+            );
+        }
+    }
 }
