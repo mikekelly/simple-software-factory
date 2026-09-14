@@ -218,7 +218,7 @@ macOS through Homebrew; every release carries the Linux packages.
 - **Arch**: the same `.pkg.tar.zst`, after `github-cli` (`extra`) and
   `herdr` or `herdr-bin` (AUR), which it depends on. Without a Wayland
   session (X11, a server), see [Setup](docs/setup.md) step 2.
-- **Debian 12+, Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
+- **Debian 12 and 13 (Trixie), Ubuntu 24.04+**: `ssf_<version>-1_amd64.deb`, `sudo apt
   install ./ssf_*_amd64.deb`; `gh`, `git` and `jq` come from the
   repositories (Debian 12 needs GitHub's apt repository for a new enough
   `gh`), and herdr is installed by hand ([Setup, step
@@ -230,6 +230,10 @@ macOS through Homebrew; every release carries the Linux packages.
   (`ssf setup`, then `ssf vm build`); the formula installs
   `ssf`, `ssf-server`, the VM scripts under `$(brew --prefix)/share/ssf/vm` and this
   documentation under `$(brew --prefix)/share/doc/ssf`.
+
+Separate static Linux x86_64 and ARM64 client/server binaries are also release
+assets; see [standalone installation](docs/install-binaries.md) for client-only
+SSH use and installation without a package. ARM64 assets are best effort.
 
 The Linux packages install the same paths on every distribution:
 
