@@ -33,7 +33,7 @@ person's account. Preserve uncommitted and unpushed work.
 | `ssf skill server` | `docs/skills/server.md`: daemon, services, diagnosis |
 | `ssf skill config` | `docs/configuration.md`: options, repositories, allowed users |
 | `ssf skill vm` | `docs/vm.md`: VM lifecycle and host/guest ownership |
-| `ssf skill headless` | `docs/headless-host.md`: Grok Bot / stripped Linux host path |
+| `ssf skill headless` | `docs/headless-host.md`: VPS / headless Linux host path |
 | `ssf skill install-binaries` | `docs/install-binaries.md`: standalone / client-only installation |
 | `ssf skill drivers` | `docs/drivers.md`: harnesses and workspace drivers |
 | `ssf skill sessions` | `docs/sessions.md`: collaboration and workspace lifecycle |

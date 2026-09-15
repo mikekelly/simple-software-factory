@@ -7,15 +7,14 @@ topics.
 Supported release packages are for Arch-family Linux (including Omarchy) and
 Debian-family Linux (including Ubuntu). macOS support is planned next but is
 not supported yet; macOS-specific notes below describe work in progress. The
-two main deployments are a factory running directly on a VPS (such as a Grok
-Bot or Meta Muse machine, or a Hetzner server) and a local factory isolated
-inside a microVM.
+two main deployments are a factory running directly on a dedicated Linux host,
+VPS, or container and a local factory isolated inside a microVM.
 
 For a VPS or stripped Linux container without KVM / a systemd user session,
 use `docs/headless-host.md` first: standalone binaries, host mode,
 `herdr server`, and foreground `ssf-server`. Keep the fresh server catalog empty
-so client and daemon share paths; skip package setup and linger. Refresh apt
-lists and install OpenSSH before key enrollment. Follow its older-gh device
+so client and daemon share paths; skip package setup and linger. Refresh the host package manager's
+indexes and install an OpenSSH client before key enrollment. Follow its older-gh device
 flow/token handoff and load harness credentials into both processes at restart.
 Setup steps 3b–3e explicitly separate owner invitation, bot acceptance, project
 owner board access, and `SSF.md` on the default branch. Do not skip acceptance

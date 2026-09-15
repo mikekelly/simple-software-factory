@@ -10,17 +10,16 @@ factory; VM setup supplies it in the guest.
 
 SSF release packages support Arch-family Linux (including Omarchy) and
 Debian-family Linux (including Ubuntu). macOS support is planned next but is
-not supported yet. Run a Linux factory either directly on a VPS (for example a
-Grok Bot or Meta Muse machine, or a Hetzner server) or, for the recommended
-local setup, inside a microVM.
+not supported yet. Run a Linux factory directly on a dedicated Linux host,
+VPS, or container, or inside a microVM for the recommended local setup.
 
 For installation, follow the [repository instructions](https://github.com/mikekelly/simple-software-factory#install).
 
-On a Bot-dedicated-VPS where Grok Bot should be the user's liaison for
+On a host where an always-on assistant should be the user's liaison for
 SSF-tracked repositories, follow the repository's
 [liaison guide](https://github.com/mikekelly/simple-software-factory/blob/master/docs/bot-dedicated-vps.md)
-after installing the factory. Grok Bot's Cursor GitHub event connection is a
-separate enrollment from the factory bot's `ssf auth`.
+after installing the factory. Configure the assistant's GitHub access and
+event delivery separately from the factory bot's `ssf auth`.
 
 Once installed, run `ssf skill` for authoritative guidance bundled with your
 binary, then follow its `ssf skill <topic>` commands for details.

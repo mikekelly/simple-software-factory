@@ -144,10 +144,10 @@ per `name` under it.
 The guest is Ubuntu 24.04 LTS in a
 [Firecracker](https://firecracker-microvm.github.io/) microVM, whatever Linux
 distribution the host runs. Firecracker runs as your user, given access to
-`/dev/kvm` (world-writable on Omarchy, Arch and Fedora; on Debian and Ubuntu a
-user logged in at the machine's seat gets access through udev, and a user who
-only comes in over ssh needs the `kvm` group: `sudo usermod -aG kvm $USER` and a new
-login), the guest's network is
+`/dev/kvm`. Check read/write access for the account that runs the VM rather
+than assuming permissions from the distribution name. If the device is owned
+by the `kvm` group, adding that user to the group may be needed:
+`sudo usermod -aG kvm "$USER"`, followed by a new login. The guest's network is
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) (a
 user-mode TCP/IP stack on the host end of a vsock, so no tap, bridge or
 firewall rule on the host), and the images are made with `fakeroot` and
@@ -158,7 +158,8 @@ gvproxy and kernel binaries `ssf vm build` downloads are built for it.
 The host needs `/dev/kvm` usable by you, `fakeroot`, `bsdtar`
 (libarchive), `mkfs.ext4`, `e2fsck`, `debugfs` and `resize2fs` (e2fsprogs), `curl`,
 `openssh`, and its own `herdr` binary, which is copied into the image.
-All of that is on a stock Omarchy; elsewhere `sudo pacman -S --needed
+Check these tools on the actual host and install missing prerequisites with
+its package manager. Examples: `sudo pacman -S --needed
 fakeroot libarchive e2fsprogs curl openssh`, `sudo apt install fakeroot
 libarchive-tools e2fsprogs curl openssh-client` or `sudo dnf install
 fakeroot bsdtar e2fsprogs curl openssh-clients` (the .deb and .rpm
