@@ -57,20 +57,9 @@ fn event_paths(path: &Path, sequence: u64, text: &str) -> (PathBuf, PathBuf) {
     )
 }
 
-/// Stop a replacement bridge from consuming an event that Herdr is about to
-/// deliver through the confirmed relaunch path.
-pub(crate) fn retire_pending(path: &Path, sequence: u64, text: &str) -> Result<()> {
-    let (pending, _) = event_paths(path, sequence, text);
-    if pending.exists() {
-        let retired = pending.with_extension("json.terminal");
-        std::fs::rename(&pending, &retired).with_context(|| {
-            format!(
-                "retiring delivery {} before terminal relaunch",
-                pending.display()
-            )
-        })?;
-    }
-    Ok(())
+pub(crate) fn has_record(path: &Path, sequence: u64, text: &str) -> bool {
+    let (pending, ack) = event_paths(path, sequence, text);
+    pending.exists() || ack.exists()
 }
 
 pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<()> {
@@ -163,10 +152,8 @@ mod tests {
         deliver(&root, 7, "[ssf] hello").await.unwrap();
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
 
-        retire_pending(&root, 8, "[ssf] later").unwrap();
         std::fs::write(event_paths(&root, 8, "[ssf] later").0, b"pending").unwrap();
-        retire_pending(&root, 8, "[ssf] later").unwrap();
-        assert!(!event_paths(&root, 8, "[ssf] later").0.exists());
+        assert!(has_record(&root, 8, "[ssf] later"));
         assert_eq!(
             std::fs::read_dir(&root)
                 .unwrap()

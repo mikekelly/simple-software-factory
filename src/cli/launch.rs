@@ -64,6 +64,10 @@ pub(super) fn launch(
         cmd.env("SSF_REPO", r);
     }
     cmd.env("SSF_PI_BRIDGE", crate::delivery_channel::bridge());
+    cmd.env(
+        "SSF_PI_LAUNCHER",
+        crate::platform::share_file("harness/ssf-pi-launch"),
+    );
     if let Some(n) = issue {
         cmd.env("SSF_ISSUE", n.to_string());
     }

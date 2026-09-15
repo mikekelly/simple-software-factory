@@ -27,6 +27,7 @@ const NFPM: &str = "packaging/linux/nfpm.yaml";
 #[test]
 fn harness_delivery_bridge_ships_on_each_host_and_into_the_guest() {
     assert!(repo().join("harness/ssf-delivery.ts").is_file());
+    assert!(repo().join("harness/ssf-pi-launch").is_file());
     for (manifest, expected) in [
         (
             PKGBUILD,
@@ -48,6 +49,12 @@ fn harness_delivery_bridge_ships_on_each_host_and_into_the_guest() {
         assert!(
             read(manifest).contains(expected),
             "{manifest} does not ship the OMP/Pi delivery bridge"
+        );
+    }
+    for manifest in [PKGBUILD, NFPM, "vm/guest/seed-common.sh"] {
+        assert!(
+            read(manifest).contains("ssf-pi-launch"),
+            "{manifest} does not ship the OMP/Pi session launcher"
         );
     }
 }

@@ -163,11 +163,13 @@ checks, and a restrictive content security policy. See
   starts its poller; `session_shutdown` removes only its own marker. A mailbox
   event is written through a temporary file and atomic rename. The extension
   renames it to an acknowledgement, which remains as the session's idempotency
-  record. Before taking the terminal relaunch path, Herdr retires an
-  unacknowledged copy so the replacement extension cannot inject it as well. A
-  daemon restart can therefore finish the same delivery without publishing a
-  known second copy. `ssf doctor` checks both the shipped extension and the
-  ready marker of each live OMP/Pi session.
+  record. An exec-only launcher selects a transcript only from the
+  mailbox-scoped session directory; the custom message stores the stable
+  delivery ID as extension-only metadata. On relaunch, the bridge acknowledges
+  an ID already in the resumed transcript or injects its pending event, and
+  Herdr suppresses terminal delivery for that existing mailbox record. `ssf
+  doctor` checks the shipped bridge and launcher plus the ready marker of each
+  live OMP/Pi session.
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. A machine restart takes the terminals with it, so the

@@ -394,10 +394,12 @@ async fn herdr_live_native_delivery() {
         );
     }
     let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("harness/ssf-delivery.ts");
+    let launcher = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("harness/ssf-pi-launch");
     let quote = |path: &std::path::Path| format!("'{}'", path.display());
     let command = std::env::var("SSF_LIVE_COMMAND")
         .unwrap_or_else(|_| crate::models::default_command(&harness))
-        .replace("\"$SSF_PI_BRIDGE\"", &quote(&bridge));
+        .replace("\"$SSF_PI_BRIDGE\"", &quote(&bridge))
+        .replace("\"$SSF_PI_LAUNCHER\"", &quote(&launcher));
     let command = format!("SSF_DELIVERY_MAILBOX={} {command}", quote(&mailbox));
     let h = Herdr::new(HerdrConfig::default());
     h.status().await.unwrap();
@@ -497,6 +499,76 @@ async fn herdr_live_native_delivery() {
     h.run(&["pane", "send-keys", &handle, "ctrl+u"])
         .await
         .unwrap();
+
+    // Recreate the send/ack crash window: the transcript already contains
+    // the delivery ID, but its mailbox file still looks pending. A restarted
+    // harness must resume that transcript, acknowledge the existing entry,
+    // and not submit the event again through its terminal.
+    let acknowledged = std::fs::read_dir(&mailbox)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".json.ack"))
+        })
+        .unwrap();
+    let pending = acknowledged.with_extension("");
+    std::fs::rename(&acknowledged, &pending).unwrap();
+    h.run(&["pane", "send-keys", &handle, "ctrl+d"])
+        .await
+        .unwrap();
+    let stopped = Instant::now() + Duration::from_secs(10);
+    while h
+        .agents()
+        .await
+        .unwrap()
+        .iter()
+        .any(|agent| agent.pane_id == handle)
+    {
+        assert!(
+            Instant::now() < stopped,
+            "harness did not exit for relaunch"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let recovery = h
+        .deliver(
+            &wt.id,
+            Some(&handle),
+            &Relaunch {
+                command: &command,
+                resume_command: None,
+                harness: &harness,
+                title: "native delivery · #334",
+                text: None,
+                first_prompt: FirstPrompt::No,
+                channel: Some((&mailbox, 1)),
+            },
+            "[ssf] Native idle event. Reply with only IDLE-RECEIVED-334.",
+        )
+        .await
+        .unwrap();
+    assert!(recovery.relaunched && recovery.resumed);
+    assert!(pending.with_extension("json.ack").is_file());
+    let handle = recovery.handle;
+    let transcript = std::fs::read_dir(mailbox.join("session"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .unwrap();
+    let transcript = std::fs::read_to_string(transcript).unwrap();
+    assert_eq!(
+        transcript
+            .matches("\"customType\":\"ssf-item-activity\"")
+            .count(),
+        1,
+        "relaunch duplicated the native event:\n{transcript}"
+    );
 
     h.send_prompt(
         &handle,

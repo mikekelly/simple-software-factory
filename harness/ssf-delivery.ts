@@ -11,6 +11,7 @@ import * as path from "node:path";
 export default function (pi: any) {
 	let timer: ReturnType<typeof setInterval> | undefined;
 	let polling = false;
+	let sessionManager: any;
 	const mailbox = process.env.SSF_DELIVERY_MAILBOX;
 	const ready = mailbox ? path.join(mailbox, "ready.json") : undefined;
 
@@ -26,6 +27,16 @@ export default function (pi: any) {
 				const pending = path.join(mailbox, name);
 				const message = JSON.parse(fs.readFileSync(pending, "utf8"));
 				if (typeof message.text !== "string" || message.text.length === 0) continue;
+				const recorded = sessionManager?.getEntries().some(
+					(entry: any) =>
+						entry.type === "custom_message" &&
+						entry.customType === "ssf-item-activity" &&
+						entry.details?.deliveryId === name,
+				);
+				if (recorded) {
+					fs.renameSync(pending, `${pending}.ack`);
+					continue;
+				}
 				// A custom message does not submit or replace the interactive editor.
 				// triggerTurn wakes an idle agent; followUp queues behind an active turn.
 				pi.sendMessage(
@@ -34,6 +45,7 @@ export default function (pi: any) {
 						content: message.text,
 						display: true,
 						attribution: "user",
+						details: { deliveryId: name },
 					},
 					{ deliverAs: "followUp", triggerTurn: true },
 				);
@@ -46,8 +58,9 @@ export default function (pi: any) {
 		}
 	}
 
-	pi.on("session_start", async () => {
+	pi.on("session_start", async (_event: any, ctx: any) => {
 		if (!mailbox || !ready) return;
+		sessionManager = ctx.sessionManager;
 		fs.mkdirSync(mailbox, { recursive: true, mode: 0o700 });
 		fs.writeFileSync(ready, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
 		await poll();

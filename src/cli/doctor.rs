@@ -377,6 +377,15 @@ pub(super) async fn doctor() -> Result<()> {
                     bridge.display()
                 ),
             );
+            let launcher = crate::platform::share_file("harness/ssf-pi-launch");
+            check(
+                launcher.is_file(),
+                format!(
+                    "{}: harness session launcher at {}",
+                    r.name,
+                    launcher.display()
+                ),
+            );
         }
         if let Some(repo_state) = state.repos.get(&r.name) {
             for session in repo_state.issues.values().filter(|session| {

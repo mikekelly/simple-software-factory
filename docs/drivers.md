@@ -34,6 +34,15 @@ turn. The extension acknowledges the event after handing it to the harness. It
 never writes bytes to the pane, and a draft already in the OMP/Pi composer is
 left intact.
 
+The default command runs through a small exec wrapper that keeps the harness
+transcript in that mailbox's session directory. It explicitly resumes only the
+latest transcript in that directory, never a global "most recent" session.
+Each injected message carries its stable mailbox ID in extension-only metadata.
+If the harness exits between recording a message and acknowledging it, the
+replacement resumes that transcript: its bridge acknowledges an ID already
+present or injects the still-pending event, and Herdr does not also submit it
+through the terminal.
+
 The mailbox lives under the factory state directory at
 `delivery/<owner>/<repo>/<issue>/`. Its ready marker belongs to the running
 extension. After upgrading SSF, restart any already-running OMP/Pi session so
@@ -73,9 +82,10 @@ than risk replaying side effects; Herdr correctly reports that terminal as
 command sets `PI_STREAM_IDLE_TIMEOUT_MS=900000` (15 minutes), the upstream
 recommendation for long agentic workloads. A repository `command` replaces the
 whole default, so include that environment setting there too if a custom OMP
-command should retain the longer window. A custom OMP/Pi command must also load
-`-e "$SSF_PI_BRIDGE"` to retain native item-activity delivery; the launch
-wrapper supplies that path. Set a different timeout value deliberately to
+command should retain the longer window. A custom OMP/Pi command must also use
+`"$SSF_PI_LAUNCHER" pi|omp ... -e "$SSF_PI_BRIDGE"` to retain resumable native
+item-activity delivery; the launch wrapper supplies both paths. Set a different
+timeout value deliberately to
 tune the tradeoff; `0` disables the watchdog and can leave a genuinely wedged
 stream waiting forever.
 

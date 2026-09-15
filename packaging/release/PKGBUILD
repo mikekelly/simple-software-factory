@@ -71,6 +71,7 @@ package() {
   install -Dm644 marketplace/FactoryPanel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/marketplace/FactoryPanel.qml"
   install -Dm644 config.example.toml "$pkgdir/usr/share/ssf/config.example.toml"
   install -Dm644 harness/ssf-delivery.ts "$pkgdir/usr/share/ssf/harness/ssf-delivery.ts"
+  install -Dm755 harness/ssf-pi-launch "$pkgdir/usr/share/ssf/harness/ssf-pi-launch"
   # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the
   # guest scripts, the units and their per-backend drop-ins. A loop, not a
   # list, because `ssf vm build` reads whatever the guest scripts ask for
