@@ -1165,6 +1165,12 @@ accepting the successful Enter without retrying: {e:#}"
             .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
             match relaunch.first_prompt {
+                FirstPrompt::No if crate::delivery_channel::supports(relaunch.harness) => {
+                    let (mailbox, sequence) = relaunch
+                        .channel
+                        .context("native harness delivery has no mailbox")?;
+                    crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+                }
                 FirstPrompt::No => self.send_prompt(&handle, text).await?,
                 FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
                 FirstPrompt::Recover => self.recover_first_prompt(&handle, text).await?,

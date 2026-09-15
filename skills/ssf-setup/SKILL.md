@@ -50,3 +50,10 @@ repository `command` replaces that default; include
 `PI_STREAM_IDLE_TIMEOUT_MS=900000` in a custom OMP command to keep the same
 behavior. Setting it to `0` disables stall detection and can leave a genuinely
 wedged stream waiting forever.
+
+SSF's default OMP and Pi commands also load `-e "$SSF_PI_BRIDGE"`, the shipped
+extension that wakes idle sessions for item activity without submitting a
+person's composer draft. A custom OMP/Pi repository `command` must include that
+argument too. `ssf launch` supplies the path; `ssf doctor` reports a live
+session whose bridge is unavailable, and the session must be restarted after
+an upgrade or command correction.

@@ -1,6 +1,79 @@
 use super::*;
 use serde_json::json;
 
+#[tokio::test]
+async fn omp_delivery_uses_the_mailbox_not_terminal_input() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base =
+        std::env::temp_dir().join(format!("ssf-herdr-native-delivery-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$(dirname "$0")/calls"
+case "$1 $2" in
+  "agent list")
+    echo '{"agents":[{"agent":"omp","agent_status":"idle","pane_id":"w7:p1","workspace_id":"w7"}]}'
+    ;;
+  "agent prompt"|"pane send-text"|"pane send-keys")
+    echo 'terminal input was used' >&2
+    exit 1
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mailbox = base.join("mailbox");
+    std::fs::create_dir(&mailbox).unwrap();
+    std::fs::write(
+        mailbox.join("ready.json"),
+        format!("{{\"pid\":{}}}", std::process::id()),
+    )
+    .unwrap();
+    let reader = mailbox.clone();
+    let bridge = tokio::spawn(async move {
+        loop {
+            if let Some(pending) = std::fs::read_dir(&reader).unwrap().flatten().find_map(|e| {
+                let path = e.path();
+                (path.file_name().unwrap() != "ready.json"
+                    && path.extension().is_some_and(|ext| ext == "json"))
+                .then_some(path)
+            }) {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
+                std::fs::rename(&pending, format!("{}.ack", pending.display())).unwrap();
+                return value["text"].as_str().unwrap().to_string();
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    });
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+    let relaunch = Relaunch {
+        command: "unused",
+        resume_command: None,
+        harness: "omp",
+        title: "unused",
+        text: None,
+        first_prompt: FirstPrompt::No,
+        channel: Some((&mailbox, 3)),
+    };
+    h.deliver("w7", Some("w7:p1"), &relaunch, "[ssf] event")
+        .await
+        .unwrap();
+    assert_eq!(bridge.await.unwrap(), "[ssf] event");
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("agent list"), "{calls}");
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    assert!(!calls.contains("pane send"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
 /// Against a running herdr server: makes a scratch repo, opens a
 /// workspace, runs Claude Code in it, sends a prompt, removes it all.
 /// `cargo test herdr_live -- --ignored --nocapture`.
@@ -269,6 +342,199 @@ Reply with the single token RECOVERED-279 and nothing else.",
         recovered.contains("RECOVERED-279"),
         "the stranded prompt was not answered"
     );
+    h.remove_worktree(&wt.id).await.unwrap();
+    if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
+        && let Some(src) = v
+            .pointer("/source/source_workspace_id")
+            .and_then(Value::as_str)
+    {
+        let _ = h.run(&["workspace", "close", src]).await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Against a running herdr server and an installed OMP/Pi: proves #334's
+/// gate.  A native event wakes an idle session without submitting a draft,
+/// and an event accepted during a turn is handled afterwards.
+/// `cargo test herdr_live_native_delivery -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn herdr_live_native_delivery() {
+    let harness = std::env::var("SSF_LIVE_HARNESS").unwrap_or_else(|_| "omp".into());
+    assert!(crate::delivery_channel::supports(&harness));
+    let base = std::env::temp_dir().join(format!(
+        "ssf-native-delivery-{harness}-{}",
+        std::process::id()
+    ));
+    let root = base.join("widgets").to_string_lossy().to_string();
+    let mailbox = base.join("mailbox");
+    std::fs::create_dir_all(&root).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "master"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let bridge = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("harness/ssf-delivery.ts");
+    let quote = |path: &std::path::Path| format!("'{}'", path.display());
+    let command = std::env::var("SSF_LIVE_COMMAND")
+        .unwrap_or_else(|_| crate::models::default_command(&harness))
+        .replace("\"$SSF_PI_BRIDGE\"", &quote(&bridge));
+    let command = format!("SSF_DELIVERY_MAILBOX={} {command}", quote(&mailbox));
+    let h = Herdr::new(HerdrConfig::default());
+    h.status().await.unwrap();
+    let wt = h
+        .create_worktree(
+            &root,
+            "owner/widgets",
+            "issue-334-native-delivery",
+            334,
+            "ssf: native delivery test",
+            None,
+        )
+        .await
+        .unwrap();
+    let handle = h
+        .launch(&wt.id, &command, "native delivery · #334", &harness)
+        .await
+        .unwrap();
+    h.send_first_prompt(&handle, "Reply with only READY-334.")
+        .await
+        .unwrap();
+    let settled = Instant::now() + Duration::from_secs(60);
+    loop {
+        let state = h
+            .agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.pane_id == handle)
+            .map(|agent| agent.status);
+        if state.as_deref().is_some_and(|state| state != "working") {
+            break;
+        }
+        assert!(
+            Instant::now() < settled,
+            "first turn did not settle: {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    let draft = "HUMAN-DRAFT-334";
+    h.run(&["pane", "send-text", &handle, draft]).await.unwrap();
+    let draft_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let screen = h.screen(&handle).await.unwrap().join("\n");
+        if screen.contains(draft) {
+            break;
+        }
+        assert!(
+            Instant::now() < draft_deadline,
+            "synthetic draft never reached the composer:\n{screen}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    crate::delivery_channel::deliver(
+        &mailbox,
+        1,
+        "[ssf] Native idle event. Reply with only IDLE-RECEIVED-334.",
+    )
+    .await
+    .unwrap();
+    h.run(&[
+        "agent",
+        "wait",
+        &handle,
+        "--until",
+        "working",
+        "--timeout",
+        "15000",
+    ])
+    .await
+    .unwrap();
+    let settled = Instant::now() + Duration::from_secs(60);
+    loop {
+        let state = h
+            .agents()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|agent| agent.pane_id == handle)
+            .map(|agent| agent.status);
+        if state.as_deref().is_some_and(|state| state != "working") {
+            break;
+        }
+        assert!(
+            Instant::now() < settled,
+            "idle event did not settle: {state:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let idle_screen = h.screen(&handle).await.unwrap().join("\n");
+    assert!(idle_screen.contains("IDLE-RECEIVED-334"), "{idle_screen}");
+    assert!(
+        idle_screen.contains(draft),
+        "draft was disturbed:\n{idle_screen}"
+    );
+    h.run(&["pane", "send-keys", &handle, "ctrl+u"])
+        .await
+        .unwrap();
+
+    h.send_prompt(
+        &handle,
+        "Use the bash tool to run `sleep 4`, then reply with only PRIMARY-DONE-334.",
+    )
+    .await
+    .unwrap();
+    h.run(&[
+        "agent",
+        "wait",
+        &handle,
+        "--until",
+        "working",
+        "--timeout",
+        "15000",
+    ])
+    .await
+    .unwrap();
+    crate::delivery_channel::deliver(
+        &mailbox,
+        2,
+        "[ssf] Native busy event. After the current turn reply with only FOLLOWUP-RECEIVED-334.",
+    )
+    .await
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let screen = h.screen(&handle).await.unwrap().join("\n");
+        if screen.contains("FOLLOWUP-RECEIVED-334") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "busy event was not handled:\n{screen}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
     h.remove_worktree(&wt.id).await.unwrap();
     if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
         && let Some(src) = v

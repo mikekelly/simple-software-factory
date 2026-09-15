@@ -10,6 +10,7 @@ mod config;
 mod dashboard;
 mod dashboard_transport;
 mod dashboard_web;
+mod delivery_channel;
 mod driver;
 mod engine;
 mod events;

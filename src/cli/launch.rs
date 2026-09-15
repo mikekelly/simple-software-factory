@@ -55,8 +55,15 @@ pub(super) fn launch(
         cmd.env("SSF_BOT", login);
     }
     if let Some(r) = repo {
+        if let Some(n) = issue {
+            cmd.env(
+                "SSF_DELIVERY_MAILBOX",
+                crate::delivery_channel::mailbox(&r, n),
+            );
+        }
         cmd.env("SSF_REPO", r);
     }
+    cmd.env("SSF_PI_BRIDGE", crate::delivery_channel::bridge());
     if let Some(n) = issue {
         cmd.env("SSF_ISSUE", n.to_string());
     }

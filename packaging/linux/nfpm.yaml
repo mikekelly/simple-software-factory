@@ -72,6 +72,9 @@ contents:
   - dst: /usr/share/ssf/omarchy-plugin/marketplace
     type: dir
     packager: rpm
+  - dst: /usr/share/ssf/harness
+    type: dir
+    packager: rpm
   - dst: /usr/share/ssf/vm
     type: dir
     packager: rpm
@@ -126,6 +129,10 @@ contents:
       mode: 0644
   - src: config.example.toml
     dst: /usr/share/ssf/config.example.toml
+    file_info:
+      mode: 0644
+  - src: harness/ssf-delivery.ts
+    dst: /usr/share/ssf/harness/ssf-delivery.ts
     file_info:
       mode: 0644
   # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the

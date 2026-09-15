@@ -43,7 +43,7 @@ class Ssf < Formula
 
     # #{HOMEBREW_PREFIX}/share/ssf/vm is where `ssf vm build` looks for the
     # image scripts, relative to the binary (<bin>/../share/ssf/vm).
-    pkgshare.install "vm", "config.example.toml", "SSF.example.md"
+    pkgshare.install "vm", "harness", "config.example.toml", "SSF.example.md"
     doc.install "README.md", "docs"
   end
 
