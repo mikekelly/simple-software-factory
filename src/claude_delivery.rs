@@ -71,6 +71,14 @@ async fn process_start(pid: u32, expected: &str) -> Option<String> {
 fn unattended(argv: &[Value]) -> bool {
     argv.iter()
         .any(|arg| arg.as_str() == Some("--dangerously-skip-permissions"))
+        && argv
+            .iter()
+            .filter(|arg| arg.as_str() == Some("--settings"))
+            .count()
+            == 1
+        && !argv
+            .iter()
+            .any(|arg| arg.as_str() == Some("--permission-mode"))
         && argv.windows(2).any(|pair| {
             pair[0].as_str() == Some("--settings")
                 && pair[1]
@@ -107,6 +115,11 @@ pub(crate) async fn discover(process_info: &Value) -> Option<Inbox> {
             return None;
         }
         let socket = std::fs::canonicalize(&reg.messaging_socket_path).ok()?;
+        // A stale socket inode alone does not prove an available running channel.
+        let _probe = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(&socket))
+            .await
+            .ok()?
+            .ok()?;
         let hash = format!(
             "{:x}",
             Sha256::digest(socket.as_os_str().as_encoded_bytes())
@@ -421,6 +434,57 @@ mod tests {
         assert!(path.exists());
     }
 
+    #[tokio::test]
+    async fn exited_saved_pane_never_routes_to_a_neighbor() {
+        use std::os::unix::fs::PermissionsExt;
+        let sandbox = crate::config::test_support::sandbox();
+        let mailbox = sandbox.root().join("mailbox");
+        let calls = sandbox.root().join("calls");
+        let fake = sandbox.root().join("herdr");
+        std::fs::write(&fake, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nif [ \"$1 $2\" = 'agent list' ]; then\nprintf '%s\\n' '{{\"result\":{{\"agents\":[{{\"pane_id\":\"w7:p2\",\"workspace_id\":\"w7\",\"agent\":\"claude\",\"agent_status\":\"idle\"}}]}}}}'\nelse\nexit 1\nfi\n", calls.display())).unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let herdr = crate::herdr::Herdr::new(crate::config::HerdrConfig {
+            command: fake.to_string_lossy().into_owned(),
+            ..Default::default()
+        });
+        let relaunch = crate::driver::Relaunch {
+            command: "unused",
+            resume_command: None,
+            harness: "claude",
+            title: "unused",
+            text: None,
+            first_prompt: crate::driver::FirstPrompt::No,
+            channel: Some((&mailbox, 1)),
+        };
+        // A new event must not paste to the neighbour when native discovery fails.
+        assert!(
+            herdr
+                .deliver("w7", Some("w7:p1"), &relaunch, "event")
+                .await
+                .is_err()
+        );
+        assert!(
+            !std::fs::read_to_string(&calls)
+                .unwrap()
+                .contains("agent prompt")
+        );
+        save(
+            &record_path(&mailbox, 1, "event"),
+            &Record {
+                transcript: sandbox.root().join("old.jsonl"),
+                content: "event".into(),
+                confirmed: true,
+            },
+        )
+        .unwrap();
+        // An existing journal must reach saved-session recovery, not return via the neighbour.
+        let error = herdr
+            .deliver("w7", Some("w7:p1"), &relaunch, "event")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no saved session"), "{error}");
+    }
+
     /// Existing scratch pane only; leaves the harness and its transcript for inspection.
     /// SSF_CLAUDE_TEST_PANE=wN:pN cargo test claude_live_inbox -- --ignored --nocapture
     #[tokio::test]
@@ -441,10 +505,7 @@ mod tests {
         );
         let herdr = crate::herdr::Herdr::new(crate::config::HerdrConfig::default());
         let inbox = herdr.claude_inbox(&pane).await.expect("live native inbox");
-        let agent = herdr
-            .agents()
-            .await
-            .unwrap()
+        let agent = crate::herdr::parse_agents(&herdr.run(&["agent", "list"]).await.unwrap())
             .into_iter()
             .find(|agent| agent.pane_id == pane)
             .unwrap();

@@ -1170,10 +1170,27 @@ accepting the successful Enter without retrying: {e:#}"
         let (ws, _) = split_id(workspace_id);
         let agents = self.agents().await?;
         let live: Vec<&Agent> = agents.iter().filter(|a| a.workspace_id == ws).collect();
-        let target = preferred_handle
-            .and_then(|h| live.iter().find(|a| a.pane_id == h))
-            .or_else(|| live.first())
-            .map(|a| a.pane_id.clone());
+        let target = if relaunch.harness == "claude" {
+            // A saved pane is an address, not a preference. Never deliver to a
+            // neighbour if its agent exits or its pane hosts a different harness.
+            match preferred_handle {
+                Some(handle) => live
+                    .iter()
+                    .find(|a| a.pane_id == handle && a.kind == "claude"),
+                None => {
+                    let candidates: Vec<_> = live.iter().filter(|a| a.kind == "claude").collect();
+                    if candidates.len() > 1 {
+                        bail!("Claude delivery has multiple live sessions and no saved pane");
+                    }
+                    candidates.first().copied()
+                }
+            }
+        } else {
+            preferred_handle
+                .and_then(|h| live.iter().find(|a| a.pane_id == h))
+                .or_else(|| live.first())
+        }
+        .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
             match relaunch.first_prompt {
                 FirstPrompt::No if relaunch.harness == "claude" => {
