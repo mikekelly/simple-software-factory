@@ -1,7 +1,7 @@
 use super::*;
 
 #[tokio::test]
-async fn handover_and_release_retire_native_routing_without_erasing_receipts() {
+async fn handover_retires_native_routing_but_release_preserves_resume_binding() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;
     let (mut e, _) = handover_setup(&stub);
@@ -19,7 +19,7 @@ async fn handover_and_release_retire_native_routing_without_erasing_receipts() {
     assert_eq!(std::fs::read(&receipt).unwrap(), b"pending receipt");
     std::fs::write(&binding, b"next conversation").unwrap();
     e.mark_released(&repo(), 5);
-    assert!(!binding.exists());
+    assert_eq!(std::fs::read(&binding).unwrap(), b"next conversation");
     assert_eq!(std::fs::read(&receipt).unwrap(), b"pending receipt");
 }
 

@@ -124,7 +124,8 @@ can use experimental native delivery: idle wakes, busy admission leaves active
 work intact, and the composer is untouched. Endpoint/conversation bindings and
 exact user-message rollout receipts prevent retry duplication. A delayed or
 ambiguous receipt is held; an invalid explicit channel never silently pastes.
-Handover or release archives the active binding without discarding old receipts.
+Handover or fresh onboarding archives the active binding without discarding old receipts;
+release retains it for resuming the saved conversation.
 Remote resume retains server permissions and omits the permission-bypass flag.
 Standalone Codex keeps terminal fallback. Server provisioning remains the
 launcher/Herdr's responsibility; see [delivery configuration](configuration.md#codex-native-delivery).

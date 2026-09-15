@@ -14,7 +14,18 @@ async fn onboarding_posts_one_attached_event_and_no_more_after_that() {
     e.cfg.repos = vec![r.clone()];
     stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
     stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    let mailbox = crate::delivery_channel::mailbox("o/r", 5);
+    std::fs::create_dir_all(&mailbox).unwrap();
+    let old_binding = mailbox.join("codex-binding.json");
+    std::fs::write(&old_binding, b"previous native conversation").unwrap();
+    let old_receipt = mailbox.join("codex-event.json");
+    std::fs::write(&old_receipt, b"pending old receipt").unwrap();
     e.tick_repo(&r).await.unwrap();
+    assert!(
+        !old_binding.exists(),
+        "fresh onboarding retires old routing"
+    );
+    assert_eq!(std::fs::read(&old_receipt).unwrap(), b"pending old receipt");
     let st = e.entry(&r, 5).clone();
     assert!(st.seeded && st.active, "{st:?}");
     assert!(e.failures.is_empty(), "{:?}", e.failures);
