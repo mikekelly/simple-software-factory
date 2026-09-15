@@ -424,6 +424,46 @@ that has not been carried out yet. Releasing the workspace or purging the
 item clears the override, and the item comes back on the repository's own
 settings.
 
+## Codex native delivery
+
+Native Codex item activity is experimental and opt-in, live-verified on 0.154.0.
+The normal default command remains standalone and uses terminal fallback.
+An operator-provided launcher may instead attach the normal Herdr-managed TUI
+to an item-specific app-server:
+
+```sh
+codex --remote unix:///absolute/item-specific/app.sock \
+  --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
+```
+
+Set `repo.command` to that launcher, keeping model/effort in their dedicated
+SSF keys. The launcher receives `SSF_REPO`, `SSF_ISSUE` and
+`SSF_DELIVERY_MAILBOX`; derive a unique private endpoint for each item rather
+than hard-code one repository-wide socket for every worker. Provision the server
+with `codex app-server --listen unix:///absolute/item-specific/app.sock` before
+attaching, and retain ownership of its startup, restart and cleanup. SSF does
+not provision servers or expose public TCP listeners. The endpoint must control
+the same persistent conversation displayed by the TUI, with socket mode 0600
+and a same-user peer. SSF pins the sole ordinary loaded thread and refuses
+ambiguous conversation selection. Preserve the same endpoint and resume that
+thread after exit; a saved binding without a resumable session is held rather
+than replaced with a new conversation. Unverified permission/configuration
+overrides are rejected for native delivery.
+
+Remote resume must omit `--dangerously-bypass-approvals-and-sandbox`: Codex
+rejects permission overrides when reconnecting to a persisted remote task.
+Keep `--dangerously-bypass-hook-trust` and resume the exact saved thread;
+its existing server-side permissions are retained. SSF removes the permission
+flag for a direct `codex --remote ...` command; a custom launcher must handle
+this distinction when SSF appends `resume <id>`. Handover or fresh onboarding retires the active
+native binding, preserving old per-event receipt journals. Workspace release
+retains the binding because the saved conversation remains resumable.
+
+`ssf doctor` reports unavailable channels. Explicit native launch failures hold
+activity instead of reverting to paste; pending journals reconcile the exact
+durable user-message echo, never blindly resend. See
+[delivery details](drivers.md#item-activity-delivery).
+
 ## Permissions
 
 Nobody sits at an ssf terminal, so an agent that stops to ask whether it may

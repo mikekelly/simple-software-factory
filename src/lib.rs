@@ -7,6 +7,7 @@
 mod agents;
 mod allow;
 mod claude_delivery;
+mod codex_delivery;
 mod config;
 mod dashboard;
 mod dashboard_transport;

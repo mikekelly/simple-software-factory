@@ -71,3 +71,16 @@ that inline setting and bypass permissions; restart existing sessions to load
 it. `ssf doctor` reports an unavailable inbox (legacy terminal fallback).
 Ambiguous native sends are held, never blindly resent; inspect their journal
 and target transcript as described in `ssf skill drivers` before intervening.
+
+Codex native delivery is experimental and opt-in: a launcher/Herdr must provide
+an item-specific private Unix app-server and start the normal TUI with explicit
+`--remote unix://PATH` plus SSF's bypass-approvals/sandbox and bypass-hook-trust
+flags. Remote resume omits the permission-bypass flag and retains server permissions;
+custom launchers must handle this when SSF appends `resume <id>`.
+Do not point multiple items at a shared conversation or start a separate
+headless session as a substitute. SSF pins the endpoint and exact conversation,
+journals events and reconciles rollout receipts. Explicit channel failures and
+ambiguous sends are held; standalone sessions retain terminal fallback. Run
+`ssf doctor` and read `ssf skill drivers` before changing a saved binding; never
+delete an uncertain journal to force delivery. Do not enable this launch mode
+without the operator accepting its experimental status and server ownership.

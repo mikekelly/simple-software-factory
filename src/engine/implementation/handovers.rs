@@ -272,6 +272,18 @@ impl Engine {
                 return;
             }
         }
+        if let Err(e) = crate::codex_delivery::retire_binding(&crate::delivery_channel::mailbox(
+            &repo.name, number,
+        )) {
+            self.refuse_handover(
+                repo,
+                number,
+                &h,
+                format!("could not retire native conversation binding: {e:#}"),
+            )
+            .await;
+            return;
+        }
         // A hold on the item ends here: the session it was held for is
         // gone. The item was told the hold was on, so it is told it is
         // over, before the handover itself is posted.

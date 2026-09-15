@@ -230,6 +230,11 @@ impl Engine {
                     "created workspace"
                 );
                 self.remember_worktree(repo, issue.number, &created);
+                crate::codex_delivery::retire_binding(&crate::delivery_channel::mailbox(
+                    &repo.name,
+                    issue.number,
+                ))
+                .context("retiring native binding before a fresh conversation")?;
                 {
                     let e = self.entry(repo, issue.number);
                     e.launched_at = Some(now_iso());
