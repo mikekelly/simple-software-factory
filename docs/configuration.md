@@ -220,6 +220,7 @@ instructions = "Run `make test` before opening a PR."
 | `vm.guest_binary` | this client on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` client to seed into the guest; its matching `ssf-server` build must be beside it (`ssf-server`, or the corresponding versioned release-asset name) |
 | `vm.herdr` | the host's own `herdr` on a Linux host, else herdr's latest Linux release downloaded by the guest while provisioning | lima only: a Linux herdr binary for the guest; installed when the guest is provisioned, so a change needs `ssf vm reset` |
 | `repo.name` | | `owner/name` on GitHub (required) |
+| `repo.enrolled_at` | set by `ssf repo add` | Enrollment generation used to quarantine allocations already present on the first successful poll; retained by `ssf repo set` and replaced after remove/add |
 | `repo.github_id` | enrolled by ssf | GitHub's immutable repository database id; ssf uses it to discover renames and transfers |
 | `repo.aliases` | `[]` | Previous `owner/name` values retained by ssf so historical session origin tags still route correctly |
 | `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |

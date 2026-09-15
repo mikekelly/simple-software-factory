@@ -1,5 +1,229 @@
 use super::*;
 
+#[tokio::test(flavor = "current_thread")]
+async fn a_new_repo_enrollment_lists_existing_allocations_without_starting_them() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    let listed = assigned_item(3, "alice", "u1");
+    stub.set_assigned(vec![listed.clone()]);
+
+    // A candidate left by a prior enrollment is not part of this one.
+    e.state.repo_mut(&r.name).adoption_candidates.insert(
+        99,
+        AdoptionCandidate {
+            number: 99,
+            title: "stale".into(),
+            html_url: "https://gh/99".into(),
+            updated_at: "old".into(),
+            kind: "issue".into(),
+            triggers: vec!["assigned".into()],
+        },
+    );
+
+    // Retained state from another enrollment is detached, but its checkout
+    // remains available for an explicit adoption to reuse.
+    {
+        let st = e.entry(&r, 3);
+        st.seeded = true;
+        st.active = true;
+        st.worktree_id = Some("w3".into());
+        st.worktree_path = Some("/worktrees/w3".into());
+        st.terminal_handle = Some("old-terminal".into());
+        st.agent_session_id = Some("old-conversation".into());
+    }
+    // This old session disappeared from the listings while the repository
+    // was removed. Discovery must not resume it merely to retire it.
+    {
+        let st = e.entry(&r, 9);
+        st.seeded = true;
+        st.active = true;
+        st.worktree_id = Some("w9".into());
+        st.worktree_path = Some("/worktrees/w9".into());
+        st.terminal_handle = Some("old-nine".into());
+        st.agent_session_id = Some("old-nine-conversation".into());
+    }
+    let mut closed = assigned_item(9, "alice", "u2");
+    closed["state"] = json!("closed");
+    stub.set_issue(9, closed);
+    d.with(|s| {
+        s.worktrees.insert("w3".into());
+        s.worktrees.insert("w9".into());
+    });
+    e.startup_pending = vec![DriverKind::Herdr];
+    e.cfg.save().unwrap();
+    e.tick().await;
+
+    let rs = &e.state.repos[&r.name];
+    assert_eq!(rs.enrollment_seen.as_deref(), Some("generation-1"));
+    assert_eq!(
+        rs.adoption_candidates.keys().copied().collect::<Vec<_>>(),
+        vec![3],
+        "the new enrollment must replace the prior candidate snapshot"
+    );
+    assert_eq!(rs.adoption_candidates[&3].triggers, vec!["assigned"]);
+    assert!(!rs.issues[&3].seeded && !rs.issues[&3].active);
+    assert_eq!(rs.issues[&3].worktree_id.as_deref(), Some("w3"));
+    assert_eq!(
+        rs.issues[&3].terminal_handle.as_deref(),
+        Some("old-terminal")
+    );
+    assert_eq!(
+        rs.issues[&3].agent_session_id.as_deref(),
+        Some("old-conversation")
+    );
+    assert!(d.launches().is_empty(), "discovery must not start an agent");
+    assert!(d.log().is_empty(), "discovery touched a retained session");
+    assert!(!rs.issues[&9].seeded && !rs.issues[&9].active);
+
+    // A later listing change still cannot start the candidate implicitly.
+    stub.set_assigned(vec![assigned_item(3, "alice", "u2")]);
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.launches().is_empty());
+    assert!(e.state.repos[&r.name].adoption_candidates.contains_key(&3));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn explicit_adoption_starts_fresh_with_the_complete_github_story() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    let listed = assigned_item(3, "alice", "u1");
+    stub.set_assigned(vec![listed.clone()]);
+    stub.set_issue(3, listed);
+    stub.set_timeline(
+        3,
+        vec![
+            assigned_by(1, "alice"),
+            comment(2, "alice", "the historical detail adoption must replay"),
+        ],
+    );
+    e.tick_repo(&r).await.unwrap();
+    assert!(d.prompts().is_empty());
+    {
+        let st = e.entry(&r, 3);
+        st.worktree_id = Some("w3".into());
+        st.worktree_path = Some("/worktrees/w3".into());
+        st.terminal_handle = Some("stale-terminal".into());
+        st.agent_session_id = Some("old-conversation".into());
+    }
+    d.seed("w3", "old-terminal", READY_SCREEN);
+
+    let response = e
+        .handle_request(Request::Adopt {
+            items: vec!["o/r#3".into()],
+        })
+        .await;
+    assert!(response.ok, "{:?}", response.error);
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("the historical detail adoption must replay"));
+    let log = d.log();
+    assert_eq!(log[0], "stop:old-terminal", "{log:?}");
+    assert!(
+        log.iter().any(|entry| entry == "relaunch:w3:false"),
+        "adoption starts fresh rather than resuming: {log:?}"
+    );
+    assert!(e.state.repos[&r.name].adoption_candidates.is_empty());
+    let st = &e.state.repos[&r.name].issues[&3];
+    assert!(st.seeded && st.active, "{st:?}");
+    assert!(e.refetch.contains(&r.name));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn adopting_a_pull_request_always_starts_its_own_fresh_session() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    seeded(&mut e, 1, Some("bot/issue-1"), true);
+
+    let mut pull = assigned_item(3, "alice", "u1");
+    pull["user"]["login"] = json!("bot");
+    pull["body"] = json!("🤖#1 says: <!-- ssf: origin=o/r#1 -->\n\nImplementation");
+    pull["pull_request"] = json!({"url": "https://api.github.test/pulls/3"});
+    stub.set_assigned(vec![pull.clone()]);
+    stub.set_issue(3, pull);
+    stub.set_timeline(3, vec![assigned_by(1, "alice")]);
+    stub.set_pull(
+        3,
+        json!({
+            "head": {"ref": "feature", "repo": {"full_name": "o/r"}},
+            "base": {"ref": "main"},
+            "requested_reviewers": []
+        }),
+    );
+    e.tick_repo(&r).await.unwrap();
+
+    let response = e
+        .handle_request(Request::Adopt {
+            items: vec!["o/r#3".into()],
+        })
+        .await;
+
+    assert!(response.ok, "{:?}", response.error);
+    let adopted = &e.state.repos[&r.name].issues[&3];
+    assert!(adopted.seeded && adopted.active, "{adopted:?}");
+    assert!(adopted.shares_workspace_of.is_none(), "{adopted:?}");
+    assert_ne!(adopted.worktree_id.as_deref(), Some("w1"));
+}
+
+#[tokio::test]
+async fn adoption_rechecks_the_allocation_before_stopping_an_existing_agent() {
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let mut r = repo();
+    r.enrolled_at = Some("generation-1".into());
+    e.cfg.repos = vec![r.clone()];
+    stub.set_assigned(vec![assigned_item(3, "alice", "u1")]);
+    e.tick_repo(&r).await.unwrap();
+
+    let mut no_longer_assigned = assigned_item(3, "alice", "u2");
+    no_longer_assigned["assignees"] = json!([]);
+    stub.set_issue(3, no_longer_assigned);
+    stub.set_timeline(3, vec![assigned_by(1, "alice")]);
+    {
+        let st = e.entry(&r, 3);
+        st.worktree_id = Some("w3".into());
+        st.terminal_handle = Some("old-terminal".into());
+    }
+    d.seed("w3", "old-terminal", READY_SCREEN);
+
+    let response = e
+        .handle_request(Request::Adopt {
+            items: vec!["o/r#3".into()],
+        })
+        .await;
+
+    assert!(!response.ok, "a stale candidate was adopted");
+    assert!(
+        response
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("no longer allocated")),
+        "{:?}",
+        response.error
+    );
+    assert!(d.log().is_empty(), "the existing agent was disturbed");
+    assert!(e.state.repos[&r.name].adoption_candidates.is_empty());
+}
+
 #[tokio::test]
 async fn ignored_items_are_not_fetched_on_a_full_listing_or_after_a_restart() {
     let stub = GitHubStub::start().await;

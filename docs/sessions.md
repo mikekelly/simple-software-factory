@@ -4,6 +4,18 @@ The rules that decide which session acts on an item, how a bot pull request gets
 
 ## Ownership: one session per item
 
+### Adopting allocations when a repository is enrolled
+
+Adding a watched repository establishes a factory enrollment. On its first
+successful poll, SSF lists allocations already involving the bot as adoption
+candidates and starts none of them. `ssf candidates [--repo owner/name]` shows
+that queue. After confirming that another factory is not working the item,
+`ssf adopt owner/name#N [...]` explicitly gives the selected items to this
+factory. Each adopted item starts a fresh harness conversation whose first
+message reconstructs the complete GitHub issue and timeline; private transcripts
+from a former server are neither required nor copied. Normal later allocations,
+daemon restarts, and reactivation of released sessions remain automatic.
+
 GitHub has one bot identity, so without help a human's @mention or review
 request on a pull request the bot opened would start a second agent next
 to the one that wrote it. ssf instead binds every item to at most one

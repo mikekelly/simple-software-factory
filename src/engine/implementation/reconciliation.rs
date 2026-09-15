@@ -51,10 +51,20 @@ impl Engine {
             }
             // Before anything is delivered or resumed: a session that has
             // been handed over is replaced first.
-            self.run_handovers(&repo).await;
+            if !self.enrollment_pending(&repo) {
+                self.run_handovers(&repo).await;
+            }
             if let Err(e) = self.tick_repo(&repo).await {
                 warn!(repo = repo.name, "pass failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
+            }
+            // Until the first full listing snapshot succeeds, retained state
+            // must not resume, hand over, deliver, conflict-check or clean up.
+            if self.enrollment_pending(&repo) {
+                if let Err(e) = self.state.save() {
+                    error!("saving state: {e:#}");
+                }
+                continue;
             }
             if let Err(e) = self.check_conflicts(&repo).await {
                 warn!(repo = repo.name, "branch conflict check failed: {e:#}");
@@ -160,6 +170,9 @@ impl Engine {
     /// workspace). A session whose workspace is gone, released or about to
     /// be removed is skipped.
     pub(in crate::engine) fn resume_candidates(&self, repo: &RepoConfig) -> Vec<u64> {
+        if self.enrollment_pending(repo) {
+            return Vec::new();
+        }
         let Some(rs) = self.state.repos.get(&repo.name) else {
             return Vec::new();
         };
@@ -187,9 +200,12 @@ impl Engine {
     pub(in crate::engine) async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
         let (owner, name) = repo.split()?;
         self.refresh_collaborators(repo, owner, name).await?;
-        // Sessions whose harness sits at a login prompt are found (and
-        // brought back) before anything is delivered this pass.
-        self.check_logins(repo).await;
+        let discovering = self.enrollment_pending(repo);
+        // Preserve the normal pre-listing recovery order. A new enrollment
+        // waits until after its quarantine snapshot instead.
+        if !discovering {
+            self.check_logins(repo).await;
+        }
         if self.refetch.remove(&repo.name) {
             self.clear_etags(repo);
         }
@@ -207,7 +223,11 @@ impl Engine {
                 name,
                 "assignee",
                 &self.login,
-                rs.issues_etag.as_deref(),
+                if discovering {
+                    None
+                } else {
+                    rs.issues_etag.as_deref()
+                },
             )
             .await?;
         let mentioned = self
@@ -217,12 +237,25 @@ impl Engine {
                 name,
                 "mentioned",
                 &self.login,
-                rs.mentioned_etag.as_deref(),
+                if discovering {
+                    None
+                } else {
+                    rs.mentioned_etag.as_deref()
+                },
             )
             .await?;
         let reviews = self
             .gh
-            .review_requested(owner, name, &self.login, rs.pulls_etag.as_deref())
+            .review_requested(
+                owner,
+                name,
+                &self.login,
+                if discovering {
+                    None
+                } else {
+                    rs.pulls_etag.as_deref()
+                },
+            )
             .await?;
         let created = self
             .gh
@@ -231,7 +264,11 @@ impl Engine {
                 name,
                 "creator",
                 &self.login,
-                rs.created_etag.as_deref(),
+                if discovering {
+                    None
+                } else {
+                    rs.created_etag.as_deref()
+                },
             )
             .await?;
         if matches!(assigned, Conditional::NotModified)
@@ -323,6 +360,57 @@ impl Engine {
             count = items.len(),
             "open items involving the bot"
         );
+
+        if discovering {
+            let rs = self.state.repo_mut(&repo.name);
+            rs.adoption_candidates.clear();
+            // Removing a repository retains its state and checkouts. A new
+            // enrollment must detach every old session before recovery,
+            // retirement, handover or subscription delivery can touch it.
+            for st in rs.issues.values_mut() {
+                st.seeded = false;
+                st.active = false;
+                st.cleanup_pending = false;
+                st.release_pending = false;
+                st.release_forced = false;
+                st.handover = None;
+                st.handover_note = None;
+                st.blocked = None;
+                st.subscribers.clear();
+                st.subscriber_only = false;
+            }
+            for (number, (issue, _, triggers)) in &items {
+                if triggers.iter().all(|trigger| trigger == "created") {
+                    continue;
+                }
+                let Some(issue) = issue else {
+                    continue;
+                };
+                rs.adoption_candidates.insert(
+                    *number,
+                    AdoptionCandidate {
+                        number: *number,
+                        title: issue.title.clone(),
+                        html_url: issue.html_url.clone(),
+                        updated_at: issue.updated_at.clone(),
+                        kind: if issue.is_pull_request() {
+                            "pull_request".into()
+                        } else {
+                            "issue".into()
+                        },
+                        triggers: triggers.clone(),
+                    },
+                );
+            }
+            rs.enrollment_seen = repo.enrolled_at.clone();
+        }
+
+        // Sessions whose harness sits at a login prompt are found (and
+        // brought back) before item activity is delivered. A pending new
+        // enrollment reaches this point only after its quarantine exists.
+        if discovering {
+            self.check_logins(repo).await;
+        }
 
         let mut all_ok = true;
         let present: BTreeSet<u64> = items.keys().copied().collect();
@@ -439,6 +527,16 @@ impl Engine {
         self.watch_subscribed(repo, owner, name).await
     }
 
+    fn enrollment_pending(&self, repo: &RepoConfig) -> bool {
+        repo.enrolled_at.is_some()
+            && self
+                .state
+                .repos
+                .get(&repo.name)
+                .and_then(|rs| rs.enrollment_seen.as_ref())
+                != repo.enrolled_at.as_ref()
+    }
+
     /// Whether a pass has to look at an item found on the listings: `fresh`
     /// is the item as a changed listing reported it, `None` when every
     /// listing carrying it was a 304, and `triggers` names the listings it
@@ -456,6 +554,14 @@ impl Engine {
         fresh: Option<&Issue>,
         triggers: &[String],
     ) -> bool {
+        if self
+            .state
+            .repos
+            .get(&repo.name)
+            .is_some_and(|rs| rs.adoption_candidates.contains_key(&number))
+        {
+            return false;
+        }
         let tracked = self
             .state
             .repos

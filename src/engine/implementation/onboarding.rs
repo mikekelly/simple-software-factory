@@ -135,7 +135,12 @@ impl Engine {
             {
                 e.subscribers.push(parent);
             }
-        } else if let Some(owner) = self.find_owner(repo, issue, pr.as_ref(), &scan) {
+        } else if !self
+            .adopting
+            .as_ref()
+            .is_some_and(|(name, number)| name == &repo.name && *number == issue.number)
+            && let Some(owner) = self.find_owner(repo, issue, pr.as_ref(), &scan)
+        {
             return self
                 .bind_to(repo, issue, owner, diff, triggers, since_prior)
                 .await;
