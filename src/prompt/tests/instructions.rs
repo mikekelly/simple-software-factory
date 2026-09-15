@@ -106,6 +106,9 @@ explains the rest.\n\n\
 - This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
 GitHub.\n\
 - Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.\n\
+- Use GitHub Flavored Markdown in GitHub posts when it makes them easier to read: link to \
+specific lines of code or Markdown, and use tables or Mermaid diagrams when they clarify the \
+content.\n\
 - Before starting on a goal, say on the issue what you are about to do, and say when you need a \
 decision or have delivered: silent work leaves the issue looking unattended until it lands.\n\
 - `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this \
