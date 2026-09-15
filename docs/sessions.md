@@ -114,7 +114,12 @@ the harness's in-process extension rather than through its terminal. An idle
 session wakes for the event, a working one queues it as a follow-up, and text a
 person has begun composing stays in the editor. Delivery to a live OMP/Pi
 session with no ready bridge is held and retried; run `ssf doctor`, then restart
-that session to load the bridge. Other harnesses and a newly created or resumed
+that session to load the bridge. Claude Code uses its authenticated peer inbox
+with the default `crossSessionInbound: accept` setting: idle wakes, busy receives
+priority `next`, and the draft stays untouched. Receipt is confirmed through its
+transcript; an ambiguous send is held without resending. An unavailable inbox
+before sending keeps the legacy terminal fallback, reported by `ssf doctor`.
+Other harnesses and a newly created or resumed
 pane retain the terminal delivery behavior described in
 [Workspaces and terminals](drivers.md#item-activity-delivery).
 

@@ -50,7 +50,26 @@ it is relaunched with the bridge; until then delivery is held rather than
 risking a terminal paste. `ssf doctor` reports a live OMP/Pi session whose
 marker is unavailable.
 
-Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush do not
+Claude Code's default command adds
+`--settings '{"crossSessionInbound":"accept"}'` alongside bypass permissions.
+Later events go to the exact pane's foreground Claude PID through its authenticated
+peer inbox socket, discovered in `~/.claude/sessions/` (or `CLAUDE_CONFIG_DIR`).
+Idle delivery starts a turn; busy delivery uses priority `next`, without touching
+the composer. This unofficial protocol is live-verified with Claude Code 2.1.268.
+SSF confirms receipt in that session's persistent transcript and keeps a journal
+under the same delivery directory. Retries reconcile that journal rather than
+sending another copy. If the socket is unavailable before sending, the legacy
+terminal fallback remains; `ssf doctor` reports that limitation. Existing sessions
+must be restarted with the new setting; a custom command must retain the inline
+setting and bypass-permissions flag to use native delivery.
+
+A write with no transcript confirmation is ambiguous: delivery is held, never
+resent or pasted. Inspect the journal's target transcript before resolving it;
+do not delete the journal merely to force a retry. An exited target is resumed
+from its saved session before reconciliation, not given a duplicate first prompt.
+Dialogs remain outside the channel's scope.
+
+Codex, OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush do not
 yet have a proven channel wired into SSF's attached interactive session. Their
 later activity still uses `herdr agent prompt`; if Herdr refuses because the
 agent is at a question, the existing raw bracketed-paste fallback remains.

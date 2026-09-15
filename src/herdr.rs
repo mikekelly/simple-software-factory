@@ -1149,6 +1149,17 @@ accepting the successful Enter without retrying: {e:#}"
         .map(|_| ())
     }
 
+    pub(crate) async fn claude_inbox(
+        &self,
+        pane_id: &str,
+    ) -> Option<crate::claude_delivery::Inbox> {
+        let info = self
+            .run(&["pane", "process-info", "--pane", pane_id])
+            .await
+            .ok()?;
+        crate::claude_delivery::discover(&info).await
+    }
+
     pub async fn deliver(
         &self,
         workspace_id: &str,
@@ -1165,6 +1176,20 @@ accepting the successful Enter without retrying: {e:#}"
             .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
             match relaunch.first_prompt {
+                FirstPrompt::No if relaunch.harness == "claude" => {
+                    let (mailbox, sequence) =
+                        relaunch.channel.context("Claude delivery has no journal")?;
+                    let inbox = self.claude_inbox(&handle).await;
+                    if !crate::claude_delivery::deliver(inbox.as_ref(), mailbox, sequence, text)
+                        .await?
+                    {
+                        warn!(
+                            pane_id = handle,
+                            "Claude inbox unavailable; using terminal fallback"
+                        );
+                        self.send_prompt(&handle, text).await?;
+                    }
+                }
                 FirstPrompt::No if crate::delivery_channel::supports(relaunch.harness) => {
                     let (mailbox, sequence) = relaunch
                         .channel
@@ -1180,6 +1205,15 @@ accepting the successful Enter without retrying: {e:#}"
                 relaunched: false,
                 resumed: false,
             });
+        }
+        let claude_retry = relaunch.channel.filter(|(mailbox, sequence)| {
+            relaunch.harness == "claude"
+                && crate::claude_delivery::has_record(mailbox, *sequence, text)
+        });
+        if claude_retry.is_some() && relaunch.resume_command.is_none() {
+            bail!(
+                "Claude has an outstanding native delivery journal but no saved session to resume (no terminal fallback)"
+            );
         }
         let native_retry = relaunch.channel.filter(|(mailbox, sequence)| {
             crate::delivery_channel::supports(relaunch.harness)
@@ -1247,6 +1281,11 @@ keeping it"
                 }
             }
         }
+        if claude_retry.is_some() && handle.is_none() {
+            bail!(
+                "Claude could not resume its outstanding native delivery; refusing a fresh terminal submission"
+            );
+        }
         let handle = match handle {
             Some(h) => h,
             None => {
@@ -1264,6 +1303,14 @@ keeping it"
                 .await?
             }
         };
+        if let Some((mailbox, sequence)) = claude_retry {
+            crate::claude_delivery::deliver(None, mailbox, sequence, text).await?;
+            return Ok(Delivery {
+                handle,
+                relaunched: true,
+                resumed: true,
+            });
+        }
         if let Some((mailbox, sequence)) = native_retry {
             // The per-session Pi/OMP command resumes the transcript. Its
             // bridge either finds this delivery ID there and acknowledges it,

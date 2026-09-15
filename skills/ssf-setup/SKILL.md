@@ -64,3 +64,10 @@ activity without submitting a person's composer draft. A custom OMP/Pi
 repository `command` must use both too. `ssf launch` supplies their paths; `ssf
 doctor` reports a live session whose channel is unavailable, and the session
 must be restarted after an upgrade or command correction.
+
+Claude's default command adds `--settings '{"crossSessionInbound":"accept"}'`
+for native item activity through its peer inbox. Custom commands must retain
+that inline setting and bypass permissions; restart existing sessions to load
+it. `ssf doctor` reports an unavailable inbox (legacy terminal fallback).
+Ambiguous native sends are held, never blindly resent; inspect their journal
+and target transcript as described in `ssf skill drivers` before intervening.

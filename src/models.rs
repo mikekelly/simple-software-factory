@@ -207,7 +207,7 @@ pub fn effort_levels(harness: &str) -> &'static [&'static str] {
 const UNATTENDED_FLAGS: &[(&str, &str)] = &[
     (
         "claude",
-        "--dangerously-skip-permissions --disallowedTools AskUserQuestion",
+        "--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'",
     ),
     (
         "codex",
@@ -484,7 +484,7 @@ mod tests {
     fn default_commands_are_permission_free() {
         assert_eq!(
             default_command("claude"),
-            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+            "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'"
         );
         assert_eq!(
             default_command("codex"),
