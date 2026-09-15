@@ -24,6 +24,41 @@ fn repo() -> PathBuf {
 const PKGBUILD: &str = "packaging/release/PKGBUILD";
 const NFPM: &str = "packaging/linux/nfpm.yaml";
 
+#[test]
+fn harness_delivery_bridge_ships_on_each_host_and_into_the_guest() {
+    assert!(repo().join("harness/ssf-delivery.ts").is_file());
+    assert!(repo().join("harness/ssf-pi-launch").is_file());
+    for (manifest, expected) in [
+        (
+            PKGBUILD,
+            "install -Dm644 harness/ssf-delivery.ts \"$pkgdir/usr/share/ssf/harness/ssf-delivery.ts\"",
+        ),
+        (
+            NFPM,
+            "- src: harness/ssf-delivery.ts\n    dst: /usr/share/ssf/harness/ssf-delivery.ts",
+        ),
+        (
+            "packaging/homebrew/ssf.rb",
+            "pkgshare.install \"vm\", \"harness\"",
+        ),
+        (
+            "vm/guest/seed-common.sh",
+            "/usr/local/share/ssf/harness/ssf-delivery.ts",
+        ),
+    ] {
+        assert!(
+            read(manifest).contains(expected),
+            "{manifest} does not ship the OMP/Pi delivery bridge"
+        );
+    }
+    for manifest in [PKGBUILD, NFPM, "vm/guest/seed-common.sh"] {
+        assert!(
+            read(manifest).contains("ssf-pi-launch"),
+            "{manifest} does not ship the OMP/Pi session launcher"
+        );
+    }
+}
+
 fn read(rel: &str) -> String {
     std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("reading {rel}: {e}"))
 }

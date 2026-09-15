@@ -107,9 +107,17 @@ checks, and a restrictive content security policy. See
   process-held lock beside `state.json`; both `ssf-server` and `ssf-server --once`
   take it before reading state. It is released when its owner exits. Do not
   unlink it to clear a refusal while an engine may still be running.
-- **Delivery into the agent's terminal.** Messages are pasted with bracketed
-  paste so multi-line text arrives as one message, then Enter. Claude Code
-  queues it as a steering message while busy, or runs it when idle.
+- **Delivery into a harness.** A live, seeded OMP or Pi session receives later
+  messages through SSF's shipped extension and per-session mailbox. The
+  extension uses a user-attributed custom message with `triggerTurn: true` and
+  `deliverAs: "followUp"`, so idle starts a turn, busy queues one, and the
+  terminal editor (including a person's draft) is untouched. The daemon uses
+  the session's next prompt count plus a content fingerprint as the stable
+  mailbox key: a retry observes the same pending or acknowledged event rather
+  than publishing another copy. If a live bridge is unavailable, delivery
+  fails and remains retryable instead of falling back to terminal input.
+  Other harnesses, and OMP/Pi first prompts in newly created or resumed panes,
+  still use Herdr's terminal prompt path and its bracketed-paste fallback.
 - **Bringing a session back.** After the first message ssf records the
   agent's conversation id (Claude Code and Codex keep transcripts on disk).
   If the agent's terminal is gone, ssf starts it again with `--resume <id>`
@@ -150,6 +158,18 @@ checks, and a restrictive content security policy. See
   harness found on a later pass submits an identifiable stranded prompt and
   resends only after a positively identified first-run dialog; an ambiguous
   screen is accepted so a consumed prompt cannot become a steering message.
+- **OMP/Pi bridge readiness.** `ssf launch` gives the extension the session's
+  mailbox and shipped extension path. `session_start` writes `ready.json` and
+  starts its poller; `session_shutdown` removes only its own marker. A mailbox
+  event is written through a temporary file and atomic rename. The extension
+  renames it to an acknowledgement, which remains as the session's idempotency
+  record. An exec-only launcher selects a transcript only from the
+  mailbox-scoped session directory; the custom message stores the stable
+  delivery ID as extension-only metadata. On relaunch, the bridge acknowledges
+  an ID already in the resumed transcript or injects its pending event, and
+  Herdr suppresses terminal delivery for that existing mailbox record. `ssf
+  doctor` checks the shipped bridge and launcher plus the ready marker of each
+  live OMP/Pi session.
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. A machine restart takes the terminals with it, so the

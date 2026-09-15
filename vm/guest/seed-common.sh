@@ -33,6 +33,8 @@ seed_from() {
     chmod 700 /home/ssf/.ssh
     install -m755 "$seed/ssf" /usr/local/bin/ssf
     install -m755 "$seed/ssf-server" /usr/local/bin/ssf-server
+    install -Dm644 "$seed/ssf-delivery.ts" /usr/local/share/ssf/harness/ssf-delivery.ts
+    install -Dm755 "$seed/ssf-pi-launch" /usr/local/share/ssf/harness/ssf-pi-launch
     install -d -m700 -o ssf -g ssf /home/ssf/.config/ssf
     # Keep SSH usable for recovery when migration finds a conflict. The daemon
     # may only start after guest ownership was successfully established.

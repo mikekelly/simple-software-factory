@@ -436,8 +436,8 @@ therefore starts every agent with the flags that let it run unattended:
 | `codex` | `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust` | the directory-trust question (ssf answers it) |
 | `gemini` | `gemini --yolo --skip-trust` | nothing (without `--skip-trust`, a trust dialog ssf answers) |
 | `grok` | `grok --always-approve` | nothing |
-| `pi` | `pi --approve` (Pi has no tool approvals; the flag trusts the repository's `.pi/` files) | nothing (without `--approve`, a trust dialog ssf answers) |
-| `omp` | `PI_STREAM_IDLE_TIMEOUT_MS=900000 omp --auto-approve` (the longer stream-idle window is explained in [Workspaces and terminals](drivers.md)) | nothing |
+| `pi` | `"$SSF_PI_LAUNCHER" pi --approve -e "$SSF_PI_BRIDGE"` (Pi has no tool approvals; the flag trusts the repository's `.pi/` files; the launcher isolates and resumes its session) | nothing (without `--approve`, a trust dialog ssf answers) |
+| `omp` | `PI_STREAM_IDLE_TIMEOUT_MS=900000 "$SSF_PI_LAUNCHER" omp --auto-approve -e "$SSF_PI_BRIDGE"` (the longer stream-idle window and delivery bridge are explained in [Workspaces and terminals](drivers.md)) | nothing |
 | `opencode` | `opencode --auto` | nothing |
 | `copilot` | `copilot --allow-all` | nothing (the flag trusts the folder too) |
 | `crush` | `crush --yolo` | an offer to create `AGENTS.md`, which the first prompt dismisses |
@@ -447,6 +447,13 @@ therefore starts every agent with the flags that let it run unattended:
 at the terminal; the agent is told to ask on the issue instead. Login and
 first-run onboarding are not covered: sign each agent in once, by hand, on
 the machine that runs the daemon.
+
+`ssf launch` sets `SSF_PI_BRIDGE` to the packaged extension. A custom `pi` or
+`omp` repository command replaces the default, so include
+`"$SSF_PI_LAUNCHER" pi|omp ... -e "$SSF_PI_BRIDGE"`; otherwise a live session
+has no complete, resumable item-activity channel and `ssf doctor` asks for it
+to be restarted after the command is fixed. The launcher is an exec wrapper,
+not a process that remains beside the harness.
 
 Set `repo.command` to run an agent differently, for instance with a
 permission mode of your own or a tool deny list in the agent's own syntax

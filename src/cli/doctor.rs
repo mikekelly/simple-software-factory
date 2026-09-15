@@ -356,6 +356,77 @@ pub(super) async fn doctor() -> Result<()> {
         let bin = cmd.split_whitespace().next().unwrap_or("");
         let ok = which(bin).is_some() || installed.iter().any(|a| a.id == r.harness && a.installed);
         check(ok, format!("{}: harness `{}` installed", r.name, r.harness));
+        let driver_rows = open_workspaces
+            .get(&cfg.driver_for(r))
+            .and_then(|rows| rows.as_ref().ok());
+        let uses_native_channel = crate::delivery_channel::supports(&r.harness)
+            || state.repos.get(&r.name).is_some_and(|repo_state| {
+                repo_state.issues.values().any(|session| {
+                    session.overrides.as_ref().is_some_and(|overrides| {
+                        crate::delivery_channel::supports(&overrides.harness)
+                    })
+                })
+            });
+        if uses_native_channel {
+            let bridge = crate::delivery_channel::bridge();
+            check(
+                bridge.is_file(),
+                format!(
+                    "{}: harness delivery bridge at {}",
+                    r.name,
+                    bridge.display()
+                ),
+            );
+            let launcher = crate::platform::share_file("harness/ssf-pi-launch");
+            check(
+                launcher.is_file(),
+                format!(
+                    "{}: harness session launcher at {}",
+                    r.name,
+                    launcher.display()
+                ),
+            );
+        }
+        if let Some(repo_state) = state.repos.get(&r.name) {
+            for session in repo_state.issues.values().filter(|session| {
+                session.active
+                    && session.shares_workspace_of.is_none()
+                    && session.worktree_id.is_some()
+            }) {
+                let harness = session
+                    .overrides
+                    .as_ref()
+                    .map(|overrides| overrides.harness.as_str())
+                    .unwrap_or(&r.harness);
+                if !crate::delivery_channel::supports(harness) {
+                    continue;
+                }
+                let live = session.worktree_id.as_deref().is_some_and(|id| {
+                    driver_rows.is_some_and(|rows| {
+                        rows.iter().any(|workspace| {
+                            workspace.worktree_id == id && workspace.live_terminals > 0
+                        })
+                    })
+                });
+                if live {
+                    let mailbox = crate::delivery_channel::mailbox(&r.name, session.number);
+                    check(
+                        crate::delivery_channel::available(&mailbox),
+                        format!(
+                            "{}#{}: {harness} item-activity channel at {}{}",
+                            r.name,
+                            session.number,
+                            mailbox.display(),
+                            if crate::delivery_channel::available(&mailbox) {
+                                ""
+                            } else {
+                                "; restart this session to load the bridge"
+                            }
+                        ),
+                    );
+                }
+            }
+        }
         // The SSF agent guidance (`SSF.md`, or `repo.prompt_file`): looked for
         // on GitHub, on the branch the agents start from (`repo.base_branch`,
         // else the default branch), so no clone is needed; a machine path

@@ -45,6 +45,12 @@ impl Vm {
         std::fs::copy(&server, tree.join("ssf-server"))
             .with_context(|| format!("copying {}", server.display()))?;
         make_executable(&tree.join("ssf-server"))?;
+        let delivery_bridge = crate::delivery_channel::bridge();
+        std::fs::copy(&delivery_bridge, tree.join("ssf-delivery.ts"))
+            .with_context(|| format!("copying {}", delivery_bridge.display()))?;
+        let delivery_launcher = crate::platform::share_file("harness/ssf-pi-launch");
+        std::fs::copy(&delivery_launcher, tree.join("ssf-pi-launch"))
+            .with_context(|| format!("copying {}", delivery_launcher.display()))?;
         // Credentials are imported only during adoption of legacy host state.
         let defaults = guest_config(&Config::default());
         write_private(

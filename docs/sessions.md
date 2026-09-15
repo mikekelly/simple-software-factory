@@ -109,6 +109,15 @@ does the same. If that later screen shows neither the prompt nor a first-run
 dialog, ssf accepts the durable delivery attempt instead of risking an initial
 prompt that was already consumed being sent again as a steering message.
 
+After that first prompt, a live OMP or Pi session takes item activity through
+the harness's in-process extension rather than through its terminal. An idle
+session wakes for the event, a working one queues it as a follow-up, and text a
+person has begun composing stays in the editor. Delivery to a live OMP/Pi
+session with no ready bridge is held and retried; run `ssf doctor`, then restart
+that session to load the bridge. Other harnesses and a newly created or resumed
+pane retain the terminal delivery behavior described in
+[Workspaces and terminals](drivers.md#item-activity-delivery).
+
 ## Second opinions: the gauntlet
 
 ssf runs one session per item and starts no second session on a pull

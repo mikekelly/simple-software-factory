@@ -409,6 +409,8 @@ pub struct Relaunch<'a> {
     /// What a fresh harness gets instead of the prompt (the whole story).
     pub text: Option<&'a str>,
     pub first_prompt: FirstPrompt,
+    /// Mailbox and stable sequence for native delivery to a live harness.
+    pub channel: Option<(&'a Path, u64)>,
 }
 
 /// A launch command fit for a log line: the bot token that
@@ -475,6 +477,22 @@ impl Driver {
             Driver::Herdr(d) => d.status().await,
             #[cfg(test)]
             Driver::Stub(_) => Ok(()),
+        }
+    }
+
+    /// Native delivery mailbox for a harness, when this driver can use one.
+    pub fn delivery_channel(
+        &self,
+        repo: &str,
+        number: u64,
+        harness: &str,
+        sequence: u64,
+    ) -> Option<(PathBuf, u64)> {
+        match self {
+            Driver::Herdr(_) if crate::delivery_channel::supports(harness) => {
+                Some((crate::delivery_channel::mailbox(repo, number), sequence))
+            }
+            _ => None,
         }
     }
 

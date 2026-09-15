@@ -1,0 +1,25 @@
+#!/bin/sh
+set -eu
+
+harness=$1
+shift
+case "$harness" in
+  omp|pi) ;;
+  *) echo "ssf-pi-launch: unsupported harness: $harness" >&2; exit 2 ;;
+esac
+
+session_dir=${SSF_DELIVERY_MAILBOX:?SSF_DELIVERY_MAILBOX is not set}/session
+mkdir -p "$session_dir"
+latest=$(find "$session_dir" -maxdepth 1 -type f -name '*.jsonl' -print | sort | tail -n 1)
+
+if [ -n "$latest" ]; then
+  if [ "$harness" = omp ]; then
+    set -- "$@" --resume "$latest"
+  else
+    set -- "$@" --session "$latest"
+  fi
+else
+  set -- "$@" --session-dir "$session_dir"
+fi
+
+exec "$harness" "$@"

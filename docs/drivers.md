@@ -21,7 +21,41 @@ New and reopened workspaces are labelled `<repo>-<issue-number>` (for example,
 labels until reopened. Git worktree paths and branch names still include the
 issue number and title for recovery. Herdr recognises the agent in the root pane
 and reports its state (`idle`, `working`, `blocked`, `done`); later messages are
-delivered with `herdr agent prompt`.
+delivered through the harness channel described below where one is available.
+
+## Item-activity delivery
+
+OMP and Pi sessions started with SSF's default command load the shipped
+`ssf-delivery.ts` extension. The daemon puts each later item event in that
+session's mailbox, and the extension sends it as a user-attributed context
+message with `triggerTurn: true` and `deliverAs: "followUp"`. An idle agent
+therefore starts a turn; a working agent receives the event after its current
+turn. The extension acknowledges the event after handing it to the harness. It
+never writes bytes to the pane, and a draft already in the OMP/Pi composer is
+left intact.
+
+The default command runs through a small exec wrapper that keeps the harness
+transcript in that mailbox's session directory. It explicitly resumes only the
+latest transcript in that directory, never a global "most recent" session.
+Each injected message carries its stable mailbox ID in extension-only metadata.
+If the harness exits between recording a message and acknowledging it, the
+replacement resumes that transcript: its bridge acknowledges an ID already
+present or injects the still-pending event, and Herdr does not also submit it
+through the terminal.
+
+The mailbox lives under the factory state directory at
+`delivery/<owner>/<repo>/<issue>/`. Its ready marker belongs to the running
+extension. After upgrading SSF, restart any already-running OMP/Pi session so
+it is relaunched with the bridge; until then delivery is held rather than
+risking a terminal paste. `ssf doctor` reports a live OMP/Pi session whose
+marker is unavailable.
+
+Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush do not
+yet have a proven channel wired into SSF's attached interactive session. Their
+later activity still uses `herdr agent prompt`; if Herdr refuses because the
+agent is at a question, the existing raw bracketed-paste fallback remains.
+Fresh and resumed OMP/Pi panes also use the confirmed first-prompt path below;
+there cannot be a person's draft in a pane SSF has just created.
 
 SSF answers known first-run trust dialogs from the pane screen. A login prompt
 is the one dialog it cannot answer: that session is marked blocked until a
@@ -48,7 +82,10 @@ than risk replaying side effects; Herdr correctly reports that terminal as
 command sets `PI_STREAM_IDLE_TIMEOUT_MS=900000` (15 minutes), the upstream
 recommendation for long agentic workloads. A repository `command` replaces the
 whole default, so include that environment setting there too if a custom OMP
-command should retain the longer window. Set a different value deliberately to
+command should retain the longer window. A custom OMP/Pi command must also use
+`"$SSF_PI_LAUNCHER" pi|omp ... -e "$SSF_PI_BRIDGE"` to retain resumable native
+item-activity delivery; the launch wrapper supplies both paths. Set a different
+timeout value deliberately to
 tune the tradeoff; `0` disables the watchdog and can leave a genuinely wedged
 stream waiting forever.
 

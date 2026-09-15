@@ -72,6 +72,9 @@ contents:
   - dst: /usr/share/ssf/omarchy-plugin/marketplace
     type: dir
     packager: rpm
+  - dst: /usr/share/ssf/harness
+    type: dir
+    packager: rpm
   - dst: /usr/share/ssf/vm
     type: dir
     packager: rpm
@@ -128,6 +131,14 @@ contents:
     dst: /usr/share/ssf/config.example.toml
     file_info:
       mode: 0644
+  - src: harness/ssf-delivery.ts
+    dst: /usr/share/ssf/harness/ssf-delivery.ts
+    file_info:
+      mode: 0644
+  - src: harness/ssf-pi-launch
+    dst: /usr/share/ssf/harness/ssf-pi-launch
+    file_info:
+      mode: 0755
   # The whole vm/ tree, mirrored under /usr/share/ssf: make-base.sh, the
   # guest scripts, the units and their per-backend drop-ins. nfpm copies a
   # directory src recursively and keeps each file's own mode (scripts 755,

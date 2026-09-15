@@ -156,6 +156,12 @@ impl Engine {
             .and_then(|id| sessions::resume_command(&eff.harness, &eff.harness_command(), id))
             .map(|c| self.launch_command(repo, st.number, &st.html_url, &c));
         let relaunch = self.launch_command(repo, st.number, &st.html_url, &eff.harness_command());
+        let channel = self.driver(repo).delivery_channel(
+            &repo.name,
+            target,
+            &eff.harness,
+            st.prompts_sent + 1,
+        );
         let d = self
             .driver(repo)
             .deliver(
@@ -168,6 +174,9 @@ impl Engine {
                     title: &title,
                     text: relaunch_text,
                     first_prompt,
+                    channel: channel
+                        .as_ref()
+                        .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
                 },
                 text,
             )

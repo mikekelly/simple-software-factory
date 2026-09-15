@@ -1165,6 +1165,12 @@ accepting the successful Enter without retrying: {e:#}"
             .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
             match relaunch.first_prompt {
+                FirstPrompt::No if crate::delivery_channel::supports(relaunch.harness) => {
+                    let (mailbox, sequence) = relaunch
+                        .channel
+                        .context("native harness delivery has no mailbox")?;
+                    crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+                }
                 FirstPrompt::No => self.send_prompt(&handle, text).await?,
                 FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
                 FirstPrompt::Recover => self.recover_first_prompt(&handle, text).await?,
@@ -1175,6 +1181,10 @@ accepting the successful Enter without retrying: {e:#}"
                 resumed: false,
             });
         }
+        let native_retry = relaunch.channel.filter(|(mailbox, sequence)| {
+            crate::delivery_channel::supports(relaunch.harness)
+                && crate::delivery_channel::has_record(mailbox, *sequence, text)
+        });
         let mut resumed = false;
         let mut handle = None;
         // A resumed agent already at work takes the message as a steering
@@ -1254,6 +1264,18 @@ keeping it"
                 .await?
             }
         };
+        if let Some((mailbox, sequence)) = native_retry {
+            // The per-session Pi/OMP command resumes the transcript. Its
+            // bridge either finds this delivery ID there and acknowledges it,
+            // or injects the still-pending event. In neither case should the
+            // relaunch path submit the same body through the terminal.
+            crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+            return Ok(Delivery {
+                handle,
+                relaunched: true,
+                resumed: true,
+            });
+        }
         let body = match relaunch.text {
             Some(full) if !resumed => full,
             _ => text,
