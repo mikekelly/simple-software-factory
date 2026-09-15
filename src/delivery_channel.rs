@@ -49,6 +49,30 @@ fn fingerprint(text: &str) -> u64 {
     })
 }
 
+fn event_paths(path: &Path, sequence: u64, text: &str) -> (PathBuf, PathBuf) {
+    let stem = format!("{sequence:020}-{:016x}", fingerprint(text));
+    (
+        path.join(format!("{stem}.json")),
+        path.join(format!("{stem}.json.ack")),
+    )
+}
+
+/// Stop a replacement bridge from consuming an event that Herdr is about to
+/// deliver through the confirmed relaunch path.
+pub(crate) fn retire_pending(path: &Path, sequence: u64, text: &str) -> Result<()> {
+    let (pending, _) = event_paths(path, sequence, text);
+    if pending.exists() {
+        let retired = pending.with_extension("json.terminal");
+        std::fs::rename(&pending, &retired).with_context(|| {
+            format!(
+                "retiring delivery {} before terminal relaunch",
+                pending.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<()> {
     if !available(path) {
         bail!(
@@ -58,30 +82,15 @@ pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<()
     }
     std::fs::create_dir_all(path)
         .with_context(|| format!("creating delivery mailbox {}", path.display()))?;
-    let stem = format!("{sequence:020}-{:016x}", fingerprint(text));
-    let pending = path.join(format!("{stem}.json"));
-    let ack = path.join(format!("{stem}.json.ack"));
+    let (pending, ack) = event_paths(path, sequence, text);
     if ack.exists() {
         return Ok(());
     }
-    // Retain the current acknowledgement across a daemon crash: state may not
-    // yet contain the incremented prompt counter, so a retry must remain a
-    // no-op. Once the next sequence starts, earlier acknowledgements can no
-    // longer be retried by the serial event loop.
-    for entry in std::fs::read_dir(path)
-        .with_context(|| format!("reading delivery mailbox {}", path.display()))?
-        .flatten()
-    {
-        let old_ack = entry.path();
-        if old_ack != ack
-            && old_ack
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(".json.ack"))
-        {
-            let _ = std::fs::remove_file(old_ack);
-        }
-    }
     if !pending.exists() {
+        let stem = pending
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .context("delivery path has no UTF-8 file stem")?;
         let temporary = path.join(format!(".{stem}.tmp-{}", std::process::id()));
         let bytes = serde_json::to_vec(&json!({ "text": text }))?;
         std::fs::write(&temporary, bytes)
@@ -153,5 +162,19 @@ mod tests {
         // cannot publish a second copy.
         deliver(&root, 7, "[ssf] hello").await.unwrap();
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+
+        retire_pending(&root, 8, "[ssf] later").unwrap();
+        std::fs::write(event_paths(&root, 8, "[ssf] later").0, b"pending").unwrap();
+        retire_pending(&root, 8, "[ssf] later").unwrap();
+        assert!(!event_paths(&root, 8, "[ssf] later").0.exists());
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().ends_with(".json.ack"))
+                .count(),
+            1,
+            "a later event must not delete the earlier durable acknowledgement"
+        );
     }
 }

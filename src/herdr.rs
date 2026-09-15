@@ -1181,6 +1181,15 @@ accepting the successful Enter without retrying: {e:#}"
                 resumed: false,
             });
         }
+        if crate::delivery_channel::supports(relaunch.harness)
+            && let Some((mailbox, sequence)) = relaunch.channel
+        {
+            // A previous bridge may have died after the daemon published this
+            // event. The replacement bridge starts polling during launch, so
+            // retire that pending copy before delivering through the normal
+            // confirmed first-prompt/relaunch path below.
+            crate::delivery_channel::retire_pending(mailbox, sequence, text)?;
+        }
         let mut resumed = false;
         let mut handle = None;
         // A resumed agent already at work takes the message as a steering
