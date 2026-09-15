@@ -450,6 +450,14 @@ thread after exit; a saved binding without a resumable session is held rather
 than replaced with a new conversation. Unverified permission/configuration
 overrides are rejected for native delivery.
 
+Remote resume must omit `--dangerously-bypass-approvals-and-sandbox`: Codex
+rejects permission overrides when reconnecting to a persisted remote task.
+Keep `--dangerously-bypass-hook-trust` and resume the exact saved thread;
+its existing server-side permissions are retained. SSF removes the permission
+flag for a direct `codex --remote ...` command; a custom launcher must handle
+this distinction when SSF appends `resume <id>`. Handover and workspace release
+retire the active native binding, preserving old per-event receipt journals.
+
 `ssf doctor` reports unavailable channels. Explicit native launch failures hold
 activity instead of reverting to paste; pending journals reconcile the exact
 durable user-message echo, never blindly resend. See

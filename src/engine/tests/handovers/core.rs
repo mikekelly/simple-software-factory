@@ -1,6 +1,29 @@
 use super::*;
 
 #[tokio::test]
+async fn handover_and_release_retire_native_routing_without_erasing_receipts() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, _) = handover_setup(&stub);
+    let mailbox = crate::delivery_channel::mailbox("o/r", 5);
+    std::fs::create_dir_all(&mailbox).unwrap();
+    let binding = mailbox.join("codex-binding.json");
+    let receipt = mailbox.join("codex-event.json");
+    std::fs::write(&binding, b"old conversation").unwrap();
+    std::fs::write(&receipt, b"pending receipt").unwrap();
+    e.handover("o/r#5", "pi", None, None, None, Some("o/r#5"))
+        .await
+        .unwrap();
+    e.run_handovers(&repo()).await;
+    assert!(!binding.exists());
+    assert_eq!(std::fs::read(&receipt).unwrap(), b"pending receipt");
+    std::fs::write(&binding, b"next conversation").unwrap();
+    e.mark_released(&repo(), 5);
+    assert!(!binding.exists());
+    assert_eq!(std::fs::read(&receipt).unwrap(), b"pending receipt");
+}
+
+#[tokio::test]
 async fn a_new_harness_at_its_sign_in_prompt_blocks_the_new_session() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;

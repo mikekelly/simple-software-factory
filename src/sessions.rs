@@ -78,7 +78,22 @@ pub fn supports_resume(harness: &str) -> bool {
 pub fn resume_command(harness: &str, base: &str, session_id: &str) -> Option<String> {
     match harness {
         "claude" => Some(format!("{base} --resume {session_id}")),
-        "codex" => Some(format!("{base} resume {session_id}")),
+        "codex" => {
+            // Remote tasks retain their server-side permission settings. Codex
+            // rejects a permission override on remote resume, unlike local resume.
+            let remote = base.starts_with("codex ")
+                && base
+                    .split_whitespace()
+                    .any(|a| a == "--remote" || a.starts_with("--remote="));
+            let command = if remote {
+                base.split_inclusive(char::is_whitespace)
+                    .filter(|a| a.trim() != "--dangerously-bypass-approvals-and-sandbox")
+                    .collect::<String>()
+            } else {
+                base.to_owned()
+            };
+            Some(format!("{command} resume {session_id}"))
+        }
         _ => None,
     }
 }
@@ -344,6 +359,16 @@ mod tests {
 
     #[test]
     fn resume_commands() {
+        assert_eq!(resume_command("codex", "codex --remote unix:///tmp/app.sock --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust", "abc").unwrap(), "codex --remote unix:///tmp/app.sock --dangerously-bypass-hook-trust resume abc");
+        assert_eq!(
+            resume_command(
+                "codex",
+                "codex --dangerously-bypass-approvals-and-sandbox",
+                "abc"
+            )
+            .unwrap(),
+            "codex --dangerously-bypass-approvals-and-sandbox resume abc"
+        );
         assert_eq!(
             resume_command("claude", "claude", "abc").unwrap(),
             "claude --resume abc"

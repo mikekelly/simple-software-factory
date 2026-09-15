@@ -622,6 +622,11 @@ impl Engine {
     /// The workspace of `number`'s session is gone by our hand: forget its
     /// bindings (the next event re-creates it) and record when.
     pub(in crate::engine) fn mark_released(&mut self, repo: &RepoConfig, number: u64) {
+        if let Err(e) = crate::codex_delivery::retire_binding(&crate::delivery_channel::mailbox(
+            &repo.name, number,
+        )) {
+            warn!("could not retire released native conversation binding: {e:#}");
+        }
         let now = now_iso();
         let e = self.entry(repo, number);
         e.release_pending = false;

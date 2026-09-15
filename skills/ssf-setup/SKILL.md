@@ -75,7 +75,9 @@ and target transcript as described in `ssf skill drivers` before intervening.
 Codex native delivery is experimental and opt-in: a launcher/Herdr must provide
 an item-specific private Unix app-server and start the normal TUI with explicit
 `--remote unix://PATH` plus SSF's bypass-approvals/sandbox and bypass-hook-trust
-flags. Do not point multiple items at a shared conversation or start a separate
+flags. Remote resume omits the permission-bypass flag and retains server permissions;
+custom launchers must handle this when SSF appends `resume <id>`.
+Do not point multiple items at a shared conversation or start a separate
 headless session as a substitute. SSF pins the endpoint and exact conversation,
 journals events and reconciles rollout receipts. Explicit channel failures and
 ambiguous sends are held; standalone sessions retain terminal fallback. Run

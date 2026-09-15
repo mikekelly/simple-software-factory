@@ -153,7 +153,10 @@ fn endpoint(info: &Value) -> Result<Option<(PathBuf, PathBuf)>> {
         if remote.len() != 1 || found.is_some() {
             bail!("Codex remote endpoint is ambiguous");
         }
-        if !args.contains(&"--dangerously-bypass-approvals-and-sandbox")
+        if (!args.contains(&"--dangerously-bypass-approvals-and-sandbox")
+            && !args
+                .windows(2)
+                .any(|a| a[0] == "resume" && !a[1].starts_with('-')))
             || !args.contains(&"--dangerously-bypass-hook-trust")
             || args.iter().any(|a| {
                 matches!(
@@ -224,6 +227,19 @@ async fn bind(info: &Value, mailbox: &Path, persist: bool) -> Result<Option<(Bin
         bail!("Codex conversation does not belong to this pane's directory")
     }
     let path = mailbox.join("codex-binding.json");
+    let processes = info["process_info"]["foreground_processes"]
+        .as_array()
+        .unwrap();
+    let resumes: Vec<&str> = processes
+        .iter()
+        .filter_map(|p| p["argv"].as_array())
+        .flat_map(|args| args.windows(2))
+        .filter(|a| a[0] == "resume")
+        .filter_map(|a| a[1].as_str())
+        .collect();
+    if !resumes.is_empty() && (!path.exists() || resumes != [id]) {
+        bail!("Codex remote resume requires the item's existing exact native binding");
+    }
     let binding = if path.exists() {
         let binding: Binding = serde_json::from_slice(&std::fs::read(&path)?)?;
         if binding.socket != socket || binding.cwd != cwd || binding.thread != id {
@@ -283,6 +299,24 @@ pub(crate) fn has_record(mailbox: &Path, sequence: u64, text: &str) -> bool {
 
 pub(crate) fn has_binding(mailbox: &Path) -> bool {
     mailbox.join("codex-binding.json").exists()
+}
+
+/// Retire only the active routing binding; event journals retain their own
+/// snapshots so ambiguous writes can still be reconciled against the old task.
+pub(crate) fn retire_binding(mailbox: &Path) -> Result<()> {
+    let path = mailbox.join("codex-binding.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let archive = mailbox.join(format!(
+        "codex-binding-retired-{:x}.json",
+        Sha256::digest(&bytes)
+    ));
+    std::fs::rename(path, archive)?;
+    std::fs::File::open(mailbox)?.sync_all()?;
+    Ok(())
 }
 
 fn save(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -415,6 +449,25 @@ mod tests {
 
     fn echo(thread: &str, id: &str, text: &str) -> Value {
         json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":thread,"item":{"type":"UserMessage","client_id":id,"content":[{"type":"text","text":text}]}}})
+    }
+
+    #[test]
+    fn retiring_a_binding_preserves_event_intents() {
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.root().join("codex-binding.json");
+        std::fs::write(&path, b"old binding").unwrap();
+        let journal = sandbox.root().join("codex-event.json");
+        std::fs::write(&journal, b"pending event").unwrap();
+        retire_binding(sandbox.root()).unwrap();
+        retire_binding(sandbox.root()).unwrap();
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&journal).unwrap(), b"pending event");
+        assert!(std::fs::read_dir(sandbox.root()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("codex-binding-retired-")
+        }));
     }
 
     #[tokio::test]
