@@ -411,14 +411,15 @@ pub(super) async fn doctor() -> Result<()> {
                 if live {
                     if harness == "claude" {
                         let herdr = crate::herdr::Herdr::new(cfg.herdr.clone());
-                        let handle = herdr
-                            .live_handle(
-                                session.worktree_id.as_deref().unwrap(),
-                                session.terminal_handle.as_deref(),
-                            )
-                            .await
-                            .ok()
-                            .flatten();
+                        // Do not report a neighbour's inbox as the saved pane's channel.
+                        let handle = match &session.terminal_handle {
+                            Some(handle) => Some(handle.clone()),
+                            None => herdr
+                                .live_handle(session.worktree_id.as_deref().unwrap(), None)
+                                .await
+                                .ok()
+                                .flatten(),
+                        };
                         let available = match handle {
                             Some(handle) => herdr.claude_inbox(&handle).await.is_some(),
                             None => false,

@@ -208,7 +208,10 @@ For busy delivery, use `SSF_CLAUDE_TEST_SEQUENCE=2` and
 `SSF_CLAUDE_TEST_EVENT='[ssf] Run sleep 20 with Bash, then reply BUSY-334-OK.'`,
 then deliver sequence 3 while the tool is running. Inspect the transcript for one
 user entry per event and a completed response, with no approval dialog; close
-only your test workspace afterwards. Claude 2.1.268 passed these gates on
+only your test workspace afterwards. `SSF_CLAUDE_TEST_RESUME=1` also recreates
+the receipt-before-confirmation crash window, exits the scratch agent, and
+checks saved-session resumption without a second enqueue (do this after the
+busy turn completes). Claude 2.1.268 passed these gates on
 2026-09-15. The protocol is unofficial, based on
 [cc-peer's protocol documentation](https://github.com/mikekelly/cc-peer/blob/main/docs/PROTOCOL.md).
 

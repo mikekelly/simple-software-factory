@@ -546,5 +546,47 @@ mod tests {
                 .unwrap()
                 .contains("HUMAN-DRAFT-334")
         );
+        if std::env::var_os("SSF_CLAUDE_TEST_RESUME").is_some() {
+            let path = record_path(&mailbox, sequence, &text);
+            let mut record: Record =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            record.confirmed = false; // Receipt happened, but daemon confirmation was not saved.
+            save(&path, &record).unwrap();
+            let base = format!("{} --model haiku", crate::models::default_command("claude"));
+            let resume = crate::sessions::resume_command(
+                "claude",
+                &base,
+                agent.session_id.as_deref().unwrap(),
+            )
+            .unwrap();
+            herdr.stop_agent(&agent.workspace_id, &pane).await.unwrap();
+            let recovered = herdr
+                .deliver(
+                    &agent.workspace_id,
+                    Some(&pane),
+                    &crate::driver::Relaunch {
+                        command: &base,
+                        resume_command: Some(&resume),
+                        ..relaunch
+                    },
+                    &text,
+                )
+                .await
+                .unwrap();
+            assert!(recovered.resumed);
+            let restored = herdr.claude_inbox(&recovered.handle).await.unwrap();
+            assert_eq!(restored.transcript, inbox.transcript);
+            let body = std::fs::read_to_string(&restored.transcript).unwrap();
+            let count = body
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .filter(|entry| {
+                    entry["type"] == "queue-operation"
+                        && entry["operation"] == "enqueue"
+                        && entry["content"].as_str() == Some(&record.content)
+                })
+                .count();
+            assert_eq!(count, 1, "restart must not enqueue a second copy");
+        }
     }
 }
