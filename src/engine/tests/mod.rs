@@ -35,6 +35,7 @@ pub(super) fn engine() -> Engine {
         refetch: BTreeSet::new(),
         startup_pass: false,
         onboarding: None,
+        adopting: None,
         conflict_checks: BTreeMap::new(),
         conflict_pairs: BTreeMap::new(),
         identity_checked_at: Some(Instant::now()),

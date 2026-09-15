@@ -32,6 +32,11 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             let driver = driver.map(|d| d.parse()).transpose()?;
             let mut entry = RepoConfig {
                 name: name.clone(),
+                // Nanosecond precision keeps a scripted remove/add from
+                // accidentally reusing the previous enrollment generation.
+                enrolled_at: Some(
+                    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                ),
                 github_id: None,
                 aliases: Vec::new(),
                 harness,
@@ -65,6 +70,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 .iter()
                 .position(|x| x.name.eq_ignore_ascii_case(&name))
             {
+                entry.enrolled_at = cfg.repos[pos].enrolled_at.clone();
                 entry.github_id = cfg.repos[pos].github_id;
                 entry.aliases = cfg.repos[pos].aliases.clone();
                 cfg.repos[pos] = entry;
@@ -75,6 +81,11 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             };
             cfg.save_to(config_file)?;
             println!("{action} {name} in {}", config_file.display());
+            if action == "Added" {
+                println!(
+                    "Existing allocations will not start automatically; after the next poll, list them with `ssf candidates`."
+                );
+            }
             Ok(())
         }
         RepoCommand::Set {

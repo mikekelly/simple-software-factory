@@ -25,6 +25,13 @@ separate enrollment from the factory bot's `ssf auth`.
 Once installed, run `ssf skill` for authoritative guidance bundled with your
 binary, then follow its `ssf skill <topic>` commands for details.
 
+After `ssf repo add`, inspect pre-existing bot allocations with `ssf
+candidates [--repo OWNER/NAME]`; the first successful poll leaves them idle.
+After verifying that no other factory owns an item, opt in explicitly with
+`ssf adopt OWNER/NAME#N [...]`. Adoption starts a fresh harness conversation
+from the complete GitHub history. New allocations after enrollment and normal
+daemon restarts remain automatic.
+
 An issue opened by an agent without assigning the bot is an unbound
 placeholder. Create it with `--assignee <bot>` to hand it to a fresh session;
 assigning the bot later also starts a fresh session.

@@ -77,6 +77,51 @@ pub(super) async fn peers(json: bool, repo: Option<String>, all: bool) -> Result
     Ok(())
 }
 
+pub(super) async fn candidates(repo: Option<String>, json: bool) -> Result<()> {
+    let value = ipc::call(&ipc::Request::Candidates { repo }).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    let rows = value
+        .as_array()
+        .context("daemon returned invalid candidates")?;
+    if rows.is_empty() {
+        println!("no allocations are waiting for adoption");
+        return Ok(());
+    }
+    println!("Pre-existing allocations waiting for explicit adoption:");
+    for row in rows {
+        println!(
+            "  {:<28} {:<12} {}",
+            row["item"].as_str().unwrap_or("?"),
+            row["kind"].as_str().unwrap_or("item"),
+            row["title"].as_str().unwrap_or("")
+        );
+    }
+    println!("Verify no other factory owns them, then run `ssf adopt owner/repo#N [...]`.");
+    Ok(())
+}
+
+pub(super) async fn adopt(items: Vec<String>, json: bool) -> Result<()> {
+    let value = ipc::call(&ipc::Request::Adopt { items }).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    for row in value
+        .as_array()
+        .context("daemon returned invalid adoption results")?
+    {
+        println!(
+            "Adopted {} \"{}\"; started its session with the complete GitHub history.",
+            row["item"].as_str().unwrap_or("?"),
+            row["title"].as_str().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
 /// This session's identity: `--as owner/repo#N`, else the environment
 /// `ssf launch` set up.
 pub(super) fn identity(as_: Option<&str>) -> Result<Option<origin::Origin>> {

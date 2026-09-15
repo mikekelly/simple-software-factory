@@ -480,6 +480,7 @@ reported for your installation:
 ```sh
 ssf repo add OWNER/NAME --harness HARNESS --model MODEL --effort EFFORT
 ssf repo list --json
+ssf candidates --repo OWNER/NAME
 ```
 
 Replace the uppercase placeholders; omit `--effort` for a harness that
@@ -489,6 +490,24 @@ access, and the harness must be installed and signed in where it runs.
 The daemon records GitHub's immutable repository id on its first pass. Later
 renames and transfers should happen through GitHub as usual; ssf periodically
 detects the new canonical name and repairs its configuration and checkouts.
+
+The first successful poll after `ssf repo add` does not automatically start
+allocations that are already assigned to, mention, or request review from the
+bot. It records them as candidates instead. This avoids accidentally competing
+with another factory when a repository is moved or a server is enabled in
+error. Review them with `ssf candidates`, verify that no other factory owns the
+selected work, then opt in only the items wanted here:
+
+```sh
+ssf adopt OWNER/NAME#3 [OWNER/NAME#8 ...]
+```
+
+Adoption creates or reuses the item's workspace, starts a fresh agent
+conversation, and supplies the complete GitHub issue and timeline history. It
+does not copy another harness's private conversation transcript. New
+allocations arriving after enrollment continue to start normally. Removing and
+adding the repository again creates a new enrollment and therefore a new
+candidate snapshot; `ssf repo set` does not.
 
 Use `ssf repo set OWNER/NAME` with the same options to change settings.
 Changing the harness requires a fresh model and effort selection where supported.

@@ -48,6 +48,7 @@ fn initial_prompt_mentions_bot_and_issue() {
     let repo = RepoConfig {
         name: "o/r".into(),
         harness: "claude".into(),
+        enrolled_at: None,
         github_id: None,
         aliases: Vec::new(),
         driver: None,

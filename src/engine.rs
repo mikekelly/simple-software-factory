@@ -25,8 +25,8 @@ use crate::prompt::{
 use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
-    Blocked, ConflictNotice, HandoverNote, Ignored, IssueState, Overrides, PendingHandover, State,
-    StateLock, now_iso, owner_in,
+    AdoptionCandidate, Blocked, ConflictNotice, HandoverNote, Ignored, IssueState, Overrides,
+    PendingHandover, State, StateLock, now_iso, owner_in,
 };
 use crate::status::session_id;
 
@@ -168,6 +168,9 @@ pub struct Engine {
     /// workspace is delivering right now: a relaunch for it is told of in
     /// that onboarding's `attached`, not as a `resumed` of its own.
     onboarding: Option<(String, u64)>,
+    /// An explicit adoption is onboarding this item into its own fresh
+    /// conversation, even when normal PR-origin rules would bind it elsewhere.
+    adopting: Option<(String, u64)>,
     /// When each repository's conflict check last ran. This is deliberately
     /// in-memory: a restart gets one fresh check rather than trusting an old
     /// scheduling timestamp.
