@@ -23,9 +23,8 @@ whole factory can run [inside a microVM](docs/vm.md).
 
 There are two main ways to run an ssf factory on Linux:
 
-- **On a VPS:** run the factory directly on a dedicated Linux host, such as a
-  Grok Bot or Meta Muse machine, or a VPS from Hetzner. Start with the
-  [headless-host guide](docs/headless-host.md).
+- **On a VPS:** run the factory directly on a dedicated Linux host or
+  container. Start with the [headless-host guide](docs/headless-host.md).
 - **On your local machine, inside a microVM:** keep the daemon, herdr and coding
   agents isolated from your host. This is the recommended local setup; start
   with [Setup](docs/setup.md).
@@ -222,11 +221,10 @@ Choose the installation for the Linux machine:
 - **Only controlling an existing factory over SSH:** install the
   [standalone client](docs/install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
 
-If the Grok Bot computer is a **Bot-dedicated-VPS** that should also act as
-your always-on, human-facing assistant, continue with the
-[Grok Bot liaison guide](docs/bot-dedicated-vps.md) after installing the
-factory. It covers the separate Cursor GitHub enrollment required for event
-wakes; the factory bot enrollment alone does not provide it.
+If an always-on assistant should also act as your liaison for SSF-tracked
+work, continue with the [bot-managed host liaison guide](docs/bot-dedicated-vps.md).
+Its GitHub access and event delivery are separate from factory bot enrollment;
+the guide includes an optional Grok Bot example.
 
 Until ssf is published in Omarchy's package repository, download the current
 Arch package and install it with pacman. This is a normal package-manager
@@ -364,7 +362,7 @@ ssf auth login --web              # straight to the browser flow; prints the URL
 ssf auth login --user acme-bot    # guest device flow checks this login; host mode selects a gh account
 printf '%s' "$TOKEN" | ssf auth login --token   # a pasted token instead of gh
 ssf auth status
-ssf agents                        # which agents Omarchy knows and which are installed
+ssf agents                        # available harnesses and which are installed
 ssf repo add acme/widgets --harness claude --model opus --effort high
 ssf candidates                    # existing allocations waiting for explicit adoption; starts nothing
 ssf adopt acme/widgets#12          # start one here with its complete GitHub history

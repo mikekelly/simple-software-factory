@@ -7,8 +7,8 @@ browser sign-in, or sudo password.
 
 **Choose your path first:**
 
-- **A VPS**, such as a Grok Bot or Meta Muse machine or a Hetzner server (and
-  stripped Debian containers or hosts without KVM / a systemd user session):
+- **A dedicated Linux host, VPS, or container**, including hosts without
+  KVM or a systemd user session:
   use the [headless-host guide](headless-host.md), which replaces the VM and
   package-service steps below with standalone binaries and foreground processes.
 - **Your local Linux machine, inside a microVM:** follow the package steps below.
@@ -64,7 +64,7 @@ and run the command for your platform (**you** for sudo):
 On Debian/Ubuntu, run `sudo apt update` before installing packages, including
 on minimal images with stale or absent apt lists. The `.deb` depends on
 `systemd`; installing that package does not make it PID 1 or create a working
-systemd user session in a container running `tini`. Use
+systemd user session in a container. Use
 [standalone + host mode](headless-host.md) there.
 
 Ubuntu 24.04 and Debian 13 (Trixie) use the same amd64 `.deb`; their standard

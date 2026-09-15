@@ -1,29 +1,25 @@
 # VPS / headless-host installation
 
-Use **standalone Linux binaries + host mode** on a dedicated VPS, such as a
-Grok Bot or Meta Muse machine or a Hetzner server, or in a stripped Debian
-container without usable KVM or a systemd user session. This
-path runs herdr and the factory directly as your Unix user; agents can access
-that user's files and credentials. No VM, linger, `ssf setup`, or Omarchy
-widget is needed.
+Use **standalone Linux binaries + host mode** on a dedicated Linux host,
+VPS, or container where you want the factory to run directly, including hosts
+without usable KVM or a systemd user session. This path runs herdr and the
+factory as your Unix user; agents can access that user's files and credentials.
+No VM, linger, `ssf setup`, or desktop widget is needed.
 
-This guide installs the factory only. If this machine is a
-**Bot-dedicated-VPS** whose Grok Bot should also watch SSF-tracked work and act
-as the user's liaison, complete this guide and then follow the separate
-[Bot-dedicated-VPS liaison guide](bot-dedicated-vps.md). Its Cursor GitHub
-connection is a second enrollment, not part of `ssf auth`.
+Choose steps from the host's actual OS, architecture, permissions, available
+init/service manager, and KVM access. A hosting provider or assistant product
+name does not establish these capabilities. Host mode does not require KVM,
+Docker, or Podman. If you want VM isolation and the host supports it, use
+[Setup](setup.md) instead.
 
-The [September 2026 install report](https://github.com/mikekelly/simple-software-factory/issues/287)
-observed Debian 13, `/.dockerenv`, PID 1 `tini`, and no usable KVM for `box`.
-Use what the computer actually exposes when choosing installation steps;
-public descriptions of Firecracker infrastructure do not imply nested KVM or
-systemd inside it. A plan-tier change does not change this computer shape.
-Do not expect a nested Docker Engine or `/var/run/docker.sock`. Rootless
-Podman can work after installation if the host permits it; it is a separate
-runtime, not Docker-in-Docker, and is not required for SSF host mode.
+This guide installs the factory only. If an always-on assistant should also
+watch SSF-tracked work and act as the user's liaison, follow the separate
+[bot-managed host liaison guide](bot-dedicated-vps.md) afterward. Configure
+that assistant's GitHub access and event delivery separately from `ssf auth`.
 
 These steps assume a **fresh installation**, run as the same non-root Unix
-user throughout (except apt). If SSF already exists, inspect `ssf server list`,
+user throughout (except privileged prerequisite installation). If SSF already
+exists, inspect `ssf server list`,
 `ssf status` and the selected factory's config before changing it. Leave the
 server catalog empty on this fresh path so `ssf` and foreground `ssf-server`
 use the same default config and state. Do not set `SSF_SERVER` to another
@@ -31,19 +27,25 @@ factory or create a named local target halfway through these steps.
 
 ## 1. Install prerequisites and both SSF binaries
 
-On Debian/Ubuntu (**you** for sudo; a root provisioning shell can omit sudo):
+Install CA certificates, curl, Git, jq, GitHub CLI 2.40+, and an OpenSSH
+client (`ssh-keygen` is needed for bot key enrollment) using the host's package
+manager. Refresh its package indexes first on minimal images.
+
+For example, on Debian/Ubuntu (**you** for sudo):
 
 ```sh
 sudo apt update
 sudo apt install ca-certificates curl git jq gh openssh-client
-export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Refresh apt lists first: minimal images may have stale or absent indexes.
-`openssh-client` supplies `ssh-keygen` for bot key enrollment. Use gh 2.40+
-(on Debian 12 use [GitHub's apt repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)).
-The SSF `.deb` has a hard `Depends: systemd`; resolving it with apt does not
-make systemd the container's init or supply a working user service manager.
+Use the equivalent packages on other distributions. On Debian 12, use
+[GitHub's apt repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md)
+for a recent enough gh. Installing a `systemd` package does not itself supply
+a working user service manager; this standalone path does not require one.
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
 
 Follow [Download and install on Linux](install-binaries.md#download-and-install-on-linux),
 then [Run a local factory without a package](install-binaries.md#run-a-local-factory-without-a-package)
@@ -56,15 +58,16 @@ Stop before the final daemon start there; complete authentication below first.
 
 ```sh
 curl -fsSL https://herdr.dev/install.sh | sh
-curl -fsSL https://omp.sh/install | sh
 herdr --version
-omp --version
 ssf config set driver herdr
 ssf agents
 ```
 
-OMP is one example; choose a harness and model using
-[Setup's selection guidance](setup.md#choosing-the-harness-and-the-model).
+Choose a harness and model using
+[Setup's selection guidance](setup.md#choosing-the-harness-and-the-model),
+then install the chosen harness following its own instructions. For example,
+OMP can be installed with `curl -fsSL https://omp.sh/install | sh`; verify it
+with `omp --version`. The OMP example below is optional.
 Install your repository's build tools separately on this host.
 
 ## 3. Sign in as the bot
@@ -93,8 +96,8 @@ was unsupported in the reported gh 2.46 install. Account pickup also failed
 there after browser login. The direct flow above avoids both. SSF's `--no-keys`
 is a different option: add it to the **token handoff** only as a temporary
 workaround if OpenSSH is unavailable. It leaves commits unsigned / HTTPS-only,
-and doctor still reports a missing bot key. Install `openssh-client` and rerun
-the handoff without `--no-keys` to complete enrollment. Keep `project` scope
+and doctor still reports a missing bot key. Install the host's OpenSSH client
+package and rerun the handoff without `--no-keys` to complete enrollment. Keep `project` scope
 for board operations even if temporarily skipping keys.
 
 ## 4. Complete repository and board access
@@ -124,6 +127,15 @@ See [Setup's access steps](setup.md#3-create-the-bot-account) and
 [guidance and boards](setup.md#9-ssf-agent-guidance-and-boards) for details.
 
 ## 5. Give the harness persistent credentials
+
+Sign in to the selected harness and finish any one-time interactive setup as
+the same Unix user and HOME that will run herdr. Use the harness's supported
+credential storage or arrange persistent environment variables for both the
+supervised processes and their agent panes. Verify a real request in a
+herdr-launched pane; a daemon environment or passing login check alone does
+not prove that a pane can authenticate.
+
+### Example: OMP with OpenRouter
 
 For OMP with OpenRouter, supply `OPENROUTER_API_KEY` on the host. For example,
 create a private shell environment file (do not put secrets in repository config):
@@ -170,7 +182,8 @@ In one persistent terminal, as the bot's Unix user:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-. "$HOME/.config/ssf/harness.env"
+# If using the environment-file example above:
+# . "$HOME/.config/ssf/harness.env"
 herdr server
 ```
 
@@ -179,27 +192,31 @@ terminal, with the same user, HOME and config/state environment:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
-. "$HOME/.config/ssf/harness.env"
+# If using the environment-file example above:
+# . "$HOME/.config/ssf/harness.env"
 ssf-server
 ```
 
 Keep both processes running. Foreground logs appear in their terminals; Ctrl-C
 stops them. For unattended operation use the host's process supervisor with
-these commands, the same user/PATH, and the environment file loaded **on every
-restart for both processes**. A variable exported only in your setup shell
+these commands, the same user/PATH, and any required credential environment
+loaded **on every restart for both processes**. A variable exported only in your setup shell
 will not reach a later daemon or herdr launch. Stop the SSF daemon before
 replacing either binary; restart the driver and daemon with credentials loaded.
 
-In a third terminal, load the same PATH and environment file, then configure
-the repository (replace OWNER/NAME, MODEL and EFFORT with the human operator’s choices):
+In a third terminal, load the same PATH and any required credential environment,
+then configure the repository. Replace OWNER/NAME, HARNESS, MODEL and EFFORT
+with the human operator’s choices:
 
 ```sh
-ssf models omp
-ssf repo add OWNER/NAME --harness omp --model MODEL --effort EFFORT
+ssf models HARNESS
+ssf repo add OWNER/NAME --harness HARNESS --model MODEL --effort EFFORT
 ssf auth status
 ssf status
 ssf doctor
 ```
+
+Include `--effort` only if the selected harness supports it.
 
 By default, collaborators with push access may drive the factory; see
 [allowed users](setup.md#5-who-may-drive-the-factory) for an explicit allowlist.
