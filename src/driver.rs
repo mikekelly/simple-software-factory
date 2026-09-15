@@ -489,7 +489,9 @@ impl Driver {
         sequence: u64,
     ) -> Option<(PathBuf, u64)> {
         match self {
-            Driver::Herdr(_) if crate::delivery_channel::supports(harness) => {
+            Driver::Herdr(_)
+                if crate::delivery_channel::supports(harness) || harness == "claude" =>
+            {
                 Some((crate::delivery_channel::mailbox(repo, number), sequence))
             }
             _ => None,

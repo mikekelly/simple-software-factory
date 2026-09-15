@@ -398,7 +398,7 @@ pub(super) async fn doctor() -> Result<()> {
                     .as_ref()
                     .map(|overrides| overrides.harness.as_str())
                     .unwrap_or(&r.harness);
-                if !crate::delivery_channel::supports(harness) {
+                if !crate::delivery_channel::supports(harness) && harness != "claude" {
                     continue;
                 }
                 let live = session.worktree_id.as_deref().is_some_and(|id| {
@@ -409,6 +409,36 @@ pub(super) async fn doctor() -> Result<()> {
                     })
                 });
                 if live {
+                    if harness == "claude" {
+                        let herdr = crate::herdr::Herdr::new(cfg.herdr.clone());
+                        // Do not report a neighbour's inbox as the saved pane's channel.
+                        let handle = match &session.terminal_handle {
+                            Some(handle) => Some(handle.clone()),
+                            None => herdr
+                                .live_handle(session.worktree_id.as_deref().unwrap(), None)
+                                .await
+                                .ok()
+                                .flatten(),
+                        };
+                        let available = match handle {
+                            Some(handle) => herdr.claude_inbox(&handle).await.is_some(),
+                            None => false,
+                        };
+                        check(
+                            available,
+                            format!(
+                                "{}#{}: Claude inbox item-activity channel{}",
+                                r.name,
+                                session.number,
+                                if available {
+                                    ""
+                                } else {
+                                    "; unavailable: terminal fallback is in use; restart with --settings '{\"crossSessionInbound\":\"accept\"}' and bypass permissions"
+                                }
+                            ),
+                        );
+                        continue;
+                    }
                     let mailbox = crate::delivery_channel::mailbox(&r.name, session.number);
                     check(
                         crate::delivery_channel::available(&mailbox),

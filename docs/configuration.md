@@ -432,7 +432,7 @@ therefore starts every agent with the flags that let it run unattended:
 
 | Agent | Default command | What still shows up at start |
 |-------|-----------------|------------------------------|
-| `claude` | `claude --dangerously-skip-permissions --disallowedTools AskUserQuestion` | the folder-trust question, and once per machine the "Bypass Permissions mode" acceptance (ssf answers both) |
+| `claude` | `claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{"crossSessionInbound":"accept"}'` | the folder-trust question, and once per machine the "Bypass Permissions mode" acceptance (ssf answers both) |
 | `codex` | `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust` | the directory-trust question (ssf answers it) |
 | `gemini` | `gemini --yolo --skip-trust` | nothing (without `--skip-trust`, a trust dialog ssf answers) |
 | `grok` | `grok --always-approve` | nothing |

@@ -351,7 +351,7 @@ harness = "aider"
     .unwrap();
     assert_eq!(
         cfg.repos[0].harness_command(),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'"
     );
     assert_eq!(
         cfg.repos[1].harness_command(),
@@ -361,7 +361,7 @@ harness = "aider"
     // Resuming builds on the same base.
     assert_eq!(
         crate::sessions::resume_command("claude", &cfg.repos[0].harness_command(), "abc").unwrap(),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --resume abc"
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}' --resume abc"
     );
 }
 

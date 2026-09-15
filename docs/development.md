@@ -188,6 +188,33 @@ restoration. Keys and guest credentials are temporary; it does not contact the
 factory, boot a VM, or authorize against a real provider. Real macOS browser
 and provider enrollment remains a separate manual check.
 
+## Claude inbox live checks
+
+Use an isolated scratch checkout and a Herdr pane you created for the test;
+never point the following command at a factory worker or a person's pane.
+Launch Claude with the default unattended command plus a small model, answer
+the known first-run trust/bypass dialogs, and put `HUMAN-DRAFT-334` in its
+composer without submitting it. Supply that pane and a temporary mailbox:
+
+```sh
+SSF_CLAUDE_TEST_PANE=wN:pN SSF_CLAUDE_TEST_MAILBOX=/tmp/your-scratch/mailbox \
+env -u SSF_INTERNAL_SELECTED_TARGET cargo test claude_live_inbox -- --ignored --nocapture
+```
+
+The test discovers the live inbox, sends an `[ssf]` event, verifies its persistent
+transcript entry, repeats the same delivery to check reconciliation, and checks
+that the draft is still visible. It leaves the pane and transcript for inspection.
+For busy delivery, use `SSF_CLAUDE_TEST_SEQUENCE=2` and
+`SSF_CLAUDE_TEST_EVENT='[ssf] Run sleep 20 with Bash, then reply BUSY-334-OK.'`,
+then deliver sequence 3 while the tool is running. Inspect the transcript for one
+user entry per event and a completed response, with no approval dialog; close
+only your test workspace afterwards. `SSF_CLAUDE_TEST_RESUME=1` also recreates
+the receipt-before-confirmation crash window, exits the scratch agent, and
+checks saved-session resumption without a second enqueue (do this after the
+busy turn completes). Claude 2.1.268 passed these gates on
+2026-09-15. The protocol is unofficial, based on
+[cc-peer's protocol documentation](https://github.com/mikekelly/cc-peer/blob/main/docs/PROTOCOL.md).
+
 ## A dev build as the service
 
 `packaging/dev-install.sh` builds `target/release/ssf` and `ssf-server`, writes the

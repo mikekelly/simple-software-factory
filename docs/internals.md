@@ -116,7 +116,15 @@ checks, and a restrictive content security policy. See
   mailbox key: a retry observes the same pending or acknowledged event rather
   than publishing another copy. If a live bridge is unavailable, delivery
   fails and remains retryable instead of falling back to terminal input.
-  Other harnesses, and OMP/Pi first prompts in newly created or resumed panes,
+  Claude Code uses exact-pane foreground PID discovery and its authenticated
+  NDJSON peer inbox, with priority `next` and launch settings accepting inbound
+  peers. Its unofficial protocol has no ordinary receipt, so SSF journals before
+  writing and confirms enqueue/user entries in the target transcript. A retry
+  reconciles the original transcript rather than resending; an exited target
+  resumes the saved session without a terminal submission. Ambiguous writes are
+  held, while an unavailable channel before any send retains terminal fallback.
+  Numeric Linux `/proc` start ticks and older `ps` timestamps guard PID reuse.
+  Other harnesses, and first prompts in newly created or resumed panes,
   still use Herdr's terminal prompt path and its bracketed-paste fallback.
 - **Bringing a session back.** After the first message ssf records the
   agent's conversation id (Claude Code and Codex keep transcripts on disk).
