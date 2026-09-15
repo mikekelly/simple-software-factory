@@ -69,7 +69,28 @@ do not delete the journal merely to force a retry. An exited target is resumed
 from its saved session before reconciliation, not given a duplicate first prompt.
 Dialogs remain outside the channel's scope.
 
-Codex, OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush do not
+Codex has an **experimental, opt-in** native channel when its Herdr-managed TUI
+is launched with an explicit `--remote unix:///absolute/item-specific/app.sock`
+endpoint and SSF's bypass-approvals/sandbox and bypass-hook-trust flags. The
+launcher/Herdr must provision that same server; SSF does not start a second
+headless conversation or manage the server lifecycle. The socket must be private
+(mode 0600), owned by the current user, and dedicated to one ordinary loaded
+conversation. SSF binds its endpoint, directory, conversation ID and transcript
+under `codex-binding.json` in the item's delivery directory. Switching to another
+conversation or endpoint is held, never guessed from the newest session.
+
+Later events use app-server `turn/start`: idle starts generation, while active
+work admits the event into the current turn at a model boundary without terminal
+input. This path is live-verified with Codex 0.154.0. SSF journals before sending,
+and confirms the exact `clientUserMessageId` through the persistent rollout's
+user-message echo. A delayed echo remains retryable; an ambiguous attempt is
+never resent or pasted. Inspect the journal and target rollout before resolving
+it; do not delete intent to force a retry. Ordinary standalone Codex sessions
+retain terminal fallback. Explicit remote launches with an unavailable or invalid
+channel are held, and `ssf doctor` reports the limitation. First prompts still
+use Herdr's confirmed path. See [configuration](configuration.md#codex-native-delivery).
+
+OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush do not
 yet have a proven channel wired into SSF's attached interactive session. Their
 later activity still uses `herdr agent prompt`; if Herdr refuses because the
 agent is at a question, the existing raw bracketed-paste fallback remains.

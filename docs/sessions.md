@@ -119,6 +119,13 @@ with the default `crossSessionInbound: accept` setting: idle wakes, busy receive
 priority `next`, and the draft stays untouched. Receipt is confirmed through its
 transcript; an ambiguous send is held without resending. An unavailable inbox
 before sending keeps the legacy terminal fallback, reported by `ssf doctor`.
+Codex sessions explicitly attached to a private item-specific Unix app-server
+can use experimental native delivery: idle wakes, busy admission leaves active
+work intact, and the composer is untouched. Endpoint/conversation bindings and
+exact user-message rollout receipts prevent retry duplication. A delayed or
+ambiguous receipt is held; an invalid explicit channel never silently pastes.
+Standalone Codex keeps terminal fallback. Server provisioning remains the
+launcher/Herdr's responsibility; see [delivery configuration](configuration.md#codex-native-delivery).
 Other harnesses and a newly created or resumed
 pane retain the terminal delivery behavior described in
 [Workspaces and terminals](drivers.md#item-activity-delivery).

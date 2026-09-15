@@ -124,6 +124,15 @@ checks, and a restrictive content security policy. See
   resumes the saved session without a terminal submission. Ambiguous writes are
   held, while an unavailable channel before any send retains terminal fallback.
   Numeric Linux `/proc` start ticks and older `ps` timestamps guard PID reuse.
+  Explicitly attached Codex TUIs can use experimental app-server `turn/start`
+  over WebSocket/Unix transport. SSF binds the sole ordinary loaded thread to
+  the exact pane endpoint and cwd, then journals before event admission. Active
+  admission can coalesce into an existing turn: a turn ID is not a message
+  receipt. The rollout's exact `UserMessage.client_id`, thread and content
+  confirm delivery. Subsequent passes reconcile the same intent without RPC
+  resubmission, including receipt-before-confirmation crashes. A changed binding
+  or unavailable explicit channel is held; standalone Codex retains fallback.
+  SSF does not own the attached server or replace Herdr's terminal lifecycle.
   Other harnesses, and first prompts in newly created or resumed panes,
   still use Herdr's terminal prompt path and its bracketed-paste fallback.
 - **Bringing a session back.** After the first message ssf records the

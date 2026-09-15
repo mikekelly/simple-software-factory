@@ -188,6 +188,33 @@ restoration. Keys and guest credentials are temporary; it does not contact the
 factory, boot a VM, or authorize against a real provider. Real macOS browser
 and provider enrollment remains a separate manual check.
 
+## Codex attached-server live checks
+
+Use an isolated scratch checkout, private Unix endpoint and Herdr pane you
+created, never a running factory worker. Start the installed app-server with
+`--listen unix:///absolute/scratch/app.sock`, then launch the normal Codex TUI
+through Herdr with explicit `--remote` and both SSF bypass flags. Seed one prompt
+so the TUI creates its persistent thread, then put `HUMAN-DRAFT-334` in the
+composer without submitting it:
+
+```sh
+SSF_CODEX_TEST_PANE=wN:pN SSF_CODEX_TEST_MAILBOX=/tmp/your-scratch/mailbox \
+  cargo test codex_live_channel -- --ignored --nocapture
+```
+
+The compiled test calls Herdr's native delivery twice, checks one exact rollout
+receipt, recreates receipt-before-confirmation recovery, and verifies the draft
+is still present. `SSF_CODEX_TEST_EVENT` and `SSF_CODEX_TEST_SEQUENCE` allow a
+distinct busy-tool/queued event. A long active tool can delay its receipt: the
+first pass may hold; rerun the *same sequence and event* after the model boundary
+and confirm it reconciles, not reinjects. Check Herdr still reports Codex and
+working/done, the tool completes, and the native event is answered without an
+approval dialog. Exit the scratch TUI, restart only your owned server, resume
+the exact saved thread at the same endpoint and repeat reconciliation. Also
+check another ordinary thread makes delivery hold rather than target the newest
+conversation. Close only your scratch pane/server; preserve journals on an
+uncertain outcome. The app-server remains experimental.
+
 ## Claude inbox live checks
 
 Use an isolated scratch checkout and a Herdr pane you created for the test;

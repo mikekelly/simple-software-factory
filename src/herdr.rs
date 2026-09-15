@@ -1160,6 +1160,11 @@ accepting the successful Enter without retrying: {e:#}"
         crate::claude_delivery::discover(&info).await
     }
 
+    pub(crate) async fn codex_channel_available(&self, pane: &str, mailbox: &Path) -> Result<bool> {
+        let info = self.run(&["pane", "process-info", "--pane", pane]).await?;
+        crate::codex_delivery::available(&info, mailbox).await
+    }
+
     pub async fn deliver(
         &self,
         workspace_id: &str,
@@ -1170,17 +1175,21 @@ accepting the successful Enter without retrying: {e:#}"
         let (ws, _) = split_id(workspace_id);
         let agents = self.agents().await?;
         let live: Vec<&Agent> = agents.iter().filter(|a| a.workspace_id == ws).collect();
-        let target = if relaunch.harness == "claude" {
+        let target = if matches!(relaunch.harness, "claude" | "codex") {
             // A saved pane is an address, not a preference. Never deliver to a
             // neighbour if its agent exits or its pane hosts a different harness.
             match preferred_handle {
                 Some(handle) => live
                     .iter()
-                    .find(|a| a.pane_id == handle && a.kind == "claude"),
+                    .find(|a| a.pane_id == handle && a.kind == relaunch.harness),
                 None => {
-                    let candidates: Vec<_> = live.iter().filter(|a| a.kind == "claude").collect();
+                    let candidates: Vec<_> =
+                        live.iter().filter(|a| a.kind == relaunch.harness).collect();
                     if candidates.len() > 1 {
-                        bail!("Claude delivery has multiple live sessions and no saved pane");
+                        bail!(
+                            "{} delivery has multiple live sessions and no saved pane",
+                            relaunch.harness
+                        );
                     }
                     candidates.first().copied()
                 }
@@ -1193,6 +1202,17 @@ accepting the successful Enter without retrying: {e:#}"
         .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
             match relaunch.first_prompt {
+                FirstPrompt::No if relaunch.harness == "codex" => {
+                    let (mailbox, sequence) =
+                        relaunch.channel.context("Codex delivery has no journal")?;
+                    let info = self
+                        .run(&["pane", "process-info", "--pane", &handle])
+                        .await?;
+                    if !crate::codex_delivery::deliver(Some(&info), mailbox, sequence, text).await?
+                    {
+                        self.send_prompt(&handle, text).await?;
+                    }
+                }
                 FirstPrompt::No if relaunch.harness == "claude" => {
                     let (mailbox, sequence) =
                         relaunch.channel.context("Claude delivery has no journal")?;
@@ -1227,9 +1247,20 @@ accepting the successful Enter without retrying: {e:#}"
             relaunch.harness == "claude"
                 && crate::claude_delivery::has_record(mailbox, *sequence, text)
         });
-        if claude_retry.is_some() && relaunch.resume_command.is_none() {
+        let codex_retry = relaunch.channel.filter(|(mailbox, sequence)| {
+            relaunch.harness == "codex"
+                && crate::codex_delivery::has_record(mailbox, *sequence, text)
+        });
+        let codex_bound = relaunch.harness == "codex"
+            && relaunch
+                .channel
+                .is_some_and(|(mailbox, _)| crate::codex_delivery::has_binding(mailbox));
+        if (claude_retry.is_some() || codex_retry.is_some() || codex_bound)
+            && relaunch.resume_command.is_none()
+        {
             bail!(
-                "Claude has an outstanding native delivery journal but no saved session to resume (no terminal fallback)"
+                "{} has an outstanding native delivery journal but no saved session to resume (no terminal fallback)",
+                relaunch.harness
             );
         }
         let native_retry = relaunch.channel.filter(|(mailbox, sequence)| {
@@ -1298,9 +1329,10 @@ keeping it"
                 }
             }
         }
-        if claude_retry.is_some() && handle.is_none() {
+        if (claude_retry.is_some() || codex_retry.is_some() || codex_bound) && handle.is_none() {
             bail!(
-                "Claude could not resume its outstanding native delivery; refusing a fresh terminal submission"
+                "{} could not resume its outstanding native delivery; refusing a fresh terminal submission",
+                relaunch.harness
             );
         }
         let handle = match handle {
@@ -1327,6 +1359,30 @@ keeping it"
                 relaunched: true,
                 resumed: true,
             });
+        }
+        if let Some((mailbox, sequence)) = codex_retry {
+            if !self.codex_channel_available(&handle, mailbox).await? {
+                bail!("Codex resumed without its native channel; refusing terminal fallback");
+            }
+            crate::codex_delivery::deliver(None, mailbox, sequence, text).await?;
+            return Ok(Delivery {
+                handle,
+                relaunched: true,
+                resumed: true,
+            });
+        }
+        if resumed && relaunch.harness == "codex" {
+            let (mailbox, sequence) = relaunch.channel.context("Codex delivery has no journal")?;
+            let info = self
+                .run(&["pane", "process-info", "--pane", &handle])
+                .await?;
+            if crate::codex_delivery::deliver(Some(&info), mailbox, sequence, text).await? {
+                return Ok(Delivery {
+                    handle,
+                    relaunched: true,
+                    resumed: true,
+                });
+            }
         }
         if let Some((mailbox, sequence)) = native_retry {
             // The per-session Pi/OMP command resumes the transcript. Its

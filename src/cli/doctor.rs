@@ -398,7 +398,9 @@ pub(super) async fn doctor() -> Result<()> {
                     .as_ref()
                     .map(|overrides| overrides.harness.as_str())
                     .unwrap_or(&r.harness);
-                if !crate::delivery_channel::supports(harness) && harness != "claude" {
+                if !crate::delivery_channel::supports(harness)
+                    && !matches!(harness, "claude" | "codex")
+                {
                     continue;
                 }
                 let live = session.worktree_id.as_deref().is_some_and(|id| {
@@ -409,6 +411,28 @@ pub(super) async fn doctor() -> Result<()> {
                     })
                 });
                 if live {
+                    if harness == "codex" {
+                        let herdr = crate::herdr::Herdr::new(cfg.herdr.clone());
+                        let mailbox = crate::delivery_channel::mailbox(&r.name, session.number);
+                        let result = match &session.terminal_handle {
+                            Some(handle) => herdr.codex_channel_available(handle, &mailbox).await,
+                            None => Err(anyhow::anyhow!("no saved Codex pane")),
+                        };
+                        let available = matches!(result, Ok(true));
+                        let detail = match result {
+                            Ok(true) => "experimental native Unix channel".to_owned(),
+                            Ok(false) => "standalone TUI: terminal fallback; native delivery requires explicit --remote unix://PATH".to_owned(),
+                            Err(error) => format!("unavailable: {error:#}; explicit native launches are held, not pasted"),
+                        };
+                        check(
+                            available,
+                            format!(
+                                "{}#{}: Codex item-activity channel; {detail}",
+                                r.name, session.number
+                            ),
+                        );
+                        continue;
+                    }
                     if harness == "claude" {
                         let herdr = crate::herdr::Herdr::new(cfg.herdr.clone());
                         // Do not report a neighbour's inbox as the saved pane's channel.
