@@ -427,7 +427,8 @@ item, and the line for one of those says which item put it there and how
 acme/widgets#12 after a handover)`, or `... used by acme/widgets#13
 assigned`); such a harness is checked for being installed too, which
 nothing else here would look for, and an item an assignment has pinned
-counts before it has been onboarded. With the factory
+counts before it has been onboarded (one that is closed or merged does
+not: no pass will ever start a session on it). With the factory
 in a VM the command is forwarded into the guest, so the check happens
 where the agents are.
 

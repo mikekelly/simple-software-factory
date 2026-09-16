@@ -858,6 +858,12 @@ pub(super) async fn doctor() -> Result<()> {
 /// `after a handover` for `ssf handover`). Those harnesses run where the
 /// daemon runs, so doctor checks them like the configured ones; nothing
 /// else in the report would look, because no repository names them.
+///
+/// An item that is closed or merged is left out: no pass will start a
+/// session on it, so a harness it pins that nobody has installed is not a
+/// problem to report. That is not the `active` flag -- an item an
+/// assignment has just pinned is not active until the pass onboards it,
+/// and then its harness is exactly what is worth checking.
 fn pinned_harnesses(
     cfg: &Config,
     state: &state::State,
@@ -869,6 +875,9 @@ fn pinned_harnesses(
                 continue;
             };
             if cfg.repos.iter().any(|r| r.harness == o.harness) {
+                continue;
+            }
+            if matches!(it.github_state.as_deref(), Some("closed" | "merged")) {
                 continue;
             }
             let how = if it.assigned_at.is_some() {
@@ -1041,7 +1050,9 @@ mod version_tests {
     /// command pinned the item and how: an assignment's overrides are not
     /// a handover's. An item an assignment has just pinned has no session
     /// yet (`active` is false until the pass onboards it) and still counts,
-    /// which is the window in which its harness is most likely missing.
+    /// which is the window in which its harness is most likely missing; an
+    /// item no pass will onboard (closed, merged) does not, or a healthy
+    /// machine would fail doctor over a harness nothing is going to run.
     #[test]
     fn the_harnesses_items_are_pinned_to_are_reported_by_their_writer() {
         use crate::state::{IssueState, Overrides, RepoState, State};
@@ -1057,11 +1068,12 @@ mod version_tests {
             model: None,
             effort: None,
         };
-        let item = |number: u64, o: Option<Overrides>, assigned: bool, active: bool| {
+        let item = |number: u64, o: Option<Overrides>, assigned: bool, active: bool, gs: &str| {
             let mut s = IssueState {
                 number,
                 active,
                 overrides: o,
+                github_state: Some(gs.into()),
                 ..Default::default()
             };
             if assigned {
@@ -1074,13 +1086,17 @@ mod version_tests {
         let mut rs = RepoState::default();
         for s in [
             // Not onboarded yet: the assignment's overrides are all there is.
-            item(1, Some(pin("pi")), true, false),
-            item(2, Some(pin("codex")), true, true),
-            item(3, Some(pin("omp")), false, true),
+            item(1, Some(pin("pi")), true, false, "open"),
+            item(2, Some(pin("codex")), true, true, "open"),
+            item(3, Some(pin("omp")), false, true, "open"),
             // A repository harness nobody needs to be told about.
-            item(4, Some(pin("claude")), true, true),
+            item(4, Some(pin("claude")), true, true, "open"),
             // Ours, but with no overrides at all.
-            item(5, None, false, true),
+            item(5, None, false, true, "open"),
+            // Nothing will onboard these, so a missing harness is not a
+            // problem to report.
+            item(6, Some(pin("gemini")), true, false, "closed"),
+            item(7, Some(pin("gemini")), false, true, "merged"),
         ] {
             rs.issues.insert(s.number, s);
         }
@@ -1101,6 +1117,7 @@ mod version_tests {
             Some(["acme/widgets#3 after a handover".to_string()].as_slice())
         );
         assert!(!pinned.contains_key("claude"), "the repository's own");
+        assert!(!pinned.contains_key("gemini"), "closed and merged");
         assert_eq!(pinned.len(), 3);
     }
 }

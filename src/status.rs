@@ -501,9 +501,10 @@ pub fn sessions_with(
             // too.
             let owner = crate::state::owner_in(&rs.issues, item.number);
             let source = rs.issues.get(&owner).unwrap_or(item);
-            // Which of the two writers put the stack there: each stamps
-            // the item it wrote (`IssueState::assigned_at`,
-            // `IssueState::handed_over_at`), so only one can be set.
+            // Which command wrote the stack: `assigned_at` is set exactly
+            // when an assignment wrote it, since only `finish_handover`
+            // clears it (an assignment leaves the handover's own stamp
+            // alone, because that one bounds the capture window).
             let assigned = source.assigned_at.is_some();
             out.push(join(
                 repo,
