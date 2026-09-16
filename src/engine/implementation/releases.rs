@@ -123,6 +123,10 @@ impl Engine {
                 .has_live_agent(&worktree_id)
                 .await
                 .unwrap_or(false);
+        // What the session is started with, decided here: the story below
+        // is told to the harness this launches, and the relaunch, the title
+        // and the resume all use it.
+        let eff = self.effective(repo, target);
         let mut story = None;
         // A handover whose new session never came up left its summary on
         // the item: the harness started here is the one that takes it on.
@@ -131,7 +135,13 @@ impl Engine {
             let owed = self
                 .peek(repo, target)
                 .is_some_and(|s| s.handover_note.is_some());
-            match self.first_message(repo, target).await {
+            // The harness about to start, not the one a pane is showing:
+            // this message goes to a session that is not there yet, and it
+            // reads the guidance of the harness it is on.
+            match self
+                .first_message(repo, target, Some(eff.harness.as_str()))
+                .await
+            {
                 Ok(s) => {
                     story = Some(format!("{}\n\n{text}", s.text));
                     note_given = owed;
@@ -148,7 +158,6 @@ impl Engine {
         // goes out, and put back if that message turns out to have gone
         // into a sign-in screen (below).
         let mut spent_note = None;
-        let eff = self.effective(repo, target);
         let title = format!("{} · #{target}", eff.harness);
         let resume = st
             .agent_session_id
@@ -228,7 +237,9 @@ impl Engine {
             if let Some(note) = spent_note {
                 self.entry(repo, target).handover_note = Some(note);
             }
-            let b = self.set_blocked_for(repo, target, reason, detail).await;
+            let b = self
+                .set_blocked_for(repo, target, &eff.harness, reason, detail)
+                .await;
             return Err(SessionBlocked {
                 session: session_id(&repo.name, target),
                 blocked: b,
@@ -428,9 +439,20 @@ impl Engine {
                 .collect(),
             None => Vec::new(),
         };
+        // The id recorded here is the *configured* harness's own
+        // conversation (the capture reads that harness's transcripts), and
+        // a relaunch resumes it with the same harness, so a session left on
+        // another harness by a config edit records nothing: its transcripts
+        // are not the ones this harness would start again from.
         let harnesses: Vec<(u64, String)> = candidates
             .into_iter()
-            .map(|n| (n, self.effective(repo, n).harness))
+            .filter_map(|n| {
+                let harness = self.effective(repo, n).harness;
+                match self.running_harness(repo, n) {
+                    Some(running) if running != harness => None,
+                    _ => Some((n, harness)),
+                }
+            })
             .filter(|(_, h)| sessions::supports_resume(h))
             .collect();
         let rs = self.state.repo_mut(&repo.name);

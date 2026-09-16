@@ -35,7 +35,15 @@ session with `ssf assign {id} --harness {harness}` instead)"
             model: model.map(|m| m.trim().to_string()),
             effort: effort.map(|e| e.trim().to_string()),
         };
-        let from = self.effective(&repo, number);
+        // What the item is on now, and not what its record would launch: a
+        // config edit does not change what a live session is running, so
+        // handing the item to the *configured* stack has to be accepted --
+        // that command is the way an item left on an older harness is
+        // brought onto the one the repository now runs. The workspaces are
+        // read here rather than off the pass, since the CLI answers between
+        // passes and this decides on the answer.
+        self.refresh_workspaces(&repo).await;
+        let from = self.current_stack(&repo, number);
         let to = repo.with_overrides(Some(&overrides));
         if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
             anyhow::bail!("the item is already on {harness} with that model and effort");
@@ -94,7 +102,12 @@ session with `ssf assign {id} --harness {harness}` instead)"
         Ok(serde_json::json!({
             "session": id,
             "title": st.title,
-            "from": launch(&from),
+            "from": {
+                "harness": from.harness,
+                "model": from.model,
+                "effort": from.effort,
+                "command": from.command,
+            },
             "to": launch(&to),
             "summary_chars": chars,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
@@ -116,6 +129,11 @@ session with `ssf assign {id} --harness {harness}` instead)"
         if pending.is_empty() {
             return;
         }
+        // What each pane is running, once for the pass: a handover names
+        // the session it takes over from with it (a config edit under a
+        // live session leaves the pane on the harness it was started with),
+        // and the transcript captured for a resume is that harness's.
+        self.learn_workspaces(repo).await;
         // The new session is given the item's story, which the allow-list
         // filters: the collaborators have to be known first, or every
         // human post would be left out of it. A handover the daemon
@@ -181,15 +199,21 @@ session with `ssf assign {id} --harness {harness}` instead)"
         // The new session's first message is built before anything is
         // stopped: a story that cannot be assembled is a refusal, not a
         // session ended with nothing to put in its place.
-        let from_launch = self.launch_of(repo, number);
-        let from_harness = self.effective(repo, number).harness;
+        //
+        // Both of these name the session that is *there*, which is the
+        // harness on its pane and not necessarily the one the record would
+        // launch: a config edit under a live session leaves it on the old
+        // harness until a launch, and the post and the opener have to say
+        // what it is being handed over *from*.
+        let from_launch = self.running_launch(repo, number);
+        let from_harness = self.current_stack(repo, number).harness;
         let from_name = login::display_name(&from_harness);
         // Who the new session really takes over from. Normally the
         // harness the item is on; but a handover whose harness never came
         // up left a note of its own, and the session that wrote it is
         // still the last one that worked the item, so its name is the one
-        // carried forward. The `handed-over` post keeps saying what the
-        // item was configured on.
+        // carried forward. The `handed-over` post keeps saying the harness
+        // that is being ended, which is the one on the pane.
         let pending_note = self
             .peek(repo, number)
             .and_then(|s| s.handover_note.clone());
@@ -359,7 +383,7 @@ session with `ssf assign {id} --harness {harness}` instead)"
                 )
                 .await;
                 let why = safe_error(&events::one_line(&format!("{e:#}")));
-                self.set_blocked_for(repo, number, Blocked::START, why)
+                self.set_blocked_for(repo, number, &eff.harness, Blocked::START, why)
                     .await;
                 self.report_blocked(repo, number).await;
                 return;
@@ -399,7 +423,8 @@ session with `ssf assign {id} --harness {harness}` instead)"
             && let Some((reason, detail)) =
                 crate::driver::blocking_dialog(&eff.harness, &screen.join("\n"))
         {
-            self.set_blocked_for(repo, number, reason, detail).await;
+            self.set_blocked_for(repo, number, &eff.harness, reason, detail)
+                .await;
             self.report_blocked(repo, number).await;
             return;
         }

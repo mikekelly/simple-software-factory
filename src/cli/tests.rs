@@ -685,6 +685,31 @@ fn repo_add_and_set_switch_event_comments_and_clear_puts_it_back() {
 }
 
 #[test]
+fn live_sessions_are_the_active_items_with_a_workspace() {
+    let mut state = state::State::default();
+    let mut rs = state::RepoState::default();
+    let item = |number: u64, active: bool, worktree: Option<&str>| state::IssueState {
+        number,
+        title: format!("Item {number}"),
+        active,
+        worktree_id: worktree.map(str::to_string),
+        ..Default::default()
+    };
+    // A running session, retired-but-kept, never-launched, and another
+    // repository's.
+    rs.issues.insert(1, item(1, true, Some("w1")));
+    rs.issues.insert(2, item(2, false, Some("w2")));
+    rs.issues.insert(3, item(3, true, None));
+    state.repos.insert("o/r".into(), rs);
+    let mut other = state::RepoState::default();
+    other.issues.insert(4, item(4, true, Some("w4")));
+    state.repos.insert("o/other".into(), other);
+    assert_eq!(live_sessions(&state, "o/r"), 1);
+    assert_eq!(live_sessions(&state, "o/other"), 1);
+    assert_eq!(live_sessions(&state, "o/none"), 0);
+}
+
+#[test]
 fn config_set_writes_the_wildcard_only_with_its_marker() {
     let dir = std::env::temp_dir().join(format!(
         "ssf-config-set-test-{}-{}",

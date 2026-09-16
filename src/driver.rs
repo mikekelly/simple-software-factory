@@ -819,6 +819,11 @@ pub struct StubState {
     /// this to exercise the daemon's retry bookkeeping without changing a
     /// real driver's delivery semantics.
     pub deliver_error: Option<String>,
+    /// The harness each worktree's pane is running: what `ps` reports as
+    /// `AgentInfo.agent_type`, and so what ssf reads as the session's own
+    /// harness (#349). A worktree that is not on this map runs whatever its
+    /// record says, the way a driver that reports no agent type leaves it.
+    pub harnesses: std::collections::BTreeMap<String, String>,
     handles: u32,
 }
 
@@ -849,6 +854,15 @@ impl StubDriver {
 
     pub fn log(&self) -> Vec<String> {
         self.with(|s| std::mem::take(&mut s.log))
+    }
+
+    /// The harness the pane of `worktree_id` is running, as the driver would
+    /// report it: an item whose record names another one is a session left
+    /// behind by a config edit (#349).
+    pub fn runs(&self, worktree_id: &str, harness: &str) {
+        self.with(|s| {
+            s.harnesses.insert(worktree_id.into(), harness.into());
+        });
     }
 
     /// The harnesses started since the last call, as `<harness>:<command>`.
@@ -930,6 +944,7 @@ impl StubDriver {
                             } else {
                                 "open".into()
                             },
+                            agent_type: s.harnesses.get(id).cloned(),
                             ..Default::default()
                         })
                         .into_iter()

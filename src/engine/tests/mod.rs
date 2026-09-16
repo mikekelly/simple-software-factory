@@ -32,6 +32,8 @@ pub(super) fn engine() -> Engine {
         }),
         installed: std::sync::Arc::new(|_| true),
         probes: BTreeMap::new(),
+        workspaces: BTreeMap::new(),
+        workspaces_read: BTreeSet::new(),
         refetch: BTreeSet::new(),
         startup_pass: false,
         onboarding: None,
@@ -789,6 +791,7 @@ fn handover_launch(harness: &str) -> events::Launch {
         command: None,
         driver: "herdr".into(),
         branch: Some("refs/heads/bot/issue-5".into()),
+        unknown_stack: false,
     }
 }
 

@@ -399,17 +399,28 @@ impl Engine {
     /// start that fails is tried again later, and the words the outgoing
     /// agent left go with that attempt rather than being lost with the
     /// pane that never came up.
+    ///
+    /// `target_harness` is the harness that will read the message, for the
+    /// harness-specific guidance in it: the stack about to be launched when
+    /// a harness has to start from scratch, and `None` for a session that
+    /// is already there (its own harness is the one on the pane).
     pub(in crate::engine) async fn first_message(
         &mut self,
         repo: &RepoConfig,
         number: u64,
+        target_harness: Option<&str>,
     ) -> Result<Story> {
         let note = self
             .peek(repo, number)
             .and_then(|s| s.handover_note.clone());
         let kind = self.item_kind(repo, number);
         let mut story = self
-            .story(repo, number, note.as_ref().map(|n| n.from.as_str()), None)
+            .story(
+                repo,
+                number,
+                note.as_ref().map(|n| n.from.as_str()),
+                target_harness,
+            )
             .await?;
         if let Some(n) = note {
             story.text = prompt::handover_prompt(&n.from, kind, n.summary.as_deref(), &story.text);

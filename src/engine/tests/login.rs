@@ -444,6 +444,96 @@ async fn omp_setup_is_held_with_correct_remediation_and_recovers() {
     assert!(!d.log().iter().any(|l| l.starts_with("stop:")));
 }
 
+/// The harness on the pane is the one whose sign-in screen is read: a
+/// config edit cannot make a Codex pane show OMP's prompt, and reading the
+/// configured harness's phrases instead means the block is missed and the
+/// item's activity is pasted into a screen that cannot take it (#349).
+#[tokio::test]
+async fn the_login_check_reads_the_harness_on_the_screen() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    // Codex's own sign-in prompt, which reads nothing like OMP's.
+    let (mut e, d) = blocked_setup(
+        &stub,
+        &[
+            "  Welcome to Codex",
+            "",
+            "  Sign in with ChatGPT",
+            "  Re-run codex login to change accounts",
+            "",
+            "❯ ",
+        ],
+    );
+    // The repository was changed to OMP under a session that has run Codex
+    // since before the edit.
+    let mut r = repo();
+    r.harness = "omp".into();
+    e.cfg.repos = vec![r.clone()];
+    d.runs("w5", "codex");
+    probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
+    stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+    stub.set_timeline(
+        5,
+        vec![assigned_by(1, "alice"), comment(2, "alice", "please hurry")],
+    );
+    e.tick_repo(&r).await.unwrap();
+    let st = e.entry(&r, 5).clone();
+    let b = st
+        .blocked
+        .clone()
+        .expect("blocked on the harness that is there");
+    assert_eq!(b.reason, "login");
+    assert_eq!(b.harness, "codex", "the harness on the screen");
+    assert_eq!(b.detail, "Sign in with ChatGPT");
+    assert!(
+        d.log().is_empty(),
+        "nothing is pasted into a sign-in screen"
+    );
+    assert_eq!(st.updated_at.as_deref(), Some("u1"), "the activity is owed");
+    assert!(!st.seen.contains_key("comment:2"), "{:?}", st.seen.keys());
+    let posts = stub.post_bodies();
+    assert_eq!(posts.len(), 1, "{posts:?}");
+    assert!(posts[0].1.contains("harness: Codex"), "{:?}", posts[0]);
+    assert!(
+        posts[0].1.contains(&format!(
+            "fix: {}",
+            login::how_to_sign_in("codex").replace('`', "")
+        )),
+        "{:?}",
+        posts[0]
+    );
+    // The next pass reads the codex screen again: the block stands, and
+    // nothing is pasted into it. Judged by the configured harness instead,
+    // this screen shows no sign-in prompt at all, the block is lifted, and
+    // the item's activity goes into it.
+    let _ = d.log();
+    e.tick_repo(&r).await.unwrap();
+    let st = e.entry(&r, 5).clone();
+    assert_eq!(
+        st.blocked.as_ref().map(|b| b.harness.as_str()),
+        Some("codex")
+    );
+    assert!(d.log().is_empty(), "{:?}", d.log());
+    assert_eq!(st.updated_at.as_deref(), Some("u1"));
+    // Once the codex login is back the pane is restarted, and what starts
+    // is the stack the item will run from now: the configured one.
+    e.entry(&r, 5).blocked.as_mut().unwrap().retried_at = Some(now_iso());
+    probe_returning(&mut e, LoginState::SignedIn, Some("cred-new"));
+    e.tick_repo(&r).await.unwrap();
+    assert!(
+        e.entry(&r, 5).blocked.is_none(),
+        "{:?}",
+        e.entry(&r, 5).blocked
+    );
+    let log = d.log();
+    assert_eq!(log[0], "stop:t5", "{log:?}");
+    let launched = d.launches();
+    assert!(
+        launched.iter().any(|l| l.starts_with("omp:")),
+        "the configured harness starts next: {launched:?}"
+    );
+}
+
 #[tokio::test]
 async fn changed_block_reason_after_relaunch_is_reported_again() {
     let _sandbox = crate::config::test_support::sandbox();
@@ -453,13 +543,14 @@ async fn changed_block_reason_after_relaunch_is_reported_again() {
     r.harness = "omp".into();
     e.cfg.repos = vec![r.clone()];
     probe_returning(&mut e, LoginState::SignedIn, Some("same"));
-    e.set_blocked_for(&r, 5, Blocked::LOGIN, "login".into())
+    e.set_blocked_for(&r, 5, "omp", Blocked::LOGIN, "login".into())
         .await;
     e.report_blocked(&r, 5).await;
     stub.post_bodies();
     e.set_blocked_for(
         &r,
         5,
+        "omp",
         Blocked::SETUP,
         "OMP first-run setup incomplete".into(),
     )

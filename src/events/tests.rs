@@ -13,6 +13,7 @@ fn launch(branch: Option<&str>) -> Launch {
         command: None,
         driver: "herdr".into(),
         branch: branch.map(str::to_string),
+        unknown_stack: false,
     }
 }
 
