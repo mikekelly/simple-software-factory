@@ -26,6 +26,15 @@ function activityLabel(value) {
   return `${relative} · ${date.toLocaleString()}`;
 }
 
+// The card's stack line: what the pane is running, or what is running and
+// what the next launch would start (`codex → omp next launch`, when a config
+// edit left a live session on the older harness).
+function stackLabel(card) {
+  const next = card.next_launch && card.next_launch.harness;
+  if (next) return `${card.harness} → ${next} next launch`;
+  return [card.harness, card.model].filter(Boolean).join(" · ");
+}
+
 function render(cards, monitoredItems) {
   const focused = cardsNode.contains(document.activeElement) && document.activeElement.matches("a")
     ? document.activeElement.dataset.issueId
@@ -36,7 +45,7 @@ function render(cards, monitoredItems) {
     const article = fragment.querySelector(".card");
     article.dataset.state = card.agent_state.toLowerCase().replace(/[^a-z-]/g, "");
     fragment.querySelector(".state-text").textContent = card.agent_state;
-    fragment.querySelector(".harness").textContent = [card.harness, card.model].filter(Boolean).join(" · ");
+    fragment.querySelector(".harness").textContent = stackLabel(card);
     fragment.querySelector(".issue-title").textContent = card.origin.title;
     issueLink(fragment.querySelector(".issue-link"), card.origin);
     fragment.querySelector(".activity").textContent = activityLabel(card.last_activity_at);

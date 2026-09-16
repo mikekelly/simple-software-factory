@@ -239,13 +239,19 @@ impl Engine {
         if candidates.is_empty() {
             return;
         }
-        let ps = match self.driver(repo).ps().await {
-            Ok(p) => p,
-            Err(e) => {
-                debug!(repo = repo.name, "login check skipped: {e:#}");
-                return;
-            }
-        };
+        // The workspaces, once for the pass: which panes are mid-work (a
+        // working harness is not at a login prompt, and its screen may
+        // quote anything) and what harness each one is running. Without
+        // them nothing here is safe -- every screen would be read, a
+        // working agent's included -- so a driver that cannot be asked
+        // means this pass's check waits for one that can.
+        if !self.learn_workspaces(repo).await {
+            debug!(
+                repo = repo.name,
+                "login check skipped: the driver's workspaces could not be read"
+            );
+            return;
+        }
         for number in candidates {
             let st = self.entry(repo, number).clone();
             let Some(wt) = st.worktree_id.clone() else {
@@ -257,7 +263,11 @@ impl Engine {
             }
             // Only an idle harness is read: a working one is not at a login
             // prompt, and its screen may quote anything.
-            if ps.iter().any(|w| w.worktree_id == wt && w.is_working()) {
+            if self
+                .workspaces_of(repo)
+                .iter()
+                .any(|w| w.worktree_id == wt && w.is_working())
+            {
                 continue;
             }
             let handle = match self
@@ -271,12 +281,16 @@ impl Engine {
             let Ok(screen) = self.driver(repo).screen(&handle).await else {
                 continue;
             };
-            let harness = self.effective(repo, number).harness;
+            // The phases are the *running* harness's: a pane left on
+            // another one by a config edit shows that harness's sign-in
+            // screen, not the configured one's.
+            let harness = self.live_harness(repo, number);
             if let Some((reason, detail)) =
                 crate::driver::blocking_dialog(&harness, &screen.join("\n"))
             {
                 self.entry(repo, number).terminal_handle = Some(handle);
-                self.set_blocked_for(repo, number, reason, detail).await;
+                self.set_blocked_for(repo, number, &harness, reason, detail)
+                    .await;
                 self.report_blocked(repo, number).await;
             }
         }
@@ -305,8 +319,10 @@ impl Engine {
         p
     }
 
-    /// Record a login, setup, or startup block. Nothing is
-    /// delivered to it from now on; the item is told once (see
+    /// Record a login, setup, or startup block on `harness` -- the harness
+    /// whose screen showed it, which is the running one for a session that
+    /// is there and the one just launched for a start that failed. Nothing
+    /// is delivered to it from now on; the item is told once (see
     /// `report_blocked`) and the login is checked every pass. On a record
     /// that already exists (the harness was started again and came back
     /// to the prompt) only the attempt is noted, so the item is not told
@@ -315,12 +331,12 @@ impl Engine {
         &mut self,
         repo: &RepoConfig,
         number: u64,
+        harness: &str,
         reason: &str,
         detail: String,
     ) -> Blocked {
         let session = session_id(&repo.name, number);
-        let harness = self.effective(repo, number).harness;
-        let probe = self.probe_harness(&harness).await;
+        let probe = self.probe_harness(harness).await;
         let reason = if reason == Blocked::START && probe.state == LoginState::SignedOut {
             Blocked::LOGIN
         } else {
@@ -348,7 +364,7 @@ impl Engine {
         }
         let b = Blocked {
             reason: reason.to_string(),
-            harness: harness.clone(),
+            harness: harness.to_string(),
             detail,
             since: now_iso(),
             reported: false,
@@ -364,7 +380,7 @@ impl Engine {
             harness,
             detail = b.detail,
             "session is blocked: {} {}; {}",
-            login::display_name(&harness),
+            login::display_name(harness),
             if reason == Blocked::START {
                 "could not be started"
             } else if reason == Blocked::SETUP {
@@ -463,9 +479,12 @@ impl Engine {
         }
     }
 
-    /// What the harness of `number`'s workspace runs with, for an
+    /// What the harness of `number`'s workspace is started with, for an
     /// `attached` post: the repository's harness, model and effort as
-    /// configured, the driver, and the workspace's branch when known.
+    /// configured (the item's overrides applied), the driver, and the
+    /// workspace's branch when known. Every launch goes through the
+    /// record, so this is what the post names whatever the pane happens to
+    /// be running; `running_launch` is the other question.
     pub(in crate::engine) fn launch_of(&self, repo: &RepoConfig, number: u64) -> events::Launch {
         self.launch_with(repo, number, self.overrides_of(repo, number).as_ref())
     }
@@ -478,14 +497,48 @@ impl Engine {
         number: u64,
         overrides: Option<&Overrides>,
     ) -> events::Launch {
-        let eff = repo.with_overrides(overrides);
+        self.launch_of_config(repo, number, repo.with_overrides(overrides))
+    }
+
+    /// [`launch_of`](Self::launch_of) for the session that is on the item
+    /// now: the harness its pane is running, with the record's model, effort
+    /// and command when they belong to that harness (`Engine::current_stack`
+    /// explains what is left out and why). This is the stack a
+    /// `handed-over` post names the outgoing session with.
+    pub(in crate::engine) fn running_launch(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+    ) -> events::Launch {
+        let current = self.current_stack(repo, number);
         events::Launch {
-            harness: login::display_name(&eff.harness),
-            model: eff.model.clone(),
-            effort: eff.effort.clone(),
-            command: eff.command.clone(),
+            harness: login::display_name(&current.harness),
+            model: current.model,
+            effort: current.effort,
+            command: current.command,
             driver: self.cfg.driver_for(repo).id().to_string(),
             branch: self.peek(repo, number).and_then(|s| s.branch.clone()),
+            unknown_stack: current.unknown_stack,
+        }
+    }
+
+    /// The `attached`/`handed-over` lines for a stack that has already been
+    /// worked out: `config` in `effective`'s shape.
+    fn launch_of_config(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+        config: RepoConfig,
+    ) -> events::Launch {
+        events::Launch {
+            harness: login::display_name(&config.harness),
+            model: config.model.clone(),
+            effort: config.effort.clone(),
+            command: config.command.clone(),
+            driver: self.cfg.driver_for(repo).id().to_string(),
+            branch: self.peek(repo, number).and_then(|s| s.branch.clone()),
+            // Every launch goes through the record: this is its stack.
+            unknown_stack: false,
         }
     }
 
@@ -507,7 +560,15 @@ impl Engine {
         b: Blocked,
     ) {
         let session = session_id(&repo.name, number);
-        let harness = self.effective(repo, number).harness;
+        // The harness whose screen was read when the block was recorded:
+        // that is the one still sitting at the prompt (nothing restarts it
+        // until this path does), and the login the recovery waits on. Only
+        // the screen is judged by what the pane reports instead, in case
+        // another harness was started in it by hand since.
+        let harness = b.harness.clone();
+        let screen_harness = self
+            .running_harness(repo, number)
+            .unwrap_or_else(|| harness.clone());
         if !b.reported {
             self.report_blocked(repo, number).await;
         }
@@ -546,7 +607,7 @@ impl Engine {
             let Ok(screen) = self.driver(repo).screen(h).await else {
                 return;
             };
-            let dialog = crate::driver::blocking_dialog(&harness, &screen.join("\n"));
+            let dialog = crate::driver::blocking_dialog(&screen_harness, &screen.join("\n"));
             if let Some((reason, detail)) = &dialog
                 && *reason != b.reason
             {
@@ -675,7 +736,9 @@ impl Engine {
             cur.told_at = attempted.told_at.clone();
             cur.tell_failures = attempted.tell_failures;
         }
-        let story = match self.first_message(repo, number).await {
+        // A session that is running: the guidance is the harness its pane
+        // reports, which is the one that will read the story.
+        let story = match self.first_message(repo, number, None).await {
             Ok(s) => s,
             Err(e) => {
                 warn!(

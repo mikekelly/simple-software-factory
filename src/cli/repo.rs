@@ -115,6 +115,9 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 .position(|x| x.name.eq_ignore_ascii_case(&name))
                 .with_context(|| format!("{name} is not configured; use `ssf repo add`"))?;
             let default_driver = cfg.default_driver();
+            // What the repository ran before the edit, to tell whether the
+            // stack a session is started with changed at all.
+            let was = cfg.repos[pos].clone();
             let entry = &mut cfg.repos[pos];
             if let Some(h) = harness {
                 check_harness(&h);
@@ -201,10 +204,16 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             entry.validate_launch_prefs()?;
             entry.require_launch_prefs()?;
             let updated = entry.name.clone();
+            let stack_changed = was.harness != entry.harness
+                || was.model != entry.model
+                || was.effort != entry.effort;
             cfg.validate()?;
             let identity = cfg.git_identity(cfg.repos.get(pos));
             cfg.save_to(config_file)?;
             println!("Updated {updated}");
+            if stack_changed {
+                warn_live_sessions(&updated);
+            }
             if !identity.is_bot() || identity.credential != config::Credential::Bot {
                 println!(
                     "{updated}: {}",
@@ -267,6 +276,48 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `ssf repo set` changed the stack a session is started with: say what
+/// that means for the sessions already running. A config edit does not
+/// touch them -- each keeps the harness, model and effort it was started
+/// with until it next launches, resumes or relaunches -- so an operator who
+/// expects the change to be in effect is told it is not, where to see the
+/// difference and how to move one session onto it now (#349).
+fn warn_live_sessions(repo: &str) {
+    let Ok(state) = state::State::load() else {
+        return;
+    };
+    let running = live_sessions(&state, repo);
+    if running == 0 {
+        return;
+    }
+    println!(
+        "{repo}: {running} session(s) are already running and keep the stack they were started \
+with until each next launches, resumes or relaunches; `ssf status` shows what is running against \
+what is next, and `ssf handover <item> --harness <id>` moves one now."
+    );
+}
+
+/// The sessions of a repository that are running: the workspaces its active
+/// items are in. A retired item that kept its workspace is not one (nothing
+/// is in it), and an active item with no workspace has not been started yet.
+/// Counted by workspace rather than by item: an item bound to another
+/// session's workspace mirrors its id (`mirror_owner`), so it is that one
+/// session, not a second one, and it has no stack of its own to keep.
+pub(super) fn live_sessions(state: &state::State, repo: &str) -> usize {
+    state
+        .repos
+        .get(repo)
+        .map(|rs| {
+            rs.issues
+                .values()
+                .filter(|s| s.active)
+                .filter_map(|s| s.worktree_id.as_deref())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+        })
+        .unwrap_or(0)
 }
 
 pub(super) fn expand_checkout(path: Option<String>) -> Result<Option<String>> {

@@ -304,13 +304,15 @@ path for SSF guidance you would rather not commit.
 For additional instructions specific to a harness, add `SSF.<harness>.md` at
 the checkout root, for example `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md`.
 Use the harness identifier from the configuration. ssf appends this file after
-the shared SSF guidance, under its own "Harness guidance" heading. It uses the harness
-actually starting the session, including after a handover or restart, and
-includes no other harness's file. These optional files are independent of
-`repo.prompt_file`: changing the shared guidance path does not change their
-location. Missing, empty, or HTML-comment-only files add nothing; HTML
-comments are filtered just as in the shared guidance. `ssf doctor` checks the
-shared SSF guidance only.
+the shared SSF guidance, under its own "Harness guidance" heading. It uses the
+harness the session is on: the one the driver reports for its pane when there is
+one (so a session the config changed under reads its own harness's file, not the
+configured one's), and the one about to start otherwise, including after a
+handover or restart. It includes no other harness's file. These optional files
+are independent of `repo.prompt_file`: changing the shared guidance path does
+not change their location. Missing, empty, or HTML-comment-only files add
+nothing; HTML comments are filtered just as in the shared guidance.
+`ssf doctor` checks the shared SSF guidance only.
 Harness guidance is also appended only to the issue-owning main session, not
 automatically to subagents that harness creates.
 
@@ -434,6 +436,28 @@ item comes back on the repository's own settings. `ssf assign` writes
 nothing at all when the stack it is given is the one the item would run
 anyway: an override nobody needs would pin the item out of `ssf repo
 set`.
+
+### What a session runs, against what launches next
+
+An override and the repository's config are both about the *next* launch:
+they say what a session would be started with. What a session that is
+already running is on is the driver's answer, not the config's -- the
+harness reported for its pane (`AgentInfo.agent_type`) governs what ssf
+reports, which harness's sign-in prompt it looks for on the screen, and
+which `SSF.<harness>.md` guidance the session is given. Change a
+repository's harness, model or effort under a live session and that
+session stays where it is: ssf does not restart a running agent under an
+operator, and `ssf repo set` prints a line saying so when the repository
+has running sessions. The change waits for that session's next launch,
+resume, relaunch or re-creation, and until then `ssf status` and `ssf
+peers` show both sides (`harness codex → omp next launch (model
+deepseek/deepseek-flash, effort high)`, and `next_launch` beside
+`harness` in `--json`; the dashboard cards and the bar widget show
+`codex → omp next launch`). The running session's own model and effort
+are left out while the two differ: only the harness is the driver's to
+report, and ssf does not have the stack that session was started with.
+`ssf handover <item> --harness <the configured one> ...` is how to move
+one onto it now (see [Handover](sessions.md#handover)).
 
 ## Codex native delivery
 

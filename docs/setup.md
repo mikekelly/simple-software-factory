@@ -514,7 +514,14 @@ Changing the harness requires a fresh model and effort selection where supported
 Other edits retain existing selections; incomplete legacy entries must be completed
 before `repo set` can save. Changes apply
 to the next started or resumed session; an already running session keeps
-its selection. A [per-item override](configuration.md#per-item-overrides)
+its selection, and when the repository has running sessions `repo set`
+says so on its output rather than leaving an operator to assume the change
+took effect. `ssf status` and `ssf peers` then show both sides until the
+session next launches: `harness codex → omp next launch (model
+deepseek/deepseek-flash, effort high)`, and `next_launch` beside `harness`
+in `--json`. `ssf handover <item> --harness <id> ...` moves one session
+onto the new stack now. A
+[per-item override](configuration.md#per-item-overrides)
 takes precedence until that item's workspace is released: `ssf assign`
 sets one for an item that has no session yet, `ssf handover` for one that
 does.

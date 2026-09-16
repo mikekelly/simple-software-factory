@@ -78,6 +78,9 @@ session to another stack"
             model: model.map(|m| m.trim().to_string()),
             effort: effort.map(|e| e.trim().to_string()),
         };
+        // The record's stack, not the one a pane is running: an item with a
+        // session is refused above (it is `ssf handover`'s to move), so this
+        // is an item that has nothing running and the two are the same.
         let from = self.effective(&repo, number);
         let to = repo.with_overrides(Some(&overrides));
         // The same comparison `ssf handover` refuses on, except that

@@ -392,6 +392,22 @@ fn safe_link(value: &Value, x: u16, y: u16, max_width: u16) -> Option<TerminalLi
     })
 }
 
+/// The stack line of a card: the harness the pane is running and its model,
+/// or `codex → omp next launch` when the config would start another harness
+/// (a config edit does not touch a session that is already running, so the
+/// change waits for the next launch).
+fn stack_label(card: &Value) -> String {
+    let harness = text(card, "harness");
+    if let Some(next) = card["next_launch"]["harness"].as_str() {
+        return format!("{harness} → {next} next launch");
+    }
+    [harness, text(card, "model")]
+        .into_iter()
+        .filter(|part| *part != "—" && !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 fn render_card(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -435,11 +451,7 @@ fn render_card(
         .collect::<Vec<_>>();
 
     let origin = &card["origin"];
-    let stack = [text(card, "harness"), text(card, "model")]
-        .into_iter()
-        .filter(|part| *part != "—" && !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(" · ");
+    let stack = stack_label(card);
     let mut lines = vec![
         Line::from(Span::styled(
             clean(text(origin, "title")),
@@ -855,6 +867,39 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|frame| render(frame, view)).unwrap();
         terminal.backend().to_string()
+    }
+
+    /// A card for a session left on another harness by a config edit says
+    /// what is running and what the next launch would start: the model on
+    /// the card belongs to the harness named beside it, and the one the
+    /// *next* launch uses is not the running session's (#349).
+    #[test]
+    fn a_card_says_which_harness_starts_next() {
+        let mut view = View::new(vec![None]);
+        view.update(
+            0,
+            payload(
+                "factory",
+                vec![json!({
+                    "owner":"r#1",
+                    "origin":{"id":"r#1","title":"Left behind","url":"https://example.test/issue"},
+                    "agent_state":"working",
+                    "last_activity_at":"2026-09-12T20:00:00Z",
+                    "last_assistant_message":"Latest summary",
+                    "additional":[],
+                    "harness":"codex",
+                    "next_launch":{"harness":"omp","model":"deepseek/deepseek-flash"}
+                })],
+                vec![],
+            ),
+        )
+        .unwrap();
+        let screen = rendered(&mut view, 100, 20);
+        assert!(screen.contains("codex → omp next launch"), "{screen}");
+        assert!(
+            !screen.contains("deepseek"),
+            "not the model of what runs: {screen}"
+        );
     }
 
     #[test]

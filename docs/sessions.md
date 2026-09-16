@@ -269,7 +269,7 @@ The events, and nothing else:
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
-| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
+| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line; when the harness ending is the one its pane runs and not the one its record names -- a config edit under a live session -- only `from` is written, followed by `from stack: unknown (the harness on the pane is not the record's)`, since ssf has no model, effort or command of that session's to report); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
 
 The `handed-over` post is what a reader sees when an item changes stack
 (see [Handover](#handover)):
@@ -365,8 +365,13 @@ would keep pasting activity into a terminal that cannot act.
 So every pass, for each session whose agent is idle, ssf reads the bottom
 of its screen and, if it shows the harness's sign-in prompt (the phrases
 are the harnesses' own, as seen on their screens; `driver::login_dialog`
-has the list per harness), marks the session **blocked**. Two things keep
-an agent's own screen from tripping this: only the bottom of an idle
+has the list per harness), marks the session **blocked**. The harness
+those phrases are checked against is the one the driver reports for that
+pane, not the one the item's record would launch: a config edit under a
+live session ([`ssf repo set`](setup.md#8-watch-a-repository)) leaves the
+pane on the harness it was started with, and judging its codex screen by
+OMP's phrases would miss the block and keep pasting into it. Two things
+keep an agent's own screen from tripping this: only the bottom of an idle
 agent's screen counts, and a line inside echoed `[ssf]` text (a pasted
 prompt, or activity delivered from the item, where a person may well have
 quoted the phrase) is skipped. Every text ssf itself puts on a screen or
@@ -498,7 +503,13 @@ done, and anything it starts now is thrown away with its pane.
   says it is signed out (with the factory in a VM this is the guest's
   login, see [A harness that is not signed in](#a-harness-that-is-not-signed-in));
 - a handover on the item is already pending, or a release is;
-- the item is already on that harness with that model and effort;
+- the item is already on that harness with that model and effort, judged
+  against the harness its pane is running (not the one its record would
+  launch): `ssf handover <item> --harness <the configured one>` is the
+  accepted way to bring a session left behind by a
+  [`ssf repo set`](setup.md#8-watch-a-repository) onto the configured
+  stack, and an operator who asks for what is genuinely already running
+  is still refused;
 - the summary is longer than 8,000 characters;
 - the summary would read as a harness's own sign-in screen (it quotes
   `Please run /login`, say). The summary is pasted into the new
@@ -516,7 +527,12 @@ session it was held for: when the item was told of it, the pass posts
 **On the next pass** (within `daemon.poll_interval_secs`, and before the
 repository's items are polled) the daemon:
 
-1. checks the item is still active and its workspace still known;
+1. checks the item is still active and its workspace still known, and that
+   the driver can say what is running in it: the harness the session is on
+   is what the `handed-over` post and the new session's opening line name
+   as the one being taken over from, so a driver that cannot answer leaves
+   the handover on the next pass (`ssf handover` refuses outright in that
+   state, rather than comparing the request against the record);
 2. ends the outgoing agent's pane, leaving the worktree and its branch
    exactly as they are;
 3. retires the outgoing session on the record (its conversation id, its

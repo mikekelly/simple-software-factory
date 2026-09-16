@@ -264,7 +264,8 @@ reflect transcript writes, and missing activity times remain unknown.
     harness-created subagents, so it can define orchestration without polluting
     delegated task contexts. Optional
     `SSF.<harness>.md` files at the checkout root add instructions only for the
-    selected harness's main session, including handovers; for example, put
+    main session of the harness on the pane (a session the config changed under
+    reads its own harness's file), including handovers; for example, put
     Codex-specific subagent orchestration guidance in `SSF.codex.md`. They do
     not replace the shared SSF guidance.
     Use the [boilerplate](../SSF.example.md) and

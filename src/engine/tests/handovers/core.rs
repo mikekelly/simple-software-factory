@@ -609,6 +609,193 @@ async fn a_second_handover_names_the_session_that_did_the_work() {
     assert!(handed.1.contains("\nfrom: Pi\n"), "{posts:?}");
     assert!(handed.1.contains("\nto: Codex\n"), "{posts:?}");
 }
+
+/// `ssf handover` moves an item from the harness its pane is on to the one
+/// the repository now configures. The comparison is against what the
+/// session is *running*, so the one command that fixes a config edit under
+/// a live session is accepted, and both the post and the new session's
+/// opening line name the harness it took over from (#349).
+#[tokio::test]
+async fn a_handover_onto_the_configured_stack_moves_a_session_left_behind() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    // The repository was changed to OMP with the session in it unchanged:
+    // since that edit the pane has run Codex, and its record still says so.
+    let r = RepoConfig {
+        harness: "omp".into(),
+        model: Some("deepseek/deepseek-flash".into()),
+        effort: Some("high".into()),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    d.runs("w5", "codex");
+    let v = e
+        .handover(
+            "o/r#5",
+            "omp",
+            Some("deepseek/deepseek-flash"),
+            Some("high"),
+            Some("carry on where I left off"),
+            None,
+        )
+        .await
+        .expect("onto the configured stack, which is not what is running");
+    assert_eq!(v["from"]["harness"], "codex", "what the session is on");
+    assert_eq!(
+        v["from"]["model"],
+        Value::Null,
+        "a stack ssf does not have on the record is not claimed"
+    );
+    assert_eq!(v["to"]["harness"], "omp");
+    assert_eq!(v["to"]["model"], "deepseek/deepseek-flash");
+    e.run_handovers(&r).await;
+    let st = e.entry(&r, 5).clone();
+    assert_eq!(
+        st.overrides,
+        Some(Overrides {
+            harness: "omp".into(),
+            model: Some("deepseek/deepseek-flash".into()),
+            effort: Some("high".into()),
+        })
+    );
+    // The message reached the new harness, so what the outgoing agent left
+    // has been read and the note is gone from the record.
+    assert!(st.handover_note.is_none(), "{:?}", st.handover_note);
+    let prompts = d.prompts();
+    assert!(
+        prompts[0].starts_with("You took over this issue from a session on Codex"),
+        "{}",
+        prompts[0]
+    );
+    let launched = d.launches();
+    assert!(
+        launched.iter().any(|l| l.starts_with("omp:")),
+        "{launched:?}"
+    );
+    let posts = stub.post_bodies();
+    let handed = posts
+        .iter()
+        .find(|(_, b)| b.contains("event=handed-over"))
+        .expect("the handover is posted");
+    assert!(handed.1.contains("\nfrom: Codex\n"), "{}", handed.1);
+    assert!(
+        handed
+            .1
+            .contains("\nfrom stack: unknown (the harness on the pane is not the record's)\n"),
+        "a stack ssf does not have is not claimed: {}",
+        handed.1
+    );
+    assert!(
+        !handed.1.contains("from model:"),
+        "no model line for a session whose stack is not on the record: {}",
+        handed.1
+    );
+    assert!(handed.1.contains("\nto: Oh My Pi\n"), "{}", handed.1);
+    assert!(
+        handed.1.contains("\nto model: deepseek/deepseek-flash\n"),
+        "{}",
+        handed.1
+    );
+}
+
+/// A driver that cannot say what is in the workspace has no answer to
+/// compare the requested stack against, and the item's record would answer
+/// with the stack being asked for: the command waits for a driver that can
+/// answer rather than refusing the remedy as something the item is already
+/// on (#349).
+#[tokio::test]
+async fn a_handover_waits_for_a_driver_that_can_say_what_is_running() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = RepoConfig {
+        harness: "omp".into(),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    d.runs("w5", "codex");
+    d.with(|s| s.ps_error = Some("herdr is not answering".into()));
+    let err = e
+        .handover("o/r#5", "omp", None, None, Some("carry on"), None)
+        .await
+        .expect_err("the driver cannot say what is running");
+    assert!(
+        err.to_string()
+            .contains("cannot say which harness is running"),
+        "{err:#}"
+    );
+    assert!(
+        e.entry(&r, 5).handover.is_none(),
+        "nothing was recorded to be carried out on a guess"
+    );
+    // Once it answers, the same command goes through.
+    e.handover("o/r#5", "omp", None, None, Some("carry on"), None)
+        .await
+        .unwrap();
+    e.run_handovers(&r).await;
+    let posts = stub.post_bodies();
+    let handed = posts
+        .iter()
+        .find(|(_, b)| b.contains("event=handed-over"))
+        .expect("the handover is posted");
+    assert!(handed.1.contains("\nfrom: Codex\n"), "{}", handed.1);
+}
+
+/// A pass that carries a recorded handover out has to know which harness
+/// the session is on, since the post and the new session's opening line
+/// name it. A driver that cannot say has no answer for that, and the
+/// record's stack is the one being handed *to*: the handover waits for a
+/// pass that can be told, rather than being carried out backwards (#349).
+#[tokio::test]
+async fn a_handover_waits_for_a_pass_that_can_read_the_panes() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = RepoConfig {
+        harness: "omp".into(),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    d.runs("w5", "codex");
+    e.handover("o/r#5", "omp", None, None, Some("carry on"), None)
+        .await
+        .unwrap();
+    // The driver stops answering between the request and the pass, whose
+    // own read is its first (`forget_workspaces` is what the top of a pass
+    // does; these tests drive `run_handovers` directly).
+    e.forget_workspaces(&r);
+    d.with(|s| s.ps_error = Some("herdr is not answering".into()));
+    e.run_handovers(&r).await;
+    assert!(
+        e.entry(&r, 5).handover.is_some(),
+        "the handover is carried out on the next pass, not backwards"
+    );
+    assert!(
+        d.log().iter().all(|l| !l.starts_with("stop:")),
+        "the session that is there was not ended for it: {:?}",
+        d.log()
+    );
+    assert!(stub.post_bodies().is_empty(), "nothing was posted");
+    // The next pass reads the panes: the handover runs, naming Codex.
+    e.forget_workspaces(&r);
+    e.run_handovers(&r).await;
+    assert!(e.entry(&r, 5).handover.is_none());
+    let posts = stub.post_bodies();
+    let handed = posts
+        .iter()
+        .find(|(_, b)| b.contains("event=handed-over"))
+        .expect("the handover is posted");
+    assert!(handed.1.contains("\nfrom: Codex\n"), "{}", handed.1);
+    assert!(handed.1.contains("\nto: Oh My Pi\n"), "{}", handed.1);
+    let prompts = d.prompts();
+    assert!(
+        prompts[0].starts_with("You took over this issue from a session on Codex"),
+        "{}",
+        prompts[0]
+    );
+}
+
 #[test]
 fn a_handover_retires_the_workspace_s_last_conversation_too() {
     let id = |s: &str| Some(s.to_string());

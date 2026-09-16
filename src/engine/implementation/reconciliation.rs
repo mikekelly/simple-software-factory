@@ -15,6 +15,7 @@ impl Engine {
         // Per-pass state only. `refetch` is deliberately not reset here: it
         // has to outlive the pass that armed it (issue #141).
         self.probes.clear();
+        self.workspaces_read.clear();
         if self.cfg.repos.is_empty() {
             warn!("no repos configured; nothing to do (see `ssf repo add`)");
             return;
@@ -200,6 +201,10 @@ impl Engine {
     pub(in crate::engine) async fn tick_repo(&mut self, repo: &RepoConfig) -> Result<()> {
         let (owner, name) = repo.split()?;
         self.refresh_collaborators(repo, owner, name).await?;
+        // What each pane in this repository is running, once for the whole
+        // pass: the login check, the harness a handover takes over from and
+        // the guidance a live session is given all ask.
+        self.learn_workspaces(repo).await;
         let discovering = self.enrollment_pending(repo);
         // Preserve the normal pre-listing recovery order. A new enrollment
         // waits until after its quarantine snapshot instead.

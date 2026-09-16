@@ -31,6 +31,13 @@ pub struct Launch {
     pub driver: String,
     /// The workspace's branch, when known.
     pub branch: Option<String>,
+    /// This harness is the one the pane is running and not the one the item's
+    /// record launches (a config edit left the session on the harness it was
+    /// started with), so the model, effort and command are empty because ssf
+    /// does not have the stack that session was started with -- not because
+    /// it ran the harness's own defaults. A post says so rather than
+    /// claiming a stack the record does not have.
+    pub unknown_stack: bool,
 }
 
 /// How an item got its agent: the three occasions of `attached`.
@@ -289,13 +296,23 @@ impl Event {
                 let mut lines = Vec::new();
                 if refused.is_none() {
                     lines.push(("from", from.harness.clone()));
-                    lines.push(("from model", from.model_value()));
-                    lines.push(("from effort", from.effort_value()));
-                    // The model and effort lines say `the command's` when
-                    // a command is configured, so the command is named
-                    // here as it is in the `attached` block.
-                    if let Some(c) = set(&from.command) {
-                        lines.push(("from command", c));
+                    if from.unknown_stack {
+                        // Nothing is claimed about what the outgoing session
+                        // was launched with: the harness here is the pane's,
+                        // and the record's stack belongs to another one.
+                        lines.push((
+                            "from stack",
+                            "unknown (the harness on the pane is not the record's)".into(),
+                        ));
+                    } else {
+                        lines.push(("from model", from.model_value()));
+                        lines.push(("from effort", from.effort_value()));
+                        // The model and effort lines say `the command's` when
+                        // a command is configured, so the command is named
+                        // here as it is in the `attached` block.
+                        if let Some(c) = set(&from.command) {
+                            lines.push(("from command", c));
+                        }
                     }
                 }
                 lines.push(("to", to.harness.clone()));
