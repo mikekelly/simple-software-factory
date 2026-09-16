@@ -42,7 +42,16 @@ session with `ssf assign {id} --harness {harness}` instead)"
         // brought onto the one the repository now runs. The workspaces are
         // read here rather than off the pass, since the CLI answers between
         // passes and this decides on the answer.
-        self.refresh_workspaces(&repo).await;
+        //
+        // A driver that cannot say what is in the workspace leaves nothing
+        // to compare against -- its record would answer with the stack this
+        // asks to *launch* -- and refusing on that is the refusal this
+        // check exists to stop, so the command waits for one that answers.
+        if !self.refresh_workspaces(&repo).await {
+            anyhow::bail!(
+                "{id}: the driver cannot say which harness is running in the item's workspace right now; try again once it answers"
+            );
+        }
         let from = self.current_stack(&repo, number);
         let to = repo.with_overrides(Some(&overrides));
         if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
@@ -155,6 +164,13 @@ session with `ssf assign {id} --harness {harness}` instead)"
                 error!("saving state: {e:#}");
             }
         }
+        // The panes this pass read at the top describe the sessions the
+        // handovers have just ended. Everything the rest of the pass asks
+        // about a live pane -- which harness's phrases the login check
+        // looks for, which harness's guidance a delivery carries -- has to
+        // see the one that is there now, so the read is dropped and the
+        // next ask makes it again.
+        self.forget_workspaces(repo);
     }
 
     /// Second half of `ssf handover`: end the session that is there, keep

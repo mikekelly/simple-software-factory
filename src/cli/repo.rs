@@ -299,9 +299,12 @@ what is next, and `ssf handover <item> --harness <id>` moves one now."
     );
 }
 
-/// The sessions of a repository that are running: active items owning a
-/// workspace. A retired item that kept its workspace is not one (nothing is
-/// in it), and an active item with no workspace has not been started yet.
+/// The sessions of a repository that are running: the workspaces its active
+/// items are in. A retired item that kept its workspace is not one (nothing
+/// is in it), and an active item with no workspace has not been started yet.
+/// Counted by workspace rather than by item: an item bound to another
+/// session's workspace mirrors its id (`mirror_owner`), so it is that one
+/// session, not a second one, and it has no stack of its own to keep.
 pub(super) fn live_sessions(state: &state::State, repo: &str) -> usize {
     state
         .repos
@@ -309,8 +312,10 @@ pub(super) fn live_sessions(state: &state::State, repo: &str) -> usize {
         .map(|rs| {
             rs.issues
                 .values()
-                .filter(|s| s.active && s.worktree_id.is_some())
-                .count()
+                .filter(|s| s.active)
+                .filter_map(|s| s.worktree_id.as_deref())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
         })
         .unwrap_or(0)
 }

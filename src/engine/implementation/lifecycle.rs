@@ -86,43 +86,58 @@ impl Engine {
     /// pass (`Driver::ps`): the panes live in it, and the agent each one is
     /// running. Read once a pass, so the login check, the handover
     /// bookkeeping and the guidance a live session is given all see the
-    /// same answer.
-    pub(in crate::engine) async fn learn_workspaces(&mut self, repo: &RepoConfig) {
+    /// same answer. False when the driver could not be asked, which nothing
+    /// stands in for: a question about a pane is not answered by a guess.
+    pub(in crate::engine) async fn learn_workspaces(&mut self, repo: &RepoConfig) -> bool {
         if self.workspaces_read.contains(&repo.name) {
-            return;
+            return self.workspaces.contains_key(&repo.name);
         }
-        self.refresh_workspaces(repo).await;
+        self.refresh_workspaces(repo).await
     }
 
     /// [`learn_workspaces`](Self::learn_workspaces) reading the driver
-    /// again whatever this pass already saw: `ssf handover` decides on the
-    /// answer, and the CLI answers it between passes.
-    pub(in crate::engine) async fn refresh_workspaces(&mut self, repo: &RepoConfig) {
+    /// again whatever this pass already saw. `ssf handover` decides on the
+    /// answer, and the CLI answers it between passes; a pass that changes
+    /// which harness is in a workspace has to read again too, since the
+    /// panes it read at the start describe the session it has just ended.
+    pub(in crate::engine) async fn refresh_workspaces(&mut self, repo: &RepoConfig) -> bool {
         self.workspaces_read.insert(repo.name.clone());
         match self.driver(repo).ps().await {
             Ok(list) => {
                 self.workspaces.insert(repo.name.clone(), list);
+                true
             }
             Err(e) => {
                 // Nothing stands in for the answer: a pane whose harness is
                 // not known is read as the stack its record would launch,
-                // never as the one read in some earlier pass.
+                // never as the one read in some earlier pass, and a caller
+                // that has to know which panes are there is told to wait
+                // for a pass that can ask.
                 self.workspaces.remove(&repo.name);
                 debug!(
                     repo = repo.name,
                     "the driver's workspaces could not be read, so what each pane runs is unknown: {e:#}"
                 );
+                false
             }
         }
     }
 
     /// The workspaces of a repository as last read this pass; empty when
-    /// the driver could not be asked.
+    /// the driver could not be asked (`learn_workspaces` says which).
     pub(in crate::engine) fn workspaces_of(&self, repo: &RepoConfig) -> &[WorkspaceInfo] {
         self.workspaces
             .get(&repo.name)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    /// Forget this pass's read of a repository's panes: the driver changed
+    /// what is in a workspace since (a handover ended one harness and
+    /// started another), and what the pass asks next has to see the
+    /// harness that is there now.
+    pub(in crate::engine) fn forget_workspaces(&mut self, repo: &RepoConfig) {
+        self.workspaces_read.remove(&repo.name);
     }
 
     /// The harness the pane of an item's session is running, from the

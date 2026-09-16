@@ -612,7 +612,7 @@ impl Driver {
         match self {
             Driver::Herdr(d) => d.ps().await,
             #[cfg(test)]
-            Driver::Stub(d) => Ok(d.ps()),
+            Driver::Stub(d) => d.ps(),
         }
     }
 
@@ -821,9 +821,15 @@ pub struct StubState {
     pub deliver_error: Option<String>,
     /// The harness each worktree's pane is running: what `ps` reports as
     /// `AgentInfo.agent_type`, and so what ssf reads as the session's own
-    /// harness (#349). A worktree that is not on this map runs whatever its
-    /// record says, the way a driver that reports no agent type leaves it.
+    /// harness (#349). Kept as a real driver's answer is: a `start` or a
+    /// relaunch puts its harness here and a `stop` takes the pane's away,
+    /// so what is read is whatever was started there last. A worktree
+    /// nothing was started in is not on this map, which is what a pane
+    /// with no agent (or one the driver does not recognise) reports.
     pub harnesses: std::collections::BTreeMap<String, String>,
+    /// When set, the next `ps` fails with this message: a driver that
+    /// cannot say what is in its workspaces at all.
+    pub ps_error: Option<String>,
     handles: u32,
 }
 
@@ -840,11 +846,16 @@ impl StubDriver {
         f(&mut self.inner.lock().unwrap())
     }
 
-    /// A workspace with a live, idle agent showing `screen`.
+    /// A workspace with a live, idle agent showing `screen`. The pane is a
+    /// fresh one: whatever a `start` in this workspace left behind is not
+    /// in it, so a test that wants the driver to report a harness for it
+    /// says so with `runs` (otherwise the driver reports none, as it does
+    /// for an agent it does not recognise).
     pub fn seed(&self, worktree_id: &str, handle: &str, screen: &[&str]) {
         self.with(|s| {
             s.worktrees.insert(worktree_id.into());
             s.live.insert(worktree_id.into(), handle.into());
+            s.harnesses.remove(worktree_id);
             s.screens.insert(
                 handle.into(),
                 screen.iter().map(|l| l.to_string()).collect(),
@@ -856,9 +867,11 @@ impl StubDriver {
         self.with(|s| std::mem::take(&mut s.log))
     }
 
-    /// The harness the pane of `worktree_id` is running, as the driver would
-    /// report it: an item whose record names another one is a session left
-    /// behind by a config edit (#349).
+    /// The harness the pane of `worktree_id` is running, as a driver would
+    /// report it for a pane something was started in before the test:
+    /// `start` and a relaunch set this too, so this is for the pane whose
+    /// session ssf did not start itself (one left behind by a config edit,
+    /// #349).
     pub fn runs(&self, worktree_id: &str, harness: &str) {
         self.with(|s| {
             s.harnesses.insert(worktree_id.into(), harness.into());
@@ -912,6 +925,9 @@ impl StubDriver {
                 bail!("{why}");
             }
             let h = Self::new_handle(s, worktree_id);
+            // What is in the pane from here: the harness that was started,
+            // as a driver would report it.
+            s.harnesses.insert(worktree_id.into(), harness.into());
             s.prompts.push(text.to_string());
             s.launches.push(format!("{harness}:{command}"));
             s.log
@@ -927,9 +943,12 @@ impl StubDriver {
         self.with(|s| s.worktrees.contains(id))
     }
 
-    fn ps(&self) -> Vec<WorkspaceInfo> {
+    fn ps(&self) -> Result<Vec<WorkspaceInfo>> {
         self.with(|s| {
-            s.worktrees
+            if let Some(why) = s.ps_error.take() {
+                bail!("{why}");
+            }
+            Ok(s.worktrees
                 .iter()
                 .map(|id| WorkspaceInfo {
                     worktree_id: id.clone(),
@@ -951,7 +970,7 @@ impl StubDriver {
                         .collect(),
                     ..Default::default()
                 })
-                .collect()
+                .collect())
         })
     }
 
@@ -975,6 +994,9 @@ impl StubDriver {
         self.with(|s| {
             s.live.remove(worktree_id);
             s.working.remove(worktree_id);
+            // The pane has no agent in it any more: a driver reports none,
+            // and nothing says what harness was ever there.
+            s.harnesses.remove(worktree_id);
             s.log.push(format!("stop:{handle}"));
         });
     }
@@ -1013,6 +1035,10 @@ impl StubDriver {
                 s.launches
                     .push(format!("{}:{}", relaunch.harness, relaunch.command));
             }
+            // A fresh harness in the pane is the harness the pane runs; a
+            // resumed one is the same harness as before.
+            s.harnesses
+                .insert(worktree_id.into(), relaunch.harness.into());
             let h = Self::new_handle(s, worktree_id);
             s.log.push(format!("relaunch:{worktree_id}:{resumed}"));
             let body = match relaunch.text {

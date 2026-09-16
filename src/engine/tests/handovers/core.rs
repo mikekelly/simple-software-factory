@@ -699,6 +699,49 @@ async fn a_handover_onto_the_configured_stack_moves_a_session_left_behind() {
     );
 }
 
+/// A driver that cannot say what is in the workspace has no answer to
+/// compare the requested stack against, and the item's record would answer
+/// with the stack being asked for: the command waits for a driver that can
+/// answer rather than refusing the remedy as something the item is already
+/// on (#349).
+#[tokio::test]
+async fn a_handover_waits_for_a_driver_that_can_say_what_is_running() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = RepoConfig {
+        harness: "omp".into(),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    d.runs("w5", "codex");
+    d.with(|s| s.ps_error = Some("herdr is not answering".into()));
+    let err = e
+        .handover("o/r#5", "omp", None, None, Some("carry on"), None)
+        .await
+        .expect_err("the driver cannot say what is running");
+    assert!(
+        err.to_string()
+            .contains("cannot say which harness is running"),
+        "{err:#}"
+    );
+    assert!(
+        e.entry(&r, 5).handover.is_none(),
+        "nothing was recorded to be carried out on a guess"
+    );
+    // Once it answers, the same command goes through.
+    e.handover("o/r#5", "omp", None, None, Some("carry on"), None)
+        .await
+        .unwrap();
+    e.run_handovers(&r).await;
+    let posts = stub.post_bodies();
+    let handed = posts
+        .iter()
+        .find(|(_, b)| b.contains("event=handed-over"))
+        .expect("the handover is posted");
+    assert!(handed.1.contains("\nfrom: Codex\n"), "{}", handed.1);
+}
+
 #[test]
 fn a_handover_retires_the_workspace_s_last_conversation_too() {
     let id = |s: &str| Some(s.to_string());

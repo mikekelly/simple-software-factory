@@ -534,6 +534,89 @@ async fn the_login_check_reads_the_harness_on_the_screen() {
     );
 }
 
+/// The pass reads the panes once, and a handover in the same pass replaces
+/// the harness in one of them: the login check that follows has to judge the
+/// screen with the harness that is there now, not the one the read at the
+/// top of the pass still has. Reading it as the od harness means a sign-in
+/// screen the new harness shows is missed and the item's activity goes into
+/// a pane that cannot take it.
+#[tokio::test]
+async fn a_handover_this_pass_leaves_the_login_check_on_the_new_harness() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = repo();
+    // The pane runs Claude Code when the pass begins.
+    d.runs("w5", "claude");
+    e.handover("o/r#5", "pi", None, None, Some("half done"), None)
+        .await
+        .unwrap();
+    e.run_handovers(&r).await;
+    assert_eq!(
+        e.entry(&r, 5)
+            .overrides
+            .as_ref()
+            .map(|o| o.harness.as_str()),
+        Some("pi")
+    );
+    let started = d.log().iter().any(|l| l.starts_with("start:"));
+    assert!(started, "{:?}", d.log());
+    // The new harness comes up at its own sign-in screen just after the
+    // handover's own check of it, on the pane the driver now reports for
+    // this workspace.
+    let handle = e.entry(&r, 5).terminal_handle.clone().expect("started");
+    d.seed("w5", &handle, PI_LOGIN_SCREEN);
+    e.check_logins(&r).await;
+    let b = e.entry(&r, 5).blocked.clone().expect("blocked");
+    assert_eq!(
+        b.harness, "pi",
+        "the harness the pane was started with, not the one it was on"
+    );
+    assert_eq!(b.reason, "login");
+    assert!(
+        d.log().iter().all(|l| !l.starts_with("deliver:")),
+        "{:?}",
+        d.log()
+    );
+}
+
+/// A driver that cannot say what is in its workspaces answers nothing about
+/// them, and the login check is the one caller that must not guess: without
+/// the panes it cannot tell an idle harness from one mid-work, and a working
+/// agent's screen (which may quote anything) would be read as a sign-in
+/// prompt.
+#[tokio::test]
+async fn the_login_check_waits_when_the_driver_cannot_say() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = blocked_setup(&stub, LOGIN_SCREEN);
+    // The agent is mid-work: it is not at a sign-in prompt whatever its
+    // screen shows.
+    d.with(|s| {
+        s.working.insert("w5".into());
+        s.ps_error = Some("herdr is not answering".into());
+    });
+    probe_returning(&mut e, LoginState::SignedOut, Some("cred-old"));
+    e.check_logins(&repo()).await;
+    assert!(
+        e.entry(&repo(), 5).blocked.is_none(),
+        "{:?}",
+        e.entry(&repo(), 5).blocked
+    );
+    assert!(stub.posts().is_empty());
+    // The next pass, with the driver answering again, reads it.
+    d.with(|s| s.working.remove("w5"));
+    e.forget_workspaces(&repo());
+    e.tick_repo(&repo()).await.unwrap();
+    assert_eq!(
+        e.entry(&repo(), 5)
+            .blocked
+            .as_ref()
+            .map(|b| b.harness.as_str()),
+        Some("claude")
+    );
+}
+
 #[tokio::test]
 async fn changed_block_reason_after_relaunch_is_reported_again() {
     let _sandbox = crate::config::test_support::sandbox();

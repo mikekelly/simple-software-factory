@@ -241,8 +241,17 @@ impl Engine {
         }
         // The workspaces, once for the pass: which panes are mid-work (a
         // working harness is not at a login prompt, and its screen may
-        // quote anything) and what harness each one is running.
-        self.learn_workspaces(repo).await;
+        // quote anything) and what harness each one is running. Without
+        // them nothing here is safe -- every screen would be read, a
+        // working agent's included -- so a driver that cannot be asked
+        // means this pass's check waits for one that can.
+        if !self.learn_workspaces(repo).await {
+            debug!(
+                repo = repo.name,
+                "login check skipped: the driver's workspaces could not be read"
+            );
+            return;
+        }
         for number in candidates {
             let st = self.entry(repo, number).clone();
             let Some(wt) = st.worktree_id.clone() else {
