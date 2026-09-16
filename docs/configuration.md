@@ -393,10 +393,12 @@ twice.
 ### Per-item overrides
 
 `ssf handover` (see [Handover](sessions.md#handover)) moves one item to
-another harness, model or effort level without touching `config.toml`.
-What it sets is a per-item override, kept on the item in `state.json`
-next to the rest of its record, and it wins over the `[[repo]]` the item
-belongs to:
+another harness, model or effort level without touching `config.toml`, and
+`ssf assign` (see [Assigning a stack before there is a
+session](sessions.md#assigning-a-stack-before-there-is-a-session)) starts an
+item's *first* session on one. What they set is a per-item override, kept
+on the item in `state.json` next to the rest of its record, and it wins
+over the `[[repo]]` the item belongs to:
 
 - **The same harness the repository uses**: the repository's `command`
   still starts the agent, and the override's model and effort replace the
@@ -420,9 +422,14 @@ state file, so it survives daemon and machine restarts, and an item bound
 to another session's workspace follows that session's override. `ssf
 status` and `ssf peers` show the overridden harness, model and effort on
 the item's line (and `overrides` in `--json`), together with a handover
-that has not been carried out yet. Releasing the workspace or purging the
-item clears the override, and the item comes back on the repository's own
-settings.
+that has not been carried out yet, worded by which command wrote them:
+`handed over to pi` after `ssf handover`, `harness pi` after `ssf
+assign` (which leaves no other mark on the record, so a handover is what
+the status commands read the difference off). Releasing the workspace or
+purging the item clears the override, and the item comes back on the
+repository's own settings. `ssf assign` writes nothing at all when the
+stack it is given is the one the item would run anyway: an override
+nobody needs would pin the item out of `ssf repo set`.
 
 ## Codex native delivery
 

@@ -80,6 +80,37 @@ impl Engine {
         repo.with_overrides(self.overrides_of(repo, number).as_ref())
     }
 
+    /// The stack a command is naming, checked the way both commands that
+    /// write one need it: a harness ssf knows, a model and effort that
+    /// harness takes, installed where the daemon runs, and signed in as of
+    /// now. The login is asked afresh rather than off the pass's memo: an
+    /// operator who signs the harness in and runs the command again must
+    /// get the new answer, not the one from up to a poll interval ago.
+    pub(in crate::engine) async fn check_stack(
+        &mut self,
+        harness: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        if !crate::agents::is_known(harness) {
+            anyhow::bail!("{harness} is not a harness ssf knows (see `ssf agents`)");
+        }
+        crate::models::validate(harness, model, effort)?;
+        let name = login::display_name(harness);
+        if !(self.installed)(harness) {
+            anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");
+        }
+        self.probes.remove(harness);
+        let probe = self.probe_harness(harness).await;
+        if probe.state == LoginState::SignedOut {
+            anyhow::bail!(
+                "{name} is not signed in here; {}",
+                login::how_to_sign_in(harness)
+            );
+        }
+        Ok(())
+    }
+
     /// The overrides that govern an item: its own, or, for an item bound
     /// to another item's session, that session's (they share the
     /// workspace, so they share the harness in it).

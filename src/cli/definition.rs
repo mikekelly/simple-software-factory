@@ -224,6 +224,34 @@ pub(super) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Assign the bot to an item and start its first session on a chosen
+    /// harness, model or effort: the assignment lands on GitHub and the
+    /// item's launch overrides are written in the same request, so the
+    /// session that onboards it comes up on that stack rather than the
+    /// repository's. The repository's own stack is not written as an
+    /// override, and the stack stays with the item until its workspace is
+    /// released. An item that already has a session is refused: hand that
+    /// one over with `ssf handover`.
+    Assign {
+        /// Item number on this session's repository, or owner/repo#N.
+        item: String,
+        /// Harness the first session runs (`ssf agents` lists the ids).
+        #[arg(long, value_name = "ID")]
+        harness: String,
+        /// Model for the session (`ssf models <harness>` lists them); the
+        /// harness's own default when not given.
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        /// Effort level for the session; the harness's own default when
+        /// not given.
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
+        /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
+        #[arg(long = "as", value_name = "SESSION")]
+        r#as: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove the workspaces of closed items whose agent is gone: each is
     /// listed with its state, the clean-and-pushed ones are removed, the
     /// rest are left in place. Workspaces of open items, of sessions that

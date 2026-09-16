@@ -156,7 +156,10 @@ pub struct IssueState {
     /// handed the item away, so the moments before a launch are no longer
     /// a safe place to look for the new session's own (see
     /// `Engine::capture_sessions`). Cleared when the workspace is
-    /// released or the item purged.
+    /// released or the item purged. It is also what tells the two writers
+    /// of [`IssueState::overrides`] apart, and a handover is the only one
+    /// that sets it: an item whose overrides carry this was handed over,
+    /// one whose do not was assigned (`ssf assign`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handed_over_at: Option<String>,
     /// When the harness was last launched, to find its session file.
@@ -278,9 +281,11 @@ pub struct IssueState {
     pub subscriber_only: bool,
     /// Per-item launch overrides: the harness, model and effort this
     /// item's session runs with, whatever the repository is configured
-    /// with. Written by a handover (`ssf handover`), used by every later
-    /// launch, resume and re-creation, cleared when the workspace is
-    /// released or the item purged.
+    /// with. Written by a handover (`ssf handover`) or by an assignment
+    /// of an item that had no session yet (`ssf assign`), used by every
+    /// later launch, resume and re-creation, cleared when the workspace
+    /// is released or the item purged. Which of the two wrote it is not
+    /// recorded here: [`IssueState::handed_over_at`] tells them apart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Overrides>,
     /// A handover the daemon has accepted and not carried out yet: the
@@ -314,9 +319,10 @@ pub struct ConflictNotice {
 }
 
 /// What an item's session runs with instead of the repository's own
-/// settings (`ssf handover`). `model` and `effort` unset mean the
-/// harness's own defaults, not the repository's, when the harness
-/// differs; see `Engine::effective`.
+/// settings. Written by `ssf handover` (a new session for an item that
+/// has one) and by `ssf assign` (the first session of an item that has
+/// none); `model` and `effort` unset mean the harness's own defaults,
+/// not the repository's, when the harness differs; see `Engine::effective`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Overrides {
     pub harness: String,

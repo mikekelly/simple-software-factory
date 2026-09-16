@@ -79,9 +79,9 @@ const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
 /// VM from the host).
-pub const FORWARDED: [&str; 17] = [
-    "status", "peers", "sub", "unsub", "subs", "tell", "release", "handover", "purge", "doctor",
-    "run", "repo", "config", "auth", "token", "agents", "models",
+pub const FORWARDED: [&str; 18] = [
+    "status", "peers", "sub", "unsub", "subs", "tell", "release", "handover", "assign", "purge",
+    "doctor", "run", "repo", "config", "auth", "token", "agents", "models",
 ];
 
 mod firecracker;

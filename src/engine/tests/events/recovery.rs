@@ -187,6 +187,20 @@ fn ssf_texts_never_look_like_a_login_prompt() {
                 10,
             ),
             crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, None, 10),
+            crate::assign_recorded_text(
+                "o/r#7",
+                "Fix it",
+                "Pi",
+                Some("openai/gpt-6"),
+                Some("high"),
+                None,
+                true,
+                true,
+                10,
+            ),
+            crate::assign_recorded_text(
+                "o/r#7", "Fix it", &name, None, None, None, false, false, 10,
+            ),
             crate::handover_recorded_text(
                 "o/r#5",
                 "Fix it",

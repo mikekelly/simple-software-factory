@@ -43,7 +43,8 @@ pub struct Session {
     /// `created` (the bot's own item).
     pub triggers: Vec<String>,
     /// The harness this item's session runs, the per-item overrides of a
-    /// handover applied (`overrides` says whether they are in play).
+    /// handover or an assignment applied (`overrides` says whether they
+    /// are in play).
     pub harness: String,
     /// Model and effort the session runs with, overrides applied; `None`
     /// is the harness's own default.
@@ -51,10 +52,15 @@ pub struct Session {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// Set when a handover moved this session off the repository's
-    /// configured harness, model or effort.
+    /// Set when a handover or an assignment moved this session off the
+    /// repository's configured harness, model or effort.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Overrides>,
+    /// `overrides` were written by `ssf assign` rather than by a
+    /// handover: the two write the same thing, and a handover is the one
+    /// that also stamps the item (`IssueState::handed_over_at`). This is
+    /// what the status commands word them by.
+    pub assigned_stack: bool,
     /// A handover the daemon has accepted and not carried out yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handover: Option<HandoverView>,
@@ -487,16 +493,24 @@ pub fn sessions_with(
         for item in rs.issues.values() {
             let ws = workspaces.and_then(|list| find_workspace(list, item));
             // An item bound to another session shares its workspace, and
-            // so the harness a handover put in it. The binding is followed
-            // to its end, as the daemon follows it: an item bound to a
-            // bound item is the first one's session's too.
+            // so the harness a handover or an assignment put in it. The
+            // binding is followed to its end, as the daemon follows it:
+            // an item bound to a bound item is the first one's session's
+            // too.
             let owner = crate::state::owner_in(&rs.issues, item.number);
-            let overrides = rs
-                .issues
-                .get(&owner)
-                .or(Some(item))
-                .and_then(|o| o.overrides.as_ref());
-            out.push(join(repo, item, owner, overrides, ws, workspaces.is_some()));
+            let source = rs.issues.get(&owner).unwrap_or(item);
+            // Which of the two writers put the stack there: a handover
+            // stamps the item, an assignment does not.
+            let assigned = source.overrides.is_some() && source.handed_over_at.is_none();
+            out.push(join(
+                repo,
+                item,
+                owner,
+                source.overrides.as_ref(),
+                assigned,
+                ws,
+                workspaces.is_some(),
+            ));
         }
     }
     out
@@ -560,12 +574,14 @@ fn workspace_state(
 }
 
 /// `owner` is the item whose session acts on this one (itself, unless it
-/// is bound), and `overrides` the ones that govern it: the owner's.
+/// is bound), `overrides` the ones that govern it (the owner's), and
+/// `assigned` whether those came from `ssf assign` rather than a handover.
 fn join(
     repo: &RepoConfig,
     item: &IssueState,
     owner: u64,
     overrides: Option<&Overrides>,
+    assigned: bool,
     ws: Option<&WorkspaceInfo>,
     driver_available: bool,
 ) -> Session {
@@ -610,6 +626,7 @@ fn join(
         model: eff.model.clone(),
         effort: eff.effort.clone(),
         overrides: overrides.cloned(),
+        assigned_stack: assigned,
         handover: item.handover.as_ref().map(HandoverView::of),
         handover_note: item.handover_note.as_ref().map(HandoverNoteView::of),
         owner: if item.subscriber_only {
@@ -729,7 +746,11 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             facts.push(format!("handed off by {p}"));
         }
         if let Some(o) = &s.overrides {
-            facts.push(format!("handed over to {}", o.harness));
+            facts.push(if s.assigned_stack {
+                format!("harness {}", o.harness)
+            } else {
+                format!("handed over to {}", o.harness)
+            });
             if let Some(m) = &o.model {
                 facts.push(format!("model {m}"));
             }
@@ -883,7 +904,14 @@ pub fn render_status(snap: &Snapshot) -> String {
                 if let Some(e) = &o.effort {
                     what.push_str(&format!(" effort={e}"));
                 }
-                out.push_str(&format!("          handed over: {what}\n"));
+                out.push_str(&format!(
+                    "          {}: {what}\n",
+                    if s.assigned_stack {
+                        "assigned"
+                    } else {
+                        "handed over"
+                    }
+                ));
             }
             if let Some(h) = &s.handover {
                 out.push_str(&format!("          handover pending: {}\n", h.describe()));
