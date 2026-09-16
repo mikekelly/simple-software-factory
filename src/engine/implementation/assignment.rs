@@ -45,22 +45,15 @@ pass has removed the workspace"
         // An item bound to another item's session runs that session's
         // stack (`overrides_of` reads the owner's record), so overrides
         // written here would be inert.
-        let bound = |owner: u64| {
-            let owner = session_id(&repo.name, owner);
-            anyhow::anyhow!(
-                "{id} is worked by {owner} and shares its workspace, so it runs that session's \
-stack; hand that one over instead: `ssf handover {owner} --harness {harness}`"
-            )
-        };
         let recorded = self.owner_of(&repo, number);
         if recorded != number {
-            return Err(bound(recorded));
+            anyhow::bail!("{}", self.bound_refusal(&repo, &id, recorded, harness));
         }
         // A retired item is not a seat: nothing is running, and it is
         // exactly where a first session on a chosen stack comes from --
-        // the assignment brings the item back, and it reuses the workspace
-        // it kept, or the one its branch is re-created from. A session
-        // that is there is `ssf handover`'s to move, and no login probe is
+        // the assignment brings it back, and it reuses the workspace it
+        // kept, or the one its branch is re-created from. A session that
+        // is there is `ssf handover`'s to move, and no login probe is
         // worth running for an item this refuses.
         if st
             .as_ref()
@@ -78,7 +71,7 @@ session to another stack"
         // it onboards (an origin tag naming another item, or another
         // session's branch), which its record does not have until then.
         if let Some(o) = self.bound_in_github(&repo, number, &issue).await? {
-            return Err(bound(o));
+            anyhow::bail!("{}", self.bound_refusal(&repo, &id, o, harness));
         }
         let overrides = Overrides {
             harness: harness.to_string(),
@@ -119,8 +112,45 @@ session to another stack"
                 let e = self.entry(&repo, number);
                 e.agent_session_id = None;
                 retire(e, &retired);
+                // Items bound to this session mirror its conversation id,
+                // so the retired one goes from them too
+                // (`capture_sessions` writes the new one there once there
+                // is one).
+                let bound: Vec<u64> = self
+                    .state
+                    .repo_mut(&repo.name)
+                    .issues
+                    .values()
+                    .filter(|s| s.shares_workspace_of == Some(number))
+                    .map(|s| s.number)
+                    .collect();
+                for n in bound {
+                    let e = self.entry(&repo, n);
+                    e.agent_session_id = None;
+                    retire(e, &retired);
+                }
             }
-            self.entry(&repo, number).overrides = Some(overrides);
+            let e = self.entry(&repo, number);
+            e.overrides = Some(overrides);
+            // Recorded so a reader can say which command put the item on
+            // this stack; cleared by the next handover. `handed_over_at`
+            // is left where it is: it bounds the transcript capture
+            // window, and the workspace still holds the transcript a
+            // handover left.
+            e.assigned_at = Some(now_iso());
+            // The record may be new: the CLI reads the title off the item
+            // it just fetched, and `ssf status` would otherwise show the
+            // item as an untitled row until the pass onboards it.
+            if e.title.is_empty() {
+                e.title = issue.title.clone();
+                e.html_url = issue.html_url.clone();
+                e.kind = Some(if issue.is_pull_request() {
+                    "pull_request".into()
+                } else {
+                    "issue".into()
+                });
+                e.github_state = Some(issue.state.clone());
+            }
         }
         info!(
             session = id,
@@ -149,8 +179,34 @@ session to another stack"
             "to": launch(&to),
             "assigned": assigned,
             "overrides_written": pin,
+            // A closed item is assigned on GitHub like any other, but no
+            // pass onboards it: the stack waits on the item until it is
+            // open again, and the CLI says so.
+            "open": issue.state == "open",
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
         }))
+    }
+
+    /// Why an item that is not its own session's cannot take a stack: the
+    /// overrides would be inert, and what the caller has to move is the
+    /// session the item is worked by. The command named is the one that
+    /// fits what that session is doing -- `ssf handover` if it is running,
+    /// `ssf assign` if it has no session either (which the owner being
+    /// retired is).
+    fn bound_refusal(&self, repo: &RepoConfig, id: &str, owner: u64, harness: &str) -> String {
+        let owner_id = session_id(&repo.name, owner);
+        let running = self
+            .peek(repo, owner)
+            .is_some_and(|s| s.active && s.worktree_id.is_some());
+        let command = if running {
+            format!("`ssf handover {owner_id} --harness {harness}`")
+        } else {
+            format!("`ssf assign {owner_id} --harness {harness}`")
+        };
+        format!(
+            "{id} is worked by {owner_id} and shares its workspace, so it runs that session's \
+stack; {command} moves it, and the item follows"
+        )
     }
 
     /// The session `issue` belongs to when it is not its own, read off the

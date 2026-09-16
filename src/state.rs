@@ -156,10 +156,10 @@ pub struct IssueState {
     /// handed the item away, so the moments before a launch are no longer
     /// a safe place to look for the new session's own (see
     /// `Engine::capture_sessions`). Cleared when the workspace is
-    /// released or the item purged. It is also what tells the two writers
-    /// of [`IssueState::overrides`] apart, and a handover is the only one
-    /// that sets it: an item whose overrides carry this was handed over,
-    /// one whose do not was assigned (`ssf assign`).
+    /// released or the item purged. A handover also clears
+    /// [`IssueState::assigned_at`], the stamp an assignment leaves on the
+    /// overrides, so the two commands can be told apart by which stamp is
+    /// the newer writer's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handed_over_at: Option<String>,
     /// When the harness was last launched, to find its session file.
@@ -284,10 +284,20 @@ pub struct IssueState {
     /// with. Written by a handover (`ssf handover`) or by an assignment
     /// of an item that had no session yet (`ssf assign`), used by every
     /// later launch, resume and re-creation, cleared when the workspace
-    /// is released or the item purged. Which of the two wrote it is not
-    /// recorded here: [`IssueState::handed_over_at`] tells them apart.
+    /// is released or the item purged. Which of the two wrote them is
+    /// recorded next to them: a handover stamps
+    /// [`IssueState::handed_over_at`], an assignment
+    /// [`IssueState::assigned_at`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Overrides>,
+    /// When `ssf assign` wrote this item's overrides (`overrides`). It is
+    /// what tells an assignment's overrides from a handover's, so `ssf
+    /// status` and `ssf peers` can word the stack by the command that put
+    /// the item on it; a handover clears it when it replaces the
+    /// overrides. Cleared with the overrides when the workspace is
+    /// released or the item purged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assigned_at: Option<String>,
     /// A handover the daemon has accepted and not carried out yet: the
     /// next pass ends this session and starts the new one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

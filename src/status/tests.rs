@@ -435,6 +435,17 @@ fn an_assigned_session_shows_the_stack_it_was_given() {
         model: Some("openai/gpt-6".into()),
         effort: Some("high".into()),
     });
+    one.assigned_at = Some("2026-09-07T09:00:00Z".into());
+    // Overrides an assignment wrote, on an item that was handed over
+    // before them: the assignment's stamp is the one that counts.
+    let mut three = item(3, Some("r1::/w/three"));
+    three.overrides = Some(Overrides {
+        harness: "codex".into(),
+        model: None,
+        effort: None,
+    });
+    three.handed_over_at = Some("2026-09-07T08:00:00Z".into());
+    three.assigned_at = Some("2026-09-07T09:00:00Z".into());
     let mut two = item(2, Some("r1::/w/two"));
     two.overrides = Some(Overrides {
         harness: "pi".into(),
@@ -442,14 +453,16 @@ fn an_assigned_session_shows_the_stack_it_was_given() {
         effort: None,
     });
     two.handed_over_at = Some("2026-09-07T09:00:00Z".into());
-    let st = state_with(vec![one, two]);
+    let st = state_with(vec![one, two, three]);
     let s = sessions(&cfg(), &st, None);
-    assert!(s[0].assigned_stack, "assigned: nothing stamped the item");
+    assert!(s[0].assigned_stack, "assigned: its own stamp");
     assert!(!s[1].assigned_stack, "the handover stamped it");
+    assert!(s[2].assigned_stack, "the assignment wrote these last");
     let table = render_peers(&s, None);
     assert!(table.contains("harness pi"), "{table}");
     assert!(table.contains("model openai/gpt-6"), "{table}");
     assert!(table.contains("handed over to pi"), "{table}");
+    assert!(table.contains("harness codex"), "{table}");
     let snap = Snapshot {
         cfg: cfg(),
         state: st,
@@ -463,6 +476,7 @@ fn an_assigned_session_shows_the_stack_it_was_given() {
         "{text}"
     );
     assert!(text.contains("handed over: harness=pi\n"), "{text}");
+    assert!(text.contains("assigned: harness=codex\n"), "{text}");
 }
 
 #[test]

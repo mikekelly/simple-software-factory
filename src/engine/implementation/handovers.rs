@@ -16,7 +16,7 @@ impl Engine {
         if !st.active || st.worktree_id.is_none() {
             anyhow::bail!(
                 "{id}: the item has no running session; nothing to hand over (start its first \
-session with `ssf assign {id}` instead)"
+session with `ssf assign {id} --harness {harness}` instead)"
             );
         }
         let harness = harness.trim();
@@ -311,6 +311,10 @@ session with `ssf assign {id}` instead)"
             e.launched_at = None;
             e.handed_over_at = Some(now_iso());
             e.overrides = Some(h.overrides());
+            // Whatever wrote the overrides before, the handover has now:
+            // the item reads as handed over, not as assigned (`ssf
+            // status`, `ssf peers`).
+            e.assigned_at = None;
             e.handover = None;
             // What the outgoing agent left is kept on the item until a
             // session has read it: the start below can fail, or come up

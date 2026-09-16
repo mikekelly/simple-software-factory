@@ -235,6 +235,55 @@ async fn a_seat_on_the_item_is_refused_with_the_command_that_moves_it() {
     assert!(stub.assignments().is_empty(), "nothing was assigned");
 }
 
+/// A bound item's owner may have no session either (it retired), and then
+/// `ssf handover` on it is refused for having nothing to hand over: the
+/// refusal has to name the command that does work.
+#[tokio::test]
+async fn a_bound_item_whose_owner_has_no_session_is_told_to_assign_it() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    // The owner is retired: no workspace, nothing running.
+    seeded(&mut e, 5, Some("bot/issue-5"), false);
+    seeded(&mut e, 6, Some("bot/issue-6"), false);
+    e.entry(&r, 6).shares_workspace_of = Some(5);
+    stub.set_issue(5, unassigned_item(5, "alice", "u1"));
+    stub.set_issue(6, unassigned_item(6, "alice", "u1"));
+
+    let resp = e
+        .handle_request(Request::Assign {
+            item: "o/r#6".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            by: None,
+        })
+        .await;
+    assert!(!resp.ok);
+    let why = resp.error.unwrap_or_default();
+    assert!(why.contains("is worked by o/r#5"), "{why}");
+    assert!(
+        why.contains("ssf assign o/r#5 --harness pi"),
+        "the owner has no session, so handover would refuse: {why}"
+    );
+    // Which is what actually moves the bound item onto the stack: the
+    // owner takes it, and the bound item follows the owner's overrides.
+    let ok = e
+        .handle_request(Request::Assign {
+            item: "o/r#5".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            by: None,
+        })
+        .await;
+    assert!(ok.ok, "{:?}", ok.error);
+    assert_eq!(e.effective(&r, 6).harness, "pi", "the bound item follows");
+    assert!(e.entry(&r, 6).overrides.is_none(), "written on the owner");
+}
+
 /// A pull request the daemon would bind to another session's branch is a
 /// refusal too, even though its own record says nothing of the sort yet.
 #[tokio::test]
@@ -385,6 +434,166 @@ async fn a_stack_that_cannot_be_run_is_refused_before_anything_is_written() {
     assert!(e.peek(&r, 7).is_none(), "nothing was written");
 }
 
+/// Which command put the item on its stack is recorded rather than
+/// inferred, so an assignment that replaces a handover's overrides is not
+/// still read as a handover (and the reverse).
+#[tokio::test]
+async fn the_stack_records_which_command_wrote_it() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = repo();
+
+    // Item 5 is handed over to codex, and then retires with its workspace
+    // kept: overrides and the handover's stamp are both still on it.
+    e.handover("o/r#5", "codex", None, None, Some("half done"), None)
+        .await
+        .unwrap();
+    e.run_handovers(&r).await;
+    let st = e.entry(&r, 5).clone();
+    assert_eq!(
+        st.overrides.as_ref().map(|o| o.harness.as_str()),
+        Some("codex")
+    );
+    assert!(st.handed_over_at.is_some());
+    assert!(st.assigned_at.is_none());
+    e.entry(&r, 5).active = false;
+    e.entry(&r, 5).terminal_handle = None;
+
+    // `ssf assign` replaces them: the item is on pi because it was
+    // assigned, which `assigned_at` says. `handed_over_at` is left where
+    // it is: it is what bounds the transcript capture window, and the
+    // workspace still holds the transcript the handover left.
+    let ok = e
+        .handle_request(Request::Assign {
+            item: "o/r#5".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            by: None,
+        })
+        .await;
+    assert!(ok.ok, "{:?}", ok.error);
+    let st = e.entry(&r, 5).clone();
+    assert_eq!(
+        st.overrides.as_ref().map(|o| o.harness.as_str()),
+        Some("pi")
+    );
+    assert!(st.assigned_at.is_some(), "assigned, which is the point");
+    assert!(
+        st.handed_over_at.is_some(),
+        "the capture window is untouched"
+    );
+
+    // The item comes back (a human reassigns it, or the pass sees new
+    // activity), and a handover to codex takes the record over again:
+    // the stamp follows the last writer.
+    e.entry(&r, 5).active = true;
+    let st = e.entry(&r, 5).clone();
+    d.seed(
+        &format!("w{}", st.number),
+        &format!("t{}", st.number),
+        READY_SCREEN,
+    );
+    e.entry(&r, 5).terminal_handle = Some("t5".into());
+    e.handover("o/r#5", "codex", None, None, Some("and back"), None)
+        .await
+        .unwrap();
+    e.run_handovers(&r).await;
+    let st = e.entry(&r, 5).clone();
+    assert_eq!(
+        st.overrides.as_ref().map(|o| o.harness.as_str()),
+        Some("codex")
+    );
+    assert!(st.handed_over_at.is_some());
+    assert!(st.assigned_at.is_none(), "the handover is the last writer");
+}
+
+/// The item a closed issue is assigned on GitHub starts nothing: no pass
+/// onboards a closed item (`state=open` listings), so the answer says the
+/// stack waits rather than promising a session within the poll interval.
+#[tokio::test]
+async fn an_assignment_on_a_closed_item_says_no_session_starts_yet() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    let mut closed = unassigned_item(7, "alice", "u1");
+    closed["state"] = json!("closed");
+    stub.set_issue(7, closed);
+
+    let resp = e
+        .handle_request(Request::Assign {
+            item: "o/r#7".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            by: None,
+        })
+        .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.data["open"], false);
+    assert_eq!(resp.data["assigned"], true);
+    assert_eq!(stub.assignments().len(), 1, "still assigned on GitHub");
+    assert_eq!(
+        e.entry(&r, 7)
+            .overrides
+            .as_ref()
+            .map(|o| o.harness.as_str()),
+        Some("pi"),
+        "and the stack is ready on the item"
+    );
+    // The record the request creates carries what the item is, so `ssf
+    // status` does not show an untitled row before the next pass: not
+    // that a closed item ever gets one.
+    let st = e.entry(&r, 7).clone();
+    assert_eq!(st.title, "t");
+    assert_eq!(st.kind.as_deref(), Some("issue"));
+    assert_eq!(st.github_state.as_deref(), Some("closed"));
+}
+
+/// An item bound to the session being re-pinned mirrors its conversation
+/// id, so the retired one goes from that record too: `sf status` would
+/// otherwise show a bound row holding a conversation of the harness the
+/// item left.
+#[tokio::test]
+async fn reassigning_a_harness_retires_the_conversation_bound_items_mirror() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    // #5 retired with its workspace kept and a conversation on it; #6 is
+    // bound to it and mirrors that conversation.
+    seeded(&mut e, 5, Some("bot/issue-5"), false);
+    e.entry(&r, 5).worktree_id = Some("w5".into());
+    e.entry(&r, 5).worktree_path = Some("/w/5".into());
+    e.entry(&r, 5).agent_session_id = Some("sess-5".into());
+    seeded(&mut e, 6, Some("bot/issue-6"), false);
+    e.entry(&r, 6).shares_workspace_of = Some(5);
+    e.entry(&r, 6).agent_session_id = Some("sess-5".into());
+    stub.set_issue(5, unassigned_item(5, "alice", "u1"));
+
+    let resp = e
+        .handle_request(Request::Assign {
+            item: "o/r#5".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            by: None,
+        })
+        .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    let bound = e.entry(&r, 6).clone();
+    assert!(bound.agent_session_id.is_none(), "the mirror is cleared");
+    assert!(
+        bound.retired_session_ids.contains(&"sess-5".to_string()),
+        "and the id is never captured again: {:?}",
+        bound.retired_session_ids
+    );
+}
+
 /// A retired item whose workspace is kept comes back on the assigned
 /// stack, and the conversation the old harness left is not resumed by the
 /// new one.
@@ -430,9 +639,11 @@ async fn a_reassigned_item_drops_the_conversation_of_the_harness_it_left() {
         st.overrides.as_ref().map(|o| o.harness.as_str()),
         Some("pi")
     );
-    // A handover is still the only writer that stamps the item, which is
-    // what tells the two apart in `ssf status`/`ssf peers`.
+    // A handover is still the only writer that stamps `handed_over_at`,
+    // and an assignment stamps its own field, which is what tells the two
+    // apart in `ssf status`/`ssf peers`.
     assert!(st.handed_over_at.is_none(), "assigned, not handed over");
+    assert!(st.assigned_at.is_some(), "the assignment recorded itself");
 }
 
 /// The same harness with another model keeps the conversation: there is

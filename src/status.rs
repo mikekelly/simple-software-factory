@@ -57,9 +57,11 @@ pub struct Session {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Overrides>,
     /// `overrides` were written by `ssf assign` rather than by a
-    /// handover: the two write the same thing, and a handover is the one
-    /// that also stamps the item (`IssueState::handed_over_at`). This is
-    /// what the status commands word them by.
+    /// handover: the two write the same thing, and each stamps the item
+    /// it wrote (`IssueState::assigned_at` against
+    /// `IssueState::handed_over_at`), so a session can say which command
+    /// put the item on the stack it runs. This is what the status
+    /// commands word them by.
     pub assigned_stack: bool,
     /// A handover the daemon has accepted and not carried out yet.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -499,9 +501,10 @@ pub fn sessions_with(
             // too.
             let owner = crate::state::owner_in(&rs.issues, item.number);
             let source = rs.issues.get(&owner).unwrap_or(item);
-            // Which of the two writers put the stack there: a handover
-            // stamps the item, an assignment does not.
-            let assigned = source.overrides.is_some() && source.handed_over_at.is_none();
+            // Which of the two writers put the stack there: each stamps
+            // the item it wrote (`IssueState::assigned_at`,
+            // `IssueState::handed_over_at`), so only one can be set.
+            let assigned = source.assigned_at.is_some();
             out.push(join(
                 repo,
                 item,

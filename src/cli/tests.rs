@@ -279,6 +279,7 @@ fn the_assign_message_names_the_stack_the_first_session_comes_up_on() {
             None,
             true,
             true,
+            true,
             10,
         ),
         "Assigned the bot to o/r#7 (\"Fix the widget\"). Its session starts on Pi (model \
@@ -297,6 +298,7 @@ from here."
         Some("codex --yolo"),
         false,
         false,
+        true,
         30,
     );
     assert!(
@@ -307,6 +309,29 @@ overrides were written: the item is already on that stack."
         ),
         "{already}"
     );
+    // A closed item is assigned but starts nothing, so the text does not
+    // promise a session within the poll interval.
+    let closed = assign_recorded_text(
+        "o/r#7",
+        "T",
+        "Pi",
+        Some("openai/gpt-6"),
+        None,
+        None,
+        true,
+        true,
+        false,
+        10,
+    );
+    assert!(
+        closed.starts_with(
+            "Assigned the bot to o/r#7 (\"T\"). The item is closed, so no session starts yet; \
+the stack (Pi, model openai/gpt-6, the harness's default effort) is on it for the session that \
+onboards it once it is open again."
+        ),
+        "{closed}"
+    );
+    assert!(!closed.contains("next pass"), "{closed}");
 }
 
 #[test]

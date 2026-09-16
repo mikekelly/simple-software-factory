@@ -632,6 +632,7 @@ pub fn assign_recorded_text(
     command: Option<&str>,
     assigned: bool,
     pinned: bool,
+    open: bool,
     secs: u64,
 ) -> String {
     // What decides an unset model or effort, in the words the
@@ -653,16 +654,27 @@ pub fn assign_recorded_text(
     } else {
         format!("The bot was already assigned to {session} (\"{title}\").")
     };
+    // A closed item is assigned on GitHub like any other, but no pass
+    // onboards one: the stack waits on it, and saying it starts now would
+    // be a promise nothing keeps.
+    let start = if open {
+        format!(
+            "Its session starts on {harness_name} ({model}, {effort}) on the daemon's next pass \
+(within {secs}s)."
+        )
+    } else {
+        format!(
+            "The item is closed, so no session starts yet; the stack ({harness_name}, {model}, \
+{effort}) is on it for the session that onboards it once it is open again."
+        )
+    };
     let tail = if pinned {
         "The item keeps that stack for every later start until its workspace is released, and \
 `ssf handover` is how it changes from here."
     } else {
         "No per-item overrides were written: the item is already on that stack."
     };
-    format!(
-        "{head} Its session starts on {harness_name} ({model}, {effort}) on the daemon's next \
-pass (within {secs}s). {tail}"
-    )
+    format!("{head} {start} {tail}")
 }
 
 /// `ssf assign`: the bot is assigned on GitHub and the item's launch
@@ -717,6 +729,7 @@ pub(super) async fn assign(
             v.get("overrides_written")
                 .and_then(|x| x.as_bool())
                 .unwrap_or(false),
+            v.get("open").and_then(|x| x.as_bool()).unwrap_or(true),
             v.get("poll_interval_secs")
                 .and_then(|n| n.as_u64())
                 .unwrap_or(10),
