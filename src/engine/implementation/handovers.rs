@@ -141,8 +141,22 @@ session with `ssf assign {id} --harness {harness}` instead)"
         // What each pane is running, once for the pass: a handover names
         // the session it takes over from with it (a config edit under a
         // live session leaves the pane on the harness it was started with),
-        // and the transcript captured for a resume is that harness's.
-        self.learn_workspaces(repo).await;
+        // and the transcript captured for a resume is that harness's. A
+        // driver that cannot say waits for a pass that can, as one whose
+        // repository cannot be read for the story does above: without the
+        // answer there is nothing to name, and the record's stack is the
+        // one being handed *to*, so the post and the opening line would
+        // name the harness the item is going onto as the one it is leaving
+        // -- and the transcript searched for a resume would be the wrong
+        // harness's.
+        if !self.learn_workspaces(repo).await {
+            warn!(
+                repo = repo.name,
+                "handovers wait for the next pass on this repository: the driver cannot say \
+which harness is running in its workspaces"
+            );
+            return;
+        }
         // The new session is given the item's story, which the allow-list
         // filters: the collaborators have to be known first, or every
         // human post would be left out of it. A handover the daemon

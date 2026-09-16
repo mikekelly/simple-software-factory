@@ -742,6 +742,60 @@ async fn a_handover_waits_for_a_driver_that_can_say_what_is_running() {
     assert!(handed.1.contains("\nfrom: Codex\n"), "{}", handed.1);
 }
 
+/// A pass that carries a recorded handover out has to know which harness
+/// the session is on, since the post and the new session's opening line
+/// name it. A driver that cannot say has no answer for that, and the
+/// record's stack is the one being handed *to*: the handover waits for a
+/// pass that can be told, rather than being carried out backwards (#349).
+#[tokio::test]
+async fn a_handover_waits_for_a_pass_that_can_read_the_panes() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = RepoConfig {
+        harness: "omp".into(),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    d.runs("w5", "codex");
+    e.handover("o/r#5", "omp", None, None, Some("carry on"), None)
+        .await
+        .unwrap();
+    // The driver stops answering between the request and the pass, whose
+    // own read is its first (`forget_workspaces` is what the top of a pass
+    // does; these tests drive `run_handovers` directly).
+    e.forget_workspaces(&r);
+    d.with(|s| s.ps_error = Some("herdr is not answering".into()));
+    e.run_handovers(&r).await;
+    assert!(
+        e.entry(&r, 5).handover.is_some(),
+        "the handover is carried out on the next pass, not backwards"
+    );
+    assert!(
+        d.log().iter().all(|l| !l.starts_with("stop:")),
+        "the session that is there was not ended for it: {:?}",
+        d.log()
+    );
+    assert!(stub.post_bodies().is_empty(), "nothing was posted");
+    // The next pass reads the panes: the handover runs, naming Codex.
+    e.forget_workspaces(&r);
+    e.run_handovers(&r).await;
+    assert!(e.entry(&r, 5).handover.is_none());
+    let posts = stub.post_bodies();
+    let handed = posts
+        .iter()
+        .find(|(_, b)| b.contains("event=handed-over"))
+        .expect("the handover is posted");
+    assert!(handed.1.contains("\nfrom: Codex\n"), "{}", handed.1);
+    assert!(handed.1.contains("\nto: Oh My Pi\n"), "{}", handed.1);
+    let prompts = d.prompts();
+    assert!(
+        prompts[0].starts_with("You took over this issue from a session on Codex"),
+        "{}",
+        prompts[0]
+    );
+}
+
 #[test]
 fn a_handover_retires_the_workspace_s_last_conversation_too() {
     let id = |s: &str| Some(s.to_string());

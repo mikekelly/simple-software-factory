@@ -87,7 +87,9 @@ impl Engine {
     /// running. Read once a pass, so the login check, the handover
     /// bookkeeping and the guidance a live session is given all see the
     /// same answer. False when the driver could not be asked, which nothing
-    /// stands in for: a question about a pane is not answered by a guess.
+    /// stands in for: a question about a pane is not answered by a guess,
+    /// and a read that failed is remembered as that for the rest of the
+    /// pass rather than retried by every caller.
     pub(in crate::engine) async fn learn_workspaces(&mut self, repo: &RepoConfig) -> bool {
         if self.workspaces_read.contains(&repo.name) {
             return self.workspaces.contains_key(&repo.name);

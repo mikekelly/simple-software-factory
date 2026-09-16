@@ -527,7 +527,12 @@ session it was held for: when the item was told of it, the pass posts
 **On the next pass** (within `daemon.poll_interval_secs`, and before the
 repository's items are polled) the daemon:
 
-1. checks the item is still active and its workspace still known;
+1. checks the item is still active and its workspace still known, and that
+   the driver can say what is running in it: the harness the session is on
+   is what the `handed-over` post and the new session's opening line name
+   as the one being taken over from, so a driver that cannot answer leaves
+   the handover on the next pass (`ssf handover` refuses outright in that
+   state, rather than comparing the request against the record);
 2. ends the outgoing agent's pane, leaving the worktree and its branch
    exactly as they are;
 3. retires the outgoing session on the record (its conversation id, its
