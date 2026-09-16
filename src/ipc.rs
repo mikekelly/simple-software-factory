@@ -99,6 +99,19 @@ pub enum Request {
     CancelHandover {
         session: String,
     },
+    /// Assign the bot to `item` (`owner/repo#N`) on GitHub and write the
+    /// item's launch overrides, so the session that onboards it comes up
+    /// on `harness`/`model`/`effort` rather than on the repository's
+    /// stack. The inverse of `Handover`, which wants an item that already
+    /// has a session. `by` is the session that asked, or `None` for a
+    /// person at a shell.
+    Assign {
+        item: String,
+        harness: String,
+        model: Option<String>,
+        effort: Option<String>,
+        by: Option<String>,
+    },
     /// List, and unless `dry_run` remove, the workspaces of closed items
     /// whose agent is gone: the clean-and-pushed ones, or all of them with
     /// `force`. `older_than_days` keeps recently retired ones out of it.
@@ -245,6 +258,16 @@ mod tests {
         let j = serde_json::to_string(&c).unwrap();
         assert!(j.contains("\"op\":\"cancel_handover\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), c);
+        let s = Request::Assign {
+            item: "o/r#2".into(),
+            harness: "pi".into(),
+            model: Some("openai/gpt-6".into()),
+            effort: Some("high".into()),
+            by: Some("o/r#1".into()),
+        };
+        let j = serde_json::to_string(&s).unwrap();
+        assert!(j.contains("\"op\":\"assign\""));
+        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), s);
         let a = Request::Adopt {
             items: vec!["o/r#3".into(), "x/y#4".into()],
         };

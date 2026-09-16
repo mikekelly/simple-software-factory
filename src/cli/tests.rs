@@ -268,6 +268,109 @@ fn item_refs_accept_numbers_and_sessions() {
     assert!(item_ref("nonsense", Some(&me)).is_err());
 }
 #[test]
+fn the_assign_message_names_the_stack_the_first_session_comes_up_on() {
+    assert_eq!(
+        assign_recorded_text(
+            "o/r#7",
+            "Fix the widget",
+            "Pi",
+            Some("openai/gpt-6"),
+            Some("high"),
+            None,
+            true,
+            true,
+            true,
+            10,
+        ),
+        "Assigned the bot to o/r#7 (\"Fix the widget\"). Its session starts on Pi (model \
+openai/gpt-6, effort high) on the daemon's next pass (within 10s). The item keeps that stack \
+for every later start until its workspace is released, and `ssf handover` is how it changes \
+from here."
+    );
+    // Already assigned (the bot was put on the item before ssf saw it),
+    // and a stack the item already runs: nothing was pinned.
+    let already = assign_recorded_text(
+        "o/r#7",
+        "T",
+        "Codex",
+        None,
+        None,
+        Some("codex --yolo"),
+        false,
+        false,
+        true,
+        30,
+    );
+    assert!(
+        already.starts_with(
+            "The bot was already assigned to o/r#7 (\"T\"). Its session starts on Codex (the \
+command's model, the command's effort) on the daemon's next pass (within 30s). No per-item \
+overrides were written: the item is already on that stack."
+        ),
+        "{already}"
+    );
+    // A closed item is assigned but starts nothing, so the text does not
+    // promise a session within the poll interval.
+    let closed = assign_recorded_text(
+        "o/r#7",
+        "T",
+        "Pi",
+        Some("openai/gpt-6"),
+        None,
+        None,
+        true,
+        true,
+        false,
+        10,
+    );
+    assert!(
+        closed.starts_with(
+            "Assigned the bot to o/r#7 (\"T\"). The item is closed, so no session starts yet; \
+the stack (Pi, model openai/gpt-6, the harness's default effort) is on it for the session that \
+onboards it once it is open again."
+        ),
+        "{closed}"
+    );
+    assert!(!closed.contains("next pass"), "{closed}");
+}
+
+#[test]
+fn assign_takes_an_item_a_harness_and_optional_model_and_effort() {
+    let cli = Cli::try_parse_from([
+        "ssf",
+        "assign",
+        "7",
+        "--harness",
+        "pi",
+        "--model",
+        "openai/gpt-6",
+        "--effort",
+        "high",
+        "--json",
+    ])
+    .unwrap();
+    let Command::Assign {
+        item,
+        harness,
+        model,
+        effort,
+        json,
+        ..
+    } = cli.command
+    else {
+        panic!("parsed as something else");
+    };
+    assert_eq!(item, "7");
+    assert_eq!(harness, "pi");
+    assert_eq!(model.as_deref(), Some("openai/gpt-6"));
+    assert_eq!(effort.as_deref(), Some("high"));
+    assert!(json);
+    // The stack is the point of the command, so the harness is required.
+    let bare = Cli::try_parse_from(["ssf", "assign", "7"]);
+    assert!(bare.is_err(), "a stackless assign is `gh`'s to do");
+}
+
+#[test]
 fn the_handover_message_names_the_new_stack_and_ends_the_session() {
     assert_eq!(
         handover_recorded_text(

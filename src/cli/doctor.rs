@@ -112,33 +112,20 @@ pub(super) async fn doctor() -> Result<()> {
     }
     let state = state::State::load().unwrap_or_default();
     // Harnesses no repository is configured with, because an item was
-    // handed over to one (`ssf handover`): its session runs that harness
-    // where the daemon runs, so it is checked like the configured ones,
-    // and the line says which item put it there.
-    let mut handed_over: std::collections::BTreeMap<String, Vec<String>> = Default::default();
-    for (name, rs) in &state.repos {
-        for it in rs.issues.values().filter(|i| i.active) {
-            let Some(o) = it.overrides.as_ref() else {
-                continue;
-            };
-            if cfg.repos.iter().any(|r| r.harness == o.harness) {
-                continue;
-            }
-            handed_over
-                .entry(o.harness.clone())
-                .or_default()
-                .push(format!("{name}#{}", it.number));
-        }
-    }
-    let used_by = |h: &str| match handed_over.get(h) {
-        Some(items) => format!("; used by {} after a handover", items.join(", ")),
+    // put on one. The item does not have to be active yet: an item an
+    // assignment has just pinned has no session until the next pass
+    // onboards it, which is exactly when its harness is most likely to
+    // be missing.
+    let pinned = pinned_harnesses(&cfg, &state);
+    let used_by = |h: &str| match pinned.get(h) {
+        Some(items) => format!("; used by {}", items.join(", ")),
         None => String::new(),
     };
     // Each harness a repository uses, signed in where this runs (the host,
     // or the guest: with the factory in a VM `ssf doctor` is forwarded
     // there, so the check happens where the agents are).
     let mut harnesses: Vec<String> = cfg.repos.iter().map(|r| r.harness.clone()).collect();
-    harnesses.extend(handed_over.keys().cloned());
+    harnesses.extend(pinned.keys().cloned());
     harnesses.sort();
     harnesses.dedup();
     let place = if factory_vm::in_guest() {
@@ -242,18 +229,16 @@ pub(super) async fn doctor() -> Result<()> {
         .ok()
         .and_then(|t| github::GitHub::new(&cfg.github.api_url, &t).ok());
     let bot = cfg.github.login.clone().unwrap_or_else(|| "the bot".into());
-    // The harnesses handovers put on items, installed where the daemon
-    // runs: no repository names them, so nothing else here would look.
-    for (h, items) in &handed_over {
+    // The harnesses a handover or an assignment put on items, installed
+    // where the daemon runs: no repository names them, so nothing else
+    // here would look.
+    for (h, items) in &pinned {
         let bin = models::default_command(h);
         let bin = bin.split_whitespace().next().unwrap_or("");
         let ok = which(bin).is_some() || installed.iter().any(|a| a.id == *h && a.installed);
         check(
             ok,
-            format!(
-                "harness `{h}` installed (used by {} after a handover)",
-                items.join(", ")
-            ),
+            format!("harness `{h}` installed (used by {})", items.join(", ")),
         );
     }
     // What each driver has open, once, for the worktree lines below: a
@@ -867,6 +852,48 @@ pub(super) async fn doctor() -> Result<()> {
     Ok(())
 }
 
+/// The harnesses no repository is configured with but an item is pinned
+/// to, keyed by harness and holding `repo#N how` for each item, where
+/// `how` says which command put it there (`assigned` for `ssf assign`,
+/// `after a handover` for `ssf handover`). Those harnesses run where the
+/// daemon runs, so doctor checks them like the configured ones; nothing
+/// else in the report would look, because no repository names them.
+///
+/// An item that is closed or merged is left out: no pass will start a
+/// session on it, so a harness it pins that nobody has installed is not a
+/// problem to report. That is not the `active` flag -- an item an
+/// assignment has just pinned is not active until the pass onboards it,
+/// and then its harness is exactly what is worth checking.
+fn pinned_harnesses(
+    cfg: &Config,
+    state: &state::State,
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut pinned: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for (name, rs) in &state.repos {
+        for it in rs.issues.values() {
+            let Some(o) = it.overrides.as_ref() else {
+                continue;
+            };
+            if cfg.repos.iter().any(|r| r.harness == o.harness) {
+                continue;
+            }
+            if matches!(it.github_state.as_deref(), Some("closed" | "merged")) {
+                continue;
+            }
+            let how = if it.assigned_at.is_some() {
+                "assigned"
+            } else {
+                "after a handover"
+            };
+            pinned
+                .entry(o.harness.clone())
+                .or_default()
+                .push(format!("{name}#{} {how}", it.number));
+        }
+    }
+    pinned
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum VersionCompatibility {
     Exact,
@@ -1017,5 +1044,80 @@ mod version_tests {
                 "{client} against {server}"
             );
         }
+    }
+
+    /// Doctor checks the harnesses no repository names, and says which
+    /// command pinned the item and how: an assignment's overrides are not
+    /// a handover's. An item an assignment has just pinned has no session
+    /// yet (`active` is false until the pass onboards it) and still counts,
+    /// which is the window in which its harness is most likely missing; an
+    /// item no pass will onboard (closed, merged) does not, or a healthy
+    /// machine would fail doctor over a harness nothing is going to run.
+    #[test]
+    fn the_harnesses_items_are_pinned_to_are_reported_by_their_writer() {
+        use crate::state::{IssueState, Overrides, RepoState, State};
+
+        let mut cfg = Config::default();
+        cfg.repos.push(crate::config::RepoConfig {
+            name: "acme/widgets".into(),
+            harness: "claude".into(),
+            ..Default::default()
+        });
+        let pin = |harness: &str| Overrides {
+            harness: harness.into(),
+            model: None,
+            effort: None,
+        };
+        let item = |number: u64, o: Option<Overrides>, assigned: bool, active: bool, gs: &str| {
+            let mut s = IssueState {
+                number,
+                active,
+                overrides: o,
+                github_state: Some(gs.into()),
+                ..Default::default()
+            };
+            if assigned {
+                s.assigned_at = Some("2026-09-16T10:00:00Z".into());
+            } else if s.overrides.is_some() {
+                s.handed_over_at = Some("2026-09-16T09:00:00Z".into());
+            }
+            s
+        };
+        let mut rs = RepoState::default();
+        for s in [
+            // Not onboarded yet: the assignment's overrides are all there is.
+            item(1, Some(pin("pi")), true, false, "open"),
+            item(2, Some(pin("codex")), true, true, "open"),
+            item(3, Some(pin("omp")), false, true, "open"),
+            // A repository harness nobody needs to be told about.
+            item(4, Some(pin("claude")), true, true, "open"),
+            // Ours, but with no overrides at all.
+            item(5, None, false, true, "open"),
+            // Nothing will onboard these, so a missing harness is not a
+            // problem to report.
+            item(6, Some(pin("gemini")), true, false, "closed"),
+            item(7, Some(pin("gemini")), false, true, "merged"),
+        ] {
+            rs.issues.insert(s.number, s);
+        }
+        let mut state = State::default();
+        state.repos.insert("acme/widgets".into(), rs);
+
+        let pinned = pinned_harnesses(&cfg, &state);
+        assert_eq!(
+            pinned.get("pi").map(Vec::as_slice),
+            Some(["acme/widgets#1 assigned".to_string()].as_slice())
+        );
+        assert_eq!(
+            pinned.get("codex").map(Vec::as_slice),
+            Some(["acme/widgets#2 assigned".to_string()].as_slice())
+        );
+        assert_eq!(
+            pinned.get("omp").map(Vec::as_slice),
+            Some(["acme/widgets#3 after a handover".to_string()].as_slice())
+        );
+        assert!(!pinned.contains_key("claude"), "the repository's own");
+        assert!(!pinned.contains_key("gemini"), "closed and merged");
+        assert_eq!(pinned.len(), 3);
     }
 }

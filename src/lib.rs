@@ -40,8 +40,8 @@ mod vm;
 mod cli;
 
 pub use cli::{
-    auth_logout, client_main, handover_cancelled_text, handover_recorded_text, server_main,
-    summary_quotes_a_sign_in_screen_text,
+    assign_recorded_text, auth_logout, client_main, handover_cancelled_text,
+    handover_recorded_text, server_main, summary_quotes_a_sign_in_screen_text,
 };
 
 pub(crate) use cli::{

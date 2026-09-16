@@ -514,8 +514,10 @@ Changing the harness requires a fresh model and effort selection where supported
 Other edits retain existing selections; incomplete legacy entries must be completed
 before `repo set` can save. Changes apply
 to the next started or resumed session; an already running session keeps
-its selection. A [per-item handover](configuration.md#per-item-overrides)
-takes precedence until that item's workspace is released.
+its selection. A [per-item override](configuration.md#per-item-overrides)
+takes precedence until that item's workspace is released: `ssf assign`
+sets one for an item that has no session yet, `ssf handover` for one that
+does.
 
 ### Choosing the harness and the model
 

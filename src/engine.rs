@@ -316,6 +316,7 @@ struct Diff {
 }
 
 mod implementation {
+    mod assignment;
     mod conflicts;
     mod delivery;
     mod handovers;

@@ -634,6 +634,7 @@ impl Engine {
         e.released_at = Some(now.clone());
         // The item comes back on the repository's own harness.
         e.overrides = None;
+        e.assigned_at = None;
         e.handover = None;
         e.handover_note = None;
         e.handed_over_at = None;

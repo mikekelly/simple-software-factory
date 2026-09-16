@@ -15,29 +15,12 @@ impl Engine {
         let st = self.entry(&repo, number).clone();
         if !st.active || st.worktree_id.is_none() {
             anyhow::bail!(
-                "{id}: the item has no running session; nothing to hand over (assign the bot to it instead)"
+                "{id}: the item has no running session; nothing to hand over (start its first \
+session with `ssf assign {id} --harness {harness}` instead)"
             );
         }
         let harness = harness.trim();
-        if !crate::agents::is_known(harness) {
-            anyhow::bail!("{harness} is not a harness ssf knows (see `ssf agents`)");
-        }
-        crate::models::validate(harness, model, effort)?;
-        let name = login::display_name(harness);
-        if !(self.installed)(harness) {
-            anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");
-        }
-        // Asked afresh rather than off the pass's memo: an operator who
-        // signs the harness in and runs the command again must get the
-        // new answer, not the one from up to a poll interval ago.
-        self.probes.remove(harness);
-        let probe = self.probe_harness(harness).await;
-        if probe.state == LoginState::SignedOut {
-            anyhow::bail!(
-                "{name} is not signed in here; {}",
-                login::how_to_sign_in(harness)
-            );
-        }
+        self.check_stack(harness, model, effort).await?;
         if let Some(h) = st.handover.as_ref() {
             anyhow::bail!("a handover to {} is already pending", h.harness);
         }
@@ -328,6 +311,10 @@ impl Engine {
             e.launched_at = None;
             e.handed_over_at = Some(now_iso());
             e.overrides = Some(h.overrides());
+            // Whatever wrote the overrides before, the handover has now:
+            // the item reads as handed over, not as assigned (`ssf
+            // status`, `ssf peers`).
+            e.assigned_at = None;
             e.handover = None;
             // What the outgoing agent left is kept on the item until a
             // session has read it: the start below can fail, or come up

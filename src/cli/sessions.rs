@@ -619,6 +619,125 @@ pub(super) async fn handover(
     Ok(())
 }
 
+/// What `ssf assign` prints once the daemon has assigned the item and
+/// written its stack. Worded, like every text ssf puts on a screen,
+/// without the phrases `driver::login_dialog` looks for.
+#[allow(clippy::too_many_arguments)]
+pub fn assign_recorded_text(
+    session: &str,
+    title: &str,
+    harness_name: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    command: Option<&str>,
+    assigned: bool,
+    pinned: bool,
+    open: bool,
+    secs: u64,
+) -> String {
+    // What decides an unset model or effort, in the words the
+    // `handed-over` post uses for it (`events::Launch`).
+    let default = match command {
+        Some(_) => "the command's",
+        None => "the harness's default",
+    };
+    let model = match model {
+        Some(m) => format!("model {m}"),
+        None => format!("{default} model"),
+    };
+    let effort = match effort {
+        Some(e) => format!("effort {e}"),
+        None => format!("{default} effort"),
+    };
+    let head = if assigned {
+        format!("Assigned the bot to {session} (\"{title}\").")
+    } else {
+        format!("The bot was already assigned to {session} (\"{title}\").")
+    };
+    // A closed item is assigned on GitHub like any other, but no pass
+    // onboards one: the stack waits on it, and saying it starts now would
+    // be a promise nothing keeps.
+    let start = if open {
+        format!(
+            "Its session starts on {harness_name} ({model}, {effort}) on the daemon's next pass \
+(within {secs}s)."
+        )
+    } else {
+        format!(
+            "The item is closed, so no session starts yet; the stack ({harness_name}, {model}, \
+{effort}) is on it for the session that onboards it once it is open again."
+        )
+    };
+    let tail = if pinned {
+        "The item keeps that stack for every later start until its workspace is released, and \
+`ssf handover` is how it changes from here."
+    } else {
+        "No per-item overrides were written: the item is already on that stack."
+    };
+    format!("{head} {start} {tail}")
+}
+
+/// `ssf assign`: the bot is assigned on GitHub and the item's launch
+/// overrides are written in the same request, so the session that onboards
+/// the item comes up on the chosen stack.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn assign(
+    item: &str,
+    harness: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+    as_: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let me = identity(as_)?;
+    let item = item_ref(item, me.as_ref())?;
+    let harness = harness.trim();
+    if !agents::is_known(harness) {
+        bail!(
+            "{harness} is not a harness ssf knows; `ssf agents` lists the ids ({})",
+            agents::list()
+                .iter()
+                .map(|a| a.id.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    models::validate(harness, model, effort)?;
+    let v = ipc::call(&ipc::Request::Assign {
+        item,
+        harness: harness.to_string(),
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+        by: me.map(|o| o.to_string()),
+    })
+    .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+    let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).map(str::to_string);
+    println!(
+        "{}",
+        assign_recorded_text(
+            v.get("session").and_then(|x| x.as_str()).unwrap_or("?"),
+            v.get("title").and_then(|x| x.as_str()).unwrap_or(""),
+            &login::display_name(s("/to/harness").as_deref().unwrap_or(harness)),
+            s("/to/model").as_deref(),
+            s("/to/effort").as_deref(),
+            s("/to/command").as_deref(),
+            v.get("assigned").and_then(|x| x.as_bool()).unwrap_or(false),
+            v.get("overrides_written")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false),
+            v.get("open").and_then(|x| x.as_bool()).unwrap_or(true),
+            v.get("poll_interval_secs")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(10),
+        )
+    );
+    Ok(())
+}
+
 /// `ssf handover --cancel`: the pending handover is dropped and the
 /// session that is there keeps the item.
 pub(super) async fn cancel_handover(session: &str, json: bool) -> Result<()> {

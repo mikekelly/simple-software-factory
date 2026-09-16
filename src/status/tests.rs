@@ -341,6 +341,9 @@ fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
         model: Some("openai/gpt-6".into()),
         effort: Some("high".into()),
     });
+    // A handover is the writer that stamps the item; an assignment does
+    // not (see `an_assigned_session_shows_the_stack_it_was_given`).
+    one.handed_over_at = Some("2026-09-07T09:00:00Z".into());
     // The harness it went to never read what the outgoing session
     // left: the note waits on the item for the one that does.
     one.handover_note = Some(HandoverNote {
@@ -416,6 +419,64 @@ fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
     assert_eq!(v["sessions"][0]["handover_note"]["from"], "Claude Code");
     assert_eq!(v["sessions"][0]["handover_note"]["summary_chars"], 13);
     assert!(v["sessions"][2]["handover_note"].is_null());
+}
+
+/// `ssf assign` writes the same overrides a handover does, and a person
+/// reading the status commands is told which of the two put the stack
+/// there: an assigned item is on `harness pi` with the model and effort
+/// facts, not "handed over to pi" (which is also where the item's
+/// `via assigned` trigger sits on the same line).
+#[test]
+fn an_assigned_session_shows_the_stack_it_was_given() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut one = item(1, Some("r1::/w/one"));
+    one.overrides = Some(Overrides {
+        harness: "pi".into(),
+        model: Some("openai/gpt-6".into()),
+        effort: Some("high".into()),
+    });
+    one.assigned_at = Some("2026-09-07T09:00:00Z".into());
+    // Overrides an assignment wrote, on an item that was handed over
+    // before them: the assignment's stamp is the one that counts.
+    let mut three = item(3, Some("r1::/w/three"));
+    three.overrides = Some(Overrides {
+        harness: "codex".into(),
+        model: None,
+        effort: None,
+    });
+    three.handed_over_at = Some("2026-09-07T08:00:00Z".into());
+    three.assigned_at = Some("2026-09-07T09:00:00Z".into());
+    let mut two = item(2, Some("r1::/w/two"));
+    two.overrides = Some(Overrides {
+        harness: "pi".into(),
+        model: None,
+        effort: None,
+    });
+    two.handed_over_at = Some("2026-09-07T09:00:00Z".into());
+    let st = state_with(vec![one, two, three]);
+    let s = sessions(&cfg(), &st, None);
+    assert!(s[0].assigned_stack, "assigned: its own stamp");
+    assert!(!s[1].assigned_stack, "the handover stamped it");
+    assert!(s[2].assigned_stack, "the assignment wrote these last");
+    let table = render_peers(&s, None);
+    assert!(table.contains("harness pi"), "{table}");
+    assert!(table.contains("model openai/gpt-6"), "{table}");
+    assert!(table.contains("handed over to pi"), "{table}");
+    assert!(table.contains("harness codex"), "{table}");
+    let snap = Snapshot {
+        cfg: cfg(),
+        state: st,
+        workspaces: Vec::new(),
+        down: Vec::new(),
+        errors: Vec::new(),
+    };
+    let text = render_status(&snap);
+    assert!(
+        text.contains("assigned: harness=pi model=openai/gpt-6 effort=high"),
+        "{text}"
+    );
+    assert!(text.contains("handed over: harness=pi\n"), "{text}");
+    assert!(text.contains("assigned: harness=codex\n"), "{text}");
 }
 
 #[test]

@@ -48,7 +48,8 @@ mod prelude {
 pub use auth::auth_logout;
 pub use client::{client_main, server_main};
 pub use sessions::{
-    handover_cancelled_text, handover_recorded_text, summary_quotes_a_sign_in_screen_text,
+    assign_recorded_text, handover_cancelled_text, handover_recorded_text,
+    summary_quotes_a_sign_in_screen_text,
 };
 
 pub(crate) use auth::hostname;

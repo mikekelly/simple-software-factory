@@ -867,6 +867,24 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             )
             .await
         }
+        Command::Assign {
+            item,
+            harness,
+            model,
+            effort,
+            r#as,
+            json,
+        } => {
+            assign(
+                &item,
+                &harness,
+                model.as_deref(),
+                effort.as_deref(),
+                r#as.as_deref(),
+                json,
+            )
+            .await
+        }
         Command::Purge {
             dry_run,
             older_than,

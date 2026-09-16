@@ -422,6 +422,12 @@ fn guide_holds_the_moved_reference() {
     assert!(g.contains("from the agent on owner/repo#M"));
     assert!(g.contains("`--assignee bot` in the same `gh ... create` command"));
     assert!(g.contains("You are subscribed to it automatically"));
+    assert!(g.contains("`ssf assign <n|owner/repo#n> --harness <id> [--model <id>] [--effort"));
+    assert!(g.contains("an orchestrator or project-manager item, an architectural review"));
+    assert!(g.contains("The item starts in the same poll-interval window as any other"));
+    assert!(
+        g.contains("an item that already has a session is refused: `ssf handover` is the tool")
+    );
     // One session per item: no reviewer, no label, no role; a second
     // opinion is the session's own to arrange, with the herdr recipe.
     assert!(g.contains("## Second opinions"));
