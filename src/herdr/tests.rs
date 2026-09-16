@@ -1242,3 +1242,331 @@ esac
     );
     std::fs::remove_dir_all(base).unwrap();
 }
+
+/// The failure mikekelly/pg-cbor-schema#33 hit: an item's story is its body
+/// plus every comment, and that issue's was past 128 KiB, which is all the
+/// kernel allows one argument. herdr takes prompt text as an argument, so
+/// the spawn failed before herdr ran at all -- "spawning herdr (is herdr
+/// installed?): Argument list too long (os error 7)" -- and the handover
+/// left the item blocked with nothing running. The prompt has to reach the
+/// pane in pieces that fit.
+#[tokio::test]
+async fn a_first_prompt_too_long_for_one_argument_reaches_the_pane_whole() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!(
+        "ssf-herdr-long-first-prompt-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+d="$(dirname "$0")"
+case "$1 $2" in
+  "pane send-text")
+    printf '%s' "$4" >> "$d/pasted"
+    printf 'send-text %s\n' "${#4}" >> "$d/calls"
+    ;;
+  *)
+    printf '%s\n' "$*" >> "$d/calls"
+    ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+
+    // Past the kernel's cap on one argument, with a multi-byte character
+    // straddling the chunk boundary: two writes must not cut it in half.
+    let prompt = format!(
+        "{}→{}",
+        "a".repeat(SEND_TEXT_CHUNK - 1),
+        "z".repeat(SEND_TEXT_CHUNK)
+    );
+    assert!(
+        prompt.len() > 128 * 1024,
+        "the prompt has to be longer than one argument can carry"
+    );
+
+    h.send_first_prompt("w7:p1", &prompt).await.unwrap();
+
+    let pasted = std::fs::read_to_string(base.join("pasted")).unwrap();
+    assert_eq!(pasted, format!("{PASTE_START}{prompt}{PASTE_END}"));
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("pane send-keys w7:p1 enter"), "{calls}");
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    let writes: Vec<usize> = calls
+        .lines()
+        .filter_map(|line| line.strip_prefix("send-text "))
+        .map(|len| len.parse().unwrap())
+        .collect();
+    assert!(writes.len() > 1, "the prompt went in one write: {calls}");
+    assert!(
+        writes
+            .iter()
+            .all(|len| *len <= SEND_TEXT_CHUNK + PASTE_START.len() + PASTE_END.len()),
+        "a write is still argument-sized: {writes:?}"
+    );
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A delivery carries whatever activity arrived since the last pass, which
+/// is as unbounded as the story is, and reaches the pane the same way. A
+/// harness that answers a paste this size with a representation choice
+/// spends the first Enter on that and leaves the prompt in the composer,
+/// so the paste is submitted again -- and only ever pasted once.
+#[tokio::test]
+async fn a_delivery_too_long_for_one_argument_reaches_the_pane_whole() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = std::env::temp_dir().join(format!("ssf-herdr-long-delivery-{}", std::process::id()));
+    std::fs::create_dir_all(&base).unwrap();
+    let fake = base.join("herdr");
+    std::fs::write(
+        &fake,
+        r#"#!/bin/sh
+d="$(dirname "$0")"
+case "$1 $2" in
+  "pane send-text")
+    printf '%s' "$4" >> "$d/pasted"
+    ;;
+  "pane read")
+    # What OMP's composer shows for a wrapped paste this size.
+    printf '%s\n' '│bbbbbbbbbb…│' '╰ +1423 lin… ╯'
+    ;;
+esac
+printf '%s\n' "$*" >> "$d/calls"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let h = Herdr::new(HerdrConfig {
+        command: fake.to_string_lossy().into_owned(),
+        ..HerdrConfig::default()
+    });
+
+    let body = "b".repeat(SEND_TEXT_CHUNK * 3);
+    h.send_prompt("w7:p1", &body).await.unwrap();
+
+    let pasted = std::fs::read_to_string(base.join("pasted")).unwrap();
+    assert_eq!(pasted, format!("{PASTE_START}{body}{PASTE_END}"));
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(!calls.contains("agent prompt"), "{calls}");
+    assert_eq!(
+        calls.matches("pane send-keys w7:p1 enter").count(),
+        2,
+        "the prompt left in the composer was not submitted again: {calls}"
+    );
+
+    // A prompt that fits still goes through herdr's own prompt handling,
+    // which is what reports the agent as blocked and waits on it.
+    h.send_prompt("w7:p1", "short enough").await.unwrap();
+    let calls = std::fs::read_to_string(base.join("calls")).unwrap();
+    assert!(calls.contains("agent prompt w7:p1 short enough"), "{calls}");
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+/// Against a running herdr server: a prompt past the argument limit reaches
+/// the pane byte for byte, framed as the one bracketed paste `agent prompt`
+/// would have made, when it goes in as several writes. The pane runs
+/// `stty raw` and `head` first, so what it reads is what herdr wrote, with
+/// no shell or line discipline in between.
+/// `cargo test herdr_live_long_paste -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn herdr_live_long_paste_reaches_the_pane_whole() {
+    let base = std::env::temp_dir().join(format!("ssf-herdr-long-paste-{}", std::process::id()));
+    let root = base.join("widgets").to_string_lossy().to_string();
+    std::fs::create_dir_all(&root).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "master"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let h = Herdr::new(HerdrConfig::default());
+    h.status().await.unwrap();
+    let wt = h
+        .create_worktree(
+            &root,
+            "owner/widgets",
+            "issue-33-paste",
+            33,
+            "ssf: test",
+            None,
+        )
+        .await
+        .unwrap();
+    let (ws, _) = split_id(&wt.id);
+    let pane = h.panes(ws).await.unwrap()[0].pane_id.clone();
+
+    // Past the kernel's cap on one argument, with a multi-byte character
+    // and a newline straddling chunk boundaries.
+    let payload = format!(
+        "{}→\n{}",
+        "a".repeat(SEND_TEXT_CHUNK - 1),
+        "z".repeat(SEND_TEXT_CHUNK)
+    );
+    let expected = format!("{PASTE_START}{payload}{PASTE_END}");
+    let out = base.join("pasted.bin");
+    let _ = std::fs::remove_file(&out);
+    h.run(&[
+        "pane",
+        "run",
+        &pane,
+        &format!(
+            "stty raw -echo; head -c {} > {}",
+            expected.len(),
+            out.display()
+        ),
+    ])
+    .await
+    .unwrap();
+
+    let started = Instant::now();
+    h.type_text(&pane, &payload).await.unwrap();
+    while started.elapsed() < Duration::from_secs(20) {
+        if std::fs::metadata(&out).is_ok_and(|m| m.len() as usize == expected.len()) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let read = std::fs::read(&out).unwrap();
+    assert_eq!(
+        read.len(),
+        expected.len(),
+        "the pane read {} of {} bytes",
+        read.len(),
+        expected.len()
+    );
+    assert_eq!(read, expected.as_bytes(), "the paste did not arrive whole");
+
+    let _ = h.run(&["pane", "run", &pane, "stty sane"]).await;
+    h.remove_worktree(&wt.id).await.unwrap();
+    if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
+        && let Some(src) = v
+            .pointer("/source/source_workspace_id")
+            .and_then(Value::as_str)
+    {
+        let _ = h.run(&["workspace", "close", src]).await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// Against a running herdr server: a harness is launched and given a first
+/// prompt past the argument limit -- the case that failed for
+/// mikekelly/pg-cbor-schema#33 -- and answers a token at the very end of
+/// it, so the whole prompt arrived and was submitted. The harness is
+/// `SSF_LIVE_HARNESS` with `SSF_LIVE_COMMAND` (Codex by default).
+/// `cargo test herdr_live_long_first_prompt -- --ignored --nocapture`.
+#[tokio::test]
+#[ignore]
+async fn herdr_live_long_first_prompt() {
+    let harness = std::env::var("SSF_LIVE_HARNESS").unwrap_or_else(|_| "codex".into());
+    let command = std::env::var("SSF_LIVE_COMMAND")
+        .unwrap_or_else(|_| crate::models::default_command(&harness));
+    let base = std::env::temp_dir().join(format!(
+        "ssf-long-first-prompt-{harness}-{}",
+        std::process::id()
+    ));
+    let root = base.join("widgets").to_string_lossy().to_string();
+    std::fs::create_dir_all(&root).unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "master"],
+        vec![
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let h = Herdr::new(HerdrConfig::default());
+    h.status().await.unwrap();
+    let wt = h
+        .create_worktree(
+            &root,
+            "owner/widgets",
+            "issue-33-long-prompt",
+            33,
+            "ssf: test",
+            None,
+        )
+        .await
+        .unwrap();
+    let mut story = String::new();
+    for n in 0.. {
+        if story.len() > 128 * 1024 {
+            break;
+        }
+        story.push_str(&format!("Comment {n}: {}\n", "context line ".repeat(6)));
+    }
+    let prompt = format!(
+        "# A story as long as a busy item's\n\n{story}\nReply with the single token \
+LONG-PROMPT-OK and nothing else."
+    );
+    assert!(prompt.len() > 128 * 1024, "{} bytes", prompt.len());
+    let handle = h
+        .launch(&wt.id, &command, "long first prompt · #33", &harness)
+        .await
+        .unwrap();
+    let sent = Instant::now();
+    h.send_first_prompt(&handle, &prompt).await.unwrap();
+    eprintln!("long first prompt taken in {:?}", sent.elapsed());
+    h.run(&["agent", "wait", &handle, "--timeout", "120000"])
+        .await
+        .unwrap();
+    let screen = h.screen(&handle).await.unwrap().join("\n");
+    eprintln!("screen:\n{screen}");
+    assert!(
+        screen.contains("LONG-PROMPT-OK"),
+        "the long first prompt was not answered"
+    );
+    h.remove_worktree(&wt.id).await.unwrap();
+    if let Ok(v) = h.run(&["worktree", "list", "--cwd", &root]).await
+        && let Some(src) = v
+            .pointer("/source/source_workspace_id")
+            .and_then(Value::as_str)
+    {
+        let _ = h.run(&["workspace", "close", src]).await;
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}

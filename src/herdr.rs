@@ -34,6 +34,22 @@ fn workspace_label(repo: &str, number: u64) -> String {
 const PASTE_START: &str = "\x1b[200~";
 const PASTE_END: &str = "\x1b[201~";
 
+/// Longest prompt text herdr is handed as one argument. herdr takes the
+/// text of a prompt on its command line, and the kernel refuses a spawn
+/// whose argument is longer than `MAX_ARG_STRLEN` (128 KiB in 4 KiB-page
+/// Linux) with `E2BIG` -- reported as "spawning herdr (is herdr
+/// installed?): Argument list too long (os error 7)", which is neither
+/// true nor actionable. An item's story is its body plus every comment, so
+/// a busy item passes that cap and a handover to a new session fails to
+/// start at all. The cap is below the kernel's, because the limit counts
+/// the argument's terminator and a different page size changes it.
+const HERDR_ARG_LIMIT: usize = 96 * 1024;
+
+/// Bytes of prompt text in one `pane send-text` write, for text too long
+/// for [`HERDR_ARG_LIMIT`]. Small enough that the paste markers framing
+/// the write fit beside it.
+const SEND_TEXT_CHUNK: usize = 64 * 1024;
+
 /// How long to give a freshly launched harness to start working on its
 /// first prompt. herdr gives up on its own after five seconds when the
 /// text went nowhere; a healthy harness takes well under a second.
@@ -79,6 +95,25 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
         Some((ws, path)) => (ws, Some(path)),
         None => (id, None),
     }
+}
+
+/// Whether herdr can be handed this text as one argument.
+fn fits_one_argument(text: &str) -> bool {
+    text.len() <= HERDR_ARG_LIMIT
+}
+
+/// How much of `text` one `pane send-text` write carries: at most
+/// [`SEND_TEXT_CHUNK`] bytes, and never through the middle of a UTF-8
+/// character, whose halves two writes would deliver as broken text.
+fn chunk_end(text: &str) -> usize {
+    if text.len() <= SEND_TEXT_CHUNK {
+        return text.len();
+    }
+    let mut end = SEND_TEXT_CHUNK;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    end
 }
 
 fn is_not_found(e: &anyhow::Error) -> bool {
@@ -959,6 +994,14 @@ impl Herdr {
     /// it refuses because the agent is at a question, the text is pasted
     /// raw so the harness can queue it.
     pub async fn send_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
+        if !fits_one_argument(text) {
+            warn!(
+                pane_id,
+                bytes = text.len(),
+                "the prompt is too long for one herdr argument; pasting it raw"
+            );
+            return self.paste_prompt(pane_id, text).await;
+        }
         match self
             .run(&["agent", "prompt", pane_id, text.trim_end()])
             .await
@@ -977,11 +1020,71 @@ impl Herdr {
             pane_id,
             "agent is blocked on a question; pasting the prompt raw"
         );
-        let pasted = format!("{PASTE_START}{}{PASTE_END}", text.trim_end());
-        self.run(&["pane", "send-text", pane_id, &pasted]).await?;
+        self.paste_prompt(pane_id, text).await
+    }
+
+    /// Paste a prompt into the pane and submit it with Enter, for text that
+    /// has to go there rather than through herdr's own prompt handling. The
+    /// harness is given the bracketed paste and the Enter `agent prompt`
+    /// would have made of it.
+    ///
+    /// One Enter does not always submit a paste. OMP asks how to represent
+    /// a paste this size and spends the Enter on that answer, leaving the
+    /// prompt in the composer -- and herdr reports no state change either
+    /// way, so nothing else notices it never started a turn. The composer
+    /// is therefore read back, and a prompt still sitting there gets one
+    /// more Enter. Only Enter is repeated: the prompt is never pasted
+    /// twice, which is what would double a delivery.
+    async fn paste_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
+        let text = text.trim_end();
+        self.type_text(pane_id, text).await?;
         tokio::time::sleep(Duration::from_millis(400)).await;
         self.run(&["pane", "send-keys", pane_id, "enter"]).await?;
+        for _ in 0..5 {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let screen = self
+                .recent_screen(pane_id)
+                .await
+                .unwrap_or_default()
+                .join("\n");
+            if prompt_on_screen(&screen, text) {
+                warn!(
+                    pane_id,
+                    "the pasted prompt is still in the composer; submitting it again"
+                );
+                return self
+                    .run(&["pane", "send-keys", pane_id, "enter"])
+                    .await
+                    .map(|_| ());
+            }
+        }
         Ok(())
+    }
+
+    /// Type literal text into a pane as one bracketed paste, in as many
+    /// `pane send-text` writes as [`SEND_TEXT_CHUNK`] needs. herdr takes
+    /// the text as an argument, so a whole item story cannot go in one
+    /// write: the paste is opened before the first write and closed after
+    /// the last, and the pane reads one paste however many writes carried
+    /// it. Nothing is submitted here.
+    async fn type_text(&self, pane_id: &str, text: &str) -> Result<()> {
+        let mut rest = text;
+        let mut opened = false;
+        loop {
+            let (chunk, tail) = rest.split_at(chunk_end(rest));
+            let framed = match (opened, tail.is_empty()) {
+                (false, true) => format!("{PASTE_START}{chunk}{PASTE_END}"),
+                (false, false) => format!("{PASTE_START}{chunk}"),
+                (true, true) => format!("{chunk}{PASTE_END}"),
+                (true, false) => chunk.to_string(),
+            };
+            self.run(&["pane", "send-text", pane_id, &framed]).await?;
+            if tail.is_empty() {
+                return Ok(());
+            }
+            rest = tail;
+            opened = true;
+        }
     }
 
     /// Give a harness that has just been launched its first prompt, and
@@ -1002,7 +1105,7 @@ impl Herdr {
     pub async fn send_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
         let mut answered_dialog = false;
         loop {
-            let e = match self.prompt_until_working(pane_id, text).await {
+            let e = match self.submit_first_prompt(pane_id, text).await {
                 Ok(()) => return Ok(()),
                 Err(e) => e,
             };
@@ -1140,6 +1243,42 @@ accepting the successful Enter without retrying: {e:#}"
             pane_id,
             text.trim_end(),
             "--wait",
+            "--until",
+            "working",
+            "--timeout",
+            FIRST_PROMPT_TIMEOUT_MS,
+        ])
+        .await
+        .map(|_| ())
+    }
+
+    /// Give the harness its first prompt, however long it is. `agent prompt`
+    /// cannot carry a story past [`HERDR_ARG_LIMIT`] -- herdr takes the text
+    /// as an argument -- so a longer one is typed into the pane and
+    /// submitted with the same Enter, and waited on the same way: a wait
+    /// that times out is the `[timeout]` [`prompt_failure`] reads as a
+    /// stall, so the screen decides exactly as it does for a short one.
+    async fn submit_first_prompt(&self, pane_id: &str, text: &str) -> Result<()> {
+        if fits_one_argument(text) {
+            return self.prompt_until_working(pane_id, text).await;
+        }
+        warn!(
+            pane_id,
+            bytes = text.len(),
+            "the first prompt is too long for one herdr argument; typing it into the pane"
+        );
+        self.paste_prompt(pane_id, text).await?;
+        self.wait_until_working(pane_id).await
+    }
+
+    /// `agent wait`, until the harness starts working on the prompt it was
+    /// just given. The counterpart of [`Herdr::prompt_until_working`] for a
+    /// prompt herdr was not handed through `agent prompt`.
+    async fn wait_until_working(&self, pane_id: &str) -> Result<()> {
+        self.run(&[
+            "agent",
+            "wait",
+            pane_id,
             "--until",
             "working",
             "--timeout",
