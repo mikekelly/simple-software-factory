@@ -143,6 +143,17 @@ X11, and headless sessions and starts through the user's `default.target`.
 The service can start before bot login; in VM mode the guest starts without a
 credential and becomes healthy after step 4.
 
+The unit restarts the daemon after **any** exit, a clean one included, 15
+seconds later. A clean exit is what an unexplained SIGTERM is to systemd, and
+the daemon exits cleanly only when a signal asks it to, so `Restart=always` is
+what recovers the factory from a stop nobody asked for rather than leaving it
+inactive — which is how it stayed down until it was started by hand in
+[#344](https://github.com/mikekelly/simple-software-factory/issues/344). A
+stop you did ask for still sticks: `systemctl --user stop ssf.service` and
+everything that stops the same way (`ssf ui service disable`, `ssf uninstall`,
+package removal) is not undone. In the guest the same policy applies to the
+`ssf` system unit.
+
 On Omarchy, install the widget separately if you want its status display and
 service controls:
 
@@ -747,7 +758,10 @@ the upgrade, `ssf doctor` should look as it did before.
 
 `ssf ui service disable` stops the service and keeps it stopped across
 logins. `ssf ui service enable` enables it again on Linux, including machines
-without the Omarchy widget.
+without the Omarchy widget. A stop nobody asked for is different: the unit
+restarts the daemon after any exit
+([see above](#service-and-optional-omarchy-widget)), so a crash or an
+unexplained SIGTERM costs one `RestartSec` rather than the factory.
 
 Host agent terminals survive a daemon stop; activity is delivered when
 the daemon returns. In VM mode, stopping the host service shuts down the

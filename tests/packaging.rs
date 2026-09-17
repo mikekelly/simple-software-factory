@@ -254,6 +254,84 @@ fn packages_leave_service_enablement_to_explicit_setup() {
     assert!(upgrade.contains("daemon-reload"));
 }
 
+/// Every shipped unit that runs the daemon comes back from any exit.
+///
+/// `on-failure` does not cover a clean exit, and `systemd.service(5)` counts
+/// SIGTERM -- how an unrequested stop arrives -- as one, so the factory stayed
+/// inactive after the unexplained SIGTERM of #344. The daemon has no
+/// deliberate "finished" exit to protect: its one clean exit *is* that signal.
+/// The guest's own `herdr-server.service` and `gvforwarder.service` already
+/// come back on any exit. The units are discovered from the tree so a new
+/// variant is held to the policy rather than added with a policy of its own.
+#[test]
+fn every_unit_that_runs_the_daemon_restarts_after_any_exit() {
+    let mut units = Vec::new();
+    collect_unit_files(&repo().join("packaging"), "packaging", &mut units);
+    collect_unit_files(&repo().join("vm/guest/units"), "vm/guest/units", &mut units);
+    let mut daemons: Vec<String> = units
+        .into_iter()
+        .filter(|f| read(f).contains("ssf-server"))
+        .collect();
+    daemons.sort();
+    let expected = [
+        "packaging/linux/ssf.service",
+        "packaging/linux/ssf@.service",
+        "packaging/ssf.service",
+        "packaging/ssf@.service",
+        "vm/guest/units/ssf.service",
+    ];
+    assert_eq!(
+        daemons, expected,
+        "the units that run ssf-server changed. A new one must restart the daemon after any exit \
+         (#344); if it is not the daemon, it does not belong in this list, and if one was removed \
+         the list goes with it"
+    );
+
+    for path in &daemons {
+        let unit = read(path);
+        let policy: Vec<&str> = unit
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("Restart="))
+            .collect();
+        assert_eq!(
+            policy,
+            ["Restart=always"],
+            "{path} must restart the daemon after a clean exit as well: systemd counts SIGTERM as \
+             success, so on-failure leaves the factory down for the unrequested stop of #344 (an \
+             explicit `systemctl stop` is not undone by this)"
+        );
+        assert!(
+            unit.contains("RestartSec="),
+            "{path} restarts without a delay, which turns a failing start into a tight loop"
+        );
+    }
+}
+
+/// The `.service` files under `dir`, repository-relative. `packaging/` is
+/// shared with build output when someone has run `makepkg` (`src/`, `pkg/`)
+/// or nfpm (`linux/dist/`); those copies of the working tree are not what
+/// ships, so the walk stays out of them.
+fn collect_unit_files(dir: &Path, rel: &str, out: &mut Vec<String>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
+        .map(|e| e.expect("directory entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let child = format!("{rel}/{name}");
+        if path.is_dir() {
+            if ["src", "pkg", "dist", "target"].contains(&name.as_str()) {
+                continue;
+            }
+            collect_unit_files(&path, &child, out);
+        } else if name.ends_with(".service") {
+            out.push(child);
+        }
+    }
+}
+
 #[test]
 fn removal_stops_only_the_package_owned_opted_in_unit() {
     let hook = read("packaging/linux/preremove.sh");
