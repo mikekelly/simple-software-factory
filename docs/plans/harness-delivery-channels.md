@@ -1,18 +1,28 @@
 # Waking an idle agent with an event: harness delivery channels
 
 Investigation for [#334](https://github.com/mikekelly/simple-software-factory/issues/334),
-2026-09-15. SSF source audited: `5c92e4886e27165fa67ca1ad000c35b612669943`. herdr on the
-investigating machine: **0.9.0**. `cc-peer` read at
-`e3df969f16fc` (2026-08-22). Harness mechanisms below are third-party surfaces that
-change without notice; each is a hypothesis to prove live, not a contract.
+2026-09-15; sources re-audited 2026-09-17 at
+`c217acdb101b0010b576001ddd043c3f5c5fa18f`, where the Orca driver removed in #301 is gone.
+herdr on the investigating machine: **0.9.0**. `cc-peer` read at `e3df969f16fc`
+(2026-08-22). Harness mechanisms below are third-party surfaces that change without
+notice; each is a hypothesis to prove live, not a contract.
+
+The plan shipped for `omp`/`pi`
+([#340](https://github.com/mikekelly/simple-software-factory/pull/340)), `claude`
+([#343](https://github.com/mikekelly/simple-software-factory/pull/343)) and opt-in `codex`
+([#345](https://github.com/mikekelly/simple-software-factory/pull/345)); `opencode`/`crush`
+stayed deferred and the rest keep the paste. The behaviour that runs today, per harness, is
+in [`docs/drivers.md#item-activity-delivery`](../drivers.md#item-activity-delivery) — this
+document is the analysis behind it, not the shipped description.
 
 ## Decision
 
 **Deliver an item event through a harness's own event channel where one exists, and keep
 the terminal paste only for harnesses that have none.** The order is `omp`/`pi` (in-process
-extension), `claude` (the session's peer inbox socket), `codex` (the shared app-server),
-then `opencode`/`crush` (their local HTTP servers). `gemini`, `grok` and `copilot` expose
-no channel into a *running interactive* session and keep the paste.
+extension), `claude` (the session's peer inbox socket), `codex` (app-server `turn/start`
+over an explicit `--remote` endpoint), then `opencode`/`crush` (their local HTTP servers).
+`gemini`, `grok` and `copilot` expose no channel into a *running interactive* session and
+keep the paste.
 
 The gate for every candidate is the same, and it is the one thing that must hold: **the
 event must wake an agent that is idle and waiting for input, and it must never write to
@@ -23,18 +33,16 @@ Claude Code's research-preview *channels* also satisfy the gate in principle, an
 cleanest semantics of the lot, but they cannot be loaded unattended today; that is a
 known upstream gap, not a design choice (see [`claude`](#claude)).
 
-## What is delivered today, and why it is the problem
+## The paste path, and why it is the problem
 
-Activity, closures, `ssf tell` and handover notices all reach an agent the same way: bytes
-into its pty.
+For a harness with no channel, and for a pane whose channel is unavailable, activity,
+closures, `ssf tell` and handover notices still reach an agent one way: bytes into its pty.
 
-- [`src/herdr.rs:955`](../../src/herdr.rs) `send_prompt` → `herdr agent prompt <pane>
+- [`src/herdr.rs:996`](../../src/herdr.rs) `send_prompt` → `herdr agent prompt <pane>
   <text>`, which herdr documents as "text followed by encoded Enter as one ordered
   submission"; the only thing it refuses is `agent_blocked`.
-- [`src/herdr.rs:970`](../../src/herdr.rs) `paste_raw` → `pane send-text` with
+- [`src/herdr.rs:1018`](../../src/herdr.rs) `paste_raw` → `pane send-text` with
   bracketed-paste markers plus `pane send-keys enter`, for when herdr will not send.
-- [`src/orca.rs:782`](../../src/orca.rs) does the same through `orca terminal send --text
-  … --enter`.
 
 Two costs:
 
@@ -42,22 +50,20 @@ Two costs:
    box already holds. With a human mid-draft the event text is appended to it and the
    following Enter submits both, as one turn. Reported 2026-09-15.
 2. **Delivery is unobservable, so it is inferred from the screen.** The first-prompt
-   confirmation, `agent_prompt_stalled` handling, the OMP attachment-composer recovery and
-   the "never paste a copy twice" rules ([`src/herdr.rs:1000-1080`](../../src/herdr.rs),
+   confirmation, `agent_prompt_stalled` handling, the composer-recovery paths and the
+   "never paste a copy twice" rules ([`src/herdr.rs:1105-1200`](../../src/herdr.rs),
    [`docs/internals.md`](../internals.md#polling-and-delivery)) exist because nothing
    tells ssf whether the bytes were received, submitted or swallowed. A harness that
    reports "you have a new turn" makes all of it unnecessary for delivery.
 
-Neither driver offers an alternative: herdr's agent surface is `prompt` and `send-keys`,
-and Orca's is `terminal send`.
+Herdr offers no alternative: its agent surface is `prompt` and `send-keys`.
 
 ## The gate: waking an idle agent
 
 Three states matter, and only the first is the acceptance criterion:
 
-1. **Idle at the composer.** No turn in flight. The event must start a turn. Most
-   harnesses call this state `idle` (herdr) or `waiting`/`open` (Orca); `agent_state` in
-   `ssf status --json` reports it.
+1. **Idle at the composer.** No turn in flight. The event must start a turn. Herdr calls
+   this state `idle`; `agent_state` in `ssf status --json` reports it.
 2. **Mid-turn.** The event must be queued (delivered at the turn boundary) or steered; it
    must arrive exactly once and not be lost.
 3. **At a dialog** (trust, permission, plan-mode question). Out of scope. No channel here
@@ -109,7 +115,7 @@ An extension receives `pi` and can inject turns:
 Extensions load from `-e/--extension` on the command line (and from settings or
 `<cwd>/.extensions`), so `models::default_command("omp")`/`("pi")` plus the
 `launch_command` wrapper in
-[`src/engine/implementation/releases.rs:28`](../../src/engine/implementation/releases.rs)
+[`src/engine/implementation/releases.rs:29`](../../src/engine/implementation/releases.rs)
 are the whole wiring cost. OMP's own docs describe the mirror of this pattern for MCP
 pushes (`pi.on("mcp_notification", … pi.sendUserMessage(…, { deliverAs: "steer" })`).
 
@@ -240,12 +246,14 @@ process can drive the same session over HTTP.
   is interactive-only, policy-gated, and has no documented API; the ACP server
   (`copilot --acp`) is a separate mode.
 
-These keep the paste, and `docs/drivers.md` should say so.
+These keep the paste;
+[`docs/drivers.md#item-activity-delivery`](../drivers.md#item-activity-delivery) names the
+harnesses that have a channel, and these that do not.
 
 ## Delivery design
 
 - **Capability dispatch, not a new driver.** `Driver::deliver`
-  ([`src/driver.rs:610`](../../src/driver.rs)) already takes the workspace and the text;
+  ([`src/driver.rs:704`](../../src/driver.rs)) already takes the workspace and the text;
   the harness is known at that point, so the choice of channel belongs there, with the
   paste as the final fallback (`FirstPrompt` handling is unchanged for harnesses that
   still paste).
@@ -263,21 +271,29 @@ These keep the paste, and `docs/drivers.md` should say so.
 - **Packaging:** an `omp`/`pi` bridge is a shipped file, so `packaging/` and the VM guest
   seed tree need it too, not just the repository.
 
-## Open questions, each one a live check
+## Open questions, and how they settled
 
-1. Does `pi.sendUserMessage` without `deliverAs` truly start a turn when the session is
-   idle in the versions ssf installs, and does a mid-turn event need `steer` or `followUp`
-   to avoid throwing?
-2. Does a peer message posted by an external (non-child) process reach the model of a
-   Claude session launched with `--dangerously-skip-permissions` and
-   `crossSessionInbound: "accept"`, and does it start a turn from idle?
-3. What does `priority: "now" | "next" | "later"` change about injection, and which value
-   corresponds to "start a turn now"?
-4. Does an explicit `--remote unix://` endpoint preserve Codex's
-   `--dangerously-bypass-approvals-and-sandbox` posture per thread?
-5. Does an OpenCode `prompt_async` message render in the attached TUI, or only run?
-6. For each harness, does the event arrive exactly once when the daemon retries after a
-   failed delivery?
+All but (5) were answered by the channels that shipped; the behaviour that runs, including
+the live-verified harness versions, is in
+[`docs/drivers.md#item-activity-delivery`](../drivers.md#item-activity-delivery).
+
+1. Neither form alone: the bridge uses `pi.sendMessage(..., { triggerTurn: true, deliverAs:
+   "followUp" })`, which starts a turn when the session is idle and arrives after the
+   current turn when it is not.
+2. Yes. A peer message from an external (non-child) process reaches the model of a
+   `--dangerously-skip-permissions` session carrying `crossSessionInbound: "accept"`, and
+   starts a turn from idle (live-verified, Claude Code 2.1.268).
+3. Settled as `priority: "next"`: a busy session takes the event at its next opportunity
+   rather than interrupting the turn in flight.
+4. Yes — that explicit `--remote unix://` endpoint is the shipped opt-in path
+   (live-verified, Codex 0.154.0), with the endpoint and conversation pinned in
+   `codex-binding.json` so a different one is held rather than guessed.
+5. Still open. `opencode` and `crush` are deferred, so nothing has checked how the attached
+   TUI renders a prompt sent to its server.
+6. Yes, by a journal plus a per-channel receipt: the extension's mailbox acknowledgement,
+   the Claude transcript confirmation, the Codex `clientUserMessageId` echo. A retry
+   reconciles rather than duplicating, and an ambiguous send is held, never resent or
+   pasted.
 
 ## Evidence
 
