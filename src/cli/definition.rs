@@ -148,19 +148,6 @@ pub(super) enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Paste a message into the terminal of the agent session on an item,
-    /// through the daemon's delivery path (the session is brought back if
-    /// its terminal is gone).
-    Tell {
-        item: String,
-        /// The message (read from stdin when omitted).
-        message: Option<String>,
-        /// Send as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
-        #[arg(long = "as", value_name = "SESSION")]
-        r#as: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
     /// Give a session's workspace back once everything is on origin: the
     /// daemon checks the tree is clean, every commit at HEAD is reachable from
     /// a remote-tracking ref and no stash was made on the branch, and refuses

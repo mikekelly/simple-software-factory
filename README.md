@@ -151,9 +151,9 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   session per item, the rule for the second pair of eyes in `SSF.md`.
 - **Everything is on GitHub.** Agents talk to people, and to each other,
   through issue and pull request comments. Every post carries the byline of
-  the session that made it. The one exception is `ssf tell`, a message
-  typed straight into an agent's terminal, kept for nudges that would be
-  noise on the item.
+  the session that made it, and the item is the only channel between
+  sessions: nobody reaches an agent's terminal behind the record. Debugging
+  or rescuing a session is done at its terminal through herdr.
 - **Repository renames reconnect.** ssf records GitHub's immutable repository
   id and periodically resolves its current name. Rename or transfer a watched
   repository through GitHub and ssf repairs its configuration, session state,
@@ -408,9 +408,8 @@ ssf peers [--repo owner/name] [--all] [--json]
 ssf sub 12 | ssf sub acme/widgets#12   # follow an item (inside a session, or --as owner/repo#N)
 ssf unsub 12
 ssf subs                          # what this session follows, who follows its items
-ssf tell 12 "stop, I'm changing the spec"   # steer that session from your shell: pastes into its terminal
 ssf handover --harness codex --model gpt-5.5 --summary "..."   # inside a session: hand the item to a new session on another harness, model or effort
-ssf handover 12 --harness pi --no-summary          # or from your shell, like tell (owner/name#12, or --as)
+ssf handover 12 --harness pi --no-summary          # or from your shell (owner/name#12, or --as)
 ssf handover 12 --cancel                           # drop a handover the daemon has not carried out yet
 ssf assign 12 --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high   # open the issue with gh, then start its first session on that stack
 ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspace once its work is on origin
@@ -425,7 +424,7 @@ Every command can target another machine that has SSF installed:
 
 ```sh
 ssf --server factory.example status
-SSF_SERVER=factory.example ssf tell acme/widgets#12 "pause here"
+SSF_SERVER=factory.example ssf peers
 ```
 
 The destination is any SSH destination accepted by `ssh` (including a host
@@ -482,13 +481,14 @@ Things to know when operating it:
 - A workspace closed by hand (a herdr tab) leaves its git
   checkout behind. `ssf doctor` warns, per repository, about every such
   checkout holding commits that are on no other branch and not on origin, or
-  uncommitted changes, with no agent on it. `ssf tell` to an active item
-  brings the session back in that checkout; a retired item's branch is
+  uncommitted changes, with no agent on it. Commenting on an active item
+  starts its session again in that checkout; a retired item's branch is
   pushed by hand. Removing the directory loses the uncommitted changes and
   leaves the commits on a local branch nothing lists (see [Workspaces after
   close](docs/sessions.md#workspaces-after-close-release-and-purge)).
-- `tell` is not mirrored to GitHub; decisions go on the item as comments,
-  which the agent receives like any other activity.
+- Nothing reaches an agent off the record: every message it gets is activity
+  on an item it works on or follows, or the daemon's own notice about that
+  item. Decisions go on the item as comments.
 - A daemon restart is invisible to agents; a reboot triggers the startup
   pass that relaunches interrupted sessions.
 - ssf starts no second session on a pull request the bot opened: the

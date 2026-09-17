@@ -215,10 +215,10 @@ reflect transcript writes, and missing activity times remain unknown.
    under `<checkout>.worktrees/`; `ssf doctor` prints a `WARN` line per
    repository naming each such checkout holding commits on no other
    branch and not on origin (or uncommitted changes) with no agent on
-   it. For an active item the fix is `ssf tell <item> "..."`, which
-   brings the session back in that checkout; a retired item refuses a
-   tell, and its branch is pushed by hand. `ssf purge` says `(workspace
-   gone, checkout still on disk)` for one whose item is closed and
+   it. For an active item the fix is a comment on it, which starts its
+   session again in that checkout; a retired item gets nothing, and its
+   branch is pushed by hand. `ssf purge` says `(workspace gone, checkout
+   still on disk)` for one whose item is closed and
    removes it only when clean and pushed. Show the person the line and
    let them decide about anything else. `ssf release` refuses while an
    item is still the bot's, and `--force` does not lift that: the item

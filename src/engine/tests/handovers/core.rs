@@ -167,7 +167,7 @@ async fn a_pending_handover_can_be_cancelled() {
     assert!(d.log().is_empty(), "the session stays");
     assert!(e.entry(&repo(), 5).overrides.is_none());
     assert!(e.resume_candidates(&repo()).contains(&5));
-    e.tell(None, "o/r#5", "hello").await.unwrap();
+    e.deliver_to(&repo(), 5, "[ssf] hello", None).await.unwrap();
 }
 #[tokio::test]
 async fn a_handover_closes_an_outstanding_hold_on_the_item() {

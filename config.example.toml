@@ -49,7 +49,7 @@
 # The whole factory (daemon, herdr, sessions) inside a VM instead of on this
 # machine: a Firecracker microVM on Linux, a lima instance on macOS; see
 # `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf-server` starts and
-# watches the VM, and `ssf status`, `tell`, `peers`, `sub`, `release`, `purge`
+# watches the VM, and `ssf status`, `peers`, `sub`, `release`, `purge`
 # and `doctor` run inside it. `ssf vm status --json` reports `running = null`
 # (with `probe_error`) when lima cannot answer, rather than claiming it stopped.
 [vm]

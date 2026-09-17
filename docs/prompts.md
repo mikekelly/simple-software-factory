@@ -46,11 +46,11 @@ below." and the story follows straight away. The story is the usual one,
 and its reason reads "because the agent session on Claude Code working on
 it handed #N over to you".
 
-`ssf guide` prints the reference (other sessions, `ssf sub`/`ssf tell`,
-items a session opens and hand-offs, assigning a stack to an item before
-its first session, second opinions through herdr,
-wrapping up, the byline, the `Closes #N` suggestion) from the same binary, so it cannot
-drift from the daemon. Follow-up messages carry the activity and at most
+`ssf guide` prints the reference (other sessions, `ssf sub`, items a
+session opens and hand-offs, assigning a stack to an item before its
+first session, second opinions through herdr, wrapping up, the byline,
+the `Closes #N` suggestion) from the same binary, so it cannot drift from
+the daemon. Follow-up messages carry the activity and at most
 one line after it.
 
 Every message names its item once: `#N "title"` with the URL on first
@@ -86,7 +86,6 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
 - `Now tracking ...`: an item it opened, or a pull request on its branch,
   has been bound to the session.
 - `FYI: ...`: activity on an item it follows but does not work on.
-- `Message from ...`: a message pasted in with `ssf tell`.
 - `... has been closed`, `... no longer assigned`, `... assigned ...
   again`: the item's lifecycle; each says what to do.
 - `The review request for @<bot> on <item> has been fulfilled or

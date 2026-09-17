@@ -789,33 +789,6 @@ pub fn fyi_prompt(
     assemble(&head, events, &tail)
 }
 
-/// A message another session (or a human shell) pasted in with `ssf tell`.
-pub fn tell_prompt(
-    from: Option<&str>,
-    from_title: Option<&str>,
-    text: &str,
-    max_body_chars: usize,
-) -> String {
-    let who = match (from, from_title) {
-        (Some(f), Some(t)) => format!("the agent session on {f} (\"{t}\")"),
-        (Some(f), None) => format!("the agent session on {f}"),
-        (None, _) => "a human at the terminal".to_string(),
-    };
-    let mut s = format!("[ssf] Message from {who}, sent with `ssf tell`:\n\n");
-    s.push_str(&quote(text, max_body_chars));
-    match from {
-        Some(f) => {
-            let n = f.rsplit_once('#').map(|(_, n)| n).unwrap_or(f);
-            s.push_str(&format!(
-                "\n\nIf it needs an answer, comment on {f}; `ssf tell {n} \"...\"` only for an \
-operational nudge."
-            ));
-        }
-        None => s.push_str("\n\nIt comes from outside GitHub, so answer here."),
-    }
-    s
-}
-
 /// A session the startup pass found interrupted: the item it works on and
 /// where its workspace is.
 pub struct Interrupted<'a> {

@@ -687,8 +687,8 @@ GitHub (@mentioning it, or a review request, works too).
   whatever it holds. `ssf doctor` prints a `WARN` line per repository
   naming every such checkout with commits on no other branch and not on
   origin, or uncommitted changes, and no agent on it. For an active
-  item `ssf tell <item> "..."` brings the session back in that checkout;
-  a retired item's branch is pushed by hand. Do not delete the directory
+  item a comment starts the session again in that checkout; a retired
+  item's branch is pushed by hand. Do not delete the directory
   or `ssf purge --force` first: that loses the uncommitted changes and
   leaves the commits on a local branch nothing lists. See
   [Workspaces after
@@ -702,7 +702,7 @@ GitHub (@mentioning it, or a review request, works too).
   [A harness that is not signed
   in](sessions.md#a-harness-that-is-not-signed-in).
 
-The everyday commands (`status`, `peers`, `tell`, `sub`, `release`,
+The everyday commands (`status`, `peers`, `sub`, `release`,
 `purge`) are in the [README](../README.md#everyday-commands); agents get
 their own reference from `ssf guide`.
 

@@ -510,8 +510,8 @@ are resumed on the first pass that finds it: {err:#}"
         Ok(())
     }
 
-    /// Answer the CLI (`ssf sub|unsub|tell`) until `deadline`. True when a
-    /// signal asked the daemon to exit.
+    /// Answer the CLI (`ssf sub|unsub`, `ssf release|purge`) until
+    /// `deadline`. True when a signal asked the daemon to exit.
     pub(in crate::engine) async fn idle_until(
         &mut self,
         deadline: tokio::time::Instant,

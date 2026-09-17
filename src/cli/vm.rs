@@ -15,7 +15,7 @@ pub(super) enum Gate {
 ///
 /// Only a definite "not running" refuses. "Could not ask" is not an
 /// answer to guess from: under lima the probe forks `limactl`, and one
-/// fork that failed refused `tell`, `release`, `purge` and `doctor` over
+/// fork that failed refused `release`, `purge` and `doctor` over
 /// a factory that was up, and had `status --json` -- the bar widget's
 /// source -- report an idle one. The command goes to the guest instead,
 /// to succeed or fail on its own terms, having said first why ssf cannot
@@ -113,7 +113,6 @@ pub(super) fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Sub { .. } => "sub",
         Command::Unsub { .. } => "unsub",
         Command::Subs { .. } => "subs",
-        Command::Tell { .. } => "tell",
         Command::Release { .. } => "release",
         Command::Handover { .. } => "handover",
         Command::Assign { .. } => "assign",

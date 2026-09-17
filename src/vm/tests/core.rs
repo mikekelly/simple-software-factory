@@ -833,11 +833,11 @@ fn ssh_args_pin_the_key_port_and_hosts_file() {
     assert_eq!(
         shell_join(&[
             "ssf".into(),
-            "tell".into(),
+            "release".into(),
             "o/r#1".into(),
             "hi there".into()
         ]),
-        "ssf tell 'o/r#1' 'hi there'"
+        "ssf release 'o/r#1' 'hi there'"
     );
     assert_eq!(shell_join(&["it's".into()]), "'it'\\''s'");
 }

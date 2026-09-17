@@ -143,7 +143,6 @@ machine.\n"
     for moved in [
         "ssf peers",
         "ssf sub",
-        "ssf tell",
         "--assignee",
         "reviewer session",
         "mode=delegate",
@@ -414,9 +413,9 @@ fn guide_holds_the_moved_reference() {
     assert!(g.contains("Use `Closes #N` only when merging completes the entire issue"));
     assert!(g.contains("needs it added by hand, as the first line of the body"));
     assert!(g.contains("To speak to the agent on another item, comment on that item with `gh`"));
-    assert!(g.contains("`ssf tell <n> \"message\"`"));
-    assert!(g.contains("\"master moved, rebase\", \"terminal is being replaced\""));
-    assert!(g.contains("a session whose item is already closed"));
+    assert!(g.contains("the item is the only channel between sessions"));
+    assert!(g.contains("worked at its terminal through herdr"));
+    assert!(!g.contains("`ssf tell"));
     assert!(g.contains("`ssf sub <n>`"));
     assert!(g.contains("`ssf unsub <n>` stops them; `ssf subs` lists"));
     assert!(g.contains("from the agent on owner/repo#M"));

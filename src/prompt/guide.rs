@@ -28,7 +28,6 @@ like on your item. Your own posts are never echoed back.\n\
 - `[ssf] Now tracking ...`: a pull request you opened or one on your branch has been bound \
 to this session; its activity comes here from now on.\n\
 - `[ssf] FYI: ...`: activity on an item you follow but do not work on. For information only.\n\
-- `[ssf] Message from ...`: a message pasted into this terminal with `ssf tell` (below).\n\
 - `[ssf] ... has been closed`, `... no longer assigned`, `... assigned ... again`: your item's \
 lifecycle; each says what to do.\n\
 - `[ssf] The review request for ... has been fulfilled or withdrawn`: the review you were asked \
@@ -52,11 +51,10 @@ To speak to the agent on another item, comment on that item with `gh`: it reache
 labelled as coming from you (\"from the agent on owner/repo#M\"), and stays on the item where \
 anyone can find it later. Comments from other sessions on your items arrive the same way. \
 Decisions, questions that change scope, status and anything someone might need to look up go \
-on the item.\n\n\
-`ssf tell <n> \"message\"` (or `ssf tell owner/repo#n \"...\"`) pastes a message straight into \
-that session's terminal instead. It is not mirrored to GitHub, so it is the exception: for operational nudges that would be noise \
-on the item (\"master moved, rebase\", \"terminal is being replaced\") and for reaching a session \
-whose item is already closed.\n\n\
+on the item; the item is the only channel between sessions, and none of it is private to the \
+terminal. A session that needs debugging or rescuing is worked at its terminal through herdr \
+(the commands are under \"Second opinions\" below), which is a person's tool, not a way to \
+hold a conversation.\n\n\
 ## Following items\n\n\
 `ssf sub <n>` (or `ssf sub owner/repo#n`) follows an item without working on it: its activity \
 then arrives here as `[ssf] FYI` messages. `ssf unsub <n>` stops them; `ssf subs` lists what \
