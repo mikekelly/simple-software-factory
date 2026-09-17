@@ -14,7 +14,7 @@ and that decides what it needs before it can do anything for them:
 | | On the factory host | On the user's machine |
 |---|---|---|
 | Example | Grok Bot, or Hermes/OpenClaw, running on the same VPS as `ssf-server` | A desktop assistant watching a factory that runs on a VPS |
-| Factory commands | `ssf` on this machine is the whole setup: no catalog entry, no SSH | `ssf` on the liaison machine drives the factory over SSH (`ssf --server user@factory.example status`), so it needs the client, a key and `ssf-server` on the far side — see [Reach the factory over SSH](#reach-the-factory-over-ssh) |
+| Factory commands | `ssf` on this machine is the whole setup: no catalog entry, no SSH | `ssf` on the liaison machine drives the factory over SSH, so it needs the client, a key and `ssf-server` on the far side — see [Reach the factory over SSH](#reach-the-factory-over-ssh) |
 | herdr | The herdr server the daemon drives is on this machine, so `herdr` and `ssf dashboard` inspect it directly | The factory's herdr server is saved in the liaison machine's herdr — see [Inspect the factory's herdr server](#inspect-the-factorys-herdr-server) |
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
@@ -79,8 +79,9 @@ its own agent sessions. The liaison machine is the one that is set up.
 
    `ssf server add` writes the client-side catalog
    (`~/.config/ssf/servers.toml`); `ssf skill client-cli` covers a client with
-   several targets. Without a catalog entry, `ssf --server user@factory.example
-   <command>` and `SSF_SERVER=user@factory.example` select the same factory.
+   several targets. A raw destination selects a factory only on a client with
+   no catalog file at all: there, `ssf --server user@factory.example <command>`
+   and `SSF_SERVER=user@factory.example` reach the same factory.
 
 Every remote command runs as the factory account, so it can change or remove
 that factory's workspaces: `ssf release`, `ssf purge`, `ssf uninstall`, `ssf
@@ -109,8 +110,11 @@ user asks for it**: on a factory host those panes are the live agent sessions.
 A version difference between the liaison's client and the factory's server is
 not a reason to stop it. ssf starts a session again after its terminal
 disappears, but the interruption is still the user's call. Once saved, the
-machine reconnects in the background; `herdr --remote factory` attaches, and is
-also the command to run when herdr reports that a machine needs attention.
+machine reconnects in the background. The saved label is for the sidebar:
+`herdr --remote` takes the SSH target, not the label, so attaching is
+`herdr --remote user@factory.example`, and that is also the command to run when
+herdr reports that a machine needs attention. A host alias in `~/.ssh/config`
+gives a shorter target that works in both commands.
 
 Herdr commands act on the session their own pane inherited, and workspace,
 pane and agent ids are scoped to one server, so a command run locally does not
