@@ -24,8 +24,9 @@ installs the skill for each detected harness.
 This skill is a thin pointer on purpose, so it cannot drift from the version
 you have. Once `ssf` is on `PATH`, `ssf skill` prints the overview bundled with
 the executing binary, and `ssf skill <topic>` prints one topic: `setup`,
-`agent`, `liaison`, `client-cli`, `server`, `config`, `vm`, `headless`,
-`install-binaries`, `drivers`, `sessions`, `dashboard`, `uninstall`. They need
+`agent`, `ssf-md`, `liaison`, `client-cli`, `server`, `config`, `vm`,
+`headless`, `install-binaries`, `drivers`, `sessions`, `dashboard`,
+`uninstall`. They need
 no configuration, daemon, VM, or network access, and `--server` or
 `SSF_SERVER` does not redirect them. Inside a factory session, `ssf guide` is
 the context-aware collaboration reference.
@@ -36,33 +37,17 @@ the context-aware collaboration reference.
 | --- | --- |
 | Installing or upgrading a factory | [Install](https://github.com/mikekelly/simple-software-factory#install) in the repository, then `ssf skill setup`; `ssf skill headless` or `ssf skill install-binaries` for a VPS/container or a client-only host; `ssf doctor` after an upgrade |
 | Operating a running factory | `ssf skill server`, `ssf skill client-cli`, `ssf skill config`, `ssf skill dashboard` |
-| Working as an ssf-spawned agent on an assigned issue | `ssf guide`, then `ssf skill agent` |
+| Working as an ssf-spawned agent on an assigned issue | `ssf guide` (the first prompt already carries what a session needs) |
 | Acting as a liaison for a person, on the factory host or from their machine | `ssf skill liaison` |
-| Writing `SSF.md` for a project or a factory | `ssf skill setup` (its `SSF.md` step) and [SSF.example.md](https://github.com/mikekelly/simple-software-factory/blob/master/SSF.example.md) |
+| Writing `SSF.md` for a project or a factory | `ssf skill ssf-md`, then [SSF.example.md](https://github.com/mikekelly/simple-software-factory/blob/master/SSF.example.md) |
 | Auditing a project's existing agent guidance | [Bounded project guidance audit](https://github.com/mikekelly/simple-software-factory/blob/master/docs/audit.md) |
 
 ## Acting as a liaison
 
-A liaison drives the factory on a person's behalf. Work out which side it runs
-on first; that is what decides what it needs:
+A liaison drives the factory on a person's behalf, from the factory host (a
+Grok Bot, Hermes or OpenClaw beside `ssf-server`) or from the person's
+machine over SSH. Its GitHub access is its own, never the bot's. `ssf skill
+liaison` has the general rules and one labelled setup section per side.
 
-- **On the factory host** — a Grok Bot, Hermes or OpenClaw on the same VPS as
-  `ssf-server`: the `ssf` client there is the whole setup, with no catalog entry
-  and no SSH. Its GitHub access is still its own, not the bot's `ssf auth`.
-- **On the person's machine, factory elsewhere**: it needs a key that reaches
-  the factory account for `ssf` commands (`ssh user@factory 'command -v
-  ssf-server'` is the check; every command is a non-interactive `ssh`), a
-  client-only `ssf` install if the machine has none, `ssf server add factory
-  --ssh user@factory.example` to name the destination, and `herdr machine add
-  user@factory.example --label factory` so the factory's herdr server is managed
-  from the local herdr. Answer No if that asks to replace the factory's running
-  server: those panes are the factory's live agent sessions.
-
-Either way, the liaison's GitHub access and event delivery are configured
-separately from the factory bot's. `ssf skill liaison` has both setups in full
-and links the [guide](https://github.com/mikekelly/simple-software-factory/blob/master/docs/liaison.md).
-
-Release packages cover Arch-family and Debian-family Linux, including Omarchy
-and Ubuntu on x86_64; macOS support is planned but not supported yet. Platform
-requirements, setup choices and step-by-step installation live in the
-repository and in `ssf skill setup`, not here.
+Platform support and installation live in the repository and `ssf skill
+setup`, not here.

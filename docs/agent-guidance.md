@@ -1,320 +1,232 @@
 # Agent operating guidance
 
-Read `ssf skill setup` for the setup procedure; this topic preserves the
-agent-specific operating rules. Use `ssf skill` to find bundled reference
-topics.
+This is for an agent installing, operating, upgrading or removing a factory
+on a person's behalf. A session ssf started to work an issue has its own
+reference, `ssf guide`; this document is not for it. `ssf skill` lists the
+other bundled topics.
 
-Supported release packages are for Arch-family Linux (including Omarchy) and
-Debian-family Linux (including Ubuntu). macOS support is planned next but is
-not supported yet; macOS-specific notes below describe work in progress. The
-two main deployments are a factory running directly on a dedicated Linux host,
-VPS, or container and a local factory isolated inside a microVM.
+The setup procedure is `docs/setup.md` (`ssf skill setup`;
+`/usr/share/doc/ssf/docs/setup.md` once the Linux package is installed).
+Read it and follow it for a first install, or the one step that matches
+what the person asked for on an installed factory. It has the
+prerequisites, the package, the bot account, the sign-in, who may drive the
+factory, the VM and the host alternatives, the harness login, the first
+repository and its harness and model, `SSF.md`, the first issue, upgrading,
+stopping and uninstalling, with `ssf doctor` checkpoints after each step.
+There is no second copy of the steps here. Release packages cover
+Arch-family Linux (including Omarchy) and Debian-family Linux (including
+Ubuntu) on x86_64; macOS is planned and not yet supported.
 
-For a VPS or stripped Linux container without KVM / a systemd user session,
-use `docs/headless-host.md` first: standalone binaries, host mode,
-`herdr server`, and foreground `ssf-server`. Keep the fresh server catalog empty
-so client and daemon share paths; skip package setup and linger. Refresh the host package manager's
-indexes and install an OpenSSH client before key enrollment. Follow its older-gh device
-flow/token handoff and load harness credentials into both processes at restart.
-Setup steps 3b–3e explicitly separate owner invitation, bot acceptance, project
-owner board access, and `SSF.md` on the default branch. Do not skip acceptance
-or infer board access from repository Write.
+## Rules
 
-For standalone Linux binaries or a client-only SSH installation, follow
-`docs/install-binaries.md`. Packages bundle client and server; bare binaries
-ship neither service units nor VM scripts, and `ssf setup` requires the packaged
-installation. Package installation leaves the service disabled; explicit setup
-enables it and asks about linger for boot/logout operation.
-
-The setup document is `docs/setup.md`: `/usr/share/doc/ssf/docs/setup.md`
-once the Linux package is installed, or `docs/setup.md` in a checkout of the
-repository. Read it and follow it,
-for a first install (in VM mode complete step 6 before step 4, then its
-checklist), or the one step that matches what the person asked for on an
-installed factory. It has the prerequisites, the package, the bot
-account, the sign-in, who may drive the factory, the default Firecracker
-microVM and the host alternatives, the
-harness login, the first repository and the harness and model it runs
-on, `SSF.md`, the first issue, upgrading, stopping and uninstalling,
-with `ssf doctor` checkpoints after each step. There is no second copy of the
-steps here. The README next to it (`/usr/share/doc/ssf/README.md`) has the
-everyday commands, and the rest of `docs/` is the reference the
-document links to.
-
-## Rules for an agent following it
-
-The live terminal dashboard is included in the Linux client. Run
-`ssf dashboard` in any terminal, or `ssf --server HOST dashboard` /
-`SSF_SERVER=HOST ssf dashboard` for a remote factory. Repeat `--server` to show
-several factories as independently updated groups in one dashboard. Without
-`--server` or `SSF_SERVER`, the dashboard connects to all catalog entries. A local VM
-uses the host client's normal VM forwarding. No browser or Herdr installation
-is required. The dashboard keeps one `status --json --watch` stream open per
-server (and one SSH channel per remote factory). Only driver-reported agents become cards;
-monitored items without an agent are listed separately.
-An optional client-owned `~/.config/ssf/servers.toml` gives local, existing VM
-and SSH factories stable names. With one catalog entry commands select it
-implicitly; with several, every factory command requires `--server NAME` or an
-explicit `SSF_SERVER=NAME`, except `ssf dashboard`, which defaults to all entries.
-There is no persistent default. Inspect it with
-`ssf server list` / `ssf server show NAME`. A fresh `ssf setup` creates the
-recommended sole VM target `ssf-server`; it stays implicit while it is the only
-entry. Use `ssf server add local --local`, `ssf server add NAME --vm`, or
-`ssf server add cloud --ssh ssf@factory.example.com` for advanced layouts.
-Local defaults use isolated config/state trees. VM creation persists a
-Lima-safe runtime name, a non-overlapping VM directory and a free SSH/build
-port pair; plan CPU, memory and disk per VM before building several at once.
-For an established enabled VM, verify `ssf vm status` and `ssf status`, run
-`ssf server migrate-vm`, then verify both again explicitly as `ssf-server`
-before adding another target. Migration preserves the runtime and guest data;
-stop if SSF reports conflicting legacy and target-owned settings.
-VM lifecycle commands use `ssf --server NAME vm ...`. Setup, service controls
-are selected the same way: `ssf --server NAME ui service enable|disable|status`.
-Linux uses `ssf@NAME.service`; macOS uses `dev.ssf.server.NAME` and logs to
-`~/Library/Logs/ssf/NAME.log`. Before enabling the first target service, inspect
-and stop the legacy singleton with `systemctl --user disable --now ssf.service`
-or `brew services stop ssf`; SSF refuses target enablement while it is active or
-enabled so two supervisors cannot own one factory. Setup follows the selected
-target. Uninstall still refuses a namespaced target; do not improvise removal.
-Disable a target service before `ssf server remove NAME`; catalog removal never
-destroys its VM or local data, and VM destruction remains a separate explicitly
-selected command.
-Keyboard and mouse selection can focus a matched agent when running inside
-Herdr; matching is scoped to the Herdr server where the TUI runs, including
-its other tabs and workspaces. The optional plugin is only a launch shortcut.
-See `docs/dashboard.md` for controls and failure states. The server web UI is
-off by default; `[dashboard] enabled = true` enables a loopback listener on
-port 8787 after restarting ssf-server. Non-loopback binds are rejected; remote
-web access needs an authenticated TLS reverse proxy. Treat the logged capability
-URL as a secret. In VM mode, `dashboard.*` settings belong to the host.
-Herdr's terminal title is a status summary; Claude Code/Codex activity times
-reflect transcript writes, and missing activity times remain unknown.
-
-1. **Stop where only the person can act.** The document marks them
-   **you**: type a sudo password (`pacman`, `apt`), create a GitHub account,
-   sign in in a browser, approve a token or scopes, sign a harness in.
-   Give the exact command or URL, say what they will see, and wait;
-   carry on when they say it is done. Everything else is for the agent
-   to run. For OMP VM enrollment, have the person run `ssf vm login omp`
-   on the computer running their browser, select `/login` and the provider,
-   then open the short loopback `/launch` URL after ssf establishes its SSH
-   forwarding. Keep that terminal open through authorization; exit OMP to
-   check the result. If forwarding fails because a loopback port is occupied,
-   free the port and retry. Do not ask for callback URLs, codes, or tokens in
-   chat or replay them from another shell. Current OMP stores credentials in
-   `~/.omp/agent/agent.db`; missing `auth.json` alone is not a sign-out.
-   For headless/herdr OMP, after OpenRouter auth run one interactive `omp`
-   as the factory's Unix user on the host and finish or Esc through the
-   first-run wizard before spawning sessions. An already-logged-in provider
-   under setup needs completion/skipping, not another `/login`; completion
-   persists `setupVersion` in `~/.omp/agent/config.yml`. A key in the daemon
-   environment is not forwarded to herdr panes; SSF has no `omp.env` loader.
-   Use OMP's saved credentials in the shared home or verify the actual pane
-   environment and a request there. Doctor success alone does not verify setup.
-   In Claude Code, a command the person must type themselves can
-   be run as `! <command>` from the prompt.
-2. **If ssf is already installed, inspect `ssf server list` first, then run
-   `ssf --server NAME doctor` and `ssf --server NAME status` for every named
-   target** (or unqualified `ssf doctor` and `ssf status` when no catalog
-   exists) and read them before changing anything. One target's clean result
-   says nothing about another target's safety. Most setup problems show up
-   there, and the document says which lines are expected to fail at each step.
-   A state directory has one engine owner: `ssf-server --once` refuses while
-   the daemon is running. With a VM it is the guest daemon and state that
-   matter, so let its next poll run.
-   To operate a factory over SSH, use `ssf --server HOST COMMAND` or set
-   `SSF_SERVER=HOST`; this invokes the same `ssf-server` command endpoint as
-   a local client, and the SSH account must be able to operate the factory.
+1. **Stop where only the person can act.** The setup document marks them
+   **you**: a sudo password, creating a GitHub account, signing in in a
+   browser, approving a token or scopes, signing a harness in. Give the
+   exact command or URL, say what they will see, and wait; carry on when
+   they say it is done. Everything else is yours to run. Never ask for
+   callback URLs, codes or tokens in chat, or replay them from another
+   shell. In Claude Code, a command the person must type themselves can be
+   run as `! <command>` from the prompt.
+2. **Inspect before changing.** On an installed factory read `ssf server
+   list`, then `ssf --server NAME doctor` and `ssf --server NAME status`
+   for every named target (unqualified `ssf doctor` and `ssf status` when
+   there is no catalog). One target's clean result says nothing about
+   another. The document says which lines are expected to fail at each
+   step. A state directory has one engine owner: `ssf-server --once`
+   refuses while the daemon runs; with a VM, the guest daemon and state are
+   the ones that matter, so let its next poll run.
 3. **Prefer the CLI** (`ssf repo add`, `ssf repo set`, `ssf config set`,
-   `ssf auth login`) over editing `config.toml` by hand: it validates
-   harness IDs, model support and effort levels. Unknown model IDs pass
-   through to the harness. Repository settings are picked up on the next poll;
-   In VM mode, first build, enable and start the VM, then authenticate the
-   bot and configure repositories inside it through the normal CLI.
-   Factory commands route to the guest and fail if it is unavailable;
-   never fall back to host edits or recommend routine `ssf vm sync`.
-   Only `[vm]` settings and the guest administration SSH key belong to
-   the host. Bot credentials, git keys and factory config belong to the
-   guest data disk. VM or service changes may require a restart. Never write `github.token` into the
-   file; `ssf config set` refuses it on purpose. `ssf auth login` and
-   `ssf auth logout` change credentials and config only; they do not edit
-   the daemon's live `state.json` for bot identity.
-4. **Raise the harness and the model; do not silently take the
-   defaults.** Follow [Choosing the harness and the
-   model](setup.md#choosing-the-harness-and-the-model): it
-   has the commands that say what the machine can run, what to ask the
-   person (the machine says which harnesses are installed and signed
-   in; only they can say which subscriptions or keys are behind them,
-   what metered spend is acceptable and what must not be exhausted),
-   and current provider documentation for availability, pricing and limits.
-   Capability/cost comparisons can supplement this; API prices do not measure
-   subscription allowance. Propose a model and effort per repository and
-   explain the tradeoff. If numbers cannot be verified, say so and let the
-   person choose. **Before adding a watched repository or changing its
-   harness/model/effort, obtain the person's explicit choice for each supported
-   setting.** A choice already provided in this setup conversation counts;
-   examples, recommendations, silence and installer defaults do not. If no
-   choice is available, pause that step and ask; do not invent values or write
-   an incomplete repo directly to TOML. The CLI requires supported settings
-   on add/set, and doctor fails for missing legacy settings. Existing values
-   alone do not establish human consent. ssf sets the
-   main session's model; optional subagents follow harness configuration and
-   project instructions. Do not impose a delegation hierarchy on simple work.
+   `ssf auth login`) over editing `config.toml`: it validates harness ids,
+   model support and effort levels; unknown model ids pass through to the
+   harness. Repository settings are picked up on the next poll. Never write
+   `github.token` into the file; `ssf config set` refuses it on purpose.
+   `ssf auth login` and `ssf auth logout` change credentials and config
+   only, not the daemon's live `state.json`.
+4. **Raise the harness and the model; never take the defaults silently.**
+   Follow [Choosing the harness and the
+   model](setup.md#choosing-the-harness-and-the-model): the machine says
+   which harnesses are installed and signed in; only the person can say
+   which subscriptions or keys are behind them, what metered spend is
+   acceptable and what must not be exhausted. Propose a model and effort
+   per repository with the tradeoff; if numbers cannot be verified, say so.
+   Before adding a watched repository or changing its harness, model or
+   effort, obtain the person's explicit choice for each supported setting.
+   A choice made earlier in this conversation counts; examples,
+   recommendations, silence, installer defaults and existing values do not.
+   Without one, pause that step and ask. ssf sets the main session's model;
+   subagents follow the harness and the repository's guidance.
 5. **Never sign in as the person** or use their token, key or account for
-   the bot. The bot is an account of its own; `ssf auth login --user
-   <bot> -y` is the form an agent may run, once the bot is in gh's
-   credential store on the machine running the factory. In VM mode use
-   guest-native `ssf auth login --web`; the person approves the printed
-   device code as the bot, and credentials stay in the guest.
-6. **Never pass `--accept-anyone-risk`** on the person's behalf, and do
-   not set `allowed_users` to `"*"` for them; say what it means and let
-   them decide.
-7. **For a stripped headless container, prefer the host path above. Otherwise
-   take the default path** (the factory inside the VM, herdr inside
-   it) unless the person asks for an alternative or the machine cannot
-   run the VM at all. A Linux machine without a usable `/dev/kvm`, or one that is
-   not x86_64, cannot run the Firecracker backend, but it can still run
-   the VM: set `[vm] backend = "lima"`, which uses qemu there (slower,
-   and it needs `qemu-system-<arch>` installed). The lima backend needs
-   lima 2.0.1 or newer on either OS; `ssf vm build` reads
-   `limactl --version` and refuses an older one by name rather than
-   letting it fail at the first boot, so a distribution shipping an old
-   lima means lima's release tarball or `[vm] limactl` pointing at a
-   newer one. The document says where the alternatives branch off. On
-   Debian and Ubuntu the package does not bring host herdr; install it
-   as the document's step 2 says for host sessions. The VM supplies its own.
-   When reading `ssf vm status --json`, treat `running =
-   null` as an unanswered lima probe, not a stopped VM; `probe_error`
-   names why the host could not ask. Use `ssf vm status` to inspect host
-   infrastructure and `ssf status` / `ssf doctor` for guest factory health.
-   New and reopened herdr workspaces use `<repo>-<issue-number>` labels
-   (GitHub repository name); already open workspaces keep their labels.
-   Before upgrading an old copied-config VM, read the migration/recovery
-   section in `docs/vm.md`. Firecracker uses an Ubuntu 24.04 LTS guest on
-   every Linux host. Legacy Firecracker roots, including the former Arch
-   guest, require the matching package and guest scripts, then run
-   `ssf vm build --force`, `ssf vm reset`, and `ssf vm start`; reset alone
-   reuses the unsafe old image. Legacy Lima roots require reset and start. Both
-   preserve the data disk; never patch a legacy seed script in place to bypass
-   the startup check. Tailscale is optional and absent from the base image.
-   When asked to enrol the guest, start it and run `ssf vm tailscale`; relay
-   its browser URL. It requests `ssf-vm`, with collision suffixes assigned by
-   Tailscale. A root reset discards the enrolment, so rerun the command
-   afterwards. Do not enable Tailscale SSH, routes, an exit node or key-expiry
-   changes unless asked.
-   Stop on conflicts, preserve both versions, and have the person choose
-   precedence; never guess or discard state.
-8. **Let `ssf vm build` size the VM** from the machine (vCPUs, memory,
-   data disk; it prints what it chose and writes it to `[vm]`) and tell
-   the person what it picked; pass `--vcpus`, `--mem-mib` or
-   `--data-gib` only when they ask for a size. When `ssf doctor` says the
-   data disk is full, `ssf vm grow` (VM stopped) enlarges it without
-   losing anything; see [Size](vm.md#size).
-9. **Never delete a worktree directory or `ssf purge --force` on the
-   person's behalf.** A workspace closed by hand leaves its git checkout
-   under `<checkout>.worktrees/`; `ssf doctor` prints a `WARN` line per
-   repository naming each such checkout holding commits on no other
-   branch and not on origin (or uncommitted changes) with no agent on
-   it. For an active item the fix is a comment on it, which starts its
-   session again in that checkout; a retired item gets nothing, and its
-   branch is pushed by hand. `ssf purge` says `(workspace gone, checkout
-   still on disk)` for one whose item is closed and
-   removes it only when clean and pushed. Show the person the line and
-   let them decide about anything else. `ssf release` refuses while an
-   item is still the bot's, and `--force` does not lift that: the item
-   has to stop being the bot's first. For a retired session pinned by
-   open follow-ups, a person can use `ssf release --as owner/repo#N
-   --force`; this bypasses both the follow-up guard and worktree checks.
-   Follow-ups retain ownership and provenance, and later activity can
-   recreate the workspace. A pending handover still blocks release. An
-   item the bot was only ever mentioned on stays the bot's
-   until it closes, since nobody can withdraw a mention, so its
-   workspace is not releasable while the item is open. `ssf status
-   --json` marks such an item with `retirement_held_at`.
-10. **Uninstall with `ssf uninstall`**, never by hand: it reports and
-    asks once, and it refuses while a workspace holds unpushed work or
-    the VM's clones cannot be checked. Under the lima backend it asks
-    lima what it holds rather than reading `[vm] dir`, so the instance
-    and its data disk are found and destroyed even where that directory
-    has gone or `[vm] dir` has changed. The refusal names its own
-    remedy: `ssf vm start` only where there is an instance to start, and
-    never for a data disk that outlived its instance or for a lima that
-    would not say whether the VM is running. A directory ssf could not
-    read at all is a question that was never answered, not an empty
-    one, and refuses too. So does a `data.ext4` a switch of
-    `[vm] backend` left in the VM's own directory: it is checked on the
-    host, because a healthy lima guest cannot see it, and the remedy is
-    to put `[vm] backend` back rather than any lima command. Do not add `--force` on the
-    person's behalf: show them the report and let them settle the work
-    or decide; `--data` (config, the bot's key, state) is also theirs to
-    ask for. The package removal that follows (`sudo pacman -R ssf` or
-    `sudo apt remove ssf`; the command
-    prints the one for the machine) is **you**.
-    On Omarchy the optional widget is independent: `omarchy plugin remove
-    ssf.factory` removes only its checkout and leaves the service running.
-    A reinstall uses `ssf setup` for the user and adds the widget separately;
-    preserved configuration, state, clones and worktrees are reused unless the
-    person explicitly chose `--data`.
-11. **Keep SSF-agent guidance distinct from repository policy** when writing
-    `SSF.md`. Put issue ownership and communication, board choices and status
-    mappings, delegation and handoffs, bounded review, completion and merge
-    authority there (or in `repo.prompt_file`). Put repository-wide build,
-    test, implementation, architecture, domain and safety policy in
-    `AGENTS.md`. SSF injects its file into the issue-owning main session, not
-    harness-created subagents, so it can define orchestration without polluting
-    delegated task contexts. Optional
-    `SSF.<harness>.md` files at the checkout root add instructions only for the
-    main session of the harness on the pane (a session the config changed under
-    reads its own harness's file), including handovers; for example, put
-    Codex-specific subagent orchestration guidance in `SSF.codex.md`. They do
-    not replace the shared SSF guidance.
-    Use the [boilerplate](../SSF.example.md) and
-    [gauntlet guidance](sessions.md#second-opinions-the-gauntlet)
-    for one behavior review and at most one focused follow-up for substantive
-    fixes. Unresolved defects require simplification or a maintainer decision;
-    wording changes do not restart review. Keep one outcome
-    per issue and implementation tasks within it. Use `Refs #N` for ongoing
-    management/tracking work; reserve `Closes #N` for complete delivery.
-    State completion and merge authority explicitly: the owning issue agent
-    normally takes responsibility for merging after required checks/review,
-    unless reserved for a human. Complete work within delegated authority;
-    otherwise tag an appropriate human with the concrete next action. Use the
-    bounded [project guidance audit](audit.md) when asked to assess
-    these policies.
+   the bot. The bot is an account of its own; `ssf auth login --user <bot>
+   -y` is the form an agent may run once the bot is in gh's credential
+   store on the machine running the factory.
+6. **Never pass `--accept-anyone-risk`** on the person's behalf, and do not
+   set `allowed_users` to `"*"` for them; say what it means and let them
+   decide.
+7. **Take the default path** (the factory inside the VM, herdr inside it)
+   unless the person asks for an alternative or the machine cannot run the
+   VM; the document says where the alternatives branch off. Let `ssf vm
+   build` size the VM and tell the person what it picked; pass `--vcpus`,
+   `--mem-mib` or `--data-gib` only when they ask.
+8. **Never delete a worktree directory or `ssf purge --force`** on the
+   person's behalf. `ssf doctor` prints a `WARN` line per checkout holding
+   commits on no other branch, or uncommitted changes, with no agent on it;
+   show the person the line and let them decide. For an active item the fix
+   is a comment on it, which starts its session again in that checkout;
+   a retired item's branch is pushed by hand. [Workspaces after
+   close](sessions.md#workspaces-after-close-release-and-purge) has the
+   release and purge rules, including `ssf release --as owner/repo#N
+   --force` for a retired session pinned by open follow-ups.
+9. **Uninstall with `ssf uninstall`**, never by hand: it reports and asks
+   once, and refuses while a workspace holds unpushed work or the VM's
+   clones cannot be checked. Its refusal names its own remedy; do not add
+   `--force` or `--data` on the person's behalf. The package removal it
+   prints at the end (`sudo pacman -R ssf` or `sudo apt remove ssf`) is
+   **you**. [Uninstall](uninstall.md) has the cases.
+10. **Writing `SSF.md`**: follow [Writing SSF.md](ssf-md.md) (`ssf skill
+    ssf-md`) and start from [`SSF.example.md`](../SSF.example.md). Use the
+    bounded [project guidance audit](audit.md) when asked to assess a
+    repository's existing guidance.
+11. **Conflict notices concern committed branches.** Follow [Branch
+    conflicts](sessions.md#branch-conflicts): `daemon.conflict_check_interval_secs`
+    (default 300, `0` disables, a repository can override). Resolve before
+    delivery, preferably against stable dependency heads; a notice alone
+    does not restart review.
+12. **Name the base when reporting verification counts.** Follow the
+    [development guidance](development.md): a Clippy warning count or a
+    test total means nothing without the base commit it is compared to.
+13. **Let GitHub own repository renames and transfers.** Do not remove and
+    re-add a watched repository because its `owner/name` changed: ssf
+    records GitHub's immutable repository id and repairs the name, state and
+    checkout remotes itself. `ssf doctor` verifies the reconciliation.
+14. **On any conflict between two states, stop**, preserve both versions
+    and have the person choose; never guess or discard state.
 
-12. **Conflict notices concern committed branches.** Follow
-    [Branch conflicts](sessions.md#branch-conflicts) when an
-    operator asks about them: `daemon.conflict_check_interval_secs`
-    defaults to 300 seconds, a repository can override it, and `0`
-    disables checks. `event_comments` does not control these terminal
-    notices. Resolve conflicts before delivery, preferably against stable
-    dependency heads. Test the integration and review behavior changes;
-    a notice alone does not require restarting review.
+## Setup-specific notes
 
-13. **Name the base when reporting verification counts.** Follow the
-    [development guidance](development.md) for the JSON-based
-    Clippy warning count and comparisons against a named base commit.
-    Test totals need the base too; equal warning counts alone do not prove
-    that a change adds no warnings.
+Each note applies to one kind of factory. Read the one that matches.
 
-14. **Let GitHub own repository renames and transfers.** Do not remove and
-    re-add an established watched repository merely because its `owner/name`
-    changed. ssf records GitHub's immutable repository id, periodically repairs
-    its canonical name, state and managed checkout remotes, and retains prior
-    names for historical origin tags. Use `ssf doctor` to verify reconciliation.
+### Factory in the VM (Firecracker or Lima)
 
-## GitHub body handling
+Build, enable and start the VM first, then authenticate the bot and
+configure repositories inside it through the normal CLI: factory commands
+route to the guest and fail if it is unavailable. Never fall back to host
+edits or recommend routine `ssf vm sync`. Only `[vm]` settings and the
+guest administration SSH key belong to the host; bot credentials, git keys
+and factory config live on the guest data disk. Use guest-native `ssf auth
+login --web`: the person approves the device code as the bot and the
+credential stays in the guest.
 
-The session’s gh shim stamps explicit bodies, reading only the last repeated
-body-file value. Large bodies use an inherited anonymous file (memory on
-Linux, an immediately unlinked temporary file on other Unix systems). An
-invalid UTF-8 body or stdin read error fails before posting; fix the input
-and retry. Explicit blank comment/request-changes review bodies are rejected before
-posting. Generated `--fill` bodies still need attribution supplied
-by the agent; do not replace requested commit text with a byline-only body.
-The shim directory also links a `git` wrapper. Both wrappers run the real
-program with the session’s own `GH_TOKEN`, `GIT_SSH_COMMAND` and git
-configuration, taken from an ancestor process when the tool that started them
-dropped them (OMP’s Python tool, say), so a harness tool that scrubs its
-environment cannot post or push as the operator.
-See `docs/identity-and-bylines.md`.
+A Linux machine without a usable `/dev/kvm`, or not x86_64, cannot run the
+Firecracker backend but can still run the VM with `[vm] backend = "lima"`
+(qemu, slower; needs `qemu-system-<arch>` and lima 2.0.1 or newer, which
+`ssf vm build` checks by name). On Debian and Ubuntu the package does not
+bring host herdr; install it as setup step 2 says for host sessions. In
+`ssf vm status --json`, `running = null` is an unanswered lima probe, not a
+stopped VM; `probe_error` says why. `ssf vm status` is host
+infrastructure, `ssf status` and `ssf doctor` are guest health. When
+`ssf doctor` says the data disk is full, `ssf vm grow` (VM stopped)
+enlarges it without losing anything ([Size](vm.md#size)).
+
+Before upgrading an old copied-config VM, read the migration and recovery
+section of [the VM document](vm.md). Legacy Firecracker roots need the
+matching package and guest scripts, then `ssf vm build --force`, `ssf vm
+reset` and `ssf vm start`; legacy Lima roots need reset and start. Both keep
+the data disk; never patch a legacy seed script in place. Tailscale is
+absent from the base image: when asked to enrol the guest, run `ssf vm
+tailscale` and relay its browser URL; a root reset discards the enrolment.
+Do not enable Tailscale SSH, routes, an exit node or key-expiry changes
+unless asked.
+
+### Headless VPS or stripped container
+
+Without KVM or a systemd user session, use [the headless
+document](headless-host.md) (`ssf skill headless`) first: standalone
+binaries, host mode, `herdr server` and a foreground `ssf-server`. Keep the
+fresh server catalog empty so client and daemon share paths; skip package
+setup and linger. Refresh the package manager's indexes and install an
+OpenSSH client before key enrolment. Follow its older-gh device flow and
+token handoff, and load harness credentials into both processes at
+restart. Setup steps 3b to 3e separate owner invitation, bot acceptance,
+project board access and `SSF.md` on the default branch: do not skip
+acceptance or infer board access from repository Write. Standalone binaries
+and client-only SSH installs are in [Install
+binaries](install-binaries.md): bare binaries ship no service units or VM
+scripts, and `ssf setup` needs the packaged installation. Package
+installation leaves the service disabled; explicit setup enables it and
+asks about linger.
+
+### Several factories on one client
+
+An optional client-owned `~/.config/ssf/servers.toml` names local, VM and
+SSH factories (`ssf server list`, `ssf server show NAME`). With one entry
+commands select it implicitly; with several, every factory command needs
+`--server NAME` or `SSF_SERVER=NAME`, except `ssf dashboard`, which defaults
+to all. There is no persistent default. A fresh `ssf setup` creates the sole
+VM target `ssf-server`. `ssf server add local --local`, `ssf server add
+NAME --vm` and `ssf server add cloud --ssh ssf@factory.example.com` are the
+advanced layouts; VM creation picks a Lima-safe runtime name, a
+non-overlapping directory and a free port pair, so plan CPU, memory and
+disk per VM before building several. For an established VM, verify `ssf vm
+status` and `ssf status`, run `ssf server migrate-vm`, then verify both
+again as `ssf-server` before adding another target. Services are
+`ssf@NAME.service` on Linux (`dev.ssf.server.NAME` on macOS, logging to
+`~/Library/Logs/ssf/NAME.log`); before enabling the first target service,
+stop the legacy singleton (`systemctl --user disable --now ssf.service`,
+or `brew services stop ssf`), since ssf refuses two supervisors on one
+factory. Disable a target's service before `ssf server remove NAME`;
+catalog removal never destroys its VM or data. To operate a factory over
+SSH, `ssf --server HOST COMMAND` or `SSF_SERVER=HOST` runs the same
+`ssf-server` command endpoint; the SSH account must be able to operate it.
+
+### OMP (Oh My Pi) sign-in
+
+For VM enrolment, have the person run `ssf vm login omp` on the computer
+with their browser, select `/login` and the provider, then open the short
+loopback `/launch` URL once ssf has its SSH forwarding up; keep that
+terminal open through authorisation and exit OMP to check the result. If a
+loopback port is occupied, free it and retry. OMP stores credentials in
+`~/.omp/agent/agent.db`; a missing `auth.json` alone is not a sign-out. On
+a headless or herdr host, after OpenRouter auth run one interactive `omp`
+as the factory's Unix user and finish or Esc through the first-run wizard
+before spawning sessions; an already-logged-in provider under setup needs
+completion or skipping, not another `/login` (completion persists
+`setupVersion` in `~/.omp/agent/config.yml`). A key in the daemon
+environment is not forwarded to herdr panes and ssf has no `omp.env`
+loader: use OMP's saved credentials in the shared home, or verify the pane
+environment and a request there. Doctor success alone does not verify it.
+
+### Dashboard and web UI
+
+`ssf dashboard` (in the Linux client) watches one or several factories in
+a terminal: `--server HOST` per factory, or all catalog entries by default;
+one `status --json --watch` stream per server. Only driver-reported agents
+become cards; monitored items without an agent are listed separately.
+Keyboard and mouse selection focus a matched agent when running inside
+herdr, scoped to that herdr server. The web UI is off by default;
+`[dashboard] enabled = true` enables a loopback listener on port 8787
+after restarting ssf-server; non-loopback binds are refused, remote access
+needs an authenticated TLS reverse proxy, and the logged capability URL is
+a secret. In VM mode `dashboard.*` settings belong to the host. See [the
+dashboard document](dashboard.md).
+
+### Omarchy
+
+The bar widget is independent of the service: `omarchy plugin remove
+ssf.factory` removes only its checkout and leaves the factory running; a
+reinstall uses `ssf setup` for the user and adds the widget separately.
+Preserved configuration, state, clones and worktrees are reused unless the
+person explicitly chose `--data` at uninstall.
+
+### GitHub body handling (the `gh` shim)
+
+The session's `gh` shim stamps explicit bodies, reading only the last
+repeated body-file value; large bodies go through an anonymous file. An
+invalid UTF-8 body or a stdin read error fails before posting, as does an
+explicit blank comment or request-changes review body. Generated `--fill`
+bodies still need the byline supplied by the agent; do not replace
+requested commit text with a byline-only body. The same directory links a
+`git` wrapper; both run the real program with the session's own
+`GH_TOKEN`, `GIT_SSH_COMMAND` and git configuration, taken from an ancestor
+process when the tool that started them dropped them, so a harness tool
+that scrubs its environment still posts and pushes as the bot. See
+[Identity and bylines](identity-and-bylines.md).
