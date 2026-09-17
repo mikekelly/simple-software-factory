@@ -792,8 +792,30 @@ impl Catalog {
     }
 }
 
+/// Whether the routing environment may answer for this thread. A pane
+/// inherits `SELECTED_TARGET_ENV`/`SELECTED_VM_ENV` from the daemon
+/// through herdr, so a test that holds a
+/// `crate::config::test_support::Sandbox` answers for the state it
+/// established itself, not for a target some factory session selected
+/// (#360).
+fn ambient_routing_is_visible() -> bool {
+    #[cfg(test)]
+    {
+        !crate::config::test_support::in_sandbox()
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
 pub(crate) fn selected_vm_context() -> Result<Option<SelectedVmContext>> {
-    let Some(raw) = std::env::var_os(SELECTED_VM_ENV) else {
+    let raw = if ambient_routing_is_visible() {
+        std::env::var_os(SELECTED_VM_ENV)
+    } else {
+        None
+    };
+    let Some(raw) = raw else {
         return Ok(SERVICE_CONTEXT
             .get()
             .and_then(|context| context.route.vm_context.clone()));
@@ -811,7 +833,12 @@ pub(crate) fn selected_target_name() -> Option<String> {
 }
 
 pub(crate) fn selected_target_identity() -> Result<Option<TargetIdentity>> {
-    if let Some(raw) = std::env::var_os(SELECTED_TARGET_ENV) {
+    let raw = if ambient_routing_is_visible() {
+        std::env::var_os(SELECTED_TARGET_ENV)
+    } else {
+        None
+    };
+    if let Some(raw) = raw {
         return serde_json::from_slice(raw.as_encoded_bytes())
             .context("parsing selected server identity")
             .map(Some);
