@@ -387,7 +387,7 @@ from the release either way.
 | `src/vm.rs`, `src/vm/`, `vm/` | VM interface and constants; backend, guest, sizing, and support components; guest scripts and units |
 | `src/platform.rs` | what differs per host OS: the systemd user unit on Linux, the Homebrew launchd service on macOS |
 | `src/sessions.rs` | agent session capture and resume |
-| `src/origin.rs`, `src/shim.rs` | bylines and origin tags; the `gh` wrapper |
+| `src/origin.rs`, `src/shim.rs`, `src/shim/session.rs` | bylines and origin tags; the `gh` and `git` wrappers, and the session environment they recover |
 | `src/allow.rs` | the allow-list of GitHub users |
 | `src/release.rs` | the release and purge checks |
 | `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `handover`, `assign`, `release` and `purge` |

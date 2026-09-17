@@ -707,17 +707,28 @@ pub(super) async fn doctor() -> Result<()> {
             _ => {}
         }
     }
-    match shim::real_gh() {
+    match shim::real_tool("gh") {
         Some(gh) => check(true, format!("GitHub CLI at {}", gh.display())),
         None => check(
             false,
             "GitHub CLI (gh) not installed; agents cannot post as the bot".into(),
         ),
     }
+    // The `git` link in the shim directory wraps every git command, so a
+    // missing real git stops agents' commits and pushes rather than falling
+    // back to another one on PATH.
+    match shim::real_tool("git") {
+        Some(git) => check(true, format!("git at {}", git.display())),
+        None => check(
+            false,
+            "git not installed; agents cannot commit or push".into(),
+        ),
+    }
     let me = client_executable().and_then(std::fs::canonicalize).ok();
     let is_me = |p: &std::path::Path| me.is_some() && std::fs::canonicalize(p).ok() == me;
-    // Both links (gh and ssf) have to point at this client binary for agents
-    // to post as the bot and run the server's command endpoint.
+    // Every link (gh, git and ssf) has to point at this client binary for
+    // agents to post and push as the bot and to run the server's command
+    // endpoint.
     let links: Vec<(&str, Option<PathBuf>)> = shim::LINKS
         .iter()
         .map(|name| (*name, std::fs::read_link(shim::dir().join(name)).ok()))

@@ -80,8 +80,10 @@ pub(super) fn launch(
     // A session is already on the server machine; do not send its own ssf
     // commands back through a remote transport selected by the operator.
     cmd.env_remove("SSF_SERVER");
-    // A `gh` shim first on PATH stamps everything the agent posts with the
-    // origin tag for this issue (see src/shim.rs).
+    // A `gh` and `git` shim first on PATH stamps everything the agent posts
+    // with the origin tag for this issue and hands git the session's own
+    // identity, even from a harness tool that started with a scrubbed
+    // environment (see src/shim.rs).
     match client_executable().and_then(std::fs::canonicalize) {
         Ok(me) => match shim::install(&me) {
             Ok(dir) => match shim::prepend_to_path(&dir, std::env::var_os("PATH").as_deref()) {
@@ -94,11 +96,13 @@ pub(super) fn launch(
                 ),
             },
             Err(e) => eprintln!(
-                "ssf launch: gh shim not installed, posts will not carry origin tags ({e:#})"
+                "ssf launch: gh and git shims not installed, posts will not carry origin tags and pushes may not use the bot's identity ({e:#})"
             ),
         },
         Err(e) => {
-            eprintln!("ssf launch: gh shim not installed, posts will not carry origin tags ({e:#})")
+            eprintln!(
+                "ssf launch: gh and git shims not installed, posts will not carry origin tags and pushes may not use the bot's identity ({e:#})"
+            )
         }
     }
     let err = cmd.exec();

@@ -3,7 +3,14 @@
 //! notices it was invoked as `gh`, prepends the session's byline and origin
 //! tag to the body of anything that posts to GitHub, and execs the real gh.
 //! The same directory carries an `ssf` link to the same binary, so the `ssf`
-//! commands the prompts name run the daemon's build.
+//! commands the prompts name run the daemon's build, and a `git` link, whose
+//! shim execs the real git with the session's own environment.
+//!
+//! Both shims exec the real program with the environment `ssf launch` built
+//! for the session, recovered from an ancestor process when the tool that
+//! started them had it scrubbed (see [`session`]). Without that, a `gh` or
+//! `git push` issued from such a tool would act as the operator rather than
+//! the bot.
 //!
 //! Only `issue create|comment` and `pr create|comment|review` are touched
 //! (with `new`, gh's own alias for `create` on both);
@@ -23,33 +30,48 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use crate::origin::{Origin, stamp_with};
+use session::Session;
 
 /// Keep individual body arguments well below exec limits, including Linux’s
 /// per-argument limit. Larger bodies travel through an inherited file.
 const MAX_INLINE_BODY: usize = 32_000;
+
+mod session;
 
 /// Directory the shim lives in: `~/.config/ssf/bin`.
 pub fn dir() -> PathBuf {
     crate::config::config_dir().join("bin")
 }
 
-/// Was this process started under the name `gh`?
-pub fn invoked_as_gh() -> bool {
+/// Was this process started under the name `name`?
+fn invoked_as(name: &str) -> bool {
     std::env::args_os()
         .next()
         .map(PathBuf::from)
-        .and_then(|p| p.file_name().map(|f| f == "gh"))
+        .and_then(|p| p.file_name().map(|f| f == name))
         .unwrap_or(false)
 }
 
-/// Names linked to the ssf binary in the shim directory: `gh` (the shim)
-/// and `ssf` itself, so `ssf release`, `ssf sub` and the rest
-/// run the daemon's own build rather than whatever `ssf` the agent's shell
-/// happens to have (an older package, or nothing).
-pub const LINKS: [&str; 2] = ["gh", "ssf"];
+/// Run the shim when this process was started under one of its names, and
+/// return when it was not (an invocation as `ssf` itself).
+pub fn run_as_shim() {
+    if invoked_as("gh") {
+        run();
+    }
+    if invoked_as("git") {
+        run_git();
+    }
+}
 
-/// Make `<dir>/gh` and `<dir>/ssf` symlinks to `exe`, replacing whatever
-/// is there.
+/// Names linked to the ssf binary in the shim directory: `gh` (the shim),
+/// `git` (the same wrapper around a push, so a tool started with a scrubbed
+/// environment pushes with the session's key and credential helper) and `ssf`
+/// itself, so `ssf release`, `ssf sub` and the rest run the daemon's own build
+/// rather than whatever `ssf` the agent's shell happens to have (an older
+/// package, or nothing).
+pub const LINKS: [&str; 3] = ["gh", "git", "ssf"];
+
+/// Make the links in `dir` point at `exe`, replacing whatever is there.
 pub fn install(exe: &Path) -> Result<PathBuf> {
     let dir = dir();
     install_in(&dir, exe)?;
@@ -95,10 +117,10 @@ pub fn prepend_to_path(dir: &Path, path: Option<&std::ffi::OsStr>) -> Option<std
     std::env::join_paths(parts).ok()
 }
 
-/// The real GitHub CLI: the first `gh` on PATH that is neither this binary
-/// nor anything in the shim directory (so a missing /proc, which makes
+/// The real program of this name: the first one on PATH that is neither this
+/// binary nor anything in the shim directory (so a missing /proc, which makes
 /// `current_exe` fail, cannot turn the shim into an exec loop).
-pub fn real_gh() -> Option<PathBuf> {
+pub fn real_tool(name: &str) -> Option<PathBuf> {
     let me = std::env::current_exe().and_then(std::fs::canonicalize).ok();
     let shim_dir = dir();
     let path = std::env::var_os("PATH")?;
@@ -106,7 +128,7 @@ pub fn real_gh() -> Option<PathBuf> {
         .filter(|d| {
             *d != shim_dir && std::fs::canonicalize(d).ok() != std::fs::canonicalize(&shim_dir).ok()
         })
-        .map(|d| d.join("gh"))
+        .map(|d| d.join(name))
         .filter(|p| p.is_file())
         .find(|p| {
             let canonical = std::fs::canonicalize(p).ok();
@@ -125,19 +147,24 @@ pub fn real_gh() -> Option<PathBuf> {
 /// Entry point when invoked as `gh`. Never returns.
 pub fn run() -> ! {
     use std::os::unix::process::CommandExt;
+    let session = Session::current();
     let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let Some(real) = real_gh() else {
+    let Some(real) = real_tool("gh") else {
         eprintln!("gh: the GitHub CLI is not installed (ssf's gh shim found no other gh on PATH)");
         std::process::exit(127);
     };
     let mut cmd = std::process::Command::new(&real);
+    // A tool runner that scrubbed this process's environment (OMP's Python
+    // tool, say) must not turn a post into the human's: gh gets the session's
+    // token, ssh command and git configuration back.
+    session.apply(&mut cmd);
     let mut body_files = Vec::new();
     // Only well-formed UTF-8 argument lists are inspected; anything else is
     // handed to gh exactly as received.
     let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
-    let bot = std::env::var("SSF_BOT").ok();
-    let gh_repo = std::env::var("GH_REPO").ok();
-    match (utf8, Origin::from_env()) {
+    let bot = session.var("SSF_BOT");
+    let gh_repo = session.var("GH_REPO");
+    match (utf8, session.origin()) {
         (Some(args), Some(origin)) => {
             let shim = Shim {
                 origin: &origin,
@@ -165,6 +192,30 @@ pub fn run() -> ! {
     }
     let err = cmd.exec();
     eprintln!("gh: could not run {}: {err}", real.display());
+    std::process::exit(126);
+}
+
+/// Entry point when invoked as `git`. Never returns.
+///
+/// The command line is passed through untouched; what a scrubbed environment
+/// would otherwise cost is the session's own `GIT_*`: `GIT_SSH_COMMAND` pins
+/// the bot's key, the `GIT_CONFIG_*` entries carry its identity, signing key
+/// and credential helper, and without them git reads the human's
+/// `~/.gitconfig` and pushes with their key. `ssf git-credential` runs in the
+/// environment this execs, so the helper answers for the session's repository.
+pub fn run_git() -> ! {
+    use std::os::unix::process::CommandExt;
+    let session = Session::current();
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let Some(real) = real_tool("git") else {
+        eprintln!("git: git is not installed (ssf's git shim found no other git on PATH)");
+        std::process::exit(127);
+    };
+    let mut cmd = std::process::Command::new(&real);
+    session.apply(&mut cmd);
+    cmd.args(&raw);
+    let err = cmd.exec();
+    eprintln!("git: could not run {}: {err}", real.display());
     std::process::exit(126);
 }
 
