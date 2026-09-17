@@ -10,7 +10,10 @@ ExecStart=/usr/bin/ssf-server
 # signal, the VM is told by ssf.
 KillMode=mixed
 TimeoutStopSec=90
-Restart=on-failure
+# Any exit, a clean one included: systemd counts SIGTERM as success, so
+# `on-failure` would leave the factory down after an unexplained one (#344).
+# An explicit `systemctl stop` is not undone by this.
+Restart=always
 RestartSec=15
 Environment=RUST_LOG=info
 
