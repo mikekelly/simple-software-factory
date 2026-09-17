@@ -32,8 +32,12 @@ pub struct Sandbox {
 }
 
 /// Point `config_dir()` and `state_dir()` at a fresh temporary
-/// directory for this thread. Both exist by the time this returns, so a
-/// test can lay a fixture down before ssf writes.
+/// directory for this thread, and make the daemon's routing environment
+/// (`SSF_INTERNAL_SELECTED_TARGET`/`SSF_INTERNAL_SELECTED_VM`) invisible
+/// to it: a factory pane inherits those from the daemon, so while the
+/// guard is alive a test answers for the state it establishes itself.
+/// Both directories exist by the time this returns, so a test can lay a
+/// fixture down before ssf writes.
 pub fn sandbox() -> Sandbox {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
@@ -51,6 +55,19 @@ pub fn sandbox() -> Sandbox {
         root,
         _thread_bound: PhantomData,
     }
+}
+
+/// Whether the calling thread holds a [`Sandbox`]. While it does, the
+/// daemon's routing environment is ignored as well
+/// (`crate::server_catalog`): a pane inherits it, and a test must answer
+/// for the state it established rather than for a target some factory
+/// session selected (#360).
+pub(crate) fn in_sandbox() -> bool {
+    ACTIVE.with(|s| {
+        s.borrow()
+            .iter()
+            .any(|dirs| matches!(dirs, Dirs::Sandbox(_)))
+    })
 }
 
 impl Sandbox {

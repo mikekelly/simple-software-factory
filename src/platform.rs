@@ -729,6 +729,9 @@ mod tests {
 
     #[test]
     fn service_hints_name_the_command_for_the_os() {
+        // A pane's inherited routing environment would make the hint name
+        // the selected target instead of the unselected default.
+        let _sandbox = crate::config::test_support::sandbox();
         assert_eq!(
             service_hint_for("linux", "stop"),
             "systemctl --user stop ssf.service"
@@ -751,6 +754,9 @@ mod tests {
 
     #[test]
     fn launchctl_print_is_read_for_its_state_line() {
+        // The label is the legacy one only without a selected target, which
+        // a pane's inherited routing environment would supply.
+        let _sandbox = crate::config::test_support::sandbox();
         let running = "gui/501/homebrew.mxcl.ssf = {\n\tactive count = 1\n\tpath = /Users/me/Library/LaunchAgents/homebrew.mxcl.ssf.plist\n\tstate = running\n\n\tprogram = /opt/homebrew/opt/ssf/bin/ssf\n}\n";
         assert!(launchctl_says_running(running));
         assert!(!launchctl_says_running(
