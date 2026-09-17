@@ -70,14 +70,166 @@ impl Engine {
         }
     }
 
-    /// What one item's session runs with: the repository's config with
-    /// the item's own launch overrides applied (`ssf handover`). Every
-    /// launch, resume, relaunch, login check and event of that item goes
-    /// through this rather than through `repo` itself, or a handed-over
-    /// session would be started with the old harness's flags or probed as
-    /// the wrong harness.
+    /// What one item's next session is launched with: the repository's
+    /// config with the item's own launch overrides applied (`ssf
+    /// handover`). Every launch, resume, relaunch and re-creation of that
+    /// item goes through this rather than through `repo` itself, or a
+    /// handed-over session would be started with the old harness's flags.
+    /// It says nothing about a session that is already running: a config
+    /// edit does not change what a live pane is on, and the questions
+    /// about that one go through `live_harness`.
     pub(in crate::engine) fn effective(&self, repo: &RepoConfig, number: u64) -> RepoConfig {
         repo.with_overrides(self.overrides_of(repo, number).as_ref())
+    }
+
+    /// The workspaces of a repository as the driver last reported them this
+    /// pass (`Driver::ps`): the panes live in it, and the agent each one is
+    /// running. Read once a pass, so the login check, the handover
+    /// bookkeeping and the guidance a live session is given all see the
+    /// same answer. False when the driver could not be asked, which nothing
+    /// stands in for: a question about a pane is not answered by a guess,
+    /// and a read that failed is remembered as that for the rest of the
+    /// pass rather than retried by every caller.
+    pub(in crate::engine) async fn learn_workspaces(&mut self, repo: &RepoConfig) -> bool {
+        if self.workspaces_read.contains(&repo.name) {
+            return self.workspaces.contains_key(&repo.name);
+        }
+        self.refresh_workspaces(repo).await
+    }
+
+    /// [`learn_workspaces`](Self::learn_workspaces) reading the driver
+    /// again whatever this pass already saw. `ssf handover` decides on the
+    /// answer, and the CLI answers it between passes; a pass that changes
+    /// which harness is in a workspace has to read again too, since the
+    /// panes it read at the start describe the session it has just ended.
+    pub(in crate::engine) async fn refresh_workspaces(&mut self, repo: &RepoConfig) -> bool {
+        self.workspaces_read.insert(repo.name.clone());
+        match self.driver(repo).ps().await {
+            Ok(list) => {
+                self.workspaces.insert(repo.name.clone(), list);
+                true
+            }
+            Err(e) => {
+                // Nothing stands in for the answer: a pane whose harness is
+                // not known is read as the stack its record would launch,
+                // never as the one read in some earlier pass, and a caller
+                // that has to know which panes are there is told to wait
+                // for a pass that can ask.
+                self.workspaces.remove(&repo.name);
+                debug!(
+                    repo = repo.name,
+                    "the driver's workspaces could not be read, so what each pane runs is unknown: {e:#}"
+                );
+                false
+            }
+        }
+    }
+
+    /// The workspaces of a repository as last read this pass; empty when
+    /// the driver could not be asked (`learn_workspaces` says which).
+    pub(in crate::engine) fn workspaces_of(&self, repo: &RepoConfig) -> &[WorkspaceInfo] {
+        self.workspaces
+            .get(&repo.name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// Forget this pass's read of a repository's panes: the driver changed
+    /// what is in a workspace since (a handover ended one harness and
+    /// started another), and what the pass asks next has to see the
+    /// harness that is there now.
+    pub(in crate::engine) fn forget_workspaces(&mut self, repo: &RepoConfig) {
+        self.workspaces_read.remove(&repo.name);
+    }
+
+    /// The harness the pane of an item's session is running, from the
+    /// driver's own report (`AgentInfo.agent_type`). `None` when nothing
+    /// live reports one: an item that has never been launched, a workspace
+    /// the driver does not list, a driver that could not be asked, or a
+    /// pane whose agent the driver does not recognise.
+    pub(in crate::engine) fn running_harness(
+        &self,
+        repo: &RepoConfig,
+        number: u64,
+    ) -> Option<String> {
+        let owner = self.owner_of(repo, number);
+        let id = self.peek(repo, owner)?.worktree_id.as_deref()?;
+        self.workspaces_of(repo)
+            .iter()
+            .find(|w| w.worktree_id == id)
+            .and_then(WorkspaceInfo::primary_agent)
+            .and_then(|a| a.agent_type.clone())
+    }
+
+    /// The harness a question about the session that is *live now* is asked
+    /// with: what its pane is running when the driver reports one, and the
+    /// harness its record would launch otherwise (nothing started yet, or
+    /// a driver that cannot say). The screen it is showing, the login it
+    /// needs and the guidance it reads all follow this; what a launch,
+    /// resume or relaunch starts is `effective`, never this.
+    pub(in crate::engine) fn live_harness(&self, repo: &RepoConfig, number: u64) -> String {
+        self.running_harness(repo, number)
+            .unwrap_or_else(|| self.effective(repo, number).harness)
+    }
+
+    /// What the item is on now, for the commands and posts that have to name
+    /// it: the harness its pane is running when the driver reports one, with
+    /// the record's model, effort and command. A session left on another
+    /// harness by a config edit (`ssf repo set`) keeps that harness, and
+    /// there its model, effort and command stay unset: only the harness is
+    /// the driver's to report, and what that session was launched with is
+    /// not on the record, so nothing is claimed about it.
+    pub(in crate::engine) fn current_stack(&self, repo: &RepoConfig, number: u64) -> Current {
+        let mut eff = self.effective(repo, number);
+        let mut unknown_stack = false;
+        if let Some(running) = self
+            .running_harness(repo, number)
+            .filter(|running| *running != eff.harness)
+        {
+            eff.harness = running;
+            eff.model = None;
+            eff.effort = None;
+            eff.command = None;
+            unknown_stack = true;
+        }
+        Current {
+            harness: eff.harness,
+            model: eff.model,
+            effort: eff.effort,
+            command: eff.command,
+            unknown_stack,
+        }
+    }
+
+    /// The stack a command is naming, checked the way both commands that
+    /// write one need it: a harness ssf knows, a model and effort that
+    /// harness takes, installed where the daemon runs, and signed in as of
+    /// now. The login is asked afresh rather than off the pass's memo: an
+    /// operator who signs the harness in and runs the command again must
+    /// get the new answer, not the one from up to a poll interval ago.
+    pub(in crate::engine) async fn check_stack(
+        &mut self,
+        harness: &str,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
+        if !crate::agents::is_known(harness) {
+            anyhow::bail!("{harness} is not a harness ssf knows (see `ssf agents`)");
+        }
+        crate::models::validate(harness, model, effort)?;
+        let name = login::display_name(harness);
+        if !(self.installed)(harness) {
+            anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");
+        }
+        self.probes.remove(harness);
+        let probe = self.probe_harness(harness).await;
+        if probe.state == LoginState::SignedOut {
+            anyhow::bail!(
+                "{name} is not signed in here; {}",
+                login::how_to_sign_in(harness)
+            );
+        }
+        Ok(())
     }
 
     /// The overrides that govern an item: its own, or, for an item bound
@@ -157,6 +309,8 @@ impl Engine {
             probe: std::sync::Arc::new(login::probe),
             installed: std::sync::Arc::new(crate::agents::installed),
             probes: BTreeMap::new(),
+            workspaces: BTreeMap::new(),
+            workspaces_read: BTreeSet::new(),
             refetch: BTreeSet::new(),
             startup_pass: false,
             onboarding: None,

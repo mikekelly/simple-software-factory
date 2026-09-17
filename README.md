@@ -406,6 +406,7 @@ ssf tell 12 "stop, I'm changing the spec"   # steer that session from your shell
 ssf handover --harness codex --model gpt-5.5 --summary "..."   # inside a session: hand the item to a new session on another harness, model or effort
 ssf handover 12 --harness pi --no-summary          # or from your shell, like tell (owner/name#12, or --as)
 ssf handover 12 --cancel                           # drop a handover the daemon has not carried out yet
+ssf assign 12 --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high   # open the issue with gh, then start its first session on that stack
 ssf release [12 | --as acme/widgets#12] [--force]   # remove a session's workspace once its work is on origin
 ssf purge [--dry-run] [--older-than DAYS] [--force] # remove the clean workspaces of closed items; list the rest, a checkout whose workspace was closed by hand included
 ssf guide                         # the reference for agents (the initial prompt points at it)
@@ -523,7 +524,7 @@ covers and who needs it; they are installed under `/usr/share/doc/ssf/docs/`.
 | [Inside a VM](docs/vm.md) | running the whole factory in a Firecracker microVM on Linux; also documents the work-in-progress lima backend for macOS |
 | [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards, and the boundary between `SSF.md` and `AGENTS.md` |
 | [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and how the byline and origin tag say which session posted |
-| [Sessions](docs/sessions.md) | which session owns an item, second opinions, following and messaging other sessions, release and purge |
+| [Sessions](docs/sessions.md) | which session owns an item, second opinions, following and messaging other sessions, assigning a stack before an item's first session, handovers, release and purge |
 | [Under the hood](docs/internals.md) | polling, delivery, resume and restarts; the `ssf status --json` fields; known limits |
 | [Development](docs/development.md) | building, scratch runs, a dev build as the service, the source layout |
 

@@ -215,8 +215,8 @@ another session counts as that session):
   (decisions, questions that change scope, status) goes on the item.
 - Delegating parents are subscribed to their children automatically.
 
-`sub`, `unsub`, `tell`, `handover`, `release` and `purge` talk to the
-running daemon over a Unix socket in the state directory (`ssf.sock`),
+`sub`, `unsub`, `tell`, `handover`, `assign`, `release` and `purge` talk to
+the running daemon over a Unix socket in the state directory (`ssf.sock`),
 because the daemon owns the state and the delivery path; `ssf doctor`
 reports whether it answers. `subs`, `peers` and `status` read the state
 file and work without it.
@@ -269,7 +269,7 @@ The events, and nothing else:
 | `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
-| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
+| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line; when the harness ending is the one its pane runs and not the one its record names -- a config edit under a live session -- only `from` is written, followed by `from stack: unknown (the harness on the pane is not the record's)`, since ssf has no model, effort or command of that session's to report); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
 
 The `handed-over` post is what a reader sees when an item changes stack
 (see [Handover](#handover)):
@@ -365,8 +365,13 @@ would keep pasting activity into a terminal that cannot act.
 So every pass, for each session whose agent is idle, ssf reads the bottom
 of its screen and, if it shows the harness's sign-in prompt (the phrases
 are the harnesses' own, as seen on their screens; `driver::login_dialog`
-has the list per harness), marks the session **blocked**. Two things keep
-an agent's own screen from tripping this: only the bottom of an idle
+has the list per harness), marks the session **blocked**. The harness
+those phrases are checked against is the one the driver reports for that
+pane, not the one the item's record would launch: a config edit under a
+live session ([`ssf repo set`](setup.md#8-watch-a-repository)) leaves the
+pane on the harness it was started with, and judging its codex screen by
+OMP's phrases would miss the block and keep pasting into it. Two things
+keep an agent's own screen from tripping this: only the bottom of an idle
 agent's screen counts, and a line inside echoed `[ssf]` text (a pasted
 prompt, or activity delivered from the item, where a person may well have
 quoted the phrase) is skipped. Every text ssf itself puts on a screen or
@@ -420,11 +425,15 @@ restarted screen is clean.
 on the host (claude auth status: signed in)`, or `FAIL ... not signed in
 ...` with the command to run, or `note ... cannot tell` for a harness ssf
 has no check for, such as Copilot's keyring. The harnesses in use are the
-ones the configured repositories name and any a [handover](#handover) put
-on an item, and the line for one of those says which item put it there
+ones the configured repositories name and any a [handover](#handover) or
+an [assignment](#assigning-a-stack-before-there-is-a-session) put on an
+item, and the line for one of those says which item put it there and how
 (`Pi signed in on the host (~/.pi/agent/auth.json present; used by
-acme/widgets#12 after a handover)`); such a harness is checked for being
-installed too, which nothing else here would look for. With the factory
+acme/widgets#12 after a handover)`, or `... used by acme/widgets#13
+assigned`); such a harness is checked for being installed too, which
+nothing else here would look for, and an item an assignment has pinned
+counts before it has been onboarded (one that is closed or merged does
+not: no pass will ever start a session on it). With the factory
 in a VM the command is forwarded into the guest, so the check happens
 where the agents are.
 
@@ -435,7 +444,9 @@ the daemon to end the session working on the item and start a new one on
 another harness, model or effort level, in the same worktree, on the same
 branch, with a summary the outgoing session writes. A person asks for it
 on the issue ("hand this over to Codex on gpt-5.5 at medium") and the
-agent runs one command; an operator does the same from a shell.
+agent runs one command; an operator does the same from a shell. An item
+that has no session yet takes its first stack from `ssf assign` instead
+([below](#assigning-a-stack-before-there-is-a-session)).
 
 ```sh
 ssf handover --harness codex --model gpt-5.5 --effort medium --summary "..."  # inside a session
@@ -484,15 +495,21 @@ done, and anything it starts now is thrown away with its pane.
 
 **Refused straight away**, with the reason, and nothing recorded:
 
-- the item has no running session (nothing to hand over: assign the bot
-  to it instead);
+- the item has no running session (nothing to hand over: give it its first
+  session with `ssf assign <item> --harness <id>` instead);
 - the harness id is not one ssf knows, the effort level is not one that
   harness offers, or the model id is not shaped like one;
 - the harness is not installed where the daemon runs, or its login probe
   says it is signed out (with the factory in a VM this is the guest's
   login, see [A harness that is not signed in](#a-harness-that-is-not-signed-in));
 - a handover on the item is already pending, or a release is;
-- the item is already on that harness with that model and effort;
+- the item is already on that harness with that model and effort, judged
+  against the harness its pane is running (not the one its record would
+  launch): `ssf handover <item> --harness <the configured one>` is the
+  accepted way to bring a session left behind by a
+  [`ssf repo set`](setup.md#8-watch-a-repository) onto the configured
+  stack, and an operator who asks for what is genuinely already running
+  is still refused;
 - the summary is longer than 8,000 characters;
 - the summary would read as a harness's own sign-in screen (it quotes
   `Please run /login`, say). The summary is pasted into the new
@@ -510,7 +527,12 @@ session it was held for: when the item was told of it, the pass posts
 **On the next pass** (within `daemon.poll_interval_secs`, and before the
 repository's items are polled) the daemon:
 
-1. checks the item is still active and its workspace still known;
+1. checks the item is still active and its workspace still known, and that
+   the driver can say what is running in it: the harness the session is on
+   is what the `handed-over` post and the new session's opening line name
+   as the one being taken over from, so a driver that cannot answer leaves
+   the handover on the next pass (`ssf handover` refuses outright in that
+   state, rather than comparing the request against the record);
 2. ends the outgoing agent's pane, leaving the worktree and its branch
    exactly as they are;
 3. retires the outgoing session on the record (its conversation id, its
@@ -628,7 +650,101 @@ item alone rather than resuming the old harness only to stop it. The
 overrides last until the workspace is released or the item is purged,
 which clears them; the item then comes back on the repository's own
 harness, model and effort. `ssf status` and `ssf peers` show both the
-overrides and a pending handover.
+overrides and a pending handover, and word them by which of the two
+writers put them there (`ssf peers`: `handed over to pi` after a handover,
+`harness pi` after an assignment; `ssf status`: `handed over: harness=pi`
+and `assigned: harness=pi`, below).
+
+## Assigning a stack before there is a session
+
+An item's stack can also be chosen before it has a session at all, so its
+*first* session comes up on it instead of on the repository's:
+`ssf assign` assigns the bot on GitHub and writes the item's per-item
+overrides in the same request. The daemon answers the CLI between polls,
+so the two cannot be separated by a pass that onboards the item with the
+old stack.
+
+```sh
+ssf assign 12 --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
+ssf assign acme/widgets#12 --harness codex --model gpt-5.5   # from a shell
+ssf assign 12 --harness pi --json                            # the same as data
+```
+
+- **Which item.** The item comes first, as `owner/name#N` or as a bare
+  `N` with `SSF_REPO` set or `--as owner/repo#N`, exactly like
+  `ssf handover`, `ssf release` and `ssf tell`.
+- **Which stack.** `--harness` is required and `--model` and `--effort`
+  are optional, checked exactly the way `ssf handover` checks them:
+  against the levels that harness offers and the shape of a model id,
+  and then, in the daemon, against what is installed and signed in where
+  the daemon runs. A stack equal to the one the item would run anyway is
+  assigned *without* writing overrides, so asking for the repository's
+  own stack leaves the item following `ssf repo set`.
+- **The assignment stays in `gh`'s hands.** ssf opens no issue: create it
+  with `gh issue create`, then assign it a stack. `gh issue create
+  --assignee <bot>` still works on its own, and is what a session uses to
+  hand work off (see above); `ssf assign` is for the cases where that
+  first session should not come up on the repository's stack — an
+  orchestrator or project-manager item, an architectural review, a deep
+  audit. There is no `--cancel`: the inverse is unassigning the bot
+  (`gh issue edit --remove-assignee <bot>`), and once there is a session
+  `ssf handover` is the tool.
+- **A closed item** is assigned and given its stack like any other, but no
+  pass onboards one (every listing ssf reads is `state=open`), so no
+  session starts until the item is open again; the command says so instead
+  of promising a session within the poll interval. `--json` carries the
+  same thing as `open`.
+
+The item is picked up on the daemon's next pass, within
+`daemon.poll_interval_secs`, like any other assignment: the overrides are
+already on the record, so the `attached` post and the launch log both
+name the stack that was asked for. Onboarding does not clear the
+overrides, and the startup pass, a re-created workspace and a resumed
+conversation all use them.
+
+**Refused straight away**, with the reason, and nothing assigned and
+nothing written:
+
+- the item has a session already (a workspace) — `ssf handover` moves
+  that one to another stack;
+- a handover or a release on the item is pending — each is carried out on
+  the next pass, and a handover can be called off with `ssf handover
+  --cancel`;
+- the item is bound to another item's session (its own overrides would be
+  inert, since the bound item runs its owner's stack) — the refusal names
+  the owner and the command that fits it (`ssf handover` when the owner
+  is running, `ssf assign` when it has no session either). A
+  `mode=delegate` item is not bound: it was handed off to be worked, and
+  it takes a stack of its own;
+- the repository is not watched, the harness is not one ssf knows, it is
+  not installed where the daemon runs, or its login probe says it is
+  signed out, or the effort level is not one it offers;
+- the model id is not shaped like one.
+
+A *retired* open item — the bot no longer assigned, so nothing is
+running — is not a session and stays assignable: the assignment brings it
+back, in the workspace it kept or in one re-created from its branch. A
+*closed* item is accepted too and gets its stack, but no pass onboards
+one: it waits until the item is open again, and the answer says so rather
+than promising a session. A conversation recorded for the harness the item
+last ran is dropped when the new stack runs a different harness, so the
+resume path never hands an old harness's conversation id to a new one.
+
+The answer names the stack and what will happen to it:
+
+```
+Assigned the bot to acme/widgets#12 ("Rework the parser"). Its session starts on Pi (model openrouter/anthropic/claude-sonnet-4, effort high) on the daemon's next pass (within 10s). The item keeps that stack for every later start until its workspace is released, and `ssf handover` is how it changes from here.
+```
+
+`--json` returns what `ssf handover --json` does (`session`, `title` and
+the `from`/`to` launch), plus `assigned` (whether this request put the bot
+on the item, `false` when it was already there), `overrides_written` and
+`open` (whether a pass will onboard the item now).
+
+`ssf status` and `ssf peers` say which command put the item on its stack
+(`harness pi` after an assignment, `handed over to pi` after a handover):
+`state.json` records the writer as `assigned_at` next to the `overrides` a
+handover stamps with `handed_over_at`.
 
 ## Workspaces after close: release and purge
 

@@ -88,6 +88,25 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
             },
+            Request::Assign {
+                item,
+                harness,
+                model,
+                effort,
+                by,
+            } => match self
+                .assign(
+                    &item,
+                    &harness,
+                    model.as_deref(),
+                    effort.as_deref(),
+                    by.as_deref(),
+                )
+                .await
+            {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::err(format!("{e:#}")),
+            },
             Request::Purge {
                 dry_run,
                 older_than_days,
@@ -239,7 +258,7 @@ impl Engine {
 
     /// A watched repository and an item number out of `owner/repo#N` (a
     /// session or item reference from the CLI).
-    fn locate(&self, item: &str) -> Result<(RepoConfig, u64)> {
+    pub(in crate::engine) fn locate(&self, item: &str) -> Result<(RepoConfig, u64)> {
         let o = Origin::parse(item).with_context(|| format!("{item}: expected owner/repo#N"))?;
         let repo = self
             .cfg

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::allow::{self, AllowList, Source};
 use crate::config::DriverKind;
 use crate::config::{Config, RepoConfig};
-use crate::driver::{Delivery, Driver, Drivers, Relaunch, Worktree};
+use crate::driver::{Delivery, Driver, Drivers, Relaunch, WorkspaceInfo, Worktree};
 use crate::events::{self, Attach, Conversation, Event};
 use crate::github::{Conditional, GitHub, Issue, PrInfo, RepositoryIdentity};
 #[cfg(test)]
@@ -155,6 +155,16 @@ pub struct Engine {
     /// The probes run this pass, by harness: one per harness per pass
     /// however many sessions are blocked.
     probes: BTreeMap<String, Probe>,
+    /// Each repository's workspaces as the driver reported them this pass
+    /// (`Engine::learn_workspaces`): what every live pane is running, for
+    /// the questions about the session that is there now -- which harness's
+    /// sign-in prompt is on its screen, which harness's guidance it reads.
+    /// Not what a launch uses: that is `effective`.
+    workspaces: BTreeMap<String, Vec<WorkspaceInfo>>,
+    /// Repositories whose workspaces have been read this pass, so a pass
+    /// reads them once whatever asks first. `ssf handover` reads them
+    /// again, since it decides on them out of band.
+    workspaces_read: BTreeSet<String>,
     /// Repositories whose next pass fetches every listing in full (a
     /// session came back mid-pass and its held activity is owed). Unlike
     /// `probes` above it, this is not per-pass state: the whole point is
@@ -192,6 +202,26 @@ struct Collaborators {
     /// Logins with push access, as GitHub gave them.
     logins: Vec<String>,
     etag: Option<String>,
+}
+
+/// What an item's session is on *now*, for the questions about the session
+/// that is live: the harness its pane is running when the driver reports
+/// one, with the model, effort and command the record holds for it (see
+/// `Engine::current_stack`). What a launch starts is `Engine::effective`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Current {
+    /// The harness id (`ssf handover --harness` takes this form), not the
+    /// display name.
+    harness: String,
+    model: Option<String>,
+    effort: Option<String>,
+    /// The command that starts the harness, when the record has one for
+    /// the harness named here.
+    command: Option<String>,
+    /// The harness here is the pane's and not the record's, so the model,
+    /// effort and command above are empty because ssf does not have the
+    /// stack that session was started with (see `Engine::current_stack`).
+    unknown_stack: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -316,6 +346,7 @@ struct Diff {
 }
 
 mod implementation {
+    mod assignment;
     mod conflicts;
     mod delivery;
     mod handovers;

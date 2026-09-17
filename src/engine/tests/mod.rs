@@ -32,6 +32,8 @@ pub(super) fn engine() -> Engine {
         }),
         installed: std::sync::Arc::new(|_| true),
         probes: BTreeMap::new(),
+        workspaces: BTreeMap::new(),
+        workspaces_read: BTreeSet::new(),
         refetch: BTreeSet::new(),
         startup_pass: false,
         onboarding: None,
@@ -219,6 +221,9 @@ struct GitHubStub {
     /// Comments posted (`/repos/o/r/issues/N/comments`), in order:
     /// the path and the comment body.
     posts: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    /// Assignee POSTs (`/repos/o/r/issues/N/assignees`), in order: the
+    /// path and the login asked for.
+    assignments: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     /// Pending repository invitations and the ids accepted through PATCH.
     invitations: std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
     accepted_invitations: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
@@ -245,6 +250,7 @@ impl GitHubStub {
         let collaborators: Arc<Mutex<Option<Vec<Value>>>> = Arc::default();
         let collab_version = Arc::new(AtomicU32::new(1));
         let posts: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
+        let asg: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
         let invitations: Arc<Mutex<Vec<Value>>> = Arc::default();
         let accepted_invitations: Arc<Mutex<Vec<u64>>> = Arc::default();
         let rejected_invitations: Arc<Mutex<BTreeSet<u64>>> = Arc::default();
@@ -255,6 +261,7 @@ impl GitHubStub {
             ssh_url: "git@github.com:o/r.git".into(),
         }));
         let p = posts.clone();
+        let ag = asg.clone();
         let (h, c, v) = (hits.clone(), created.clone(), created_etag.clone());
         let cf = created_fulls.clone();
         let (a, t, k, kv) = (
@@ -351,6 +358,17 @@ impl GitHubStub {
                         accepted.lock().unwrap().push(id);
                         ("204 No Content", "\"accepted\"".to_string(), String::new())
                     }
+                } else if method == "POST" && path.ends_with("/assignees") {
+                    let login = serde_json::from_str::<Value>(&sent)
+                        .ok()
+                        .and_then(|v| v["assignees"][0].as_str().map(str::to_string))
+                        .unwrap_or_else(|| sent.clone());
+                    asg.lock().unwrap().push((path.to_string(), login));
+                    (
+                        "201 Created",
+                        "\"a\"".to_string(),
+                        r#"{"number":1,"assignees":[{"login":"bot"}]}"#.to_string(),
+                    )
                 } else if method == "POST" && path.ends_with("/comments") {
                     let comment = serde_json::from_str::<Value>(&sent)
                         .ok()
@@ -453,6 +471,7 @@ impl GitHubStub {
             collaborators,
             collab_version,
             posts,
+            assignments: ag,
             invitations,
             accepted_invitations,
             rejected_invitations,
@@ -475,6 +494,11 @@ impl GitHubStub {
     /// The comments posted since the last call: endpoint and body.
     fn post_bodies(&self) -> Vec<(String, String)> {
         std::mem::take(&mut *self.posts.lock().unwrap())
+    }
+
+    /// The assignee POSTs since the last call: endpoint and login.
+    fn assignments(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.assignments.lock().unwrap())
     }
 
     fn set_collaborators(&self, list: Option<Vec<Value>>) {
@@ -767,6 +791,7 @@ fn handover_launch(harness: &str) -> events::Launch {
         command: None,
         driver: "herdr".into(),
         branch: Some("refs/heads/bot/issue-5".into()),
+        unknown_stack: false,
     }
 }
 
@@ -922,6 +947,7 @@ const EXPIRED: &str = "2026-01-01T00:00:00Z";
 // only an item that is assigned, and a mention cannot be withdrawn.
 
 mod access_and_conflicts;
+mod assignments;
 #[path = "events/mod.rs"]
 mod event_tests;
 mod handovers;

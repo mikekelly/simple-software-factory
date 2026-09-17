@@ -79,6 +79,16 @@ comment (the last comment the bot left on it). Assigning @{bot} to an existing i
 fresh session too. A session that was handed an item this way is told so, \
 and its final comment on the item is all the delegating session gets, so it should sum up the \
 outcome.\n\n\
+An item supervised from here can also be started on a stack chosen for the work: open the \
+issue, then `ssf assign <n|owner/repo#n> --harness <id> [--model <id>] [--effort <level>]`. The \
+assignment lands on GitHub and the item's launch settings are written in the same request, so \
+the session that onboards it comes up on them -- a stronger reasoning model for an \
+orchestrator or project-manager item, an architectural review, a deep audit -- and they stay \
+with the item until its workspace is released. The item starts in the same poll-interval \
+window as any other; `ssf models <harness>` lists the model ids that harness takes, and its \
+effort levels are in `ssf agents --json`. Asking for the stack the item already runs writes no \
+overrides, and an item that already has a session is refused: `ssf handover` is the tool for \
+one.\n\n\
 ## Handing over\n\n\
 When a person asks on the item for another harness, model or effort, or another stack plainly \
 fits the work better, hand the item over: `ssf handover --harness <id> [--model <id>] [--effort \

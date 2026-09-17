@@ -341,6 +341,9 @@ fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
         model: Some("openai/gpt-6".into()),
         effort: Some("high".into()),
     });
+    // A handover is the writer that stamps the item; an assignment does
+    // not (see `an_assigned_session_shows_the_stack_it_was_given`).
+    one.handed_over_at = Some("2026-09-07T09:00:00Z".into());
     // The harness it went to never read what the outgoing session
     // left: the note waits on the item for the one that does.
     one.handover_note = Some(HandoverNote {
@@ -416,6 +419,160 @@ fn a_handed_over_session_shows_its_own_harness_and_a_pending_handover() {
     assert_eq!(v["sessions"][0]["handover_note"]["from"], "Claude Code");
     assert_eq!(v["sessions"][0]["handover_note"]["summary_chars"], 13);
     assert!(v["sessions"][2]["handover_note"].is_null());
+}
+
+/// `ssf assign` writes the same overrides a handover does, and a person
+/// reading the status commands is told which of the two put the stack
+/// there: an assigned item is on `harness pi` with the model and effort
+/// facts, not "handed over to pi" (which is also where the item's
+/// `via assigned` trigger sits on the same line).
+#[test]
+fn an_assigned_session_shows_the_stack_it_was_given() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut one = item(1, Some("r1::/w/one"));
+    one.overrides = Some(Overrides {
+        harness: "pi".into(),
+        model: Some("openai/gpt-6".into()),
+        effort: Some("high".into()),
+    });
+    one.assigned_at = Some("2026-09-07T09:00:00Z".into());
+    // Overrides an assignment wrote, on an item that was handed over
+    // before them: the assignment's stamp is the one that counts.
+    let mut three = item(3, Some("r1::/w/three"));
+    three.overrides = Some(Overrides {
+        harness: "codex".into(),
+        model: None,
+        effort: None,
+    });
+    three.handed_over_at = Some("2026-09-07T08:00:00Z".into());
+    three.assigned_at = Some("2026-09-07T09:00:00Z".into());
+    let mut two = item(2, Some("r1::/w/two"));
+    two.overrides = Some(Overrides {
+        harness: "pi".into(),
+        model: None,
+        effort: None,
+    });
+    two.handed_over_at = Some("2026-09-07T09:00:00Z".into());
+    let st = state_with(vec![one, two, three]);
+    let s = sessions(&cfg(), &st, None);
+    assert!(s[0].assigned_stack, "assigned: its own stamp");
+    assert!(!s[1].assigned_stack, "the handover stamped it");
+    assert!(s[2].assigned_stack, "the assignment wrote these last");
+    let table = render_peers(&s, None);
+    assert!(table.contains("harness pi"), "{table}");
+    assert!(table.contains("model openai/gpt-6"), "{table}");
+    assert!(table.contains("handed over to pi"), "{table}");
+    assert!(table.contains("harness codex"), "{table}");
+    let snap = Snapshot {
+        cfg: cfg(),
+        state: st,
+        workspaces: Vec::new(),
+        down: Vec::new(),
+        errors: Vec::new(),
+    };
+    let text = render_status(&snap);
+    assert!(
+        text.contains("assigned: harness=pi model=openai/gpt-6 effort=high"),
+        "{text}"
+    );
+    assert!(text.contains("handed over: harness=pi\n"), "{text}");
+    assert!(text.contains("assigned: harness=codex\n"), "{text}");
+}
+
+/// A session left on another harness by a config edit (`ssf repo set`) says
+/// what its pane is running and what the next launch would start. Only the
+/// harness is the driver's to report, so the stack the *next* launch uses is
+/// the only one with a model and effort (#349).
+#[test]
+fn a_session_left_on_an_older_harness_reports_both_stacks() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut cfg = cfg();
+    cfg.repos[0].model = Some("deepseek/deepseek-flash".into());
+    cfg.repos[0].effort = Some("high".into());
+    let st = state_with(vec![item(1, Some("r1::/w/one"))]);
+    let ws = vec![workspace(
+        "r1::/w/one",
+        None,
+        Some(AgentInfo {
+            state: "working".into(),
+            agent_type: Some("codex".into()),
+            ..Default::default()
+        }),
+    )];
+    let joined = sessions(&cfg, &st, Some(&ws));
+    let s = &joined[0];
+    assert_eq!(s.harness, "codex", "the pane, not the config");
+    assert_eq!(s.model, None, "what the running session was launched with");
+    assert_eq!(s.effort, None);
+    let next = s.next_launch.as_ref().expect("the change is pending");
+    assert_eq!(next.harness, "claude");
+    assert_eq!(next.model.as_deref(), Some("deepseek/deepseek-flash"));
+    assert_eq!(next.effort.as_deref(), Some("high"));
+    assert_eq!(
+        s.next_launch_change().as_deref(),
+        Some("harness codex → claude next launch (model deepseek/deepseek-flash, effort high)")
+    );
+    let peers = render_peers(&joined, None);
+    assert!(
+        peers.contains(
+            "harness codex → claude next launch (model deepseek/deepseek-flash, effort high)"
+        ),
+        "{peers}"
+    );
+    let snap = Snapshot {
+        cfg,
+        state: st,
+        workspaces: ws,
+        down: Vec::new(),
+        errors: Vec::new(),
+    };
+    let v = snap.to_json();
+    assert_eq!(v["sessions"][0]["harness"], "codex");
+    assert_eq!(v["sessions"][0]["next_launch"]["harness"], "claude");
+    assert_eq!(v["sessions"][0]["model"], serde_json::Value::Null);
+    let text = render_status(&snap);
+    assert!(
+        text.contains(
+            "harness codex → claude next launch (model deepseek/deepseek-flash, effort high)"
+        ),
+        "{text}"
+    );
+    let card = dashboard_presentation(&v).unwrap();
+    assert_eq!(card["cards"][0]["harness"], "codex");
+    assert_eq!(card["cards"][0]["next_launch"]["harness"], "claude");
+}
+
+/// The ordinary case is untouched: an item that has never been launched
+/// reports the stack its record would launch, and nothing is pending.
+#[test]
+fn a_session_that_never_launched_reports_the_configured_stack() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut cfg = cfg();
+    cfg.repos[0].model = Some("opus".into());
+    cfg.repos[0].effort = Some("high".into());
+    let s = sessions(
+        &cfg,
+        &state_with(vec![item(1, Some("r1::/w/one"))]),
+        Some(&[]),
+    );
+    assert_eq!(s[0].harness, "claude");
+    assert_eq!(s[0].model.as_deref(), Some("opus"));
+    assert_eq!(s[0].effort.as_deref(), Some("high"));
+    assert!(s[0].next_launch.is_none());
+    assert!(s[0].next_launch_change().is_none());
+    let json = serde_json::to_string(&s[0]).unwrap();
+    assert!(!json.contains("next_launch"), "{json}");
+    // And the same through the whole payload: nothing is invented for a
+    // session the driver does not know about.
+    let snap = Snapshot {
+        cfg,
+        state: state_with(vec![item(1, Some("r1::/w/one"))]),
+        workspaces: Vec::new(),
+        down: Vec::new(),
+        errors: Vec::new(),
+    };
+    assert_eq!(snap.to_json()["sessions"][0]["harness"], "claude");
+    assert!(snap.to_json()["sessions"][0]["next_launch"].is_null());
 }
 
 #[test]

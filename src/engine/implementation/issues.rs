@@ -13,7 +13,10 @@ impl Engine {
             .worktree_path
             .as_deref()
             .and_then(|p| ProjectPrompt::load(repo, Path::new(p)));
-        let harness = self.effective(repo, st.number).harness;
+        // The guidance is the running harness's: a session left on another
+        // one by a config edit reads the notes for the harness it is
+        // actually on, not for the one the next launch would start.
+        let harness = self.live_harness(repo, st.number);
         let global_prompt = ProjectPrompt::load_global(repo);
         let global_harness_prompt = ProjectPrompt::load_global_harness(repo, &harness);
         let harness_prompt = st

@@ -171,12 +171,26 @@ Panel {
     return b.length > 40 ? b.slice(0, 39) + "…" : b
   }
 
+  // What the session is on, and what its next launch would start when a
+  // config edit left a live session on an older harness (`codex → omp next
+  // launch`); a change waits for the next launch, resume or relaunch.
+  function stackLabel(s) {
+    var harness = String(s.harness || "")
+    if (harness === "") return ""
+    var next = s.next_launch && s.next_launch.harness ? String(s.next_launch.harness) : ""
+    if (next !== "") return harness + " → " + next + " next launch"
+    if (s.model) return harness + " · " + String(s.model)
+    return harness
+  }
+
   // repo · branch · activity · who else is on it.
   function factsLine(s) {
     var parts = []
     var repo = String(s.repo || "")
     if (repo.indexOf("/") >= 0) repo = repo.slice(repo.indexOf("/") + 1)
     if (repo !== "") parts.push(repo)
+    var stack = stackLabel(s)
+    if (stack !== "") parts.push(stack)
     var state = githubStateLabel(s)
     if (state !== "") parts.push(state)
     var branch = shortBranch(s)

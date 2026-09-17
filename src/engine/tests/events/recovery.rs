@@ -187,6 +187,21 @@ fn ssf_texts_never_look_like_a_login_prompt() {
                 10,
             ),
             crate::handover_recorded_text("o/r#5", "Fix it", &name, None, None, None, None, 10),
+            crate::assign_recorded_text(
+                "o/r#7",
+                "Fix it",
+                "Pi",
+                Some("openai/gpt-6"),
+                Some("high"),
+                None,
+                true,
+                true,
+                true,
+                10,
+            ),
+            crate::assign_recorded_text(
+                "o/r#7", "Fix it", &name, None, None, None, false, false, false, 10,
+            ),
             crate::handover_recorded_text(
                 "o/r#5",
                 "Fix it",
@@ -272,7 +287,7 @@ async fn harness_notes_follow_the_session_through_handover_and_restart() {
     assert!(!prompts[0].contains("Claude-only guidance."));
 
     // A fresh session after the handover uses the persisted override.
-    let restarted = e.first_message(&r, 5).await.unwrap().text;
+    let restarted = e.first_message(&r, 5, None).await.unwrap().text;
     assert!(restarted.contains("Shared project guidance."));
     assert!(restarted.contains("Global shared guidance."));
     assert!(restarted.contains("Global Codex guidance."));
@@ -280,6 +295,70 @@ async fn harness_notes_follow_the_session_through_handover_and_restart() {
     assert!(restarted.contains("Codex-only guidance."));
     assert!(!restarted.contains("Claude-only guidance."));
 }
+
+/// The guidance a session is given is the one for the harness it is *on*: a
+/// pane left on Codex by a config edit reads `SSF.codex.md`, not the
+/// configured harness's file, while a harness started from scratch reads the
+/// one it will run (#349).
+#[tokio::test]
+async fn guidance_follows_the_harness_on_the_pane() {
+    let sandbox = crate::config::test_support::sandbox();
+    let global = sandbox.home().join(".ssf");
+    std::fs::create_dir_all(&global).unwrap();
+    for (file, text) in [
+        ("SSF.codex.md", "Global Codex guidance."),
+        ("SSF.omp.md", "Global OMP guidance."),
+    ] {
+        std::fs::write(global.join(file), text).unwrap();
+    }
+    let worktree = sandbox.root().join("worktree");
+    std::fs::create_dir_all(&worktree).unwrap();
+    for (file, text) in [
+        ("SSF.codex.md", "Codex-only guidance."),
+        ("SSF.omp.md", "OMP-only guidance."),
+    ] {
+        std::fs::write(worktree.join(file), text).unwrap();
+    }
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = RepoConfig {
+        harness: "omp".into(),
+        ..repo()
+    };
+    e.cfg.repos = vec![r.clone()];
+    e.entry(&r, 5).worktree_path = Some(worktree.to_string_lossy().into_owned());
+    d.runs("w5", "codex");
+    // A pass reads what each pane is running, as every pass does.
+    stub.set_assigned(vec![assigned_item(5, "alice", "u1")]);
+    stub.set_timeline(5, vec![assigned_by(1, "alice")]);
+    e.tick_repo(&r).await.unwrap();
+    let issue: Issue = serde_json::from_value(assigned_item(5, "alice", "u1")).unwrap();
+    // The message the session that is there would be given: its own
+    // harness's notes, not the configured one's.
+    let text = e.initial_text(&r, &issue, &[]);
+    assert!(text.contains("Codex-only guidance."), "the pane's harness");
+    assert!(text.contains("Global Codex guidance."));
+    assert!(!text.contains("OMP-only guidance."));
+    assert!(!text.contains("Global OMP guidance."));
+    // A harness that has to start from scratch is told the stack it will
+    // run, and not the one the read at the top of the pass still has for
+    // the pane that has just died.
+    d.with(|s| {
+        s.live.remove("w5");
+    });
+    e.entry(&r, 5).agent_session_id = None;
+    e.deliver_to(&r, 5, "[ssf] hello", None).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(prompts[0].contains("OMP-only guidance."), "{}", prompts[0]);
+    assert!(prompts[0].contains("Global OMP guidance."));
+    assert!(!prompts[0].contains("Codex-only guidance."));
+    assert!(prompts[0].contains("Global OMP guidance."));
+    assert!(!prompts[0].contains("Codex-only guidance."));
+    // ... and the delivered activity, which the harness needs to see.
+    assert!(prompts[0].contains("[ssf] hello"));
+}
+
 #[tokio::test]
 async fn a_handover_replaces_the_session_in_the_same_workspace() {
     let _sandbox = crate::config::test_support::sandbox();

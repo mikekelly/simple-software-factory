@@ -47,7 +47,8 @@ and its reason reads "because the agent session on Claude Code working on
 it handed #N over to you".
 
 `ssf guide` prints the reference (other sessions, `ssf sub`/`ssf tell`,
-items a session opens and hand-offs, second opinions through herdr,
+items a session opens and hand-offs, assigning a stack to an item before
+its first session, second opinions through herdr,
 wrapping up, the byline, the `Closes #N` suggestion) from the same binary, so it cannot
 drift from the daemon. Follow-up messages carry the activity and at most
 one line after it.

@@ -42,19 +42,37 @@ pub struct Session {
     /// Why the bot got involved: `assigned`, `mentioned`, `review_requested`,
     /// `created` (the bot's own item).
     pub triggers: Vec<String>,
-    /// The harness this item's session runs, the per-item overrides of a
-    /// handover applied (`overrides` says whether they are in play).
+    /// The harness this item's session runs: what the driver reports for
+    /// its pane (`AgentInfo.agent_type`), and the harness its record would
+    /// launch when nothing live reports one (`next_launch` says whether
+    /// the two differ).
     pub harness: String,
     /// Model and effort the session runs with, overrides applied; `None`
-    /// is the harness's own default.
+    /// is the harness's own default. Left out while `next_launch` is set:
+    /// a pane on another harness was launched with a stack ssf does not
+    /// have on the record, and these are the next launch's, not its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    /// Set when a handover moved this session off the repository's
-    /// configured harness, model or effort.
+    /// The stack the next launch, resume, relaunch or re-creation uses,
+    /// when it is not the one running: the repository's config with the
+    /// item's overrides applied. A config edit does not touch a session
+    /// that is already live, so the change waits for the next launch, and
+    /// this is what makes it visible rather than hidden.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_launch: Option<Stack>,
+    /// Set when a handover or an assignment moved this session off the
+    /// repository's configured harness, model or effort.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overrides: Option<Overrides>,
+    /// `overrides` were written by `ssf assign` rather than by a
+    /// handover: the two write the same thing, and each stamps the item
+    /// it wrote (`IssueState::assigned_at` against
+    /// `IssueState::handed_over_at`), so a session can say which command
+    /// put the item on the stack it runs. This is what the status
+    /// commands word them by.
+    pub assigned_stack: bool,
     /// A handover the daemon has accepted and not carried out yet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handover: Option<HandoverView>,
@@ -146,6 +164,17 @@ pub struct Session {
     /// login is back; a person has to sign the harness in.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<BlockedView>,
+}
+
+/// A stack a session is launched with: a harness, and the model and effort
+/// it takes (`None` is the harness's own default).
+#[derive(Debug, Clone, Serialize)]
+pub struct Stack {
+    pub harness: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 /// A handover waiting for the daemon's next pass, for `ssf status --json`
@@ -326,6 +355,31 @@ impl Session {
     pub fn is_pull_request(&self) -> bool {
         self.kind == "pull_request"
     }
+
+    /// The change waiting on this session, as the status commands word it:
+    /// `harness codex → omp next launch`, with the model and effort the
+    /// next launch uses. `None` while the pane is on the stack the record
+    /// names, which is the ordinary case.
+    pub fn next_launch_change(&self) -> Option<String> {
+        let next = self.next_launch.as_ref()?;
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(m) = &next.model {
+            extra.push(format!("model {m}"));
+        }
+        if let Some(e) = &next.effort {
+            extra.push(format!("effort {e}"));
+        }
+        Some(if extra.is_empty() {
+            format!("harness {} → {} next launch", self.harness, next.harness)
+        } else {
+            format!(
+                "harness {} → {} next launch ({})",
+                self.harness,
+                next.harness,
+                extra.join(", ")
+            )
+        })
+    }
 }
 
 /// Everything `ssf status` reports, gathered once.
@@ -487,16 +541,26 @@ pub fn sessions_with(
         for item in rs.issues.values() {
             let ws = workspaces.and_then(|list| find_workspace(list, item));
             // An item bound to another session shares its workspace, and
-            // so the harness a handover put in it. The binding is followed
-            // to its end, as the daemon follows it: an item bound to a
-            // bound item is the first one's session's too.
+            // so the harness a handover or an assignment put in it. The
+            // binding is followed to its end, as the daemon follows it:
+            // an item bound to a bound item is the first one's session's
+            // too.
             let owner = crate::state::owner_in(&rs.issues, item.number);
-            let overrides = rs
-                .issues
-                .get(&owner)
-                .or(Some(item))
-                .and_then(|o| o.overrides.as_ref());
-            out.push(join(repo, item, owner, overrides, ws, workspaces.is_some()));
+            let source = rs.issues.get(&owner).unwrap_or(item);
+            // Which command wrote the stack: `assigned_at` is set exactly
+            // when an assignment wrote it, since only `finish_handover`
+            // clears it (an assignment leaves the handover's own stamp
+            // alone, because that one bounds the capture window).
+            let assigned = source.assigned_at.is_some();
+            out.push(join(
+                repo,
+                item,
+                owner,
+                source.overrides.as_ref(),
+                assigned,
+                ws,
+                workspaces.is_some(),
+            ));
         }
     }
     out
@@ -560,17 +624,34 @@ fn workspace_state(
 }
 
 /// `owner` is the item whose session acts on this one (itself, unless it
-/// is bound), and `overrides` the ones that govern it: the owner's.
+/// is bound), `overrides` the ones that govern it (the owner's), and
+/// `assigned` whether those came from `ssf assign` rather than a handover.
 fn join(
     repo: &RepoConfig,
     item: &IssueState,
     owner: u64,
     overrides: Option<&Overrides>,
+    assigned: bool,
     ws: Option<&WorkspaceInfo>,
     driver_available: bool,
 ) -> Session {
     let eff = repo.with_overrides(overrides);
     let agent = ws.and_then(WorkspaceInfo::primary_agent);
+    // What the pane is running, when the driver reports an agent type for
+    // it. A session that has never been launched has no workspace to
+    // report one, so the stack the record would launch stands in for it,
+    // and the two agree.
+    let running = agent.and_then(|a| a.agent_type.clone());
+    let harness = running.unwrap_or_else(|| eff.harness.clone());
+    // A config edit does not touch a session that is already live: the
+    // harness the pane is on and the one the next launch starts differ,
+    // and that difference is what the status commands show instead of
+    // hiding behind the config.
+    let next_launch = (harness != eff.harness).then(|| Stack {
+        harness: eff.harness.clone(),
+        model: eff.model.clone(),
+        effort: eff.effort.clone(),
+    });
     let agent_state = match (ws, agent) {
         (Some(_), Some(a)) => a.state.clone(),
         (Some(_), None) => "no-agent".into(),
@@ -606,10 +687,20 @@ fn join(
             .unwrap_or_else(|| if item.active { "open" } else { "unknown" }.into()),
         active: item.active,
         triggers: item.triggers.clone(),
-        harness: eff.harness.clone(),
-        model: eff.model.clone(),
-        effort: eff.effort.clone(),
+        harness,
+        model: if next_launch.is_some() {
+            None
+        } else {
+            eff.model.clone()
+        },
+        effort: if next_launch.is_some() {
+            None
+        } else {
+            eff.effort.clone()
+        },
+        next_launch,
         overrides: overrides.cloned(),
+        assigned_stack: assigned,
         handover: item.handover.as_ref().map(HandoverView::of),
         handover_note: item.handover_note.as_ref().map(HandoverNoteView::of),
         owner: if item.subscriber_only {
@@ -728,8 +819,15 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         if let Some(p) = &s.delegated_by {
             facts.push(format!("handed off by {p}"));
         }
+        if let Some(next) = s.next_launch_change() {
+            facts.push(next);
+        }
         if let Some(o) = &s.overrides {
-            facts.push(format!("handed over to {}", o.harness));
+            facts.push(if s.assigned_stack {
+                format!("harness {}", o.harness)
+            } else {
+                format!("handed over to {}", o.harness)
+            });
             if let Some(m) = &o.model {
                 facts.push(format!("model {m}"));
             }
@@ -875,6 +973,9 @@ pub fn render_status(snap: &Snapshot) -> String {
                     ago(s.released_at.as_deref())
                 ));
             }
+            if let Some(next) = s.next_launch_change() {
+                out.push_str(&format!("          {next}\n"));
+            }
             if let Some(o) = &s.overrides {
                 let mut what = format!("harness={}", o.harness);
                 if let Some(m) = &o.model {
@@ -883,7 +984,14 @@ pub fn render_status(snap: &Snapshot) -> String {
                 if let Some(e) = &o.effort {
                     what.push_str(&format!(" effort={e}"));
                 }
-                out.push_str(&format!("          handed over: {what}\n"));
+                out.push_str(&format!(
+                    "          {}: {what}\n",
+                    if s.assigned_stack {
+                        "assigned"
+                    } else {
+                        "handed over"
+                    }
+                ));
             }
             if let Some(h) = &s.handover {
                 out.push_str(&format!("          handover pending: {}\n", h.describe()));
@@ -998,7 +1106,15 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
                 value.to_owned()
             }
         };
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"agent_session_id":metadata("agent_session_id")}));
+        // The stack the next launch uses when it is not the one running:
+        // the owning row's own, or the live row's (a bound item is worked
+        // in its owner's workspace, so the pane there is what is running).
+        let next_launch = [primary, runtime]
+            .into_iter()
+            .map(|row| row["next_launch"].clone())
+            .find(|value| !value.is_null())
+            .unwrap_or(Value::Null);
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"next_launch":next_launch,"agent_session_id":metadata("agent_session_id")}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");

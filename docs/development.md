@@ -378,7 +378,7 @@ from the release either way.
 |------|------|
 | `src/main.rs`, `src/bin/ssf-server.rs`, `src/lib.rs` | binary entry points and shared library module declarations |
 | `src/cli/` | argument definitions, client dispatch, and handlers grouped by command family (auth, repos/config, sessions, VM, UI, doctor, launch, daemon) |
-| `src/engine.rs`, `src/engine/implementation/` | engine state and helpers; reconciliation, onboarding, issue updates, delivery, lifecycle, handovers, releases, and conflict checks |
+| `src/engine.rs`, `src/engine/implementation/` | engine state and helpers; reconciliation, onboarding, issue updates, delivery, lifecycle, handovers, assignment, releases, and conflict checks |
 | `src/engine/requests.rs` | daemon-side handling of CLI requests over the IPC socket |
 | `src/github.rs` | REST and GraphQL client (listings, timelines, boards, collaborators) |
 | `src/prompt.rs`, `src/prompt/timeline.rs`, `src/prompt/guide.rs` | prompt templates, timeline event rendering, and the on-demand `ssf guide` reference |
@@ -390,7 +390,7 @@ from the release either way.
 | `src/origin.rs`, `src/shim.rs` | bylines and origin tags; the `gh` wrapper |
 | `src/allow.rs` | the allow-list of GitHub users |
 | `src/release.rs` | the release and purge checks |
-| `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `handover`, `release` and `purge` |
+| `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `handover`, `assign`, `release` and `purge` |
 | `src/dashboard.rs`, `src/dashboard_herdr.rs`, `src/dashboard_transport.rs` | terminal dashboard, optional Herdr focus, and reusable SSH status transport |
 | `src/dashboard_web.rs`, `dashboard/` | optional server HTTP dashboard and embedded browser assets |
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |

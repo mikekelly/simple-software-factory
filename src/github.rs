@@ -746,6 +746,30 @@ impl GitHub {
             .to_string())
     }
 
+    /// Assign `login` to an issue or pull request (`ssf assign`). GitHub
+    /// answers with the updated item; nothing here needs it.
+    pub async fn add_assignee(
+        &self,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        login: &str,
+    ) -> Result<()> {
+        let url = self.url(&format!("repos/{owner}/{repo}/issues/{number}/assignees"));
+        let resp = self
+            .post(&url)
+            .json(&serde_json::json!({ "assignees": [login] }))
+            .send()
+            .await
+            .with_context(|| format!("POST {url}"))?;
+        Self::check(
+            resp,
+            &format!("assigning @{login} to {owner}/{repo}#{number}"),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Full timeline for an issue, oldest first, all pages.
     pub async fn timeline(&self, owner: &str, repo: &str, number: u64) -> Result<Vec<Value>> {
         let mut url = Some(format!(

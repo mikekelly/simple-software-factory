@@ -304,13 +304,15 @@ path for SSF guidance you would rather not commit.
 For additional instructions specific to a harness, add `SSF.<harness>.md` at
 the checkout root, for example `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md`.
 Use the harness identifier from the configuration. ssf appends this file after
-the shared SSF guidance, under its own "Harness guidance" heading. It uses the harness
-actually starting the session, including after a handover or restart, and
-includes no other harness's file. These optional files are independent of
-`repo.prompt_file`: changing the shared guidance path does not change their
-location. Missing, empty, or HTML-comment-only files add nothing; HTML
-comments are filtered just as in the shared guidance. `ssf doctor` checks the
-shared SSF guidance only.
+the shared SSF guidance, under its own "Harness guidance" heading. It uses the
+harness the session is on: the one the driver reports for its pane when there is
+one (so a session the config changed under reads its own harness's file, not the
+configured one's), and the one about to start otherwise, including after a
+handover or restart. It includes no other harness's file. These optional files
+are independent of `repo.prompt_file`: changing the shared guidance path does
+not change their location. Missing, empty, or HTML-comment-only files add
+nothing; HTML comments are filtered just as in the shared guidance.
+`ssf doctor` checks the shared SSF guidance only.
 Harness guidance is also appended only to the issue-owning main session, not
 automatically to subagents that harness creates.
 
@@ -393,10 +395,12 @@ twice.
 ### Per-item overrides
 
 `ssf handover` (see [Handover](sessions.md#handover)) moves one item to
-another harness, model or effort level without touching `config.toml`.
-What it sets is a per-item override, kept on the item in `state.json`
-next to the rest of its record, and it wins over the `[[repo]]` the item
-belongs to:
+another harness, model or effort level without touching `config.toml`, and
+`ssf assign` (see [Assigning a stack before there is a
+session](sessions.md#assigning-a-stack-before-there-is-a-session)) starts an
+item's *first* session on one. What they set is a per-item override, kept
+on the item in `state.json` next to the rest of its record, and it wins
+over the `[[repo]]` the item belongs to:
 
 - **The same harness the repository uses**: the repository's `command`
   still starts the agent, and the override's model and effort replace the
@@ -420,9 +424,40 @@ state file, so it survives daemon and machine restarts, and an item bound
 to another session's workspace follows that session's override. `ssf
 status` and `ssf peers` show the overridden harness, model and effort on
 the item's line (and `overrides` in `--json`), together with a handover
-that has not been carried out yet. Releasing the workspace or purging the
-item clears the override, and the item comes back on the repository's own
-settings.
+that has not been carried out yet, worded by which command wrote them
+(`ssf peers`: `handed over to pi` after `ssf handover`, `harness pi` after
+`ssf assign`; `ssf status`: `handed over: harness=pi` against `assigned:
+harness=pi`). Which of the two it was is recorded on the item
+(`assigned_at` for an assignment, `handed_over_at` for a handover), not
+inferred, so a later command taking the overrides over changes the
+wording with them.
+Releasing the workspace or purging the item clears the override, and the
+item comes back on the repository's own settings. `ssf assign` writes
+nothing at all when the stack it is given is the one the item would run
+anyway: an override nobody needs would pin the item out of `ssf repo
+set`.
+
+### What a session runs, against what launches next
+
+An override and the repository's config are both about the *next* launch:
+they say what a session would be started with. What a session that is
+already running is on is the driver's answer, not the config's -- the
+harness reported for its pane (`AgentInfo.agent_type`) governs what ssf
+reports, which harness's sign-in prompt it looks for on the screen, and
+which `SSF.<harness>.md` guidance the session is given. Change a
+repository's harness, model or effort under a live session and that
+session stays where it is: ssf does not restart a running agent under an
+operator, and `ssf repo set` prints a line saying so when the repository
+has running sessions. The change waits for that session's next launch,
+resume, relaunch or re-creation, and until then `ssf status` and `ssf
+peers` show both sides (`harness codex → omp next launch (model
+deepseek/deepseek-flash, effort high)`, and `next_launch` beside
+`harness` in `--json`; the dashboard cards and the bar widget show
+`codex → omp next launch`). The running session's own model and effort
+are left out while the two differ: only the harness is the driver's to
+report, and ssf does not have the stack that session was started with.
+`ssf handover <item> --harness <the configured one> ...` is how to move
+one onto it now (see [Handover](sessions.md#handover)).
 
 ## Codex native delivery
 
