@@ -267,37 +267,39 @@ source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
 
 ## The SSF agent guidance file
 
-Optional machine-wide context belongs in `~/.ssf/SSF.md`. For example, it can
-tell every SSF session how this factory machine is networked or which local
-services are available. `~/.ssf/SSF.<harness>.md` adds machine-wide context
-only for the selected harness, such as `~/.ssf/SSF.codex.md`. In VM mode these
-paths are in the guest user's home; in host mode they are in the host user's
-home.
+`SSF.md` at the repository root is the operating contract for ssf-spawned
+sessions: how the owner wants them to behave as unattended colleagues on an
+item (planning, who decides, posting, review, merging, boards, delegation,
+what delivered means). Repository-wide build, test, implementation,
+architecture, domain and safety policy belongs in `AGENTS.md`, which
+applies however an agent was started. ssf appends `SSF.md` to the
+issue-owning main session's first prompt only, never to subagents the
+harness creates, so advice meant for the orchestrating agent alone (keep
+this context for deliberation, delegate execution) is safe there.
+[Writing SSF.md](ssf-md.md) (`ssf skill ssf-md`) is the guide;
+[`SSF.example.md`](../SSF.example.md) (installed as
+`/usr/share/ssf/SSF.example.md`, and on macOS as
+`$(brew --prefix)/share/ssf/SSF.example.md`) is the template. This
+repository's own [`SSF.md`](../SSF.md) is one example, its
+[`AGENTS.md`](../AGENTS.md) the policy that goes with it, and
+[`CLAUDE.md`](../CLAUDE.md) the one-line `@AGENTS.md` that keeps a single
+copy.
 
-The operating contract that only applies to an ssf-spawned agent goes in an
-`SSF.md` at the repository root: issue ownership and communication, project
-board choices and status mappings, delegation and handoffs, bounded review,
-completion and merge authority. Repository-wide build, test, implementation,
-architecture, domain and safety policy belongs in `AGENTS.md`, where it applies
-regardless of how an agent was started. SSF injects this guidance into the
-issue-owning main session, not into subagents the harness creates, so it can
-define the main agent's orchestration role without spending subagent context on
-workflow that does not apply to them. When an agent is started for an item, ssf
-reads `SSF.md` from
-the item's own checkout (so a PR branch that changes it is seen with its own
-version) and appends it to the initial prompt under an "SSF agent guidance" heading.
-The complete instruction order is `daemon.instructions`, global shared and
-global harness guidance, `repo.instructions`, repository shared guidance, then
-repository harness guidance. The same text is included
-when an agent is started again from scratch. No file, or an empty one, adds
-nothing, and `ssf doctor` reports a repository whose SSF guidance is missing
-(`FAIL no SSF.md in owner/name; start from /usr/share/ssf/SSF.example.md`;
-on a Mac the message names the Homebrew copy instead, under
-`$(brew --prefix)/share/ssf/`, since ssf looks beside its own binary
-first there), looking for the file through the GitHub
-contents API on `repo.base_branch`
-(else the default branch), so no clone is needed; an absolute or `~/`
-`prompt_file` is looked for on the machine instead. `repo.prompt_file` names another
+When an agent is started for an item, ssf reads `SSF.md` from the item's
+own checkout (so a PR branch that changes it is seen with its own version)
+and appends it under an "SSF agent guidance" heading. The complete
+instruction order is `daemon.instructions`, global shared and global
+harness guidance, `repo.instructions`, repository shared guidance, then
+repository harness guidance. The same text is included when an agent is
+started again from scratch; it is not repeated on later messages. No file,
+or an empty one, adds nothing, and `ssf doctor` reports a repository whose
+SSF guidance is missing (`FAIL no SSF.md in owner/name; start from
+/usr/share/ssf/SSF.example.md`; on a Mac the message names the Homebrew
+copy instead, under `$(brew --prefix)/share/ssf/`, since ssf looks beside
+its own binary first there), looking for the file through the GitHub
+contents API on `repo.base_branch` (else the default branch), so no clone
+is needed; an absolute or `~/` `prompt_file` is looked for on the machine
+instead. `repo.prompt_file` names another
 file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
 path for SSF guidance you would rather not commit.
 
@@ -322,26 +324,16 @@ or inspect them. A handover selects the new harness's global and repository
 harness files. Repository guidance comes later in the prompt so it can refine
 the broader machine context.
 
-Put only SSF-session working preferences here (see [What the agent is told](prompts.md)).
-`repo.model` selects the session's model, not its subagents' models. Optional
-subagent preferences belong in this guidance or `repo.instructions` and depend
-on what the harness supports; they are not daemon-enforced settings (see
-[Choosing the harness and the model](setup.md#choosing-the-harness-and-the-model)).
-[`SSF.example.md`](../SSF.example.md) (installed as
-`/usr/share/ssf/SSF.example.md`, and on macOS as
-`$(brew --prefix)/share/ssf/SSF.example.md`) is a starting point for the SSF
-operating contract: one independently valuable outcome per issue, a short
-plan, useful delegation and concise delivery evidence. Implementation tasks
-stay on their owning issue; separate issues are for independently prioritized
-outcomes outside its scope. Use non-closing PR references for ongoing tracking
-issues. The template uses self-review for documentation/tests and one review
-for behavior changes, with at most one focused follow-up for substantive
-fixes. Unresolved defects mean simplifying or holding delivery, not extending
-the review loop. Validation matches the change; package builds are not a
-per-round requirement (see [Second
-opinions](sessions.md#second-opinions-the-gauntlet)).
-This repository's own [`SSF.md`](../SSF.md) supplies its SSF-session guidance;
-[`AGENTS.md`](../AGENTS.md) supplies its repository-wide policy.
+Optional machine-wide context belongs in `~/.ssf/SSF.md`: the operator's
+preferences for every session on this factory, such as how the machine is
+networked or which local services are available. `~/.ssf/SSF.<harness>.md`
+adds machine-wide context only for the selected harness, such as
+`~/.ssf/SSF.codex.md`. In VM mode these paths are in the guest user's home;
+in host mode they are in the host user's home. `SSF.<harness>.md` at the
+repository root does the same for one repository. `repo.model` selects the
+session's model, not its subagents' models; subagent preferences belong in
+this guidance and depend on what the harness supports (see [Choosing the
+harness and the model](setup.md#choosing-the-harness-and-the-model)).
 
 ## Models and effort levels
 

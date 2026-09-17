@@ -29,6 +29,7 @@ person's account. Preserve uncommitted and unpushed work.
 | --- | --- |
 | `ssf skill setup` | `docs/setup.md`: first factory, authentication, harness/model selection |
 | `ssf skill agent` | `docs/agent-guidance.md`: agent operating rules and safety boundaries |
+| `ssf skill ssf-md` | `docs/ssf-md.md`: writing a repository's `SSF.md`, and what belongs in `AGENTS.md` instead |
 | `ssf skill liaison` | `docs/liaison.md`: the assistant that acts for a person, on the factory host or from their machine |
 | `ssf skill client-cli` | `docs/skills/client-cli.md`: everyday CLI and target selection |
 | `ssf skill server` | `docs/skills/server.md`: daemon, services, diagnosis |

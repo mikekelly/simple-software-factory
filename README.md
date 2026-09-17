@@ -289,7 +289,7 @@ The Linux packages install the same paths on every distribution:
 | `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
 | `/usr/lib/systemd/user/ssf.service` | legacy singleton service retained for unmigrated installations |
 | `/usr/lib/systemd/user/ssf@.service` | one target-qualified background service instance per named local or VM server |
-| `/usr/share/ssf/SSF.example.md` | a starting point for your repository's SSF-agent operating contract in `SSF.md` |
+| `/usr/share/ssf/SSF.example.md` | a starting point for your repository's SSF-agent operating contract in `SSF.md` ([Writing SSF.md](docs/ssf-md.md) explains it) |
 | `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
 | `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
 | `/usr/share/doc/ssf/` | this file and `docs/`, [Setup](docs/setup.md) among them |
@@ -335,8 +335,8 @@ the short form after that explicit setup is:
    effort require an explicit choice when the harness supports them), and
    an `SSF.md` at its root telling SSF-spawned
    agents how to own and communicate work, manage the board, review and
-   complete it, starting from
-   [`SSF.example.md`](SSF.example.md).
+   complete it, starting from [`SSF.example.md`](SSF.example.md) and
+   [Writing SSF.md](docs/ssf-md.md).
    Machine-wide context can optionally go in `~/.ssf/SSF.md`, with
    harness-specific additions in `~/.ssf/SSF.<harness>.md`.
 
