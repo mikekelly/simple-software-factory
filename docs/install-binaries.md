@@ -27,10 +27,10 @@ prebuilt binaries in this release workflow.
 ## Download and install on Linux
 
 Select a release and matching architecture explicitly. For example, these
-commands install the published v0.9.3 client for Linux x86_64 without sudo:
+commands install the published v0.9.4 client for Linux x86_64 without sudo:
 
 ```sh
-version=0.9.3
+version=0.9.4
 arch=x86_64                 # aarch64 for Linux ARM64
 base="https://github.com/mikekelly/simple-software-factory/releases/download/v$version"
 download_dir=$(mktemp -d)
