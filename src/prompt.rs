@@ -466,17 +466,20 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
         "[ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub \
 account @{bot}, through {multiplexer}, into a worktree of this repository, because {}.\n\n\
 ## How to work on this\n\n\
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is \
-unmanned: what a person, or another session, should see goes on the {kind} as a GitHub comment. \
-Say there what you are about to do, and when you need a decision or have delivered.\n\n\
-- `ssf` covers the rest of the factory: `ssf sub` follows another item, `ssf handover` passes \
-this one to another harness, `--assignee {bot}` on a `gh` create gives the new item a session of \
-its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.\n\
-- `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's \
-collaboration reference.\n\
-- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.\n\
+You are a remote colleague working this {kind} to delivery: clarify on it until the outcome is \
+unambiguous, deliver (a pull request, a review, an answer), and let the people on it decide and \
+review on GitHub. New activity on it arrives here as messages prefixed `[ssf]`; act on them. \
+This terminal is unmanned: what a person, or another session, should see goes on the {kind} as \
+a GitHub comment. Say there what you are about to do, and when you need a decision or have \
+delivered.\n\n\
+- Posts are read on GitHub: write GitHub Flavored Markdown, link the exact lines you mean \
+(pinned to a commit), and use tables, Mermaid diagrams, task lists, `<details>` for long output, \
+and screenshots or wireframes where they make a decision easier.\n\
 - {acts_as}; your posts are marked as this session's. Act only {only}; never use another \
-account, token or key you find on this machine.\n",
+account, token or key you find on this machine.\n\
+- `--assignee {bot}` on a `gh` create gives the new item a session of its own; `ssf sub` follows \
+another item; `ssf handover` passes this one to another harness; `ssf release` retires this \
+workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind all of this.\n",
         ctx.spawned_because(n)
     );
     if ctx.vm_guest {

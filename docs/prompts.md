@@ -2,21 +2,21 @@
 
 The prompts ssf writes: the first message an agent gets, the follow-ups, the project boards section, and what is deliberately left to repository-owned guidance. For whoever wonders why an agent behaves as it does, or is writing an `SSF.md`.
 
-ssf's own prompting is the bare functional minimum. The initial prompt opens
-with `[ssf]`, like later event deliveries, and with "How to work on this",
-which says only what ssf owns:
+ssf's own prompting is the bare functional minimum: what ssf owns, plus
+every affordance a session needs for coherent work, since reading the
+guide is not guaranteed. The initial prompt opens with `[ssf]`, like later
+event deliveries, and with "How to work on this":
 
 ```
 [ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this repository, because #16 was assigned to @bot.
 
 ## How to work on this
 
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. Say there what you are about to do, and when you need a decision or have delivered.
+You are a remote colleague working this issue to delivery: clarify on it until the outcome is unambiguous, deliver (a pull request, a review, an answer), and let the people on it decide and review on GitHub. New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. Say there what you are about to do, and when you need a decision or have delivered.
 
-- `ssf` covers the rest of the factory: `ssf sub` follows another item, `ssf handover` passes this one to another harness, `--assignee bot` on a `gh` create gives the new item a session of its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.
-- `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's collaboration reference.
-- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.
+- Posts are read on GitHub: write GitHub Flavored Markdown, link the exact lines you mean (pinned to a commit), and use tables, Mermaid diagrams, task lists, `<details>` for long output, and screenshots or wireframes where they make a decision easier.
 - `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as @bot; never use another account, token or key you find on this machine.
+- `--assignee bot` on a `gh` create gives the new item a session of its own; `ssf sub` follows another item; `ssf handover` passes this one to another harness; `ssf release` retires this workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind all of this.
 ```
 
 The operating contract comes first. After the block above come ssf's own
@@ -31,13 +31,18 @@ session reads what it is being asked to do before the material that
 applies to it, and the `[ssf]` marker on the item's header still keeps its
 Markdown from colliding with harness composer shortcuts.
 
-The block names the CLI's affordances and points at the reference instead
-of teaching the tools: `ssf skill` prints the guidance bundled with the
-executing binary, `ssf guide` the session's collaboration reference.
-What a capable model already knows (`gh` mechanics, worktrees, how to
-write a GitHub post) is left unsaid; the markdown worth asking for is one
-clause, and the concretes behind it — links to specific lines, tables,
-Mermaid diagrams — are a rule in `ssf guide`, which this block names.
+The block opens with the thesis in one sentence (a remote colleague
+working the item to delivery, clarifying until the outcome is
+unambiguous, with the people on it deciding on GitHub), so a session
+behaves sensibly even in a repository without an `SSF.md`. It then names
+what a session needs and cannot discover: the GitHub affordances that
+make a post actionable (line links pinned to a commit, tables, Mermaid,
+task lists, `<details>`, images), the identity it acts as, and the `ssf`
+commands that drive the factory, ordered by how often a session needs
+them. `ssf guide` is its one pointer; `ssf skill` is an operator's index
+and is not named. What a capable model already knows (`gh` mechanics,
+worktrees, how to write a comment) is left unsaid, and what each
+affordance is for is the guide's to explain.
 
 When `[git].credential` (or the repository's) names someone other than the bot,
 the identity line reads
@@ -70,11 +75,11 @@ it handed #N over to you".
 session opens and hand-offs, assigning a stack to an item before its
 first session, second opinions through herdr, wrapping up, the byline,
 the `Closes #N` suggestion, and the markdown the prompt leaves to it)
-from the same binary, so it cannot drift from the daemon. It opens by
-pointing at the CLI's own guidance: `ssf skill` prints the topic index
-bundled with the executing binary, `ssf skill sessions` the lifecycle
-reference behind the guide. Follow-up messages carry the activity and at
-most one line after it.
+from the same binary, so it cannot drift from the daemon. It names
+`ssf skill sessions` as the lifecycle reference behind it, and keeps the
+herdr recipe for a second opinion on another agent in a labelled section
+at the end, after the principle. Follow-up messages carry the activity
+and at most one line after it.
 
 Every message names its item once: `#N "title"` with the URL on first
 mention (the header of a first message, or of an FYI), `#N` alone in later

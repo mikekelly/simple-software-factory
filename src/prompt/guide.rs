@@ -21,10 +21,18 @@ Simple Software Factory (ssf) runs one agent session per GitHub issue or pull re
 involves the bot account @{bot}. Each session has a workspace (a git worktree of the \
 repository) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login.{machine} \
-This guide is the reference behind the initial prompt; `ssf skill` prints the guidance bundled \
-with this binary, and `ssf skill sessions` the lifecycle reference behind it.\n\n\
-Posts are read on GitHub, so write them in GitHub Flavored Markdown: links to specific lines of \
-code or Markdown, tables and Mermaid diagrams make a post easier to follow than prose.\n\n\
+This guide is the reference behind the initial prompt, and `ssf skill sessions` the lifecycle \
+reference behind this guide.\n\n\
+## Posts\n\n\
+Posts are read on GitHub, so write them in GitHub Flavored Markdown, and use what GitHub turns \
+into something people can act on: links to lines of code or Markdown pinned to a commit (a \
+branch link drifts with the next push); tables and Mermaid diagrams where they make a decision, \
+dependency or status easier to see; task lists (`- [ ]`) for a plan or acceptance criteria, \
+which GitHub tracks on the item; `<details>` around logs, test output and long diffs, so the \
+conclusion stays above the evidence; fenced code blocks for commands, errors and snippets; \
+`@mention` for the person who owns a decision; `#N` and `owner/repo#N` for cross-references. \
+Screenshots and wireframes need a place to live: `gh` cannot attach an image to a post, so \
+commit it on the branch and link the raw file.\n\n\
 ## Messages you receive\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
 like on your item. Your own posts are not echoed back here; a session started again is shown \
@@ -57,8 +65,8 @@ anyone can find it later. Comments from other sessions on your items arrive the 
 Decisions, questions that change scope, status and anything someone might need to look up go \
 on the item; the item is the only channel between sessions, and none of it is private to the \
 terminal. A session that needs debugging or rescuing is worked at its terminal through herdr \
-(the commands are under \"Second opinions\" below), which is a person's tool, not a way to \
-hold a conversation.\n\n\
+(the commands are under \"A second opinion through herdr\" at the end), which is a person's \
+tool, not a way to hold a conversation.\n\n\
 ## Following items\n\n\
 `ssf sub <n>` (or `ssf sub owner/repo#n`) follows an item without working on it: its activity \
 then arrives here as `[ssf] FYI` messages. `ssf unsub <n>` stops them; `ssf subs` lists what \
@@ -109,16 +117,8 @@ if the handover turns out to be wrong.\n\n\
 ssf runs one session per item and starts no reviewer for your work: a second pair of eyes is \
 yours to arrange, and the repository's notes say when one is required. Give a fresh agent that \
 has not seen your reasoning the diff, the item and your claim of what the change does, and \
-ask it to break it. A subagent of your own harness is the default. For a different agent and \
-model, start one through herdr in this worktree and take it down after: \
-`herdr workspace create --cwd \"$PWD\" --label second-opinion --no-focus` (prints the workspace \
-id and its pane id), `herdr agent start second-opinion --kind <kind> --pane <pane>` (`herdr \
-agent start --help` lists the kinds; agent flags such as a model go after `--`; a trust or \
-safety dialog, which `herdr pane read <pane>` shows, is answered with `herdr agent send-keys \
-<pane> down` and `... enter`), `herdr agent prompt <pane> \"<brief>\" --wait`, `herdr pane read \
-<pane> --lines 200 --format text` (its answer), `herdr workspace close <id>`. Tell it to change \
-nothing; it shares your checkout, and `ssf peers` may show it as your session until it is \
-closed.\n\n\
+ask it to break it. A subagent of your own harness is the default; a different agent and model \
+can be started through herdr (see \"A second opinion through herdr\" at the end).\n\n\
 ## Wrapping up\n\n\
 When your item closes, or you are no longer assigned, ssf says so and leaves the workspace \
 exactly as it is: nothing on disk is ever removed on that signal. Commit what is worth \
@@ -139,11 +139,18 @@ session's PATH adds the line when `--body` or `--body-file` is passed to `issue 
 or `pr create|comment|review` (`new` counts as `create`); any other way of posting (`gh api`, `gh pr create --fill`, \
 `gh pr edit --body`, ...) needs it added by hand, as the first line of the body. A tag \
 anywhere else, in a code block or a quote, is content and is ignored. The same directory links a \
-`git` wrapper, and both wrappers run the real `gh` and `git` with the session's `GH_TOKEN`, \
-`GIT_SSH_COMMAND` and `git config`, so `gh` and `git push` act as the bot however they are \
-launched: a tool of your harness that starts with a reduced environment (a Python tool, say) \
-still posts and pushes as the bot rather than as the person at this machine. A post by \
-@{bot} without the line was typed by a person using the bot account; it reaches you marked \
-\"(not from a session)\" and is a human's.\n"
+`git` wrapper, and both act as the bot however they are launched, even from a harness tool that \
+starts with a reduced environment. A post by @{bot} without the line was typed by a person using \
+the bot account; it reaches you marked \"(not from a session)\" and is a human's.\n\n\
+## A second opinion through herdr\n\n\
+For a reviewer on a different agent and model than your harness offers, start one through herdr \
+in this worktree and take it down after: `herdr workspace create --cwd \"$PWD\" --label \
+second-opinion --no-focus` (prints the workspace id and its pane id), `herdr agent start \
+second-opinion --kind <kind> --pane <pane>` (`herdr agent start --help` lists the kinds; agent \
+flags such as a model go after `--`; a trust or safety dialog, which `herdr pane read <pane>` \
+shows, is answered with `herdr agent send-keys <pane> down` and `... enter`), `herdr agent \
+prompt <pane> \"<brief>\" --wait`, `herdr pane read <pane> --lines 200 --format text` (its \
+answer), `herdr workspace close <id>`. Tell it to change nothing; it shares your checkout, and \
+`ssf peers` may show it as your session until it is closed.\n"
     )
 }

@@ -108,17 +108,20 @@ fn initial_prompt_mentions_bot_and_issue() {
 account @bot, through the herdr multiplexer, into a worktree of this repository, because #3 was \
 assigned to @bot.\n\n\
 ## How to work on this\n\n\
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is \
-unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. \
-Say there what you are about to do, and when you need a decision or have delivered.\n\n\
-- `ssf` covers the rest of the factory: `ssf sub` follows another item, `ssf handover` passes \
-this one to another harness, `--assignee bot` on a `gh` create gives the new item a session of \
-its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.\n\
-- `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's \
-collaboration reference.\n\
-- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.\n\
+You are a remote colleague working this issue to delivery: clarify on it until the outcome is \
+unambiguous, deliver (a pull request, a review, an answer), and let the people on it decide and \
+review on GitHub. New activity on it arrives here as messages prefixed `[ssf]`; act on them. \
+This terminal is unmanned: what a person, or another session, should see goes on the issue as \
+a GitHub comment. Say there what you are about to do, and when you need a decision or have \
+delivered.\n\n\
+- Posts are read on GitHub: write GitHub Flavored Markdown, link the exact lines you mean \
+(pinned to a commit), and use tables, Mermaid diagrams, task lists, `<details>` for long output, \
+and screenshots or wireframes where they make a decision easier.\n\
 - `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as \
-@bot; never use another account, token or key you find on this machine.\n"
+@bot; never use another account, token or key you find on this machine.\n\
+- `--assignee bot` on a `gh` create gives the new item a session of its own; `ssf sub` follows \
+another item; `ssf handover` passes this one to another harness; `ssf release` retires this \
+workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind all of this.\n"
         ),
         "{p}"
     );
@@ -144,11 +147,12 @@ collaboration reference.\n\
             "{dropped} is no longer the prompt's to say:\n{p}"
         );
     }
-    // The reference lives behind `ssf skill` and `ssf guide`: the prompt
-    // names what the CLI affords and points there, and leaves the rest of
-    // the commands, the hand-off tag and the review arrangements to them.
-    assert!(p.contains("`ssf skill` prints the guidance bundled with this binary"));
-    for moved in ["ssf peers", "ssf subs", "reviewer session", "mode=delegate"] {
+    // The prompt carries every affordance a session needs for coherent
+    // work, since reading the guide is not guaranteed, and points at
+    // `ssf guide` alone for the rest; `ssf skill` is an operator's index.
+    assert!(p.contains("`ssf guide` is the reference behind all of this"));
+    assert!(!p.contains("ssf skill"));
+    for moved in ["ssf peers", "ssf subs", "reviewer session", "mode=delegate", "herdr agent"] {
         assert!(
             !p.contains(moved),
             "{moved} belongs in the guide, not the prompt"
@@ -565,13 +569,25 @@ fn guide_holds_the_moved_reference() {
     assert!(g.starts_with("# ssf guide\n\n"));
     assert!(g.contains("`ssf peers` lists the agent sessions"));
     assert!(!g.contains("Leave their branches and workspaces alone"));
-    // The prompt signposts the binary's own guidance; the concrete
-    // markdown guidance it names only in outline lives here in full.
-    assert!(g.contains("`ssf skill` prints the guidance bundled with this binary"));
-    assert!(g.contains("`ssf skill sessions` the lifecycle reference behind it"));
-    assert!(g.contains(
-        "links to specific lines of code or Markdown, tables and Mermaid diagrams make a post"
-    ));
+    // The prompt names the GitHub affordances in one line; the guide
+    // says what each is for. `ssf skill` is for operators, not sessions.
+    assert!(g.contains("`ssf skill sessions` the lifecycle reference behind this guide"));
+    assert!(!g.contains("`ssf skill` prints"));
+    assert!(g.contains("## Posts\n\n"));
+    for affordance in [
+        "pinned to a commit",
+        "task lists (`- [ ]`)",
+        "`<details>` around logs",
+        "`@mention` for the person who owns a decision",
+        "`gh` cannot attach an image",
+    ] {
+        assert!(g.contains(affordance), "{affordance}");
+    }
+    // The herdr recipe is setup-specific and sits in a labelled section
+    // at the end, after the principle.
+    assert!(g.contains("## A second opinion through herdr\n\n"));
+    assert!(g.ends_with("until it is closed.\n"));
+    assert!(g.find("## Second opinions").unwrap() < g.find("## A second opinion through herdr").unwrap());
     assert!(
         g.contains("Use `Refs #N` to link a pull request to ongoing management or tracking work.")
     );
@@ -596,7 +612,7 @@ fn guide_holds_the_moved_reference() {
     // opinion is the session's own to arrange, with the herdr recipe.
     assert!(g.contains("## Second opinions"));
     assert!(g.contains("ssf runs one session per item and starts no reviewer for your work"));
-    assert!(g.contains("A subagent of your own harness is the default."));
+    assert!(g.contains("A subagent of your own harness is the default;"));
     assert!(
         g.contains("`herdr workspace create --cwd \"$PWD\" --label second-opinion --no-focus`")
     );
