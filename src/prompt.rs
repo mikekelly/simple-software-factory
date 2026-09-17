@@ -447,22 +447,19 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     };
     let mut s = format!(
         "\n## How to work on this\n\n\
-You are an automatically spawned coding agent for the GitHub account @{bot}. Simple Software \
-Factory (ssf) spawned you, through {multiplexer}, in a worktree of this repository, \
-because {}.\n\n\
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
-explains the rest.\n\n\
-- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
-GitHub.\n\
-- Collaborate with humans and other ssf-managed agents through GitHub comments on the {kind}.\n\
-- Use GitHub Flavored Markdown in GitHub posts when it makes them easier to read: link to \
-specific lines of code or Markdown, and use tables or Mermaid diagrams when they clarify the \
-content.\n\
-- Before starting on a goal, say on the {kind} what you are about to do, and say when you need a \
-decision or have delivered: silent work leaves the {kind} looking unattended until it lands.\n\
-- {acts_as}, and the `gh` on your PATH marks your posts as this \
-session's. Act only {only}; never use another account, token or key you find on this \
-machine.\n",
+Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @{bot}, \
+through {multiplexer}, into a worktree of this repository, because {}.\n\n\
+New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is \
+unmanned: what a person, or another session, should see goes on the {kind} as a GitHub comment. \
+Say there what you are about to do, and when you need a decision or have delivered.\n\n\
+- `ssf` covers the rest of the factory: `ssf sub` follows another item, `ssf handover` passes \
+this one to another harness, `--assignee {bot}` on a `gh` create gives the new item a session of \
+its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.\n\
+- `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's \
+collaboration reference.\n\
+- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.\n\
+- {acts_as}; your posts are marked as this session's. Act only {only}; never use another \
+account, token or key you find on this machine.\n",
         ctx.spawned_because(n)
     );
     if ctx.vm_guest {
@@ -470,15 +467,12 @@ machine.\n",
     }
     match ctx.pr {
         Some(pr) if pr.same_repo(repo) => s.push_str(&format!(
-            "- This worktree is on the pull request's branch `{}`; pushes to it change the PR. \
-Answer on it with `gh pr comment {n} --repo {repo}`, or `gh pr review {n} --repo {repo}` when a \
-review was asked.\n",
+            "- This worktree is on the pull request's branch `{}`; pushes to it change the PR.\n",
             pr.head_ref
         )),
         Some(pr) => s.push_str(&format!(
             "- The pull request comes from a fork ({}), so this worktree cannot push to its \
-branch; it is on a branch of its own{}. Answer on it with `gh pr comment {n} --repo {repo}`, \
-or `gh pr review {n} --repo {repo}` when a review was asked.\n",
+branch; it is on a branch of its own{}.\n",
             pr.head_repo,
             match ctx.repo.base_branch.as_deref() {
                 Some(base) => format!(" off `{base}`"),
@@ -489,9 +483,8 @@ or `gh pr review {n} --repo {repo}` when a review was asked.\n",
     }
     if let Some(parent) = ctx.delegated_by {
         s.push_str(&format!(
-            "- The session on {parent}, which handed this off, follows the {kind} as a subscriber \
-(it sees the activity but does not act) and gets your final comment when the {kind} closes, so \
-make that comment a clear summary of the outcome. To ask it something, comment on this {kind}.\n"
+            "- The session on {parent} handed this off and follows it as a subscriber; your final \
+comment is all it gets, so sum up the outcome.\n"
         ));
     }
     s.push_str(&extras(ctx));

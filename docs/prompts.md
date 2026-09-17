@@ -9,28 +9,36 @@ description, boards, everything that has happened on it) followed by "How to
 work on this", which says only what ssf owns:
 
 ```
-You are an automatically spawned coding agent for the GitHub account @bot. Simple Software Factory (ssf) spawned you, through the herdr multiplexer, in a worktree of this repository, because #16 was assigned to @bot.
+Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this repository, because #16 was assigned to @bot.
 
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` explains the rest.
+New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. Say there what you are about to do, and when you need a decision or have delivered.
 
-- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on GitHub.
-- Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.
-- Use GitHub Flavored Markdown in GitHub posts when it makes them easier to read: link to specific lines of code or Markdown, and use tables or Mermaid diagrams when they clarify the content.
-- Before starting on a goal, say on the issue what you are about to do, and say when you need a decision or have delivered: silent work leaves the issue looking unattended until it lands.
-- `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this session's. Act only as @bot; never use another account, token or key you find on this machine.
+- `ssf` covers the rest of the factory: `ssf sub` follows another item, `ssf handover` passes this one to another harness, `--assignee bot` on a `gh` create gives the new item a session of its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.
+- `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's collaboration reference.
+- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.
+- `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as @bot; never use another account, token or key you find on this machine.
 ```
+
+The block names the CLI's affordances and points at the reference instead
+of teaching the tools: `ssf skill` prints the guidance bundled with the
+executing binary, `ssf guide` the session's collaboration reference.
+What a capable model already knows (`gh` mechanics, worktrees, how to
+write a GitHub post) is left unsaid; the markdown worth asking for is one
+clause, and the concretes behind it — links to specific lines, tables,
+Mermaid diagrams — are a rule in `ssf guide`, which this block names.
 
 When `[git].credential` (or the repository's) names someone other than the bot,
 the identity line reads
-"`gh` already acts as @bot and `git push` as @ann, and ... Act only
-through those; ..." (a `file:` token or a helper string is described
-rather than named); see [Committing as a
+"`gh` already acts as @bot and `git push` as @ann; your posts are marked
+as this session's. Act only through those; never use another account,
+token or key you find on this machine." (a `file:` token or a helper
+string is described rather than named); see [Committing as a
 person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot). The reason is whatever brought the item to
 ssf (assigned, mentioned, a review request, opened by the bot or handed
 off by another session). A pull request adds one line
 saying how the worktree relates to it (on its branch, or unable to push to
-a fork's) and that `gh pr comment` and `gh pr review` are the way to
-answer; a handed-off item adds one saying which session follows it; a
+a fork's); a handed-off item adds one saying which session follows it,
+which is also where the session's final comment goes; a
 factory inside a [microVM](vm.md) adds one saying the agent has root there
 through `sudo`. The board rule sits with the boards (below).
 
@@ -49,9 +57,12 @@ it handed #N over to you".
 `ssf guide` prints the reference (other sessions, `ssf sub`, items a
 session opens and hand-offs, assigning a stack to an item before its
 first session, second opinions through herdr, wrapping up, the byline,
-the `Closes #N` suggestion) from the same binary, so it cannot drift from
-the daemon. Follow-up messages carry the activity and at most
-one line after it.
+the `Closes #N` suggestion, and the markdown the prompt leaves to it)
+from the same binary, so it cannot drift from the daemon. It opens by
+pointing at the CLI's own guidance: `ssf skill` prints the topic index
+bundled with the executing binary, `ssf skill sessions` the lifecycle
+reference behind the guide. Follow-up messages carry the activity and at
+most one line after it.
 
 Every message names its item once: `#N "title"` with the URL on first
 mention (the header of a first message, or of an FYI), `#N` alone in later

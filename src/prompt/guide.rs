@@ -21,7 +21,10 @@ Simple Software Factory (ssf) runs one agent session per GitHub issue or pull re
 involves the bot account @{bot}. Each session has a workspace (a git worktree of the \
 repository) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login.{machine} \
-This guide is the reference behind the initial prompt.\n\n\
+This guide is the reference behind the initial prompt; `ssf skill` prints the guidance bundled \
+with this binary, and `ssf skill sessions` the lifecycle reference behind it.\n\n\
+Posts are read on GitHub, so write them in GitHub Flavored Markdown: links to specific lines of \
+code or Markdown, tables and Mermaid diagrams make a post easier to follow than prose.\n\n\
 ## Messages you receive\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
 like on your item. Your own posts are never echoed back.\n\

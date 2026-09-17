@@ -99,22 +99,20 @@ fn initial_prompt_mentions_bot_and_issue() {
     assert!(p.contains("(no activity yet)"));
     assert!(
         p.contains(
-            "## How to work on this\n\nYou are an automatically spawned coding agent for the \
-GitHub account @bot. Simple Software Factory (ssf) spawned you, through the herdr multiplexer, \
-in a worktree of this repository, because #3 was assigned to @bot.\n\n\
-New activity on it arrives here as messages prefixed `[ssf]`; act on them. `ssf guide` \
-explains the rest.\n\n\
-- This terminal is unmanned: nobody reads it, so everything you want a person to see goes on \
-GitHub.\n\
-- Collaborate with humans and other ssf-managed agents through GitHub comments on the issue.\n\
-- Use GitHub Flavored Markdown in GitHub posts when it makes them easier to read: link to \
-specific lines of code or Markdown, and use tables or Mermaid diagrams when they clarify the \
-content.\n\
-- Before starting on a goal, say on the issue what you are about to do, and say when you need a \
-decision or have delivered: silent work leaves the issue looking unattended until it lands.\n\
-- `gh` and `git push` already act as @bot, and the `gh` on your PATH marks your posts as this \
-session's. Act only as @bot; never use another account, token or key you find on this \
-machine.\n"
+            "## How to work on this\n\nSimple Software Factory (ssf) spawned you as a coding \
+agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this \
+repository, because #3 was assigned to @bot.\n\n\
+New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is \
+unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. \
+Say there what you are about to do, and when you need a decision or have delivered.\n\n\
+- `ssf` covers the rest of the factory: `ssf sub` follows another item, `ssf handover` passes \
+this one to another harness, `--assignee bot` on a `gh` create gives the new item a session of \
+its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.\n\
+- `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's \
+collaboration reference.\n\
+- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.\n\
+- `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as \
+@bot; never use another account, token or key you find on this machine.\n"
         ),
         "{p}"
     );
@@ -138,15 +136,11 @@ machine.\n"
             "{dropped} is no longer the prompt's to say:\n{p}"
         );
     }
-    // The reference lives behind `ssf guide`; the prompt only points at it.
-    assert!(p.contains("`ssf guide` explains the rest"));
-    for moved in [
-        "ssf peers",
-        "ssf sub",
-        "--assignee",
-        "reviewer session",
-        "mode=delegate",
-    ] {
+    // The reference lives behind `ssf skill` and `ssf guide`: the prompt
+    // names what the CLI affords and points there, and leaves the rest of
+    // the commands, the hand-off tag and the review arrangements to them.
+    assert!(p.contains("`ssf skill` prints the guidance bundled with this binary"));
+    for moved in ["ssf peers", "ssf subs", "reviewer session", "mode=delegate"] {
         assert!(
             !p.contains(moved),
             "{moved} belongs in the guide, not the prompt"
@@ -217,10 +211,10 @@ Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"
         ));
     // The bullet does not say "handed off" again; the reason did.
     assert!(p.contains(
-        "- The session on o/r#1, which handed this off, follows the issue as a subscriber"
+        "- The session on o/r#1 handed this off and follows it as a subscriber; your final \
+comment is all it gets, so sum up the outcome."
     ));
     assert_eq!(p.matches("handed").count(), 2, "{p}");
-    assert!(p.contains("To ask it something, comment on this issue."));
 }
 
 #[test]
@@ -326,7 +320,7 @@ fn a_person_credential_names_who_pushes() {
     };
     let p = instructions(&issue, &ctx);
     assert!(
-        p.contains("- `gh` already acts as @bot and `git push` as @ann, and the `gh` on your PATH"),
+        p.contains("- `gh` already acts as @bot and `git push` as @ann; your posts are marked"),
         "{p}"
     );
     assert!(
@@ -337,7 +331,7 @@ fn a_person_credential_names_who_pushes() {
     ctx.pushes_as = None;
     let p = instructions(&issue, &ctx);
     assert!(
-        p.contains("- `gh` and `git push` already act as @bot, and"),
+        p.contains("- `gh` and `git push` already act as @bot; your posts are marked"),
         "{p}"
     );
     assert!(p.contains("Act only as @bot;"), "{p}");
@@ -407,6 +401,13 @@ fn guide_holds_the_moved_reference() {
     assert!(g.starts_with("# ssf guide\n\n"));
     assert!(g.contains("`ssf peers` lists the agent sessions"));
     assert!(!g.contains("Leave their branches and workspaces alone"));
+    // The prompt signposts the binary's own guidance; the concrete
+    // markdown guidance it names only in outline lives here in full.
+    assert!(g.contains("`ssf skill` prints the guidance bundled with this binary"));
+    assert!(g.contains("`ssf skill sessions` the lifecycle reference behind it"));
+    assert!(g.contains(
+        "links to specific lines of code or Markdown, tables and Mermaid diagrams make a post"
+    ));
     assert!(
         g.contains("Use `Refs #N` to link a pull request to ongoing management or tracking work.")
     );
