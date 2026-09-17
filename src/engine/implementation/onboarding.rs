@@ -691,9 +691,13 @@ impl Engine {
         let ctx = self.ctx(repo, &st);
         let text = prompt::followup_prompt(issue, &mine, &ctx);
         // A harness started from scratch has lost its memory, so it gets the
-        // whole story rather than just the delta.
+        // whole story rather than just the delta -- minus what the delta
+        // already carries below it. A post of the session's own is the one
+        // thing the delta leaves out (its own posts are not echoed back),
+        // so it stays in the story, which is where the session reads what
+        // it already said and promised.
         let mut all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
-        all.retain(|r| !diff.rendered.iter().any(|n| n.key == r.key));
+        all.retain(|r| !mine.iter().any(|n| n.key == r.key));
         let all = self.for_recipient(&all, &self.acting_on(repo, issue.number), OwnPosts::Shown);
         let mut relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
         relaunch_text.push_str("\n\n");

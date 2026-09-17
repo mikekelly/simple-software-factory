@@ -92,16 +92,12 @@ fn initial_prompt_mentions_bot_and_issue() {
         "{p}"
     );
     assert!(
-        p.starts_with("[ssf] "),
-        "the prompt opens with the event marker: {p}"
+        !p.starts_with('#'),
+        "a leading # is a prompt action in OMP: {p}"
     );
     assert!(item.starts_with(
             "[ssf] GitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
         ), "{p}");
-    assert!(
-        !item.starts_with('#'),
-        "a leading # is a prompt action in OMP: {p}"
-    );
     // The item is named once: the header has the URL, the reason has `#3`.
     assert_eq!(p.matches("https://gh/3").count(), 1);
     assert!(!p.contains("o/r#3"));
@@ -387,6 +383,10 @@ fn initial_prompt_is_the_bare_minimum() {
     let boards = &p[p.find("## Project boards").unwrap()..p.find("## Description").unwrap()];
     assert!(boards.contains("Keep the card's Status accurate; which column fits is your call."));
     let (how, _) = split_item(&p);
+    assert!(
+        how.contains("## How to work on this"),
+        "the instructions are the prompt's opening: {p}"
+    );
     assert!(!how.contains("card"));
 }
 

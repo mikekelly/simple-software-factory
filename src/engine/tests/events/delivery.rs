@@ -50,6 +50,61 @@ async fn a_restarted_session_is_shown_its_own_earlier_posts() {
         story.contains("one more thing: keep the flag"),
         "the new activity is there too: {story}"
     );
+    // The same story, built on its own for a harness that has to be
+    // started again outside a follow-up.
+    let story = e.first_message(&r, 5, None).await.unwrap().text;
+    assert!(
+        story.contains("Pushed the parser fix; the flag is untested."),
+        "its own post is in the story a restart is given: {story}"
+    );
+}
+
+/// The post the session itself made in this very pass is the one the delta
+/// never carries (its own posts are not echoed back), so the catch-up
+/// story must keep it: a session whose pane died between its comment and
+/// the next poll is exactly the one that needs to read what it promised.
+#[tokio::test]
+async fn a_restarted_session_is_shown_the_post_it_made_this_pass() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = repo();
+    stub.set_issue(5, assigned_item(5, "alice", "u2"));
+    stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            comment(
+                2,
+                "bot",
+                "🤖#5 says: <!-- ssf: origin=o/r#5 -->\n\nPushed the parser fix; the flag is untested.",
+            ),
+            comment(3, "alice", "one more thing: keep the flag"),
+        ],
+    );
+    e.entry(&r, 5).agent_session_id = None;
+    d.with(|s| {
+        s.live.remove("w5");
+    });
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    assert!(
+        prompts[0].contains("Pushed the parser fix; the flag is untested."),
+        "an own post new in this pass is not dropped from the story: {}",
+        prompts[0]
+    );
+    // And not twice: the story is where it is read, the delta below it
+    // carries the person's comment alone.
+    let story = &prompts[0];
+    assert_eq!(
+        story
+            .matches("Pushed the parser fix; the flag is untested.")
+            .count(),
+        1,
+        "{story}"
+    );
 }
 
 #[tokio::test]
