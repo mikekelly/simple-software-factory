@@ -122,7 +122,7 @@ collaboration reference.\n\
         ),
         "{p}"
     );
-    assert!(item.contains("## Description\n\nPlease add"), "{p}");
+    assert!(item.contains("## Description\n\n  > Please add"), "{p}");
     assert!(!how.contains("## Description"), "{p}");
     // Branches and worktrees are the agent's own business, the byline's
     // mechanics are the guide's, and the PR conventions (reference the
@@ -316,6 +316,65 @@ fn the_prompt_states_the_rules_before_the_item() {
         item.contains("- [t] @alice commented"),
         "the activity is the item's: {p}"
     );
+}
+
+/// The description is someone else's text, so it is rendered as a
+/// quoted block the way a comment body is: the sign-in detector skips a
+/// line carrying the `> ` marker wherever it appears in an echoed prompt
+/// (`driver::dialog_candidates`). The first prompt ends with the item,
+/// so a description that quotes a harness's sign-in phrase sits at the
+/// bottom of the pane (#372).
+#[test]
+fn a_sign_in_phrase_in_the_description_is_not_a_login_prompt() {
+    let issue: Issue = serde_json::from_value(json!({
+        "number": 5, "title": "Fix it",
+        "body": "The pane kept saying:\n\nLogin expired · Please run /login\n\nso I gave up.",
+        "html_url": "https://gh/5", "state": "open", "user": {"login": "mike"},
+        "created_at": "2026-09-17T08:00:00Z", "updated_at": "t"
+    }))
+    .unwrap();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        ..Default::default()
+    };
+    let d = cfg();
+    let ctx = PromptContext {
+        repo: &repo,
+        daemon: &d,
+        bot_login: "bot",
+        driver: DriverKind::Herdr,
+        pr: None,
+        triggers: &[],
+        owner: None,
+        delegated_by: None,
+        handed_over_from: None,
+        projects: &[],
+        global_prompt: None,
+        global_harness_prompt: None,
+        project_prompt: None,
+        harness_prompt: None,
+        vm_guest: false,
+        pushes_as: None,
+    };
+    let p = initial_prompt(&issue, &[], &ctx);
+    // Every line of the description, the blank ones included, carries
+    // the marker; nothing is dropped.
+    assert!(
+        p.contains(
+            "\n\n## Description\n\n  > The pane kept saying:\n  > \n  > Login expired · Please \
+run /login\n  > \n  > so I gave up.\n\n## Activity so far\n\n(no activity yet)\n"
+        ),
+        "{p}"
+    );
+    // As the pane shows it -- the echoed prompt, the composer's last
+    // line -- no harness reads the item's words as its own prompt.
+    let pane = format!("❯ {p}❯ ");
+    for h in [
+        "claude", "codex", "gemini", "copilot", "grok", "pi", "omp", "opencode", "crush", "other",
+    ] {
+        assert_eq!(crate::driver::login_dialog(h, &pane), None, "{h}:\n{pane}");
+    }
 }
 
 #[test]

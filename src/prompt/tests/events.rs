@@ -185,5 +185,5 @@ fn tags_are_stripped_from_bodies_and_shown_as_sessions() {
         p.contains("\n\nOpened by @bot (from the agent on o/r#3) on t.\n"),
         "{p}"
     );
-    assert!(p.contains("## Description\n\nFixes it\n\n## Activity"));
+    assert!(p.contains("## Description\n\n  > Fixes it\n\n## Activity"));
 }
