@@ -457,8 +457,9 @@ this one to another harness, `--assignee {bot}` on a `gh` create gives the new i
 its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.\n\
 - `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's \
 collaboration reference.\n\
-- {acts_as} and mark your posts as this session's. Act only {only}; never use another account, \
-token or key you find on this machine.\n",
+- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.\n\
+- {acts_as}; your posts are marked as this session's. Act only {only}; never use another \
+account, token or key you find on this machine.\n",
         ctx.spawned_because(n)
     );
     if ctx.vm_guest {
@@ -482,8 +483,8 @@ branch; it is on a branch of its own{}.\n",
     }
     if let Some(parent) = ctx.delegated_by {
         s.push_str(&format!(
-            "- The session on {parent}, which handed this off, follows it as a subscriber: your \
-final comment on the {kind} is all it gets, so make that a clear summary of the outcome.\n"
+            "- The session on {parent} handed this off and follows it as a subscriber; your final \
+comment is all it gets, so sum up the outcome.\n"
         ));
     }
     s.push_str(&extras(ctx));

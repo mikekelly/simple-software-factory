@@ -110,7 +110,8 @@ this one to another harness, `--assignee bot` on a `gh` create gives the new ite
 its own, `ssf release` retires this workspace, `ssf doctor` checks the machine.\n\
 - `ssf skill` prints the guidance bundled with this binary and `ssf guide` this session's \
 collaboration reference.\n\
-- `gh` and `git push` already act as @bot and mark your posts as this session's. Act only as \
+- Posts read better in GitHub Flavored Markdown: link the lines of code you mean.\n\
+- `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as \
 @bot; never use another account, token or key you find on this machine.\n"
         ),
         "{p}"
@@ -210,8 +211,8 @@ Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"
         ));
     // The bullet does not say "handed off" again; the reason did.
     assert!(p.contains(
-        "- The session on o/r#1, which handed this off, follows it as a subscriber: your final \
-comment on the issue is all it gets, so make that a clear summary of the outcome."
+        "- The session on o/r#1 handed this off and follows it as a subscriber; your final \
+comment is all it gets, so sum up the outcome."
     ));
     assert_eq!(p.matches("handed").count(), 2, "{p}");
 }
@@ -319,7 +320,7 @@ fn a_person_credential_names_who_pushes() {
     };
     let p = instructions(&issue, &ctx);
     assert!(
-        p.contains("- `gh` already acts as @bot and `git push` as @ann and mark your posts"),
+        p.contains("- `gh` already acts as @bot and `git push` as @ann; your posts are marked"),
         "{p}"
     );
     assert!(
@@ -330,7 +331,7 @@ fn a_person_credential_names_who_pushes() {
     ctx.pushes_as = None;
     let p = instructions(&issue, &ctx);
     assert!(
-        p.contains("- `gh` and `git push` already act as @bot and mark your posts"),
+        p.contains("- `gh` and `git push` already act as @bot; your posts are marked"),
         "{p}"
     );
     assert!(p.contains("Act only as @bot;"), "{p}");
@@ -401,9 +402,9 @@ fn guide_holds_the_moved_reference() {
     assert!(g.contains("`ssf peers` lists the agent sessions"));
     assert!(!g.contains("Leave their branches and workspaces alone"));
     // The prompt signposts the binary's own guidance; the concrete
-    // markdown guidance it used to spell out lives here.
+    // markdown guidance it names only in outline lives here in full.
     assert!(g.contains("`ssf skill` prints the guidance bundled with this binary"));
-    assert!(g.contains("`ssf skill sessions` this reference's full version"));
+    assert!(g.contains("`ssf skill sessions` the lifecycle reference behind it"));
     assert!(g.contains(
         "links to specific lines of code or Markdown, tables and Mermaid diagrams make a post"
     ));

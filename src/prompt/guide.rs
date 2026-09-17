@@ -22,7 +22,7 @@ involves the bot account @{bot}. Each session has a workspace (a git worktree of
 repository) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login.{machine} \
 This guide is the reference behind the initial prompt; `ssf skill` prints the guidance bundled \
-with this binary, and `ssf skill sessions` this reference's full version.\n\n\
+with this binary, and `ssf skill sessions` the lifecycle reference behind it.\n\n\
 Posts are read on GitHub, so write them in GitHub Flavored Markdown: links to specific lines of \
 code or Markdown, tables and Mermaid diagrams make a post easier to follow than prose.\n\n\
 ## Messages you receive\n\n\
