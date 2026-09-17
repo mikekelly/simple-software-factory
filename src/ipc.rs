@@ -3,7 +3,7 @@
 //!
 //! The daemon keeps the state in memory and writes it out wholesale, so
 //! anything that changes it (a subscription) or needs its delivery path (a
-//! message pasted into another session's terminal) has to go through the
+//! handover summary, an assignment's overrides) has to go through the
 //! daemon rather than edit the state file. The protocol is one JSON line
 //! each way; the daemon answers between polls.
 

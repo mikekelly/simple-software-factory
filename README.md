@@ -481,7 +481,8 @@ Things to know when operating it:
   leaves the commits on a local branch nothing lists (see [Workspaces after
   close](docs/sessions.md#workspaces-after-close-release-and-purge)).
 - Nothing reaches an agent off the record: every message it gets is activity
-  on an item it works on or follows. Decisions go on the item as comments.
+  on an item it works on or follows, or the daemon's own notice about that
+  item. Decisions go on the item as comments.
 - A daemon restart is invisible to agents; a reboot triggers the startup
   pass that relaunches interrupted sessions.
 - ssf starts no second session on a pull request the bot opened: the
