@@ -29,7 +29,7 @@ subagents and for `ssf assign` and `ssf handover` across harnesses.
 | Harness | Deliberation | Execution |
 | --- | --- | --- |
 | `claude` | `fable`, effort `low` | `opus`, effort `medium` |
-| `codex` | `astra`, effort `low` | `gpt-5.6-sol`, effort `high` |
+| `codex` | `gpt-6-astra`, effort `low` | `gpt-5.6-sol`, effort `high` |
 | `omp` | `deepseek/deepseek-flash`, effort `high` | `deepseek/deepseek-flash`, effort `high` |
 
 ## Communication
