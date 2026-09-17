@@ -157,13 +157,21 @@ mod linux {
     /// account from the operator's own store; the wrapper's recovery would put
     /// the session's values back and look in ssf's account-less directory
     /// instead, failing the push.
+    ///
+    /// The shim lives where `ssf launch` puts it — `<config>/bin`, first on
+    /// `PATH` — so this is the layout a factory has, and the client here runs
+    /// as the daemon's half of it does (the ssf binary execs `ssf-server`).
     #[test]
     fn ssf_itself_reaches_gh_without_the_shim() {
         let root = std::env::temp_dir().join(format!("ssf-ghcli-env-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (shim, tools) = fixtures(&root);
+        let (_, tools) = fixtures(&root);
         let config = root.join("config");
-        std::fs::create_dir_all(&config).unwrap();
+        let shim = config.join("bin");
+        std::fs::create_dir_all(&shim).unwrap();
+        for name in ["gh", "git"] {
+            std::os::unix::fs::symlink(client(), shim.join(name)).unwrap();
+        }
         std::fs::write(
             config.join("config.toml"),
             "[git]\nname = \"Widgets Bot\"\nemail = \"widgets-bot@example.com\"\n\

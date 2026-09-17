@@ -105,26 +105,3 @@ fn the_parent_comes_after_the_command_name_in_the_parens() {
         Some(std::os::unix::process::parent_id()),
     );
 }
-
-#[test]
-fn a_process_that_still_has_its_session_is_left_alone() {
-    let environ = b"SSF_REPO=o/r\0SSF_BOT=bot\0GH_CONFIG_DIR=/c/gh\0GH_TOKEN=t\0";
-    // Something that dropped `GH_CONFIG_DIR` and `GH_TOKEN` but kept the rest
-    // dropped them on purpose: ssf itself does this to read another account's
-    // token from gh, and putting them back would read ssf's own account-less
-    // store instead. Only an environment rebuilt from scratch is repaired.
-    let still_session = |name: &OsStr| {
-        matches!(
-            name.to_str(),
-            Some("SSF_REPO") | Some("GH_CONFIG_DIR") | Some("SSF_BOT")
-        )
-    };
-    assert!(recover_for(environ, still_session).is_empty());
-
-    let scrubbed = |name: &OsStr| matches!(name.to_str(), Some("GH_TOKEN"));
-    let recovered: Vec<String> = recover_for(environ, scrubbed)
-        .into_iter()
-        .map(|(name, _)| name.to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(recovered, vec!["SSF_REPO", "SSF_BOT", "GH_CONFIG_DIR"]);
-}
