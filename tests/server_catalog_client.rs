@@ -728,6 +728,7 @@ fn skill_topics_work_without_server_binary_or_valid_configuration() {
         "",
         "setup",
         "agent",
+        "liaison",
         "client-cli",
         "server",
         "config",

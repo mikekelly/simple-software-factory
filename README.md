@@ -226,9 +226,11 @@ Choose the installation for the Linux machine:
   [standalone client](docs/install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
 
 If an always-on assistant should also act as your liaison for SSF-tracked
-work, continue with the [bot-managed host liaison guide](docs/bot-dedicated-vps.md).
-Its GitHub access and event delivery are separate from factory bot enrollment;
-the guide includes an optional Grok Bot example.
+work, continue with the [liaison guide](docs/liaison.md): it covers an
+assistant on the factory host, and one on your own machine, which reaches the
+factory over SSH and saves its herdr server locally. The liaison's GitHub access
+and event delivery are separate from factory bot enrollment, and the guide
+includes an optional Grok Bot example.
 
 Until ssf is published in Omarchy's package repository, download the current
 Arch package and install it with pacman. This is a normal package-manager
