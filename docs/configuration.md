@@ -343,8 +343,9 @@ the subagents it spawns underneath itself, which is the harness's own
 business — on some harnesses a subagent inherits the session's model
 unless the session or an agent definition names another, so a session
 left on an expensive model is an expensive subagent too. What ssf can do
-about the tiers below the session is the line the repository's `SSF.md`
-puts in the prompt. Which model to put where, and how to work it out
+about the tiers below the session is the model register the repository's
+`SSF.md` puts in the prompt: a model and effort per harness for
+deliberation and for execution (see [Writing SSF.md](ssf-md.md)). Which model to put where, and how to work it out
 from what the person can run and what a task costs, is [Choosing the
 harness and the model](setup.md#choosing-the-harness-and-the-model) in
 the setup document; the rest of this section is the mechanics.

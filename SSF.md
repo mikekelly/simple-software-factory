@@ -19,6 +19,19 @@
   enrols it so collaborators can reach a local service (see [Optional
   Tailscale enrolment](docs/vm.md#optional-tailscale-enrolment)).
 
+## Models
+
+Two capability levels, one row per harness. Deliberation is orchestration,
+planning, architecture, design, review and copywriting; execution is
+implementation and other bounded tasks. Use the register for in-harness
+subagents and for `ssf assign` and `ssf handover` across harnesses.
+
+| Harness | Deliberation | Execution |
+| --- | --- | --- |
+| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
+| `codex` | `astra`, effort `low` | `gpt-5.6-sol`, effort `high` |
+| `omp` | `deepseek/deepseek-flash`, effort `high` | `deepseek/deepseek-flash`, effort `high` |
+
 ## Communication
 
 - Post when starting (the outcome you take on and when the next update

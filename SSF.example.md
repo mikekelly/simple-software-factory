@@ -23,6 +23,18 @@ per session. docs/ssf-md.md (`ssf skill ssf-md`) explains each choice.
 - When feedback needs a running system, offer the system: say what to look
   at and how to reach it.
 
+## Models
+
+Two capability levels, one row per harness this repository allows. Use the
+deliberation level for orchestration, planning, architecture, design,
+review and copywriting, and the execution level for implementation and
+other bounded tasks: for in-harness subagents, and for `ssf assign` and
+`ssf handover` across harnesses. `ssf models <harness>` lists the ids.
+
+| Harness | Deliberation | Execution |
+| --- | --- | --- |
+| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
+
 ## Communication
 
 - Post when starting (the outcome you take on and when the next update

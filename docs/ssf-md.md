@@ -59,6 +59,16 @@ about how their sessions work.
    the collaborators can reach, a recording.
 9. **Delivered.** What "done" means here: merged, deployed, documented,
    workspace released.
+10. **Models.** A register of the harnesses the repository allows, each
+    with a model and effort for two capability levels: *deliberation*
+    (orchestration, planning, architecture, design, review, copywriting)
+    and *execution* (implementation and other bounded tasks). The session
+    reads it when it spawns a subagent in its own harness and when it
+    starts or hands work to another harness with `ssf assign` or
+    `ssf handover`; without it, subagents inherit whatever the session
+    runs on. `ssf models <harness>` lists the ids and `ssf agents --json`
+    the effort levels; `repo.model` and `repo.effort` in the factory's
+    config still choose what the session itself starts on.
 
 ## Keep it short
 
@@ -85,6 +95,8 @@ A solo maintainer:
 - Open the PR with `Closes #N` and @mention me to merge; I merge.
 - Keep this session for planning and talking to me; delegate execution to
   subagents.
+- Models: `claude` is `fable` low for deliberation and `opus` medium for
+  execution.
 ```
 
 A team with a board:
@@ -101,4 +113,9 @@ A team with a board:
 - Delegate independent tasks as issues assigned to the bot; keep this
   session for integration and communication.
 - Delivered means merged, the deploy checked, and `ssf release` run.
+
+| Harness | Deliberation | Execution |
+| --- | --- | --- |
+| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
+| `codex` | `gpt-5.6-sol`, effort `low` | `gpt-5.6-sol`, effort `high` |
 ```
