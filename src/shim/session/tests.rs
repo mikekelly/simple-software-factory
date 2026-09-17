@@ -93,14 +93,38 @@ fn a_variable_the_process_already_has_is_left_alone() {
 
 #[test]
 fn the_parent_comes_after_the_command_name_in_the_parens() {
-    // Field 4 of `/proc/<pid>/stat` is the parent, and the command name in
-    // parentheses before it may itself contain spaces and parentheses, so the
-    // fields are read from after the last `)`.
+    // Fields of `/proc/<pid>/stat`: pid, the command name in parentheses (which
+    // may itself contain spaces and parentheses), state, then the parent. The
+    // process here is its own group and session leader, so only the field after
+    // the state is the parent.
     let stat = "42 (omp tool (x)) S 7 42 42 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 1 0 0 0";
+    assert_eq!(parent_of_stat(stat), Some(7));
+    // Field 4 of a real process is its parent, as the system reports it.
     assert_eq!(
-        stat.rsplit_once(") ").unwrap().1.split_whitespace().nth(1),
-        Some("7")
+        parent_of(std::process::id()),
+        Some(std::os::unix::process::parent_id()),
     );
-    // And a real one names a process that exists.
-    assert!(parent_of(std::process::id()).is_some());
+}
+
+#[test]
+fn a_process_that_still_has_its_session_is_left_alone() {
+    let environ = b"SSF_REPO=o/r\0SSF_BOT=bot\0GH_CONFIG_DIR=/c/gh\0GH_TOKEN=t\0";
+    // Something that dropped `GH_CONFIG_DIR` and `GH_TOKEN` but kept the rest
+    // dropped them on purpose: ssf itself does this to read another account's
+    // token from gh, and putting them back would read ssf's own account-less
+    // store instead. Only an environment rebuilt from scratch is repaired.
+    let still_session = |name: &OsStr| {
+        matches!(
+            name.to_str(),
+            Some("SSF_REPO") | Some("GH_CONFIG_DIR") | Some("SSF_BOT")
+        )
+    };
+    assert!(recover_for(environ, still_session).is_empty());
+
+    let scrubbed = |name: &OsStr| matches!(name.to_str(), Some("GH_TOKEN"));
+    let recovered: Vec<String> = recover_for(environ, scrubbed)
+        .into_iter()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(recovered, vec!["SSF_REPO", "SSF_BOT", "GH_CONFIG_DIR"]);
 }

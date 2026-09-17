@@ -149,4 +149,77 @@ mod linux {
         );
         std::fs::remove_dir_all(&root).unwrap();
     }
+
+    /// ssf's own gh calls are not routed through the wrapper, so a variable
+    /// they clear on purpose stays cleared. `ssf git-credential` reads a token
+    /// for another account with `gh auth token --user` after removing
+    /// `GH_CONFIG_DIR` and `GH_TOKEN`, which is what makes gh read that
+    /// account from the operator's own store; the wrapper's recovery would put
+    /// the session's values back and look in ssf's account-less directory
+    /// instead, failing the push.
+    #[test]
+    fn ssf_itself_reaches_gh_without_the_shim() {
+        let root = std::env::temp_dir().join(format!("ssf-ghcli-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (shim, tools) = fixtures(&root);
+        let config = root.join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("config.toml"),
+            "[git]\nname = \"Widgets Bot\"\nemail = \"widgets-bot@example.com\"\n\
+             credential = \"token:ann\"\n",
+        )
+        .unwrap();
+        // The real gh records the environment it was run with, and answers the
+        // one call ssf makes here.
+        let log = root.join("gh-env");
+        std::fs::write(
+            tools.join("gh"),
+            format!(
+                "#!/bin/sh\nenv >> {}\nif [ \"$1 $2\" = \"auth token\" ]; then echo anna-token; fi\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            tools.join("gh"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+
+        let path = format!("{}:{}:/usr/bin", shim.display(), tools.display());
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "printf 'protocol=https\\nhost=github.com\\n\\n' | '{}' git-credential get",
+                client().display()
+            ))
+            .env_clear()
+            .env("PATH", &path)
+            .env("HOME", "/home/pane")
+            .env("SSF_REPO", "acme/widgets")
+            .env("SSF_ISSUE", "12")
+            .env("SSF_BOT", "widgets-bot")
+            .env("SSF_CONFIG_DIR", &config)
+            .env("GH_CONFIG_DIR", config.join("gh"))
+            .env("GH_TOKEN", "session-token")
+            .env("SSF_TEST_LOG", &log)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{stdout}");
+        assert!(
+            stdout.contains("password=anna-token"),
+            "the token for the other account was not read: {stdout}"
+        );
+        let seen = std::fs::read_to_string(&log).unwrap_or_default();
+        assert!(!seen.is_empty(), "the real gh never ran: {stdout}");
+        for cleared in ["GH_CONFIG_DIR=", "GH_TOKEN=", "GITHUB_TOKEN="] {
+            assert!(
+                !seen.contains(cleared),
+                "the wrapper put {cleared} back into a call that cleared it: {seen}"
+            );
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

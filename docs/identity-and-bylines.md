@@ -243,7 +243,13 @@ key. So both wrappers look up the process tree for the nearest ancestor that
 carries `SSF_REPO` — the pane's own environment — and hand the program they
 exec its `SSF_*`, `GH_*`, `GITHUB_*` and `GIT_*` variables (whole families,
 so a variable `ssf launch` starts exporting needs no change here), each one
-only where the process does not already have a value of its own. The `git`
+only where the process does not already have a value of its own. A process
+that still carries the session's marker is left alone altogether: a variable
+missing there was dropped deliberately, which is what ssf itself does around
+`gh auth token --user <login>` — clearing `GH_CONFIG_DIR` and `GH_TOKEN` is
+how that call reads another account from gh's own store, and it, like every
+other gh call ssf makes itself, runs the real gh rather than the wrapper.
+Only an environment a tool runner rebuilt from scratch is repaired. The `git`
 wrapper touches nothing else: it passes the command line through and runs the
 real git, so `ssf git-credential` resolves the session's repository and
 `[repo.git]` identity as it does from the agent's shell. Nothing is recovered

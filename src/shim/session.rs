@@ -27,8 +27,9 @@ const MARKER: &str = "SSF_REPO";
 const ANCESTORS: u32 = 16;
 
 /// The session variables this process does not have, read from the nearest
-/// ancestor that has them: empty outside a session and when `/proc` cannot be
-/// read, and never carrying a value the process was given itself.
+/// ancestor that has them: empty outside a session, when this process still has
+/// the session itself (so a variable it lacks was dropped on purpose), and when
+/// `/proc` cannot be read.
 pub(super) struct Session {
     missing: Vec<(OsString, OsString)>,
 }
@@ -69,12 +70,28 @@ impl Session {
 }
 
 fn recover() -> Vec<(OsString, OsString)> {
-    let Some(environ) = ancestor_environ() else {
+    match ancestor_environ() {
+        Some(environ) => recover_for(&environ, |name| std::env::var_os(name).is_some()),
+        None => Vec::new(),
+    }
+}
+
+/// The session variables to hand a process whose environment was `environ`,
+/// for a process that has the ones `present` reports.
+///
+/// A process that still carries the marker was not stripped of its session: it
+/// is the pane's own shell, or a program of it, and a session variable such a
+/// process does not have was dropped deliberately — ssf itself clears
+/// `GH_CONFIG_DIR` and `GH_TOKEN` around `gh auth token --user <login>` to read
+/// another account's token from gh's own store. Only an environment a tool
+/// runner built from scratch is put back, and then only what it lost: a value
+/// the process was given itself wins, because the tool that started it decided
+/// that value.
+fn recover_for(environ: &[u8], present: impl Fn(&OsStr) -> bool) -> Vec<(OsString, OsString)> {
+    if present(OsStr::new(MARKER)) {
         return Vec::new();
-    };
-    // A variable this process was given itself wins: the tool that started it
-    // decided that value, and the shim is only putting back what it dropped.
-    missing(parse(&environ), |name| std::env::var_os(name).is_some())
+    }
+    missing(parse(environ), present)
 }
 
 /// The recovered entries whose name the process already carries, dropped.
@@ -153,6 +170,12 @@ fn carries_marker(environ: &[u8]) -> bool {
 /// command name, which can itself contain spaces and parentheses.
 fn parent_of(pid: u32) -> Option<u32> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    parent_of_stat(&stat)
+}
+
+/// The parent out of a `/proc/<pid>/stat` line: field 4, the one after the
+/// state letter that follows the command name.
+fn parent_of_stat(stat: &str) -> Option<u32> {
     stat.rsplit_once(") ")?
         .1
         .split_whitespace()

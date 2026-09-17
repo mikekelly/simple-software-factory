@@ -51,9 +51,25 @@ struct StatusJson {
     hosts: BTreeMap<String, Vec<Account>>,
 }
 
+/// The real GitHub CLI, for the calls ssf makes itself. Inside an agent session
+/// the shim directory is first on `PATH`, so a plain `gh` would be that wrapper
+/// — and its recovery of the session's environment would put back exactly what
+/// these calls drop on purpose: `token_for` clears `GH_CONFIG_DIR` and
+/// `GH_TOKEN` to read another account's token from gh's own store, and the
+/// device login clears `GH_TOKEN` so gh stores the token it obtains. Resolved
+/// the way the wrapper resolves it, so both agree on which gh is the real one;
+/// `gh` alone when PATH names none outside the shim directory.
+fn real_gh() -> PathBuf {
+    crate::shim::real_tool("gh").unwrap_or_else(|| PathBuf::from("gh"))
+}
+
+/// A `Command` for the real gh.
+fn gh() -> Command {
+    Command::new(real_gh())
+}
+
 pub fn available() -> bool {
-    Command::new("gh")
-        .arg("--version")
+    gh().arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -63,7 +79,7 @@ pub fn available() -> bool {
 
 /// Accounts gh knows for `host`, active one flagged.
 pub fn accounts(host: &str) -> Result<Vec<Account>> {
-    let out = Command::new("gh")
+    let out = gh()
         .args(["auth", "status", "--hostname", host, "--json", "hosts"])
         .output()
         .context("running gh auth status (is github-cli installed?)")?;
@@ -84,7 +100,7 @@ pub fn accounts(host: &str) -> Result<Vec<Account>> {
 /// bot, so both are dropped: this is the one place that reads another
 /// account's token on purpose (`git.credential = "token:<login>"`).
 pub fn token_for(host: &str, login: &str) -> Result<String> {
-    let out = Command::new("gh")
+    let out = gh()
         .args(["auth", "token", "--hostname", host, "--user", login])
         .env_remove("GH_CONFIG_DIR")
         .env_remove("GH_TOKEN")
@@ -105,7 +121,7 @@ pub fn token_for(host: &str, login: &str) -> Result<String> {
 }
 
 pub fn switch_to(host: &str, login: &str) -> Result<()> {
-    let out = Command::new("gh")
+    let out = gh()
         .args(["auth", "switch", "--hostname", host, "--user", login])
         .output()
         .context("running gh auth switch")?;
@@ -120,7 +136,7 @@ pub fn switch_to(host: &str, login: &str) -> Result<()> {
 
 /// Current `git_protocol` preference for `host` in gh's config, if any.
 fn git_protocol(host: &str) -> Option<String> {
-    let out = Command::new("gh")
+    let out = gh()
         .args(["config", "get", "--host", host, "git_protocol"])
         .output()
         .ok()?;
@@ -138,7 +154,7 @@ fn git_protocol(host: &str) -> Option<String> {
 /// it, so the human's existing preference is put back.
 pub fn login_web(host: &str, scopes: &[&str]) -> Result<()> {
     let previous_protocol = git_protocol(host);
-    let status = Command::new("gh")
+    let status = gh()
         .args([
             "auth",
             "login",
@@ -154,7 +170,7 @@ pub fn login_web(host: &str, scopes: &[&str]) -> Result<()> {
         .status()
         .context("running gh auth login")?;
     if let Some(prev) = previous_protocol {
-        let _ = Command::new("gh")
+        let _ = gh()
             .args(["config", "set", "--host", host, "git_protocol", &prev])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -170,7 +186,7 @@ pub fn login_web(host: &str, scopes: &[&str]) -> Result<()> {
 /// account and save the returned token with `config::save_token` before using it.
 /// No system keyring or existing gh account is read or changed.
 pub fn login_device(host: &str, scopes: &[&str]) -> Result<String> {
-    login_device_using(host, scopes, &crate::config::config_dir(), Path::new("gh"))
+    login_device_using(host, scopes, &crate::config::config_dir(), &real_gh())
 }
 
 struct DeviceLoginDir(PathBuf);
@@ -260,7 +276,7 @@ fn login_device_using(host: &str, scopes: &[&str], root: &Path, program: &Path) 
 
 /// Interactive scope upgrade for the *active* account.
 pub fn refresh_scopes(host: &str, scopes: &[&str]) -> Result<()> {
-    let status = Command::new("gh")
+    let status = gh()
         .args([
             "auth",
             "refresh",
