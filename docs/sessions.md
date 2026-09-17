@@ -361,16 +361,18 @@ live session ([`ssf repo set`](setup.md#8-watch-a-repository)) leaves the
 pane on the harness it was started with, and judging its codex screen by
 OMP's phrases would miss the block and keep pasting into it. Two things
 keep an agent's own screen from tripping this: only the bottom of an idle
-agent's screen counts, and a line inside echoed `[ssf]` text (a pasted
-prompt, or activity delivered from the item, where a person may well have
-quoted the phrase) is skipped. Every text ssf itself puts on a screen or
-that agents read (the comments below, the message after a restart, the
-`BLOCKED:` lines, the refusal messages the daemon prints) is worded
-without those phrases, and a test pins that. What remains is an agent
-quoting the exact phrase in its own answer, or a quoted comment line the terminal wrapped
-past the quote marker; that costs one `blocked` post and one restart
-after the retry wait, with its `unblocked` post, and nothing more: the
-restarted screen is clean.
+agent's screen counts, and a line carrying ssf's `> ` quote marker, or
+inside echoed `[ssf]` text, is skipped. The item's own words — its
+description and every comment body — are relayed under that marker so a
+phrase someone wrote or quoted in them is not read as the harness's own
+prompt, wherever in the prompt the line lands. Every text ssf itself puts
+on a screen or that agents read (the comments below, the message after a
+restart, the `BLOCKED:` lines, the refusal messages the daemon prints) is
+worded without those phrases, and a test pins that. What remains is an
+agent quoting the exact phrase in its own answer, or a quoted comment line
+the terminal wrapped past the quote marker; that costs one `blocked` post
+and one restart after the retry wait, with its `unblocked` post, and
+nothing more: the restarted screen is clean.
 
 - **Told once.** One `blocked` post lands on the session's item (see
   [What ssf says on the item](#what-ssf-says-on-the-item): the harness,

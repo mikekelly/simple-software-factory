@@ -23,9 +23,13 @@ The operating contract comes first. After the block above come ssf's own
 guidance additions — the operator's instructions and the global, repository
 and harness guidance files (below) — and then the item, under its own `[ssf]`
 header: title with URL, project boards, description, and everything that has
-happened on it. A session reads what it is being asked to do before the
-material that applies to it, and the `[ssf]` marker on the item's header
-still keeps its Markdown from colliding with harness composer shortcuts.
+happened on it. The item's own words — the description and every comment
+body — are relayed under an indented `> ` marker: the marker says whose
+words these are, and keeps a line of them (a sign-in phrase someone quoted,
+say) from being read as ssf's own, both here and on a harness screen. A
+session reads what it is being asked to do before the material that
+applies to it, and the `[ssf]` marker on the item's header still keeps its
+Markdown from colliding with harness composer shortcuts.
 
 The block names the CLI's affordances and points at the reference instead
 of teaching the tools: `ssf skill` prints the guidance bundled with the

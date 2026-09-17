@@ -15,7 +15,7 @@ pub use guide::{VM_GUEST_LINE, guide};
 #[cfg(test)]
 use timeline::today_utc;
 pub use timeline::{Rendered, actor_of, event_key, render_event};
-use timeline::{fmt_when, quote};
+use timeline::{fmt_when, quote, quote_lines};
 
 #[cfg(not(test))]
 fn global_prompt_dir() -> Option<std::path::PathBuf> {
@@ -415,10 +415,15 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
     s.push_str("\n\n## Description\n\n");
     let body = origin::strip(issue.body.as_deref().unwrap_or(""));
     let body = body.trim();
-    s.push_str(if body.is_empty() {
-        "(no description)"
+    s.push_str(&if body.is_empty() {
+        "(no description)".to_string()
     } else {
-        body
+        // The description is the item author's text, quoted the way a
+        // comment body is: the sign-in detector reads a line carrying
+        // the `> ` marker as relayed words, and the first prompt now
+        // ends with the item, so the description sits where a harness
+        // draws its own dialog (#372).
+        quote_lines(body)
     });
     s.push_str("\n\n## Activity so far\n\n");
     if events.is_empty() {

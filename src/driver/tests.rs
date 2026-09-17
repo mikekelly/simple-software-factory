@@ -247,7 +247,7 @@ fn login_prompts_of_each_harness_are_recognised() {
     // rendering of someone else's words (#355), not a sign-in prompt.
     let first_prompt = "❯ [ssf] GitHub issue #5: Fix it\nhttps://gh/5\n\n\
 Opened by @mike on 2026-09-17 08:00Z. Labels: daemon.\n\n\
-## Description\n\nRetry the sign-in when the token lapses.\n\n\
+## Description\n\n  > Retry the sign-in when the token lapses.\n\n\
 ## Activity so far\n\n- 09:20Z @mike commented (https://gh/c1):\n  > the daemon does not retry: Login expired · Please run /login\n\n❯ ";
     assert_eq!(login_dialog("claude", first_prompt), None);
     // A dialog drawn flush or in a box is still read, wherever it is.

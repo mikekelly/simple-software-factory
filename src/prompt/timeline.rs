@@ -101,7 +101,17 @@ pub(super) fn quote(body: &str, max: usize) -> String {
     if b.chars().count() > max {
         b = b.chars().take(max).collect::<String>() + "\n… (truncated)";
     }
-    b.lines()
+    quote_lines(&b)
+}
+
+/// `text` as the block ssf renders someone else's words in: an indented
+/// `> ` marker on every line, and nothing dropped. The marker is what
+/// keeps such a line from being read as ssf's own anywhere the text
+/// lands -- most of all on a harness screen, where
+/// `driver::dialog_candidates` skips a line carrying it even inside an
+/// echoed prompt (#372).
+pub(super) fn quote_lines(text: &str) -> String {
+    text.lines()
         .map(|l| format!("  > {l}"))
         .collect::<Vec<_>>()
         .join("\n")

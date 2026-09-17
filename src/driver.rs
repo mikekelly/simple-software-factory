@@ -166,9 +166,11 @@ const SETUP_TAIL_LINES: usize = 32;
 /// from Claude Code's own list of errors a person has to fix.
 ///
 /// Two things keep an agent's own screen from tripping this: only the
-/// bottom of the screen counts, and a line inside echoed `[ssf]` text (a
-/// pasted prompt, or activity delivered from the item, where a person may
-/// well have quoted the phrase) is skipped: from a line carrying `[ssf]`
+/// bottom of the screen counts, and a line inside echoed `[ssf]` text or
+/// carrying ssf's `> ` quote marker is skipped. The prompt's own text --
+/// a pasted prompt, the item's description, activity delivered from the
+/// item, where a person may well have quoted the phrase -- is relayed
+/// under that marker, and an echo carries `[ssf]` from its first line
 /// through the bullet and quote lines (`- `, `> `) that follow it. Every
 /// string ssf itself writes into a terminal or that agents read stays
 /// free of these phrases (`prompt::login_back_prompt`, the `blocked` and
@@ -207,10 +209,11 @@ fn omp_setup(harness: &str, candidates: &[&str]) -> bool {
 
 fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
     // The raw line, not just its trimmed form: ssf renders what someone
-    // else wrote as an indented `> ` quote, and the item's own comments
-    // now end the first prompt, so one can sit at the bottom of the
-    // window with a sign-in phrase quoted in it. A harness draws its own
-    // dialog flush or in a box, never indented behind a `> `.
+    // else wrote as an indented `> ` quote, and the item's own text --
+    // its description, then its comments -- now ends the first prompt,
+    // so one can sit at the bottom of the window with a sign-in phrase
+    // quoted in it. A harness draws its own dialog flush or in a box,
+    // never indented behind a `> `.
     let tail: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let start = tail.len().saturating_sub(limit);
     let mut in_echo = false;
