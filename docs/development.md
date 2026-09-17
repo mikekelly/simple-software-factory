@@ -390,7 +390,7 @@ from the release either way.
 | `src/origin.rs`, `src/shim.rs` | bylines and origin tags; the `gh` wrapper |
 | `src/allow.rs` | the allow-list of GitHub users |
 | `src/release.rs` | the release and purge checks |
-| `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `tell`, `handover`, `assign`, `release` and `purge` |
+| `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `handover`, `assign`, `release` and `purge` |
 | `src/dashboard.rs`, `src/dashboard_herdr.rs`, `src/dashboard_transport.rs` | terminal dashboard, optional Herdr focus, and reusable SSH status transport |
 | `src/dashboard_web.rs`, `dashboard/` | optional server HTTP dashboard and embedded browser assets |
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |

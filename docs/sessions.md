@@ -201,21 +201,9 @@ another session counts as that session):
   the subscribers are told; when nobody follows it any more it is dropped.
 - `ssf subs` lists what this session follows and who follows its items
   (`--json` for detail); `ssf peers` shows subscribers per session.
-- `ssf tell <n> "message"` pastes a message into the terminal of the session
-  acting on that item, through the daemon's own delivery path (so the agent is relaunched or resumed first
-  if its terminal is gone). It arrives as an
-  `[ssf] Message from the agent session on owner/repo#A ("title") ...` prompt,
-  or "from a human at the terminal" without `--as`. For an operator it is the
-  steering tool ("stop, I'm changing the spec"). Between agents it is the
-  exception: the default channel is a comment on the item (below), and
-  `ssf guide` tells agents to keep `tell` for operational nudges that would
-  be noise on the item ("master moved, rebase", "terminal is being replaced")
-  and for reaching a session whose item is already closed. Tells are not
-  mirrored to GitHub, so anything someone might need to find later
-  (decisions, questions that change scope, status) goes on the item.
 - Delegating parents are subscribed to their children automatically.
 
-`sub`, `unsub`, `tell`, `handover`, `assign`, `release` and `purge` talk to
+`sub`, `unsub`, `handover`, `assign`, `release` and `purge` talk to
 the running daemon over a Unix socket in the state directory (`ssf.sock`),
 because the daemon owns the state and the delivery path; `ssf doctor`
 reports whether it answers. `subs`, `peers` and `status` read the state
@@ -232,8 +220,7 @@ reaches every recipient, marked "(not from a session)". So session A talks
 to session B by commenting on B's issue with `gh`: B's agent receives it
 labelled as coming from A, and A does not receive its own comment back,
 even when A is subscribed to B's issue. This is the default channel between
-agents: `ssf guide` says so, and a `tell` message repeats in one line that
-the answer goes on the item.
+agents: `ssf guide` says so, and it is the only channel between sessions.
 
 ## What ssf says on the item
 
@@ -376,9 +363,9 @@ agent's screen counts, and a line inside echoed `[ssf]` text (a pasted
 prompt, or activity delivered from the item, where a person may well have
 quoted the phrase) is skipped. Every text ssf itself puts on a screen or
 that agents read (the comments below, the message after a restart, the
-`BLOCKED:` lines, the refusal `ssf tell` prints) is worded without those
-phrases, and a test pins that. What remains is an agent quoting the exact
-phrase in its own answer, or a quoted comment line the terminal wrapped
+`BLOCKED:` lines, the refusal messages the daemon prints) is worded
+without those phrases, and a test pins that. What remains is an agent
+quoting the exact phrase in its own answer, or a quoted comment line the terminal wrapped
 past the quote marker; that costs one `blocked` post and one restart
 after the retry wait, with its `unblocked` post, and nothing more: the
 restarted screen is clean.
@@ -394,10 +381,10 @@ restarted screen is clean.
   `detail`, `since` and `fix`, and `blocked_sessions` at the top), in
   `ssf peers`, and in the bar widget (urgent, with the same line on the
   session's row).
-- **Nothing is delivered.** Activity on the item, tells, FYIs and the
+- **Nothing is delivered.** Activity on the item, FYIs and the
   closing message are held: the item's bookkeeping is left as it was
   (`updated_at`, the seen events), so what happened meanwhile is
-  delivered in full once the session is back. `ssf tell` to a blocked
+  delivered in full once the session is back. A delivery to a blocked
   session is refused with the reason. A harness that ssf starts again
   (after a reboot, say) and that comes up on its login screen is caught
   the same way.
@@ -458,7 +445,7 @@ ssf handover 12 --cancel                                                      # 
 - **Which item.** Inside a session the command takes no item: it is the
   session's own (`SSF_REPO`/`SSF_ISSUE`). From a shell the item comes
   first, as `owner/name#N` or as a bare `N` with `SSF_REPO` set or `--as
-  owner/repo#N`, exactly like `ssf release` and `ssf tell`. An item bound
+  owner/repo#N`, exactly like `ssf release`. An item bound
   to another session's workspace counts as that session.
 - **Which harness.** `--harness` is required; the same harness with a
   different model or effort is a valid handover. `--model` and `--effort`
@@ -644,8 +631,8 @@ the collaborators cannot be fetched -- because until then everything else
 on the item is refused. Nothing is posted on the item: the handover was
 never announced there.
 
-While a handover is pending, `ssf release` on the item and `ssf tell` to
-it are refused with that as the reason, and the startup pass leaves the
+While a handover is pending, `ssf release` on the item is refused with
+that as the reason, and the startup pass leaves the
 item alone rather than resuming the old harness only to stop it. The
 overrides last until the workspace is released or the item is purged,
 which clears them; the item then comes back on the repository's own
@@ -672,7 +659,7 @@ ssf assign 12 --harness pi --json                            # the same as data
 
 - **Which item.** The item comes first, as `owner/name#N` or as a bare
   `N` with `SSF_REPO` set or `--as owner/repo#N`, exactly like
-  `ssf handover`, `ssf release` and `ssf tell`.
+  `ssf handover` and `ssf release`.
 - **Which stack.** `--harness` is required and `--model` and `--effort`
   are optional, checked exactly the way `ssf handover` checks them:
   against the levels that harness offers and the shape of a model id,
@@ -820,9 +807,9 @@ mentioned item rather than to unassign one that has no assignee.
   hand leaves the checkout behind), gets a `WARN`
   line naming it, what it holds (`6 commits ahead of master, not on
   origin`), whether its workspace is open, and whether its item is active
-  on the record. For an active item `ssf tell <item> "..."` brings the
-  session back in that checkout; a retired item refuses a tell, so its
-  branch is pushed by hand (`git -C <checkout> push -u origin <branch>`).
+  on the record. Commenting on an active item starts its session again in
+  that checkout; a retired item gets nothing, so its branch is pushed by
+  hand (`git -C <checkout> push -u origin <branch>`).
   `ssf purge --force` or removing the directory loses the uncommitted
   changes and leaves the commits on a local branch nothing lists.
   Worktrees with an agent on them, and ones whose work is on origin or

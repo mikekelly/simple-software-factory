@@ -322,50 +322,6 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn tell(
-    item: &str,
-    message: Option<String>,
-    as_: Option<&str>,
-    json: bool,
-) -> Result<()> {
-    let me = identity(as_)?;
-    let target = item_ref(item, me.as_ref())?;
-    let text = match message {
-        Some(m) => m,
-        None => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            buf
-        }
-    };
-    if text.trim().is_empty() {
-        bail!("nothing to say (pass the message, or pipe it in)");
-    }
-    let v = ipc::call(&ipc::Request::Tell {
-        from: me.map(|o| o.to_string()),
-        target: target.clone(),
-        text,
-    })
-    .await?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&v)?);
-        return Ok(());
-    }
-    println!(
-        "delivered to the session on {target} ({}){}",
-        v.get("session").and_then(|s| s.as_str()).unwrap_or("?"),
-        if v.get("relaunched")
-            .and_then(|b| b.as_bool())
-            .unwrap_or(false)
-        {
-            ", whose agent had to be relaunched for it"
-        } else {
-            ""
-        }
-    );
-    Ok(())
-}
-
 pub(super) async fn release(
     item: Option<&str>,
     as_: Option<&str>,

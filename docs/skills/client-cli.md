@@ -38,7 +38,7 @@ to operate that factory.
 
 `ssf status --json` provides a snapshot; add `--watch` for a stream.
 `ssf dashboard` is the live terminal view. Inside an issue session, `ssf guide`
-explains `peers`, `tell`, `sub`, `unsub`, `subs`, `handover`, `assign` and
+explains `peers`, `sub`, `unsub`, `subs`, `handover`, `assign` and
 `release` with that session's context. `ssf skill sessions` provides the full
 lifecycle reference. Release and purge protect worktrees holding unpushed
 work; resolve that work before removal and do not bypass checks on someone's

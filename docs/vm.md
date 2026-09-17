@@ -575,14 +575,14 @@ The guest's sshd is published on `127.0.0.1:<vm.ssh_port>` (by gvproxy
 under Firecracker, by lima's port forwarding under lima), keyed by a key
 made per VM. With `vm.enabled`, repository, factory configuration and
 bot authentication commands run in the guest, as do commands that talk to the daemon
-(`status`, `peers`, `sub`, `unsub`, `subs`, `tell`, `handover`, `release`,
+(`status`, `peers`, `sub`, `unsub`, `subs`, `handover`, `release`,
 `purge`, `doctor`, `run --once`) run inside the guest over that
 connection. A stopped or unreachable guest produces an error; it never
 falls back to editing host factory settings. Start it with `ssf vm start`
 and retry. `ssf config get|set vm.<key>` and `ssf vm ...` operate on the
 host. `ssf vm status` diagnoses host infrastructure; `ssf status`,
 `ssf doctor`, `ssf auth status` and repository listing inspect the guest
-factory. The bar widget, `ssf status --json` and `ssf tell` work as
+factory. The bar widget and `ssf status --json` work as
 before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 [-- cmd]` gives a shell. `ssf vm attach` attaches to herdr's session in
 the guest in your terminal; `ssf vm ssh-config` prints an `~/.ssh/config`
@@ -749,7 +749,7 @@ rather than the empty object it falls back to, and a `jq` over the
 command gets a field rather than a parse error.
 
 A probe that could not be made is never read as a stopped factory:
-reading it that way refused `tell`, `release`, `purge` and `doctor` over
+reading it that way refused `release`, `purge` and `doctor` over
 a running VM and showed the widget an idle one. The supervisor inside
 `ssf-server` asks the same question on its own loop, where a slow answer is
 waited out rather than cut short at fifteen seconds, since it gives up on

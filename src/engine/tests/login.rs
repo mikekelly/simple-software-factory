@@ -49,8 +49,8 @@ async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
     assert!(stub.posts().is_empty());
     assert!(d.log().is_empty());
     assert!(e.entry(&repo(), 5).blocked.is_some());
-    // Direct deliveries (a tell, a subscriber's FYI) are refused with
-    // the reason, not silently lost.
+    // Direct deliveries (a subscriber's FYI, a session's own message)
+    // are refused with the reason, not silently lost.
     let err = e.deliver_to(&repo(), 5, "hello", None).await.unwrap_err();
     assert!(is_blocked(&err), "{err:#}");
     assert!(
@@ -59,8 +59,6 @@ async fn a_session_at_a_login_prompt_is_blocked_told_and_held() {
         "{err:#}"
     );
     assert!(err.to_string().contains("claude auth login"), "{err:#}");
-    let err = e.tell(None, "o/r#5", "hello").await.unwrap_err();
-    assert!(is_blocked(&err), "{err:#}");
     assert!(d.log().is_empty());
 }
 #[tokio::test]

@@ -1,4 +1,4 @@
-//! Requests from the CLI to the running daemon (`ssf sub|unsub|tell`,
+//! Requests from the CLI to the running daemon (`ssf sub|unsub`,
 //! `ssf release|purge`), over a Unix socket in the state directory.
 //!
 //! The daemon keeps the state in memory and writes it out wholesale, so
@@ -68,13 +68,6 @@ pub enum Request {
     Unsub {
         from: String,
         target: String,
-    },
-    /// Paste `text` into the terminal of the session acting on `target`.
-    /// `from` is the sending session, or `None` from a human shell.
-    Tell {
-        from: Option<String>,
-        target: String,
-        text: String,
     },
     /// Remove the workspace of `session` (`owner/repo#N`) once the checks
     /// in `crate::release` pass; `force` skips them.
@@ -225,14 +218,6 @@ mod tests {
 
     #[test]
     fn requests_round_trip_as_tagged_json() {
-        let r = Request::Tell {
-            from: Some("o/r#1".into()),
-            target: "o/r#2".into(),
-            text: "hi".into(),
-        };
-        let j = serde_json::to_string(&r).unwrap();
-        assert!(j.contains("\"op\":\"tell\""));
-        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), r);
         let p = Request::Purge {
             dry_run: true,
             older_than_days: Some(7),

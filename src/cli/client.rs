@@ -829,12 +829,6 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         Command::Sub { item, r#as, json } => sub(&item, r#as.as_deref(), json, true).await,
         Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false).await,
         Command::Subs { r#as, json } => subs(r#as.as_deref(), json),
-        Command::Tell {
-            item,
-            message,
-            r#as,
-            json,
-        } => tell(&item, message, r#as.as_deref(), json).await,
         Command::Release {
             item,
             r#as,

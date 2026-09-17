@@ -397,11 +397,6 @@ async fn a_handover_replaces_the_session_in_the_same_workspace() {
             .contains("a handover to pi is already pending"),
         "{err:#}"
     );
-    let err = e.tell(None, "o/r#5", "hello").await.unwrap_err();
-    assert!(
-        err.to_string().contains("a handover to pi is pending"),
-        "{err:#}"
-    );
     assert!(!e.resume_candidates(&repo()).contains(&5));
     // Delivery failures counted against the session that is going.
     e.failures.insert(("o/r".into(), 5), 2);

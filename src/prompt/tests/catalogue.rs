@@ -259,15 +259,6 @@ fn prompt_catalogue() {
             ),
         ),
         (
-            "tell_prompt (message from another session)",
-            tell_prompt(
-                Some("mikekelly/simple-software-factory#16"),
-                Some("Project management"),
-                "master moved after you branched (#14 and #13 merged); please rebase onto origin/master before pushing again.",
-                d.max_body_chars,
-            ),
-        ),
-        (
             "handover_prompt (a session handed the item over, with a summary)",
             handover_prompt(
                 "Claude Code",
@@ -305,10 +296,6 @@ bump is not done.",
         (
             "start_again_prompt (the harness would not start, and now has)",
             start_again_prompt(&back),
-        ),
-        (
-            "tell_prompt (from a human shell, no session)",
-            tell_prompt(None, None, "stop, I'm changing the spec", d.max_body_chars),
         ),
     ];
     println!("\n| # | prompt | chars | ~tokens |\n|---|---|---|---|");

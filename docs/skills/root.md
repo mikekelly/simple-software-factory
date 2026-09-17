@@ -16,7 +16,7 @@ in a VM, or over SSH.
 - `ssf dashboard`: watch factories in a terminal.
 - `ssf vm`: manage the factory VM from its host.
 - `ssf guide`: read the session-specific agent collaboration reference.
-- `ssf peers`, `ssf tell`, `ssf handover`, `ssf assign`, `ssf sub`: coordinate sessions.
+- `ssf peers`, `ssf handover`, `ssf assign`, `ssf sub`: coordinate sessions.
 - `ssf release` / `ssf purge`: retire workspaces after checking their work.
 
 Use `ssf <command> --help` for arguments. Inspect existing targets and their

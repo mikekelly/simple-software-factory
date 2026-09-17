@@ -43,7 +43,7 @@ pub fn invoked_as_gh() -> bool {
 }
 
 /// Names linked to the ssf binary in the shim directory: `gh` (the shim)
-/// and `ssf` itself, so `ssf release`, `ssf sub`, `ssf tell` and the rest
+/// and `ssf` itself, so `ssf release`, `ssf sub` and the rest
 /// run the daemon's own build rather than whatever `ssf` the agent's shell
 /// happens to have (an older package, or nothing).
 pub const LINKS: [&str; 2] = ["gh", "ssf"];

@@ -212,7 +212,7 @@ pub(super) async fn doctor() -> Result<()> {
             ),
         ),
         Err(e) => {
-            println!("note the daemon is not answering (`ssf sub|unsub|tell` need it): {e:#}")
+            println!("note the daemon is not answering (`ssf sub|unsub` need it): {e:#}")
         }
     }
     check(
@@ -635,13 +635,13 @@ pub(super) async fn doctor() -> Result<()> {
                         for (line, _) in &stranded {
                             println!("              - {line}");
                         }
-                        // What to do depends on the item: a tell reaches an
-                        // active one and brings its session back in the
-                        // checkout; a retired one refuses a tell, so its
+                        // What to do depends on the item: a comment reaches
+                        // an active one and its session is started again in
+                        // the checkout; a retired one gets nothing, so its
                         // branch is pushed by hand.
                         if stranded.iter().any(|(_, active)| *active) {
                             println!(
-                                "              an active item: `ssf tell <item> \"...\"` brings its session back in that checkout"
+                                "              an active item: comment on it (`gh issue comment <n> --body \"...\"`) and its session is started again in that checkout"
                             );
                         }
                         if stranded.iter().any(|(_, active)| !*active) {

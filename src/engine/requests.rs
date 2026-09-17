@@ -9,8 +9,6 @@ use super::{Engine, github_state, mentions_bot};
 use crate::config::RepoConfig;
 use crate::ipc::{Request, Response};
 use crate::origin::Origin;
-use crate::prompt;
-use crate::state::now_iso;
 use crate::status::session_id;
 
 impl Engine {
@@ -32,7 +30,7 @@ impl Engine {
         }
     }
 
-    /// `ssf sub|unsub|tell`, run inside the daemon so the state and the
+    /// `ssf sub|unsub`, run inside the daemon so the state and the
     /// delivery path are the daemon's own.
     pub async fn handle_request(&mut self, req: Request) -> Response {
         match req {
@@ -53,12 +51,6 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
             },
-            Request::Tell { from, target, text } => {
-                match self.tell(from.as_deref(), &target, &text).await {
-                    Ok(v) => Response::ok(v),
-                    Err(e) => Response::err(format!("{e:#}")),
-                }
-            }
             Request::Release { session, force } => match self.release(&session, force).await {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::err(format!("{e:#}")),
@@ -417,81 +409,6 @@ impl Engine {
             "untracked": dropped,
         }))
     }
-
-    /// Paste a message into the terminal of the session acting on `target`.
-    pub(super) async fn tell(
-        &mut self,
-        from: Option<&str>,
-        target: &str,
-        text: &str,
-    ) -> Result<Value> {
-        if text.trim().is_empty() {
-            anyhow::bail!("nothing to say");
-        }
-        let (repo, number) = self.locate(target)?;
-        let st = self
-            .peek(&repo, number)
-            .cloned()
-            .filter(|s| s.seeded)
-            .with_context(|| format!("{target} has no agent session (see `ssf peers --all`)"))?;
-        let acting = self.owner_of(&repo, number);
-        let ost = self.entry(&repo, acting).clone();
-        let alive = match ost.worktree_id.as_deref() {
-            Some(id) => self
-                .driver(&repo)
-                .worktree_exists(id)
-                .await
-                .unwrap_or(false),
-            None => false,
-        };
-        if !ost.active && !alive {
-            anyhow::bail!(
-                "the session on {target} ({}) has retired and its workspace is gone",
-                session_id(&repo.name, acting)
-            );
-        }
-        if let Some(h) = ost.handover.as_ref() {
-            anyhow::bail!(
-                "a handover to {} is pending on {} ({}); the session is about to be replaced",
-                h.harness,
-                target,
-                session_id(&repo.name, acting)
-            );
-        }
-        let (sender, sender_title) = match from {
-            Some(f) => {
-                let (frepo, fnumber, fid) = self.known_session(f)?;
-                let title = self.entry(&frepo, fnumber).title.clone();
-                (Some(fid), Some(title).filter(|t| !t.is_empty()))
-            }
-            None => (None, None),
-        };
-        let prompt = prompt::tell_prompt(
-            sender.as_deref(),
-            sender_title.as_deref(),
-            text,
-            self.cfg.daemon.max_body_chars,
-        );
-        let d = self.deliver_to(&repo, number, &prompt, None).await?;
-        let e = self.entry(&repo, acting);
-        e.last_prompt_at = Some(now_iso());
-        e.prompts_sent += 1;
-        info!(
-            repo = repo.name,
-            issue = number,
-            session = session_id(&repo.name, acting),
-            from = sender.as_deref().unwrap_or("a human"),
-            "delivered a message"
-        );
-        Ok(serde_json::json!({
-            "item": session_id(&repo.name, number),
-            "title": st.title,
-            "session": session_id(&repo.name, acting),
-            "terminal": d.handle,
-            "relaunched": d.relaunched,
-            "from": sender,
-        }))
-    }
 }
 
 #[cfg(test)]
@@ -609,35 +526,6 @@ mod tests {
         assert!(resp.ok);
         assert_eq!(resp.data["removed"], false);
 
-        // Telling a retired session with no workspace is refused, and an
-        // empty message too.
-        let resp = e
-            .handle_request(Request::Tell {
-                from: None,
-                target: "o/r#3".into(),
-                text: "  ".into(),
-            })
-            .await;
-        assert!(!resp.ok);
-        e.entry(&r, 3).active = false;
-        let resp = e
-            .handle_request(Request::Tell {
-                from: Some("o/r#1".into()),
-                target: "o/r#3".into(),
-                text: "hello".into(),
-            })
-            .await;
-        assert!(!resp.ok);
-        assert!(resp.error.unwrap().contains("retired"));
-        let resp = e
-            .handle_request(Request::Tell {
-                from: None,
-                target: "o/r#50".into(),
-                text: "hello".into(),
-            })
-            .await;
-        assert!(!resp.ok);
-        assert!(resp.error.unwrap().contains("no agent session"));
         assert!(e.handle_request(Request::Ping).await.ok);
     }
 }

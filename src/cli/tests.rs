@@ -162,13 +162,13 @@ fn the_machine_name_comes_from_whichever_source_this_os_has() {
 fn only_a_definite_no_keeps_a_command_out_of_the_guest() {
     // A guest that is up takes the command, with nothing said.
     assert_eq!(
-        forwarding_gate(&Ok(true), "default", "lima", "tell", None),
+        forwarding_gate(&Ok(true), "default", "lima", "release", None),
         Gate::Send(None)
     );
     // A guest that is down does not, and the refusal names what the
     // host has not got when that is why it cannot be started.
     assert_eq!(
-        forwarding_gate(&Ok(false), "default", "lima", "tell", None),
+        forwarding_gate(&Ok(false), "default", "lima", "release", None),
         Gate::Refuse(
             "the factory runs in VM default, which is not running; `ssf vm start` first".into()
         )
@@ -196,14 +196,17 @@ fn only_a_definite_no_keeps_a_command_out_of_the_guest() {
     let probe = Err("asking lima whether ssf-default is running: fork/exec: \
 resource temporarily unavailable"
         .to_string());
-    let Gate::Send(Some(note)) = forwarding_gate(&probe, "default", "lima", "tell", None) else {
+    let Gate::Send(Some(note)) = forwarding_gate(&probe, "default", "lima", "release", None) else {
         panic!("an unanswered probe forwards the command")
     };
     assert!(
         note.starts_with("could not tell whether VM default is running: asking lima"),
         "{note}"
     );
-    assert!(note.contains("sending `ssf tell` to it anyway"), "{note}");
+    assert!(
+        note.contains("sending `ssf release` to it anyway"),
+        "{note}"
+    );
     assert!(!note.contains("is not running,"), "{note}");
     // A host with no `limactl` at all cannot answer the probe, so
     // the refusal that names the missing tooling is never reached:

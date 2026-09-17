@@ -178,7 +178,7 @@ nobody else is spawned for it.",
 }
 
 #[test]
-fn fyi_and_tell_prompts() {
+fn fyi_prompts() {
     let issue: Issue = serde_json::from_value(json!({
             "number": 5, "title": "Thing", "body": null, "html_url": "https://gh/5", "state": "closed",
             "state_reason": "completed", "user": {"login": "carol"}, "created_at": "t", "updated_at": "t"
@@ -247,17 +247,6 @@ For information only; you will not hear about it again unless it comes back."
     assert!(p.starts_with(
             "[ssf] FYI: @bot is no longer involved with issue #5 \"Thing\" (https://gh/5), so its session has retired."
         ));
-
-    let t = tell_prompt(Some("o/r#3"), Some("Fix it"), "are you done?", 100);
-    assert!(t.starts_with(
-            "[ssf] Message from the agent session on o/r#3 (\"Fix it\"), sent with `ssf tell`:\n\n  > are you done?"
-        ));
-    assert!(t.ends_with(
-            "  > are you done?\n\nIf it needs an answer, comment on o/r#3; `ssf tell 3 \"...\"` only for an operational nudge."
-        ));
-    let t = tell_prompt(None, None, "hello", 100);
-    assert!(t.starts_with("[ssf] Message from a human at the terminal, sent with `ssf tell`:"));
-    assert!(t.ends_with("  > hello\n\nIt comes from outside GitHub, so answer here."));
 }
 
 #[test]

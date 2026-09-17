@@ -551,7 +551,7 @@ impl std::str::FromStr for BackendKind {
 pub struct VmConfig {
     /// Run the factory in the VM: `ssf-server` on the host starts and watches
     /// the guest instead of polling GitHub itself, and the daemon-facing
-    /// commands (`status`, `tell`, `peers`, ...) run inside the guest.
+    /// commands (`status`, `peers`, ...) run inside the guest.
     #[serde(default)]
     pub enabled: bool,
     /// Name of the VM (its disks live in `<dir>/<name>/`).
