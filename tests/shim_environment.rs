@@ -40,19 +40,16 @@ mod linux {
     }
 
     /// A directory of `gh` and `git` stand-ins that print the environment they
-    /// were exec'd with, and a directory linking the shims to the client.
-    fn fixtures(root: &Path) -> (PathBuf, PathBuf) {
-        let (shim, tools) = (root.join("shim"), root.join("tools"));
-        for dir in [&shim, &tools] {
-            std::fs::create_dir_all(dir).unwrap();
-        }
+    /// were exec'd with.
+    fn tools(root: &Path) -> PathBuf {
+        let tools = root.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
         let watched = SESSION
             .iter()
             .map(|(name, _)| *name)
             .collect::<Vec<_>>()
             .join(" ");
         for name in ["gh", "git"] {
-            std::os::unix::fs::symlink(client(), shim.join(name)).unwrap();
             let tool = tools.join(name);
             std::fs::write(
                 &tool,
@@ -61,6 +58,18 @@ mod linux {
             .unwrap();
             std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
                 .unwrap();
+        }
+        tools
+    }
+
+    /// The tools, plus a directory linking the shims to the client the way
+    /// `ssf launch` links them.
+    fn fixtures(root: &Path) -> (PathBuf, PathBuf) {
+        let tools = tools(root);
+        let shim = root.join("shim");
+        std::fs::create_dir_all(&shim).unwrap();
+        for name in ["gh", "git"] {
+            std::os::unix::fs::symlink(client(), shim.join(name)).unwrap();
         }
         (shim, tools)
     }
@@ -165,7 +174,9 @@ mod linux {
     fn ssf_itself_reaches_gh_without_the_shim() {
         let root = std::env::temp_dir().join(format!("ssf-ghcli-env-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        let (_, tools) = fixtures(&root);
+        // This test lays out the frame a factory has: the links under the
+        // config directory, as `ssf launch` installs them.
+        let tools = tools(&root);
         let config = root.join("config");
         let shim = config.join("bin");
         std::fs::create_dir_all(&shim).unwrap();
