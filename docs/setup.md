@@ -616,32 +616,21 @@ step 10.
 
 ## 9. SSF agent guidance and boards
 
-**`SSF.md`.** The operating contract for ssf-spawned agents belongs in this
-file at the repository root: issue ownership and communication, board workflow,
-delegation and handoffs, bounded review, completion and merge authority. ssf
-appends it to the initial prompt; keep it short. Repository-wide build, test,
-implementation, architecture, domain and safety policy belongs in `AGENTS.md`.
-SSF injects `SSF.md` into the issue-owning main session only, not harness-created
-subagents, so use it to define that agent's orchestration and completion role
-without polluting delegated task contexts.
-For optional context shared by every watched repository on this factory, add
-`~/.ssf/SSF.md`; add `~/.ssf/SSF.codex.md`, `~/.ssf/SSF.claude.md`, or the
-corresponding harness name for machine-wide harness-specific context. These
-files live inside the guest in VM mode and on the host in host mode. They are
-read before repository guidance and are not required by `ssf doctor`.
-Add optional `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md` at the root
-for instructions appended only when that harness starts the session.
-Describe one outcome per issue, where the plan lives, and who may merge. Keep
-implementation tasks on that issue. Use `Refs #N`
-for ongoing tracking and `Closes #N` only for complete delivery.
-
-Start from `/usr/share/ssf/SSF.example.md` and adapt it, or use the checkout’s
-[SSF.example.md](../SSF.example.md)
-for a standalone installation. Commit it as `SSF.md` at the root of the
-repository’s **default branch** before checking `ssf doctor`. `CLAUDE.md` and
-`AGENTS.md` remain the place for repository policy shared by every agent,
-whether or not ssf started it. `ssf doctor` reports missing SSF guidance
-through the GitHub API; no clone is needed. See [The SSF agent guidance
+**`SSF.md`.** The operating contract for ssf-spawned sessions belongs in this
+file at the repository root: how you want them to behave as unattended
+colleagues on an item. Repository-wide build, test, implementation,
+architecture, domain and safety policy belongs in `AGENTS.md` (with
+`CLAUDE.md` as one line, `@AGENTS.md`). ssf appends `SSF.md` to the
+issue-owning main session only, not to harness-created subagents, so it is
+the place for orchestration advice meant for that agent alone. Start from
+`/usr/share/ssf/SSF.example.md` (or the checkout's
+[SSF.example.md](../SSF.example.md) for a standalone installation), answer
+the questions in [Writing SSF.md](ssf-md.md) (`ssf skill ssf-md`), keep it
+short, and commit it as `SSF.md` at the root of the repository's **default
+branch** before checking `ssf doctor`, which looks for it through the GitHub
+API. Optional `SSF.<harness>.md` files at the root, and `~/.ssf/SSF.md` and
+`~/.ssf/SSF.<harness>.md` on the factory (inside the guest in VM mode), add
+harness-specific and machine-wide context; see [The SSF agent guidance
 file](configuration.md#the-ssf-agent-guidance-file).
 
 **Review.** ssf does not start a separate reviewer session for an agent’s

@@ -1,84 +1,52 @@
 # SSF agent guidance
 
 <!--
-Copy this template to SSF.md. Keep SSF-specific issue ownership,
-communication, board workflow, delegation, review and completion rules here.
-Put repository-wide build, test, implementation, architecture, domain and
-safety policy in AGENTS.md. ssf appends this file to the issue-owning main
-session's initial prompt; harness-created subagents do not receive it
-automatically. Comments are stripped and this guidance is not daemon-enforced.
+Copy this to SSF.md at the repository root. It reaches only the main session
+ssf starts for an item, never its subagents; repository-wide build, test and
+implementation policy belongs in AGENTS.md. Keep it short: it is read once
+per session. docs/ssf-md.md (`ssf skill ssf-md`) explains each choice.
 -->
 
 ## Role
 
-- Own the independently valuable outcome on the assigned issue from initial
-  clarification through delivery.
-- Act as the issue's orchestrator. Preserve the main session's context for
-  planning, decisions, integration and communication; give subagents only the
-  bounded task context they need.
-- Plan with the people involved before implementing: distil the goals until
-  they are clear and unambiguous, and use diagrams, wireframes or screenshots
-  where they establish shared agreement on the intended outcome. Do not start
-  implementation until you are sufficiently confident of that outcome.
-- Make the acceptance criteria and intended outcome clear before substantial
-  execution. Keep the plan, implementation tasks and pull requests on the
-  owning issue. Open a separate issue only for an out-of-scope outcome that can
-  be prioritized independently.
-- Coordinate people around decisions and outcomes. Name the owner and concrete
-  next action whenever work passes outside the agent's authority.
-- Bring people the critical big-picture decisions and the matters of taste.
-  Where confidence in the approach is high, settle the small details yourself
-  rather than spending their attention on them. Take the decisions that do need
-  them one at a time, in the order they have to be made.
-- Minimize human cognitive load with concise, direct communication. Use a
-  visual only when it makes a decision, dependency or status materially easier
-  to understand.
+- Own the independently valuable outcome on the assigned issue from
+  clarification through delivery; keep the plan, tasks and pull requests
+  on that issue, and open another only for an outcome that can be
+  prioritized on its own.
+- Plan on the issue until the outcome is unambiguous, with diagrams,
+  wireframes or screenshots where they settle agreement; do not start
+  substantial implementation before that.
+- Bring people the big-picture decisions and matters of taste, one at a
+  time in the order they must be made; settle the small details yourself.
+- Keep this session's context for deliberation with collaborators,
+  planning and integration; give subagents bounded execution tasks.
+- When feedback needs a running system, offer the system: say what to look
+  at and how to reach it.
 
-## Remote colleague
+## Communication
 
-- Act as a remote working colleague, not a local tool: the people you work with
-  are not at your keyboard, so your work is only useful once they can see it.
-- When feedback needs a running system — a live demo, a sign-off review — offer
-  the system itself and expose the local service to collaborators with a tool
-  like Tailscale (`ssf vm tailscale` enrols the VM; see [Optional Tailscale
-  enrolment](https://github.com/mikekelly/simple-software-factory/blob/master/docs/vm.md#optional-tailscale-enrolment)).
-  Say what you want looked at and how to reach it.
+- Post when starting (the outcome you take on and when the next update
+  comes), when blocked, and when delivering. In between, post only when
+  silence would leave people unsure whether work is active.
+- Keep the board's Status accurate while work starts, blocks, awaits
+  review or completes; name the board and its columns here.
 
-## Session workflow
+## Review and delivery
 
-- Preserve the existing issue body and its `ssf: origin=` tag when editing it.
-  Post when starting, blocked or delivering. At the start, say what outcome you
-  are taking responsibility for and when the next meaningful update will come.
-  During longer work, update when silence would leave people unsure whether
-  work is active, delayed or blocked; avoid narration and fixed status cadences.
-- Use the existing project board to make active issues and their status visible.
-  If there is no board, encourage setting one up. Keep status current as work
-  starts, blocks, awaits review or completes. Record repository-specific board
-  choices and status mappings in this file.
-- Use a single delivery agent for simple work; use multiple subagents only for
-  useful, independent tasks, and choose task-appropriate cost-efficient models.
-  Follow `ssf guide` when creating work for another session.
-- Use `Refs #N` for ongoing management or tracking
-  issues; use `Closes #N` only when merging completes the entire issue.
-- Verify claims against the code or a safe reproduction. Keep comments and PR
-  descriptions concise and current; state what remains unverified.
-- Review in proportion to risk. Documentation and test-only changes get
-  self-review. Behavior changes get one independent review of a pinned diff.
-  Give the reviewer the intended outcome and relevant integration boundaries,
-  not an expanding checklist.
-- Fix confirmed behavioral defects and violations of acceptance criteria.
-  Wording, naming, optional coverage and comment tidies do not trigger rounds.
-  Allow at most one focused follow-up to check substantive fixes. If defects
-  remain, stop and simplify or ask the maintainer to choose a smaller scope;
-  do not merge unresolved defects or restart an unbounded review loop.
-- Own completion: finish and close out work within your delegated authority.
-  The agent owning the issue normally takes responsibility for merging its
-  PR once required validation and review are satisfied, unless project rules
-  or a maintainer reserve that action for a human. No separate project-manager
-  issue is needed.
-  Do not close an issue whose outcome still depends on an unmerged PR.
-  Deliver the outcome, validation and remaining limitations on the owning
-  issue with the PR link. When further action is outside your authority,
-  explicitly @mention an appropriate human collaborator or request their
-  review, naming the concrete decision or action needed and who owns it;
-  “ready” or “pending review” alone is not a handoff.
+- Review in proportion to risk: self-review for documentation and
+  test-only changes, one independent review of a pinned diff for behavior
+  changes. Give the reviewer the intended outcome and the integration
+  boundaries, not a checklist.
+- Fix confirmed defects and violations of the acceptance criteria; wording
+  and naming do not trigger rounds. One focused follow-up at most, then
+  simplify or ask the maintainer for a smaller scope. Never merge a known
+  defect.
+- Verify claims against the code or a safe reproduction; state what remains
+  unverified.
+- The owning session merges once validation and review are satisfied,
+  unless a maintainer reserves that. Never close an issue whose outcome
+  still depends on an unmerged pull request.
+- Delivered means: the outcome, its validation and remaining limitations
+  posted on the issue with the pull request link. When the next action is
+  outside your authority, @mention the person who owns it and name the
+  action; "ready for review" alone is not a handoff.
