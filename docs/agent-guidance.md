@@ -312,4 +312,9 @@ invalid UTF-8 body or stdin read error fails before posting; fix the input
 and retry. Explicit blank comment/request-changes review bodies are rejected before
 posting. Generated `--fill` bodies still need attribution supplied
 by the agent; do not replace requested commit text with a byline-only body.
+The shim directory also links a `git` wrapper. Both wrappers run the real
+program with the session’s own `GH_TOKEN`, `GIT_SSH_COMMAND` and git
+configuration, taken from an ancestor process when the tool that started them
+dropped them (OMP’s Python tool, say), so a harness tool that scrubs its
+environment cannot post or push as the operator.
 See `docs/identity-and-bylines.md`.

@@ -17,6 +17,7 @@ everything git and GitHub related is the bot, whatever the human's own
 | Commit signing | `gpg.format=ssh`, `user.signingkey=<bot key>`, `commit.gpgsign=true` (or `commit.gpgsign=false` when no key is enrolled, so nothing is signed with the human's key); a person's key when `[git]` gives one |
 | Which issue this is | `SSF_REPO`, `SSF_ISSUE`, `SSF_ISSUE_URL`, `SSF_BOT` |
 | Which session posted what | a `gh` wrapper first on `PATH` that starts every post with the byline (below) |
+| A tool that drops its environment | the `gh` and `git` wrappers read the session's own variables back out of an ancestor process and hand them to the program they run (below) |
 
 Git settings go in through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, which
 outrank every config file, and only inside the agent's process tree. The
@@ -158,7 +159,8 @@ on the item shows where its session has posted.)
 directory first on the agent's `PATH` (next to it, `ssf` links to the same
 binary, so the `ssf` commands the prompts name run the daemon's own build
 rather than an older package on the shell's `PATH`; `ssf doctor` says
-when the two differ). Invoked as `gh`, ssf prepends the
+when the two differ. A third link, `git`, wraps git the same way). Invoked as
+`gh`, ssf prepends the
 line to the body of `issue create`, `issue comment`, `pr create`,
 `pr comment` and `pr review` (and `issue new` and `pr new`, gh's own
 names for the same two creates), in every spelling gh takes the body in
@@ -230,6 +232,30 @@ twice, and `ssf guide` tells the agent to add the line itself
 whenever it posts some other way (`gh api`, `gh pr create --fill`, an
 agent that resets `PATH`).
 
+**A tool that drops its environment.** A harness may run a tool of its own
+with a reduced environment: OMP's Python tool keeps `HOME`, `PATH` and a
+handful more, and the session's variables are gone. `PATH` survives, so the
+wrapper still runs — but with no `SSF_REPO` no post is stamped, with no
+`GH_CONFIG_DIR` and `GH_TOKEN` the real gh reads the operator's
+`~/.config/gh` and posts as them, and without `GIT_SSH_COMMAND`, the
+`GIT_CONFIG_*` entries and the credential helper a push uses the operator's
+key. So both wrappers look up the process tree for the nearest ancestor that
+carries `SSF_REPO` — the pane's own environment — and hand the program they
+exec its `SSF_*`, `GH_*`, `GITHUB_*` and `GIT_*` variables (whole families,
+so a variable `ssf launch` starts exporting needs no change here), each one
+only where the process does not already have a value of its own. The `git`
+wrapper touches nothing else: it passes the command line through and runs the
+real git, so `ssf git-credential` resolves the session's repository and
+`[repo.git]` identity as it does from the agent's shell. Nothing is recovered
+outside a session, and where the process tree cannot be read the wrappers
+behave as they did before. The one thing the recovery must not touch is ssf's
+own use of gh: `gh auth token --user <login>` clears `GH_CONFIG_DIR` and
+`GH_TOKEN` to read another account from gh's own store, and on a host whose gh
+keeps tokens in its config file rather than the keyring, putting them back
+would look in ssf's account-less directory instead. So the calls in
+`src/ghcli.rs` resolve the real gh directly rather than through the wrapper
+(`shim::real_tool`), and their clears stand.
+
 The daemon parses tags out of every item body and comment it reads, and
 honours a tag only where the wrapper puts it: on the first non-blank line of
 the body (the first tag on that line, so the wrapper's line, which goes before
@@ -246,7 +272,7 @@ it, for PRs and issues an agent created), `posts_by_session` (how many
 tagged comments and reviews each session made on it) and `untagged_posts`
 (how many posts by the bot carry no tag); `state.json` keeps the detail
 behind them as `origins` (timeline event key to session) and `untagged`. Untagged bot posts are also noted in the logs and
-reported by `ssf doctor`, which additionally checks that the real gh is
+reported by `ssf doctor`, which additionally checks that the real gh and git are
 installed and that the wrapper links to the running ssf. When posts are shown
 to an agent, the byline and tag are stripped and replaced by "(from the
 agent on owner/repo#N)".

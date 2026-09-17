@@ -137,7 +137,11 @@ repository; `mode=delegate` on a hand-off), then a blank line. GitHub links the 
 session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
 or `pr create|comment|review` (`new` counts as `create`); any other way of posting (`gh api`, `gh pr create --fill`, \
 `gh pr edit --body`, ...) needs it added by hand, as the first line of the body. A tag \
-anywhere else, in a code block or a quote, is content and is ignored. A post by \
+anywhere else, in a code block or a quote, is content and is ignored. The same directory links a \
+`git` wrapper, and both wrappers run the real `gh` and `git` with the session's `GH_TOKEN`, \
+`GIT_SSH_COMMAND` and `git config`, so `gh` and `git push` act as the bot however they are \
+launched: a tool of your harness that starts with a reduced environment (a Python tool, say) \
+still posts and pushes as the bot rather than as the person at this machine. A post by \
 @{bot} without the line was typed by a person using the bot account; it reaches you marked \
 \"(not from a session)\" and is a human's.\n"
     )

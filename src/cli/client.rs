@@ -5,9 +5,9 @@ use super::*;
 /// adjacent daemon binary directly; `--server HOST` (or `SSF_SERVER`) execs
 /// that same command endpoint through ssh.
 pub async fn client_main() -> Result<()> {
-    if shim::invoked_as_gh() {
-        shim::run();
-    }
+    // `ssf launch` links the shim directory's `gh`, `git` and `ssf` to this
+    // binary; under the two wrapper names this process is that wrapper.
+    shim::run_as_shim();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let explicit_server = has_server_argument(&args);
     let configured = std::env::var("SSF_SERVER").ok().filter(|s| !s.is_empty());
@@ -591,11 +591,10 @@ pub(super) fn client_targets(
 }
 
 pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<()> {
-    // `ssf launch` links `~/.config/ssf/bin/gh` (and `ssf`) to this binary;
-    // invoked under the gh name we are the gh shim, not the daemon.
-    if shim::invoked_as_gh() {
-        shim::run();
-    }
+    // `ssf launch` links `~/.config/ssf/bin/gh` (and `git`, and `ssf`) to this
+    // binary; invoked under a wrapper's name we are that wrapper, not the
+    // daemon.
+    shim::run_as_shim();
     // This internal value selects service identities. Refuse malformed
     // inherited input before a service helper could fall back to the singleton.
     server_catalog::selected_target_identity()?;

@@ -140,6 +140,10 @@ effort = "high"                              # effort/thinking level (claude: lo
 
 # Session gh shim: explicit bodies are stamped; large bodies use anonymous
 # file transport. Invalid UTF-8 and stdin read errors stop before posting.
+# Both wrappers (the gh shim and the git shim beside it) run the real
+# programs with the session's own gh token, ssh command and git
+# configuration, recovered from the pane when a harness tool starts with a
+# scrubbed environment.
 # See docs/identity-and-bylines.md; no configuration is needed.
 
 # Optional server browser dashboard. Restart ssf-server after changes.

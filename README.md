@@ -375,7 +375,7 @@ ssf adopt acme/widgets#12          # start one here with its complete GitHub his
 ssf vm login claude               # sign the harness in inside the guest
 ssf status
 ssf peers                         # the agent sessions and what each is doing
-ssf doctor                        # explicit model/effort, token and scopes, drivers, harness logins, gh wrapper, daemon socket, worktrees holding work with no agent on them
+ssf doctor                        # explicit model/effort, token and scopes, drivers, harness logins, gh and git wrappers, daemon socket, worktrees holding work with no agent on them
 ```
 
 If the commits should carry your own name rather than the bot's, a
