@@ -19,10 +19,8 @@ and that decides what it needs before it can do anything for them:
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
 Complete the factory first: [VPS / headless-host installation](headless-host.md),
-or [Setup](setup.md) for a packaged factory. Then configure the liaison using its
-own platform's instructions. A remote liaison cannot work from GitHub alone:
-without the two sections below it cannot see the factory's sessions or ask it to
-do anything, so set them up before configuring monitoring.
+or [Setup](setup.md) for a packaged factory. Then set up the side the liaison
+runs on (the "Setup" sections below), and configure its monitoring last.
 
 ## Keep factory and liaison access separate
 
@@ -42,10 +40,59 @@ bot or assume that a host `gh` sign-in enrolls a hosted assistant integration.
 Some assistants configure event delivery separately from plugins used to read
 or change GitHub during a run. Check both connections if applicable.
 
-## Reach the factory over SSH
+## Choose the liaison granularity
 
-The factory host needs nothing new for this: it already runs `ssf-server` for
-its own agent sessions. The liaison machine is the one that is set up.
+There is no SSF-required mapping between assistants and repositories. Choose
+one conversation per repository, one liaison for several related repositories,
+or separate liaisons for distinct responsibilities within a repository.
+Use boundaries that keep history understandable and event volume manageable.
+
+## Configure and test monitoring
+
+Use the assistant's supported repository events or scheduled checks. A sample
+instruction is:
+
+> Watch the supported GitHub events on `OWNER/REPO` that need my attention.
+> Inspect the current issue or pull request, summarize what changed with links,
+> explain whether SSF is already handling it, and tell me the next decision
+> needed. Do not comment, merge, close, assign, or change project fields without
+> my approval.
+
+Replace OWNER/REPO and set the liaison's action authority to match the user's
+instructions. Select useful events, enable the listener or schedule, and test
+with a safe matching GitHub event. Check run history to confirm delivery; a
+manual run alone does not prove that an event subscription works.
+
+Check the platform's current supported events and permissions. Do not assume
+that issue comments, assignments, labels, edits, or Projects v2 board moves are
+all covered by a repository listener. Use manual or scheduled checks for
+important activity that is not supported. SSF's repository polling continues
+independently; a missed liaison event does not transfer the factory bot's
+identity or responsibilities to the liaison.
+
+## Setup: a liaison on the factory host (Grok Bot, Hermes, OpenClaw)
+
+Nothing is added for the factory side: the `ssf` client on the host is the
+whole setup, with no catalog entry and no SSH, and `herdr` and `ssf
+dashboard` inspect the factory's panes directly. What the liaison does need
+is GitHub access of its own, configured through its platform, never the
+bot's `ssf auth` credential. Every command it runs acts as the factory's
+Unix user when it shares that account, so the same line applies as over
+SSH: read-only commands (`ssf status`, `ssf doctor`, `ssf peers`, `ssf
+dashboard`) are safe to run while watching; `ssf release`, `ssf purge`,
+`ssf uninstall`, `ssf repo` and `ssf config` are the user's decisions.
+Platform-specific enrolment is in its own section below.
+
+## Setup: a liaison on the user's machine, factory elsewhere
+
+The factory host needs nothing new: it already runs `ssf-server` for its
+own agent sessions. The liaison machine is the one set up, in two parts:
+reaching the factory for `ssf` commands, and saving its herdr server so the
+agents' panes can be inspected. A remote liaison cannot work from GitHub
+alone; without these it cannot see the factory's sessions or ask it to do
+anything.
+
+### Reach the factory over SSH
 
 1. **A key for the factory account.** That account is the Unix user that runs
    `herdr` and `ssf-server`, because an SSH target runs `ssf-server` at the
@@ -89,7 +136,7 @@ repo` and `ssf config` are the user's decisions, not the liaison's. `ssf
 status`, `ssf doctor`, `ssf peers`, `ssf dashboard` and the other read-only
 commands are safe to run while watching.
 
-## Inspect the factory's herdr server
+### Inspect the factory's herdr server
 
 Driving the factory over SSH says nothing about the panes its agents work in:
 the herdr server, its sessions and its panes stay on the factory host. Install
@@ -127,37 +174,7 @@ A VM factory reached from its own host already works this way: `ssf vm
 ssh-config` prints the `~/.ssh/config` entry that `herdr --remote ssf-default`
 uses.
 
-## Choose the liaison granularity
-
-There is no SSF-required mapping between assistants and repositories. Choose
-one conversation per repository, one liaison for several related repositories,
-or separate liaisons for distinct responsibilities within a repository.
-Use boundaries that keep history understandable and event volume manageable.
-
-## Configure and test monitoring
-
-Use the assistant's supported repository events or scheduled checks. A sample
-instruction is:
-
-> Watch the supported GitHub events on `OWNER/REPO` that need my attention.
-> Inspect the current issue or pull request, summarize what changed with links,
-> explain whether SSF is already handling it, and tell me the next decision
-> needed. Do not comment, merge, close, assign, or change project fields without
-> my approval.
-
-Replace OWNER/REPO and set the liaison's action authority to match the user's
-instructions. Select useful events, enable the listener or schedule, and test
-with a safe matching GitHub event. Check run history to confirm delivery; a
-manual run alone does not prove that an event subscription works.
-
-Check the platform's current supported events and permissions. Do not assume
-that issue comments, assignments, labels, edits, or Projects v2 board moves are
-all covered by a repository listener. Use manual or scheduled checks for
-important activity that is not supported. SSF's repository polling continues
-independently; a missed liaison event does not transfer the factory bot's
-identity or responsibilities to the liaison.
-
-## Optional example: Grok Bot on Cursor
+## Setup: Grok Bot on Cursor
 
 The following enrollment and routine controls are specific to Grok Bot on
 Cursor, and assume a liaison on the factory host. Use your assistant's
