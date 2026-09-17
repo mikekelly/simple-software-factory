@@ -12,10 +12,12 @@ name does not establish these capabilities. Host mode does not require KVM,
 Docker, or Podman. If you want VM isolation and the host supports it, use
 [Setup](setup.md) instead.
 
-This guide installs the factory only. If an always-on assistant should also
-watch SSF-tracked work and act as the user's liaison, follow the separate
-[bot-managed host liaison guide](bot-dedicated-vps.md) afterward. Configure
-that assistant's GitHub access and event delivery separately from `ssf auth`.
+This guide installs the factory only. If an always-on assistant on this host
+should also watch SSF-tracked work and act as the user's liaison, follow the
+separate [liaison guide](liaison.md) afterward; a liaison on the
+user's own machine instead reaches this host over SSH, and that guide covers
+that setup too. Configure the assistant's GitHub access and event delivery
+separately from `ssf auth`.
 
 These steps assume a **fresh installation**, run as the same non-root Unix
 user throughout (except privileged prerequisite installation). If SSF already

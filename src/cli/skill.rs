@@ -7,6 +7,8 @@ pub(super) enum SkillTopic {
     Setup,
     /// Agent-specific setup and operating rules.
     Agent,
+    /// The assistant that acts for a person, on the factory host or from theirs.
+    Liaison,
     /// Everyday client commands and server selection.
     ClientCli,
     /// Daemon operation, service ownership, and troubleshooting.
@@ -34,6 +36,7 @@ pub(super) fn print(topic: Option<SkillTopic>) -> Result<()> {
         None => include_str!("../../docs/skills/root.md"),
         Some(SkillTopic::Setup) => include_str!("../../docs/setup.md"),
         Some(SkillTopic::Agent) => include_str!("../../docs/agent-guidance.md"),
+        Some(SkillTopic::Liaison) => include_str!("../../docs/liaison.md"),
         Some(SkillTopic::ClientCli) => include_str!("../../docs/skills/client-cli.md"),
         Some(SkillTopic::Server) => include_str!("../../docs/skills/server.md"),
         Some(SkillTopic::Config) => include_str!("../../docs/configuration.md"),
