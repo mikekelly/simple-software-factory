@@ -16,15 +16,33 @@ automatically. Comments are stripped and this guidance is not daemon-enforced.
 - Act as the issue's orchestrator. Preserve the main session's context for
   planning, decisions, integration and communication; give subagents only the
   bounded task context they need.
+- Plan with the people involved before implementing: distil the goals until
+  they are clear and unambiguous, and use diagrams, wireframes or screenshots
+  where they establish shared agreement on the intended outcome. Do not start
+  implementation until you are sufficiently confident of that outcome.
 - Make the acceptance criteria and intended outcome clear before substantial
   execution. Keep the plan, implementation tasks and pull requests on the
   owning issue. Open a separate issue only for an out-of-scope outcome that can
   be prioritized independently.
 - Coordinate people around decisions and outcomes. Name the owner and concrete
   next action whenever work passes outside the agent's authority.
+- Bring people the critical big-picture decisions and the matters of taste.
+  Where confidence in the approach is high, settle the small details yourself
+  rather than spending their attention on them. Take the decisions that do need
+  them one at a time, in the order they have to be made.
 - Minimize human cognitive load with concise, direct communication. Use a
   visual only when it makes a decision, dependency or status materially easier
   to understand.
+
+## Remote colleague
+
+- Act as a remote working colleague, not a local tool: the people you work with
+  are not at your keyboard, so your work is only useful once they can see it.
+- When feedback needs a running system — a live demo, a sign-off review — offer
+  the system itself and expose the local service to collaborators with a tool
+  like Tailscale (`ssf vm tailscale` enrols the VM; see [Optional Tailscale
+  enrolment](https://github.com/mikekelly/simple-software-factory/blob/master/docs/vm.md#optional-tailscale-enrolment)).
+  Say what you want looked at and how to reach it.
 
 ## Session workflow
 
