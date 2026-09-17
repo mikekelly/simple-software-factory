@@ -86,11 +86,20 @@ fn initial_prompt_mentions_bot_and_issue() {
         pushes_as: None,
     };
     let p = initial_prompt(&issue, &[], &ctx);
-    assert!(p.starts_with(
+    let (how, item) = split_item(&p);
+    assert!(
+        p.starts_with("[ssf] Simple Software Factory (ssf) spawned you"),
+        "{p}"
+    );
+    assert!(
+        p.starts_with("[ssf] "),
+        "the prompt opens with the event marker: {p}"
+    );
+    assert!(item.starts_with(
             "[ssf] GitHub issue #3: Add thing\nhttps://gh/3\n\nOpened by @carol on 2026-01-01 00:00Z. Labels: feature.\n"
         ), "{p}");
     assert!(
-        !p.starts_with('#'),
+        !item.starts_with('#'),
         "a leading # is a prompt action in OMP: {p}"
     );
     // The item is named once: the header has the URL, the reason has `#3`.
@@ -98,10 +107,11 @@ fn initial_prompt_mentions_bot_and_issue() {
     assert!(!p.contains("o/r#3"));
     assert!(p.contains("(no activity yet)"));
     assert!(
-        p.contains(
-            "## How to work on this\n\nSimple Software Factory (ssf) spawned you as a coding \
-agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this \
-repository, because #3 was assigned to @bot.\n\n\
+        how.contains(
+            "[ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub \
+account @bot, through the herdr multiplexer, into a worktree of this repository, because #3 was \
+assigned to @bot.\n\n\
+## How to work on this\n\n\
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is \
 unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. \
 Say there what you are about to do, and when you need a decision or have delivered.\n\n\
@@ -116,6 +126,8 @@ collaboration reference.\n\
         ),
         "{p}"
     );
+    assert!(item.contains("## Description\n\nPlease add"), "{p}");
+    assert!(!how.contains("## Description"), "{p}");
     // Branches and worktrees are the agent's own business, the byline's
     // mechanics are the guide's, and the PR conventions (reference the
     // issue, do not close it, do not merge) are the repository's.
@@ -156,7 +168,9 @@ collaboration reference.\n\
         assert!(!p.contains(advice), "{advice} is advice, not a rule");
     }
     assert!(!p.contains("handed off to you"));
-    assert!(p.trim_end().ends_with("Run the tests."));
+    // The repository's own instructions close the guidance, before the
+    // item begins.
+    assert!(how.trim_end().ends_with("Run the tests."), "{p}");
 
     let ctx = PromptContext {
         global_prompt: Some(ProjectPrompt {
@@ -215,6 +229,97 @@ Run the tests.\n\n## SSF agent guidance (`SSF.md`)\n\nCards go to Review"
 comment is all it gets, so sum up the outcome."
     ));
     assert_eq!(p.matches("handed").count(), 2, "{p}");
+}
+
+/// #355: the operating contract comes before the material it applies to:
+/// ssf's own prompt, then the guidance (operator, repository, `SSF.md`,
+/// harness), then the item's header, boards, description and activity.
+#[test]
+fn the_prompt_states_the_rules_before_the_item() {
+    let issue: Issue = serde_json::from_value(json!({
+        "number": 7, "title": "Reorder", "body": "Body text", "html_url": "https://gh/7",
+        "state": "open", "user": {"login": "carol"}, "labels": [],
+        "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"
+    }))
+    .unwrap();
+    let repo = RepoConfig {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        ..Default::default()
+    };
+    let d = cfg();
+    let boards = vec![ProjectCard {
+        title: "Roadmap".into(),
+        url: "https://gh/p/1".into(),
+        status: Some("Todo".into()),
+        ..Default::default()
+    }];
+    let triggers = vec!["assigned".to_string()];
+    let ctx = PromptContext {
+        repo: &repo,
+        daemon: &d,
+        bot_login: "bot",
+        driver: DriverKind::Herdr,
+        pr: None,
+        triggers: &triggers,
+        owner: None,
+        delegated_by: None,
+        handed_over_from: None,
+        projects: &boards,
+        global_prompt: None,
+        global_harness_prompt: None,
+        project_prompt: Some(ProjectPrompt {
+            source: "SSF.md".into(),
+            text: "Own the issue through delivery.".into(),
+        }),
+        harness_prompt: Some(ProjectPrompt {
+            source: "SSF.claude.md".into(),
+            text: "Use native subagents.".into(),
+        }),
+        vm_guest: false,
+        pushes_as: None,
+    };
+    let ev = Rendered {
+        key: "k".into(),
+        text: "- [t] @alice commented (https://gh/7#c1):\n  > go".into(),
+        origin: None,
+        assignee: None,
+    };
+    let p = initial_prompt(&issue, &[ev], &ctx);
+    let at = |needle: &str| {
+        p.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing from:\n{p}"))
+    };
+    let order = [
+        "[ssf] Simple Software Factory",
+        "## How to work on this",
+        "## SSF agent guidance (`SSF.md`)",
+        "## Harness guidance (`SSF.claude.md`)",
+        "[ssf] GitHub issue #7",
+        "## Project boards",
+        "## Description",
+        "## Activity so far",
+    ];
+    let mut last = 0;
+    for (i, needle) in order.iter().enumerate() {
+        let at = at(needle);
+        assert!(
+            at >= last,
+            "{needle} ({i}) comes before the part it follows in:\n{p}"
+        );
+        last = at;
+    }
+    // Only the item's own part is after the guidance; the guidance names
+    // no item content.
+    let (how, item) = split_item(&p);
+    for item_part in ["## Description", "## Activity so far", "## Project boards"] {
+        assert!(!how.contains(item_part), "{p}");
+        assert!(item.contains(item_part), "{p}");
+    }
+    assert!(
+        item.contains("- [t] @alice commented"),
+        "the activity is the item's: {p}"
+    );
 }
 
 #[test]
@@ -281,7 +386,7 @@ fn initial_prompt_is_the_bare_minimum() {
     // The board rule sits with the boards, not among the instructions.
     let boards = &p[p.find("## Project boards").unwrap()..p.find("## Description").unwrap()];
     assert!(boards.contains("Keep the card's Status accurate; which column fits is your call."));
-    let how = &p[p.find("## How to work on this").unwrap()..];
+    let (how, _) = split_item(&p);
     assert!(!how.contains("card"));
 }
 
@@ -524,10 +629,13 @@ fn initial_prompt_lists_project_boards_without_prescribing_columns() {
 accurate; which column fits is your call.\n\n## Description"
     ));
     assert!(!p.contains("never moves cards"));
-    assert!(p.find("## Project boards").unwrap() < p.find("## Description").unwrap());
+    // The item's own part, in the order a message reads it: header and
+    // boards, then the description and the activity.
+    let (how, item) = split_item(&p);
+    assert!(item.find("## Project boards").unwrap() < item.find("## Description").unwrap());
+    assert!(item.find("## Description").unwrap() < item.find("## Activity so far").unwrap());
     // No column is prescribed for any situation: the option names appear
     // only in the board listing, never in the instructions.
-    let how = &p[p.find("## How to work on this").unwrap()..];
     assert!(!how.contains("card"));
     assert!(!how.contains("Todo") && !how.contains("In Progress"));
 

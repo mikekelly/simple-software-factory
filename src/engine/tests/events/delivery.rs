@@ -1,5 +1,57 @@
 use super::*;
 
+/// #355: a session started again on an item with history is shown the
+/// item's whole story, its own earlier posts included, so it can read what
+/// it already said and promised; the live follow-up that prompted the
+/// restart still leaves them out.
+#[tokio::test]
+async fn a_restarted_session_is_shown_its_own_earlier_posts() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = handover_setup(&stub);
+    let r = repo();
+    stub.set_issue(5, assigned_item(5, "alice", "u2"));
+    stub.set_assigned(vec![assigned_item(5, "alice", "u2")]);
+    stub.set_timeline(
+        5,
+        vec![
+            assigned_by(1, "alice"),
+            comment(
+                2,
+                "bot",
+                "🤖#5 says: <!-- ssf: origin=o/r#5 -->\n\nPushed the parser fix; the flag is untested.",
+            ),
+            comment(3, "alice", "one more thing: keep the flag"),
+        ],
+    );
+    // The session had already read its own post and the assignment; only
+    // the person's comment is new.
+    {
+        let st = e.entry(&r, 5);
+        st.seen.insert("assigned:1".into(), String::new());
+        st.seen.insert("commented:2".into(), "t".into());
+    }
+    // The pane is gone and there is no conversation to resume: the harness
+    // starts from scratch, so it is given the story ahead of the new
+    // activity.
+    e.entry(&r, 5).agent_session_id = None;
+    d.with(|s| {
+        s.live.remove("w5");
+    });
+    e.tick_repo(&r).await.unwrap();
+    let prompts = d.prompts();
+    assert_eq!(prompts.len(), 1, "{prompts:?}");
+    let story = &prompts[0];
+    assert!(
+        story.contains("Pushed the parser fix; the flag is untested."),
+        "its own earlier post is replayed: {story}"
+    );
+    assert!(
+        story.contains("one more thing: keep the flag"),
+        "the new activity is there too: {story}"
+    );
+}
+
 #[tokio::test]
 async fn a_handover_without_a_summary_says_so() {
     let _sandbox = crate::config::test_support::sandbox();

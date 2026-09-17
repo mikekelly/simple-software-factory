@@ -249,8 +249,10 @@ async fn event_posts_are_not_delivered_or_fanned_out() {
     assert!(diff.rendered.is_empty(), "{:?}", diff.rendered);
     assert!(diff.seen.contains_key("commented:9"));
     assert!(
-        e.for_recipient(&diff.rendered, "o/r#1").is_empty()
-            && e.for_recipient(&diff.rendered, "o/r#3").is_empty()
+        e.for_recipient(&diff.rendered, "o/r#1", OwnPosts::Shown)
+            .is_empty()
+            && e.for_recipient(&diff.rendered, "o/r#3", OwnPosts::Shown)
+                .is_empty()
     );
     e.fan_out(
         &r,

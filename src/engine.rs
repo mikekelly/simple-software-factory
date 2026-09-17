@@ -345,6 +345,17 @@ struct Diff {
     seen: BTreeMap<String, String>,
 }
 
+/// What a recipient's own posts do in the events it is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OwnPosts {
+    /// Left out: a live follow-up, where a session's own posts would only
+    /// echo its work back at it.
+    Hidden,
+    /// Kept: the catch-up story a session that is (re)started is given,
+    /// which is where it reads what it already said and promised.
+    Shown,
+}
+
 mod implementation {
     mod assignment;
     mod conflicts;

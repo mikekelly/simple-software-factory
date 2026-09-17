@@ -31,7 +31,9 @@ binding wins):
   agent, with `SSF_ISSUE` unchanged. An issue opened without assigning the bot
   remains unbound; its origin tag records attribution only. Assigning or
   mentioning the bot later starts a fresh session for that issue. The agent's
-  own posts are filtered out as usual. On upgrade, ssf detaches issue bindings
+  own posts are filtered out of live messages as usual (a session started
+  again is shown them in the catch-up story; see
+  [What the agent is told](prompts.md)). On upgrade, ssf detaches issue bindings
   written under the older authorship rule; already assigned or mentioned
   issues get a fresh session on the next pass.
 - **A PR on a session's branch.** A same-repo pull request whose head branch

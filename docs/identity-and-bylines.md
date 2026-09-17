@@ -27,7 +27,10 @@ write the credential and configuration, never the live daemon state.
 The bot's own commits and cross-references are filtered out of follow-up
 messages, and its comments are sorted per session by their byline, so
 an agent's own posts are not echoed back to it (`daemon.include_own_events`
-turns both off). `ssf token` still prints the token for any other use.
+turns both off). The exception is the catch-up story a session started again
+is given, which carries its own posts so it can see what it already said and
+promised (see [What the agent is told](prompts.md)). `ssf token` still prints
+the token for any other use.
 
 The bot identity is a default, not a security boundary: on bare metal the
 agents run as your Unix user inside your session, so a determined agent can

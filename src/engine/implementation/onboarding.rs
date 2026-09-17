@@ -150,7 +150,11 @@ impl Engine {
         // delivery record is recovered on this or a later pass.
         self.entry(repo, issue.number).active = true;
         self.refresh_projects(repo, owner, name, issue.number).await;
-        let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, issue.number));
+        let mine = self.for_recipient(
+            &diff.rendered,
+            &session_id(&repo.name, issue.number),
+            OwnPosts::Shown,
+        );
 
         let mut existing: Option<Worktree> = None;
         if let Some(id) = prior.as_ref().and_then(|s| s.worktree_id.clone()) {
@@ -352,7 +356,11 @@ impl Engine {
         }
         self.mirror_owner(repo, issue.number, owner);
         let snapshot = self.entry(repo, issue.number).clone();
-        let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, owner));
+        let mine = self.for_recipient(
+            &diff.rendered,
+            &session_id(&repo.name, owner),
+            OwnPosts::Hidden,
+        );
         let ctx = self.ctx(repo, &snapshot);
         let text = prompt::tracked_prompt(issue, &mine, &ctx);
         let d = self.deliver_to(repo, issue.number, &text, None).await?;
@@ -443,7 +451,7 @@ impl Engine {
         let timeline = self.gh.timeline(owner, name, number).await?;
         let diff = self.diff(repo, &BTreeMap::new(), &timeline);
         let me = self.acting_on(repo, number);
-        let all = self.for_recipient(&diff.rendered, &me);
+        let all = self.for_recipient(&diff.rendered, &me, OwnPosts::Shown);
         let st = self.entry(repo, number).clone();
         let mut ctx = PromptContext {
             handed_over_from,
@@ -651,7 +659,11 @@ impl Engine {
         // and a failed delivery to the owner must not replay to them.
         self.fan_out(repo, issue, &diff.rendered, Fyi::Activity, false, &[])
             .await;
-        let mine = self.for_recipient(&diff.rendered, &self.acting_on(repo, issue.number));
+        let mine = self.for_recipient(
+            &diff.rendered,
+            &self.acting_on(repo, issue.number),
+            OwnPosts::Hidden,
+        );
         if mine.is_empty() {
             debug!(
                 repo = repo.name,
@@ -682,7 +694,7 @@ impl Engine {
         // whole story rather than just the delta.
         let mut all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
         all.retain(|r| !diff.rendered.iter().any(|n| n.key == r.key));
-        let all = self.for_recipient(&all, &self.acting_on(repo, issue.number));
+        let all = self.for_recipient(&all, &self.acting_on(repo, issue.number), OwnPosts::Shown);
         let mut relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
         relaunch_text.push_str("\n\n");
         relaunch_text.push_str(&text);
@@ -728,11 +740,11 @@ impl Engine {
         };
         self.entry(repo, issue.number).subscriber_only = false;
         let me = self.acting_on(repo, issue.number);
-        let mine = self.for_recipient(&diff.rendered, &me);
+        let mine = self.for_recipient(&diff.rendered, &me, OwnPosts::Hidden);
         let ctx = self.ctx(repo, &st);
         let text = prompt::reassigned_prompt(issue, &mine, &ctx);
         let all = self.diff(repo, &BTreeMap::new(), &timeline).rendered;
-        let all = self.for_recipient(&all, &me);
+        let all = self.for_recipient(&all, &me, OwnPosts::Shown);
         let relaunch_text = prompt::initial_prompt(issue, &all, &ctx);
         let d = self
             .deliver_to(repo, issue.number, &text, Some(&relaunch_text))
@@ -965,7 +977,11 @@ impl Engine {
         self.record_origins(repo, &issue, &timeline);
         let diff = self.diff(repo, &st.seen, &timeline);
         let session = self.owner_of(repo, number);
-        let mine = self.for_recipient(&diff.rendered, &session_id(&repo.name, session));
+        let mine = self.for_recipient(
+            &diff.rendered,
+            &session_id(&repo.name, session),
+            OwnPosts::Hidden,
+        );
         let ctx = self.ctx(repo, &st);
         let text = if closed {
             prompt::closed_prompt(&issue, &mine, &ctx)
