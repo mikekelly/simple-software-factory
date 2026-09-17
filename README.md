@@ -198,11 +198,15 @@ you set (see
 Agents can discover SSF through the [skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
-npx skills add mikekelly/simple-software-factory
+npx skills add mikekelly/simple-software-factory -g
 ```
 
-The `ssf-setup` skill links to installation instructions, then directs agents
-to `ssf skill`. The binary bundles a command overview and deeper topics such as
+`-g` installs the skill globally, so every project's agent can find it; drop it
+to install for one project. The `working-with-ssf` skill is a thin pointer: it
+names the affordances — operating a factory, working as an ssf-spawned agent,
+liaising for a person, writing `SSF.md`, auditing project guidance, install and
+upgrade — links to installation instructions, then directs agents to `ssf
+skill`. The binary bundles a command overview and deeper topics such as
 `ssf skill setup`, `ssf skill client-cli`, `ssf skill server`, and
 `ssf skill config`. These print locally without configuration, a daemon, or
 network access; `--server` and `SSF_SERVER` do not select documentation from a
