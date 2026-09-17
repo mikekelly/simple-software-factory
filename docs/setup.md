@@ -176,6 +176,20 @@ Config and credentials live in `~/.config/ssf`, state in
 `~/.local/state/ssf`, and VM files in `~/.local/share/ssf/vm` (lima also
 uses `~/.lima`). Package examples are in `/usr/share/ssf`.
 
+The packages install the same paths on every distribution:
+
+| Path | What |
+|------|------|
+| `/usr/bin/ssf` | management client; locally invokes `ssf-server`, or reaches one over SSH with `--server` |
+| `/usr/bin/ssf-server` | daemon and the server-side command endpoint |
+| `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
+| `/usr/lib/systemd/user/ssf.service` | legacy singleton service retained for unmigrated installations |
+| `/usr/lib/systemd/user/ssf@.service` | one target-qualified background service instance per named local or VM server |
+| `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` ([Writing SSF.md](ssf-md.md)) |
+| `/usr/share/ssf/config.example.toml` | every configuration key, with a comment |
+| `/usr/share/ssf/vm/` | the scripts and units that build the microVM image |
+| `/usr/share/doc/ssf/` | the README and `docs/`, this document among them |
+
 **Check:** run `ssf doctor`. Before setup is complete, failures for the
 bot, service, driver, repositories and agent command links are expected.
 Resolve unreadable config or a missing GitHub CLI / ssf binary now. A
