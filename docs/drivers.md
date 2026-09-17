@@ -28,14 +28,21 @@ delivered through the harness channel described below where one is available.
 OMP and Pi sessions started with SSF's default command load the shipped
 `ssf-delivery.ts` extension. The daemon puts each later item event in that
 session's mailbox, and the extension sends it as a user-attributed context
-message with `triggerTurn: true` and `deliverAs: "followUp"`. An idle agent
-therefore starts a turn; a working agent receives the event after its current
-turn. The extension acknowledges the event after handing it to the harness. It
-never writes bytes to the pane, and a draft already in the OMP/Pi composer is
-left intact.
+message with `triggerTurn: true`. An idle agent therefore starts a turn, and a
+working agent receives the event mid-turn: OMP is given `deliverAs: "aside"`,
+injected at the next agent step boundary without interrupting the tool batch in
+flight, and Pi — whose extension API has no such mode — is given
+`deliverAs: "steer"`, which preempts the step the event arrives in. The launcher
+names the harness in `SSF_HARNESS` for that choice. Neither mode waits for a
+turn boundary, which an agent inside one long tool loop may not reach for hours
+(#385). The extension acknowledges the event after handing it to the harness, so
+an acknowledgement means the harness took it rather than that the model has seen
+it. It never writes bytes to the pane, and a draft already in the OMP/Pi
+composer is left intact.
 
 The default command runs through a small exec wrapper that keeps the harness
-transcript in that mailbox's session directory. It explicitly resumes only the
+transcript in that mailbox's session directory and names the harness in
+`SSF_HARNESS` for the bridge's delivery mode. It explicitly resumes only the
 latest transcript in that directory, never a global "most recent" session.
 Each injected message carries its stable mailbox ID in extension-only metadata.
 If the harness exits between recording a message and acknowledging it, the

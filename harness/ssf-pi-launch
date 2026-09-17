@@ -8,6 +8,11 @@ case "$harness" in
   *) echo "ssf-pi-launch: unsupported harness: $harness" >&2; exit 2 ;;
 esac
 
+# The delivery bridge chooses its injection mode by harness: OMP's extension API
+# has a non-interrupting step-boundary channel, Pi's does not.
+SSF_HARNESS=$harness
+export SSF_HARNESS
+
 session_dir=${SSF_DELIVERY_MAILBOX:?SSF_DELIVERY_MAILBOX is not set}/session
 mkdir -p "$session_dir"
 latest=$(find "$session_dir" -maxdepth 1 -type f -name '*.jsonl' -print | sort | tail -n 1)

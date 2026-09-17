@@ -1,9 +1,10 @@
 /**
  * SSF's out-of-band delivery bridge for Pi and Oh My Pi.
  *
- * The daemon writes one JSON file per item event.  The extension queues it as
- * a user-attributed context message that triggers a turn, then acknowledges
- * the file. No bytes pass through the terminal composer.
+ * The daemon writes one JSON file per item event.  The extension injects it as
+ * a user-attributed context message, mid-turn when the harness can do that
+ * without interrupting the agent, then acknowledges the file. No bytes pass
+ * through the terminal composer.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -14,6 +15,13 @@ export default function (pi: any) {
 	let sessionManager: any;
 	const mailbox = process.env.SSF_DELIVERY_MAILBOX;
 	const ready = mailbox ? path.join(mailbox, "ready.json") : undefined;
+	// `followUp` waits for the current turn to end, which an agent inside one long
+	// tool loop may not reach for hours, and the file is acknowledged either way
+	// (#385). OMP's `aside` is injected at the next agent step boundary without
+	// interrupting the tool batch in flight; Pi's extension API has no `aside`
+	// (`steer` | `followUp` | `nextTurn`, with an unknown mode treated as a
+	// steer), so Pi gets the immediate mode instead.
+	const deliverAs = process.env.SSF_HARNESS === "omp" ? "aside" : "steer";
 
 	async function poll() {
 		if (!mailbox || polling) return;
@@ -38,7 +46,7 @@ export default function (pi: any) {
 					continue;
 				}
 				// A custom message does not submit or replace the interactive editor.
-				// triggerTurn wakes an idle agent; followUp queues behind an active turn.
+				// triggerTurn wakes an idle agent; a busy one takes the mode above.
 				pi.sendMessage(
 					{
 						customType: "ssf-item-activity",
@@ -47,7 +55,7 @@ export default function (pi: any) {
 						attribution: "user",
 						details: { deliveryId: name },
 					},
-					{ deliverAs: "followUp", triggerTurn: true },
+					{ deliverAs, triggerTurn: true },
 				);
 				fs.renameSync(pending, `${pending}.ack`);
 			}
