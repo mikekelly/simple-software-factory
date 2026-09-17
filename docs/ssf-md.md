@@ -17,9 +17,11 @@ never repeats it. `ssf doctor` reports a watched repository without one.
    `@AGENTS.md`, so there is one copy.
 2. **Would this rule be wrong, or wasteful, if a subagent followed it?**
    Most harnesses hand `AGENTS.md` to every subagent they spawn; ssf gives
-   `SSF.md` only to the main session. Advice for the main agent alone goes
-   here. The clearest case is orchestration: keep the main session's context
-   for deliberation with collaborators, planning and integration, and push
+   `SSF.md` only to the main session. That is one of the things ssf is for:
+   a place to inject orchestration guidance into the main agent exclusively.
+   Advice for the main agent alone goes here. The clearest case is the
+   orchestration strategy itself: keep the main session's context for
+   deliberation with collaborators, planning and integration, and push
    execution to subagents. A subagent reading that would try to delegate
    its own task.
 
@@ -53,8 +55,12 @@ about how their sessions work.
 5. **Merging and closing.** Who merges, and whether the session closes its
    own issue.
 6. **Boards.** The board and what each column means, if there is one.
-7. **Delegation.** Appetite for subagents, delegated issues (`--assignee`),
-   and handovers to another stack.
+7. **Orchestration.** Recommended in every `SSF.md`: what the main session
+   keeps for itself (deliberation with collaborators, planning, integration,
+   review of what comes back) and what it pushes to subagents, delegated
+   issues (`--assignee`) or a handover to another stack, and how much
+   context a delegated task gets. Only the main agent reads this, so it can
+   be direct.
 8. **Demos.** How feedback on a running system is given: screenshots, a URL
    the collaborators can reach, a recording.
 9. **Delivered.** What "done" means here: merged, deployed, documented,
