@@ -109,15 +109,17 @@ impl Engine {
         }
     }
 
-    /// `events` as `recipient` (a session id) should see them: without its
-    /// own posts, which would only echo its work back at it. Other sessions'
-    /// posts stay, labelled with where they came from by the renderer.
+    /// `events` as `recipient` (a session id) should see them. Other
+    /// sessions' posts stay, labelled with where they came from by the
+    /// renderer; its own are the ones an item's story replays and a live
+    /// follow-up leaves out (`OwnPosts`).
     pub(in crate::engine) fn for_recipient(
         &self,
         events: &[Rendered],
         recipient: &str,
+        own: OwnPosts,
     ) -> Vec<Rendered> {
-        if self.cfg.daemon.include_own_events {
+        if own == OwnPosts::Shown || self.cfg.daemon.include_own_events {
             return events.to_vec();
         }
         events
@@ -194,7 +196,7 @@ impl Engine {
                 );
                 continue;
             }
-            let mine = self.for_recipient(events, &sid);
+            let mine = self.for_recipient(events, &sid, OwnPosts::Hidden);
             if mine.is_empty() && what == Fyi::Activity {
                 continue;
             }

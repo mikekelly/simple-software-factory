@@ -206,11 +206,12 @@ fn omp_setup(harness: &str, candidates: &[&str]) -> bool {
 }
 
 fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
-    let tail: Vec<&str> = screen
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect();
+    // The raw line, not just its trimmed form: ssf renders what someone
+    // else wrote as an indented `> ` quote, and the item's own comments
+    // now end the first prompt, so one can sit at the bottom of the
+    // window with a sign-in phrase quoted in it. A harness draws its own
+    // dialog flush or in a box, never indented behind a `> `.
+    let tail: Vec<&str> = screen.lines().filter(|l| !l.trim().is_empty()).collect();
     let start = tail.len().saturating_sub(limit);
     let mut in_echo = false;
     // Read echo boundaries before trimming the window: a long echoed
@@ -218,18 +219,20 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
     tail.iter()
         .copied()
         .enumerate()
-        .filter(|(index, l)| {
+        .filter(|(index, raw)| {
+            let l = raw.trim();
             if l.contains("[ssf]") {
                 in_echo = true;
                 return false;
             }
-            if in_echo && (l.starts_with('-') || l.starts_with('>')) {
+            let quoted = l.starts_with("> ") && raw.len() > l.len();
+            if quoted || (in_echo && (l.starts_with('-') || l.starts_with('>'))) {
                 return false;
             }
             in_echo = false;
             *index >= start
         })
-        .map(|(_, line)| line)
+        .map(|(_, raw)| raw.trim())
         .collect()
 }
 

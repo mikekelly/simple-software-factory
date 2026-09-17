@@ -192,7 +192,7 @@ instructions = "Run `make test` before opening a PR."
 | `dashboard.bind` | `127.0.0.1` | Loopback IP address only; non-loopback exposure requires an authenticated TLS reverse proxy |
 | `dashboard.port` | `8787` | Server web UI port; restart required |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
-| `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it (normally noise; see [Identity and bylines](identity-and-bylines.md)) |
+| `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it in live messages (normally noise; a session started again is always shown its own posts in the catch-up story — see [Identity and bylines](identity-and-bylines.md)) |
 | `daemon.ignored_events` | `["mentioned", "subscribed", "unsubscribed"]` | Timeline event types that are never delivered |
 | `daemon.max_body_chars` | `8000` | Longest comment body quoted in a prompt, in characters |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |

@@ -2,14 +2,14 @@
 
 The prompts ssf writes: the first message an agent gets, the follow-ups, the project boards section, and what is deliberately left to repository-owned guidance. For whoever wonders why an agent behaves as it does, or is writing an `SSF.md`.
 
-ssf's own prompting is the bare functional minimum. Like later event
-deliveries, the initial prompt starts with `[ssf]`; this keeps item Markdown
-from colliding with harness composer shortcuts. It contains the item (title,
-description, boards, everything that has happened on it) followed by "How to
-work on this", which says only what ssf owns:
+ssf's own prompting is the bare functional minimum. The initial prompt opens
+with `[ssf]`, like later event deliveries, and with "How to work on this",
+which says only what ssf owns:
 
 ```
-Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this repository, because #16 was assigned to @bot.
+[ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @bot, through the herdr multiplexer, into a worktree of this repository, because #16 was assigned to @bot.
+
+## How to work on this
 
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is unmanned: what a person, or another session, should see goes on the issue as a GitHub comment. Say there what you are about to do, and when you need a decision or have delivered.
 
@@ -18,6 +18,14 @@ New activity on it arrives here as messages prefixed `[ssf]`; act on them. This 
 - Posts read better in GitHub Flavored Markdown: link the lines of code you mean.
 - `gh` and `git push` already act as @bot; your posts are marked as this session's. Act only as @bot; never use another account, token or key you find on this machine.
 ```
+
+The operating contract comes first. After the block above come ssf's own
+guidance additions — the operator's instructions and the global, repository
+and harness guidance files (below) — and then the item, under its own `[ssf]`
+header: title with URL, project boards, description, and everything that has
+happened on it. A session reads what it is being asked to do before the
+material that applies to it, and the `[ssf]` marker on the item's header
+still keeps its Markdown from colliding with harness composer shortcuts.
 
 The block names the CLI's affordances and points at the reference instead
 of teaching the tools: `ssf skill` prints the guidance bundled with the
@@ -93,7 +101,8 @@ these files on every message.
 All of them start with `[ssf]`; `ssf guide` lists them for the agent:
 
 - `New activity on ...`: comments, reviews, label changes, renames, linked
-  PRs and the like on its item. Its own posts are never echoed back.
+  PRs and the like on its item. Its own posts are not echoed back; the
+  catch-up story below is the one place they are.
 - `Now tracking ...`: an item it opened, or a pull request on its branch,
   has been bound to the session.
 - `FYI: ...`: activity on an item it follows but does not work on.
@@ -121,6 +130,13 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
 - `The handover to <harness> was cancelled: this session keeps the item.
   Carry on.`: the handover the session asked for was called off with `ssf
   handover --cancel`.
+
+The first message is not a delta but a catch-up: a session started fresh on
+the item — the first session, a restart whose harness cannot resume its
+conversation, a handover, a reassignment — is given the item's whole story
+before the message that prompted it. That story is the one view in which a
+session's own earlier posts are replayed, so it can read what it already said
+and promised. Live follow-up messages leave them out, as above.
 
 ## Project boards
 

@@ -289,8 +289,9 @@ fn short_ref(issue: &Issue, ctx: &PromptContext) -> String {
 
 /// The header of a first message: the `[ssf]` event marker, the item named
 /// once with its URL, and the facts that the rest of the message does not
-/// repeat. Keeping the marker first also prevents a Markdown heading from
-/// being interpreted as a harness prompt action.
+/// repeat. The marker opens the item's own part of the message, after the
+/// prompt and guidance ssf puts in front of it; it is also what keeps the
+/// item's Markdown out of the harness's composer actions.
 fn issue_header(issue: &Issue, ctx: &PromptContext) -> String {
     let labels: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
     // The header keeps the full date: it is the anchor for the day-less
@@ -399,8 +400,16 @@ fn assemble(head: &str, events: &[Rendered], tail: &str) -> String {
     s
 }
 
+/// The first message: ssf's own prompt and the guidance that goes with it
+/// (the operator's, the global and repository guidance files, the
+/// harness's), then the item itself -- header, boards, description,
+/// activity. What ssf is telling the agent to do comes before the material
+/// it applies to.
 pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -> String {
-    let mut s = String::new();
+    let mut s = instructions(issue, ctx);
+    // `instructions` ends with one newline; this makes the blank line
+    // before the item.
+    s.push('\n');
     s.push_str(&issue_header(issue, ctx));
     s.push_str(&project_boards(ctx));
     s.push_str("\n\n## Description\n\n");
@@ -420,10 +429,13 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
             s.push('\n');
         }
     }
-    s.push_str(&instructions(issue, ctx));
     s
 }
 
+/// ssf's own prompt: what ssf is, how it spawned this session and the rules
+/// ssf owns, then the guidance the operator and the repository add to it.
+/// Its last line is a newline, so callers can append a part after a blank
+/// line.
 fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
     let n = issue.number;
     let repo = &ctx.repo.name;
@@ -446,9 +458,9 @@ fn instructions(issue: &Issue, ctx: &PromptContext) -> String {
         ),
     };
     let mut s = format!(
-        "\n## How to work on this\n\n\
-Simple Software Factory (ssf) spawned you as a coding agent for the GitHub account @{bot}, \
-through {multiplexer}, into a worktree of this repository, because {}.\n\n\
+        "[ssf] Simple Software Factory (ssf) spawned you as a coding agent for the GitHub \
+account @{bot}, through {multiplexer}, into a worktree of this repository, because {}.\n\n\
+## How to work on this\n\n\
 New activity on it arrives here as messages prefixed `[ssf]`; act on them. This terminal is \
 unmanned: what a person, or another session, should see goes on the {kind} as a GitHub comment. \
 Say there what you are about to do, and when you need a decision or have delivered.\n\n\

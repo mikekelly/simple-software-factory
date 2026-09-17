@@ -242,6 +242,19 @@ fn login_prompts_of_each_harness_are_recognised() {
     assert!(login_dialog("claude", expired).is_some());
     let after_echo = "❯ [ssf] New activity on #5:\n- 15:20Z @mike commented:\n  > hi\n\nLogin expired · Please run /login\n❯ ";
     assert!(login_dialog("claude", after_echo).is_some());
+    // The first prompt ends with the item, so its comments are what sits
+    // at the bottom of the pane: a phrase quoted in one is ssf's
+    // rendering of someone else's words (#355), not a sign-in prompt.
+    let first_prompt = "❯ [ssf] GitHub issue #5: Fix it\nhttps://gh/5\n\n\
+Opened by @mike on 2026-09-17 08:00Z. Labels: daemon.\n\n\
+## Description\n\nRetry the sign-in when the token lapses.\n\n\
+## Activity so far\n\n- 09:20Z @mike commented (https://gh/c1):\n  > the daemon does not retry: Login expired · Please run /login\n\n❯ ";
+    assert_eq!(login_dialog("claude", first_prompt), None);
+    // A dialog drawn flush or in a box is still read, wherever it is.
+    let after_first_prompt = format!("{first_prompt}Login expired · Please run /login");
+    assert!(login_dialog("claude", &after_first_prompt).is_some());
+    let boxed = "│ ? Get started\n│   How would you like to authenticate for this project?";
+    assert!(login_dialog("gemini", boxed).is_some());
 }
 
 /// Text ssf is about to write down or paste somewhere is read whole:

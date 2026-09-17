@@ -27,7 +27,8 @@ Posts are read on GitHub, so write them in GitHub Flavored Markdown: links to sp
 code or Markdown, tables and Mermaid diagrams make a post easier to follow than prose.\n\n\
 ## Messages you receive\n\n\
 - `[ssf] New activity on ...`: comments, reviews, label changes, renames, linked PRs and the \
-like on your item. Your own posts are never echoed back.\n\
+like on your item. Your own posts are not echoed back here; a session started again is shown \
+the item's whole story, its own posts included.\n\
 - `[ssf] Now tracking ...`: a pull request you opened or one on your branch has been bound \
 to this session; its activity comes here from now on.\n\
 - `[ssf] FYI: ...`: activity on an item you follow but do not work on. For information only.\n\

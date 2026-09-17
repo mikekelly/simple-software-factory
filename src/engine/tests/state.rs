@@ -203,14 +203,14 @@ fn tagged_bot_comments_are_kept_and_sorted_per_recipient() {
 
     // Session 1 (which also acts on PR 7) does not get its own posts
     // back; the person's post reaches everyone.
-    let mine = e.for_recipient(&d.rendered, "o/r#1");
+    let mine = e.for_recipient(&d.rendered, "o/r#1", OwnPosts::Hidden);
     let keys: Vec<&str> = mine.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(
         keys,
         vec!["commented:1", "commented:2", "commented:4", "commented:6"]
     );
     // Session 3 sees session 1's (and the PR's) comments, not its own.
-    let theirs = e.for_recipient(&d.rendered, "o/r#3");
+    let theirs = e.for_recipient(&d.rendered, "o/r#3", OwnPosts::Hidden);
     let keys: Vec<&str> = theirs.iter().map(|r| r.key.as_str()).collect();
     assert_eq!(
         keys,
@@ -223,12 +223,37 @@ fn tagged_bot_comments_are_kept_and_sorted_per_recipient() {
         ]
     );
     // Case-insensitive on the repository, like everything else.
-    assert_eq!(e.for_recipient(&d.rendered, "O/R#3").len(), 5);
+    assert_eq!(
+        e.for_recipient(&d.rendered, "O/R#3", OwnPosts::Hidden)
+            .len(),
+        5
+    );
     assert_eq!(e.acting_session("o/r#7"), "o/r#1");
     assert_eq!(e.acting_session("x/y#2"), "x/y#2");
     assert_eq!(e.acting_session("garbage"), "garbage");
     e.cfg.daemon.include_own_events = true;
-    assert_eq!(e.for_recipient(&d.rendered, "o/r#1").len(), 6);
+    assert_eq!(
+        e.for_recipient(&d.rendered, "o/r#1", OwnPosts::Hidden)
+            .len(),
+        6
+    );
+    e.cfg.daemon.include_own_events = false;
+    // The catch-up view is the exception: a session started again on an
+    // item with history is shown its own posts too.
+    let caught_up = e.for_recipient(&d.rendered, "o/r#1", OwnPosts::Shown);
+    let keys: Vec<&str> = caught_up.iter().map(|r| r.key.as_str()).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "commented:1",
+            "commented:2",
+            "commented:3",
+            "commented:4",
+            "commented:5",
+            "commented:6"
+        ],
+        "its own o/r#1 post comes back at the catch-up"
+    );
 
     // The bot's commits and cross-references are still its own echo,
     // and a plain `gh` comment by the bot login is not.
