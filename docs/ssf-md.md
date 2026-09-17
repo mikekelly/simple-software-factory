@@ -17,9 +17,11 @@ never repeats it. `ssf doctor` reports a watched repository without one.
    `@AGENTS.md`, so there is one copy.
 2. **Would this rule be wrong, or wasteful, if a subagent followed it?**
    Most harnesses hand `AGENTS.md` to every subagent they spawn; ssf gives
-   `SSF.md` only to the main session. Advice for the main agent alone goes
-   here. The clearest case is orchestration: keep the main session's context
-   for deliberation with collaborators, planning and integration, and push
+   `SSF.md` only to the main session. That is one of the things ssf is for:
+   a place to inject orchestration guidance into the main agent exclusively.
+   Advice for the main agent alone goes here. The clearest case is the
+   orchestration strategy itself: keep the main session's context for
+   deliberation with collaborators, planning and integration, and push
    execution to subagents. A subagent reading that would try to delegate
    its own task.
 
@@ -53,12 +55,26 @@ about how their sessions work.
 5. **Merging and closing.** Who merges, and whether the session closes its
    own issue.
 6. **Boards.** The board and what each column means, if there is one.
-7. **Delegation.** Appetite for subagents, delegated issues (`--assignee`),
-   and handovers to another stack.
+7. **Orchestration.** Recommended in every `SSF.md`: what the main session
+   keeps for itself (deliberation with collaborators, planning, integration,
+   review of what comes back) and what it pushes to subagents, delegated
+   issues (`--assignee`) or a handover to another stack, and how much
+   context a delegated task gets. Only the main agent reads this, so it can
+   be direct.
 8. **Demos.** How feedback on a running system is given: screenshots, a URL
    the collaborators can reach, a recording.
 9. **Delivered.** What "done" means here: merged, deployed, documented,
    workspace released.
+10. **Models.** A register of the harnesses the repository allows, each
+    with a model and effort for two capability levels: *deliberation*
+    (orchestration, planning, architecture, design, review, copywriting)
+    and *execution* (implementation and other bounded tasks). The session
+    reads it when it spawns a subagent in its own harness and when it
+    starts or hands work to another harness with `ssf assign` or
+    `ssf handover`; without it, subagents inherit whatever the session
+    runs on. `ssf models <harness>` lists the ids and `ssf agents --json`
+    the effort levels; `repo.model` and `repo.effort` in the factory's
+    config still choose what the session itself starts on.
 
 ## Keep it short
 
@@ -85,6 +101,8 @@ A solo maintainer:
 - Open the PR with `Closes #N` and @mention me to merge; I merge.
 - Keep this session for planning and talking to me; delegate execution to
   subagents.
+- Models: `claude` is `fable` low for deliberation and `opus` medium for
+  execution.
 ```
 
 A team with a board:
@@ -101,4 +119,9 @@ A team with a board:
 - Delegate independent tasks as issues assigned to the bot; keep this
   session for integration and communication.
 - Delivered means merged, the deploy checked, and `ssf release` run.
+
+| Harness | Deliberation | Execution |
+| --- | --- | --- |
+| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
+| `codex` | `gpt-5.6-sol`, effort `low` | `gpt-5.6-sol`, effort `high` |
 ```

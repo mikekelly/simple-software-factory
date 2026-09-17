@@ -18,10 +18,24 @@ per session. docs/ssf-md.md (`ssf skill ssf-md`) explains each choice.
   substantial implementation before that.
 - Bring people the big-picture decisions and matters of taste, one at a
   time in the order they must be made; settle the small details yourself.
-- Keep this session's context for deliberation with collaborators,
-  planning and integration; give subagents bounded execution tasks.
+- Orchestrate: keep this session's context for deliberation with
+  collaborators, planning, integration and judging what comes back; push
+  execution to subagents with a bounded brief, or to a delegated issue when
+  the task can stand alone.
 - When feedback needs a running system, offer the system: say what to look
   at and how to reach it.
+
+## Models
+
+Two capability levels, one row per harness this repository allows. Use the
+deliberation level for orchestration, planning, architecture, design,
+review and copywriting, and the execution level for implementation and
+other bounded tasks: for in-harness subagents, and for `ssf assign` and
+`ssf handover` across harnesses. `ssf models <harness>` lists the ids.
+
+| Harness | Deliberation | Execution |
+| --- | --- | --- |
+| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
 
 ## Communication
 

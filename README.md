@@ -140,8 +140,10 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   the SSF operating contract your repository keeps in `SSF.md` (how it owns
   and communicates work, who to ask, what the columns mean). Repository-wide
   build, test and implementation policy remains in `AGENTS.md`. `SSF.md` is
-  injected into the issue-owning main agent, not its harness-created subagents,
-  so it can define an orchestration role without spending their context.
+  injected into the issue-owning main agent only, never its harness-created
+  subagents: the one place to give the orchestrating agent its strategy
+  (what it keeps, what it delegates) without a subagent reading it as its
+  own ([Writing SSF.md](docs/ssf-md.md)).
   Optional `~/.ssf/SSF.md` and `~/.ssf/SSF.<harness>.md` files give every
   session on one factory machine shared context before those repository files.
   The main agent can see who else is working on the
