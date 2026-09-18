@@ -287,8 +287,8 @@ fn the_assign_message_names_the_stack_the_first_session_comes_up_on() {
         ),
         "Assigned the bot to o/r#7 (\"Fix the widget\"). Its session starts on Pi (model \
 openai/gpt-6, effort high) on the daemon's next pass (within 10s). The item keeps that stack \
-for every later start until its workspace is released, and `ssf handover` is how it changes \
-from here."
+for every later start, a workspace released and re-created included, and `ssf handover` is how \
+it changes from here."
     );
     // Already assigned (the bot was put on the item before ssf saw it),
     // and a stack the item already runs: nothing was pinned.

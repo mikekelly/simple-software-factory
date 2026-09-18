@@ -424,8 +424,11 @@ harness=pi`). Which of the two it was is recorded on the item
 (`assigned_at` for an assignment, `handed_over_at` for a handover), not
 inferred, so a later command taking the overrides over changes the
 wording with them.
-Releasing the workspace or purging the item clears the override, and the
-item comes back on the repository's own settings. `ssf assign` writes
+Releasing the workspace or purging the item leaves the override alone: the
+stack belongs to the item, not to the workspace it was started in, so the
+workspace re-created on the item's next event comes back on it. Only a
+later command that writes overrides replaces it -- `ssf handover` for an
+item with a session, `ssf assign` for one without. `ssf assign` writes
 nothing at all when the stack it is given is the one the item would run
 anyway: an override nobody needs would pin the item out of `ssf repo
 set`.

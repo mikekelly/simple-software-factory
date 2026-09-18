@@ -533,7 +533,8 @@ deepseek/deepseek-flash, effort high)`, and `next_launch` beside `harness`
 in `--json`. `ssf handover <item> --harness <id> ...` moves one session
 onto the new stack now. A
 [per-item override](configuration.md#per-item-overrides)
-takes precedence until that item's workspace is released: `ssf assign`
+takes precedence for that item from then on, a workspace released and
+re-created included: `ssf assign`
 sets one for an item that has no session yet, `ssf handover` for one that
 does.
 

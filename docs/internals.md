@@ -242,7 +242,8 @@ checks, and a restrictive content security policy. See
   that is not on origin (see [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge)).
   Re-assigning or reopening the issue re-creates a released workspace and
-  resumes the conversation.
+  resumes the conversation, and the item's per-item overrides are still
+  the stack the new session starts on.
 
 ## `ssf status --json`
 

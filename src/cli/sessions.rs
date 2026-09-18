@@ -625,8 +625,8 @@ pub fn assign_recorded_text(
         )
     };
     let tail = if pinned {
-        "The item keeps that stack for every later start until its workspace is released, and \
-`ssf handover` is how it changes from here."
+        "The item keeps that stack for every later start, a workspace released and re-created \
+included, and `ssf handover` is how it changes from here."
     } else {
         "No per-item overrides were written: the item is already on that stack."
     };
