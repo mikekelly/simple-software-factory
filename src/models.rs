@@ -254,6 +254,56 @@ pub fn default_command(harness: &str) -> String {
     }
 }
 
+/// How each harness runs one task with no terminal: its own non-interactive
+/// form, then the flags that let it run unattended (`--print` for the
+/// Claude-shaped CLIs, a subcommand for Codex, OpenCode and Crush). Every
+/// one of these takes the request as its last argument, which is what the
+/// task runner appends.
+///
+/// A harness that is not here has no headless form ssf knows, and a task for
+/// it is refused rather than run interactively: `repo.command` is the
+/// operator's command for a *session*, and says nothing about how its
+/// harness takes a one-shot request.
+const HEADLESS_COMMANDS: &[(&str, &str)] = &[
+    (
+        "claude",
+        "-p --dangerously-skip-permissions --disallowedTools AskUserQuestion",
+    ),
+    (
+        "codex",
+        "exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust",
+    ),
+    ("gemini", "-p --yolo --skip-trust"),
+    ("grok", "-p --always-approve"),
+    ("pi", "-p --approve"),
+    (
+        "omp",
+        // The same reason as `OMP_DEFAULT_COMMAND`: five minutes of quiet
+        // can end a healthy reasoning turn (#322), and a task is one turn.
+        "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp -p --auto-approve",
+    ),
+    ("opencode", "run --auto"),
+    ("copilot", "-p --allow-all"),
+    ("crush", "run --yolo"),
+];
+
+/// The command that runs `harness` for one non-interactive task, with the
+/// model and effort applied as for a session (`RepoConfig::harness_command`).
+/// `None` when ssf does not know a headless form for the harness.
+pub fn headless_command(
+    harness: &str,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> Option<String> {
+    let (_, words) = HEADLESS_COMMANDS.iter().find(|(h, _)| *h == harness)?;
+    Some(apply_to_command(
+        &format!("{harness} {words}"),
+        harness,
+        model,
+        effort,
+    ))
+}
+
 /// Model ids to offer for `harness`: the installed agent's own list when it
 /// can produce one, else the seeded ids.
 pub fn available_models(harness: &str) -> Result<Vec<String>> {
@@ -513,6 +563,40 @@ mod tests {
         assert_eq!(
             apply_to_command(&default_command("codex"), "codex", Some("gpt-5.5"), None),
             "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
+        );
+    }
+
+    #[test]
+    fn every_known_harness_has_a_headless_form() {
+        for a in crate::agents::list() {
+            assert!(
+                headless_command(&a.id, None, None).is_some(),
+                "{} has no headless form",
+                a.id
+            );
+        }
+        // An unknown harness has none, and a task for it is refused.
+        assert_eq!(headless_command("aider", None, None), None);
+    }
+
+    #[test]
+    fn headless_commands_carry_the_model_and_effort() {
+        assert_eq!(
+            headless_command("claude", Some("opus"), Some("high")).unwrap(),
+            "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion --model opus --effort high"
+        );
+        assert_eq!(
+            headless_command("codex", Some("gpt-5.5"), None).unwrap(),
+            "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
+        );
+        assert_eq!(
+            headless_command("opencode", Some("anthropic/claude-sonnet-4"), None).unwrap(),
+            "opencode run --auto -m anthropic/claude-sonnet-4"
+        );
+        // An effort the harness does not take is dropped, as for a session.
+        assert_eq!(
+            headless_command("gemini", None, Some("high")).unwrap(),
+            "gemini -p --yolo --skip-trust"
         );
     }
 

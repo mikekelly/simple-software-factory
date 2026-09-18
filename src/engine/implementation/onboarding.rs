@@ -85,6 +85,11 @@ impl Engine {
             .filter(|p| p.subscriber_only)
             .map(|p| self.diff(repo, &p.seen, &timeline).rendered);
         let scan = self.record_origins(repo, issue, &timeline);
+        // A `/ssf` command in the timeline is the factory's to run, and an
+        // item gets one whether or not it gets a session (see `slash`): the
+        // created-only item below is ignored as a session's work, not as a
+        // request to ssf.
+        self.take_commands(repo, issue.number, &timeline);
         let by_bot = issue.author().eq_ignore_ascii_case(&self.login);
 
         // Who acts on this item. Opening an issue does not ask ssf to act:
@@ -654,6 +659,7 @@ impl Engine {
     ) -> Result<()> {
         let timeline = self.gh.timeline(owner, name, issue.number).await?;
         self.record_origins(repo, issue, &timeline);
+        self.take_commands(repo, issue.number, &timeline);
         let diff = self.diff(repo, &st.seen, &timeline);
         // Subscribers hear first: the owner's own posts are news to them,
         // and a failed delivery to the owner must not replay to them.
@@ -736,6 +742,7 @@ impl Engine {
             "issue assigned again; reactivating"
         );
         self.record_origins(repo, issue, &timeline);
+        self.take_commands(repo, issue.number, &timeline);
         let diff = self.diff(repo, &st.seen, &timeline);
         self.refresh_projects(repo, owner, name, issue.number).await;
         let st = IssueState {

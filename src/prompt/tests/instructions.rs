@@ -64,6 +64,7 @@ fn initial_prompt_mentions_bot_and_issue() {
         allowed_users: None,
         accepted_anyone_risk: false,
         event_comments: None,
+        slash_commands: None,
         git: Default::default(),
     };
     let d = cfg();

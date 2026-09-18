@@ -156,6 +156,11 @@ are listed in [Sessions](docs/sessions.md#what-ssf-says-on-the-item).
   the session that made it, and the item is the only channel between
   sessions: nobody reaches an agent's terminal behind the record. Debugging
   or rescuing a session is done at its terminal through herdr.
+- **The server takes plain instructions.** A comment whose first line is
+  `/ssf <request>` is addressed to ssf itself, not to the item's agent: the
+  daemon runs the request now, as one headless run of the repository's
+  harness, and reports on the item what it did
+  ([Task requests](docs/sessions.md#task-requests-ssf-request)).
 - **Repository renames reconnect.** ssf records GitHub's immutable repository
   id and periodically resolves its current name. Rename or transfer a watched
   repository through GitHub and ssf repairs its configuration, session state,
