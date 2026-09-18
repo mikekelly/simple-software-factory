@@ -16,6 +16,28 @@ whole factory runs [inside a microVM](docs/vm.md) on your machine, so the
 agents never see your home directory; it can also run directly on a
 [headless host](docs/headless-host.md).
 
+## Why
+
+You already have coding agents. What you do not have is a way to run several
+of them on real work without sitting in each one's chat. Every tool that
+offers that runs the agents in its own cloud, keeps the conversation in its
+own product, and leaves you to copy the outcome back to where the work is
+actually tracked.
+
+ssf starts from the other end. GitHub is already where your work is
+described, discussed, reviewed and merged, so the agents live there: the
+issue is the unit of work, the assignment is the trigger, the comment thread
+is the conversation, the pull request is the deliverable and the board is the
+status. A person is involved exactly where a person is needed: to say what to
+build, to make the calls the agents cannot, and to merge. Everything else
+runs on hardware you own, as a bot account you control, in agents you
+already pay for, and the record of it is on GitHub rather than in a vendor's
+transcript.
+
+The aim is a factory small enough to read: a daemon that polls GitHub, a
+terminal per item, and a file in your repository saying how its sessions
+should behave.
+
 ## How a feature gets built
 
 You open an issue with an idea and assign it to the bot. A session takes it
@@ -34,38 +56,6 @@ across the board, the pull requests merge and the feature is delivered.
 GitHub holds the whole story: the discussion, the plan, the linked issues,
 the pull requests and every decision. This repository is built that way; its
 issues and pull requests are the worked example.
-
-## How it works
-
-Every few seconds ssf asks GitHub for the open issues and pull requests that
-involve the bot. For a new one it creates a workspace in herdr, checked out
-on a branch for the issue (or on the pull request's branch, so pushes update
-the pull request), and starts the agent there with the whole story so far.
-From then on every comment, review, label or push on the item is delivered
-into that agent's terminal: it steers the agent if it is busy and wakes it if
-it is idle. If a terminal is gone, or the whole workspace, ssf brings it back
-and resumes the same conversation, including after a reboot. When the item is
-closed the agent is told to push what is worth keeping and, only then, to
-release its workspace ([Under the hood](docs/internals.md)).
-
-- **One agent per issue or pull request.** Each gets its own workspace (a
-  git worktree on its own branch, in herdr) and its own session, from the
-  moment the bot is assigned, @mentioned or asked to review until the item
-  is closed. An agent is told the issue, everything that has happened on it,
-  the boards it is on and the operating guidance in your repository's
-  `SSF.md`: how it owns and communicates work, who to ask, what the columns
-  mean, who merges ([Writing SSF.md](docs/ssf-md.md)). Build and test
-  policy stays in `AGENTS.md`, as for any agent.
-- **Everything is on GitHub.** Agents talk to people, and to each other,
-  through issue and pull request comments. Every post carries the byline of
-  the session that made it, and the item is the only channel between
-  sessions: nothing reaches an agent off the record. Watching, nudging or
-  rescuing a session is done at its terminal through herdr.
-- **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
-  and starts the agents you have installed, with the bot's credentials, so
-  what the agents do on GitHub is done as the bot. Only people you allow
-  can drive it: by default the repository's collaborators with push access
-  ([Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
 
 ## Install
 
@@ -126,6 +116,38 @@ a workspace shows up in `ssf status`; within a couple of minutes the agent
 comments with what it is about to do, and later with the pull request. Read
 it, answer or merge as you would for a colleague, and close the issue; the
 agent pushes what is left, comments once more and gives its workspace back.
+
+## How it works
+
+Every few seconds ssf asks GitHub for the open issues and pull requests that
+involve the bot. For a new one it creates a workspace in herdr, checked out
+on a branch for the issue (or on the pull request's branch, so pushes update
+the pull request), and starts the agent there with the whole story so far.
+From then on every comment, review, label or push on the item is delivered
+into that agent's terminal: it steers the agent if it is busy and wakes it if
+it is idle. If a terminal is gone, or the whole workspace, ssf brings it back
+and resumes the same conversation, including after a reboot. When the item is
+closed the agent is told to push what is worth keeping and, only then, to
+release its workspace ([Under the hood](docs/internals.md)).
+
+- **One agent per issue or pull request.** Each gets its own workspace (a
+  git worktree on its own branch, in herdr) and its own session, from the
+  moment the bot is assigned, @mentioned or asked to review until the item
+  is closed. An agent is told the issue, everything that has happened on it,
+  the boards it is on and the operating guidance in your repository's
+  `SSF.md`: how it owns and communicates work, who to ask, what the columns
+  mean, who merges ([Writing SSF.md](docs/ssf-md.md)). Build and test
+  policy stays in `AGENTS.md`, as for any agent.
+- **Everything is on GitHub.** Agents talk to people, and to each other,
+  through issue and pull request comments. Every post carries the byline of
+  the session that made it, and the item is the only channel between
+  sessions: nothing reaches an agent off the record. Watching, nudging or
+  rescuing a session is done at its terminal through herdr.
+- **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
+  and starts the agents you have installed, with the bot's credentials, so
+  what the agents do on GitHub is done as the bot. Only people you allow
+  can drive it: by default the repository's collaborators with push access
+  ([Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
 
 ## Everyday commands
 
