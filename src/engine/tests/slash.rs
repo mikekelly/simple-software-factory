@@ -288,52 +288,47 @@ async fn a_task_the_daemon_was_running_when_it_stopped_is_reported_on_the_way_ba
     assert!(stub.post_bodies().is_empty());
 }
 
-#[test]
-fn a_record_kept_for_a_task_goes_when_it_is_over() {
+#[tokio::test(flavor = "current_thread")]
+async fn a_request_is_not_taken_again_on_a_later_pass() {
     let _sandbox = crate::config::test_support::sandbox();
-    let mut e = engine();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
-    // An item the bot opened and nothing acted on: no session of its own,
-    // nobody subscribed, a request that has just finished.
-    {
-        let st = e.entry(&r, 7);
-        st.subscriber_only = true;
-        st.title = "t".into();
-    }
-    e.forget_if_idle(&r.name, 7);
+    // The bot's own item, nothing acting on it: it is ignored as created-only
+    // and gets no session, which is where a request is easiest to run twice:
+    // the daemon's `task-started`/`task-ended` posts move the item's
+    // `updated_at`, so every pass looks at it again.
+    let listed = |updated: &str| {
+        json!({
+            "number": 18, "title": "t", "body": "work", "html_url": "https://gh/18",
+            "state": "open", "user": {"login": "bot"}, "created_at": "x", "updated_at": updated
+        })
+    };
+    *stub.created.lock().unwrap() = vec![listed("x")];
+    stub.set_issue(18, listed("x"));
+    stub.set_timeline(18, timeline(&[(2, "ann", "/ssf look at this")]));
+    e.cfg.save().unwrap();
+
+    e.tick_repo(&r).await.unwrap();
+    e.run_tasks(&r).await;
+    assert_eq!(e.tasks.count(), 1, "the request ran");
+    wait_for_task(&mut e).await;
+
+    // GitHub moves the item's `updated_at` when the daemon posts about it.
+    *stub.created.lock().unwrap() = vec![listed("y")];
+    stub.set_issue(18, listed("y"));
+    stub.bump_created_etag();
+    e.tick_repo(&r).await.unwrap();
     assert!(
-        !e.state.repos[&r.name].issues.contains_key(&7),
-        "nothing is left to remember it by"
+        pending(&e, &r, 18).is_empty(),
+        "a command already taken is not taken again: {:?}",
+        pending(&e, &r, 18)
     );
-
-    // What waits to be adopted keeps its record: that is where the workspace
-    // a later adoption reuses is written down.
-    {
-        let st = e.entry(&r, 8);
-        st.title = "candidate".into();
-    }
-    e.state.repo_mut(&r.name).adoption_candidates.insert(
-        8,
-        AdoptionCandidate {
-            number: 8,
-            title: "candidate".into(),
-            html_url: "https://gh/8".into(),
-            updated_at: "x".into(),
-            kind: "issue".into(),
-            triggers: vec!["assigned".into()],
-        },
-    );
-    e.forget_if_idle(&r.name, 8);
-    assert!(e.state.repos[&r.name].issues.contains_key(&8));
-
-    // And one with a session of its own keeps it, whatever else is empty.
-    {
-        let st = e.entry(&r, 9);
-        st.seeded = true;
-    }
-    e.forget_if_idle(&r.name, 9);
-    assert!(e.state.repos[&r.name].issues.contains_key(&9));
+    e.run_tasks(&r).await;
+    assert_eq!(e.tasks.count(), 0, "and nothing is started again");
 }
 
 /// Collect until the item's task has ended. The task a test starts is a real

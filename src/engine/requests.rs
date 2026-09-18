@@ -385,11 +385,13 @@ impl Engine {
         let e = self.entry(&repo, number);
         e.subscribers.retain(|s| !s.eq_ignore_ascii_case(&me));
         // An item nobody listens to any more is forgotten -- unless a `/ssf`
-        // request is still waiting on it or running for it: the item is
-        // unpolled from here, but a queued request runs on the next pass (the
-        // queue is the record's, not a subscriber's), and the record goes when
-        // that is over (`Engine::forget_if_idle`). Dropping it with the record
-        // would lose what a person asked for.
+        // request is still waiting on it or running for it. A request is
+        // run from this record (`Engine::run_tasks`), and the record is what
+        // keeps the comment from being taken again once it has run
+        // (`slash_done`); dropping it here would lose what a person asked
+        // for, or run it a second time. The record stays instead, un-polled
+        // (`watch_subscribed` needs a subscriber), which is no worse than the
+        // records other items that are nobody's keep.
         let dropped = e.subscriber_only
             && e.subscribers.is_empty()
             && e.slash_pending.is_empty()
@@ -568,9 +570,23 @@ mod tests {
         );
         assert_eq!(e.state.repos["o/r"].issues[&20].slash_pending.len(), 1);
 
-        // Once nothing waits on it and nothing runs for it, the record goes.
+        // Once the request has run there is nothing left waiting, and the
+        // record stays for the reason it did above: the comment it was taken
+        // from must not be taken again (`slash_done`).
         e.entry(&r, 20).slash_pending.clear();
-        e.forget_if_idle(&r.name, 20);
+        e.entry(&r, 20).slash_running = None;
+        assert!(e.state.repos["o/r"].issues.contains_key(&20));
+        // What a subscriber-only record with nothing on it does: it is not
+        // polled (`watch_subscribed` needs a subscriber) and, once nobody
+        // subscribes, it is dropped as it always was.
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#1".into(),
+                target: "o/r#20".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(resp.data["removed"], false, "already dropped");
         assert!(!e.state.repos["o/r"].issues.contains_key(&20));
     }
 }
