@@ -111,13 +111,16 @@ checks, and a restrictive content security policy. See
   messages through SSF's shipped extension and per-session mailbox. The
   extension uses a user-attributed custom message with `triggerTurn: true`, so
   idle starts a turn and the terminal editor (including a person's draft) is
-  untouched. A busy session takes the event mid-turn by harness: OMP gets
-  `deliverAs: "aside"`, injected at the next agent step boundary without
-  interrupting the tool batch in flight, and Pi — whose extension API has no
-  `aside` — gets `deliverAs: "steer"`, which preempts the step it arrives in;
-  the launcher names the harness in `SSF_HARNESS`. Neither waits for a turn
-  boundary, which an agent inside one long tool loop may not reach for hours
-  (#385). The daemon uses
+  untouched. A busy session takes the event at its next step boundary by
+  harness: OMP gets `deliverAs: "aside"` and Pi — whose extension API has no
+  `aside`, but whose `steer` means the same step boundary — gets
+  `deliverAs: "steer"`; the launcher names the harness in `SSF_HARNESS`. Both
+  hand the message over once the tool calls in flight have finished and before
+  the next model call, without cutting them short, where the `followUp` queue
+  the bridge used before is drained only when the run ends — a boundary an
+  agent inside one long tool loop may not reach for hours (#385). A harness the
+  launcher does not name gets `steer`, which on OMP preempts the step it
+  arrives in. The daemon uses
   the session's next prompt count plus a content fingerprint as the stable
   mailbox key: a retry observes the same pending or acknowledged event rather
   than publishing another copy. If a live bridge is unavailable, delivery

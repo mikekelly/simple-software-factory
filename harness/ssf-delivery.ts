@@ -20,7 +20,10 @@ export default function (pi: any) {
 	// (#385). OMP's `aside` is injected at the next agent step boundary without
 	// interrupting the tool batch in flight; Pi's extension API has no `aside`
 	// (`steer` | `followUp` | `nextTurn`, with an unknown mode treated as a
-	// steer), so Pi gets the immediate mode instead.
+	// steer), but its `steer` means that same step boundary, so Pi names it
+	// explicitly. A harness the launcher does not name gets `steer` too: on OMP
+	// that interrupts the step the event arrives in and finishes it in the
+	// background, which beats a queue that may never drain.
 	const deliverAs = process.env.SSF_HARNESS === "omp" ? "aside" : "steer";
 
 	async function poll() {

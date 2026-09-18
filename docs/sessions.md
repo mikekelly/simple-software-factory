@@ -113,11 +113,12 @@ prompt that was already consumed being sent again as a steering message.
 
 After that first prompt, a live OMP or Pi session takes item activity through
 the harness's in-process extension rather than through its terminal. An idle
-session wakes for the event, a working one takes it mid-turn without waiting for
-its turn to end — OMP injects it at the next agent step boundary, Pi steers it
-in — and text a person has begun composing stays in the editor. Delivery to a
-live OMP/Pi session with no ready bridge is held and retried; run `ssf doctor`,
-then restart that session to load the bridge. Claude Code uses its authenticated peer inbox
+session wakes for the event, a working one takes it at its next step boundary
+rather than at the end of the turn — OMP injects it there through `aside`, and
+Pi's `steer` lands there too, in both cases once the tool calls in flight have
+finished — and text a person has begun composing stays in the editor. Delivery
+to a live OMP/Pi session with no ready bridge is held and retried; run `ssf
+doctor`, then restart that session to load the bridge. Claude Code uses its authenticated peer inbox
 with the default `crossSessionInbound: accept` setting: idle wakes, busy receives
 priority `next`, and the draft stays untouched. Receipt is confirmed through its
 transcript; an ambiguous send is held without resending. An unavailable inbox
