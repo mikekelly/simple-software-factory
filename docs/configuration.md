@@ -204,6 +204,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
+| `daemon.slash_commands` | `true` | Act on a `/ssf <request>` comment on an item (see [Task requests](sessions.md#task-requests-ssf-request)); `false` leaves such a comment an ordinary one: nothing is run, and nothing else changes |
 | `daemon.conflict_check_interval_secs` | `300` | Interval between base fetches and committed-branch conflict checks for active sessions; `0` disables. One fetch per repository, with merge simulations only for changed commit pairs (see [Branch conflicts](sessions.md#branch-conflicts)) |
 | `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf-server` then starts and watches the VM, and daemon-facing client commands run in the guest |
 | `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends)); unset, `ssf vm build` writes the platform's default here |
@@ -236,13 +237,15 @@ instructions = "Run `make test` before opening a PR."
 | `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
 | `repo.event_comments` | `daemon.event_comments` | Whether the daemon posts its events on this repository's items (`ssf repo set <owner/name> --event-comments false`) |
+| `repo.slash_commands` | `daemon.slash_commands` | Whether `/ssf` comments on this repository's items are acted on (`ssf repo set <owner/name> --slash-commands false`) |
 | `repo.conflict_check_interval_secs` | `daemon.conflict_check_interval_secs` | Conflict-check interval for this repository; `0` disables |
 | `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |
 
 The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with
 `--driver`, `--path`, `--clone-url`, `--base-branch`, `--command`,
 `--model`, `--effort`, `--instructions`, `--prompt-file`,
-`--allowed-users` and `--accept-anyone-risk`; `ssf repo set` changes some
+`--allowed-users`, `--accept-anyone-risk`, `--event-comments` and
+`--slash-commands`; `ssf repo set` changes some
 of those, sets `--git-name`, `--git-email`, `--git-signing-key` and
 `--git-credential`, and `--clear <field>` unsets one (`git` for the whole
 `[repo.git]` table, `git.credential` for one key); `ssf config get|set
@@ -354,7 +357,9 @@ the setup document; the rest of this section is the mechanics.
 agent. Pi, Oh My Pi and OpenCode take their own `provider/model` ids (Pi and
 Oh My Pi reach many providers, OpenRouter among them) and their own thinking
 or reasoning levels. SSF turns the setting into the agent's command-line flags
-when it starts the agent, including when it resumes a session:
+when it starts the agent, including when it resumes a session. The table
+below is what ssf seeds; `ssf models` usually answers with the agent's own
+list, which is the one to choose from:
 
 | Agent | Model ids | Effort levels | What is appended to the command |
 |-------|-----------|---------------|---------------------------------|
@@ -367,15 +372,31 @@ when it starts the agent, including when it resumes a session:
 | `opencode` | `provider/model` as in `opencode models` | none | `-m <id>` |
 | `copilot` | `auto` or a model name | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
 
-`ssf models <agent>` prints the ids to choose from, asking the installed
-agent for its list where it has one (`pi`, `omp`, `opencode`); the menu's
-*Change model* picker uses the same list. Crush has no model flag for its
-terminal interface, so ssf refuses a model for it. Model ids are passed
-through as given, so a model the list does not mention works as long as the
-agent knows it; effort levels must be ones the agent accepts (a wrong one
-is refused when the config loads). Changing the agent of a repository
-requires a fresh selection of both supported settings, since the ids belong
-to the agent. Other `repo set` edits keep existing values, but reject a result
+`ssf models <agent>` prints the ids to choose from and, on stderr, which list
+answered. The installed agent's own list wins where the machine that runs the
+sessions has one (in [VM](vm.md) mode that is the guest, which is where the
+sessions and the agent are):
+
+| Source | Which agents | Where it is read |
+|--------|--------------|------------------|
+| `catalogue` | `claude`, `codex` | Claude Code's `cache/model-catalog/*.json` under `$CLAUDE_CONFIG_DIR` (default `~/.claude`), the newest file that lists models and is Claude Code's own surface; codex's `models_cache.json` under `$CODEX_HOME` (default `~/.codex`), models codex hides left out |
+| `command` | `pi`, `omp`, `opencode` | the agent itself: `pi --list-models`, `omp models --json`, `opencode models` |
+| `table` | the rest, or when the machine has neither | ssf's built-in table, above |
+
+`--json` prints `harness`, `models` and `source` (its `kind` is `catalogue`,
+`command` or `table`, and `detail` is the file or command line that
+answered). The menu's *Change model* picker uses the same list. Crush has no
+model flag for its terminal interface, so ssf refuses a model for it. Model
+ids are passed through as given, so a model the list does not mention works as
+long as the agent knows it.
+
+Effort levels stay ssf's own: they are what a config is checked against when
+it loads, and a level that only a catalogue carried would make the config
+unloadable the moment that catalogue changed, taking the factory with it. A
+wrong level is refused when the config loads. Model ids can take the agent's
+own answer precisely because they are not checked that way. Changing the
+agent of a repository requires a fresh selection of both supported settings,
+since the ids belong to the agent. Other `repo set` edits keep existing values, but reject a result
 with missing supported settings (including `--clear model/effort`). Legacy
 files still load and run with harness defaults; `ssf doctor` fails and gives
 a repair command when settings are missing. Values in `repo.command` do not
@@ -424,8 +445,11 @@ harness=pi`). Which of the two it was is recorded on the item
 (`assigned_at` for an assignment, `handed_over_at` for a handover), not
 inferred, so a later command taking the overrides over changes the
 wording with them.
-Releasing the workspace or purging the item clears the override, and the
-item comes back on the repository's own settings. `ssf assign` writes
+Releasing the workspace or purging the item leaves the override alone: the
+stack belongs to the item, not to the workspace it was started in, so the
+workspace re-created on the item's next event comes back on it. Only a
+later command that writes overrides replaces it -- `ssf handover` for an
+item with a session, `ssf assign` for one without. `ssf assign` writes
 nothing at all when the stack it is given is the one the item would run
 anyway: an override nobody needs would pin the item out of `ssf repo
 set`.
@@ -592,6 +616,11 @@ safe. One limit to know: the timeline says who posted a body or comment,
 not who edited it, and anyone with write access can edit anyone's text, so
 the list is a boundary against the internet, not a hard one among people
 who can already push. Prompts are unchanged: this is all daemon-side.
+
+The same list decides who may leave a [`/ssf <request>`](sessions.md#task-requests-ssf-request)
+comment for ssf to run: one by a login that is not on it is logged and
+ignored, and one the bot itself posted is never taken, so an agent's own
+post cannot start a task.
 
 `"*"` means anyone on GitHub. It is never accepted silently: `ssf config set
 daemon.allowed_users '["*"]'` and `ssf repo set <repo> --allowed-users '*'`

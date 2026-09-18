@@ -113,10 +113,12 @@ prompt that was already consumed being sent again as a steering message.
 
 After that first prompt, a live OMP or Pi session takes item activity through
 the harness's in-process extension rather than through its terminal. An idle
-session wakes for the event, a working one queues it as a follow-up, and text a
-person has begun composing stays in the editor. Delivery to a live OMP/Pi
-session with no ready bridge is held and retried; run `ssf doctor`, then restart
-that session to load the bridge. Claude Code uses its authenticated peer inbox
+session wakes for the event, a working one takes it at its next step boundary
+rather than at the end of the turn — OMP injects it there through `aside`, and
+Pi's `steer` lands there too, in both cases once the tool calls in flight have
+finished — and text a person has begun composing stays in the editor. Delivery
+to a live OMP/Pi session with no ready bridge is held and retried; run `ssf
+doctor`, then restart that session to load the bridge. Claude Code uses its authenticated peer inbox
 with the default `crossSessionInbound: accept` setting: idle wakes, busy receives
 priority `next`, and the draft stays untouched. Receipt is confirmed through its
 transcript; an ambiguous send is held without resending. An unavailable inbox
@@ -224,6 +226,88 @@ labelled as coming from A, and A does not receive its own comment back,
 even when A is subscribed to B's issue. This is the default channel between
 agents: `ssf guide` says so, and it is the only channel between sessions.
 
+## Task requests: `/ssf <request>`
+
+A person can ask the factory itself to do something, in a comment on an item,
+instead of telling the item's agent about it. The comment's first line is the
+command; the request is the rest of that line:
+
+```
+/ssf please assign this to claude fable low
+```
+
+Later lines are for the item's readers, not for ssf. Only the first
+non-blank line counts, so quoting a command in a reply does nothing, and
+the word has to stand alone (`/ssfx`, `/ssf-x` and a command inside a
+sentence are somebody else's words).
+
+The daemon runs the request as a **task**: one non-interactive run of the
+item's harness, started by the daemon itself and not attached to the item.
+
+- **Which harness.** The repository's harness, model and effort, with the
+  item's own overrides applied (what `ssf assign` or `ssf handover` wrote,
+  and what a session on the item would run). `repo.command` is not used: it
+  is the operator's command for starting a *session*, and says nothing about
+  how the harness takes a one-shot request. The headless form per harness is
+  a table in ssf (`claude -p`, `codex exec`, `omp -p`, `opencode run`, ...),
+  and so is where the request goes: after a `--` for the harnesses that take
+  it as their final argument, and in the `=` form of the prompt flag
+  (`--prompt=`, `--single=`) for the three that take it as a flag's value, so
+  that a request beginning with `-` is a request and not one of the harness's
+  own options. A harness without a form is refused on the item rather than run
+  interactively, and `ssf assign` to another harness is the remedy.
+- **Where it runs.** In the factory's own checkout of the repository, not in
+  a worktree: a task is for directing and inspecting, and the repository's
+  changes belong to a session that has a branch of its own. The prompt says
+  so, and to hand the work to a session (`ssf assign`, or an issue opened
+  `--assignee <bot>`) rather than make the change itself.
+- **What it is told.** ssf's own prompt for a task (one run, no session, no
+  terminal, nobody to answer a question), then the item as a session
+  receives it — header, project boards, description, activity so far — and
+  then `## Request from @who` with the text. The repository's `SSF.md` and
+  the global guidance are *not* included: those are the contract for a
+  session that owns an item and delivers it, and a task that read them would
+  try to do its work.
+- **What it can do.** It runs with the same credentials a session has — the
+  bot's token, git identity, the `gh`/`git` shims, `SSF_REPO`, `SSF_ISSUE` —
+  so its posts are the bot's, and `ssf` itself is on its `PATH`. It is
+  expected to say on the item what it did. The request decides; ssf neither
+  parses it nor restricts it beyond that.
+- **Who may.** The [allow-list](configuration.md#who-may-drive-the-factory)
+  decides: a command from a login that is not on it is logged and ignored,
+  and one on the bot's own comment is never taken (a session that writes
+  `/ssf ...` in a post is talking to its readers, and taking it would let
+  one post start another task, and so on).
+- **Which items.** Any item ssf acts on: one assigned to the bot, mentioning
+  it, with a review requested from it, or opened by it. The daemon reads a
+  timeline only for an item it polls, so a command on an item it does not
+  track at all is invisible to it, and one on an item tracked only because a
+  session subscribed to it is not taken (nothing acts on that item). In
+  either case an @mention of the bot in the same comment brings the item in,
+  and with it the command. A command can arrive on an item
+  that gets no session of its own (created-by-the-bot and nothing else): the
+  request runs, the item stays ignored as a session's work.
+- **How many at once.** One task per item (a second request waits its turn,
+  in the order the comments were written) and at most four running across
+  the factory, since each one is an unattended agent.
+- **How long.** Thirty minutes, after which the process group is killed and
+  the item is told. A task is a child of the daemon: it is killed if the
+  daemon stops, and the next daemon start says on the item that the run was
+  cut short.
+- **Where its output goes.** `~/.local/state/ssf/tasks/<owner>/<repo>/<n>/<comment id>.log`,
+  named on the item's `task-ended` post. The post itself carries the exit
+  status and, when the run failed, the last line the log has to offer. What
+  a person reads is the item: the task's own comment is the answer.
+
+The comment is not a message to the item's session and is not hidden from
+it either: it is a public comment, it stays in the timeline like any other,
+and the session receives it as activity and may act on it too. Both ends are
+visible on the item, so that is not silent.
+
+`daemon.slash_commands = false` (or `slash_commands = false` on one
+`[[repo]]`) turns the whole thing off: such a comment is then an ordinary
+comment and nothing is run or remembered.
+
 ## What ssf says on the item
 
 Most of what the daemon does is only in its journal. The moments a
@@ -259,6 +343,9 @@ The events, and nothing else:
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
 | `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line; when the harness ending is the one its pane runs and not the one its record names -- a config edit under a live session -- only `from` is written, followed by `from stack: unknown (the harness on the pane is not the record's)`, since ssf has no model, effort or command of that session's to report); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
+| `task-started` | a [`/ssf <request>`](#task-requests-ssf-request) comment was taken and the daemon is running it (`ssf running a task on issue:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (a task is never started by a configured `command`); `asked by: <login>`; `request:` the text, one line |
+| `task-ended` | that run finished (`ssf task on issue finished:`) | `harness`, `asked by`, `exit:` the exit code, or why there is none (`killed after 30 min`, `the daemon stopped while it ran`); `output:` the last line of the run's log, on a failure; `log:` where the whole log is |
+| `task-refused` | a request was taken and nothing could be run for it (`ssf not running a task on issue:`) | `harness`, `asked by`, `request:`, and `why:` the reason in one line (a harness with no headless form, a process that would not start) |
 
 The `handed-over` post is what a reader sees when an item changes stack
 (see [Handover](#handover)):
@@ -456,7 +543,8 @@ ssf handover 12 --cancel                                                      # 
   are optional and are checked exactly the way `ssf repo set` checks
   them: the effort level against the levels that harness offers, the
   model id for its shape only, since new model ids appear before any
-  catalogue does (`ssf models <harness>` lists the ids ssf knows of). A
+  catalogue does (`ssf models <harness>` lists what the harness itself
+  offers, else ssf's table). A
   model id the harness itself rejects is not caught here: it shows up as
   the harness failing to start, below. Left out, the new session runs
   on that harness's own defaults; see [Per-item
@@ -636,15 +724,15 @@ on the item is refused. Nothing is posted on the item: the handover was
 never announced there.
 
 While a handover is pending, `ssf release` on the item is refused with
-that as the reason, and the startup pass leaves the
-item alone rather than resuming the old harness only to stop it. The
-overrides last until the workspace is released or the item is purged,
-which clears them; the item then comes back on the repository's own
-harness, model and effort. `ssf status` and `ssf peers` show both the
-overrides and a pending handover, and word them by which of the two
-writers put them there (`ssf peers`: `handed over to pi` after a handover,
-`harness pi` after an assignment; `ssf status`: `handed over: harness=pi`
-and `assigned: harness=pi`, below).
+that as the reason, and the startup pass leaves the item alone rather
+than resuming the old harness only to stop it. The overrides last until a
+later command writes new ones: releasing the workspace or purging the
+item leaves them on the record, so a workspace re-created afterwards
+comes back on the same harness, model and effort. `ssf status` and `ssf
+peers` show both the overrides and a pending handover, and word them by
+which of the two writers put them there (`ssf peers`: `handed over to pi`
+after a handover, `harness pi` after an assignment; `ssf status`: `handed
+over: harness=pi` and `assigned: harness=pi`, below).
 
 ## Assigning a stack before there is a session
 
@@ -724,7 +812,7 @@ resume path never hands an old harness's conversation id to a new one.
 The answer names the stack and what will happen to it:
 
 ```
-Assigned the bot to acme/widgets#12 ("Rework the parser"). Its session starts on Pi (model openrouter/anthropic/claude-sonnet-4, effort high) on the daemon's next pass (within 10s). The item keeps that stack for every later start until its workspace is released, and `ssf handover` is how it changes from here.
+Assigned the bot to acme/widgets#12 ("Rework the parser"). Its session starts on Pi (model openrouter/anthropic/claude-sonnet-4, effort high) on the daemon's next pass (within 10s). The item keeps that stack for every later start, a workspace released and re-created included, and `ssf handover` is how it changes from here.
 ```
 
 `--json` returns what `ssf handover --json` does (`session`, `title` and
@@ -835,5 +923,8 @@ mentioned item rather than to unassign one that has no assignee.
   but does nothing.
 - **Coming back is unchanged.** A released or purged workspace is re-created
   from its branch on origin on the item's next event (reopening,
-  re-assignment, a comment on a bound pull request), and the conversation
-  resumes.
+  re-assignment, a comment on a bound pull request), on the stack the item
+  carries: its [per-item
+  overrides](configuration.md#per-item-overrides), or the repository's own
+  settings where there are none. The conversation resumes where the harness
+  keeps one (Claude Code, Codex).

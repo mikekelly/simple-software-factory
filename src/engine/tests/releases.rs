@@ -256,6 +256,78 @@ async fn daemon_side_refusals_are_capped_and_give_the_workspace_up() {
     e.remember_worktree(&r, 1, &wt);
     assert_eq!(e.entry(&r, 1).release_refusals, 0);
 }
+
+/// The stack an item is on belongs to the item, not to the workspace it was
+/// started in: a released workspace re-created later comes back on the
+/// item's own overrides, with the conversation that was captured for it
+/// (#383). Both halves matter -- an assignment's stack is what the reopened
+/// item's launch command carries, and a handover's conversation is the one
+/// the relaunch resumes.
+#[tokio::test]
+async fn a_released_workspace_is_re_created_on_the_items_own_stack() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    // The repository runs omp; the item was assigned claude/fable/low.
+    e.cfg.repos = vec![RepoConfig {
+        harness: "omp".into(),
+        model: Some("deepseek/deepseek-flash".into()),
+        effort: Some("high".into()),
+        ..repo()
+    }];
+    seeded(&mut e, 5, Some("bot/issue-5-fix-the-widget"), true);
+    {
+        let st = e.entry(&repo(), 5);
+        st.title = "Fix the widget".into();
+        st.html_url = "https://gh/5".into();
+        st.worktree_name = Some("issue-5-fix-the-widget".into());
+        st.repo_id = Some("stub".into());
+        st.worktree_id = Some("w5".into());
+        st.worktree_path = Some("/stub.worktrees/issue-5-fix-the-widget".into());
+        st.agent_session_id = Some("sess-5".into());
+        st.overrides = Some(Overrides {
+            harness: "claude".into(),
+            model: Some("fable".into()),
+            effort: Some("low".into()),
+        });
+        st.assigned_at = Some("2026-09-16T10:00:00Z".into());
+    }
+    d.seed("w5", "t5", READY_SCREEN);
+    assert!(e.entry(&repo(), 5).terminal_handle.is_none());
+    // A release by ssf's own hand: the workspace goes, the stack stays.
+    e.mark_released(&repo(), 5);
+    {
+        let st = e.entry(&repo(), 5).clone();
+        assert!(st.worktree_id.is_none());
+        assert_eq!(
+            st.overrides.as_ref().map(|o| o.harness.as_str()),
+            Some("claude"),
+            "the item keeps the stack its assignment wrote"
+        );
+        assert!(st.assigned_at.is_some(), "and which command wrote it");
+    }
+    // The reopen delivers to the item again. The workspace it had is gone,
+    // so it is re-created, and the launch carries the item's stack.
+    let delivered = e.deliver_to(&repo(), 5, "hello", None).await.unwrap();
+    assert!(delivered.relaunched && delivered.resumed);
+    let launches = d.launches();
+    assert_eq!(launches.len(), 1, "one launch, the resume: {launches:?}");
+    assert!(launches[0].starts_with("claude:"), "{launches:?}");
+    assert!(launches[0].contains("--model fable"), "{launches:?}");
+    assert!(launches[0].contains("--resume sess-5"), "{launches:?}");
+    // And the `attached` post names the item's stack, not the
+    // repository's.
+    let posts = stub.post_bodies();
+    assert_eq!(posts.len(), 1, "{posts:?}");
+    let body = &posts[0].1;
+    assert!(body.contains("re-created: workspace gone"), "{body}");
+    assert!(body.contains("harness: Claude Code"), "{body}");
+    assert!(body.contains("model: fable"), "{body}");
+    assert!(body.contains("effort: low"), "{body}");
+}
+
 #[test]
 fn release_refused_prompt_names_the_work_and_the_last_warning() {
     let problems = vec!["1 uncommitted change".to_string()];

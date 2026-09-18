@@ -384,7 +384,14 @@ impl Engine {
         let removed = st.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me));
         let e = self.entry(&repo, number);
         e.subscribers.retain(|s| !s.eq_ignore_ascii_case(&me));
-        let dropped = e.subscriber_only && e.subscribers.is_empty();
+        // An item nobody listens to any more is forgotten -- unless the
+        // record still owes something: a `/ssf` request is run from it, and
+        // the comments already taken are remembered by it, so dropping it
+        // would lose a request or take the same comment again
+        // (`IssueState::may_be_forgotten`). The record stays instead,
+        // un-polled (`watch_subscribed` needs a subscriber), which is no
+        // worse than the records other items that are nobody's keep.
+        let dropped = e.subscriber_only && e.subscribers.is_empty() && e.may_be_forgotten();
         if dropped {
             // Nobody listens any more and nothing else remembers it.
             self.state.repo_mut(&repo.name).issues.remove(&number);
@@ -527,5 +534,55 @@ mod tests {
         assert_eq!(resp.data["removed"], false);
 
         assert!(e.handle_request(Request::Ping).await.ok);
+    }
+
+    #[tokio::test]
+    async fn an_item_with_a_request_waiting_survives_its_last_subscriber() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        {
+            let s = e.entry(&r, 20);
+            s.subscriber_only = true;
+            s.subscribers = vec!["o/r#1".into()];
+            s.slash_pending = vec![crate::slash::Command {
+                id: 9,
+                author: "ann".into(),
+                text: "do it".into(),
+            }];
+        }
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#1".into(),
+                target: "o/r#20".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(
+            resp.data["untracked"], false,
+            "the request waiting on it needs the record"
+        );
+        assert_eq!(e.state.repos["o/r"].issues[&20].slash_pending.len(), 1);
+
+        // Once the request has run there is nothing left waiting, and the
+        // record stays for the reason it did above: the comment it was taken
+        // from must not be taken again (`slash_done`).
+        e.entry(&r, 20).slash_pending.clear();
+        e.entry(&r, 20).slash_running = None;
+        assert!(e.state.repos["o/r"].issues.contains_key(&20));
+        // What a subscriber-only record with nothing on it does: it is not
+        // polled (`watch_subscribed` needs a subscriber) and, once nobody
+        // subscribes, it is dropped as it always was.
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#1".into(),
+                target: "o/r#20".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(resp.data["removed"], false, "already dropped");
+        assert!(!e.state.repos["o/r"].issues.contains_key(&20));
     }
 }

@@ -60,7 +60,8 @@ pub(super) enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
-    /// List the model ids an agent takes (asking the installed agent when it can tell).
+    /// List the model ids an agent takes, preferring the installed agent's
+    /// own catalogue or listing command and saying which source answered.
     Models {
         /// Agent id (see `ssf agents`).
         harness: String,
@@ -216,9 +217,9 @@ pub(super) enum Command {
     /// item's launch overrides are written in the same request, so the
     /// session that onboards it comes up on that stack rather than the
     /// repository's. The repository's own stack is not written as an
-    /// override, and the stack stays with the item until its workspace is
-    /// released. An item that already has a session is refused: hand that
-    /// one over with `ssf handover`.
+    /// override, and the stack stays with the item for every later start,
+    /// a workspace released and re-created included. An item that already
+    /// has a session is refused: hand that one over with `ssf handover`.
     Assign {
         /// Item number on this session's repository, or owner/repo#N.
         item: String,
@@ -581,6 +582,10 @@ pub(super) enum RepoCommand {
         /// repository's items as short `ssf` blocks, overriding daemon.event_comments (default: on).
         #[arg(long, value_name = "true|false")]
         event_comments: Option<bool>,
+        /// Act on `/ssf <request>` comments on this repository's items as one-shot headless agent
+        /// tasks, overriding daemon.slash_commands (default: on).
+        #[arg(long, value_name = "true|false")]
+        slash_commands: Option<bool>,
     },
     /// Change some settings of a watched repository, keeping the rest.
     Set {
@@ -624,6 +629,10 @@ pub(super) enum RepoCommand {
         /// repository's items as short `ssf` blocks, overriding daemon.event_comments.
         #[arg(long, value_name = "true|false")]
         event_comments: Option<bool>,
+        /// Act on `/ssf <request>` comments on this repository's items as one-shot headless agent
+        /// tasks, overriding daemon.slash_commands.
+        #[arg(long, value_name = "true|false")]
+        slash_commands: Option<bool>,
         /// Commit author and committer name for this repository's agents (with --git-email); default: the [git] table, else the bot.
         #[arg(long, value_name = "NAME")]
         git_name: Option<String>,
@@ -637,7 +646,7 @@ pub(super) enum RepoCommand {
         #[arg(long, value_name = "WHO")]
         git_credential: Option<String>,
         /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file, allowed_users,
-        /// event_comments, git (the whole [repo.git] table) or git.name, git.email, git.signing_key, git.credential.
+        /// event_comments, slash_commands, git (the whole [repo.git] table) or git.name, git.email, git.signing_key, git.credential.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,
     },

@@ -174,6 +174,10 @@ can reconfigure the factory. Things to know when operating it:
   ([Workspaces after close](docs/sessions.md#workspaces-after-close-release-and-purge)).
 - **Nothing reaches an agent off the record.** Every message it gets is
   activity on an item it works on or follows. Decisions go on the item.
+- **The daemon takes plain instructions.** A comment whose first line is
+  `/ssf <request>` is for ssf itself, not the item's agent: it runs the
+  request once, headless, on the repository's harness and reports on the
+  item ([Task requests](docs/sessions.md#task-requests-ssf-request)).
 - **Restarts are invisible to agents.** A daemon restart delivers what was
   missed when it comes back; a reboot relaunches the interrupted sessions.
 - **The bot reviews its own pull requests.** ssf starts no second session

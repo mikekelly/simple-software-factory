@@ -642,7 +642,9 @@ impl Engine {
     }
 
     /// The workspace of `number`'s session is gone by our hand: forget its
-    /// bindings (the next event re-creates it) and record when.
+    /// bindings (the next event re-creates it) and record when. The item's
+    /// own stack, and the conversation captured for it, stay on the
+    /// record: the workspace that is gone is not the item.
     pub(in crate::engine) fn mark_released(&mut self, repo: &RepoConfig, number: u64) {
         let now = now_iso();
         let e = self.entry(repo, number);
@@ -654,12 +656,22 @@ impl Engine {
         e.worktree_path = None;
         e.terminal_handle = None;
         e.released_at = Some(now.clone());
-        // The item comes back on the repository's own harness.
-        e.overrides = None;
-        e.assigned_at = None;
+        // The item keeps its launch overrides: they are the item's stack,
+        // not the workspace's, and only a later command that writes one
+        // (`ssf handover`, or `ssf assign` where the item has no session)
+        // changes them. Releasing the workspace is routine -- every close
+        // asks the agent for one -- and dropping the stack here would put
+        // an item pinned to a chosen harness back on the repository's the
+        // first time it is re-created, taking the captured conversation
+        // with it where the two harnesses differ.
+        // `handed_over_at` stays with them: it is what tells a handover's
+        // overrides from an assignment's, and the transcripts it guards for
+        // `capture_sessions` outlive the workspace -- a harness keeps them
+        // under its own directory, keyed by the workspace's path -- so the
+        // floor it puts on the capture window still means something when a
+        // workspace of the same name is re-created.
         e.handover = None;
         e.handover_note = None;
-        e.handed_over_at = None;
         // Items bound to this session mirror its workspace.
         let bound: Vec<u64> = self
             .state

@@ -107,11 +107,34 @@ checks, and a restrictive content security policy. See
   process-held lock beside `state.json`; both `ssf-server` and `ssf-server --once`
   take it before reading state. It is released when its owner exits. Do not
   unlink it to clear a refusal while an engine may still be running.
+- **Task requests.** A comment whose first line is `/ssf <request>` is taken
+  where the timeline is already read (onboarding, a follow-up, a
+  reactivation) and, if the author is on the allow-list and is not the bot,
+  queued on the item: `slash_pending` and `slash_done` in the state record
+  are what make a command act once, and survive a restart. The daemon starts
+  at most one per item and four in total, from its own checkout of the
+  repository, as `sh -c` around the same `ssf launch` wrapper a session gets
+  (bot token, git identity, `gh`/`git` shims, `SSF_REPO`/`SSF_ISSUE`) with the
+  harness's headless form and the prompt as the last argument. The children
+  are the daemon's own: `kill_on_drop`, a process group of their own (killed
+  whole on timeout or shutdown), and their output goes to
+  `~/.local/state/ssf/tasks/<owner>/<repo>/<n>/<comment id>.log`. `slash_running`
+  is what lets the daemon report on the item, after a restart, a run that was
+  cut short. See [Task requests](sessions.md#task-requests-ssf-request).
 - **Delivery into a harness.** A live, seeded OMP or Pi session receives later
   messages through SSF's shipped extension and per-session mailbox. The
-  extension uses a user-attributed custom message with `triggerTurn: true` and
-  `deliverAs: "followUp"`, so idle starts a turn, busy queues one, and the
-  terminal editor (including a person's draft) is untouched. The daemon uses
+  extension uses a user-attributed custom message with `triggerTurn: true`, so
+  idle starts a turn and the terminal editor (including a person's draft) is
+  untouched. A busy session takes the event at its next step boundary by
+  harness: OMP gets `deliverAs: "aside"` and Pi — whose extension API has no
+  `aside`, but whose `steer` means the same step boundary — gets
+  `deliverAs: "steer"`; the launcher names the harness in `SSF_HARNESS`. Both
+  hand the message over once the tool calls in flight have finished and before
+  the next model call, without cutting them short, where the `followUp` queue
+  the bridge used before is drained only when the run ends — a boundary an
+  agent inside one long tool loop may not reach for hours (#385). A harness the
+  launcher does not name gets `steer`, which on OMP preempts the step it
+  arrives in. The daemon uses
   the session's next prompt count plus a content fingerprint as the stable
   mailbox key: a retry observes the same pending or acknowledged event rather
   than publishing another copy. If a live bridge is unavailable, delivery
@@ -242,7 +265,8 @@ checks, and a restrictive content security policy. See
   that is not on origin (see [Workspaces after
   close](sessions.md#workspaces-after-close-release-and-purge)).
   Re-assigning or reopening the issue re-creates a released workspace and
-  resumes the conversation.
+  resumes the conversation, and the item's per-item overrides are still
+  the stack the new session starts on.
 
 ## `ssf status --json`
 

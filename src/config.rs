@@ -754,6 +754,12 @@ pub struct DaemonConfig {
     /// and nothing else changes.
     #[serde(default = "default_true")]
     pub event_comments: bool,
+    /// Act on `/ssf <request>` in an item's comments (see `slash`): run the
+    /// request as a one-shot task on the repository's harness, for every
+    /// repository that does not decide for itself. Off: such a comment is
+    /// just a comment, delivered to the item's session like any other.
+    #[serde(default = "default_true")]
+    pub slash_commands: bool,
     /// GitHub logins whose assignments, mentions, review requests, labels
     /// and posts ssf acts on, for every repository that has no list of its
     /// own (case-insensitive; the bot itself is always accepted). Unset:
@@ -800,6 +806,7 @@ impl Default for DaemonConfig {
             resume_on_start: true,
             startup_driver_wait_secs: default_startup_driver_wait(),
             event_comments: true,
+            slash_commands: true,
             allowed_users: None,
             accepted_anyone_risk: false,
         }
@@ -906,6 +913,11 @@ pub struct RepoConfig {
     /// not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_comments: Option<bool>,
+    /// Whether `/ssf` commands in this repository's comments are acted on
+    /// (see `DaemonConfig::slash_commands`); `daemon.slash_commands` when
+    /// not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slash_commands: Option<bool>,
     /// Git identity for this repository's agents, key by key over `[git]`.
     #[serde(default, skip_serializing_if = "GitConfig::is_empty")]
     pub git: GitConfig,
@@ -1260,6 +1272,12 @@ impl Config {
     /// repository's own say, else the instance's.
     pub fn event_comments(&self, repo: &RepoConfig) -> bool {
         repo.event_comments.unwrap_or(self.daemon.event_comments)
+    }
+
+    /// Whether `/ssf` commands in a repository's comments are acted on: the
+    /// repository's own say, else the instance's.
+    pub fn slash_commands(&self, repo: &RepoConfig) -> bool {
+        repo.slash_commands.unwrap_or(self.daemon.slash_commands)
     }
 
     /// The repository's conflict check interval, or the daemon default.

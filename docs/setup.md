@@ -547,7 +547,8 @@ deepseek/deepseek-flash, effort high)`, and `next_launch` beside `harness`
 in `--json`. `ssf handover <item> --harness <id> ...` moves one session
 onto the new stack now. A
 [per-item override](configuration.md#per-item-overrides)
-takes precedence until that item's workspace is released: `ssf assign`
+takes precedence for that item from then on, a workspace released and
+re-created included: `ssf assign`
 sets one for an item that has no session yet, `ssf handover` for one that
 does.
 
@@ -570,10 +571,12 @@ ssf models HARNESS
 ssf agents --json
 ```
 
-`ssf agents` and `ssf models` are not automatically forwarded into the VM.
-The guest commands matter especially for Pi, Oh My Pi and OpenCode,
-whose model lists come from the installed harness. The JSON agent list
-includes supported effort levels and launch commands.
+`ssf agents` and `ssf models` follow the factory: with it in a VM they run in
+the guest (the `ssf vm run --` forms reach it directly), which is where the
+agents, their catalogues and the sessions are, so the model list is the one a
+session will actually get. The JSON agent list includes supported effort
+levels and launch commands. `ssf models` also names what it answered from:
+the agent's own catalogue or listing command, or ssf's built-in table.
 
 Use current provider documentation for availability, pricing and plan
 limits. [Artificial Analysis](https://artificialanalysis.ai/models)
@@ -618,7 +621,8 @@ for IDs, aliases and harness-specific restrictions.
 mode. `ssf repo list` reads that same configuration.
 Prefer the CLI for validation. For factory-wide settings, use
 `ssf config set daemon.<key> <value>`; see [Configuration](configuration.md)
-for polling, startup, instructions and event comments. Repository and
+for polling, startup, instructions, event comments and `/ssf` task
+requests. Repository and
 ordinary daemon settings are picked up on the next poll; changing VM or
 service setup can require a restart as described above.
 
