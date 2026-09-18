@@ -19,7 +19,8 @@ pub struct Agent {
     pub default: bool,
     /// Whether the agent takes a model setting (`ssf models <id>` lists ids).
     pub takes_model: bool,
-    /// Model ids the agent is known to take without asking it; more may work.
+    /// Model ids the agent is known to take without asking it: the catalogue
+    /// it wrote on this machine, else ssf's seeds. More may work.
     pub models: Vec<String>,
     /// Effort levels the agent accepts, lowest first; empty when it has none.
     pub effort_levels: Vec<String>,
@@ -76,10 +77,7 @@ pub fn list() -> Vec<Agent> {
             installed: on_path(cmd) || mise_has(pkg),
             default: default.as_deref() == Some(*id),
             takes_model: crate::models::supports_model(id),
-            models: crate::models::known_models(id)
-                .iter()
-                .map(|m| m.to_string())
-                .collect(),
+            models: crate::models::known_models(id),
             effort_levels: crate::models::effort_levels(id)
                 .iter()
                 .map(|e| e.to_string())

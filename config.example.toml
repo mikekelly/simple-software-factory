@@ -120,7 +120,7 @@ harness = "claude"                             # agent id: see `ssf agents`
 # items. See docs/configuration.md#codex-native-delivery. Standalone uses fallback.
 # Choose model and effort with the operator before watching this repository.
 # Required by repo add/set when supported; doctor fails if missing in legacy config.
-model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush (`ssf models <agent>`); choosing one: docs/setup.md
+model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush. `ssf models <agent>` lists what the installed agent itself offers, else ssf's table; choosing one: docs/setup.md
 effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
 # path = "~/code/name"                         # use an existing checkout instead of cloning

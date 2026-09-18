@@ -783,13 +783,14 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         }
         Command::Repo { command } => repo(command),
         Command::Models { harness, json } => {
-            let ids = models::available_models(&harness)?;
+            let available = models::available(&harness)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&ids)?);
+                println!("{}", serde_json::to_string_pretty(&available)?);
             } else {
-                for id in ids {
+                for id in &available.models {
                     println!("{id}");
                 }
+                eprintln!("source: {}", available.source.describe(&harness));
             }
             Ok(())
         }

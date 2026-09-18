@@ -458,7 +458,8 @@ ssf handover 12 --cancel                                                      # 
   are optional and are checked exactly the way `ssf repo set` checks
   them: the effort level against the levels that harness offers, the
   model id for its shape only, since new model ids appear before any
-  catalogue does (`ssf models <harness>` lists the ids ssf knows of). A
+  catalogue does (`ssf models <harness>` lists what the harness itself
+  offers, else ssf's table). A
   model id the harness itself rejects is not caught here: it shows up as
   the harness failing to start, below. Left out, the new session runs
   on that harness's own defaults; see [Per-item
