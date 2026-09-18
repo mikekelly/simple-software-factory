@@ -376,7 +376,7 @@ sessions and the agent are):
 
 | Source | Which agents | Where it is read |
 |--------|--------------|------------------|
-| `catalogue` | `claude`, `codex` | Claude Code's `cache/model-catalog/*.json` under `$CLAUDE_CONFIG_DIR` (default `~/.claude`), the newest file that lists models; codex's `models_cache.json` under `$CODEX_HOME` (default `~/.codex`), models codex hides left out |
+| `catalogue` | `claude`, `codex` | Claude Code's `cache/model-catalog/*.json` under `$CLAUDE_CONFIG_DIR` (default `~/.claude`), the newest file that lists models and is Claude Code's own surface; codex's `models_cache.json` under `$CODEX_HOME` (default `~/.codex`), models codex hides left out |
 | `command` | `pi`, `omp`, `opencode` | the agent itself: `pi --list-models`, `omp models --json`, `opencode models` |
 | `table` | the rest, or when the machine has neither | ssf's built-in table, above |
 
