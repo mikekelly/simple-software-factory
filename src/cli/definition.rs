@@ -60,7 +60,8 @@ pub(super) enum Command {
         #[command(subcommand)]
         command: RepoCommand,
     },
-    /// List the model ids an agent takes (asking the installed agent when it can tell).
+    /// List the model ids an agent takes, preferring the installed agent's
+    /// own catalogue or listing command and saying which source answered.
     Models {
         /// Agent id (see `ssf agents`).
         harness: String,
