@@ -152,7 +152,13 @@ workspace; `ssf doctor` checks the machine. `ssf guide` is the reference behind 
     // `ssf guide` alone for the rest; `ssf skill` is an operator's index.
     assert!(p.contains("`ssf guide` is the reference behind all of this"));
     assert!(!p.contains("ssf skill"));
-    for moved in ["ssf peers", "ssf subs", "reviewer session", "mode=delegate", "herdr agent"] {
+    for moved in [
+        "ssf peers",
+        "ssf subs",
+        "reviewer session",
+        "mode=delegate",
+        "herdr agent",
+    ] {
         assert!(
             !p.contains(moved),
             "{moved} belongs in the guide, not the prompt"
@@ -587,7 +593,10 @@ fn guide_holds_the_moved_reference() {
     // at the end, after the principle.
     assert!(g.contains("## A second opinion through herdr\n\n"));
     assert!(g.ends_with("until it is closed.\n"));
-    assert!(g.find("## Second opinions").unwrap() < g.find("## A second opinion through herdr").unwrap());
+    assert!(
+        g.find("## Second opinions").unwrap()
+            < g.find("## A second opinion through herdr").unwrap()
+    );
     assert!(
         g.contains("Use `Refs #N` to link a pull request to ongoing management or tracking work.")
     );
