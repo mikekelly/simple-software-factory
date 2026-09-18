@@ -122,7 +122,12 @@ impl Tasks {
     /// The child gets a process group of its own: what ssf starts is a shell
     /// that runs the harness, and the harness may fork; killing the group is
     /// what stops all of it (the process is still `kill_on_drop`, for the
-    /// paths that never reach [`Tasks::stop_all`]).
+    /// paths that never reach [`Tasks::stop_all`]). It also dies with the
+    /// daemon whatever takes the daemon down -- `kill_on_drop` and
+    /// [`Tasks::stop_all`] cover an exit, a panic and a signal that is
+    /// handled, but not a `SIGKILL` or the OOM killer, and a task left
+    /// running there would work on with the bot's credentials and nothing to
+    /// stop it.
     pub fn start(
         &mut self,
         task: Task,
@@ -147,6 +152,16 @@ impl Tasks {
             // A task must not outlive the daemon that started it.
             .kill_on_drop(true);
         command.process_group(0);
+        // SAFETY: prctl and the constant are async-signal-safe and touch no
+        // shared state, which is all a forked child may do here. The shell
+        // a task starts as is one simple command, so it execs the harness
+        // and this pid, and so this signal, is the harness's.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
         let child = command
             .spawn()
             .with_context(|| format!("starting {}", program.display()))?;

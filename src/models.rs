@@ -254,54 +254,72 @@ pub fn default_command(harness: &str) -> String {
     }
 }
 
-/// How each harness runs one task with no terminal: its own non-interactive
-/// form, then the flags that let it run unattended (`--print` for the
-/// Claude-shaped CLIs, a subcommand for Codex, OpenCode and Crush). Every
-/// one of these takes the request as its last argument, which is what the
-/// task runner appends.
+/// How each harness runs one task with no terminal: the whole command that
+/// makes it non-interactive (`--print` for the Claude-shaped CLIs, a
+/// subcommand for Codex, OpenCode and Crush) and unattended, and the flag the
+/// request is the *value* of, for the CLIs that take it as one (`gemini -p
+/// <prompt>`) -- empty for those that take it as the final argument. Which
+/// matters: the request has to land on that flag, and the model and effort
+/// flags go before it, so where the request is a flag's value that flag is
+/// appended last.
+///
+/// The whole command, harness name included, since an harness's headless form
+/// is not always its name followed by flags (Oh My Pi's is an environment
+/// assignment and a launcher, as in [`OMP_DEFAULT_COMMAND`]).
 ///
 /// A harness that is not here has no headless form ssf knows, and a task for
 /// it is refused rather than run interactively: `repo.command` is the
-/// operator's command for a *session*, and says nothing about how its
-/// harness takes a one-shot request.
-const HEADLESS_COMMANDS: &[(&str, &str)] = &[
+/// operator's command for a *session*, and says nothing about how its harness
+/// takes a one-shot request.
+const HEADLESS_COMMANDS: &[(&str, &str, &str)] = &[
     (
         "claude",
-        "-p --dangerously-skip-permissions --disallowedTools AskUserQuestion",
+        "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion",
+        "",
     ),
     (
         "codex",
-        "exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust",
+        "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust",
+        "",
     ),
-    ("gemini", "-p --yolo --skip-trust"),
-    ("grok", "-p --always-approve"),
-    ("pi", "-p --approve"),
+    // `-p/--prompt` is the request, not a switch.
+    ("gemini", "gemini --yolo --skip-trust", "-p"),
+    ("grok", "grok --always-approve", "-p"),
+    ("pi", "pi -p --approve", ""),
     (
         "omp",
         // The same reason as `OMP_DEFAULT_COMMAND`: five minutes of quiet
         // can end a healthy reasoning turn (#322), and a task is one turn.
         "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp -p --auto-approve",
+        "",
     ),
-    ("opencode", "run --auto"),
-    ("copilot", "-p --allow-all"),
-    ("crush", "run --yolo"),
+    ("opencode", "opencode run --auto", ""),
+    ("copilot", "copilot --allow-all", "-p"),
+    // `crush run` has no approval flag of its own: it approves what the
+    // request needs, and refuses the root command's `--yolo`.
+    ("crush", "crush run", ""),
 ];
 
-/// The command that runs `harness` for one non-interactive task, with the
-/// model and effort applied as for a session (`RepoConfig::harness_command`).
-/// `None` when ssf does not know a headless form for the harness.
+/// The command line that runs `harness` for one non-interactive task with
+/// `prompt`: the model and effort applied as for a session
+/// (`RepoConfig::harness_command`), then the request, quoted for the shell
+/// the task runs under (`ssf launch` hands it to `sh -c`). `None` when ssf
+/// does not know a headless form for the harness.
 pub fn headless_command(
     harness: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    prompt: &str,
 ) -> Option<String> {
-    let (_, words) = HEADLESS_COMMANDS.iter().find(|(h, _)| *h == harness)?;
-    Some(apply_to_command(
-        &format!("{harness} {words}"),
-        harness,
-        model,
-        effort,
-    ))
+    let (_, words, prompt_flag) = HEADLESS_COMMANDS.iter().find(|(h, ..)| *h == harness)?;
+    let mut out = apply_to_command(words, harness, model, effort);
+    if !prompt_flag.is_empty() {
+        out.push(' ');
+        out.push_str(prompt_flag);
+    }
+    out.push(' ');
+    out.push_str(&shell_word(prompt));
+    Some(out)
 }
 
 /// Model ids to offer for `harness`: the installed agent's own list when it
@@ -570,33 +588,58 @@ mod tests {
     fn every_known_harness_has_a_headless_form() {
         for a in crate::agents::list() {
             assert!(
-                headless_command(&a.id, None, None).is_some(),
+                headless_command(&a.id, None, None, "do it").is_some(),
                 "{} has no headless form",
                 a.id
             );
         }
         // An unknown harness has none, and a task for it is refused.
-        assert_eq!(headless_command("aider", None, None), None);
+        assert_eq!(headless_command("aider", None, None, "do it"), None);
     }
 
     #[test]
     fn headless_commands_carry_the_model_and_effort() {
         assert_eq!(
-            headless_command("claude", Some("opus"), Some("high")).unwrap(),
-            "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion --model opus --effort high"
+            headless_command("claude", Some("opus"), Some("high"), "do it").unwrap(),
+            "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion --model opus --effort high 'do it'"
         );
         assert_eq!(
-            headless_command("codex", Some("gpt-5.5"), None).unwrap(),
-            "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
+            headless_command("codex", Some("gpt-5.5"), None, "do it").unwrap(),
+            "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5 'do it'"
         );
         assert_eq!(
-            headless_command("opencode", Some("anthropic/claude-sonnet-4"), None).unwrap(),
-            "opencode run --auto -m anthropic/claude-sonnet-4"
+            headless_command("opencode", Some("anthropic/claude-sonnet-4"), None, "do it").unwrap(),
+            "opencode run --auto -m anthropic/claude-sonnet-4 'do it'"
         );
         // An effort the harness does not take is dropped, as for a session.
         assert_eq!(
-            headless_command("gemini", None, Some("high")).unwrap(),
-            "gemini -p --yolo --skip-trust"
+            headless_command("crush", None, Some("high"), "do it").unwrap(),
+            "crush run 'do it'"
+        );
+    }
+
+    #[test]
+    fn the_request_lands_where_the_harness_takes_it() {
+        // A harness that takes the request as the value of a flag gets that
+        // flag with the request on it, after the model and effort: anything
+        // between the two is read as the request's place in the argv.
+        assert_eq!(
+            headless_command("gemini", Some("gemini-2.5-pro"), None, "do it").unwrap(),
+            "gemini --yolo --skip-trust -m gemini-2.5-pro -p 'do it'"
+        );
+        assert_eq!(
+            headless_command("grok", None, Some("high"), "do it").unwrap(),
+            "grok --always-approve --reasoning-effort high -p 'do it'"
+        );
+        assert_eq!(
+            headless_command("copilot", Some("claude-sonnet-4"), None, "do it").unwrap(),
+            "copilot --allow-all --model claude-sonnet-4 -p 'do it'"
+        );
+        // One that takes it as the final argument gets it there, whatever
+        // the request contains: quoting is the shell's, not the argv's.
+        assert_eq!(
+            headless_command("omp", None, None, "it's a \"test\"\nwith a $var").unwrap(),
+            "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp -p --auto-approve 'it'\\''s a \"test\"\nwith a $var'"
         );
     }
 

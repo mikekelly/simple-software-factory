@@ -151,20 +151,6 @@ impl Engine {
         // harness and settings, and the item's own overrides where it has
         // any. Not `repo.command`: that command starts a session.
         let eff = self.effective(repo, number);
-        let Some(inner) = crate::models::headless_command(
-            &eff.harness,
-            eff.model.as_deref(),
-            eff.effort.as_deref(),
-        ) else {
-            let why = format!(
-                "ssf does not know how to run {} without a terminal; \
-                 `ssf assign` the item to another harness instead",
-                login::display_name(&eff.harness)
-            );
-            self.refuse_task(repo, number, command, &eff.harness, &why)
-                .await;
-            return Ok(());
-        };
         let issue = self.gh.issue(owner, name, number).await?;
         let timeline = self.gh.timeline(owner, name, number).await?;
         // The same material a session's first prompt has: what the request
@@ -175,6 +161,21 @@ impl Engine {
         let st = self.entry(repo, number).clone();
         let ctx = self.ctx(repo, &st);
         let text = prompt::task_prompt(&issue, &all, &ctx, &command.author, &command.text);
+        let Some(inner) = crate::models::headless_command(
+            &eff.harness,
+            eff.model.as_deref(),
+            eff.effort.as_deref(),
+            &text,
+        ) else {
+            let why = format!(
+                "ssf does not know how to run {} without a terminal; \
+                 `ssf assign` the item to another harness instead",
+                login::display_name(&eff.harness)
+            );
+            self.refuse_task(repo, number, command, &eff.harness, &why)
+                .await;
+            return Ok(());
+        };
         // The checkout every workspace of this repository is made from:
         // the task works in it, and is told not to change it.
         let setup = self
@@ -188,8 +189,7 @@ impl Engine {
             )
             .await?;
         let cwd = self.driver(repo).repo_path(&setup.repo_id).await?;
-        let line = format!("{inner} {}", shell_quote(&text));
-        let wrapped = self.launch_command(repo, number, &issue.html_url, &line);
+        let wrapped = self.launch_command(repo, number, &issue.html_url, &inner);
         let log = task::log_path(&repo.name, number, command.id);
         let started = Task {
             repo: repo.name.clone(),
@@ -210,9 +210,15 @@ impl Engine {
                 harness: eff.harness.clone(),
             });
         }
-        self.state
-            .save()
-            .context("recording the task before starting it")?;
+        if let Err(e) = self.state.save() {
+            // Nothing was started, so nothing may look as if it had: the
+            // request goes back to the front of the item's queue and the
+            // record stops claiming a task is on it.
+            let e2 = self.entry(repo, number);
+            e2.slash_running = None;
+            e2.slash_pending.insert(0, command.clone());
+            return Err(e).context("recording the task before starting it");
+        }
         match self.tasks.start(
             started,
             Path::new("sh"),
@@ -287,18 +293,26 @@ impl Engine {
     /// Report the tasks that have finished since the last pass.
     pub(in crate::engine) async fn collect_tasks(&mut self) {
         for done in self.tasks.poll().await {
-            let Some(repo) = self
-                .cfg
-                .repos
-                .iter()
-                .find(|r| r.name == done.task.repo)
-                .cloned()
-            else {
+            let ok = done.outcome.ok();
+            let Some(repo) = self.repo_of(&done.task.repo) else {
+                // The repository was removed while its task ran: the item is
+                // nobody's any more, so the run's end is only logged and the
+                // record is cleared rather than left claiming one is running.
+                warn!(
+                    repo = done.task.repo,
+                    issue = done.task.number,
+                    result = done.outcome.describe(),
+                    "task finished for a repository ssf no longer watches"
+                );
+                self.clear_running(&done.task.repo, done.task.number);
                 continue;
             };
-            let ok = done.outcome.ok();
             self.entry(&repo, done.task.number).slash_running = None;
-            let output = (!ok).then(|| task::last_words(&done.task.log)).flatten();
+            let output = if ok {
+                None
+            } else {
+                task::last_words(&done.task.log)
+            };
             info!(
                 repo = repo.name,
                 issue = done.task.number,
@@ -322,6 +336,25 @@ impl Engine {
         }
     }
 
+    /// The configuration of a watched repository, by the name its tasks and
+    /// records carry.
+    fn repo_of(&self, name: &str) -> Option<RepoConfig> {
+        self.cfg.repos.iter().find(|r| r.name == name).cloned()
+    }
+
+    /// Forget that an item was running a task, for an item whose repository
+    /// is no longer watched (so there is nothing to post on).
+    fn clear_running(&mut self, repo: &str, number: u64) {
+        if let Some(st) = self
+            .state
+            .repos
+            .get_mut(repo)
+            .and_then(|rs| rs.issues.get_mut(&number))
+        {
+            st.slash_running = None;
+        }
+    }
+
     /// Say on the item what became of the tasks this daemon was running when
     /// it last stopped. The task itself is gone with the daemon that started
     /// it (its process group was killed), so without this the item would
@@ -340,7 +373,8 @@ impl Engine {
             })
             .collect();
         for (name, number, running) in orphaned {
-            let Some(repo) = self.cfg.repos.iter().find(|r| r.name == name).cloned() else {
+            let Some(repo) = self.repo_of(&name) else {
+                self.clear_running(&name, number);
                 continue;
             };
             self.entry(&repo, number).slash_running = None;

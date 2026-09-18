@@ -274,11 +274,13 @@ item's harness, started by the daemon itself and not attached to the item.
   and one on the bot's own comment is never taken (a session that writes
   `/ssf ...` in a post is talking to its readers, and taking it would let
   one post start another task, and so on).
-- **Which items.** Any item ssf polls: one assigned to the bot, mentioning
-  it, with a review requested from it, opened by it, or tracked because a
-  session subscribed to it. The daemon reads a timeline only for an item it
-  polls, so a command on an item it is not tracking at all is invisible to
-  it; an @mention of the bot in the same comment brings such an item in. A command can arrive on an item
+- **Which items.** Any item ssf acts on: one assigned to the bot, mentioning
+  it, with a review requested from it, or opened by it. The daemon reads a
+  timeline only for an item it polls, so a command on an item it does not
+  track at all is invisible to it, and one on an item tracked only because a
+  session subscribed to it is not taken (nothing acts on that item). In
+  either case an @mention of the bot in the same comment brings the item in,
+  and with it the command. A command can arrive on an item
   that gets no session of its own (created-by-the-bot and nothing else): the
   request runs, the item stays ignored as a session's work.
 - **How many at once.** One task per item (a second request waits its turn,

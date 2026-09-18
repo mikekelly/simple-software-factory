@@ -109,8 +109,7 @@ checks, and a restrictive content security policy. See
   unlink it to clear a refusal while an engine may still be running.
 - **Task requests.** A comment whose first line is `/ssf <request>` is taken
   where the timeline is already read (onboarding, a follow-up, a
-  reactivation, an item polled for its subscribers) and, if the author is on
-  the allow-list and is not the bot,
+  reactivation) and, if the author is on the allow-list and is not the bot,
   queued on the item: `slash_pending` and `slash_done` in the state record
   are what make a command act once, and survive a restart. The daemon starts
   at most one per item and four in total, from its own checkout of the

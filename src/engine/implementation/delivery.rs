@@ -52,11 +52,10 @@ impl Engine {
                 }
             };
             self.record_origins(repo, &issue, &timeline);
-            // An item tracked only because sessions subscribed to it is
-            // polled like any other, so a `/ssf` command on it is taken like
-            // any other (`slash`): the request is ssf's, not a session's,
-            // and this item has none.
-            self.take_commands(repo, number, &timeline);
+            // No `/ssf` commands here: an item tracked only for its
+            // subscribers is nobody's, and one that closes in this very
+            // iteration is forgotten a few lines below, so a request taken
+            // from it would have no record to run from (`take_commands`).
             let diff = self.diff(repo, &st.seen, &timeline);
             let closed = issue.state == "closed";
             let merged = closed
