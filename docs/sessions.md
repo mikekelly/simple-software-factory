@@ -249,8 +249,12 @@ item's harness, started by the daemon itself and not attached to the item.
   and what a session on the item would run). `repo.command` is not used: it
   is the operator's command for starting a *session*, and says nothing about
   how the harness takes a one-shot request. The headless form per harness is
-  a table in ssf (`claude -p`, `codex exec`, `omp -p`, `opencode run`, ...);
-  a harness without one is refused on the item rather than run
+  a table in ssf (`claude -p`, `codex exec`, `omp -p`, `opencode run`, ...),
+  and so is where the request goes: after a `--` for the harnesses that take
+  it as their final argument, and in the `=` form of the prompt flag
+  (`--prompt=`, `--single=`) for the three that take it as a flag's value, so
+  that a request beginning with `-` is a request and not one of the harness's
+  own options. A harness without a form is refused on the item rather than run
   interactively, and `ssf assign` to another harness is the remedy.
 - **Where it runs.** In the factory's own checkout of the repository, not in
   a worktree: a task is for directing and inspecting, and the repository's

@@ -176,7 +176,11 @@ instructions, the global notes and the repository's `SSF.md` are left out on
 purpose: they are written for a session that owns an item and delivers it, and
 a task that read them would try to ([Task
 requests](sessions.md#task-requests-ssf-request) says what a task is and what
-may ask for one).
+may ask for one). The request is passed so that it can never be read as one of
+the harness's own options: after a `--` where the harness takes the prompt as
+its final argument, and in the `=` form of its prompt flag (`gemini`'s
+`--prompt=`, `grok`'s `--single=`, `copilot`'s `--prompt=`) where it takes it
+as a flag's value.
 
 ## Project boards
 

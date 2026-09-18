@@ -384,7 +384,16 @@ impl Engine {
         let removed = st.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me));
         let e = self.entry(&repo, number);
         e.subscribers.retain(|s| !s.eq_ignore_ascii_case(&me));
-        let dropped = e.subscriber_only && e.subscribers.is_empty();
+        // An item nobody listens to any more is forgotten -- unless a `/ssf`
+        // request is still waiting on it or running for it: the item is
+        // unpolled from here, but a queued request runs on the next pass (the
+        // queue is the record's, not a subscriber's), and the record goes when
+        // that is over (`Engine::forget_if_idle`). Dropping it with the record
+        // would lose what a person asked for.
+        let dropped = e.subscriber_only
+            && e.subscribers.is_empty()
+            && e.slash_pending.is_empty()
+            && e.slash_running.is_none();
         if dropped {
             // Nobody listens any more and nothing else remembers it.
             self.state.repo_mut(&repo.name).issues.remove(&number);
@@ -527,5 +536,41 @@ mod tests {
         assert_eq!(resp.data["removed"], false);
 
         assert!(e.handle_request(Request::Ping).await.ok);
+    }
+
+    #[tokio::test]
+    async fn an_item_with_a_request_waiting_survives_its_last_subscriber() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let mut e = engine();
+        let r = repo();
+        e.cfg.repos.push(r.clone());
+        seeded(&mut e, 1, Some("bot/issue-1"), true);
+        {
+            let s = e.entry(&r, 20);
+            s.subscriber_only = true;
+            s.subscribers = vec!["o/r#1".into()];
+            s.slash_pending = vec![crate::slash::Command {
+                id: 9,
+                author: "ann".into(),
+                text: "do it".into(),
+            }];
+        }
+        let resp = e
+            .handle_request(Request::Unsub {
+                from: "o/r#1".into(),
+                target: "o/r#20".into(),
+            })
+            .await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(
+            resp.data["untracked"], false,
+            "the request waiting on it needs the record"
+        );
+        assert_eq!(e.state.repos["o/r"].issues[&20].slash_pending.len(), 1);
+
+        // Once nothing waits on it and nothing runs for it, the record goes.
+        e.entry(&r, 20).slash_pending.clear();
+        e.forget_if_idle(&r.name, 20);
+        assert!(!e.state.repos["o/r"].issues.contains_key(&20));
     }
 }

@@ -254,16 +254,27 @@ pub fn default_command(harness: &str) -> String {
     }
 }
 
+/// How a harness is given the request for one task: the text is data, and a
+/// request that starts with `-` must not be read as one of the harness's own
+/// options (`/ssf --version` is a request, not a version check).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Request {
+    /// As the final argument, after a `--`: the harness takes the prompt
+    /// positionally and every one of these parsers ends its options there.
+    Positional,
+    /// As this flag's value, in the `=` form, so the request is one argv
+    /// whatever it starts with. For the harnesses whose prompt *is* a flag,
+    /// which would otherwise take a `-`-prefixed request for themselves.
+    Flag(&'static str),
+}
+
 /// How each harness runs one task with no terminal: the whole command that
 /// makes it non-interactive (`--print` for the Claude-shaped CLIs, a
-/// subcommand for Codex, OpenCode and Crush) and unattended, and the flag the
-/// request is the *value* of, for the CLIs that take it as one (`gemini -p
-/// <prompt>`) -- empty for those that take it as the final argument. Which
-/// matters: the request has to land on that flag, and the model and effort
-/// flags go before it, so where the request is a flag's value that flag is
-/// appended last.
+/// subcommand for Codex, OpenCode and Crush) and unattended, and how the
+/// request is given to it (see [`Request`]). The model and effort flags go
+/// between the two.
 ///
-/// The whole command, harness name included, since an harness's headless form
+/// The whole command, harness name included, since a harness's headless form
 /// is not always its name followed by flags (Oh My Pi's is an environment
 /// assignment and a launcher, as in [`OMP_DEFAULT_COMMAND`]).
 ///
@@ -271,39 +282,42 @@ pub fn default_command(harness: &str) -> String {
 /// it is refused rather than run interactively: `repo.command` is the
 /// operator's command for a *session*, and says nothing about how its harness
 /// takes a one-shot request.
-const HEADLESS_COMMANDS: &[(&str, &str, &str)] = &[
+const HEADLESS_COMMANDS: &[(&str, &str, Request)] = &[
     (
         "claude",
         "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion",
-        "",
+        Request::Positional,
     ),
     (
         "codex",
         "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust",
-        "",
+        Request::Positional,
     ),
-    // `-p/--prompt` is the request, not a switch.
-    ("gemini", "gemini --yolo --skip-trust", "-p"),
-    ("grok", "grok --always-approve", "-p"),
-    ("pi", "pi -p --approve", ""),
+    (
+        "gemini",
+        "gemini --yolo --skip-trust",
+        Request::Flag("--prompt="),
+    ),
+    ("grok", "grok --always-approve", Request::Flag("--single=")),
+    ("pi", "pi -p --approve", Request::Positional),
     (
         "omp",
         // The same reason as `OMP_DEFAULT_COMMAND`: five minutes of quiet
         // can end a healthy reasoning turn (#322), and a task is one turn.
         "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp -p --auto-approve",
-        "",
+        Request::Positional,
     ),
-    ("opencode", "opencode run --auto", ""),
-    ("copilot", "copilot --allow-all", "-p"),
+    ("opencode", "opencode run --auto", Request::Positional),
+    ("copilot", "copilot --allow-all", Request::Flag("--prompt=")),
     // `crush run` has no approval flag of its own: it approves what the
     // request needs, and refuses the root command's `--yolo`.
-    ("crush", "crush run", ""),
+    ("crush", "crush run", Request::Positional),
 ];
 
 /// The command line that runs `harness` for one non-interactive task with
 /// `prompt`: the model and effort applied as for a session
-/// (`RepoConfig::harness_command`), then the request, quoted for the shell
-/// the task runs under (`ssf launch` hands it to `sh -c`). `None` when ssf
+/// (`RepoConfig::harness_command`), then the request, quoted for the shell the
+/// task runs under (`ssf launch` hands the line to `sh -c`). `None` when ssf
 /// does not know a headless form for the harness.
 pub fn headless_command(
     harness: &str,
@@ -311,15 +325,28 @@ pub fn headless_command(
     effort: Option<&str>,
     prompt: &str,
 ) -> Option<String> {
-    let (_, words, prompt_flag) = HEADLESS_COMMANDS.iter().find(|(h, ..)| *h == harness)?;
+    let (_, words, request) = HEADLESS_COMMANDS.iter().find(|(h, ..)| *h == harness)?;
     let mut out = apply_to_command(words, harness, model, effort);
-    if !prompt_flag.is_empty() {
-        out.push(' ');
-        out.push_str(prompt_flag);
+    match request {
+        // Always quoted, however plain the request looks: what is in it is
+        // the shell's business (`ssf launch` runs this through `sh -c`), and
+        // the `--` is what keeps the harness's parser off it.
+        Request::Positional => {
+            out.push_str(" -- ");
+            out.push_str(&quoted(prompt));
+        }
+        Request::Flag(flag) => {
+            out.push(' ');
+            out.push_str(flag);
+            out.push_str(&quoted(prompt));
+        }
     }
-    out.push(' ');
-    out.push_str(&shell_word(prompt));
     Some(out)
+}
+
+/// `v` as one shell word, always quoted.
+fn quoted(v: &str) -> String {
+    format!("'{}'", v.replace('\'', "'\\''"))
 }
 
 /// Model ids to offer for `harness`: the installed agent's own list when it
@@ -601,46 +628,67 @@ mod tests {
     fn headless_commands_carry_the_model_and_effort() {
         assert_eq!(
             headless_command("claude", Some("opus"), Some("high"), "do it").unwrap(),
-            "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion --model opus --effort high 'do it'"
+            "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion --model opus --effort high -- 'do it'"
         );
         assert_eq!(
             headless_command("codex", Some("gpt-5.5"), None, "do it").unwrap(),
-            "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5 'do it'"
+            "codex exec --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5 -- 'do it'"
         );
         assert_eq!(
             headless_command("opencode", Some("anthropic/claude-sonnet-4"), None, "do it").unwrap(),
-            "opencode run --auto -m anthropic/claude-sonnet-4 'do it'"
+            "opencode run --auto -m anthropic/claude-sonnet-4 -- 'do it'"
         );
         // An effort the harness does not take is dropped, as for a session.
         assert_eq!(
             headless_command("crush", None, Some("high"), "do it").unwrap(),
-            "crush run 'do it'"
+            "crush run -- 'do it'"
         );
     }
 
     #[test]
-    fn the_request_lands_where_the_harness_takes_it() {
-        // A harness that takes the request as the value of a flag gets that
-        // flag with the request on it, after the model and effort: anything
-        // between the two is read as the request's place in the argv.
+    fn the_request_cannot_be_read_as_an_option_of_the_harness() {
+        // A harness that takes the request positionally gets it after `--`,
+        // and one that takes it as a flag's value gets it in the `=` form:
+        // neither parser can mistake a request for an option of its own,
+        // however it is written. Verified against the installed CLIs: with
+        // the leading `--`, `claude` and `omp` ran with `--version` as the
+        // prompt rather than printing a version, and `gemini --prompt=` and
+        // `grok --single=` did the same.
         assert_eq!(
-            headless_command("gemini", Some("gemini-2.5-pro"), None, "do it").unwrap(),
-            "gemini --yolo --skip-trust -m gemini-2.5-pro -p 'do it'"
+            headless_command("claude", None, None, "--version").unwrap(),
+            "claude -p --dangerously-skip-permissions --disallowedTools AskUserQuestion -- '--version'"
         );
         assert_eq!(
-            headless_command("grok", None, Some("high"), "do it").unwrap(),
-            "grok --always-approve --reasoning-effort high -p 'do it'"
+            headless_command("gemini", Some("gemini-2.5-pro"), None, "--version").unwrap(),
+            "gemini --yolo --skip-trust -m gemini-2.5-pro --prompt='--version'"
         );
         assert_eq!(
-            headless_command("copilot", Some("claude-sonnet-4"), None, "do it").unwrap(),
-            "copilot --allow-all --model claude-sonnet-4 -p 'do it'"
+            headless_command("grok", None, Some("high"), "-v").unwrap(),
+            "grok --always-approve --reasoning-effort high --single='-v'"
         );
-        // One that takes it as the final argument gets it there, whatever
-        // the request contains: quoting is the shell's, not the argv's.
         assert_eq!(
-            headless_command("omp", None, None, "it's a \"test\"\nwith a $var").unwrap(),
-            "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp -p --auto-approve 'it'\\''s a \"test\"\nwith a $var'"
+            headless_command("copilot", Some("claude-sonnet-4"), None, "--force").unwrap(),
+            "copilot --allow-all --model claude-sonnet-4 --prompt='--force'"
         );
+    }
+
+    #[test]
+    fn a_whole_request_survives_as_one_argument() {
+        // Quotes, newlines, `$`, backticks and `;` are the shell's, not the
+        // argv's: the request reaches the harness as one argument, verbatim.
+        let request = "it's a \"test\"\nwith a $var, `code`, ; and a \\ backslash";
+        assert_eq!(
+            headless_command("omp", None, None, request).unwrap(),
+            format!(
+                "PI_STREAM_IDLE_TIMEOUT_MS=900000 omp -p --auto-approve -- {}",
+                quoted(request)
+            )
+        );
+        assert_eq!(
+            headless_command("gemini", None, None, request).unwrap(),
+            format!("gemini --yolo --skip-trust --prompt={}", quoted(request))
+        );
+        assert!(quoted("it's").ends_with("'\\''s'"), "{}", quoted("it's"));
     }
 
     #[test]

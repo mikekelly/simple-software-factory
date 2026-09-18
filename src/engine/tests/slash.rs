@@ -288,6 +288,54 @@ async fn a_task_the_daemon_was_running_when_it_stopped_is_reported_on_the_way_ba
     assert!(stub.post_bodies().is_empty());
 }
 
+#[test]
+fn a_record_kept_for_a_task_goes_when_it_is_over() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut e = engine();
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    // An item the bot opened and nothing acted on: no session of its own,
+    // nobody subscribed, a request that has just finished.
+    {
+        let st = e.entry(&r, 7);
+        st.subscriber_only = true;
+        st.title = "t".into();
+    }
+    e.forget_if_idle(&r.name, 7);
+    assert!(
+        !e.state.repos[&r.name].issues.contains_key(&7),
+        "nothing is left to remember it by"
+    );
+
+    // What waits to be adopted keeps its record: that is where the workspace
+    // a later adoption reuses is written down.
+    {
+        let st = e.entry(&r, 8);
+        st.title = "candidate".into();
+    }
+    e.state.repo_mut(&r.name).adoption_candidates.insert(
+        8,
+        AdoptionCandidate {
+            number: 8,
+            title: "candidate".into(),
+            html_url: "https://gh/8".into(),
+            updated_at: "x".into(),
+            kind: "issue".into(),
+            triggers: vec!["assigned".into()],
+        },
+    );
+    e.forget_if_idle(&r.name, 8);
+    assert!(e.state.repos[&r.name].issues.contains_key(&8));
+
+    // And one with a session of its own keeps it, whatever else is empty.
+    {
+        let st = e.entry(&r, 9);
+        st.seeded = true;
+    }
+    e.forget_if_idle(&r.name, 9);
+    assert!(e.state.repos[&r.name].issues.contains_key(&9));
+}
+
 /// Collect until the item's task has ended. The task a test starts is a real
 /// child process (`sh -c` around a wrapper of this build's own), so this
 /// waits on it rather than assuming a time.

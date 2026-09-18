@@ -333,6 +333,40 @@ impl Engine {
                 },
             )
             .await;
+            self.forget_if_idle(&repo.name, done.task.number);
+        }
+    }
+
+    /// Give up the record of an item that is nobody's and has nothing left to
+    /// say: no session of its own, no subscribers (`subscriber_only` or not:
+    /// the flag says why the item was tracked, and with nobody left there is
+    /// no why), no request waiting, and no allocation waiting to be adopted.
+    /// An item the bot opened and nothing acted on is normally kept out of the
+    /// records altogether; one whose request ran was kept while it did (an
+    /// item with a request waiting on it outlives its last subscriber, see
+    /// `Engine::unsubscribe`), and this is where that record goes when the run
+    /// is over. What an ignored item is remembered by is its ignore record,
+    /// and what an unadopted allocation is remembered by is
+    /// `adoption_candidates` (whose items keep a record holding the workspace
+    /// a later adoption reuses); neither is touched here.
+    pub(in crate::engine) fn forget_if_idle(&mut self, repo: &str, number: u64) {
+        let Some(rs) = self.state.repos.get_mut(repo) else {
+            return;
+        };
+        let idle = !rs.adoption_candidates.contains_key(&number)
+            && rs.issues.get(&number).is_some_and(|s| {
+                !s.seeded
+                    && s.subscribers.is_empty()
+                    && s.slash_pending.is_empty()
+                    && s.slash_running.is_none()
+            });
+        if idle {
+            rs.issues.remove(&number);
+            info!(
+                repo,
+                issue = number,
+                "no session and nothing waiting; forgetting it again"
+            );
         }
     }
 
