@@ -7,14 +7,9 @@ its own agent. The agents know about each other, about the project board and
 about the operating guidance your repository keeps for them. Your part is the
 part that needs a person: raise the issue, answer when asked, merge.
 
-ssf is a small daemon for Linux (Arch family including
-[Omarchy](https://omarchy.org/), Debian family including Ubuntu; macOS is
-next on the roadmap). It needs a GitHub account for the bot, `gh`,
-[herdr](https://herdr.dev/) to run the workspaces and terminals, and a coding
-agent you already have installed (Claude Code, Codex, ...). By default the
-whole factory runs [inside a microVM](docs/vm.md) on your machine, so the
-agents never see your home directory; it can also run directly on a
-[headless host](docs/headless-host.md).
+The factory runs either inside a microVM on your machine or in the cloud
+(for example on your Grok Bot's computer). It runs on Linux today; macOS is
+next.
 
 ## Why
 
@@ -129,6 +124,12 @@ it is idle. If a terminal is gone, or the whole workspace, ssf brings it back
 and resumes the same conversation, including after a reboot. When the item is
 closed the agent is told to push what is worth keeping and, only then, to
 release its workspace ([Under the hood](docs/internals.md)).
+
+ssf itself is a small daemon. It needs a GitHub account for the bot, `gh`,
+[herdr](https://herdr.dev/) to run the workspaces and terminals, and a
+coding agent you already have installed (Claude Code, Codex, ...). Packages
+cover the Arch family (including [Omarchy](https://omarchy.org/)) and the
+Debian family (including Ubuntu).
 
 - **One agent per issue or pull request.** Each gets its own workspace (a
   git worktree on its own branch, in herdr) and its own session, from the
