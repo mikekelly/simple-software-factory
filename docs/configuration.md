@@ -354,7 +354,9 @@ the setup document; the rest of this section is the mechanics.
 agent. Pi, Oh My Pi and OpenCode take their own `provider/model` ids (Pi and
 Oh My Pi reach many providers, OpenRouter among them) and their own thinking
 or reasoning levels. SSF turns the setting into the agent's command-line flags
-when it starts the agent, including when it resumes a session:
+when it starts the agent, including when it resumes a session. The table
+below is what ssf seeds; `ssf models` usually answers with the agent's own
+list, which is the one to choose from:
 
 | Agent | Model ids | Effort levels | What is appended to the command |
 |-------|-----------|---------------|---------------------------------|
@@ -367,15 +369,31 @@ when it starts the agent, including when it resumes a session:
 | `opencode` | `provider/model` as in `opencode models` | none | `-m <id>` |
 | `copilot` | `auto` or a model name | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
 
-`ssf models <agent>` prints the ids to choose from, asking the installed
-agent for its list where it has one (`pi`, `omp`, `opencode`); the menu's
-*Change model* picker uses the same list. Crush has no model flag for its
-terminal interface, so ssf refuses a model for it. Model ids are passed
-through as given, so a model the list does not mention works as long as the
-agent knows it; effort levels must be ones the agent accepts (a wrong one
-is refused when the config loads). Changing the agent of a repository
-requires a fresh selection of both supported settings, since the ids belong
-to the agent. Other `repo set` edits keep existing values, but reject a result
+`ssf models <agent>` prints the ids to choose from and, on stderr, which list
+answered. The installed agent's own list wins where the machine that runs the
+sessions has one (in [VM](vm.md) mode that is the guest, which is where the
+sessions and the agent are):
+
+| Source | Which agents | Where it is read |
+|--------|--------------|------------------|
+| `catalogue` | `claude`, `codex` | Claude Code's `cache/model-catalog/*.json` under `$CLAUDE_CONFIG_DIR` (default `~/.claude`), the newest file that lists models; codex's `models_cache.json` under `$CODEX_HOME` (default `~/.codex`), models codex hides left out |
+| `command` | `pi`, `omp`, `opencode` | the agent itself: `pi --list-models`, `omp models --json`, `opencode models` |
+| `table` | the rest, or when the machine has neither | ssf's built-in table, above |
+
+`--json` prints `harness`, `models` and `source` (its `kind` is `catalogue`,
+`command` or `table`, and `detail` is the file or command line that
+answered). The menu's *Change model* picker uses the same list. Crush has no
+model flag for its terminal interface, so ssf refuses a model for it. Model
+ids are passed through as given, so a model the list does not mention works as
+long as the agent knows it.
+
+Effort levels stay ssf's own: they are what a config is checked against when
+it loads, and a level that only a catalogue carried would make the config
+unloadable the moment that catalogue changed, taking the factory with it. A
+wrong level is refused when the config loads. Model ids can take the agent's
+own answer precisely because they are not checked that way. Changing the
+agent of a repository requires a fresh selection of both supported settings,
+since the ids belong to the agent. Other `repo set` edits keep existing values, but reject a result
 with missing supported settings (including `--clear model/effort`). Legacy
 files still load and run with harness defaults; `ssf doctor` fails and gives
 a repair command when settings are missing. Values in `repo.command` do not
