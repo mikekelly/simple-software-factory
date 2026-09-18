@@ -343,28 +343,23 @@ impl IssueState {
     /// Whether a record nothing else needs may be given up, or something on
     /// it is still owed.
     ///
-    /// A `/ssf` request is run from the record (`Engine::run_tasks`, whatever
-    /// listings carry the item), so one that is waiting or running keeps the
-    /// record. And the comments already taken from an item's timeline are
-    /// remembered *here* (`slash_done`): an item still on a listing is walked
-    /// again -- the daemon's own task posts move its `updated_at`, which is
-    /// what an ignore record compares -- and a record dropped while it holds
-    /// those would have the same comments taken a second time, for ever. A
-    /// closed item is on no listing (all four are `state=open`), so its
-    /// timeline is never walked again and only what is owed a run has to
-    /// outlive it.
+    /// Two things hold one. A `/ssf` request is run from the record
+    /// (`Engine::run_tasks`, whatever listings carry the item), so one that is
+    /// waiting or running keeps it. And the comments already taken from the
+    /// item's timeline are remembered *here* (`slash_done`): an item on a
+    /// listing is walked again -- the daemon's own task posts move its
+    /// `updated_at`, which is what an ignore record compares -- and a record
+    /// dropped while it holds those would have the same comments taken a
+    /// second time.
+    ///
+    /// A closed item is on no listing, all four of which are `state=open`, so
+    /// its timeline is not walked while it stays closed. That is not a reason
+    /// to drop the record: the item can be reopened, and then its comments are
+    /// read again. The record is kept instead, small and un-polled (nothing
+    /// subscribes to it), which is no worse than the records other items that
+    /// are nobody's keep.
     pub fn may_be_forgotten(&self) -> bool {
-        if !self.slash_pending.is_empty() || self.slash_running.is_some() {
-            return false;
-        }
-        self.slash_done.is_empty()
-            || matches!(self.github_state.as_deref(), Some("closed" | "merged"))
-    }
-
-    /// Whether a `/ssf` request is still owed: waiting for its turn, or
-    /// running now.
-    pub fn owes_a_task(&self) -> bool {
-        !self.slash_pending.is_empty() || self.slash_running.is_some()
+        self.slash_pending.is_empty() && self.slash_running.is_none() && self.slash_done.is_empty()
     }
 }
 

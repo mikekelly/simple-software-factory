@@ -333,8 +333,8 @@ async fn a_record_that_remembers_a_taken_command_is_not_given_up() {
     );
     assert!(reloaded.repos["o/r"].issues[&20].slash_done.contains(&2));
 
-    // A closed item is on no listing, so its timeline is never walked again
-    // and the record may go as it always did.
+    // Closed is no reason either: the item can be reopened, and then its
+    // comments are read again.
     let mut e2 = engine();
     e2.cfg.repos = vec![r.clone()];
     seeded(&mut e2, 1, Some("bot/issue-1"), true);
@@ -350,8 +350,27 @@ async fn a_record_that_remembers_a_taken_command_is_not_given_up() {
         })
         .await;
     assert!(resp.ok);
+    assert_eq!(resp.data["untracked"], false);
+    assert!(e2.state.repos["o/r"].issues.contains_key(&21));
+
+    // A record that never took a command goes exactly as it always did:
+    // nothing about it is worth keeping.
+    let mut e4 = engine();
+    e4.cfg.repos = vec![r.clone()];
+    seeded(&mut e4, 1, Some("bot/issue-1"), true);
+    let st = e4.entry(&r, 23);
+    st.subscriber_only = true;
+    st.subscribers = vec!["o/r#1".into()];
+    st.github_state = Some("closed".into());
+    let resp = e4
+        .handle_request(Request::Unsub {
+            from: "o/r#1".into(),
+            target: "o/r#23".into(),
+        })
+        .await;
+    assert!(resp.ok);
     assert_eq!(resp.data["untracked"], true);
-    assert!(!e2.state.repos["o/r"].issues.contains_key(&21));
+    assert!(!e4.state.repos["o/r"].issues.contains_key(&23));
 
     // And a request still owed a run is never forgotten, open or closed.
     let mut e3 = engine();
@@ -418,6 +437,44 @@ async fn a_request_is_not_taken_again_on_a_later_pass() {
     );
     e.run_tasks(&r).await;
     assert_eq!(e.tasks.count(), 0, "and nothing is started again");
+
+    // Closed while a session follows it, and reopened: the item is tracked
+    // only for that subscriber, so the record is the one place that remembers
+    // which comments were taken. It has to survive the close -- and then the
+    // reopen must not run the same request a second time.
+    {
+        let st = e.entry(&r, 18);
+        st.subscriber_only = true;
+        st.subscribers = vec!["o/r#381".into()];
+        st.updated_at = Some("before".into());
+    }
+    let closed = |updated: &str| {
+        json!({
+            "number": 18, "title": "t", "body": "work", "html_url": "https://gh/18",
+            "state": "closed", "user": {"login": "bot"}, "created_at": "x", "updated_at": updated
+        })
+    };
+    *stub.created.lock().unwrap() = vec![];
+    stub.set_issue(18, closed("closed-at"));
+    stub.bump_created_etag();
+    e.tick_repo(&r).await.unwrap();
+    assert!(
+        e.state.repos[&r.name].issues.contains_key(&18),
+        "the record holds the comments already taken, so it outlives the close"
+    );
+
+    // Reopened, with a listing carrying it again.
+    *stub.created.lock().unwrap() = vec![listed("reopened")];
+    stub.set_issue(18, listed("reopened"));
+    stub.bump_created_etag();
+    e.tick_repo(&r).await.unwrap();
+    assert!(
+        pending(&e, &r, 18).is_empty(),
+        "a reopened item does not re-run a taken command: {:?}",
+        pending(&e, &r, 18)
+    );
+    e.run_tasks(&r).await;
+    assert_eq!(e.tasks.count(), 0);
 }
 
 /// Collect until the item's task has ended. The task a test starts is a real
