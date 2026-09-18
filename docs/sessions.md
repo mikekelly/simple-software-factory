@@ -636,15 +636,15 @@ on the item is refused. Nothing is posted on the item: the handover was
 never announced there.
 
 While a handover is pending, `ssf release` on the item is refused with
-that as the reason, and the startup pass leaves the
-item alone rather than resuming the old harness only to stop it. The
-overrides last until the workspace is released or the item is purged,
-which clears them; the item then comes back on the repository's own
-harness, model and effort. `ssf status` and `ssf peers` show both the
-overrides and a pending handover, and word them by which of the two
-writers put them there (`ssf peers`: `handed over to pi` after a handover,
-`harness pi` after an assignment; `ssf status`: `handed over: harness=pi`
-and `assigned: harness=pi`, below).
+that as the reason, and the startup pass leaves the item alone rather
+than resuming the old harness only to stop it. The overrides last until a
+later command writes new ones: releasing the workspace or purging the
+item leaves them on the record, so a workspace re-created afterwards
+comes back on the same harness, model and effort. `ssf status` and `ssf
+peers` show both the overrides and a pending handover, and word them by
+which of the two writers put them there (`ssf peers`: `handed over to pi`
+after a handover, `harness pi` after an assignment; `ssf status`: `handed
+over: harness=pi` and `assigned: harness=pi`, below).
 
 ## Assigning a stack before there is a session
 
@@ -724,7 +724,7 @@ resume path never hands an old harness's conversation id to a new one.
 The answer names the stack and what will happen to it:
 
 ```
-Assigned the bot to acme/widgets#12 ("Rework the parser"). Its session starts on Pi (model openrouter/anthropic/claude-sonnet-4, effort high) on the daemon's next pass (within 10s). The item keeps that stack for every later start until its workspace is released, and `ssf handover` is how it changes from here.
+Assigned the bot to acme/widgets#12 ("Rework the parser"). Its session starts on Pi (model openrouter/anthropic/claude-sonnet-4, effort high) on the daemon's next pass (within 10s). The item keeps that stack for every later start, a workspace released and re-created included, and `ssf handover` is how it changes from here.
 ```
 
 `--json` returns what `ssf handover --json` does (`session`, `title` and
@@ -835,5 +835,8 @@ mentioned item rather than to unassign one that has no assignee.
   but does nothing.
 - **Coming back is unchanged.** A released or purged workspace is re-created
   from its branch on origin on the item's next event (reopening,
-  re-assignment, a comment on a bound pull request), and the conversation
-  resumes.
+  re-assignment, a comment on a bound pull request), on the stack the item
+  carries: its [per-item
+  overrides](configuration.md#per-item-overrides), or the repository's own
+  settings where there are none. The conversation resumes where the harness
+  keeps one (Claude Code, Codex).

@@ -94,7 +94,8 @@ issue, then `ssf assign <n|owner/repo#n> --harness <id> [--model <id>] [--effort
 assignment lands on GitHub and the item's launch settings are written in the same request, so \
 the session that onboards it comes up on them -- a stronger reasoning model for an \
 orchestrator or project-manager item, an architectural review, a deep audit -- and they stay \
-with the item until its workspace is released. The item starts in the same poll-interval \
+with the item: a workspace released and re-created comes back on them, and only `ssf handover` \
+changes them from here. The item starts in the same poll-interval \
 window as any other; `ssf models <harness>` lists the model ids that harness takes, and its \
 effort levels are in `ssf agents --json`. Asking for the stack the item already runs writes no \
 overrides, and an item that already has a session is refused: `ssf handover` is the tool for \
@@ -110,9 +111,10 @@ at most 8,000 characters. The daemon ends this session on its next pass and star
 in the same workspace, on the same branch, so commit and push first, say on the item what you \
 are handing over, and stop working the moment the command comes back. The handover and the new \
 session are posted on the item as `handed-over` and `attached`. The new harness, model and \
-effort stay with the item for every later start until the workspace is released. Between the \
-command and the pass nothing else reaches the item, so `ssf handover --cancel` is the way back \
-if the handover turns out to be wrong.\n\n\
+effort stay with the item for every later start, a workspace released and re-created \
+included; only another handover changes them. Between the command and the pass nothing else \
+reaches the item, so `ssf handover --cancel` is the way back if the handover turns out to be \
+wrong.\n\n\
 ## Second opinions\n\n\
 ssf runs one session per item and starts no reviewer for your work: a second pair of eyes is \
 yours to arrange, and the repository's notes say when one is required. Give a fresh agent that \

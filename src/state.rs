@@ -155,11 +155,12 @@ pub struct IssueState {
     /// session's: the newest one there was written by the agent that
     /// handed the item away, so the moments before a launch are no longer
     /// a safe place to look for the new session's own (see
-    /// `Engine::capture_sessions`). Cleared when the workspace is
-    /// released or the item purged. A handover also clears
-    /// [`IssueState::assigned_at`], the stamp an assignment leaves on the
-    /// overrides, so the two commands can be told apart by which stamp is
-    /// the newer writer's.
+    /// `Engine::capture_sessions`). A release or purge leaves it: it also
+    /// tells a handover's overrides from an assignment's, and the
+    /// transcript it guards went with the workspace. A handover also
+    /// clears [`IssueState::assigned_at`], the stamp an assignment leaves
+    /// on the overrides, so the two commands can be told apart by which
+    /// stamp is the newer writer's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handed_over_at: Option<String>,
     /// When the harness was last launched, to find its session file.
@@ -283,9 +284,11 @@ pub struct IssueState {
     /// item's session runs with, whatever the repository is configured
     /// with. Written by a handover (`ssf handover`) or by an assignment
     /// of an item that had no session yet (`ssf assign`), used by every
-    /// later launch, resume and re-creation, cleared when the workspace
-    /// is released or the item purged. Which of the two wrote them is
-    /// recorded next to them: a handover stamps
+    /// later launch, resume and re-creation -- including the one after a
+    /// released workspace is rebuilt -- and replaced only by a later
+    /// command that writes them (a handover, or an assignment of an item
+    /// left with no session). Which of the two wrote them is recorded
+    /// next to them: a handover stamps
     /// [`IssueState::handed_over_at`], an assignment
     /// [`IssueState::assigned_at`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -294,8 +297,8 @@ pub struct IssueState {
     /// what tells an assignment's overrides from a handover's, so `ssf
     /// status` and `ssf peers` can word the stack by the command that put
     /// the item on it; a handover clears it when it replaces the
-    /// overrides. Cleared with the overrides when the workspace is
-    /// released or the item purged.
+    /// overrides. A release or purge leaves it: the stack it stamps is
+    /// still the item's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assigned_at: Option<String>,
     /// A handover the daemon has accepted and not carried out yet: the
