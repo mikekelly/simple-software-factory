@@ -1,36 +1,35 @@
 # Simple Software Factory (ssf)
 
-Assign a GitHub issue to a bot account and a coding agent picks it up on your
-machine: it gets a workspace of its own, works the issue, opens a pull
-request, answers the review and reports back on the issue. Every issue gets
-its own agent. The agents know about each other, about the project board and
-about the operating guidance your repository keeps for them. Your part is the
-part that needs a person: raise the issue, answer when asked, merge.
+Run a team of coding agents from your GitHub issues.
 
-The factory runs either inside a microVM on your machine or in the cloud
-(for example on your Grok Bot's computer). It runs on Linux today; macOS is
-next.
+Write down what you want as an issue, assign it to your bot, and get on
+with something else. An agent picks it up, asks you what it needs to know
+on the issue, plans the work, breaks it up, and drives it through to merged
+pull requests. Several agents can work at once, on the same project, talking
+to each other on GitHub as colleagues would. You are pulled in only for the
+things that need a person: what to build, the calls that matter, the merge.
+
+ssf runs your factory on hardware you control: in a microVM on your own
+machine, or in the cloud (for example on your Grok Bot's computer). It uses
+the coding agents you already have, as a bot account you own, and leaves the
+whole record, the discussion, the plan, the decisions and the pull requests,
+on GitHub where your work already lives. There is no dashboard to log in to
+and no transcript in a vendor's product; the issue tracker you have is the
+interface. Linux today; macOS is next.
 
 ## Why
 
-You already have coding agents. What you do not have is a way to run several
-of them on real work without sitting in each one's chat. Every tool that
-offers that runs the agents in its own cloud, keeps the conversation in its
-own product, and leaves you to copy the outcome back to where the work is
-actually tracked.
+Coding agents are good at working an issue. Managing them is the problem:
+one chat per agent, each waiting on you, with the outcome copied by hand
+into the place the work is actually tracked. Tools that fix that put the
+agents in their cloud and the conversation in their product.
 
-ssf starts from the other end. GitHub is already where your work is
-described, discussed, reviewed and merged, so the agents live there: the
-issue is the unit of work, the assignment is the trigger, the comment thread
-is the conversation, the pull request is the deliverable and the board is the
-status. A person is involved exactly where a person is needed: to say what to
-build, to make the calls the agents cannot, and to merge. Everything else
-runs on hardware you own, as a bot account you control, in agents you
-already pay for, and the record of it is on GitHub rather than in a vendor's
-transcript.
-
-The aim is a factory small enough to read: a daemon that polls GitHub, a
-terminal per item, and a file in your repository saying how its sessions
+ssf starts from the other end. GitHub is already where work is described,
+discussed, reviewed and merged, so that is where the agents live: the issue
+is the unit of work, the assignment is the trigger, the comment thread is
+the conversation, the pull request is the deliverable and the board is the
+status. The factory is small enough to read: a daemon that polls GitHub, a
+terminal per item, and one file in your repository saying how its sessions
 should behave.
 
 ## How a feature gets built
