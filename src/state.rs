@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
@@ -214,6 +214,24 @@ pub struct IssueState {
     /// Delivered timeline events: key -> updated_at marker (for edit detection).
     #[serde(default)]
     pub seen: BTreeMap<String, String>,
+    /// `/ssf` commands taken from this item's comments (see `slash`) and not
+    /// run yet, oldest first. A command waits here while the item's own task
+    /// runs, and survives a restart, so nothing a person asked for is lost
+    /// with the process (nor run twice).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub slash_pending: Vec<crate::slash::Command>,
+    /// Comment ids whose `/ssf` command ssf has dealt with: queued, run,
+    /// refused, or left alone because the bot wrote it. What makes a command
+    /// act once however often the item's timeline is walked.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub slash_done: BTreeSet<u64>,
+    /// The `/ssf` task running on this item now, if there is one. A task is a
+    /// child process of the daemon, so this is what lets a daemon that comes
+    /// back after stopping mid-run say on the item that the run was cut
+    /// short (`Engine::recover_tasks`), rather than leaving it showing one
+    /// that never ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slash_running: Option<crate::slash::Running>,
     /// The initial prompt has been delivered.
     #[serde(default)]
     pub seeded: bool,
@@ -319,6 +337,35 @@ pub struct IssueState {
     /// session itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked: Option<Blocked>,
+}
+
+impl IssueState {
+    /// Whether a record nothing else needs may be given up, or something on
+    /// it is still owed.
+    ///
+    /// A `/ssf` request is run from the record (`Engine::run_tasks`, whatever
+    /// listings carry the item), so one that is waiting or running keeps the
+    /// record. And the comments already taken from an item's timeline are
+    /// remembered *here* (`slash_done`): an item still on a listing is walked
+    /// again -- the daemon's own task posts move its `updated_at`, which is
+    /// what an ignore record compares -- and a record dropped while it holds
+    /// those would have the same comments taken a second time, for ever. A
+    /// closed item is on no listing (all four are `state=open`), so its
+    /// timeline is never walked again and only what is owed a run has to
+    /// outlive it.
+    pub fn may_be_forgotten(&self) -> bool {
+        if !self.slash_pending.is_empty() || self.slash_running.is_some() {
+            return false;
+        }
+        self.slash_done.is_empty()
+            || matches!(self.github_state.as_deref(), Some("closed" | "merged"))
+    }
+
+    /// Whether a `/ssf` request is still owed: waiting for its turn, or
+    /// running now.
+    pub fn owes_a_task(&self) -> bool {
+        !self.slash_pending.is_empty() || self.slash_running.is_some()
+    }
 }
 
 /// The commit pair that identified one successfully delivered conflict
@@ -658,8 +705,12 @@ impl State {
             // tracked at all (what `unsubscribe` does when the last one
             // leaves): dropped when it never had a session, otherwise
             // back to an ordinary retired record.
-            rs.issues
-                .retain(|_, st| !(st.subscriber_only && st.subscribers.is_empty() && !st.seeded));
+            rs.issues.retain(|_, st| {
+                !(st.subscriber_only
+                    && st.subscribers.is_empty()
+                    && !st.seeded
+                    && st.may_be_forgotten())
+            });
             for st in rs.issues.values_mut() {
                 if st.subscriber_only && st.subscribers.is_empty() {
                     st.subscriber_only = false;

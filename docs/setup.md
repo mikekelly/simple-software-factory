@@ -607,7 +607,8 @@ for IDs, aliases and harness-specific restrictions.
 mode. `ssf repo list` reads that same configuration.
 Prefer the CLI for validation. For factory-wide settings, use
 `ssf config set daemon.<key> <value>`; see [Configuration](configuration.md)
-for polling, startup, instructions and event comments. Repository and
+for polling, startup, instructions, event comments and `/ssf` task
+requests. Repository and
 ordinary daemon settings are picked up on the next poll; changing VM or
 service setup can require a restart as described above.
 

@@ -107,6 +107,20 @@ checks, and a restrictive content security policy. See
   process-held lock beside `state.json`; both `ssf-server` and `ssf-server --once`
   take it before reading state. It is released when its owner exits. Do not
   unlink it to clear a refusal while an engine may still be running.
+- **Task requests.** A comment whose first line is `/ssf <request>` is taken
+  where the timeline is already read (onboarding, a follow-up, a
+  reactivation) and, if the author is on the allow-list and is not the bot,
+  queued on the item: `slash_pending` and `slash_done` in the state record
+  are what make a command act once, and survive a restart. The daemon starts
+  at most one per item and four in total, from its own checkout of the
+  repository, as `sh -c` around the same `ssf launch` wrapper a session gets
+  (bot token, git identity, `gh`/`git` shims, `SSF_REPO`/`SSF_ISSUE`) with the
+  harness's headless form and the prompt as the last argument. The children
+  are the daemon's own: `kill_on_drop`, a process group of their own (killed
+  whole on timeout or shutdown), and their output goes to
+  `~/.local/state/ssf/tasks/<owner>/<repo>/<n>/<comment id>.log`. `slash_running`
+  is what lets the daemon report on the item, after a restart, a run that was
+  cut short. See [Task requests](sessions.md#task-requests-ssf-request).
 - **Delivery into a harness.** A live, seeded OMP or Pi session receives later
   messages through SSF's shipped extension and per-session mailbox. The
   extension uses a user-attributed custom message with `triggerTurn: true`, so

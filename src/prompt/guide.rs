@@ -56,6 +56,11 @@ started ... and has been started again`: this terminal was started again after a
 reached you while it was down.\n\
 - `[ssf] Handover to ... refused`, `[ssf] The handover to ... was cancelled`: a handover you \
 asked for could not be carried out, or was called off; either way the item stays with you.\n\n\
+A comment whose first line is `/ssf <something>` is addressed to ssf itself, not to you: the \
+daemon runs the request as one non-interactive task on the item's harness, and says on the item \
+what it did (`task-started`, `task-ended`). You still see the comment as activity, and the task \
+may hand you the work it found (`ssf assign`); what it asks for is the daemon's to carry out, \
+not yours to guess at.\n\n\
 ## Other sessions\n\n\
 `ssf peers` lists the agent sessions on this repository: item, GitHub state, agent state, \
 branch, last message (`--json` for detail, `--all` to include retired ones).\n\n\

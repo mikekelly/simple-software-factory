@@ -318,6 +318,7 @@ impl Engine {
             conflict_checks: BTreeMap::new(),
             conflict_pairs: BTreeMap::new(),
             identity_checked_at: None,
+            tasks: crate::task::Tasks::new(),
             _state_lock: Some(state_lock),
         };
         if !engine.reconcile_repo_identities(true).await {
@@ -471,6 +472,10 @@ impl Engine {
         // needs it: wait a
         // bounded while before the first poll rather than skipping passes.
         let mut stop = false;
+        // A task this daemon was running when it last stopped is gone with
+        // it; the item is told rather than left showing one that never
+        // ended.
+        self.recover_tasks().await;
         if !self.startup_pending.is_empty() {
             let wait = Duration::from_secs(self.cfg.daemon.startup_driver_wait_secs);
             let started = tokio::time::Instant::now();
@@ -505,6 +510,10 @@ are resumed on the first pass that finds it: {err:#}"
             let deadline = tokio::time::Instant::now() + interval;
             stop = self.idle_until(deadline, &listener, &mut sigterm).await;
         }
+        // Whatever a task was doing ends with the daemon: it is a child of
+        // this process, and the item is told on the next start that the run
+        // was cut short rather than being left showing one that never ended.
+        self.tasks.stop_all();
         self.state.save()?;
         let _ = std::fs::remove_file(crate::ipc::socket_path());
         Ok(())

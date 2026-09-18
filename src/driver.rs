@@ -571,8 +571,10 @@ impl Driver {
     pub async fn repo_path(&self, repo_id: &str) -> Result<String> {
         match self {
             Driver::Herdr(_) => Ok(repo_root(repo_id).to_string()),
+            // A directory that exists, so a test that starts a real process
+            // in it (a `/ssf` task) gets as far as running the command.
             #[cfg(test)]
-            Driver::Stub(_) => Ok("/stub".into()),
+            Driver::Stub(_) => Ok(std::env::temp_dir().to_string_lossy().to_string()),
         }
     }
 
