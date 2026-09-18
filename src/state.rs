@@ -339,6 +339,35 @@ pub struct IssueState {
     pub blocked: Option<Blocked>,
 }
 
+impl IssueState {
+    /// Whether a record nothing else needs may be given up, or something on
+    /// it is still owed.
+    ///
+    /// A `/ssf` request is run from the record (`Engine::run_tasks`, whatever
+    /// listings carry the item), so one that is waiting or running keeps the
+    /// record. And the comments already taken from an item's timeline are
+    /// remembered *here* (`slash_done`): an item still on a listing is walked
+    /// again -- the daemon's own task posts move its `updated_at`, which is
+    /// what an ignore record compares -- and a record dropped while it holds
+    /// those would have the same comments taken a second time, for ever. A
+    /// closed item is on no listing (all four are `state=open`), so its
+    /// timeline is never walked again and only what is owed a run has to
+    /// outlive it.
+    pub fn may_be_forgotten(&self) -> bool {
+        if !self.slash_pending.is_empty() || self.slash_running.is_some() {
+            return false;
+        }
+        self.slash_done.is_empty()
+            || matches!(self.github_state.as_deref(), Some("closed" | "merged"))
+    }
+
+    /// Whether a `/ssf` request is still owed: waiting for its turn, or
+    /// running now.
+    pub fn owes_a_task(&self) -> bool {
+        !self.slash_pending.is_empty() || self.slash_running.is_some()
+    }
+}
+
 /// The commit pair that identified one successfully delivered conflict
 /// notice. Files are deliberately not persisted: they are recomputed from
 /// the cached merge result when the pair is first seen after a restart.
@@ -676,8 +705,12 @@ impl State {
             // tracked at all (what `unsubscribe` does when the last one
             // leaves): dropped when it never had a session, otherwise
             // back to an ordinary retired record.
-            rs.issues
-                .retain(|_, st| !(st.subscriber_only && st.subscribers.is_empty() && !st.seeded));
+            rs.issues.retain(|_, st| {
+                !(st.subscriber_only
+                    && st.subscribers.is_empty()
+                    && !st.seeded
+                    && st.may_be_forgotten())
+            });
             for st in rs.issues.values_mut() {
                 if st.subscriber_only && st.subscribers.is_empty() {
                     st.subscriber_only = false;

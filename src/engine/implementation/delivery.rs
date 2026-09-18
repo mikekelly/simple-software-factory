@@ -84,12 +84,16 @@ impl Engine {
             if closed {
                 // The subscribers have had the last word on it. An item that
                 // never had a session is forgotten; one that did keeps its
-                // workspace record for the cleanup.
+                // workspace record for the cleanup. A request still owed a
+                // run keeps the record either way: it is run from there
+                // (`Engine::run_tasks`), and the next pass that finds nothing
+                // owed takes the record then -- a closed item is on no
+                // listing, so this branch is the only thing that visits it.
                 if st.seeded {
                     let e = self.entry(repo, number);
                     e.subscriber_only = false;
                     e.subscribers.clear();
-                } else {
+                } else if !st.owes_a_task() {
                     self.state.repo_mut(&repo.name).issues.remove(&number);
                 }
             }

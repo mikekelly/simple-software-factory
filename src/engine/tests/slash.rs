@@ -289,6 +289,95 @@ async fn a_task_the_daemon_was_running_when_it_stopped_is_reported_on_the_way_ba
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_record_that_remembers_a_taken_command_is_not_given_up() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let mut e = engine();
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    // The subscriber that later leaves is a session ssf knows.
+    seeded(&mut e, 1, Some("bot/issue-1"), true);
+
+    // An open item, nobody's: the record is the only place that remembers
+    // which comments were taken, and its item is walked again (the daemon's
+    // own posts move `updated_at`), so it must stay. Both ways a record goes
+    // are checked: an unsubscribe that empties the subscriber list, and the
+    // sweep at load time.
+    let open = |e: &mut Engine, number: u64| {
+        let st = e.entry(&r, number);
+        st.subscriber_only = true;
+        st.subscribers = vec!["o/r#1".into()];
+        st.github_state = Some("open".into());
+        st.slash_done.insert(2);
+    };
+    open(&mut e, 20);
+    let resp = e
+        .handle_request(Request::Unsub {
+            from: "o/r#1".into(),
+            target: "o/r#20".into(),
+        })
+        .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(
+        resp.data["untracked"], false,
+        "the record remembers a taken comment"
+    );
+    assert!(e.state.repos["o/r"].issues.contains_key(&20));
+
+    // The same record through the load-time sweep, which is the other way a
+    // record with nothing else on it goes: written out and read back.
+    e.state.save().unwrap();
+    let reloaded = crate::state::State::load().unwrap();
+    assert!(
+        reloaded.repos["o/r"].issues.contains_key(&20),
+        "reading the state back must not drop it either"
+    );
+    assert!(reloaded.repos["o/r"].issues[&20].slash_done.contains(&2));
+
+    // A closed item is on no listing, so its timeline is never walked again
+    // and the record may go as it always did.
+    let mut e2 = engine();
+    e2.cfg.repos = vec![r.clone()];
+    seeded(&mut e2, 1, Some("bot/issue-1"), true);
+    let st = e2.entry(&r, 21);
+    st.subscriber_only = true;
+    st.subscribers = vec!["o/r#1".into()];
+    st.github_state = Some("closed".into());
+    st.slash_done.insert(2);
+    let resp = e2
+        .handle_request(Request::Unsub {
+            from: "o/r#1".into(),
+            target: "o/r#21".into(),
+        })
+        .await;
+    assert!(resp.ok);
+    assert_eq!(resp.data["untracked"], true);
+    assert!(!e2.state.repos["o/r"].issues.contains_key(&21));
+
+    // And a request still owed a run is never forgotten, open or closed.
+    let mut e3 = engine();
+    e3.cfg.repos = vec![r.clone()];
+    seeded(&mut e3, 1, Some("bot/issue-1"), true);
+    let st = e3.entry(&r, 22);
+    st.subscriber_only = true;
+    st.subscribers = vec!["o/r#1".into()];
+    st.github_state = Some("closed".into());
+    st.slash_pending = vec![slash::Command {
+        id: 3,
+        author: "ann".into(),
+        text: "do it".into(),
+    }];
+    let resp = e3
+        .handle_request(Request::Unsub {
+            from: "o/r#1".into(),
+            target: "o/r#22".into(),
+        })
+        .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.data["untracked"], false);
+    assert!(e3.state.repos["o/r"].issues.contains_key(&22));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_request_is_not_taken_again_on_a_later_pass() {
     let _sandbox = crate::config::test_support::sandbox();
     let stub = GitHubStub::start().await;

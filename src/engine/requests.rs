@@ -384,18 +384,14 @@ impl Engine {
         let removed = st.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me));
         let e = self.entry(&repo, number);
         e.subscribers.retain(|s| !s.eq_ignore_ascii_case(&me));
-        // An item nobody listens to any more is forgotten -- unless a `/ssf`
-        // request is still waiting on it or running for it. A request is
-        // run from this record (`Engine::run_tasks`), and the record is what
-        // keeps the comment from being taken again once it has run
-        // (`slash_done`); dropping it here would lose what a person asked
-        // for, or run it a second time. The record stays instead, un-polled
-        // (`watch_subscribed` needs a subscriber), which is no worse than the
-        // records other items that are nobody's keep.
-        let dropped = e.subscriber_only
-            && e.subscribers.is_empty()
-            && e.slash_pending.is_empty()
-            && e.slash_running.is_none();
+        // An item nobody listens to any more is forgotten -- unless the
+        // record still owes something: a `/ssf` request is run from it, and
+        // the comments already taken are remembered by it, so dropping it
+        // would lose a request or take the same comment again
+        // (`IssueState::may_be_forgotten`). The record stays instead,
+        // un-polled (`watch_subscribed` needs a subscriber), which is no
+        // worse than the records other items that are nobody's keep.
+        let dropped = e.subscriber_only && e.subscribers.is_empty() && e.may_be_forgotten();
         if dropped {
             // Nobody listens any more and nothing else remembers it.
             self.state.repo_mut(&repo.name).issues.remove(&number);
