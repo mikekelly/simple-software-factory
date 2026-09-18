@@ -109,9 +109,18 @@ checks, and a restrictive content security policy. See
   unlink it to clear a refusal while an engine may still be running.
 - **Delivery into a harness.** A live, seeded OMP or Pi session receives later
   messages through SSF's shipped extension and per-session mailbox. The
-  extension uses a user-attributed custom message with `triggerTurn: true` and
-  `deliverAs: "followUp"`, so idle starts a turn, busy queues one, and the
-  terminal editor (including a person's draft) is untouched. The daemon uses
+  extension uses a user-attributed custom message with `triggerTurn: true`, so
+  idle starts a turn and the terminal editor (including a person's draft) is
+  untouched. A busy session takes the event at its next step boundary by
+  harness: OMP gets `deliverAs: "aside"` and Pi — whose extension API has no
+  `aside`, but whose `steer` means the same step boundary — gets
+  `deliverAs: "steer"`; the launcher names the harness in `SSF_HARNESS`. Both
+  hand the message over once the tool calls in flight have finished and before
+  the next model call, without cutting them short, where the `followUp` queue
+  the bridge used before is drained only when the run ends — a boundary an
+  agent inside one long tool loop may not reach for hours (#385). A harness the
+  launcher does not name gets `steer`, which on OMP preempts the step it
+  arrives in. The daemon uses
   the session's next prompt count plus a content fingerprint as the stable
   mailbox key: a retry observes the same pending or acknowledged event rather
   than publishing another copy. If a live bridge is unavailable, delivery
