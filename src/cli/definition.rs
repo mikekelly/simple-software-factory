@@ -216,9 +216,9 @@ pub(super) enum Command {
     /// item's launch overrides are written in the same request, so the
     /// session that onboards it comes up on that stack rather than the
     /// repository's. The repository's own stack is not written as an
-    /// override, and the stack stays with the item until its workspace is
-    /// released. An item that already has a session is refused: hand that
-    /// one over with `ssf handover`.
+    /// override, and the stack stays with the item for every later start,
+    /// a workspace released and re-created included. An item that already
+    /// has a session is refused: hand that one over with `ssf handover`.
     Assign {
         /// Item number on this session's repository, or owner/repo#N.
         item: String,

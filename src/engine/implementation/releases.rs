@@ -663,10 +663,13 @@ impl Engine {
         // asks the agent for one -- and dropping the stack here would put
         // an item pinned to a chosen harness back on the repository's the
         // first time it is re-created, taking the captured conversation
-        // with it where the two harnesses differ. `handed_over_at` stays
-        // for the same reason: it is what tells a handover's overrides
-        // from an assignment's, and the transcript it guards for
-        // `capture_sessions` went with the workspace.
+        // with it where the two harnesses differ.
+        // `handed_over_at` stays with them: it is what tells a handover's
+        // overrides from an assignment's, and the transcripts it guards for
+        // `capture_sessions` outlive the workspace -- a harness keeps them
+        // under its own directory, keyed by the workspace's path -- so the
+        // floor it puts on the capture window still means something when a
+        // workspace of the same name is re-created.
         e.handover = None;
         e.handover_note = None;
         // Items bound to this session mirror its workspace.
