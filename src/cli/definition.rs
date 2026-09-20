@@ -310,6 +310,9 @@ pub(super) enum Command {
     /// Run a command (normally an agent) with the bot's GitHub credentials in
     /// its environment: GH_TOKEN, GITHUB_TOKEN, a git credential helper, and
     /// SSF_REPO / SSF_ISSUE / SSF_ISSUE_URL for the issue being worked.
+    /// The harness, model and effort it is started with, when the daemon is
+    /// the one starting it, go to the session as SSF_HARNESS / SSF_MODEL /
+    /// SSF_EFFORT and name it in the byline of everything its `gh` posts.
     Launch {
         #[arg(long)]
         repo: Option<String>,
@@ -317,6 +320,15 @@ pub(super) enum Command {
         issue: Option<u64>,
         #[arg(long)]
         issue_url: Option<String>,
+        /// Harness id this session runs (`ssf agents` lists the ids).
+        #[arg(long)]
+        harness: Option<String>,
+        /// Model this session runs.
+        #[arg(long)]
+        model: Option<String>,
+        /// Effort level this session runs.
+        #[arg(long)]
+        effort: Option<String>,
         /// Command line to run (through `sh -c`).
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,

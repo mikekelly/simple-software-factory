@@ -203,7 +203,7 @@ fn reviews_without_a_body_get_one() {
             "pr",
             "review",
             "--body",
-            &o().first_line(None, false),
+            &o().first_line(None, false, None),
             "7",
             "--approve",
             "-R",

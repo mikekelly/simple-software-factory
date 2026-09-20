@@ -369,6 +369,76 @@ fn a_command_that_is_not_ours_is_left_alone() {
     }
 }
 
+/// Every stamped post names the session's stack when `ssf launch` was told
+/// what it runs, in every spelling of a body, and keeps the plain byline
+/// when it was not.
+#[test]
+fn the_byline_names_what_the_session_runs() {
+    let origin = o();
+    let stack = crate::origin::Stack {
+        harness: "claude".into(),
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+    };
+    let mut s = shim(&origin);
+    s.stack = Some(&stack);
+    let hed = format!("🤖#12 claude/opus/high says: {}\n\n", o().tag());
+    for a in [
+        args(&["issue", "comment", "3", "--body", "hi"]),
+        args(&["issue", "comment", "3", "--body=hi"]),
+        args(&["issue", "comment", "3", "-bhi"]),
+        args(&["pr", "create", "-t", "t", "-b", "hi"]),
+    ] {
+        let out = s.rewrite(a.clone());
+        assert!(out.join("\x00").contains(&hed), "{a:?} -> {out:?}");
+    }
+    // A bodyless approval carries the byline alone, stack and all.
+    let out = s.rewrite(args(&["pr", "review", "3", "--approve"]));
+    assert!(
+        out.iter()
+            .any(|a| a == &format!("🤖#12 claude/opus/high says: {}", o().tag())),
+        "{out:?}"
+    );
+    // On another repository the item is spelled out and the stack follows.
+    let out = s.rewrite(args(&[
+        "issue",
+        "comment",
+        "3",
+        "--body",
+        "hi",
+        "-R",
+        "acme/other",
+    ]));
+    assert!(
+        out.iter().any(|a| a.starts_with(&format!(
+            "🤖acme/widgets#12 claude/opus/high says: {}",
+            o().tag()
+        ))),
+        "{out:?}"
+    );
+    // A hand-off keeps its mode tag and names the stack of the new session.
+    let mut s = shim(&origin);
+    s.bot = Some("acme-bot");
+    s.stack = Some(&stack);
+    let out = s.rewrite(args(&[
+        "issue", "create", "-t", "t", "-b", "hi", "-a", "acme-bot",
+    ]));
+    assert!(
+        out.iter().any(|a| a.starts_with(
+            "🤖#12 claude/opus/high says: <!-- ssf: origin=acme/widgets#12 mode=delegate -->"
+        )),
+        "{out:?}"
+    );
+    // A session nothing named a harness for keeps the byline as it was; so
+    // does a model- or effort-only launch, which is no session's shape.
+    let plain = shim(&origin);
+    let out = plain.rewrite(args(&["issue", "comment", "3", "--body", "hi"]));
+    assert!(
+        out.contains(&format!("🤖#12 says: {}\n\nhi", o().tag())),
+        "{out:?}"
+    );
+}
+
 #[test]
 fn byline_follows_the_repository_posted_to() {
     let short = format!("🤖#12 says: {}\n\nhi", o().tag());

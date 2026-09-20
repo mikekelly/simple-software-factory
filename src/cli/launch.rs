@@ -4,6 +4,7 @@ pub(super) fn launch(
     repo: Option<String>,
     issue: Option<u64>,
     issue_url: Option<String>,
+    stack: Option<origin::Stack>,
     command: Vec<String>,
 ) -> Result<()> {
     let cfg = Config::load().unwrap_or_default();
@@ -73,6 +74,23 @@ pub(super) fn launch(
     }
     if let Some(u) = issue_url {
         cmd.env("SSF_ISSUE_URL", u);
+    }
+    // What this session runs, which the `gh` shim names in the byline of
+    // everything it posts (see `origin::Stack`). A launch that names no
+    // harness clears them, so one inherited from the operator's own session
+    // cannot describe this one. A harness tool that runs with a scrubbed
+    // environment recovers the `SSF_` family wholesale (src/shim/session.rs).
+    const STACK_ENV: [&str; 3] = ["SSF_HARNESS", "SSF_MODEL", "SSF_EFFORT"];
+    for name in STACK_ENV {
+        cmd.env_remove(name);
+    }
+    if let Some(stack) = &stack {
+        cmd.env("SSF_HARNESS", &stack.harness);
+        for (name, value) in [("SSF_MODEL", &stack.model), ("SSF_EFFORT", &stack.effort)] {
+            if let Some(value) = value {
+                cmd.env(name, value);
+            }
+        }
     }
     // `SSF_ROLE` marked the reviewer sessions of before #115; an old one
     // in the environment must not reach the agent.

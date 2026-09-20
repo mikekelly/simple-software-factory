@@ -16,6 +16,13 @@
 //! can tell a session's posts from their own at a glance, and their own
 //! untagged posts reach the agents as a person's.
 //!
+//! A session started by the daemon also names what it was started with
+//! (see [`Stack`]): `🤖#N claude/opus/high says:`, so a reader can tell
+//! which harness, model and effort that session is, and one session of a
+//! handover from the next. The stack sits between the item and `says:`, and
+//! is left out for a session nobody named one for (a hand-run `ssf launch`,
+//! or a post made before this).
+//!
 //! The tag is a list of `key=value` fields after `ssf:`, so later features can
 //! add fields without a new syntax. Two fields are defined: `mode=delegate`
 //! (the post opened an item that is handed off to a new session rather than
@@ -85,25 +92,35 @@ impl Origin {
 
     /// The visible byline: `🤖#N says:` on the origin's own repository,
     /// `🤖owner/repo#N says:` on another (or when `on_repo`, the repository
-    /// posted to, is not known). GitHub renders the item in either form as
-    /// a link to it.
-    pub fn byline(&self, on_repo: Option<&str>) -> String {
+    /// posted to, is not known), with `stack` between the item and `says:`
+    /// when the session was launched with one. GitHub renders the item in
+    /// either form as a link to it.
+    pub fn byline(&self, on_repo: Option<&str>, stack: Option<&Stack>) -> String {
         let item = match on_repo {
             Some(r) if r.trim().eq_ignore_ascii_case(&self.repo) => format!("#{}", self.number),
             _ => self.to_string(),
         };
-        format!("{ROBOT}{item} {SAYS}")
+        let stack = match stack.and_then(Stack::label) {
+            Some(label) => format!(" {label}"),
+            None => String::new(),
+        };
+        format!("{ROBOT}{item}{stack} {SAYS}")
     }
 
     /// The line the shim prepends to a post made on `on_repo`: the byline,
     /// then the tag (a hand-off's when asked).
-    pub fn first_line(&self, on_repo: Option<&str>, delegate: bool) -> String {
+    pub fn first_line(
+        &self,
+        on_repo: Option<&str>,
+        delegate: bool,
+        stack: Option<&Stack>,
+    ) -> String {
         let tag = if delegate {
             self.delegate_tag()
         } else {
             self.tag()
         };
-        format!("{} {tag}", self.byline(on_repo))
+        format!("{} {tag}", self.byline(on_repo, stack))
     }
 
     /// The marker for an item this session hands off to a new session.
@@ -116,6 +133,69 @@ impl Origin {
     /// and the event.
     pub fn event_line(&self, event: &str) -> String {
         format!("{ROBOT} {DAEMON} {OPEN} {MARK} origin={self} {EVENT}={event} {CLOSE}")
+    }
+}
+
+/// What a session was launched with, as its byline names it: the harness
+/// (its id, what `--harness` takes) and the configured model and effort,
+/// which are `None` where the harness's own default applies. `ssf launch`
+/// exports the three as `SSF_HARNESS`, `SSF_MODEL` and `SSF_EFFORT` for the
+/// session, and the shim reads them back out of its environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stack {
+    pub harness: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl Stack {
+    /// The stack these parts name, when a harness names one: each part is
+    /// trimmed, and a blank one is the same as an absent one.
+    pub fn from_parts(
+        harness: Option<&str>,
+        model: Option<&str>,
+        effort: Option<&str>,
+    ) -> Option<Self> {
+        let part = |v: Option<&str>| {
+            v.map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        };
+        Some(Self {
+            harness: part(harness)?,
+            model: part(model),
+            effort: part(effort),
+        })
+    }
+
+    /// `claude/opus/high`: the parts the byline can spell, in that order. A
+    /// part that is not known is left out where nothing follows it, and is
+    /// `-` where one does (an effort configured with no model), so the
+    /// fields keep their places.
+    ///
+    /// Only a part the byline can read back (`is_byline`) is written:
+    /// anything else — a harness that is a display name with a space in it,
+    /// a model id with punctuation of its own — would be a byline `strip`
+    /// cannot recognise, and so would be left in front of every agent that
+    /// reads a post carrying it. Such a part names nothing, and `None` when
+    /// the harness itself is one of them.
+    pub fn label(&self) -> Option<String> {
+        if !is_stack(&self.harness) {
+            return None;
+        }
+        let model = self.model.as_deref().filter(|m| is_stack(m));
+        let effort = self.effort.as_deref().filter(|e| is_stack(e));
+        let mut label = self.harness.clone();
+        if model.is_none() && effort.is_none() {
+            return Some(label);
+        }
+        label.push('/');
+        label.push_str(model.unwrap_or("-"));
+        if let Some(effort) = effort {
+            label.push('/');
+            label.push_str(effort);
+        }
+        Some(label)
     }
 }
 
@@ -243,23 +323,30 @@ fn is_code(line: &str) -> bool {
 }
 
 /// `body` with the byline and origin tag on a first line of its own,
-/// optionally marking the post as a hand-off. `on_repo` is the repository
-/// the post goes to, which decides the byline's form. A body that already
-/// starts with this origin's tag is left alone (the agent added the line
-/// by hand), except that a hand-written tag without `mode=delegate` is not
-/// enough for a hand-off: the delegate line goes before it, and the first
-/// tag wins when read. A tag of ours that is not on the first line does
-/// not count, even at the end where `parse` still accepts the old form, so
-/// the body gets the byline at the top anyway. Nor does a pasted event
-/// tag (`event=`): that is the daemon's form, and a session's post must
-/// not pass for one of the daemon's, so the session line goes on top.
-pub fn stamp_with(body: &str, origin: &Origin, on_repo: Option<&str>, delegate: bool) -> String {
+/// optionally marking the post as a hand-off and naming the session's
+/// `stack`. `on_repo` is the repository the post goes to, which decides the
+/// byline's form. A body that already starts with this origin's tag is left
+/// alone (the agent added the line by hand), except that a hand-written tag
+/// without `mode=delegate` is not enough for a hand-off: the delegate line
+/// goes before it, and the first tag wins when read. A tag of ours that is
+/// not on the first line does not count, even at the end where `parse` still
+/// accepts the old form, so the body gets the byline at the top anyway. Nor
+/// does a pasted event tag (`event=`): that is the daemon's form, and a
+/// session's post must not pass for one of the daemon's, so the session line
+/// goes on top.
+pub fn stamp_with(
+    body: &str,
+    origin: &Origin,
+    on_repo: Option<&str>,
+    delegate: bool,
+    stack: Option<&Stack>,
+) -> String {
     if parse_first(body).is_some_and(|t| {
         &t.origin == origin && t.event().is_none() && (!delegate || t.is_delegate())
     }) {
         return body.to_string();
     }
-    let line = origin.first_line(on_repo, delegate);
+    let line = origin.first_line(on_repo, delegate, stack);
     let text = without_leading_blank_lines(body).trim_end();
     if text.is_empty() {
         line
@@ -326,7 +413,8 @@ pub fn strip(body: &str) -> String {
 /// Is `s` (the text before a tag on its line) a byline and nothing else:
 /// `🤖#N`, `🤖owner/repo#N`, either with ` (reviewer)` (posts by the
 /// reviewer sessions of before #115), either with ` says:` (posts made
-/// before #42 have no `says:`), or the daemon's `🤖 ssf`?
+/// before #42 have no `says:`), either with a stack (`Stack::label`) between
+/// the item and `says:`, or the daemon's `🤖 ssf`?
 fn is_byline(s: &str) -> bool {
     let Some(after) = s.trim_start().strip_prefix(ROBOT) else {
         return false;
@@ -341,9 +429,32 @@ fn is_byline(s: &str) -> bool {
     let rest = after[item_len..].trim_start();
     let rest = rest
         .strip_prefix(&format!("({OLD_REVIEWER})"))
-        .unwrap_or(rest);
-    let rest = rest.trim_start().strip_prefix(SAYS).unwrap_or(rest);
-    rest.trim().is_empty()
+        .unwrap_or(rest)
+        .trim();
+    // The stack is a single word between the item and `says:`, which is
+    // where `Stack::label` writes it. Text of any other shape there is what
+    // the author wrote: a byline ends with `says:`, so anything else on the
+    // line is nothing to do with one.
+    match rest.strip_suffix(SAYS) {
+        Some(head) => {
+            let head = head.trim_end();
+            head.is_empty() || (!head.contains(char::is_whitespace) && is_stack(head))
+        }
+        // Posts made before #42 carried no `says:` at all.
+        None => rest.is_empty(),
+    }
+}
+
+/// Is `word` a stack label: the shape `Stack::label` writes, `-` where a
+/// part is not known, `/` between the parts? Model ids are opaque, so this
+/// admits any single word of identifier characters; spaces, and the
+/// punctuation of prose, are what keep a sentence from reading as one.
+fn is_stack(word: &str) -> bool {
+    !word.is_empty()
+        && word.chars().all(|c| {
+            c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | ':' | '@' | '/' | '-' | '~')
+        })
+        && word.contains(|c: char| c.is_ascii_alphanumeric())
 }
 
 /// Does the line containing byte offset `at` start with a markdown quote?
@@ -474,11 +585,19 @@ mod tests {
 
     /// Stamp for a post on the origin's own repository.
     fn stamp(body: &str, origin: &Origin) -> String {
-        stamp_with(body, origin, Some("acme/widgets"), false)
+        stamp_with(body, origin, Some("acme/widgets"), false, None)
+    }
+
+    fn stack() -> Stack {
+        Stack {
+            harness: "claude".into(),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+        }
     }
 
     fn line() -> String {
-        o().first_line(Some("acme/widgets"), false)
+        o().first_line(Some("acme/widgets"), false, None)
     }
 
     #[test]
@@ -492,22 +611,161 @@ mod tests {
 
     #[test]
     fn byline_names_the_item_the_way_github_links_it() {
-        assert_eq!(o().byline(Some("acme/widgets")), "🤖#12 says:");
-        assert_eq!(o().byline(Some("ACME/Widgets")), "🤖#12 says:");
-        assert_eq!(o().byline(Some("acme/other")), "🤖acme/widgets#12 says:");
-        assert_eq!(o().byline(None), "🤖acme/widgets#12 says:");
+        assert_eq!(o().byline(Some("acme/widgets"), None), "🤖#12 says:");
+        assert_eq!(o().byline(Some("ACME/Widgets"), None), "🤖#12 says:");
+        assert_eq!(
+            o().byline(Some("acme/other"), None),
+            "🤖acme/widgets#12 says:"
+        );
+        assert_eq!(o().byline(None, None), "🤖acme/widgets#12 says:");
         assert_eq!(
             line(),
             "🤖#12 says: <!-- ssf: origin=acme/widgets#12 -->",
             "byline, then the tag, on one line"
         );
         assert_eq!(
-            o().first_line(None, true),
+            o().first_line(None, true, None),
             "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 mode=delegate -->",
             "the byline does not encode the mode"
         );
-        // The whole line parses back to the tag.
+        // The whole line parses back to the tag: whatever the byline says
+        // about the session, the daemon reads the same item.
         assert_eq!(parse(&line()).unwrap().origin, o());
+        let stack = stack();
+        assert_eq!(
+            o().byline(Some("acme/widgets"), Some(&stack)),
+            "🤖#12 claude/opus/high says:"
+        );
+        assert_eq!(
+            o().byline(Some("acme/other"), Some(&stack)),
+            "🤖acme/widgets#12 claude/opus/high says:"
+        );
+        let stacked = o().first_line(Some("acme/widgets"), false, Some(&stack));
+        assert_eq!(
+            parse(&stacked).unwrap().origin,
+            o(),
+            "a stack is between the item and `says:`, not a tag of its own"
+        );
+        assert_eq!(strip(&format!("{stacked}\n\nhi")), "hi");
+    }
+
+    /// Only the parts a session has, and that the byline can read back, are
+    /// named; a missing one keeps the places of the parts after it.
+    #[test]
+    fn a_stack_names_the_parts_that_are_known() {
+        let stack = |harness: &str, model: Option<&str>, effort: Option<&str>| Stack {
+            harness: harness.into(),
+            model: model.map(str::to_string),
+            effort: effort.map(str::to_string),
+        };
+        let label = |harness: &str, model: Option<&str>, effort: Option<&str>| {
+            stack(harness, model, effort).label()
+        };
+        assert_eq!(
+            label("claude", Some("opus"), Some("high")).as_deref(),
+            Some("claude/opus/high")
+        );
+        assert_eq!(label("omp", None, None).as_deref(), Some("omp"));
+        assert_eq!(
+            label("claude", Some("opus"), None).as_deref(),
+            Some("claude/opus")
+        );
+        assert_eq!(
+            label("claude", None, Some("high")).as_deref(),
+            Some("claude/-/high"),
+            "an effort with no model keeps the model's place"
+        );
+        // A part the byline could not read back is not written into one: it
+        // would be left in front of every agent that reads the post.
+        assert_eq!(label("Claude Code", Some("opus"), None), None);
+        assert_eq!(
+            label("claude", Some("two words"), None).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            label("claude", Some("two words"), Some("high")).as_deref(),
+            Some("claude/-/high")
+        );
+        assert_eq!(
+            label("claude", Some("opus"), Some("on, high")).as_deref(),
+            Some("claude/opus")
+        );
+        // Whatever a config holds, the byline the shim writes comes back
+        // off: the writer and the reader agree on one alphabet, including
+        // for a harness ssf runs sessions for and one it would not accept.
+        for harness in [
+            "claude",
+            "omp",
+            "pi",
+            "codex",
+            "opencode",
+            "copilot",
+            "gemini",
+            "Claude Code",
+        ] {
+            let stack = stack(harness, Some("gpt-5.6-sol"), Some("xhigh"));
+            let line = o().first_line(Some("acme/widgets"), false, Some(&stack));
+            let body = format!("{line}\n\nhi");
+            assert_eq!(strip(&body), "hi", "{harness}: {body}");
+        }
+        assert_eq!(
+            Stack::from_parts(Some(" claude "), Some("opus"), Some("  ")),
+            Some(stack("claude", Some("opus"), None))
+        );
+        assert_eq!(Stack::from_parts(Some("  "), Some("opus"), None), None);
+        assert_eq!(Stack::from_parts(None, None, None), None);
+        // What the config makes of an item, which is what launch is given.
+        let repo = crate::config::RepoConfig {
+            harness: "codex".into(),
+            model: Some("gpt-5.6-sol".into()),
+            effort: Some("high".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            repo.stack().label().as_deref(),
+            Some("codex/gpt-5.6-sol/high")
+        );
+    }
+
+    /// A byline that carries a stack is still just a byline: what the agent
+    /// is shown keeps only the words the author wrote.
+    #[test]
+    fn a_stack_byline_is_stripped_like_any_other() {
+        let stack = stack();
+        let first = o().first_line(Some("acme/widgets"), false, Some(&stack));
+        assert_eq!(strip(&format!("{first}\n\nlook at this")), "look at this");
+        // The same on another repository, with a model id that has a slash
+        // of its own, and with the old reviewer word.
+        assert_eq!(
+            strip(&format!(
+                "🤖acme/widgets#12 omp/deepseek/deepseek-flash/high says: {}\n\nhi",
+                o().tag()
+            )),
+            "hi"
+        );
+        assert_eq!(
+            strip(&format!(
+                "🤖#12 (reviewer) claude/opus/high says: {}\n\nhi",
+                o().tag()
+            )),
+            "hi"
+        );
+        // Two words after the item are prose, not a stack: they stay.
+        assert_eq!(
+            strip(&format!("🤖#12 the model is opus: {}\n\nhi", o().tag())),
+            "🤖#12 the model is opus: \n\nhi"
+        );
+        assert_eq!(
+            strip(&format!("🤖#12 said: {}\n\nhi", o().tag())),
+            "🤖#12 said: \n\nhi"
+        );
+        // Only `says:` ends a byline, however the stack in front of it is
+        // spelled; the item is what tells a byline from prose, and a word
+        // that is prose after it is nobody's stack.
+        assert_eq!(
+            strip(&format!("🤖#12 claude/opus say: {}\n\nhi", o().tag())),
+            "🤖#12 claude/opus say: \n\nhi"
+        );
     }
 
     #[test]
@@ -699,22 +957,22 @@ mod tests {
         let parsed = parse(&t).unwrap();
         assert!(parsed.is_delegate());
         assert!(!parse(&o().tag()).unwrap().is_delegate());
-        let s = stamp_with("hand this off", &o(), Some("acme/widgets"), true);
+        let s = stamp_with("hand this off", &o(), Some("acme/widgets"), true, None);
         assert_eq!(s, format!("🤖#12 says: {t}\n\nhand this off"));
         assert_eq!(
-            stamp_with(&s, &o(), Some("acme/widgets"), true),
+            stamp_with(&s, &o(), Some("acme/widgets"), true, None),
             s,
             "not stamped twice"
         );
         assert_eq!(
-            stamp_with(&s, &o(), Some("acme/widgets"), false),
+            stamp_with(&s, &o(), Some("acme/widgets"), false, None),
             s,
             "a delegate tag is a tag"
         );
         // A hand-written plain tag does not make a hand-off: the delegate
         // line goes before it and is the one that counts.
         let plain = stamp("x", &o());
-        let both = stamp_with(&plain, &o(), Some("acme/widgets"), true);
+        let both = stamp_with(&plain, &o(), Some("acme/widgets"), true, None);
         assert!(both.ends_with(&plain));
         assert!(parse(&both).unwrap().is_delegate());
         assert_eq!(strip(&both), "x");
@@ -766,11 +1024,11 @@ mod tests {
         assert!(stamp(quoted, &o()).starts_with(&line()));
         // On another repository the byline spells the repository out.
         assert_eq!(
-            stamp_with("hi", &o(), Some("acme/other"), false),
+            stamp_with("hi", &o(), Some("acme/other"), false, None),
             "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
         );
         assert_eq!(
-            stamp_with("hi", &o(), None, false),
+            stamp_with("hi", &o(), None, false, None),
             "🤖acme/widgets#12 says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
         );
         // A hand-written first line with the right tag is left alone, byline

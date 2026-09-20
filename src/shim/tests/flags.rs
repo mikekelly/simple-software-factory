@@ -449,7 +449,7 @@ fn already_tagged_bodies_are_left_alone() {
     for body in [
         format!("{}\n\ndone", line()),
         format!("{}\n\ndone", o().tag()),
-        format!("{}\n\ndone", o().first_line(None, false)),
+        format!("{}\n\ndone", o().first_line(None, false, None)),
     ] {
         let a = args(&["issue", "comment", "3", "--body", &body]);
         assert_eq!(rewrite(a.clone()), a);

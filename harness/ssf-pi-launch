@@ -9,7 +9,10 @@ case "$harness" in
 esac
 
 # The delivery bridge chooses its injection mode by harness: OMP's extension API
-# has a non-interrupting step-boundary channel, Pi's does not.
+# has a non-interrupting step-boundary channel, Pi's does not. A by-hand launcher
+# run inside a session's pane inherits that session's model and effort, which are
+# not this one's: drop them unless the harness is the one the environment names.
+[ "${SSF_HARNESS:-}" = "$harness" ] || unset SSF_MODEL SSF_EFFORT
 SSF_HARNESS=$harness
 export SSF_HARNESS
 

@@ -17,7 +17,7 @@ use crate::github::{Conditional, GitHub, Issue, PrInfo, RepositoryIdentity};
 #[cfg(test)]
 use crate::ipc::Request;
 use crate::login::{self, LoginState, Probe};
-use crate::origin::{self, Origin};
+use crate::origin::{self, Origin, Stack};
 use crate::prompt::{
     self, FinalComment, Fyi, ProjectPrompt, PromptContext, Rendered, actor_of, event_key,
     render_event,

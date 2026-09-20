@@ -141,11 +141,15 @@ released workspace is re-created from its branch if the item comes back to life.
 ## The byline and origin tag\n\n\
 GitHub shows the same bot for every session, so every comment, review and pull request a \
 session posts starts with one line that is both a byline for people and a tag for ssf: \
-`🤖#N says: <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N says:` when the post is on another \
-repository; `mode=delegate` on a hand-off), then a blank line. GitHub links the byline to the session's item. The `gh` on the \
+`🤖#N claude/opus/high says: <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N ...` when the post is on another \
+repository; `mode=delegate` on a hand-off), then a blank line. The harness, model and effort \
+between the item and `says:` are what this session was launched with, so a reader can tell \
+which session said what when a handover has replaced the agent; `SSF_HARNESS`, `SSF_MODEL` and \
+`SSF_EFFORT` name them for this session. GitHub links the byline to the session's item. The `gh` on the \
 session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
 or `pr create|comment|review` (`new` counts as `create`); any other way of posting (`gh api`, `gh pr create --fill`, \
-`gh pr edit --body`, ...) needs it added by hand, as the first line of the body. A tag \
+`gh pr edit --body`, ...) needs it added by hand, as the first line of the body, with this \
+session's own stack in it. A tag \
 anywhere else, in a code block or a quote, is content and is ignored. The same directory links a \
 `git` wrapper, and both act as the bot however they are launched, even from a harness tool that \
 starts with a reduced environment. A post by @{bot} without the line was typed by a person using \
