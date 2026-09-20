@@ -25,13 +25,17 @@ impl Engine {
     /// identity into the harness's environment. The daemon's own config and
     /// state locations and selected target are passed along so the wrapper
     /// reads the same factory, and the VM guest flag so `ssf guide` in the
-    /// session knows where it is.
+    /// session knows where it is. `stack` is what the session is being
+    /// started with, which the wrapper exports for the byline; the stack a
+    /// resume is launched with is the same one, since a resume changes the
+    /// conversation and not the harness, model or effort.
     pub(in crate::engine) fn launch_command(
         &self,
         repo: &RepoConfig,
         number: u64,
         url: &str,
         inner: &str,
+        stack: Option<&Stack>,
     ) -> String {
         let me = crate::client_executable()
             .ok()
@@ -50,7 +54,8 @@ impl Engine {
         }
         let server =
             launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
-        render_launch_command(&prefix, &me, &server, repo, number, url, inner)
+        let wrapper = format!("{prefix}{}{server}", shell_quote(&me));
+        render_launch_command(&wrapper, repo, number, url, inner, stack)
     }
 
     /// Deliver a prompt to the agent that acts on an item (its own session,
@@ -159,12 +164,22 @@ impl Engine {
         // into a sign-in screen (below).
         let mut spent_note = None;
         let title = format!("{} · #{target}", eff.harness);
+        // A resume changes the conversation, not the stack: both are
+        // launched with what the item runs, which is what the byline of
+        // everything the session posts will say.
+        let stack = eff.stack();
         let resume = st
             .agent_session_id
             .as_deref()
             .and_then(|id| sessions::resume_command(&eff.harness, &eff.harness_command(), id))
-            .map(|c| self.launch_command(repo, st.number, &st.html_url, &c));
-        let relaunch = self.launch_command(repo, st.number, &st.html_url, &eff.harness_command());
+            .map(|c| self.launch_command(repo, st.number, &st.html_url, &c, Some(&stack)));
+        let relaunch = self.launch_command(
+            repo,
+            st.number,
+            &st.html_url,
+            &eff.harness_command(),
+            Some(&stack),
+        );
         let channel = self.driver(repo).delivery_channel(
             &repo.name,
             target,
@@ -701,17 +716,27 @@ fn launch_server_argument(server: Option<&str>) -> String {
 }
 
 fn render_launch_command(
-    prefix: &str,
-    executable: &str,
-    server: &str,
+    wrapper: &str,
     repo: &RepoConfig,
     number: u64,
     url: &str,
     inner: &str,
+    stack: Option<&Stack>,
 ) -> String {
+    // What the session runs, for the byline of everything it posts. Naming
+    // only the parts that are set keeps `ssf launch`'s reading of an unset
+    // model or effort the harness's own.
+    let mut flags = String::new();
+    if let Some(stack) = stack {
+        flags.push_str(&format!(" --harness {}", shell_quote(&stack.harness)));
+        for (flag, value) in [("--model", &stack.model), ("--effort", &stack.effort)] {
+            if let Some(value) = value {
+                flags.push_str(&format!(" {flag} {}", shell_quote(value)));
+            }
+        }
+    }
     format!(
-        "{prefix}{}{server} launch --repo {} --issue {} --issue-url {} -- {}",
-        shell_quote(executable),
+        "{wrapper} launch --repo {} --issue {} --issue-url {}{flags} -- {}",
         shell_quote(&repo.name),
         number,
         shell_quote(url),
@@ -722,6 +747,21 @@ fn render_launch_command(
 #[cfg(test)]
 mod launch_command_tests {
     use super::{launch_server_argument, render_launch_command};
+    use crate::origin::Stack;
+
+    fn stack() -> Stack {
+        Stack {
+            harness: "claude".into(),
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+        }
+    }
+
+    /// The wrapper as `Engine::launch_command` builds it: the daemon's own
+    /// directories, the executable, and the transport.
+    fn wrapper(server: Option<&str>) -> String {
+        format!("'/bin/ssf'{}", launch_server_argument(server))
+    }
 
     #[test]
     fn selected_server_is_forwarded_to_the_launch_wrapper() {
@@ -731,27 +771,58 @@ mod launch_command_tests {
         };
         assert_eq!(
             render_launch_command(
-                "",
-                "/bin/ssf",
-                &launch_server_argument(Some("local")),
+                &wrapper(Some("local")),
                 &repo,
                 42,
                 "https://example.test/owner/repo/issues/42",
-                "agent --flag"
+                "agent --flag",
+                None
             ),
             "'/bin/ssf' --server 'local' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent --flag'"
         );
         assert_eq!(
             render_launch_command(
-                "",
-                "/bin/ssf",
-                &launch_server_argument(None),
+                &wrapper(None),
                 &repo,
                 42,
                 "https://example.test/owner/repo/issues/42",
-                "agent"
+                "agent",
+                None
             ),
             "'/bin/ssf' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent'"
         );
+    }
+
+    /// The stack the session is started on travels to the wrapper, which
+    /// exports it for the byline; only the parts that are set are named, so
+    /// the wrapper reads an unset one as the harness's own default.
+    #[test]
+    fn the_launch_names_what_the_session_runs() {
+        let repo = crate::config::RepoConfig {
+            name: "owner/repo".into(),
+            ..Default::default()
+        };
+        let line = |stack: Option<&Stack>| {
+            render_launch_command(
+                &wrapper(None),
+                &repo,
+                42,
+                "https://example.test/owner/repo/issues/42",
+                "agent",
+                stack,
+            )
+        };
+        assert!(line(Some(&stack())).contains(
+            "launch --repo 'owner/repo' --issue 42 --issue-url \
+'https://example.test/owner/repo/issues/42' --harness 'claude' --model 'opus' --effort 'high' -- 'agent'"
+        ));
+        let bare = Stack {
+            harness: "omp".into(),
+            model: None,
+            effort: None,
+        };
+        assert!(line(Some(&bare)).contains("--harness 'omp' -- 'agent'"));
+        assert!(!line(Some(&bare)).contains("--model"));
+        assert!(!line(None).contains("--harness"));
     }
 }

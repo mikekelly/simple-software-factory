@@ -105,7 +105,9 @@ instructions.
 
 **Which agent said what.** GitHub shows the same bot account for every
 agent, so each post an agent makes starts with a byline naming its issue,
-linked to it. A post from the agent on issue #31 looks like this on GitHub:
+linked to it, and the harness, model and effort that session runs. A post
+from the agent on issue #31 looks like this on GitHub (from before the
+stack was added):
 
 > **OverlayBot** commented
 >
@@ -115,8 +117,9 @@ linked to it. A post from the agent on issue #31 looks like this on GitHub:
 > after the merge (...)
 
 The posts quoted above from #18 predate the byline (it arrived with #32 on 2026-09-05, and the
-`says:` with #42) and carried the same mark out of sight at the end of the
-body; every post since carries it on the first line. A post by the bot
+`says:` with #42); the harness, model and effort joined it with #400, so a
+post from a session now reads `🤖#31 claude/opus/high says:`. Every post
+since carries the byline on the first line. A post by the bot
 account *without* a byline was typed by a person. A post whose byline is
 `🤖 ssf`, followed by a fenced `ssf` block (`ssf attaching agent to
 issue:` and a few `key: value` lines), is the daemon itself, saying that

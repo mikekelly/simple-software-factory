@@ -142,7 +142,7 @@ session in the content. Everything an agent posts starts with one line that
 is both a byline for people and a tag for the daemon, then a blank line:
 
 ```
-🤖#16 says: <!-- ssf: origin=owner/repo#16 -->
+🤖#16 claude/opus/high says: <!-- ssf: origin=owner/repo#16 -->
 ```
 
 The byline is `🤖#N says:` when the post is on the same repository as the
@@ -157,6 +157,25 @@ post and is what the daemon reads. (Because the byline links to the origin
 item, GitHub adds a "referenced in ..." event on that item for every post:
 the daemon skips the bot's own cross-references, and for people the trail
 on the item shows where its session has posted.)
+
+Between the item and `says:`, a session the daemon started also names what
+it runs: the harness, and the model and effort it was launched with, `/`
+between them and the parts it does not have left out. The byline above is a
+session on Claude Code with `--model opus --effort high`; a harness with
+nothing set reads `🤖#16 omp says:`, and an effort set with no model keeps
+the model's place (`🤖#16 claude/-/high says:`). The harness is the id
+`--harness` takes (`ssf agents` lists them), and the model and effort are
+what the repository or the item's overrides had when the session was
+started, so a config edit shows up only in the next session's byline
+exactly as it does in the daemon's own `attached` post. A launch that names
+no harness — `ssf launch` by hand, or a session ssf cannot say the stack of
+— keeps the bare `🤖#N says:`.
+The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and
+`SSF_EFFORT`; `SSF_HARNESS` is the variable the
+[Pi and Oh My Pi launcher](drivers.md) already names the harness in for the
+delivery bridge's injection mode, and it means the same thing here: which
+harness this session runs. A launcher used by hand (no `ssf launch` stack)
+still sets it, so such a session's posts read `🤖#N pi says:`.
 
 `ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
 directory first on the agent's `PATH` (next to it, `ssf` links to the same
@@ -283,10 +302,11 @@ agent on owner/repo#N)".
 **A session that took an item over.** A
 [handover](sessions.md#handover) replaces the agent, not the item: the
 new session has the same identity, so its posts carry the same
-`🤖#N says:` byline and the same origin tag as the ones before it, and
-everything counted per session on the item keeps adding up. The change of
-harness is visible only in the daemon's own `handed-over` and `attached`
-posts.
+`🤖#N ... says:` byline and the same origin tag as the ones before it, and
+everything counted per session on the item keeps adding up. The stack in
+the byline is the one the new session was handed over to, so the change of
+harness is visible there as much as in the daemon's own `handed-over` and
+`attached` posts.
 
 **A person posting as the bot.** Since every session stamps its posts, a
 comment, review or item by the bot login *without* a tag was typed by a

@@ -6,7 +6,7 @@ fn o() -> Origin {
 
 /// The first line of a post on the session's own repository.
 fn line() -> String {
-    o().first_line(Some("acme/widgets"), false)
+    o().first_line(Some("acme/widgets"), false, None)
 }
 
 fn args(s: &[&str]) -> Vec<String> {
@@ -31,6 +31,7 @@ fn shim(origin: &Origin) -> Shim<'_> {
         origin,
         bot: None,
         gh_repo: None,
+        stack: None,
         read: &no_files,
         checkout: &same_repo,
     }

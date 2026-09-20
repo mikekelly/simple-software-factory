@@ -21,6 +21,9 @@ mod linux {
         ("SSF_ISSUE", "12"),
         ("SSF_ISSUE_URL", "https://github.com/acme/widgets/issues/12"),
         ("SSF_BOT", "widgets-bot"),
+        ("SSF_HARNESS", "claude"),
+        ("SSF_MODEL", "opus"),
+        ("SSF_EFFORT", "high"),
         ("SSF_CONFIG_DIR", "/factory/ssf"),
         ("SSF_STATE_DIR", "/factory/state"),
         ("GH_CONFIG_DIR", "/factory/ssf/gh"),
@@ -40,7 +43,7 @@ mod linux {
     }
 
     /// A directory of `gh` and `git` stand-ins that print the environment they
-    /// were exec'd with.
+    /// were exec'd with, and the arguments they were handed.
     fn tools(root: &Path) -> PathBuf {
         let tools = root.join("tools");
         std::fs::create_dir_all(&tools).unwrap();
@@ -53,7 +56,9 @@ mod linux {
             let tool = tools.join(name);
             std::fs::write(
                 &tool,
-                format!("#!/bin/sh\nfor v in {watched}; do\n  eval \"echo $v=\\$$v\"\ndone\n"),
+                format!(
+                    "#!/bin/sh\nfor v in {watched}; do\n  eval \"echo $v=\\$$v\"\ndone\necho \"ARGS $*\"\n"
+                ),
             )
             .unwrap();
             std::fs::set_permissions(&tool, std::os::unix::fs::PermissionsExt::from_mode(0o755))
@@ -126,6 +131,25 @@ mod linux {
                 );
             }
         }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A post made from a tool whose environment was scrubbed still names
+    /// the session it came from: the shim recovers the stack out of the
+    /// pane and the real gh is handed the stamped body.
+    #[test]
+    fn a_scrubbed_post_carries_the_sessions_stack() {
+        let root = std::env::temp_dir().join(format!("ssf-shim-stack-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (shim, tools) = fixtures(&root);
+        let stdout = scrubbed(&shim, &tools, "gh", "issue comment 12 --body hi", &[]);
+        assert!(
+            stdout.contains(
+                "ARGS issue comment 12 --body \
+                 🤖#12 claude/opus/high says: <!-- ssf: origin=acme/widgets#12 -->\n\nhi"
+            ),
+            "the post did not name the session: {stdout}"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
