@@ -279,23 +279,35 @@ fn the_old_reviewer_keys_still_load_and_are_not_written_back() {
 [daemon]
 review_label = "review"
 cleanup_grace_secs = 900
+slash_commands = false
 
 [[repo]]
 name = "acme/widgets"
 harness = "claude"
+slash_commands = true
 "#,
     )
     .unwrap();
     assert_eq!(cfg.daemon.review_label.as_deref(), Some("review"));
     assert_eq!(cfg.daemon.cleanup_grace_secs, Some(900));
+    assert_eq!(cfg.daemon.slash_commands, Some(false));
+    assert_eq!(cfg.repos[0].slash_commands, Some(true));
+    let keys: Vec<String> = cfg.retired_keys().into_iter().map(|(key, _)| key).collect();
     assert_eq!(
-        cfg.daemon.retired_keys(),
-        vec!["daemon.review_label", "daemon.cleanup_grace_secs"]
+        keys,
+        vec![
+            "daemon.review_label",
+            "daemon.cleanup_grace_secs",
+            "daemon.slash_commands",
+            "repo.slash_commands under [[repo]] acme/widgets",
+        ]
     );
     assert!(DaemonConfig::default().retired_keys().is_empty());
+    assert!(Config::default().retired_keys().is_empty());
     let out = toml::to_string(&cfg).unwrap();
     assert!(!out.contains("review_label"), "{out}");
     assert!(!out.contains("cleanup_grace_secs"), "{out}");
+    assert!(!out.contains("slash_commands"), "{out}");
 }
 
 #[test]

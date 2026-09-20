@@ -24,7 +24,6 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             allowed_users,
             accept_anyone_risk,
             event_comments,
-            slash_commands,
         } => {
             let (owner, r) = split_repo_name(&name)?;
             let name = format!("{owner}/{r}");
@@ -54,7 +53,9 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 allowed_users: None,
                 accepted_anyone_risk: false,
                 event_comments,
-                slash_commands,
+                // Retired (#397): never set anew, kept so an old file's
+                // value survives a rewrite.
+                slash_commands: None,
                 git: config::GitConfig::default(),
             };
             entry.validate_launch_prefs()?;
@@ -105,7 +106,6 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             allowed_users,
             accept_anyone_risk,
             event_comments,
-            slash_commands,
             git_name,
             git_email,
             git_signing_key,
@@ -168,9 +168,6 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             if event_comments.is_some() {
                 entry.event_comments = event_comments;
             }
-            if slash_commands.is_some() {
-                entry.slash_commands = slash_commands;
-            }
             if let Some(n) = git_name {
                 entry.git.name = Some(n.trim().to_string());
             }
@@ -204,7 +201,6 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                         entry.accepted_anyone_risk = false;
                     }
                     "event_comments" => entry.event_comments = None,
-                    "slash_commands" => entry.slash_commands = None,
                     other => bail!("cannot clear unknown field {other}"),
                 }
             }

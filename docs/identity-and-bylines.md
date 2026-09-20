@@ -299,8 +299,8 @@ not in effect, and an untagged item body binds the item to no session.
 
 **The daemon speaking.** The third kind of bot post is the daemon's own:
 the short `ssf` blocks it leaves on an item when it attaches a session,
-brings one back, holds its deliveries, gives up on a binding, releases
-a workspace or runs a `/ssf` task (the list is in
+brings one back, holds its deliveries, gives up on a binding or releases
+a workspace (the list is in
 [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)). Its
 first line is the byline `🤖 ssf`, with no item because the daemon is not
 a session, and a tag naming the item posted on with an `event` field:

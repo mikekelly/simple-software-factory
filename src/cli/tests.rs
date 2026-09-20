@@ -602,7 +602,7 @@ fn config_set_switches_event_comments_through_the_generic_path() {
 }
 
 #[test]
-fn repo_add_and_set_switch_the_post_and_slash_flags_and_clear_puts_them_back() {
+fn repo_add_and_set_switch_the_post_flag_and_clear_puts_it_back() {
     let dir = std::env::temp_dir().join(format!(
         "ssf-repo-events-test-{}-{}",
         std::process::id(),
@@ -613,7 +613,7 @@ fn repo_add_and_set_switch_the_post_and_slash_flags_and_clear_puts_them_back() {
     ));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("config.toml");
-    let add = |event_comments: Option<bool>, slash_commands: Option<bool>| RepoCommand::Add {
+    let add = |event_comments: Option<bool>| RepoCommand::Add {
         name: "o/r".into(),
         harness: "claude".into(),
         driver: None,
@@ -628,79 +628,55 @@ fn repo_add_and_set_switch_the_post_and_slash_flags_and_clear_puts_them_back() {
         allowed_users: None,
         accept_anyone_risk: false,
         event_comments,
-        slash_commands,
     };
-    let set = |event_comments: Option<bool>, slash_commands: Option<bool>, clear: Vec<String>| {
-        RepoCommand::Set {
-            name: "o/r".into(),
-            harness: None,
-            driver: None,
-            path: None,
-            clone_url: None,
-            base_branch: None,
-            command: None,
-            model: None,
-            effort: None,
-            instructions: None,
-            prompt_file: None,
-            allowed_users: None,
-            accept_anyone_risk: false,
-            event_comments,
-            slash_commands,
-            git_name: None,
-            git_email: None,
-            git_signing_key: None,
-            git_credential: None,
-            clear,
-        }
+    let set = |event_comments: Option<bool>, clear: Vec<String>| RepoCommand::Set {
+        name: "o/r".into(),
+        harness: None,
+        driver: None,
+        path: None,
+        clone_url: None,
+        base_branch: None,
+        command: None,
+        model: None,
+        effort: None,
+        instructions: None,
+        prompt_file: None,
+        allowed_users: None,
+        accept_anyone_risk: false,
+        event_comments,
+        git_name: None,
+        git_email: None,
+        git_signing_key: None,
+        git_credential: None,
+        clear,
     };
     let loaded = || Config::load_from(&path).unwrap();
     // Unset by default: the instance decides, and nothing is written.
-    repo_at(&path, add(None, None)).unwrap();
+    repo_at(&path, add(None)).unwrap();
     let enrollment = loaded().repos[0].enrolled_at.clone();
     assert!(enrollment.is_some(), "repo add records a new enrollment");
     assert_eq!(loaded().repos[0].event_comments, None);
-    assert_eq!(loaded().repos[0].slash_commands, None);
     assert!(loaded().event_comments(&loaded().repos[0]));
-    assert!(loaded().slash_commands(&loaded().repos[0]));
     let text = std::fs::read_to_string(&path).unwrap();
     let repo_table = text.split("[[repo]]").nth(1).unwrap();
     assert!(!repo_table.contains("event_comments"), "{text}");
-    assert!(!repo_table.contains("slash_commands"), "{text}");
     // Set off, then on, then cleared.
-    repo_at(&path, set(Some(false), Some(false), vec![])).unwrap();
+    repo_at(&path, set(Some(false), vec![])).unwrap();
     let cfg = loaded();
     assert_eq!(cfg.repos[0].event_comments, Some(false));
-    assert_eq!(cfg.repos[0].slash_commands, Some(false));
     assert!(!cfg.event_comments(&cfg.repos[0]));
-    assert!(!cfg.slash_commands(&cfg.repos[0]));
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.contains("event_comments = false"), "{text}");
-    assert!(text.contains("slash_commands = false"), "{text}");
-    // Either flag alone leaves the other as it was.
-    repo_at(&path, set(Some(true), None, vec![])).unwrap();
+    repo_at(&path, set(Some(true), vec![])).unwrap();
     assert_eq!(loaded().repos[0].event_comments, Some(true));
-    assert_eq!(loaded().repos[0].slash_commands, Some(false));
-    repo_at(&path, set(None, None, vec![])).unwrap();
+    repo_at(&path, set(None, vec![])).unwrap();
     assert_eq!(loaded().repos[0].event_comments, Some(true), "left alone");
-    repo_at(&path, set(None, Some(true), vec![])).unwrap();
-    assert_eq!(loaded().repos[0].slash_commands, Some(true));
-    repo_at(
-        &path,
-        set(
-            None,
-            None,
-            vec!["event_comments".into(), "slash_commands".into()],
-        ),
-    )
-    .unwrap();
+    repo_at(&path, set(None, vec!["event_comments".into()])).unwrap();
     let cfg = loaded();
     assert_eq!(cfg.repos[0].event_comments, None);
-    assert_eq!(cfg.repos[0].slash_commands, None);
-    // `repo add` over an existing entry takes the flags too.
-    repo_at(&path, add(Some(false), Some(false))).unwrap();
+    // `repo add` over an existing entry takes the flag too.
+    repo_at(&path, add(Some(false))).unwrap();
     assert_eq!(loaded().repos[0].event_comments, Some(false));
-    assert_eq!(loaded().repos[0].slash_commands, Some(false));
     assert_eq!(
         loaded().repos[0].enrolled_at,
         enrollment,

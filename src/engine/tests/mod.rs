@@ -42,7 +42,6 @@ pub(super) fn engine() -> Engine {
         conflict_checks: BTreeMap::new(),
         conflict_pairs: BTreeMap::new(),
         identity_checked_at: Some(Instant::now()),
-        tasks: crate::task::Tasks::new(),
         _state_lock: None,
     }
 }
@@ -959,5 +958,5 @@ mod listings;
 #[path = "login.rs"]
 mod login_tests;
 mod releases;
-mod slash;
+mod slash_comments;
 mod state;

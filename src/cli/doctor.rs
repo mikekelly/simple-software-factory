@@ -102,13 +102,8 @@ pub(super) async fn doctor() -> Result<()> {
             }
         }
     }
-    let retired = cfg.daemon.retired_keys();
-    if !retired.is_empty() {
-        println!(
-            "note {} in config.toml no longer {} anything: the `review` label and reviewer sessions went with one session per item; remove the line",
-            retired.join(" and "),
-            if retired.len() == 1 { "does" } else { "do" }
-        );
+    for (key, why) in cfg.retired_keys() {
+        println!("note {key} in config.toml no longer does anything: {why}; remove the line");
     }
     let state = state::State::load().unwrap_or_default();
     // Harnesses no repository is configured with, because an item was

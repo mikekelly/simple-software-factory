@@ -147,41 +147,6 @@ before the message that prompted it. That story is the one view in which a
 session's own earlier posts are replayed, so it can read what it already said
 and promised. Live follow-up messages leave them out, as above.
 
-## The prompt a `/ssf` task is given
-
-A [`/ssf <request>`](sessions.md#task-requests-ssf-request) comment is addressed
-to the factory, not to the item's session, and the daemon answers it with a
-one-shot run of the item's harness. That run is given its own prompt, from
-`prompt::task_prompt`: it is not a session, and the session prompt above would
-tell it to own the item and deliver it.
-
-```
-[ssf] Simple Software Factory (ssf) is running one task for @ann on the issue below. The request is addressed to ssf, not to the item's agent: this is a single non-interactive run of the harness, started by the daemon, and nothing comes back to you afterwards.
-
-## What this task is
-
-Do the request and stop. There is no session, no terminal and no one watching: nobody will answer a question, approve anything or read anything you print, so act on what you have and, where something is missing, say so on the issue.
-
-- `gh` already acts as @bot; your posts are the bot's. Act only as @bot; ...
-- Work only on the request. The issue itself is not yours: ...
-- You are in the factory's checkout of this repository, which every task and every workspace here is made from. Look at the code freely, but do not edit, commit, switch branches, stash or push in it: what the request needs changed in the repository belongs to a session, and you start one with `ssf assign 7 --harness HARNESS` (or by opening an issue `--assignee bot`) rather than making the change yourself.
-- `ssf guide` is the operating reference and `ssf --help` the command list; ...
-- Say what you did as a comment on the issue (`gh issue comment 7 --body ...`) with GitHub Flavored Markdown, as a session would: that is the only place a person reads. ...
-```
-
-Then the item exactly as a session's first message carries it — header,
-project boards, description, activity under the `> ` marker — and last
-`## Request from @ann` with the request, also marked. The operator's
-instructions, the global notes and the repository's `SSF.md` are left out on
-purpose: they are written for a session that owns an item and delivers it, and
-a task that read them would try to ([Task
-requests](sessions.md#task-requests-ssf-request) says what a task is and what
-may ask for one). The request is passed so that it can never be read as one of
-the harness's own options: after a `--` where the harness takes the prompt as
-its final argument, and in the `=` form of its prompt flag (`gemini`'s
-`--prompt=`, `grok`'s `--single=`, `copilot`'s `--prompt=`) where it takes it
-as a flag's value.
-
 ## Project boards
 
 If the issue or pull request is on any GitHub project (v2) boards, the

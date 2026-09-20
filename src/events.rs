@@ -152,33 +152,6 @@ pub enum Event {
         forced: bool,
         branch: Option<String>,
     },
-    /// A `/ssf` comment (see `slash`) was taken as a task: the daemon is
-    /// running the request on the item's harness, in its headless form.
-    /// Not a session: no workspace, no pane, and the request is not
-    /// delivered to the item's session.
-    TaskStarted {
-        harness: String,
-        model: Option<String>,
-        effort: Option<String>,
-        by: String,
-        request: String,
-    },
-    /// A started task has ended: `result` is the exit code, why it was
-    /// killed, or that its status could not be read any more.
-    TaskEnded {
-        harness: String,
-        by: String,
-        result: String,
-        log: Option<String>,
-        output: Option<String>,
-    },
-    /// A `/ssf` comment was taken and no task could be started for it.
-    TaskRefused {
-        harness: String,
-        by: String,
-        request: String,
-        reason: String,
-    },
 }
 
 /// What a model or effort line says when nothing is configured.
@@ -200,9 +173,6 @@ impl Event {
             Self::GaveUp { .. } => "gave-up",
             Self::HandedOver { .. } => "handed-over",
             Self::Released { .. } => "released",
-            Self::TaskStarted { .. } => "task-started",
-            Self::TaskEnded { .. } => "task-ended",
-            Self::TaskRefused { .. } => "task-refused",
         }
     }
 
@@ -373,64 +343,6 @@ impl Event {
                 }
                 (format!("releasing workspace of {item_kind}"), lines)
             }
-            Self::TaskStarted {
-                harness,
-                model,
-                effort,
-                by,
-                request,
-            } => {
-                // Model and effort follow `Launch`'s wording, so a task says
-                // what decides an unset one the way an `attached` block does.
-                let fallback = HARNESS_DEFAULT;
-                (
-                    format!("running a task on {item_kind}"),
-                    vec![
-                        ("harness", harness.clone()),
-                        ("model", set(model).unwrap_or_else(|| fallback.to_string())),
-                        (
-                            "effort",
-                            set(effort).unwrap_or_else(|| fallback.to_string()),
-                        ),
-                        ("asked by", by.clone()),
-                        ("request", request.clone()),
-                    ],
-                )
-            }
-            Self::TaskEnded {
-                harness,
-                by,
-                result,
-                log,
-                output,
-            } => {
-                let mut lines = vec![
-                    ("harness", harness.clone()),
-                    ("asked by", by.clone()),
-                    ("exit", result.clone()),
-                ];
-                if let Some(out) = output {
-                    lines.push(("output", out.clone()));
-                }
-                if let Some(l) = log {
-                    lines.push(("log", l.clone()));
-                }
-                (format!("task on {item_kind} finished"), lines)
-            }
-            Self::TaskRefused {
-                harness,
-                by,
-                request,
-                reason,
-            } => (
-                format!("not running a task on {item_kind}"),
-                vec![
-                    ("harness", harness.clone()),
-                    ("asked by", by.clone()),
-                    ("request", request.clone()),
-                    ("why", reason.clone()),
-                ],
-            ),
         }
     }
 }

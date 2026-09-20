@@ -226,87 +226,21 @@ labelled as coming from A, and A does not receive its own comment back,
 even when A is subscribed to B's issue. This is the default channel between
 agents: `ssf guide` says so, and it is the only channel between sessions.
 
-## Task requests: `/ssf <request>`
+## Talking to the factory
 
-A person can ask the factory itself to do something, in a comment on an item,
-instead of telling the item's agent about it. The comment's first line is the
-command; the request is the rest of that line:
+The factory is driven from a terminal, not from an item's comments. `ssf
+handover` and `ssf assign` name the harness, model and effort a session runs
+with; see [Handover](#handover) and [Assigning a stack to an
+item](#assigning-a-stack-to-an-item). A person who wants something done on
+an item says so in a comment and the item's own session reads it like any
+other activity; a comment is never taken as a command to ssf itself.
 
-```
-/ssf please assign this to claude fable low
-```
-
-Later lines are for the item's readers, not for ssf. Only the first
-non-blank line counts, so quoting a command in a reply does nothing, and
-the word has to stand alone (`/ssfx`, `/ssf-x` and a command inside a
-sentence are somebody else's words).
-
-The daemon runs the request as a **task**: one non-interactive run of the
-item's harness, started by the daemon itself and not attached to the item.
-
-- **Which harness.** The repository's harness, model and effort, with the
-  item's own overrides applied (what `ssf assign` or `ssf handover` wrote,
-  and what a session on the item would run). `repo.command` is not used: it
-  is the operator's command for starting a *session*, and says nothing about
-  how the harness takes a one-shot request. The headless form per harness is
-  a table in ssf (`claude -p`, `codex exec`, `omp -p`, `opencode run`, ...),
-  and so is where the request goes: after a `--` for the harnesses that take
-  it as their final argument, and in the `=` form of the prompt flag
-  (`--prompt=`, `--single=`) for the three that take it as a flag's value, so
-  that a request beginning with `-` is a request and not one of the harness's
-  own options. A harness without a form is refused on the item rather than run
-  interactively, and `ssf assign` to another harness is the remedy.
-- **Where it runs.** In the factory's own checkout of the repository, not in
-  a worktree: a task is for directing and inspecting, and the repository's
-  changes belong to a session that has a branch of its own. The prompt says
-  so, and to hand the work to a session (`ssf assign`, or an issue opened
-  `--assignee <bot>`) rather than make the change itself.
-- **What it is told.** ssf's own prompt for a task (one run, no session, no
-  terminal, nobody to answer a question), then the item as a session
-  receives it — header, project boards, description, activity so far — and
-  then `## Request from @who` with the text. The repository's `SSF.md` and
-  the global guidance are *not* included: those are the contract for a
-  session that owns an item and delivers it, and a task that read them would
-  try to do its work.
-- **What it can do.** It runs with the same credentials a session has — the
-  bot's token, git identity, the `gh`/`git` shims, `SSF_REPO`, `SSF_ISSUE` —
-  so its posts are the bot's, and `ssf` itself is on its `PATH`. It is
-  expected to say on the item what it did. The request decides; ssf neither
-  parses it nor restricts it beyond that.
-- **Who may.** The [allow-list](configuration.md#who-may-drive-the-factory)
-  decides: a command from a login that is not on it is logged and ignored,
-  and one on the bot's own comment is never taken (a session that writes
-  `/ssf ...` in a post is talking to its readers, and taking it would let
-  one post start another task, and so on).
-- **Which items.** Any item ssf acts on: one assigned to the bot, mentioning
-  it, with a review requested from it, or opened by it. The daemon reads a
-  timeline only for an item it polls, so a command on an item it does not
-  track at all is invisible to it, and one on an item tracked only because a
-  session subscribed to it is not taken (nothing acts on that item). In
-  either case an @mention of the bot in the same comment brings the item in,
-  and with it the command. A command can arrive on an item
-  that gets no session of its own (created-by-the-bot and nothing else): the
-  request runs, the item stays ignored as a session's work.
-- **How many at once.** One task per item (a second request waits its turn,
-  in the order the comments were written) and at most four running across
-  the factory, since each one is an unattended agent.
-- **How long.** Thirty minutes, after which the process group is killed and
-  the item is told. A task is a child of the daemon: it is killed if the
-  daemon stops, and the next daemon start says on the item that the run was
-  cut short.
-- **Where its output goes.** `~/.local/state/ssf/tasks/<owner>/<repo>/<n>/<comment id>.log`,
-  named on the item's `task-ended` post. The post itself carries the exit
-  status and, when the run failed, the last line the log has to offer. What
-  a person reads is the item: the task's own comment is the answer.
-
-The comment is not a message to the item's session and is not hidden from
-it either: it is a public comment, it stays in the timeline like any other,
-and the session receives it as activity and may act on it too. Both ends are
-visible on the item, so that is not silent.
-
-`daemon.slash_commands = false` (or `slash_commands = false` on one
-`[[repo]]`) turns the whole thing off: such a comment is then an ordinary
-comment and nothing is run or remembered.
+`/ssf <request>` was the earlier, comment-driven form of this: the daemon
+parsed a comment's first line and ran the request as a one-off headless
+task. It is gone (#397) — such a comment is now an ordinary comment,
+nothing is parsed, run or remembered, and historical ones are inert.
+`daemon.slash_commands` and `repo.slash_commands` are accepted only so old
+files load, and `ssf doctor` says to remove them.
 
 ## What ssf says on the item
 
@@ -343,9 +277,6 @@ The events, and nothing else:
 | `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
 | `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
 | `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line; when the harness ending is the one its pane runs and not the one its record names -- a config edit under a live session -- only `from` is written, followed by `from stack: unknown (the harness on the pane is not the record's)`, since ssf has no model, effort or command of that session's to report); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
-| `task-started` | a [`/ssf <request>`](#task-requests-ssf-request) comment was taken and the daemon is running it (`ssf running a task on issue:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (a task is never started by a configured `command`); `asked by: <login>`; `request:` the text, one line |
-| `task-ended` | that run finished (`ssf task on issue finished:`) | `harness`, `asked by`, `exit:` the exit code, or why there is none (`killed after 30 min`, `the daemon stopped while it ran`); `output:` the last line of the run's log, on a failure; `log:` where the whole log is |
-| `task-refused` | a request was taken and nothing could be run for it (`ssf not running a task on issue:`) | `harness`, `asked by`, `request:`, and `why:` the reason in one line (a harness with no headless form, a process that would not start) |
 
 The `handed-over` post is what a reader sees when an item changes stack
 (see [Handover](#handover)):
