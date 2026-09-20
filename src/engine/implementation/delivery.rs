@@ -52,10 +52,6 @@ impl Engine {
                 }
             };
             self.record_origins(repo, &issue, &timeline);
-            // No `/ssf` commands here: an item tracked only for its
-            // subscribers is nobody's, and one that closes in this very
-            // iteration is forgotten a few lines below, so a request taken
-            // from it would have no record to run from (`take_commands`).
             let diff = self.diff(repo, &st.seen, &timeline);
             let closed = issue.state == "closed";
             let merged = closed
@@ -84,16 +80,13 @@ impl Engine {
             if closed {
                 // The subscribers have had the last word on it. An item that
                 // never had a session is forgotten; one that did keeps its
-                // workspace record for the cleanup. A request still owed a
-                // run keeps the record either way: it is run from there
-                // (`Engine::run_tasks`), and the next pass that finds nothing
-                // owed takes the record then -- a closed item is on no
+                // workspace record for the cleanup. A closed item is on no
                 // listing, so this branch is the only thing that visits it.
                 if st.seeded {
                     let e = self.entry(repo, number);
                     e.subscriber_only = false;
                     e.subscribers.clear();
-                } else if !st.owes_a_task() {
+                } else {
                     self.state.repo_mut(&repo.name).issues.remove(&number);
                 }
             }
@@ -224,11 +217,11 @@ impl Engine {
                     e.last_prompt_at = Some(now_iso());
                     e.prompts_sent += 1;
                 }
-                Err(e) if is_blocked(&e) => debug!(
+                Err(e) if is_held(&e) => debug!(
                     repo = repo.name,
                     issue = issue.number,
                     subscriber = sid,
-                    "subscriber not told: {e:#}"
+                    "subscriber not told yet: {e:#}"
                 ),
                 Err(e) => warn!(
                     repo = repo.name,
@@ -708,7 +701,7 @@ impl Engine {
                 e.last_prompt_at = Some(now_iso());
                 e.prompts_sent += 1;
             }
-            Err(e) if is_blocked(&e) => {
+            Err(e) if is_held(&e) => {
                 debug!(session, "{e:#}");
             }
             Err(e) => {
@@ -784,7 +777,11 @@ deliveries resume"
                 self.unblock(repo, number, b, Conversation::Kept).await;
             }
             Err(e) => {
-                warn!(session, "could not tell the running harness: {e:#}");
+                if is_held(&e) {
+                    debug!(session, "not told yet: {e:#}");
+                } else {
+                    warn!(session, "could not tell the running harness: {e:#}");
+                }
                 let cur = self.entry(repo, number);
                 cur.handover_note = note;
                 // The delivery may have recorded a block of its own (the
@@ -862,6 +859,39 @@ deliveries resume"
         rs.mentioned_etag = None;
         rs.pulls_etag = None;
         rs.created_etag = None;
+    }
+
+    /// Held, not failed: a delivery the session's mailbox kept back (see
+    /// `Hold`).  Nothing was lost, but the item is owed another look, because
+    /// what clears the hold -- the session recording the event, or coming
+    /// back with a bridge -- happens in the harness and is invisible here.
+    /// A blocked session is re-armed by `unblock` when it comes back; a
+    /// mailbox hold has no such trigger, so the item is armed for a full read
+    /// of the listings rather than for a change that may be arbitrarily far
+    /// off (#390, #395).  A mailbox no live bridge polls is said once per
+    /// incident, so a session that has stopped taking events is not silent.
+    pub(in crate::engine) fn note_mailbox_hold(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        e: &anyhow::Error,
+    ) {
+        let Some(hold) = crate::delivery_channel::hold(e) else {
+            debug!(repo = repo.name, issue = number, "held: {e:#}");
+            return;
+        };
+        self.forget_etags(repo);
+        let said = hold == crate::delivery_channel::Hold::Unavailable
+            && self.channel_lost.insert((repo.name.clone(), number));
+        if said {
+            warn!(
+                repo = repo.name,
+                issue = number,
+                "no live bridge on the session's mailbox; the item keeps its events: {e:#}"
+            );
+        } else {
+            debug!(repo = repo.name, issue = number, "held: {e:#}");
+        }
     }
 
     /// Count a failure against an item; at `MAX_DELIVERY_FAILURES` in a

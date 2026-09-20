@@ -27,3 +27,7 @@ toml = "1.1.5"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 unicode-width = "0.2"
+
+[dev-dependencies]
+# `start_paused` lets a delivery test spend the whole receipt timeout at once.
+tokio = { version = "1.53.1", features = ["test-util"] }

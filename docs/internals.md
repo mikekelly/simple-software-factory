@@ -107,20 +107,6 @@ checks, and a restrictive content security policy. See
   process-held lock beside `state.json`; both `ssf-server` and `ssf-server --once`
   take it before reading state. It is released when its owner exits. Do not
   unlink it to clear a refusal while an engine may still be running.
-- **Task requests.** A comment whose first line is `/ssf <request>` is taken
-  where the timeline is already read (onboarding, a follow-up, a
-  reactivation) and, if the author is on the allow-list and is not the bot,
-  queued on the item: `slash_pending` and `slash_done` in the state record
-  are what make a command act once, and survive a restart. The daemon starts
-  at most one per item and four in total, from its own checkout of the
-  repository, as `sh -c` around the same `ssf launch` wrapper a session gets
-  (bot token, git identity, `gh`/`git` shims, `SSF_REPO`/`SSF_ISSUE`) with the
-  harness's headless form and the prompt as the last argument. The children
-  are the daemon's own: `kill_on_drop`, a process group of their own (killed
-  whole on timeout or shutdown), and their output goes to
-  `~/.local/state/ssf/tasks/<owner>/<repo>/<n>/<comment id>.log`. `slash_running`
-  is what lets the daemon report on the item, after a restart, a run that was
-  cut short. See [Task requests](sessions.md#task-requests-ssf-request).
 - **Delivery into a harness.** A live, seeded OMP or Pi session receives later
   messages through SSF's shipped extension and per-session mailbox. The
   extension uses a user-attributed custom message with `triggerTurn: true`, so
@@ -137,8 +123,17 @@ checks, and a restrictive content security policy. See
   arrives in. The daemon uses
   the session's next prompt count plus a content fingerprint as the stable
   mailbox key: a retry observes the same pending or acknowledged event rather
-  than publishing another copy. If a live bridge is unavailable, delivery
-  fails and remains retryable instead of falling back to terminal input.
+  than publishing another copy, and an attempt whose text carries events an
+  unacknowledged file already carries is held instead of publishing the overlap
+  beside it — it never reports a delivery it did not make, because a caller
+  that took one would move its watermark past events the mailbox never
+  received. The receipt means the session's transcript holds the event; a wait
+  that ends first reports the delivery as published into the mailbox, which
+  keeps it until the transcript records it, so a busy session's event is queued
+  rather than lost or reported as seen. If
+  a live bridge is unavailable, delivery is held and nothing is counted against
+  the item: the item keeps its events and its session, and a restart takes
+  them, instead of falling back to terminal input (#395).
   Claude Code uses exact-pane foreground PID discovery and its authenticated
   NDJSON peer inbox, with priority `next` and launch settings accepting inbound
   peers. Its unofficial protocol has no ordinary receipt, so SSF journals before
@@ -199,11 +194,27 @@ checks, and a restrictive content security policy. See
   resends only after a positively identified first-run dialog; an ambiguous
   screen is accepted so a consumed prompt cannot become a steering message.
 - **OMP/Pi bridge readiness.** `ssf launch` gives the extension the session's
-  mailbox and shipped extension path. `session_start` writes `ready.json` and
-  starts its poller; `session_shutdown` removes only its own marker. A mailbox
+  mailbox and shipped extension path. The poller writes `ready.json` as its own
+  attestation and rewrites it on any poll that does not find it naming its
+  process, so a marker removed under a live session is repaired within a poll;
+  a session that changes under the process (`session_switch`, `session_branch`,
+  `session_tree`) takes the marker and the poller over while keeping what an
+  earlier one had already handed over — those events replace the transcript,
+  not the queue an unrecorded injection may still be sitting in — and
+  `session_shutdown` removes only its own marker and stops its poller (#395). A
+  mailbox no live bridge attests to is a hold, not a failure: nothing is
+  published, the item keeps its events, and no delivery
+  failure is counted — `ssf doctor` names the session to restart. A mailbox
   event is written through a temporary file and atomic rename. The extension
-  renames it to an acknowledgement, which remains as the session's idempotency
-  record. An exec-only launcher selects a transcript only from the
+  injects a pending event once per process and renames it to an acknowledgement
+  only once the session's transcript holds the injected message: the
+  acknowledgement remains the session's idempotency record, and the rename is
+  the daemon's receipt that the agent has the event, not that the harness
+  accepted a call it could still drop. Until the record exists the file stays
+  pending, so a bounded wait that ends without a receipt reports the delivery
+  as published rather than recorded and the bridge keeps trying — and a harness
+  killed inside the injection window takes the event again on relaunch (#390).
+  An exec-only launcher selects a transcript only from the
   mailbox-scoped session directory; the custom message stores the stable
   delivery ID as extension-only metadata. On relaunch, the bridge acknowledges
   an ID already in the resumed transcript or injects its pending event, and

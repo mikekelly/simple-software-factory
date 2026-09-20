@@ -12,9 +12,6 @@ impl Engine {
             return;
         }
         self.state.last_poll_at = Some(now_iso());
-        // Tasks report to the item whether or not any driver is up: they are
-        // processes of the daemon's, not panes.
-        self.collect_tasks().await;
         // Per-pass state only. `refetch` is deliberately not reset here: it
         // has to outlive the pass that armed it (issue #141).
         self.probes.clear();
@@ -74,10 +71,6 @@ impl Engine {
                 warn!(repo = repo.name, "branch conflict check failed: {e:#}");
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
             }
-            // After this pass has taken whatever the items' timelines had
-            // for it, so a request made a moment ago runs now rather than
-            // on the pass after.
-            self.run_tasks(&repo).await;
             self.capture_sessions(&repo);
             self.run_cleanups(&repo).await;
             if let Err(e) = self.state.save() {
@@ -162,6 +155,7 @@ impl Engine {
                         e.last_prompt_at = Some(now_iso());
                         e.prompts_sent += 1;
                     }
+                    Err(e) if is_held(&e) => debug!(session, "not started again yet: {e:#}"),
                     Err(e) => warn!(session, "could not start the session again: {e:#}"),
                 }
                 if let Err(e) = self.state.save() {
@@ -463,12 +457,12 @@ impl Engine {
             {
                 Ok(()) => {
                     self.failures.remove(&(repo.name.clone(), issue.number));
+                    self.channel_lost.remove(&(repo.name.clone(), issue.number));
                 }
-                // Held, not failed: the item is looked at again when its
-                // listing changes, and in full once the session is back.
-                Err(e) if is_blocked(&e) => {
-                    debug!(repo = repo.name, issue = issue.number, "held: {e:#}");
-                }
+                // Held, not failed: nothing was lost, and the item is armed
+                // for another look by the hold itself (see
+                // `note_mailbox_hold`).
+                Err(e) if is_held(&e) => self.note_mailbox_hold(repo, issue.number, &e),
                 Err(e) => {
                     all_ok = false;
                     self.note_failure(repo, issue.number, &e).await;
@@ -498,9 +492,7 @@ impl Engine {
             }
             match self.retire_issue(repo, owner, name, number).await {
                 Ok(()) => {}
-                Err(e) if is_blocked(&e) => {
-                    debug!(repo = repo.name, issue = number, "retirement held: {e:#}");
-                }
+                Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
                 Err(e) => {
                     all_ok = false;
                     warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");

@@ -35,13 +35,13 @@ pub(super) fn engine() -> Engine {
         workspaces: BTreeMap::new(),
         workspaces_read: BTreeSet::new(),
         refetch: BTreeSet::new(),
+        channel_lost: BTreeSet::new(),
         startup_pass: false,
         onboarding: None,
         adopting: None,
         conflict_checks: BTreeMap::new(),
         conflict_pairs: BTreeMap::new(),
         identity_checked_at: Some(Instant::now()),
-        tasks: crate::task::Tasks::new(),
         _state_lock: None,
     }
 }
@@ -949,13 +949,14 @@ const EXPIRED: &str = "2026-01-01T00:00:00Z";
 
 mod access_and_conflicts;
 mod assignments;
+mod directing;
 #[path = "events/mod.rs"]
 mod event_tests;
 mod handovers;
+mod held_delivery;
 mod invitations;
 mod listings;
 #[path = "login.rs"]
 mod login_tests;
 mod releases;
-mod slash;
 mod state;
