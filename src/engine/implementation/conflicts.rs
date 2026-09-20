@@ -1,5 +1,5 @@
 use super::super::*;
-use tracing::warn;
+use tracing::{debug, warn};
 
 impl Engine {
     pub(in crate::engine) async fn check_conflicts(&mut self, repo: &RepoConfig) -> Result<()> {
@@ -123,6 +123,11 @@ impl Engine {
                     e.prompts_sent += 1;
                     e.conflict_notice = Some(fingerprint);
                 }
+                Err(e) if is_held(&e) => debug!(
+                    repo = repo.name,
+                    issue = st.number,
+                    "conflict notice not taken yet: {e:#}"
+                ),
                 Err(e) => warn!(
                     repo = repo.name,
                     issue = st.number,

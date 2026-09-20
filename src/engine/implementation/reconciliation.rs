@@ -162,6 +162,7 @@ impl Engine {
                         e.last_prompt_at = Some(now_iso());
                         e.prompts_sent += 1;
                     }
+                    Err(e) if is_held(&e) => debug!(session, "not started again yet: {e:#}"),
                     Err(e) => warn!(session, "could not start the session again: {e:#}"),
                 }
                 if let Err(e) = self.state.save() {
@@ -464,10 +465,19 @@ impl Engine {
                 Ok(()) => {
                     self.failures.remove(&(repo.name.clone(), issue.number));
                 }
-                // Held, not failed: the item is looked at again when its
-                // listing changes, and in full once the session is back.
-                Err(e) if is_blocked(&e) => {
+                // Held, not failed: nothing was lost, but the item is owed
+                // another look, because what clears the hold -- the session
+                // recording the event -- happens in the harness and is
+                // invisible here. A blocked session is re-armed by `unblock`
+                // when it comes back; the wait behind an unrecorded event has
+                // no such trigger, so the next pass reads the listings in
+                // full instead of waiting for a change that may be
+                // arbitrarily far off (#390).
+                Err(e) if is_held(&e) => {
                     debug!(repo = repo.name, issue = issue.number, "held: {e:#}");
+                    if crate::delivery_channel::is_unrecorded(&e) {
+                        self.forget_etags(repo);
+                    }
                 }
                 Err(e) => {
                     all_ok = false;
@@ -498,8 +508,11 @@ impl Engine {
             }
             match self.retire_issue(repo, owner, name, number).await {
                 Ok(()) => {}
-                Err(e) if is_blocked(&e) => {
+                Err(e) if is_held(&e) => {
                     debug!(repo = repo.name, issue = number, "retirement held: {e:#}");
+                    if crate::delivery_channel::is_unrecorded(&e) {
+                        self.forget_etags(repo);
+                    }
                 }
                 Err(e) => {
                     all_ok = false;

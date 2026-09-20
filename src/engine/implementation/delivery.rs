@@ -225,11 +225,11 @@ impl Engine {
                     e.last_prompt_at = Some(now_iso());
                     e.prompts_sent += 1;
                 }
-                Err(e) if is_blocked(&e) => debug!(
+                Err(e) if is_held(&e) => debug!(
                     repo = repo.name,
                     issue = issue.number,
                     subscriber = sid,
-                    "subscriber not told: {e:#}"
+                    "subscriber not told yet: {e:#}"
                 ),
                 Err(e) => warn!(
                     repo = repo.name,
@@ -709,7 +709,7 @@ impl Engine {
                 e.last_prompt_at = Some(now_iso());
                 e.prompts_sent += 1;
             }
-            Err(e) if is_blocked(&e) => {
+            Err(e) if is_held(&e) => {
                 debug!(session, "{e:#}");
             }
             Err(e) => {
@@ -785,7 +785,11 @@ deliveries resume"
                 self.unblock(repo, number, b, Conversation::Kept).await;
             }
             Err(e) => {
-                warn!(session, "could not tell the running harness: {e:#}");
+                if is_held(&e) {
+                    debug!(session, "not told yet: {e:#}");
+                } else {
+                    warn!(session, "could not tell the running harness: {e:#}");
+                }
                 let cur = self.entry(repo, number);
                 cur.handover_note = note;
                 // The delivery may have recorded a block of its own (the

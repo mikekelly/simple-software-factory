@@ -41,20 +41,28 @@ the launcher does not name gets `steer` too, which on OMP preempts the step it
 arrives in and finishes it in the background; immediate delivery is preferred to
 a queue that may never drain. The launcher names the harness in `SSF_HARNESS` for
 that choice.
-The extension acknowledges the event after handing it to the harness, so
-an acknowledgement means the harness took it rather than that the model has seen
-it. It never writes bytes to the pane, and a draft already in the OMP/Pi
-composer is left intact.
+The extension injects each pending event once and acknowledges it only once the
+session's transcript records the injected message, so an acknowledgement means
+the agent has the record of the event, not that the harness accepted a call it
+could still drop. The record lands at the agent's step boundary, which a busy
+session reaches when the tool calls in flight have finished; until then the
+event stays in the mailbox and the daemon reports a delivery it has published
+but the session has not recorded, rather than one the model has seen. A later
+event waiting behind an unrecorded one is held, not published beside it, so the
+session never receives the same events twice. It never writes bytes to the
+pane, and a draft already in the OMP/Pi composer is left intact.
 
 The default command runs through a small exec wrapper that keeps the harness
 transcript in that mailbox's session directory and names the harness in
 `SSF_HARNESS` for the bridge's delivery mode. It explicitly resumes only the
 latest transcript in that directory, never a global "most recent" session.
 Each injected message carries its stable mailbox ID in extension-only metadata.
-If the harness exits between recording a message and acknowledging it, the
-replacement resumes that transcript: its bridge acknowledges an ID already
-present or injects the still-pending event, and Herdr does not also submit it
-through the terminal.
+If the harness exits between injecting a message and recording it, the file is
+still pending (it is never acknowledged early), and the replacement resumes
+that transcript: its bridge acknowledges an ID already present or injects the
+still-pending event, and Herdr does not also submit it through the terminal.
+That is the same path that reconciles a recorded delivery, so a harness killed
+inside the injection window loses nothing (#390).
 
 The mailbox lives under the factory state directory at
 `delivery/<owner>/<repo>/<issue>/`. Its ready marker belongs to the running

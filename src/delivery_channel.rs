@@ -1,11 +1,55 @@
 //! Out-of-band delivery shared with harness-side bridges.
+//!
+//! The daemon publishes one file per event; the bridge injects it into the
+//! session and acknowledges the file once the session's transcript records the
+//! injected message.  Acknowledged therefore means "the agent has the record
+//! of it", but publication is what makes the event durable: the file stays in
+//! the mailbox until that record exists, so a harness that exits inside the
+//! injection window takes the event again when it is relaunched, exactly as it
+//! already reconciles an event whose record is in the resumed transcript
+//! (#390).  A delivery that publishes without a receipt is queued in the
+//! harness's own mailbox, not lost, and it stays pending for the relaunch path
+//! to find.
 
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
-const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one attempt waits for the harness to record the event before the
+/// pass moves on.  The record lands at the agent's next step boundary, so a
+/// session inside a long tool call will not reach it in this window; the wait
+/// is long enough to catch an idle session's injection and short enough that a
+/// pass is not held behind a busy one.
+const RECORD_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What an attempt got: the transcript holds the event, or the mailbox does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Receipt {
+    /// The session's transcript records the injected message.
+    Recorded,
+    /// Published to the mailbox and not recorded yet.  The bridge keeps the
+    /// file until it is, and a relaunch injects it again if the harness went
+    /// away first.
+    Published,
+}
+
+/// Is this "an earlier event of this sequence is not recorded yet, so nothing
+/// was published"?  The caller must keep its events un-seen: they were never
+/// handed to the mailbox, and a relaunch will not find them.
+pub(crate) fn is_unrecorded(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.downcast_ref::<DeliveryUnrecorded>().is_some())
+}
+
+/// The same hold as an error value, for the driver stub: a test that needs a
+/// delivery held must produce the real type, since the engine classifies it by
+/// downcast.
+#[cfg(test)]
+pub(crate) fn held(sequence: u64) -> anyhow::Error {
+    DeliveryUnrecorded { sequence }.into()
+}
 
 pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
     let mut path = crate::config::state_dir().join("delivery");
@@ -57,12 +101,58 @@ fn event_paths(path: &Path, sequence: u64, text: &str) -> (PathBuf, PathBuf) {
     )
 }
 
+/// Does the mailbox hold this event?  A pending file was published and may
+/// already have been handed to the harness; only an acknowledged one is in the
+/// session's transcript.  Either way the event must not be submitted twice, by
+/// the bridge or through the terminal.
 pub(crate) fn has_record(path: &Path, sequence: u64, text: &str) -> bool {
     let (pending, ack) = event_paths(path, sequence, text);
     pending.exists() || ack.exists()
 }
 
-pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<()> {
+/// Another attempt for this event sequence that the harness has not
+/// acknowledged.  Its text carries the events this one carries too -- the
+/// caller renders the delta since a watermark that has not moved -- so
+/// publishing beside it would have the session record them twice.
+fn unacknowledged(path: &Path, sequence: u64, here: &Path) -> bool {
+    let prefix = format!("{sequence:020}-");
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .any(|candidate| {
+            candidate != here
+                && candidate.extension().is_some_and(|ext| ext == "json")
+                && candidate
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        })
+}
+
+/// What an attempt published without a record yet, or the event it could not
+/// publish at all.  A caller that treats the second as a delivery would move
+/// the item's watermark past events the mailbox never received, so it is an
+/// error the engine holds rather than counts.
+#[derive(Debug)]
+pub(crate) struct DeliveryUnrecorded {
+    sequence: u64,
+}
+
+impl std::fmt::Display for DeliveryUnrecorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the harness has not recorded this session's event {} yet; it stays in the mailbox and \
+the newer events wait for it rather than being marked delivered",
+            self.sequence
+        )
+    }
+}
+
+impl std::error::Error for DeliveryUnrecorded {}
+
+pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<Receipt> {
     if !available(path) {
         bail!(
             "the harness delivery bridge is unavailable at {}; restart the session to load it",
@@ -73,7 +163,20 @@ pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<()
         .with_context(|| format!("creating delivery mailbox {}", path.display()))?;
     let (pending, ack) = event_paths(path, sequence, text);
     if ack.exists() {
-        return Ok(());
+        return Ok(Receipt::Recorded);
+    }
+    // One attempt per sequence is in flight at a time.  A later attempt for
+    // the same sequence re-renders the events an unrecorded file already
+    // carries -- the item's watermark has not moved -- so publishing beside it
+    // would put those events in the session twice.  It waits for the record
+    // instead, and reports a hold if it does not come: the caller keeps its
+    // events un-seen and the next pass tries again.
+    let started = Instant::now();
+    while unacknowledged(path, sequence, &pending) {
+        if started.elapsed() >= RECORD_TIMEOUT {
+            return Err(DeliveryUnrecorded { sequence }.into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     if !pending.exists() {
         let stem = pending
@@ -87,17 +190,13 @@ pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<()
         std::fs::rename(&temporary, &pending)
             .with_context(|| format!("publishing delivery {}", pending.display()))?;
     }
-    let started = Instant::now();
-    while started.elapsed() < ACK_TIMEOUT {
+    while started.elapsed() < RECORD_TIMEOUT {
         if ack.exists() {
-            return Ok(());
+            return Ok(Receipt::Recorded);
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    bail!(
-        "the harness did not acknowledge out-of-band delivery through {}",
-        path.display()
-    )
+    Ok(Receipt::Published)
 }
 
 #[cfg(test)]
@@ -112,6 +211,88 @@ mod tests {
             sandbox.state_dir().join("delivery/owner/repo/42")
         );
         assert!(mailbox("../repo", 42).starts_with(sandbox.state_dir().join("delivery")));
+    }
+
+    /// The window #390 closes: a bridge that has published the event but has
+    /// no session record of it yet.  The attempt must report the mailbox, not
+    /// the transcript, and leave the event there for the harness to take and
+    /// for a relaunch to find.
+    #[tokio::test(start_paused = true)]
+    async fn an_event_the_harness_has_not_recorded_stays_pending() {
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root().join("mailbox");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("ready.json"),
+            format!("{{\"pid\":{}}}", std::process::id()),
+        )
+        .unwrap();
+        assert_eq!(
+            deliver(&root, 3, "[ssf] busy").await.unwrap(),
+            Receipt::Published
+        );
+        let (pending, ack) = event_paths(&root, 3, "[ssf] busy");
+        assert!(
+            !ack.exists(),
+            "an event the transcript does not hold was acknowledged"
+        );
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&pending).unwrap()).unwrap();
+        assert_eq!(
+            body["text"], "[ssf] busy",
+            "the event is no longer in the mailbox for the harness to take"
+        );
+
+        // The record lands at the agent's next step boundary, however long
+        // that takes: the next attempt observes it and reports the record.
+        std::fs::rename(&pending, &ack).unwrap();
+        assert_eq!(
+            deliver(&root, 3, "[ssf] busy").await.unwrap(),
+            Receipt::Recorded
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+    }
+
+    /// A second attempt for one sequence renders the events the first one
+    /// already carries (the item's watermark has not moved), so it must not
+    /// publish beside a file the session has not recorded: the session would
+    /// see those events twice.  It must not report a delivery either -- a
+    /// caller that took this as delivered would move its watermark past events
+    /// the mailbox never received.
+    #[tokio::test(start_paused = true)]
+    async fn an_unrecorded_attempt_holds_a_newer_one_without_claiming_delivery() {
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root().join("mailbox");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("ready.json"),
+            format!("{{\"pid\":{}}}", std::process::id()),
+        )
+        .unwrap();
+        assert_eq!(
+            deliver(&root, 4, "[ssf] one").await.unwrap(),
+            Receipt::Published
+        );
+        let blocked = deliver(&root, 4, "[ssf] one and two").await.unwrap_err();
+        assert!(
+            is_unrecorded(&blocked),
+            "the held attempt was reported as a delivery: {blocked:#}"
+        );
+        assert!(
+            !event_paths(&root, 4, "[ssf] one and two").0.exists(),
+            "a superset of an unrecorded event was published beside it"
+        );
+        // Once the first is recorded, the fuller text goes out on its own.
+        std::fs::rename(
+            event_paths(&root, 4, "[ssf] one").0,
+            event_paths(&root, 4, "[ssf] one").1,
+        )
+        .unwrap();
+        assert_eq!(
+            deliver(&root, 4, "[ssf] one and two").await.unwrap(),
+            Receipt::Published
+        );
+        assert!(event_paths(&root, 4, "[ssf] one and two").0.exists());
     }
 
     #[tokio::test]

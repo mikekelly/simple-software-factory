@@ -502,6 +502,7 @@ which harness is running in its workspaces"
                     e.last_prompt_at = Some(now_iso());
                     e.prompts_sent += 1;
                 }
+                Err(e) if is_held(&e) => debug!(session = id, "not told yet: {e:#}"),
                 Err(e) => warn!(
                     session = id,
                     "could not tell the agent the handover was cancelled: {e:#}"
@@ -560,6 +561,7 @@ which harness is running in its workspaces"
                 e.last_prompt_at = Some(now_iso());
                 e.prompts_sent += 1;
             }
+            Err(e) if is_held(&e) => debug!(session, "not told yet: {e:#}"),
             Err(e) => warn!(
                 session,
                 "could not tell the agent about the refused handover: {e:#}"

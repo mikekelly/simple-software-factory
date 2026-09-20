@@ -952,6 +952,7 @@ mod assignments;
 #[path = "events/mod.rs"]
 mod event_tests;
 mod handovers;
+mod held_delivery;
 mod invitations;
 mod listings;
 #[path = "login.rs"]
