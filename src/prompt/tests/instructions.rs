@@ -607,6 +607,10 @@ fn guide_holds_the_moved_reference() {
     assert!(g.contains("the item is the only channel between sessions"));
     assert!(g.contains("worked at its terminal through herdr"));
     assert!(!g.contains("`ssf tell"));
+    // A comment is never a command: the `/ssf` affordance is gone (#398),
+    // and the guide says where directing an item lives instead.
+    assert!(g.contains("A comment is a comment: ssf reads no command out of one"));
+    assert!(!g.contains("task-started"));
     assert!(g.contains("`ssf sub <n>`"));
     assert!(g.contains("`ssf unsub <n>` stops them; `ssf subs` lists"));
     assert!(g.contains("from the agent on owner/repo#M"));

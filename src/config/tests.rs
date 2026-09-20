@@ -288,14 +288,46 @@ harness = "claude"
     .unwrap();
     assert_eq!(cfg.daemon.review_label.as_deref(), Some("review"));
     assert_eq!(cfg.daemon.cleanup_grace_secs, Some(900));
+    let keys: Vec<&str> = cfg.daemon.retired_keys().iter().map(|(k, _)| *k).collect();
     assert_eq!(
-        cfg.daemon.retired_keys(),
+        keys,
         vec!["daemon.review_label", "daemon.cleanup_grace_secs"]
     );
     assert!(DaemonConfig::default().retired_keys().is_empty());
     let out = toml::to_string(&cfg).unwrap();
     assert!(!out.contains("review_label"), "{out}");
     assert!(!out.contains("cleanup_grace_secs"), "{out}");
+}
+
+#[test]
+fn the_slash_command_keys_still_load_and_are_not_written_back() {
+    let cfg = parse(
+        r#"
+[daemon]
+slash_commands = false
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+slash_commands = false
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg.daemon.slash_commands, Some(false));
+    assert_eq!(cfg.repos[0].slash_commands, Some(false));
+    assert_eq!(
+        cfg.retired_keys()
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "daemon.slash_commands",
+            "repo.slash_commands (repo acme/widgets)"
+        ],
+        "an upgrade names the switches ssf no longer reads, and why"
+    );
+    let out = toml::to_string(&cfg).unwrap();
+    assert!(!out.contains("slash_commands"), "{out}");
 }
 
 #[test]

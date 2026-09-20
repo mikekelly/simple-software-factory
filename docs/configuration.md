@@ -199,12 +199,12 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)); still accepted so old files load |
 | `daemon.cleanup_grace_secs` | | No longer used: it timed the reviewer sessions out, which went with #115 (see [Second opinions](sessions.md#second-opinions-the-gauntlet)); still accepted so old files load, and `ssf doctor` says so while it stays |
 | `daemon.review_label` | | No longer used: the label started a reviewer session until #115; ssf reacts to no label now. Still accepted so old files load; `ssf doctor` says so while it stays |
+| `daemon.slash_commands`, `repo.slash_commands` | | No longer used: a `/ssf <request>` comment was run as one-shot task until #398. ssf reads no command out of a comment now, whatever its first line says, and the item's comments are where collaboration happens; changing an item's stack is `ssf handover` or `ssf assign` at a terminal (see [Directing an item](sessions.md#directing-an-item-comments-ssf-handover-ssf-assign)). Still accepted so old files load; `ssf doctor` says so while either stays |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
 | `daemon.startup_driver_wait_secs` | `120` | How long to wait for herdr at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
-| `daemon.slash_commands` | `true` | Act on a `/ssf <request>` comment on an item (see [Task requests](sessions.md#task-requests-ssf-request)); `false` leaves such a comment an ordinary one: nothing is run, and nothing else changes |
 | `daemon.conflict_check_interval_secs` | `300` | Interval between base fetches and committed-branch conflict checks for active sessions; `0` disables. One fetch per repository, with merge simulations only for changed commit pairs (see [Branch conflicts](sessions.md#branch-conflicts)) |
 | `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf-server` then starts and watches the VM, and daemon-facing client commands run in the guest |
 | `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends)); unset, `ssf vm build` writes the platform's default here |
@@ -237,15 +237,14 @@ instructions = "Run `make test` before opening a PR."
 | `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
 | `repo.event_comments` | `daemon.event_comments` | Whether the daemon posts its events on this repository's items (`ssf repo set <owner/name> --event-comments false`) |
-| `repo.slash_commands` | `daemon.slash_commands` | Whether `/ssf` comments on this repository's items are acted on (`ssf repo set <owner/name> --slash-commands false`) |
 | `repo.conflict_check_interval_secs` | `daemon.conflict_check_interval_secs` | Conflict-check interval for this repository; `0` disables |
 | `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |
 
 The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with
 `--driver`, `--path`, `--clone-url`, `--base-branch`, `--command`,
 `--model`, `--effort`, `--instructions`, `--prompt-file`,
-`--allowed-users`, `--accept-anyone-risk`, `--event-comments` and
-`--slash-commands`; `ssf repo set` changes some
+`--allowed-users`, `--accept-anyone-risk` and `--event-comments`;
+`ssf repo set` changes some
 of those, sets `--git-name`, `--git-email`, `--git-signing-key` and
 `--git-credential`, and `--clear <field>` unsets one (`git` for the whole
 `[repo.git]` table, `git.credential` for one key); `ssf config get|set
@@ -617,10 +616,6 @@ not who edited it, and anyone with write access can edit anyone's text, so
 the list is a boundary against the internet, not a hard one among people
 who can already push. Prompts are unchanged: this is all daemon-side.
 
-The same list decides who may leave a [`/ssf <request>`](sessions.md#task-requests-ssf-request)
-comment for ssf to run: one by a login that is not on it is logged and
-ignored, and one the bot itself posted is never taken, so an agent's own
-post cannot start a task.
 
 `"*"` means anyone on GitHub. It is never accepted silently: `ssf config set
 daemon.allowed_users '["*"]'` and `ssf repo set <repo> --allowed-users '*'`

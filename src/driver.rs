@@ -580,7 +580,7 @@ impl Driver {
         match self {
             Driver::Herdr(_) => Ok(repo_root(repo_id).to_string()),
             // A directory that exists, so a test that starts a real process
-            // in it (a `/ssf` task) gets as far as running the command.
+            // in it gets as far as running the command.
             #[cfg(test)]
             Driver::Stub(_) => Ok(std::env::temp_dir().to_string_lossy().to_string()),
         }

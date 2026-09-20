@@ -42,7 +42,6 @@ pub(super) fn engine() -> Engine {
         conflict_checks: BTreeMap::new(),
         conflict_pairs: BTreeMap::new(),
         identity_checked_at: Some(Instant::now()),
-        tasks: crate::task::Tasks::new(),
         _state_lock: None,
     }
 }
@@ -950,6 +949,7 @@ const EXPIRED: &str = "2026-01-01T00:00:00Z";
 
 mod access_and_conflicts;
 mod assignments;
+mod directing;
 #[path = "events/mod.rs"]
 mod event_tests;
 mod handovers;
@@ -959,5 +959,4 @@ mod listings;
 #[path = "login.rs"]
 mod login_tests;
 mod releases;
-mod slash;
 mod state;
