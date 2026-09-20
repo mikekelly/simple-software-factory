@@ -754,12 +754,14 @@ pub struct DaemonConfig {
     /// and nothing else changes.
     #[serde(default = "default_true")]
     pub event_comments: bool,
-    /// Act on `/ssf <request>` in an item's comments (see `slash`): run the
-    /// request as a one-shot task on the repository's harness, for every
-    /// repository that does not decide for itself. Off: such a comment is
-    /// just a comment, delivered to the item's session like any other.
-    #[serde(default = "default_true")]
-    pub slash_commands: bool,
+    /// No longer used: a comment whose first line is `/ssf <request>` was
+    /// run as a one-shot task on the repository's harness, and the daemon
+    /// re-read the item's comments on every attach and resume, so a past
+    /// command overrode later operator intent. Collaboration is the item's
+    /// comments and `ssf handover` / `ssf assign` at the terminal. Accepted
+    /// so old config files still load; never written back.
+    #[serde(default, skip_serializing)]
+    pub slash_commands: Option<bool>,
     /// GitHub logins whose assignments, mentions, review requests, labels
     /// and posts ssf acts on, for every repository that has no list of its
     /// own (case-insensitive; the bot itself is always accepted). Unset:
@@ -775,17 +777,27 @@ pub struct DaemonConfig {
     pub accepted_anyone_risk: bool,
 }
 
+/// What `ssf doctor` says about a `/ssf` switch left in the file.
+const SLASH_RETIRED: &str = "`/ssf` task requests are gone, and a comment is an ordinary comment: \
+collaboration is on the item, with `ssf handover` and `ssf assign` at the terminal";
+
 impl DaemonConfig {
-    /// Keys still in the file that ssf no longer reads, for `ssf doctor`
-    /// to mention: `review_label` and `cleanup_grace_secs` belonged to the
-    /// reviewer sessions removed in #115.
-    pub fn retired_keys(&self) -> Vec<&'static str> {
+    /// Keys still in the file that ssf no longer reads, and what to say
+    /// about them, for `ssf doctor`: `review_label` and
+    /// `cleanup_grace_secs` belonged to the reviewer sessions removed in
+    /// #115, and `slash_commands` to the `/ssf` task requests removed in
+    /// #398.
+    pub fn retired_keys(&self) -> Vec<(&'static str, &'static str)> {
         let mut out = Vec::new();
+        let reviewers = "the `review` label and reviewer sessions went with one session per item";
         if self.review_label.is_some() {
-            out.push("daemon.review_label");
+            out.push(("daemon.review_label", reviewers));
         }
         if self.cleanup_grace_secs.is_some() {
-            out.push("daemon.cleanup_grace_secs");
+            out.push(("daemon.cleanup_grace_secs", reviewers));
+        }
+        if self.slash_commands.is_some() {
+            out.push(("daemon.slash_commands", SLASH_RETIRED));
         }
         out
     }
@@ -806,7 +818,7 @@ impl Default for DaemonConfig {
             resume_on_start: true,
             startup_driver_wait_secs: default_startup_driver_wait(),
             event_comments: true,
-            slash_commands: true,
+            slash_commands: None,
             allowed_users: None,
             accepted_anyone_risk: false,
         }
@@ -913,10 +925,9 @@ pub struct RepoConfig {
     /// not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_comments: Option<bool>,
-    /// Whether `/ssf` commands in this repository's comments are acted on
-    /// (see `DaemonConfig::slash_commands`); `daemon.slash_commands` when
-    /// not set.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// No longer used: see `DaemonConfig::slash_commands`. Accepted so old
+    /// config files still load; never written back.
+    #[serde(default, skip_serializing)]
     pub slash_commands: Option<bool>,
     /// Git identity for this repository's agents, key by key over `[git]`.
     #[serde(default, skip_serializing_if = "GitConfig::is_empty")]
@@ -1274,10 +1285,23 @@ impl Config {
         repo.event_comments.unwrap_or(self.daemon.event_comments)
     }
 
-    /// Whether `/ssf` commands in a repository's comments are acted on: the
-    /// repository's own say, else the instance's.
-    pub fn slash_commands(&self, repo: &RepoConfig) -> bool {
-        repo.slash_commands.unwrap_or(self.daemon.slash_commands)
+    /// Settings still in the file that ssf no longer reads, each with what
+    /// to say about it, for `ssf doctor`: the daemon's own, and each
+    /// repository's.
+    pub fn retired_keys(&self) -> Vec<(String, &'static str)> {
+        let mut out: Vec<(String, &'static str)> = self
+            .daemon
+            .retired_keys()
+            .into_iter()
+            .map(|(key, why)| (key.to_string(), why))
+            .collect();
+        for r in self.repos.iter().filter(|r| r.slash_commands.is_some()) {
+            out.push((
+                format!("repo.slash_commands (repo {})", r.name),
+                SLASH_RETIRED,
+            ));
+        }
+        out
     }
 
     /// The repository's conflict check interval, or the daemon default.

@@ -203,10 +203,6 @@ pub struct Engine {
     conflict_pairs: BTreeMap<(String, String), ConflictPair>,
     /// Repository identity runs separately from the normal issue-poll cadence.
     identity_checked_at: Option<Instant>,
-    /// The `/ssf` tasks this daemon is running (see `slash` and `task`): in
-    /// memory only, since a task is its child process and neither outlives
-    /// the daemon.
-    tasks: crate::task::Tasks,
     /// Held from construction through shutdown, before the state is ever
     /// read. A one-shot engine uses the same guard as the daemon. Declared
     /// last so it drops only after the rest of the engine.
@@ -384,7 +380,6 @@ mod implementation {
     mod onboarding;
     mod reconciliation;
     mod releases;
-    mod tasks;
 }
 
 async fn conflict_default_base(root: &str) -> Result<String> {
