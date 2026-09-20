@@ -869,6 +869,39 @@ deliveries resume"
         rs.created_etag = None;
     }
 
+    /// Held, not failed: a delivery the session's mailbox kept back (see
+    /// `Hold`).  Nothing was lost, but the item is owed another look, because
+    /// what clears the hold -- the session recording the event, or coming
+    /// back with a bridge -- happens in the harness and is invisible here.
+    /// A blocked session is re-armed by `unblock` when it comes back; a
+    /// mailbox hold has no such trigger, so the item is armed for a full read
+    /// of the listings rather than for a change that may be arbitrarily far
+    /// off (#390, #395).  A mailbox no live bridge polls is said once per
+    /// incident, so a session that has stopped taking events is not silent.
+    pub(in crate::engine) fn note_mailbox_hold(
+        &mut self,
+        repo: &RepoConfig,
+        number: u64,
+        e: &anyhow::Error,
+    ) {
+        let Some(hold) = crate::delivery_channel::hold(e) else {
+            debug!(repo = repo.name, issue = number, "held: {e:#}");
+            return;
+        };
+        self.forget_etags(repo);
+        let said = hold == crate::delivery_channel::Hold::Unavailable
+            && self.channel_lost.insert((repo.name.clone(), number));
+        if said {
+            warn!(
+                repo = repo.name,
+                issue = number,
+                "no live bridge on the session's mailbox; the item keeps its events: {e:#}"
+            );
+        } else {
+            debug!(repo = repo.name, issue = number, "held: {e:#}");
+        }
+    }
+
     /// Count a failure against an item; at `MAX_DELIVERY_FAILURES` in a
     /// row the binding is given up (the item is onboarded afresh on its
     /// next look) and, when there was a binding to give up (the item was

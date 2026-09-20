@@ -10,8 +10,13 @@
 //! (#390).  A delivery that publishes without a receipt is queued in the
 //! harness's own mailbox, not lost, and it stays pending for the relaunch path
 //! to find.
+//!
+//! A mailbox no live bridge polls -- its ready marker is gone, or names a
+//! process that has exited -- is a [`Hold`] too, not a failure: nothing is
+//! published, so the item keeps its events, and the bridge repairs its own
+//! marker while it runs, which leaves a session restart as the fix (#395).
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -35,12 +40,34 @@ pub(crate) enum Receipt {
     Published,
 }
 
-/// Is this "an earlier event of this sequence is not recorded yet, so nothing
-/// was published"?  The caller must keep its events un-seen: they were never
-/// handed to the mailbox, and a relaunch will not find them.
-pub(crate) fn is_unrecorded(e: &anyhow::Error) -> bool {
-    e.chain()
-        .any(|c| c.downcast_ref::<DeliveryUnrecorded>().is_some())
+/// A hold on the session's mailbox: a state only the harness can clear.  An
+/// event it has not recorded yet, or a bridge that is not there to take one.
+/// Neither is a failure -- nothing was lost, and a session that is gone wants
+/// a restart, not a dropped binding -- so the caller keeps the item's events
+/// un-seen and tries again rather than counting toward giving up on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// An earlier event of this sequence is published and not recorded.
+    Unrecorded,
+    /// No live bridge attests to this mailbox (its ready marker is absent, or
+    /// names a process that has exited).
+    Unavailable,
+}
+
+/// The hold this error is, if it is one.  Both clear inside the harness -- by
+/// recording the event, or by the session coming back with a bridge -- so a
+/// pass that meets one reads the item again rather than waiting for a listing
+/// change that may be arbitrarily far off.
+pub(crate) fn hold(e: &anyhow::Error) -> Option<Hold> {
+    e.chain().find_map(|c| {
+        if c.downcast_ref::<DeliveryUnrecorded>().is_some() {
+            Some(Hold::Unrecorded)
+        } else if c.downcast_ref::<DeliveryUnavailable>().is_some() {
+            Some(Hold::Unavailable)
+        } else {
+            None
+        }
+    })
 }
 
 /// The same hold as an error value, for the driver stub: a test that needs a
@@ -49,6 +76,15 @@ pub(crate) fn is_unrecorded(e: &anyhow::Error) -> bool {
 #[cfg(test)]
 pub(crate) fn held(sequence: u64) -> anyhow::Error {
     DeliveryUnrecorded { sequence }.into()
+}
+
+/// [`held`] for the mailbox no live bridge attests to.
+#[cfg(test)]
+pub(crate) fn unavailable(mailbox: &Path) -> anyhow::Error {
+    DeliveryUnavailable {
+        mailbox: mailbox.to_path_buf(),
+    }
+    .into()
 }
 
 pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
@@ -152,12 +188,35 @@ the newer events wait for it rather than being marked delivered",
 
 impl std::error::Error for DeliveryUnrecorded {}
 
+/// The mailbox's bridge is not there to take an event: no ready marker, or
+/// one naming a process that has exited.  The marker is the running poller's
+/// own attestation and the poller repairs it, so this is what a session that
+/// is gone, or that never loaded the bridge, looks like -- and it is a hold,
+/// not a failure: nothing is published, the item's events stay un-seen, and a
+/// restart takes them.
+#[derive(Debug)]
+pub(crate) struct DeliveryUnavailable {
+    mailbox: PathBuf,
+}
+
+impl std::fmt::Display for DeliveryUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the harness delivery bridge is unavailable at {}; restart the session to load it",
+            self.mailbox.display()
+        )
+    }
+}
+
+impl std::error::Error for DeliveryUnavailable {}
+
 pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<Receipt> {
     if !available(path) {
-        bail!(
-            "the harness delivery bridge is unavailable at {}; restart the session to load it",
-            path.display()
-        );
+        return Err(DeliveryUnavailable {
+            mailbox: path.to_path_buf(),
+        }
+        .into());
     }
     std::fs::create_dir_all(path)
         .with_context(|| format!("creating delivery mailbox {}", path.display()))?;
@@ -274,8 +333,9 @@ mod tests {
             Receipt::Published
         );
         let blocked = deliver(&root, 4, "[ssf] one and two").await.unwrap_err();
-        assert!(
-            is_unrecorded(&blocked),
+        assert_eq!(
+            hold(&blocked),
+            Some(Hold::Unrecorded),
             "the held attempt was reported as a delivery: {blocked:#}"
         );
         assert!(
@@ -344,5 +404,52 @@ mod tests {
             1,
             "a later event must not delete the earlier durable acknowledgement"
         );
+    }
+
+    /// A mailbox no live bridge attests to: the ready marker is gone, or it
+    /// names a process that has exited.  The running poller repairs its own
+    /// marker (#395), so this is what a session that is gone -- or one that
+    /// never loaded the bridge -- looks like, and it must hold the item's
+    /// events rather than count toward giving the binding up: a session
+    /// restart takes them, and a dropped binding would deliver nothing.
+    #[tokio::test]
+    async fn a_mailbox_no_live_bridge_attests_to_is_held_not_failed() {
+        let sandbox = crate::config::test_support::sandbox();
+        let root = sandbox.root().join("mailbox");
+        std::fs::create_dir(&root).unwrap();
+
+        let bare = deliver(&root, 2, "[ssf] hello").await.unwrap_err();
+        assert_eq!(hold(&bare), Some(Hold::Unavailable), "{bare:#}");
+        assert!(
+            bare.to_string().contains("restart the session to load it"),
+            "the refusal must still name the fix: {bare}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            0,
+            "nothing may be published into a mailbox no bridge polls"
+        );
+
+        // The shapes a lost marker takes: an unparseable file, a pid no
+        // process can have (which stands for one that has exited), and a
+        // file that is not there at all (the case above).
+        for marker in [&b"not json"[..], &b"{\"pid\":2147483647}"[..]] {
+            std::fs::write(root.join("ready.json"), marker).unwrap();
+            let e = deliver(&root, 2, "[ssf] hello").await.unwrap_err();
+            assert_eq!(hold(&e), Some(Hold::Unavailable), "{e:#}");
+            assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        }
+
+        // A marker a live poller attests to publishes as it did before.
+        std::fs::write(
+            root.join("ready.json"),
+            format!("{{\"pid\":{}}}", std::process::id()),
+        )
+        .unwrap();
+        assert_eq!(
+            deliver(&root, 2, "[ssf] hello").await.unwrap(),
+            Receipt::Published
+        );
+        assert_eq!(hold(&anyhow::anyhow!("elsewhere")), None);
     }
 }

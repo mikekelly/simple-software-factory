@@ -838,6 +838,9 @@ pub struct StubState {
     /// When set, every delivery is held: an earlier event of its sequence is
     /// not recorded yet, so nothing is published and nothing is delivered.
     pub deliver_held: bool,
+    /// When set, every delivery finds no live bridge behind the mailbox: the
+    /// session is not there to take an event, or never loaded the bridge.
+    pub deliver_unavailable: bool,
     /// The harness each worktree's pane is running: what `ps` reports as
     /// `AgentInfo.agent_type`, and so what ssf reads as the session's own
     /// harness (#349). Kept as a real driver's answer is: a `start` or a
@@ -1033,6 +1036,14 @@ impl StubDriver {
                     .channel
                     .context("a held delivery needs a mailbox channel")?;
                 return Err(crate::delivery_channel::held(sequence));
+            }
+            // A delivery the mailbox's bridge is not there to take: the item
+            // keeps its events and its binding (#395).
+            if s.deliver_unavailable {
+                let (mailbox, _) = relaunch
+                    .channel
+                    .context("an unavailable delivery needs a mailbox channel")?;
+                return Err(crate::delivery_channel::unavailable(mailbox));
             }
             if !s.worktrees.contains(worktree_id) {
                 bail!("{worktree_id}: no such workspace");
