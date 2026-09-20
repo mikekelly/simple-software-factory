@@ -464,21 +464,12 @@ impl Engine {
             {
                 Ok(()) => {
                     self.failures.remove(&(repo.name.clone(), issue.number));
+                    self.channel_lost.remove(&(repo.name.clone(), issue.number));
                 }
-                // Held, not failed: nothing was lost, but the item is owed
-                // another look, because what clears the hold -- the session
-                // recording the event -- happens in the harness and is
-                // invisible here. A blocked session is re-armed by `unblock`
-                // when it comes back; the wait behind an unrecorded event has
-                // no such trigger, so the next pass reads the listings in
-                // full instead of waiting for a change that may be
-                // arbitrarily far off (#390).
-                Err(e) if is_held(&e) => {
-                    debug!(repo = repo.name, issue = issue.number, "held: {e:#}");
-                    if crate::delivery_channel::is_unrecorded(&e) {
-                        self.forget_etags(repo);
-                    }
-                }
+                // Held, not failed: nothing was lost, and the item is armed
+                // for another look by the hold itself (see
+                // `note_mailbox_hold`).
+                Err(e) if is_held(&e) => self.note_mailbox_hold(repo, issue.number, &e),
                 Err(e) => {
                     all_ok = false;
                     self.note_failure(repo, issue.number, &e).await;
@@ -508,12 +499,7 @@ impl Engine {
             }
             match self.retire_issue(repo, owner, name, number).await {
                 Ok(()) => {}
-                Err(e) if is_held(&e) => {
-                    debug!(repo = repo.name, issue = number, "retirement held: {e:#}");
-                    if crate::delivery_channel::is_unrecorded(&e) {
-                        self.forget_etags(repo);
-                    }
-                }
+                Err(e) if is_held(&e) => self.note_mailbox_hold(repo, number, &e),
                 Err(e) => {
                     all_ok = false;
                     warn!(repo = repo.name, issue = number, "retiring failed: {e:#}");

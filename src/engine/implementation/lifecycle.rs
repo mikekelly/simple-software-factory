@@ -312,6 +312,7 @@ impl Engine {
             workspaces: BTreeMap::new(),
             workspaces_read: BTreeSet::new(),
             refetch: BTreeSet::new(),
+            channel_lost: BTreeSet::new(),
             startup_pass: false,
             onboarding: None,
             adopting: None,

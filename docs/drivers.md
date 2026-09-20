@@ -65,11 +65,18 @@ That is the same path that reconciles a recorded delivery, so a harness killed
 inside the injection window loses nothing (#390).
 
 The mailbox lives under the factory state directory at
-`delivery/<owner>/<repo>/<issue>/`. Its ready marker belongs to the running
-extension. After upgrading SSF, restart any already-running OMP/Pi session so
-it is relaunched with the bridge; until then delivery is held rather than
-risking a terminal paste. `ssf doctor` reports a live OMP/Pi session whose
-marker is unavailable.
+`delivery/<owner>/<repo>/<issue>/`. Its ready marker is the running
+extension's own attestation that events left there will be taken, and the
+poller writes it whenever the file does not name its process; a session that
+changes under the process — OMP's `session_switch`, `session_branch`,
+`session_tree` — takes the marker over with the poller, as `session_start`
+does. A marker lost while the session lives is therefore repaired within a
+poll, instead of refusing that session's channel for the rest of its life
+(#395). A mailbox no live bridge attests to holds the item's events: nothing
+is published, no failure is counted against the item, and a session restart
+takes what is waiting. After upgrading SSF, restart any already-running
+OMP/Pi session so it is relaunched with the bridge; `ssf doctor` reports a
+live OMP/Pi session whose marker is unavailable.
 
 Claude Code's default command adds
 `--settings '{"crossSessionInbound":"accept"}'` alongside bypass permissions.

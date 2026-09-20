@@ -123,11 +123,12 @@ fn is_blocked(e: &anyhow::Error) -> bool {
         .any(|c| c.downcast_ref::<SessionBlocked>().is_some())
 }
 
-/// Held, not failed: the session is blocked, or an event it has not recorded
-/// yet keeps a newer one waiting.  Nothing is lost either way, so the item
-/// keeps its place, its events stay un-seen, and the next pass tries again.
+/// Held, not failed: the session is blocked, or its mailbox holds a delivery
+/// back -- an event it has not recorded yet, or a bridge that is not there to
+/// take one.  Nothing is lost in any of those, so the item keeps its place,
+/// its events stay un-seen, and the next pass tries again.
 fn is_held(e: &anyhow::Error) -> bool {
-    is_blocked(e) || crate::delivery_channel::is_unrecorded(e)
+    is_blocked(e) || crate::delivery_channel::hold(e).is_some()
 }
 
 pub struct Engine {
@@ -178,6 +179,11 @@ pub struct Engine {
     /// that it survives from the pass that arms it to the one that spends
     /// it, so it must never be cleared at the top of a pass.
     refetch: BTreeSet<String>,
+    /// Items whose session's mailbox was found with no live bridge behind it
+    /// (`Hold::Unavailable`), so the warning is one line per incident rather
+    /// than one per pass. Cleared for an item whose delivery goes through
+    /// again, so a second loss is said again.
+    channel_lost: BTreeSet<(String, u64)>,
     /// The startup pass (`resume_interrupted`) is under way: a harness
     /// started again now is `resumed` after a restart, not a lost terminal.
     startup_pass: bool,

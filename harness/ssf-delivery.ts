@@ -9,6 +9,18 @@
  * call it could still drop.  Until the record is there the file stays pending,
  * which is what the daemon retries and what a relaunch reconciles (#390).
  * No bytes pass through the terminal composer.
+ *
+ * The mailbox's `ready.json` is this poller's own attestation that events left
+ * there will be taken: the daemon reads the pid out of it and asks whether
+ * that process is still running.  It is written by the poller, on every tick
+ * that does not find it already naming this process, so a marker that is lost
+ * while the session lives is repaired within a poll rather than refusing the
+ * channel for the rest of the session's life (#395).  A session that
+ * shuts down removes it (a process the daemon would find gone is not an
+ * attestation), and one that changes under this process -- OMP's
+ * `session_switch`, `session_branch`, `session_tree` -- takes it over with the
+ * poller, where `session_start` also starts a transcript with nothing handed
+ * to it yet (#390).
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -29,6 +41,18 @@ interface SessionContext {
 	sessionManager: SessionManager;
 }
 
+/**
+ * The session events that put this process on a different session: a new one,
+ * a resume, a fork, a branch or a tree move.  Each is a transcript of its own
+ * and, after a dispose, a poller to start again.
+ */
+type SessionEvent =
+	| "session_start"
+	| "session_switch"
+	| "session_branch"
+	| "session_tree"
+	| "session_shutdown";
+
 /** The slice of the Pi/OMP extension API the bridge uses. */
 interface Harness {
 	sendMessage(
@@ -42,7 +66,7 @@ interface Harness {
 		options: { deliverAs: string; triggerTurn: boolean },
 	): void;
 	on(
-		event: "session_start" | "session_shutdown",
+		event: SessionEvent,
 		handler: (event: unknown, ctx: SessionContext) => Promise<void>,
 	): void;
 }
@@ -94,10 +118,39 @@ export default function (pi: Harness) {
 		);
 	}
 
+	/**
+	 * The marker, as the daemon reads it: this process is polling this
+	 * mailbox and will take what is left there.  Written whenever the file
+	 * does not already name this process, so a marker that is removed,
+	 * truncated, or left by a session that is gone is repaired by the next
+	 * poll rather than refusing the channel for the rest of the session's
+	 * life (#395).  A mailbox that cannot be made or written leaves the
+	 * daemon holding rather than delivering, which is the safe direction.
+	 */
+	function attest() {
+		if (!mailbox || !ready) return;
+		try {
+			const owner: unknown = JSON.parse(fs.readFileSync(ready, "utf8"));
+			if (
+				owner !== null &&
+				typeof owner === "object" &&
+				"pid" in owner &&
+				owner.pid === process.pid
+			) {
+				return;
+			}
+		} catch {
+			// Missing, torn or not ours: written below.
+		}
+		fs.mkdirSync(mailbox, { recursive: true, mode: 0o700 });
+		fs.writeFileSync(ready, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
+	}
+
 	async function poll() {
 		if (!mailbox || polling) return;
 		polling = true;
 		try {
+			attest();
 			const pending = fs
 				.readdirSync(mailbox)
 				.filter((name) => name.endsWith(".json") && name !== "ready.json")
@@ -137,22 +190,41 @@ export default function (pi: Harness) {
 		}
 	}
 
-	pi.on("session_start", async (_event, ctx) => {
+	/**
+	 * A session this process is on now: take over the poller and the marker
+	 * for it.  A session starting where an earlier one did not shut down
+	 * first (a replaced or restarted session) must do the same, or two
+	 * pollers could hand the same pending event over twice; a session that
+	 * changed under the running process (a switch, branch or tree move)
+	 * arrives with a transcript of its own, and after a dispose with no
+	 * poller at all.
+	 */
+	async function attach(ctx: SessionContext) {
 		if (!mailbox || !ready) return;
-		// A session starting where an earlier one did not shut down first
-		// (a replaced or restarted session) takes over the poller; two of
-		// them could hand the same pending event over twice.
 		clearInterval(timer);
 		sessionManager = ctx.sessionManager;
-		// A session starting here has a transcript of its own: what an earlier
-		// one in this process was handed is not in it, so those files are its
-		// to take.
-		handed.clear();
-		fs.mkdirSync(mailbox, { recursive: true, mode: 0o700 });
-		fs.writeFileSync(ready, JSON.stringify({ pid: process.pid }), { mode: 0o600 });
 		await poll();
 		timer = setInterval(poll, 100);
+	}
+
+	pi.on("session_start", async (_event, ctx) => {
+		// A session starting here has a transcript of its own and no queue
+		// left over from the last one: what an earlier session in this
+		// process was handed is not in it, so those files are its to take
+		// (#390).
+		handed.clear();
+		await attach(ctx);
 	});
+
+	// A session that changes under the running process keeps what was handed
+	// to it: OMP's fork and tree move replace the transcript but not the
+	// queue an unrecorded injection may still be sitting in, so taking that
+	// file again would put one item event into the agent twice.  The poller
+	// and the marker are taken over all the same, which is also how a
+	// switch that arrives after a dispose gets them back.
+	for (const event of ["session_switch", "session_branch", "session_tree"] as const) {
+		pi.on(event, (_event, ctx) => attach(ctx));
+	}
 
 	pi.on("session_shutdown", async () => {
 		clearInterval(timer);
