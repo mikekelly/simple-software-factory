@@ -100,8 +100,8 @@ impl Origin {
             Some(r) if r.trim().eq_ignore_ascii_case(&self.repo) => format!("#{}", self.number),
             _ => self.to_string(),
         };
-        let stack = match stack {
-            Some(stack) => format!(" {}", stack.label()),
+        let stack = match stack.and_then(Stack::label) {
+            Some(label) => format!(" {label}"),
             None => String::new(),
         };
         format!("{ROBOT}{item}{stack} {SAYS}")
@@ -168,22 +168,34 @@ impl Stack {
         })
     }
 
-    /// `claude/opus/high`: the parts that are known, in that order. A part
-    /// that is not known is left out where nothing follows it, and is `-`
-    /// where one does (an effort configured with no model), so the fields
-    /// keep their places.
-    pub fn label(&self) -> String {
+    /// `claude/opus/high`: the parts the byline can spell, in that order. A
+    /// part that is not known is left out where nothing follows it, and is
+    /// `-` where one does (an effort configured with no model), so the
+    /// fields keep their places.
+    ///
+    /// Only a part the byline can read back (`is_byline`) is written:
+    /// anything else — a harness that is a display name with a space in it,
+    /// a model id with punctuation of its own — would be a byline `strip`
+    /// cannot recognise, and so would be left in front of every agent that
+    /// reads a post carrying it. Such a part names nothing, and `None` when
+    /// the harness itself is one of them.
+    pub fn label(&self) -> Option<String> {
+        if !is_stack(&self.harness) {
+            return None;
+        }
+        let model = self.model.as_deref().filter(|m| is_stack(m));
+        let effort = self.effort.as_deref().filter(|e| is_stack(e));
         let mut label = self.harness.clone();
-        if self.model.is_none() && self.effort.is_none() {
-            return label;
+        if model.is_none() && effort.is_none() {
+            return Some(label);
         }
         label.push('/');
-        label.push_str(self.model.as_deref().unwrap_or("-"));
-        if let Some(effort) = &self.effort {
+        label.push_str(model.unwrap_or("-"));
+        if let Some(effort) = effort {
             label.push('/');
             label.push_str(effort);
         }
-        label
+        Some(label)
     }
 }
 
@@ -637,8 +649,8 @@ mod tests {
         assert_eq!(strip(&format!("{stacked}\n\nhi")), "hi");
     }
 
-    /// Only the parts a session has are named, and a missing one keeps the
-    /// places of the parts after it.
+    /// Only the parts a session has, and that the byline can read back, are
+    /// named; a missing one keeps the places of the parts after it.
     #[test]
     fn a_stack_names_the_parts_that_are_known() {
         let stack = |harness: &str, model: Option<&str>, effort: Option<&str>| Stack {
@@ -646,17 +658,56 @@ mod tests {
             model: model.map(str::to_string),
             effort: effort.map(str::to_string),
         };
+        let label = |harness: &str, model: Option<&str>, effort: Option<&str>| {
+            stack(harness, model, effort).label()
+        };
         assert_eq!(
-            stack("claude", Some("opus"), Some("high")).label(),
-            "claude/opus/high"
+            label("claude", Some("opus"), Some("high")).as_deref(),
+            Some("claude/opus/high")
         );
-        assert_eq!(stack("omp", None, None).label(), "omp");
-        assert_eq!(stack("claude", Some("opus"), None).label(), "claude/opus");
+        assert_eq!(label("omp", None, None).as_deref(), Some("omp"));
         assert_eq!(
-            stack("claude", None, Some("high")).label(),
-            "claude/-/high",
+            label("claude", Some("opus"), None).as_deref(),
+            Some("claude/opus")
+        );
+        assert_eq!(
+            label("claude", None, Some("high")).as_deref(),
+            Some("claude/-/high"),
             "an effort with no model keeps the model's place"
         );
+        // A part the byline could not read back is not written into one: it
+        // would be left in front of every agent that reads the post.
+        assert_eq!(label("Claude Code", Some("opus"), None), None);
+        assert_eq!(
+            label("claude", Some("two words"), None).as_deref(),
+            Some("claude")
+        );
+        assert_eq!(
+            label("claude", Some("two words"), Some("high")).as_deref(),
+            Some("claude/-/high")
+        );
+        assert_eq!(
+            label("claude", Some("opus"), Some("on, high")).as_deref(),
+            Some("claude/opus")
+        );
+        // Whatever a config holds, the byline the shim writes comes back
+        // off: the writer and the reader agree on one alphabet, including
+        // for a harness ssf runs sessions for and one it would not accept.
+        for harness in [
+            "claude",
+            "omp",
+            "pi",
+            "codex",
+            "opencode",
+            "copilot",
+            "gemini",
+            "Claude Code",
+        ] {
+            let stack = stack(harness, Some("gpt-5.6-sol"), Some("xhigh"));
+            let line = o().first_line(Some("acme/widgets"), false, Some(&stack));
+            let body = format!("{line}\n\nhi");
+            assert_eq!(strip(&body), "hi", "{harness}: {body}");
+        }
         assert_eq!(
             Stack::from_parts(Some(" claude "), Some("opus"), Some("  ")),
             Some(stack("claude", Some("opus"), None))
@@ -670,7 +721,10 @@ mod tests {
             effort: Some("high".into()),
             ..Default::default()
         };
-        assert_eq!(repo.stack().label(), "codex/gpt-5.6-sol/high");
+        assert_eq!(
+            repo.stack().label().as_deref(),
+            Some("codex/gpt-5.6-sol/high")
+        );
     }
 
     /// A byline that carries a stack is still just a byline: what the agent

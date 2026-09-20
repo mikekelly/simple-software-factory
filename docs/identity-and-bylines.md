@@ -174,8 +174,9 @@ The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and
 `SSF_EFFORT`; `SSF_HARNESS` is the variable the
 [Pi and Oh My Pi launcher](drivers.md) already names the harness in for the
 delivery bridge's injection mode, and it means the same thing here: which
-harness this session runs. A launcher used by hand (no `ssf launch` stack)
-still sets it, so such a session's posts read `🤖#N pi says:`.
+harness this session runs. A launcher used by hand sets it too, and drops a
+model and effort inherited from the pane it was run in (they belong to that
+session), so a hand-run launcher's posts read `🤖#N pi says:`.
 
 `ssf launch` links `~/.config/ssf/bin/gh` to the ssf binary and puts that
 directory first on the agent's `PATH` (next to it, `ssf` links to the same

@@ -144,7 +144,8 @@ session posts starts with one line that is both a byline for people and a tag fo
 `🤖#N claude/opus/high says: <!-- ssf: origin=owner/repo#N -->` (`🤖owner/repo#N ...` when the post is on another \
 repository; `mode=delegate` on a hand-off), then a blank line. The harness, model and effort \
 between the item and `says:` are what this session was launched with, so a reader can tell \
-which session said what when a handover has replaced the agent. GitHub links the byline to the session's item. The `gh` on the \
+which session said what when a handover has replaced the agent; `SSF_HARNESS`, `SSF_MODEL` and \
+`SSF_EFFORT` name them for this session. GitHub links the byline to the session's item. The `gh` on the \
 session's PATH adds the line when `--body` or `--body-file` is passed to `issue create|comment` \
 or `pr create|comment|review` (`new` counts as `create`); any other way of posting (`gh api`, `gh pr create --fill`, \
 `gh pr edit --body`, ...) needs it added by hand, as the first line of the body, with this \
