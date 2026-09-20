@@ -15,9 +15,15 @@
 //! process that has exited -- is a [`Hold`] too, not a failure: nothing is
 //! published, so the item keeps its events, and the bridge repairs its own
 //! marker while it runs, which leaves a session restart as the fix (#395).
+//!
+//! That contract is the bridge's, so the daemon serves the bridge it was built
+//! with rather than whichever file the filesystem happens to hold: the two
+//! [`Serving`]s below hand a session this build's own copy whenever the
+//! installed one is from another build (#402).
 
 use anyhow::{Context, Result};
 use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::Instant;
@@ -100,8 +106,173 @@ pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
     path.join(number.to_string())
 }
 
+// ---- the bridge and the launcher this build ships -------------------------
+
+/// The two harness files this build ships, embedded.  The daemon starts a
+/// session with the path it names (`SSF_PI_BRIDGE`, `SSF_PI_LAUNCHER`) and the
+/// package installs the same two files under `share/ssf/harness`; embedding
+/// them keeps the pair in lockstep with the daemon whose mailbox protocol they
+/// implement, whatever the filesystem holds.  A factory whose daemon was
+/// replaced without its harness files -- a hand-installed binary, the dev build
+/// `packaging/dev-install.sh` points the service at while the package's copies
+/// stay behind, or a standalone binary install with no share tree at all --
+/// otherwise runs a bridge from another build.  That is not a cosmetic
+/// mismatch: the ready marker a bridge older than this daemon never repairs is
+/// exactly what the daemon reads as "no live bridge", so every event for the
+/// item is held, its agent never hears that the item closed, and nothing
+/// releases its workspace (#402).
+const BRIDGE: &[u8] = include_bytes!("../harness/ssf-delivery.ts");
+const LAUNCHER: &[u8] = include_bytes!("../harness/ssf-pi-launch");
+
+const BRIDGE_NAME: &str = "harness/ssf-delivery.ts";
+const LAUNCHER_NAME: &str = "harness/ssf-pi-launch";
+
+/// Where a session is pointed for one of those files, and whether that path
+/// holds this build's copy.
+pub(crate) struct Serving {
+    /// The path a session is started with.
+    pub path: PathBuf,
+    /// False only when `path` does not hold this build's bytes, which is the
+    /// one state a session cannot work around: its channel takes no events.
+    pub sound: bool,
+    /// An installed copy is there and is not this build's: a package and a
+    /// binary from different builds, which is worth saying out loud.
+    pub skewed: bool,
+    /// Why `path` is not the installed copy, when it is not.
+    pub note: Option<String>,
+}
+
+impl Serving {
+    /// What a check line about this says after the path: nothing when the
+    /// installed copy is the one this build ships.
+    pub(crate) fn detail(&self) -> String {
+        match (&self.note, self.sound) {
+            (None, _) => String::new(),
+            (Some(note), true) => format!("; {note}"),
+            (Some(note), false) => format!(
+                "; {note}; this ssf's own copy could not be written, so a session started now \
+would have no bridge to load"
+            ),
+        }
+    }
+}
+
+/// The bridge a session is started with.
 pub(crate) fn bridge() -> PathBuf {
-    crate::platform::share_file("harness/ssf-delivery.ts")
+    bridge_serving().path
+}
+
+/// The launcher a session is started with.
+pub(crate) fn launcher() -> PathBuf {
+    launcher_serving().path
+}
+
+pub(crate) fn bridge_serving() -> Serving {
+    served(
+        BRIDGE_NAME,
+        BRIDGE,
+        &installed_candidates(BRIDGE_NAME),
+        &crate::config::state_dir(),
+    )
+}
+
+pub(crate) fn launcher_serving() -> Serving {
+    served(
+        LAUNCHER_NAME,
+        LAUNCHER,
+        &installed_candidates(LAUNCHER_NAME),
+        &crate::config::state_dir(),
+    )
+}
+
+/// Where this platform installs that file, best first (see
+/// [`crate::platform::share_candidates`]).
+fn installed_candidates(name: &str) -> Vec<PathBuf> {
+    let exe = std::env::current_exe().ok();
+    crate::platform::share_candidates(
+        name,
+        exe.as_deref().and_then(Path::parent),
+        crate::platform::detect().os,
+    )
+}
+
+/// The installed copy when it is byte-for-byte this build's file -- the normal
+/// case, and the one the package's own paths name -- else this build's own copy
+/// under the state directory, so a daemon and a bridge from different builds
+/// cannot be paired.
+fn served(name: &str, bytes: &[u8], candidates: &[PathBuf], state_dir: &Path) -> Serving {
+    let installed = candidates
+        .first()
+        .cloned()
+        .unwrap_or_else(|| PathBuf::from(name));
+    if let Some(found) = candidates.iter().find(|path| holds(path, bytes)) {
+        return Serving {
+            path: found.clone(),
+            sound: true,
+            skewed: false,
+            note: None,
+        };
+    }
+    let skewed = installed.exists();
+    let note = if skewed {
+        format!(
+            "the installed copy at {} is not the one this ssf ships",
+            installed.display()
+        )
+    } else {
+        format!("no installed copy at {}", installed.display())
+    };
+    match own_copy(name, bytes, state_dir) {
+        Ok(path) => Serving {
+            path,
+            sound: true,
+            skewed,
+            note: Some(note),
+        },
+        Err(error) => Serving {
+            path: installed,
+            sound: false,
+            skewed,
+            note: Some(format!(
+                "{note}, and writing this ssf's own copy failed: {error:#}"
+            )),
+        },
+    }
+}
+
+/// This build's own copy of that file, under the state directory, written when
+/// it is not already there: a session started by this build always loads the
+/// bridge this build's daemon reads the protocol of.
+fn own_copy(name: &str, bytes: &[u8], state_dir: &Path) -> Result<PathBuf> {
+    let file = name.rsplit('/').next().unwrap_or(name);
+    let dir = state_dir.join("harness");
+    let path = dir.join(file);
+    // The launcher is executed; the bridge is only read.
+    let mode = if file.ends_with("pi-launch") {
+        0o755
+    } else {
+        0o644
+    };
+    if holds(&path, bytes) && !wrong_mode(&path, mode) {
+        return Ok(path);
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    crate::config::write_atomic(&path, bytes, mode)?;
+    // The mode is applied when the file is created, which an existing copy --
+    // an unexecutable launcher, say -- does not go through.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
+        .with_context(|| format!("setting the mode on {}", path.display()))?;
+    Ok(path)
+}
+
+fn holds(path: &Path, bytes: &[u8]) -> bool {
+    std::fs::read(path).is_ok_and(|on_disk| on_disk == bytes)
+}
+
+fn wrong_mode(path: &Path, mode: u32) -> bool {
+    std::fs::metadata(path)
+        .map(|meta| meta.permissions().mode() & 0o777 != mode)
+        .unwrap_or(true)
 }
 
 pub(crate) fn supports(harness: &str) -> bool {
@@ -270,6 +441,128 @@ mod tests {
             sandbox.state_dir().join("delivery/owner/repo/42")
         );
         assert!(mailbox("../repo", 42).starts_with(sandbox.state_dir().join("delivery")));
+    }
+
+    /// The bytes a session is pointed at are this build's, whatever the share
+    /// tree holds.  A bridge from another build is what an item whose every
+    /// event is held looks like -- its ready marker goes unrepaired and the
+    /// daemon reads that as "no live bridge" -- so the daemon must not depend
+    /// on a human to keep the two in lockstep (#402).
+    #[test]
+    fn the_installed_copy_is_used_when_it_is_this_builds() {
+        let sandbox = crate::config::test_support::sandbox();
+        let share = sandbox.root().join("share");
+        std::fs::create_dir(&share).unwrap();
+        let installed = share.join("ssf-delivery.ts");
+        std::fs::write(&installed, BRIDGE).unwrap();
+
+        let serving = served(
+            BRIDGE_NAME,
+            BRIDGE,
+            std::slice::from_ref(&installed),
+            &sandbox.state_dir(),
+        );
+        assert_eq!(serving.path, installed, "the package's own copy is served");
+        assert!(serving.sound && !serving.skewed);
+        assert!(
+            serving.detail().is_empty(),
+            "an aligned install is not worth a remark: {}",
+            serving.detail()
+        );
+    }
+
+    #[test]
+    fn a_copy_from_another_build_is_not_the_one_a_session_gets() {
+        let sandbox = crate::config::test_support::sandbox();
+        let share = sandbox.root().join("share");
+        std::fs::create_dir(&share).unwrap();
+        let installed = share.join("ssf-delivery.ts");
+        std::fs::write(&installed, "// a bridge from an earlier build\n").unwrap();
+
+        let serving = served(
+            BRIDGE_NAME,
+            BRIDGE,
+            std::slice::from_ref(&installed),
+            &sandbox.state_dir(),
+        );
+        assert!(
+            serving.sound,
+            "delivery is still sound: {}",
+            serving.detail()
+        );
+        assert!(serving.skewed, "the mismatch has to be visible");
+        assert_ne!(
+            serving.path, installed,
+            "a session must not be handed another build's bridge"
+        );
+        assert_eq!(
+            std::fs::read(&serving.path).unwrap(),
+            BRIDGE,
+            "the served bridge is not the one this build ships"
+        );
+        assert!(
+            serving.detail().contains(&installed.display().to_string()),
+            "the check line must name the copy it refused: {}",
+            serving.detail()
+        );
+        assert!(
+            std::path::Path::new(&serving.path).starts_with(sandbox.state_dir()),
+            "the copy served instead is this ssf's own: {}",
+            serving.path.display()
+        );
+    }
+
+    /// A standalone binary install has no share tree at all, which used to
+    /// hand a session a path to a file that was never installed.
+    #[test]
+    fn a_standalone_install_still_gets_a_bridge() {
+        let sandbox = crate::config::test_support::sandbox();
+        let missing = sandbox.root().join("share/ssf-delivery.ts");
+
+        let serving = served(
+            BRIDGE_NAME,
+            BRIDGE,
+            std::slice::from_ref(&missing),
+            &sandbox.state_dir(),
+        );
+        assert!(serving.sound, "{}", serving.detail());
+        assert!(!serving.skewed, "a share tree that is absent is not a skew");
+        assert!(serving.path.is_file());
+        assert_eq!(std::fs::read(&serving.path).unwrap(), BRIDGE);
+    }
+
+    /// The launcher is executed, not read.
+    #[test]
+    fn the_launcher_a_session_gets_can_be_executed() {
+        let sandbox = crate::config::test_support::sandbox();
+        let missing = sandbox.root().join("share/ssf-pi-launch");
+
+        let serving = served(LAUNCHER_NAME, LAUNCHER, &[missing], &sandbox.state_dir());
+        assert_eq!(std::fs::read(&serving.path).unwrap(), LAUNCHER);
+        let mode = std::fs::metadata(&serving.path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o111,
+            0o111,
+            "the launcher was written without its exec bits: {mode:o}"
+        );
+    }
+
+    /// Nowhere to write this build's own copy: the check says so rather than
+    /// reporting a bridge a session cannot take events through.
+    #[test]
+    fn a_copy_that_cannot_be_written_is_not_reported_sound() {
+        let sandbox = crate::config::test_support::sandbox();
+        let missing = sandbox.root().join("share/ssf-delivery.ts");
+        std::fs::create_dir_all(sandbox.state_dir()).unwrap();
+        // The directory the copy needs is a file.
+        std::fs::write(sandbox.state_dir().join("harness"), b"not a directory").unwrap();
+
+        let serving = served(BRIDGE_NAME, BRIDGE, &[missing], &sandbox.state_dir());
+        assert!(!serving.sound, "{}", serving.detail());
+        assert!(serving.detail().contains("could not be written"));
     }
 
     /// The window #390 closes: a bridge that has published the event but has

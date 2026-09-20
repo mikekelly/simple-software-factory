@@ -42,8 +42,13 @@ ssf --version
 
 Add `~/.local/bin` to your shell's PATH for future terminals. Release asset
 names include a version; install them under the unversioned names shown here.
-For updates, repeat with the new version, updating both binaries together on a
-local factory after stopping its daemon.
+The daemon carries the OMP/Pi delivery bridge and its launcher inside its own
+binary and serves them to sessions itself, so these two files are all a host
+factory needs — there is no `share/ssf` tree to keep beside them
+([drivers](drivers.md#item-activity-delivery)). For updates, repeat with the
+new version, updating both binaries together on a local factory after stopping
+its daemon, then restart any session that was already running: a session keeps
+the bridge it started with.
 
 ## Client only: operate an existing factory over SSH
 

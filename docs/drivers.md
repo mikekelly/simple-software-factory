@@ -64,6 +64,18 @@ still-pending event, and Herdr does not also submit it through the terminal.
 That is the same path that reconciles a recorded delivery, so a harness killed
 inside the injection window loses nothing (#390).
 
+`SSF_PI_BRIDGE` and `SSF_PI_LAUNCHER` name the two files this daemon was built
+with: the package installs the same copies under `/usr/share/ssf/harness`, and
+when the installed copy is not the one this build ships — a binary replaced
+without its package, the dev build `packaging/dev-install.sh` starts while the
+package's copies stay behind, or a standalone binary install with no share tree
+at all — the daemon serves its own copy from `harness/` under the factory state
+directory instead, and `ssf doctor` says which file it refused. The pairing is
+not cosmetic: the bridge is what repairs the mailbox's ready marker, so a
+session running one from another build takes no events at all — its item's
+every event is held and its agent never hears that the item closed (#402).
+Restarting the session is what loads the bridge this daemon serves.
+
 The mailbox lives under the factory state directory at
 `delivery/<owner>/<repo>/<issue>/`. Its ready marker is the running
 extension's own attestation that events left there will be taken, and the

@@ -889,6 +889,19 @@ deliveries resume"
                 issue = number,
                 "no live bridge on the session's mailbox; the item keeps its events: {e:#}"
             );
+            // A session keeps the bridge it started with, so a held mailbox is
+            // also how a package and a binary from different builds show up.
+            // Said once with the incident, because the same restart fixes both.
+            let bridge = crate::delivery_channel::bridge_serving();
+            if bridge.skewed {
+                warn!(
+                    repo = repo.name,
+                    issue = number,
+                    "this ssf serves the harness bridge from {}: {}",
+                    bridge.path.display(),
+                    bridge.note.as_deref().unwrap_or("")
+                );
+            }
         } else {
             debug!(repo = repo.name, issue = number, "held: {e:#}");
         }

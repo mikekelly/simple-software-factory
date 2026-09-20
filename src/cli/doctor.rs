@@ -349,22 +349,24 @@ pub(super) async fn doctor() -> Result<()> {
                 })
             });
         if uses_native_channel {
-            let bridge = crate::delivery_channel::bridge();
+            let bridge = crate::delivery_channel::bridge_serving();
             check(
-                bridge.is_file(),
+                bridge.sound,
                 format!(
-                    "{}: harness delivery bridge at {}",
+                    "{}: harness delivery bridge at {}{}",
                     r.name,
-                    bridge.display()
+                    bridge.path.display(),
+                    bridge.detail()
                 ),
             );
-            let launcher = crate::platform::share_file("harness/ssf-pi-launch");
+            let launcher = crate::delivery_channel::launcher_serving();
             check(
-                launcher.is_file(),
+                launcher.sound,
                 format!(
-                    "{}: harness session launcher at {}",
+                    "{}: harness session launcher at {}{}",
                     r.name,
-                    launcher.display()
+                    launcher.path.display(),
+                    launcher.detail()
                 ),
             );
         }

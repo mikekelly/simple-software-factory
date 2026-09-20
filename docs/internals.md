@@ -194,7 +194,11 @@ checks, and a restrictive content security policy. See
   resends only after a positively identified first-run dialog; an ambiguous
   screen is accepted so a consumed prompt cannot become a steering message.
 - **OMP/Pi bridge readiness.** `ssf launch` gives the extension the session's
-  mailbox and shipped extension path. The poller writes `ready.json` as its own
+  mailbox and the bridge this build ships: the installed `share/ssf/harness`
+  copy when it is byte-for-byte this daemon's own, else a copy of it under the
+  factory state directory, so a session never loads a bridge from another build
+  — the file that repairs the marker below, and the one whose absence holds
+  every event for an item (#402). The poller writes `ready.json` as its own
   attestation and rewrites it on any poll that does not find it naming its
   process, so a marker removed under a live session is repaired within a poll;
   a session that changes under the process (`session_switch`, `session_branch`,
@@ -219,8 +223,9 @@ checks, and a restrictive content security policy. See
   delivery ID as extension-only metadata. On relaunch, the bridge acknowledges
   an ID already in the resumed transcript or injects its pending event, and
   Herdr suppresses terminal delivery for that existing mailbox record. `ssf
-  doctor` checks the shipped bridge and launcher plus the ready marker of each
-  live OMP/Pi session.
+  doctor` checks the bridge and launcher a session would be started with — and
+  names the installed copy it refused, when the two differ — plus the ready
+  marker of each live OMP/Pi session.
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. The service comes back from any exit, a clean one
