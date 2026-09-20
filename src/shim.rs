@@ -29,7 +29,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::origin::{Origin, stamp_with};
+use crate::origin::{Origin, Stack, stamp_with};
 use session::Session;
 
 /// Keep individual body arguments well below exec limits, including Linux’s
@@ -164,12 +164,14 @@ pub fn run() -> ! {
     let utf8: Option<Vec<String>> = raw.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let bot = session.var("SSF_BOT");
     let gh_repo = session.var("GH_REPO");
+    let stack = session.stack();
     match (utf8, session.origin()) {
         (Some(args), Some(origin)) => {
             let shim = Shim {
                 origin: &origin,
                 bot: bot.as_deref(),
                 gh_repo: gh_repo.as_deref(),
+                stack: stack.as_ref(),
                 read: &read_body_file,
                 checkout: &checkout_repo,
             };
@@ -441,11 +443,13 @@ fn item_url(a: &str) -> Option<String> {
 /// world: `read` resolves `--body-file` (a path, or `-` for stdin),
 /// `checkout` names the current checkout's repository. `bot` is the bot
 /// login, to notice a `create --assignee <bot>` hand-off; `gh_repo` is the
-/// `GH_REPO` gh honours over the checkout.
+/// `GH_REPO` gh honours over the checkout; `stack` is what the session was
+/// launched with, for the byline.
 pub struct Shim<'a> {
     pub origin: &'a Origin,
     pub bot: Option<&'a str>,
     pub gh_repo: Option<&'a str>,
+    pub stack: Option<&'a Stack>,
     pub read: &'a dyn Fn(&str) -> std::io::Result<String>,
     pub checkout: &'a dyn Fn() -> Option<String>,
 }
@@ -810,7 +814,7 @@ impl Shim<'_> {
         let on_repo = repo_in_args(&args, review)
             .or_else(|| self.gh_repo.and_then(repo_of))
             .or_else(|| (self.checkout)());
-        let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate);
+        let stamp = |body: &str| stamp_with(body, origin, on_repo.as_deref(), delegate, self.stack);
         // Body flags may also precede the command words.
         let mut out: Vec<String> = Vec::with_capacity(args.len());
         let mut stamped = false;
@@ -923,7 +927,10 @@ impl Shim<'_> {
         // terminator preceding the subcommand: gh would read it as positional.
         // With no rewrite, output indices still match the original arguments.
         if !stamped && review && approved && ends_flags.is_none_or(|t| t > s) {
-            out.insert(s + 1, stamp_with("", origin, on_repo.as_deref(), delegate));
+            out.insert(
+                s + 1,
+                stamp_with("", origin, on_repo.as_deref(), delegate, self.stack),
+            );
             out.insert(s + 1, "--body".to_string());
         }
         Ok(out)

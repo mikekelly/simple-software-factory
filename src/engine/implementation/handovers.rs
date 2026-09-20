@@ -387,7 +387,13 @@ which harness is running in its workspaces"
         let eff = self.effective(repo, number);
         let to_launch = self.launch_of(repo, number);
         let title = format!("{} · #{number}", eff.harness);
-        let cmd = self.launch_command(repo, number, &st.html_url, &eff.harness_command());
+        let cmd = self.launch_command(
+            repo,
+            number,
+            &st.html_url,
+            &eff.harness_command(),
+            Some(&eff.stack()),
+        );
         self.entry(repo, number).launched_at = Some(now_iso());
         let handle = match self
             .driver(repo)

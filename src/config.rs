@@ -985,6 +985,17 @@ impl RepoConfig {
         )
     }
 
+    /// What a session launched from this config runs, as its byline names it
+    /// (`origin::Stack`): the harness, and the model and effort where the
+    /// config sets them rather than leaving them to the harness's own default.
+    pub fn stack(&self) -> crate::origin::Stack {
+        crate::origin::Stack {
+            harness: self.harness.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+
     /// This config as an item with `overrides` runs: the same repository
     /// with the item's harness, model and effort. Nothing overridden is
     /// the config as it stands. An override that keeps the repository's

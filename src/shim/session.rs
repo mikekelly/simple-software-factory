@@ -14,7 +14,7 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
 
-use super::Origin;
+use super::{Origin, Stack};
 
 /// What marks an environment as a session's: `ssf launch` exports the item it
 /// was started for, and neither the daemon nor a person's shell has one. The
@@ -56,6 +56,19 @@ impl Session {
         let repo = self.var("SSF_REPO")?;
         let number = self.var("SSF_ISSUE")?.trim().parse().ok()?;
         Origin::new(&repo, number)
+    }
+
+    /// What this session was launched with, as the byline names it: the
+    /// harness the daemon started it on, and the model and effort it was
+    /// started with where they are set. Empty outside a session, and for a
+    /// session `ssf launch` did not name a harness for (one started by
+    /// hand), which keeps the byline as it was.
+    pub(super) fn stack(&self) -> Option<Stack> {
+        Stack::from_parts(
+            self.var("SSF_HARNESS").as_deref(),
+            self.var("SSF_MODEL").as_deref(),
+            self.var("SSF_EFFORT").as_deref(),
+        )
     }
 
     /// Hand the recovered environment to the program about to be exec'd, so

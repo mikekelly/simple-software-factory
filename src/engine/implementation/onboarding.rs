@@ -255,6 +255,7 @@ impl Engine {
                     issue.number,
                     &issue.html_url,
                     &eff.harness_command(),
+                    Some(&eff.stack()),
                 );
                 let text = self.initial_text(repo, issue, &mine);
                 let handle = match self

@@ -919,8 +919,17 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             repo,
             issue,
             issue_url,
+            harness,
+            model,
+            effort,
             command,
-        } => launch(repo, issue, issue_url, command),
+        } => launch(
+            repo,
+            issue,
+            issue_url,
+            origin::Stack::from_parts(harness.as_deref(), model.as_deref(), effort.as_deref()),
+            command,
+        ),
         Command::GitCredential { op } => git_credential(&op),
     }
 }

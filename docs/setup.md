@@ -200,7 +200,10 @@ Logs: `journalctl --user -fu ssf@ssf-server.service`.
 ## 3. Create the bot account
 
 The bot is a GitHub account of its own. Every agent post is made as the
-bot with a byline naming its session (`🤖#N says:`); a post by the bot
+bot with a byline naming its session and what it runs
+(`🤖#N claude/opus/high says:`; see
+[Identity and bylines](identity-and-bylines.md#bylines-and-origin-tags-which-session-posted-what));
+a post by the bot
 *without* a byline is treated as typed by a person, so sharing your own
 account muddles who said what. The bot identity is a default, not a
 security boundary: agents run as the Unix user (or as the guest user in
@@ -684,7 +687,8 @@ GitHub (@mentioning it, or a review request, works too).
   guest's herdr; on the host, your own herdr). The clone happens
   first, so the first item on a repository takes a little longer.
 - **Within a couple of minutes** the agent comments on the issue with
-  what it is about to do, under a `🤖#N says:` byline. That comment is
+  what it is about to do, under a `🤖#N <harness>/<model>/<effort> says:`
+  byline naming the session it came from. That comment is
   the check that the whole chain works. `ssf peers` shows the session and
   what it is doing.
 - **Then a pull request**, from the issue's branch, `Closes #N` in its
