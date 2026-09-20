@@ -1,6 +1,28 @@
 use super::*;
 use serde_json::json;
 
+/// The pending mailbox file for one event sequence, once the daemon has
+/// published it.  The file is named by sequence and content fingerprint, which
+/// only the channel computes, so this finds it the way the bridge does.
+async fn wait_for_pending(mailbox: &std::path::Path, sequence: u64) -> std::path::PathBuf {
+    let prefix = format!("{sequence:020}-");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        for entry in std::fs::read_dir(mailbox).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&prefix) && name.ends_with(".json") {
+                return entry.path();
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "event {sequence} never reached the mailbox at {}",
+            mailbox.display()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test]
 async fn omp_delivery_uses_the_mailbox_not_terminal_input() {
     use std::os::unix::fs::PermissionsExt;
@@ -500,21 +522,40 @@ async fn herdr_live_native_delivery() {
         .await
         .unwrap();
 
-    // Recreate the send/ack crash window: the transcript already contains
-    // the delivery ID, but its mailbox file still looks pending. A restarted
-    // harness must resume that transcript, acknowledge the existing entry,
-    // and not submit the event again through its terminal.
-    let acknowledged = std::fs::read_dir(&mailbox)
-        .unwrap()
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().ends_with(".json.ack"))
-        })
+    // The window #390 closes, on a real harness: an event handed over while
+    // a tool call is in flight is not acknowledged until the session's
+    // transcript records it, so killing the harness here leaves it pending
+    // and the relaunch injects it. A restarted harness must resume that
+    // transcript, record the event once, and acknowledge the file -- not
+    // submit it again through its terminal.
+    let busy =
+        "[ssf] Native kill-window event. After the current turn reply with only KILLWINDOW-390.";
+    h.send_prompt(
+        &handle,
+        "Use the bash tool to run `sleep 30`, then reply with only NOWINDOW-334.",
+    )
+    .await
+    .unwrap();
+    h.run(&[
+        "agent",
+        "wait",
+        &handle,
+        "--until",
+        "working",
+        "--timeout",
+        "15000",
+    ])
+    .await
+    .unwrap();
+    crate::delivery_channel::deliver(&mailbox, 2, busy)
+        .await
         .unwrap();
-    let pending = acknowledged.with_extension("");
-    std::fs::rename(&acknowledged, &pending).unwrap();
+    let kill_pending = wait_for_pending(&mailbox, 2).await;
+    assert!(
+        !kill_pending.with_extension("json.ack").is_file(),
+        "an event the transcript does not hold was acknowledged (#390): {}",
+        kill_pending.display()
+    );
     h.run(&["pane", "send-keys", &handle, "ctrl+d"])
         .await
         .unwrap();
@@ -543,15 +584,23 @@ async fn herdr_live_native_delivery() {
                 title: "native delivery · #334",
                 text: None,
                 first_prompt: FirstPrompt::No,
-                channel: Some((&mailbox, 1)),
+                channel: Some((&mailbox, 2)),
             },
-            "[ssf] Native idle event. Reply with only IDLE-RECEIVED-334.",
+            busy,
         )
         .await
         .unwrap();
     assert!(recovery.relaunched && recovery.resumed);
-    assert!(pending.with_extension("json.ack").is_file());
     let handle = recovery.handle;
+    let recorded = Instant::now() + Duration::from_secs(60);
+    while !kill_pending.with_extension("json.ack").is_file() {
+        assert!(
+            Instant::now() < recorded,
+            "the killed event was never recorded:\n{}",
+            h.screen(&handle).await.unwrap().join("\n")
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
     let transcript = std::fs::read_dir(mailbox.join("session"))
         .unwrap()
         .flatten()
@@ -566,8 +615,13 @@ async fn herdr_live_native_delivery() {
         transcript
             .matches("\"customType\":\"ssf-item-activity\"")
             .count(),
-        1,
-        "relaunch duplicated the native event:\n{transcript}"
+        2,
+        "the killed event was not recorded exactly once, or the idle event was \
+duplicated:\n{transcript}"
+    );
+    assert!(
+        transcript.contains("KILLWINDOW-390"),
+        "the event lost to the kill window was never injected:\n{transcript}"
     );
 
     h.send_prompt(
@@ -589,7 +643,7 @@ async fn herdr_live_native_delivery() {
     .unwrap();
     crate::delivery_channel::deliver(
         &mailbox,
-        2,
+        3,
         "[ssf] Native busy event. After the current turn reply with only FOLLOWUP-RECEIVED-334.",
     )
     .await

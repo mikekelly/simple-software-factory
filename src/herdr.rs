@@ -121,6 +121,19 @@ fn is_not_found(e: &anyhow::Error) -> bool {
     msg.contains("not_found") || msg.contains("not found")
 }
 
+/// Say what became of an out-of-band delivery.  `Published` is not a failure:
+/// the mailbox holds the event until the session's transcript records it, but
+/// the operator should be able to see that the agent has not taken it yet.
+fn report_receipt(receipt: crate::delivery_channel::Receipt, handle: &str, mailbox: &Path) {
+    if receipt == crate::delivery_channel::Receipt::Published {
+        info!(
+            pane_id = handle,
+            mailbox = %mailbox.display(),
+            "out-of-band delivery is in the mailbox; the session has not recorded it yet"
+        );
+    }
+}
+
 pub fn make_id(workspace_id: &str, path: &str) -> String {
     format!("{workspace_id}@{path}")
 }
@@ -1370,7 +1383,10 @@ accepting the successful Enter without retrying: {e:#}"
                     let (mailbox, sequence) = relaunch
                         .channel
                         .context("native harness delivery has no mailbox")?;
-                    crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+                    let receipt = crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+                    // The event is published either way; a mailbox without the
+                    // record yet is a busy session, not a lost event (#390).
+                    report_receipt(receipt, &handle, mailbox);
                 }
                 FirstPrompt::No => self.send_prompt(&handle, text).await?,
                 FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
@@ -1528,7 +1544,8 @@ keeping it"
             // bridge either finds this delivery ID there and acknowledges it,
             // or injects the still-pending event. In neither case should the
             // relaunch path submit the same body through the terminal.
-            crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+            let receipt = crate::delivery_channel::deliver(mailbox, sequence, text).await?;
+            report_receipt(receipt, &handle, mailbox);
             return Ok(Delivery {
                 handle,
                 relaunched: true,

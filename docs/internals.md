@@ -137,7 +137,13 @@ checks, and a restrictive content security policy. See
   arrives in. The daemon uses
   the session's next prompt count plus a content fingerprint as the stable
   mailbox key: a retry observes the same pending or acknowledged event rather
-  than publishing another copy. If a live bridge is unavailable, delivery
+  than publishing another copy, and an attempt whose text carries events an
+  unacknowledged file already carries waits for that file to be recorded
+  instead of publishing the overlap again. The receipt means the session's
+  transcript holds the event; a wait that ends first reports the delivery as
+  published into the mailbox, which keeps it until the transcript records it,
+  so a busy session's event is queued rather than lost or reported as seen. If
+  a live bridge is unavailable, delivery
   fails and remains retryable instead of falling back to terminal input.
   Claude Code uses exact-pane foreground PID discovery and its authenticated
   NDJSON peer inbox, with priority `next` and launch settings accepting inbound
@@ -202,8 +208,15 @@ checks, and a restrictive content security policy. See
   mailbox and shipped extension path. `session_start` writes `ready.json` and
   starts its poller; `session_shutdown` removes only its own marker. A mailbox
   event is written through a temporary file and atomic rename. The extension
-  renames it to an acknowledgement, which remains as the session's idempotency
-  record. An exec-only launcher selects a transcript only from the
+  injects a pending event once per process and renames it to an acknowledgement
+  only once the session's transcript holds the injected message: the
+  acknowledgement remains the session's idempotency record, and the rename is
+  the daemon's receipt that the agent has the event, not that the harness
+  accepted a call it could still drop. Until the record exists the file stays
+  pending, so a bounded wait that ends without a receipt reports the delivery
+  as published rather than recorded and the bridge keeps trying — and a harness
+  killed inside the injection window takes the event again on relaunch (#390).
+  An exec-only launcher selects a transcript only from the
   mailbox-scoped session directory; the custom message stores the stable
   delivery ID as extension-only metadata. On relaunch, the bridge acknowledges
   an ID already in the resumed transcript or injects its pending event, and
