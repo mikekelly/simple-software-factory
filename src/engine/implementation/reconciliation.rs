@@ -465,8 +465,9 @@ impl Engine {
                     self.failures.remove(&(repo.name.clone(), issue.number));
                 }
                 // Held, not failed: the item is looked at again when its
-                // listing changes, and in full once the session is back.
-                Err(e) if is_blocked(&e) => {
+                // listing changes, and in full once the session is back, or
+                // once it has recorded the event a newer one waits behind.
+                Err(e) if is_held(&e) => {
                     debug!(repo = repo.name, issue = issue.number, "held: {e:#}");
                 }
                 Err(e) => {
@@ -498,7 +499,7 @@ impl Engine {
             }
             match self.retire_issue(repo, owner, name, number).await {
                 Ok(()) => {}
-                Err(e) if is_blocked(&e) => {
+                Err(e) if is_held(&e) => {
                     debug!(repo = repo.name, issue = number, "retirement held: {e:#}");
                 }
                 Err(e) => {

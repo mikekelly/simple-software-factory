@@ -35,6 +35,14 @@ pub(crate) enum Receipt {
     Published,
 }
 
+/// Is this "an earlier event of this sequence is not recorded yet, so nothing
+/// was published"?  The caller must keep its events un-seen: they were never
+/// handed to the mailbox, and a relaunch will not find them.
+pub(crate) fn is_unrecorded(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| c.downcast_ref::<DeliveryUnrecorded>().is_some())
+}
+
 pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
     let mut path = crate::config::state_dir().join("delivery");
     for component in repo.split('/') {
@@ -114,6 +122,28 @@ fn unacknowledged(path: &Path, sequence: u64, here: &Path) -> bool {
         })
 }
 
+/// What an attempt published without a record yet, or the event it could not
+/// publish at all.  A caller that treats the second as a delivery would move
+/// the item's watermark past events the mailbox never received, so it is an
+/// error the engine holds rather than counts.
+#[derive(Debug)]
+pub(crate) struct DeliveryUnrecorded {
+    sequence: u64,
+}
+
+impl std::fmt::Display for DeliveryUnrecorded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the harness has not recorded this session's event {} yet; it stays in the mailbox and \
+the newer events wait for it rather than being marked delivered",
+            self.sequence
+        )
+    }
+}
+
+impl std::error::Error for DeliveryUnrecorded {}
+
 pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<Receipt> {
     if !available(path) {
         bail!(
@@ -127,16 +157,16 @@ pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<Re
     if ack.exists() {
         return Ok(Receipt::Recorded);
     }
-    // One attempt per sequence is in flight at a time.  An earlier one that
-    // the session has not recorded yet must land first: a pass that finds more
-    // activity renders it into the same sequence, and both files would be
-    // injected, leaving the session with the earlier events twice.  Whatever
-    // the earlier file carries is published and stays published, so this
-    // attempt reports what it can: the mailbox holds the events.
+    // One attempt per sequence is in flight at a time.  A later attempt for
+    // the same sequence re-renders the events an unrecorded file already
+    // carries -- the item's watermark has not moved -- so publishing beside it
+    // would put those events in the session twice.  It waits for the record
+    // instead, and reports a hold if it does not come: the caller keeps its
+    // events un-seen and the next pass tries again.
     let started = Instant::now();
     while unacknowledged(path, sequence, &pending) {
         if started.elapsed() >= RECORD_TIMEOUT {
-            return Ok(Receipt::Published);
+            return Err(DeliveryUnrecorded { sequence }.into());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -218,9 +248,11 @@ mod tests {
     /// A second attempt for one sequence renders the events the first one
     /// already carries (the item's watermark has not moved), so it must not
     /// publish beside a file the session has not recorded: the session would
-    /// see those events twice.
+    /// see those events twice.  It must not report a delivery either -- a
+    /// caller that took this as delivered would move its watermark past events
+    /// the mailbox never received.
     #[tokio::test(start_paused = true)]
-    async fn an_unrecorded_attempt_is_not_joined_by_a_second_one() {
+    async fn an_unrecorded_attempt_holds_a_newer_one_without_claiming_delivery() {
         let sandbox = crate::config::test_support::sandbox();
         let root = sandbox.root().join("mailbox");
         std::fs::create_dir(&root).unwrap();
@@ -229,10 +261,15 @@ mod tests {
             format!("{{\"pid\":{}}}", std::process::id()),
         )
         .unwrap();
-        let first = deliver(&root, 4, "[ssf] one").await.unwrap();
-        assert_eq!(first, Receipt::Published);
-        let second = deliver(&root, 4, "[ssf] one and two").await.unwrap();
-        assert_eq!(second, Receipt::Published);
+        assert_eq!(
+            deliver(&root, 4, "[ssf] one").await.unwrap(),
+            Receipt::Published
+        );
+        let blocked = deliver(&root, 4, "[ssf] one and two").await.unwrap_err();
+        assert!(
+            is_unrecorded(&blocked),
+            "the held attempt was reported as a delivery: {blocked:#}"
+        );
         assert!(
             !event_paths(&root, 4, "[ssf] one and two").0.exists(),
             "a superset of an unrecorded event was published beside it"

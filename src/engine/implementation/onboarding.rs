@@ -558,6 +558,12 @@ impl Engine {
                 e.last_prompt_at = Some(now_iso());
                 e.prompts_sent += 1;
             }
+            Err(e) if is_held(&e) => debug!(
+                repo = repo.name,
+                issue = issue.number,
+                parent,
+                "parent session not told yet: {e:#}"
+            ),
             Err(e) => warn!(
                 repo = repo.name,
                 issue = issue.number,
@@ -1033,6 +1039,10 @@ impl Engine {
         let handle = if workspace_alive {
             match self.deliver_to(repo, number, &text, None).await {
                 Ok(d) => Some(d.handle),
+                Err(e) if is_held(&e) => {
+                    debug!(repo = repo.name, issue = number, "not notified yet: {e:#}");
+                    None
+                }
                 Err(e) => {
                     warn!(
                         repo = repo.name,

@@ -138,11 +138,13 @@ checks, and a restrictive content security policy. See
   the session's next prompt count plus a content fingerprint as the stable
   mailbox key: a retry observes the same pending or acknowledged event rather
   than publishing another copy, and an attempt whose text carries events an
-  unacknowledged file already carries waits for that file to be recorded
-  instead of publishing the overlap again. The receipt means the session's
-  transcript holds the event; a wait that ends first reports the delivery as
-  published into the mailbox, which keeps it until the transcript records it,
-  so a busy session's event is queued rather than lost or reported as seen. If
+  unacknowledged file already carries is held instead of publishing the overlap
+  beside it — it never reports a delivery it did not make, because a caller
+  that took one would move its watermark past events the mailbox never
+  received. The receipt means the session's transcript holds the event; a wait
+  that ends first reports the delivery as published into the mailbox, which
+  keeps it until the transcript records it, so a busy session's event is queued
+  rather than lost or reported as seen. If
   a live bridge is unavailable, delivery
   fails and remains retryable instead of falling back to terminal input.
   Claude Code uses exact-pane foreground PID discovery and its authenticated

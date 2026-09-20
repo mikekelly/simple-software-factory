@@ -624,6 +624,74 @@ duplicated:\n{transcript}"
         "the event lost to the kill window was never injected:\n{transcript}"
     );
 
+    // The other half of the window: the transcript recorded the event, but the
+    // harness died before its file was renamed to `.ack`.  A relaunch must
+    // acknowledge that existing record and not inject the event again.
+    std::fs::rename(kill_pending.with_extension("json.ack"), &kill_pending).unwrap();
+    h.run(&["pane", "send-keys", &handle, "ctrl+d"])
+        .await
+        .unwrap();
+    let stopped = Instant::now() + Duration::from_secs(10);
+    while h
+        .agents()
+        .await
+        .unwrap()
+        .iter()
+        .any(|agent| agent.pane_id == handle)
+    {
+        assert!(
+            Instant::now() < stopped,
+            "harness did not exit for the second relaunch"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let reack = h
+        .deliver(
+            &wt.id,
+            Some(&handle),
+            &Relaunch {
+                command: &command,
+                resume_command: None,
+                harness: &harness,
+                title: "native delivery · #334",
+                text: None,
+                first_prompt: FirstPrompt::No,
+                channel: Some((&mailbox, 2)),
+            },
+            busy,
+        )
+        .await
+        .unwrap();
+    assert!(reack.relaunched && reack.resumed);
+    let handle = reack.handle;
+    let again = Instant::now() + Duration::from_secs(60);
+    while !kill_pending.with_extension("json.ack").is_file() {
+        assert!(
+            Instant::now() < again,
+            "a recorded event whose file was still pending was never \
+acknowledged:\n{}",
+            h.screen(&handle).await.unwrap().join("\n")
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let transcript = std::fs::read_dir(mailbox.join("session"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .unwrap();
+    let transcript = std::fs::read_to_string(transcript).unwrap();
+    assert_eq!(
+        transcript
+            .matches("\"customType\":\"ssf-item-activity\"")
+            .count(),
+        2,
+        "a relaunch re-injected an event the transcript already recorded:\n{transcript}"
+    );
+
     h.send_prompt(
         &handle,
         "Use the bash tool to run `sleep 4`, then reply with only PRIMARY-DONE-334.",

@@ -47,9 +47,10 @@ the agent has the record of the event, not that the harness accepted a call it
 could still drop. The record lands at the agent's step boundary, which a busy
 session reaches when the tool calls in flight have finished; until then the
 event stays in the mailbox and the daemon reports a delivery it has published
-but the session has not recorded, rather than one the model has seen. It never
-writes bytes to the pane, and a draft already in the OMP/Pi composer is left
-intact.
+but the session has not recorded, rather than one the model has seen. A later
+event waiting behind an unrecorded one is held, not published beside it, so the
+session never receives the same events twice. It never writes bytes to the
+pane, and a draft already in the OMP/Pi composer is left intact.
 
 The default command runs through a small exec wrapper that keeps the harness
 transcript in that mailbox's session directory and names the harness in

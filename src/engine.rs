@@ -123,6 +123,13 @@ fn is_blocked(e: &anyhow::Error) -> bool {
         .any(|c| c.downcast_ref::<SessionBlocked>().is_some())
 }
 
+/// Held, not failed: the session is blocked, or an event it has not recorded
+/// yet keeps a newer one waiting.  Nothing is lost either way, so the item
+/// keeps its place, its events stay un-seen, and the next pass tries again.
+fn is_held(e: &anyhow::Error) -> bool {
+    is_blocked(e) || crate::delivery_channel::is_unrecorded(e)
+}
+
 pub struct Engine {
     cfg: Config,
     gh: GitHub,

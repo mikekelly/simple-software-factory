@@ -634,6 +634,7 @@ impl Engine {
                 e.last_prompt_at = Some(now_iso());
                 e.prompts_sent += 1;
             }
+            Err(e) if is_held(&e) => debug!(session, "refusal not taken yet: {e:#}"),
             Err(e) => warn!(
                 session,
                 "could not tell the agent about the refused release: {e:#}"
