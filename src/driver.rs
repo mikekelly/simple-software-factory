@@ -501,6 +501,14 @@ impl Driver {
             {
                 Some((crate::delivery_channel::mailbox(repo, number), sequence))
             }
+            // The OMP/Pi channel is a mailbox on disk, which the stub can name
+            // without talking to anything, so a test of the daemon's side of it
+            // gets the channel a real driver's session would have. The Claude
+            // and Codex channels are their own protocols and stay unavailable.
+            #[cfg(test)]
+            Driver::Stub(_) if crate::delivery_channel::supports(harness) => {
+                Some((crate::delivery_channel::mailbox(repo, number), sequence))
+            }
             _ => None,
         }
     }
@@ -827,6 +835,9 @@ pub struct StubState {
     /// this to exercise the daemon's retry bookkeeping without changing a
     /// real driver's delivery semantics.
     pub deliver_error: Option<String>,
+    /// When set, every delivery is held: an earlier event of its sequence is
+    /// not recorded yet, so nothing is published and nothing is delivered.
+    pub deliver_held: bool,
     /// The harness each worktree's pane is running: what `ps` reports as
     /// `AgentInfo.agent_type`, and so what ssf reads as the session's own
     /// harness (#349). Kept as a real driver's answer is: a `start` or a
@@ -1013,6 +1024,15 @@ impl StubDriver {
         self.with(|s| {
             if let Some(why) = s.deliver_error.take() {
                 bail!("{why}");
+            }
+            // A delivery the channel holds: an earlier event of this sequence
+            // is not recorded yet. Nothing is published and the caller must
+            // keep its events un-seen (#390).
+            if s.deliver_held {
+                let (_, sequence) = relaunch
+                    .channel
+                    .context("a held delivery needs a mailbox channel")?;
+                return Err(crate::delivery_channel::held(sequence));
             }
             if !s.worktrees.contains(worktree_id) {
                 bail!("{worktree_id}: no such workspace");

@@ -43,6 +43,14 @@ pub(crate) fn is_unrecorded(e: &anyhow::Error) -> bool {
         .any(|c| c.downcast_ref::<DeliveryUnrecorded>().is_some())
 }
 
+/// The same hold as an error value, for the driver stub: a test that needs a
+/// delivery held must produce the real type, since the engine classifies it by
+/// downcast.
+#[cfg(test)]
+pub(crate) fn held(sequence: u64) -> anyhow::Error {
+    DeliveryUnrecorded { sequence }.into()
+}
+
 pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
     let mut path = crate::config::state_dir().join("delivery");
     for component in repo.split('/') {
