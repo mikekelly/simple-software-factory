@@ -116,7 +116,7 @@ then run the migration and confirm `ssf --server ssf-server vm status` and
 `ssf --server ssf-server status` before adding another target.
 
 On Linux this creates the conventional target and enables
-`ssf@ssf-server.service` for `default.target`. It asks before enabling systemd linger so
+`ssf@ssf-server.service` for `default.target`. It enables systemd linger (through `sudo`) so
 the service can start at boot and remain available after logout.
 
 Before running the install command, supply any prerequisites the package

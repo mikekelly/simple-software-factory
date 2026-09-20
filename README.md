@@ -9,13 +9,12 @@ pull requests. Several agents can work at once, on the same project, talking
 to each other on GitHub as colleagues would. You are pulled in only for the
 things that need a person: what to build, the calls that matter, the merge.
 
-ssf runs your factory on hardware you control: in a microVM on your own
-machine, or in the cloud (for example on your Grok Bot's computer). It uses
-the coding agents you already have, as a bot account you own, and leaves the
-whole record, the discussion, the plan, the decisions and the pull requests,
-on GitHub where your work already lives. There is no dashboard to log in to
-and no transcript in a vendor's product; the issue tracker you have is the
-interface. Linux today; macOS is next.
+ssf runs the factory on a machine you control: in a microVM on your own
+computer, or on a server you rent. It needs Linux, `gh`, a bot GitHub
+account, [herdr](https://herdr.dev/) (the terminal multiplexer that holds
+the workspaces) and any of the coding agents you already have: Claude Code,
+Codex, Gemini, Copilot, Grok, OpenCode, Pi, Oh My Pi or Crush. macOS is
+next.
 
 ## Why
 
@@ -28,9 +27,26 @@ ssf starts from the other end. GitHub is already where work is described,
 discussed, reviewed and merged, so that is where the agents live: the issue
 is the unit of work, the assignment is the trigger, the comment thread is
 the conversation, the pull request is the deliverable and the board is the
-status. The factory is small enough to read: a daemon that polls GitHub, a
-terminal per item, and one file in your repository saying how its sessions
-should behave.
+status. What that buys you:
+
+- **Parallel work that coordinates itself.** Several sessions on one
+  repository at once, talking on each other's issues, with a person pulled
+  in only where a decision is theirs.
+- **The right model for each job.** Pick the harness, model and effort per
+  issue (`ssf assign`), hand an item to another mid-flight (`ssf handover`),
+  and let your `SSF.md` send deliberation to a strong model and execution to
+  a cheap one.
+- **A record that is already where you look.** Every plan, decision, review
+  and result is on the issue or pull request, with a byline saying which
+  session wrote it. No vendor dashboard, no transcript to export.
+- **A boundary you can see.** In the microVM the agents never touch your
+  home directory or keyring; the bot's credentials stay on the guest.
+- **Nothing to babysit.** Sessions survive terminal loss, daemon restarts
+  and reboots, and are told when the item closes to push and tidy up.
+
+The factory is small enough to read: a daemon that polls GitHub, a terminal
+per item, and one file in your repository saying how its sessions should
+behave.
 
 ## How a feature gets built
 
@@ -38,9 +54,9 @@ You open an issue with an idea and assign it to the bot. A session takes it
 on and works out, with you on the issue, what the objective is and what
 "done" means; it writes up a plan and asks for sign-off.
 
-With the plan agreed it breaks the work into subtasks on the project board
-and opens a coordinating issue that kicks them off. Each subtask gets a
-session of its own; sessions that depend on each other talk by commenting
+With the plan agreed, the work is split into subtasks on the project board
+under a coordinating issue, and the session on that issue starts them, each
+with a session of its own on the stack it chooses; sessions that depend on each other talk by commenting
 on each other's issues. When a decision is a person's to make, a session
 @mentions you and waits.
 
@@ -48,8 +64,12 @@ Each session opens a pull request, puts it through the review its `SSF.md`
 asks for and reports on its issue with the link. The cards make their way
 across the board, the pull requests merge and the feature is delivered.
 GitHub holds the whole story: the discussion, the plan, the linked issues,
-the pull requests and every decision. This repository is built that way; its
-issues and pull requests are the worked example.
+the pull requests and every decision. This repository is built that way:
+[#361](https://github.com/mikekelly/simple-software-factory/issues/361) is
+a board issue fanning out to parallel sessions with a decision escalated to
+the owner, and
+[#348](https://github.com/mikekelly/simple-software-factory/issues/348) is
+one issue from plan through review rounds to merge and release.
 
 ## Install
 
@@ -76,8 +96,8 @@ ssf setup
 ```
 
 `ssf setup` is the per-user step: it creates the managed VM target
-`ssf-server` and enables its user service, asking before it turns on
-systemd linger so the service survives logout and starts at boot. On
+`ssf-server`, enables its user service and turns on systemd linger (via
+`sudo`) so the service survives logout and starts at boot. On
 Omarchy the optional bar widget shows the factory's state and toggles the
 service; it never installs or upgrades ssf:
 
@@ -105,15 +125,14 @@ omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --en
 
 `ssf doctor` after each step says what is still missing. Then assign an
 issue to the bot. A good first issue is small, says what "done" looks like
-and names what to run before opening a pull request. Within a poll interval
-a workspace shows up in `ssf status`; within a couple of minutes the agent
-comments with what it is about to do, and later with the pull request. Read
-it, answer or merge as you would for a colleague, and close the issue; the
-agent pushes what is left, comments once more and gives its workspace back.
+and names what to run before opening a pull request. Within a couple of
+minutes the agent comments with what it is about to do, and later with the
+pull request; read it, answer or merge as you would for a colleague, and
+close the issue.
 
 ## How it works
 
-Every few seconds ssf asks GitHub for the open issues and pull requests that
+Every ten seconds (by default) ssf asks GitHub for the open issues and pull requests that
 involve the bot. For a new one it creates a workspace in herdr, checked out
 on a branch for the issue (or on the pull request's branch, so pushes update
 the pull request), and starts the agent there with the whole story so far.
@@ -124,11 +143,8 @@ and resumes the same conversation, including after a reboot. When the item is
 closed the agent is told to push what is worth keeping and, only then, to
 release its workspace ([Under the hood](docs/internals.md)).
 
-ssf itself is a small daemon. It needs a GitHub account for the bot, `gh`,
-[herdr](https://herdr.dev/) to run the workspaces and terminals, and a
-coding agent you already have installed (Claude Code, Codex, ...). Packages
-cover the Arch family (including [Omarchy](https://omarchy.org/)) and the
-Debian family (including Ubuntu).
+Packages cover the Arch family (including [Omarchy](https://omarchy.org/))
+and the Debian family (including Ubuntu).
 
 - **One agent per issue or pull request.** Each gets its own workspace (a
   git worktree on its own branch, in herdr) and its own session, from the
@@ -143,7 +159,7 @@ Debian family (including Ubuntu).
   the session that made it, and the item is the only channel between
   sessions: nothing reaches an agent off the record. Watching, nudging or
   rescuing a session is done at its terminal through herdr.
-- **Nothing runs in the cloud.** The daemon polls GitHub, creates workspaces
+- **No hosted service.** The daemon polls GitHub, creates workspaces
   and starts the agents you have installed, with the bot's credentials, so
   what the agents do on GitHub is done as the bot. Only people you allow
   can drive it: by default the repository's collaborators with push access
@@ -158,7 +174,8 @@ catalog](docs/configuration.md#server-catalog)):
 ```sh
 ssf status | ssf dashboard | ssf peers          # what is running and what each agent is doing
 ssf repo add owner/name ... | ssf config set ... # configure; picked up on the next poll
-ssf sub 12 | ssf assign 12 ... | ssf handover ... # follow an item, start one on a chosen stack, pass one on
+ssf assign 12 --harness codex ... | ssf handover ... # start an item on a chosen stack; pass one on mid-flight
+ssf sub 12                                       # follow an item from this session
 ssf release | ssf purge                          # give back a workspace; sweep those of closed items
 ssf doctor                                       # what is missing, and which checkouts still hold work
 ```
