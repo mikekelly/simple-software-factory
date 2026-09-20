@@ -211,11 +211,13 @@ checks, and a restrictive content security policy. See
   mailbox and shipped extension path. The poller writes `ready.json` as its own
   attestation and rewrites it on any poll that does not find it naming its
   process, so a marker removed under a live session is repaired within a poll;
-  a session that changes under the process (`session_switch`,
-  `session_branch`, `session_tree`) takes the marker and poller over as
-  `session_start` does, and `session_shutdown` removes only its own marker and
-  stops its poller (#395). A mailbox no live bridge attests to is a hold, not a
-  failure: nothing is published, the item keeps its events, and no delivery
+  a session that changes under the process (`session_switch`, `session_branch`,
+  `session_tree`) takes the marker and the poller over while keeping what an
+  earlier one had already handed over — those events replace the transcript,
+  not the queue an unrecorded injection may still be sitting in — and
+  `session_shutdown` removes only its own marker and stops its poller (#395). A
+  mailbox no live bridge attests to is a hold, not a failure: nothing is
+  published, the item keeps its events, and no delivery
   failure is counted — `ssf doctor` names the session to restart. A mailbox
   event is written through a temporary file and atomic rename. The extension
   injects a pending event once per process and renames it to an acknowledgement

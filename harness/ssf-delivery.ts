@@ -19,7 +19,8 @@
  * shuts down removes it (a process the daemon would find gone is not an
  * attestation), and one that changes under this process -- OMP's
  * `session_switch`, `session_branch`, `session_tree` -- takes it over with the
- * poller, as `session_start` does.
+ * poller, where `session_start` also starts a transcript with nothing handed
+ * to it yet (#390).
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -202,19 +203,26 @@ export default function (pi: Harness) {
 		if (!mailbox || !ready) return;
 		clearInterval(timer);
 		sessionManager = ctx.sessionManager;
-		// A session here has a transcript of its own: what an earlier one in
-		// this process was handed is not in it, so those files are its to take.
-		handed.clear();
 		await poll();
 		timer = setInterval(poll, 100);
 	}
 
-	for (const event of [
-		"session_start",
-		"session_switch",
-		"session_branch",
-		"session_tree",
-	] as const) {
+	pi.on("session_start", async (_event, ctx) => {
+		// A session starting here has a transcript of its own and no queue
+		// left over from the last one: what an earlier session in this
+		// process was handed is not in it, so those files are its to take
+		// (#390).
+		handed.clear();
+		await attach(ctx);
+	});
+
+	// A session that changes under the running process keeps what was handed
+	// to it: OMP's fork and tree move replace the transcript but not the
+	// queue an unrecorded injection may still be sitting in, so taking that
+	// file again would put one item event into the agent twice.  The poller
+	// and the marker are taken over all the same, which is also how a
+	// switch that arrives after a dispose gets them back.
+	for (const event of ["session_switch", "session_branch", "session_tree"] as const) {
 		pi.on(event, (_event, ctx) => attach(ctx));
 	}
 
