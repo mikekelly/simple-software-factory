@@ -370,6 +370,16 @@ pub fn known_models(harness: &str) -> Vec<String> {
 /// stay ssf's own: they are what a config is checked against when it loads,
 /// and a check whose answer moved with a catalogue file would let a cleared
 /// `$CODEX_HOME`, or an agent that dropped a level, stop a factory loading.
+///
+/// A catalogue answers a narrower question than this does: the levels a
+/// *model* supports, not the ones the harness's flag accepts. omp's
+/// `--thinking` takes `off`, `minimal`, `low`, `medium`, `high`, `xhigh`,
+/// `max` and `auto`, while the models `omp models --json` lists support a
+/// subset of those; codex's cache gives each model its own
+/// `supported_reasoning_levels`, which need not include `minimal`; Claude
+/// Code gives each model its own `effort_options`. Reading the levels from a
+/// catalogue would refuse levels the flag takes, so `repo.effort` stays
+/// checked against the flag's own set, which is what it is turned into (#392).
 pub fn effort_levels(harness: &str) -> &'static [&'static str] {
     catalogue(harness).map(|c| c.effort_levels).unwrap_or(&[])
 }

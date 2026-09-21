@@ -389,13 +389,18 @@ model flag for its terminal interface, so ssf refuses a model for it. Model
 ids are passed through as given, so a model the list does not mention works as
 long as the agent knows it.
 
-Effort levels stay ssf's own: they are what a config is checked against when
-it loads, and a level that only a catalogue carried would make the config
-unloadable the moment that catalogue changed, taking the factory with it. A
-wrong level is refused when the config loads. Model ids can take the agent's
-own answer precisely because they are not checked that way. Changing the
-agent of a repository requires a fresh selection of both supported settings,
-since the ids belong to the agent. Other `repo set` edits keep existing values, but reject a result
+Effort levels stay ssf's own, and the table above is the flag's own set: a
+catalogue answers a narrower question, the levels one *model* supports, for
+omp, codex and Claude Code alike (`omp models --json` reports them per model,
+and codex's cache and Claude Code's catalogue scope them per model too), so a
+level list read from there would refuse levels the flag takes. They are also
+what a config is checked against when it loads, and a level that only a
+catalogue carried would make the config unloadable the moment that catalogue
+changed, taking the factory with it. A wrong level is refused when the config
+loads. Model ids can take the agent's own answer precisely because they are
+not checked that way. Changing the agent of a repository requires a fresh
+selection of both supported settings, since the ids belong to the agent.
+Other `repo set` edits keep existing values, but reject a result
 with missing supported settings (including `--clear model/effort`). Legacy
 files still load and run with harness defaults; `ssf doctor` fails and gives
 a repair command when settings are missing. Values in `repo.command` do not
