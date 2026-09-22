@@ -239,6 +239,9 @@ function showHealth() {
 // worker that is stopped closes the port, so the page opens another: without
 // both, a page left open would freeze its lines and a factory saved afterwards
 // would read blank, which is the silence these lines exist to remove (#435).
+// The timer is replaced rather than added to on each reconnect, so a page that
+// reconnects many times still holds one.
+let pingTimer = null;
 function connect() {
   const worker = chrome.runtime.connect({ name: "ssf-overlay" });
   worker.onMessage.addListener((message) => {
@@ -247,7 +250,8 @@ function connect() {
     showHealth();
   });
   worker.onDisconnect.addListener(() => setTimeout(connect, 1000));
-  setInterval(() => {
+  clearInterval(pingTimer);
+  pingTimer = setInterval(() => {
     try {
       worker.postMessage({ type: "ping" });
     } catch {
