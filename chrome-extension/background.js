@@ -12,6 +12,11 @@
 // which keeps this worker awake while a github.com tab is open; if the worker
 // is stopped anyway, the next port event starts it again and the module body
 // below rebuilds every stream. Nothing here depends on running continuously.
+//
+// This worker also carries every write. A factory accepts one only from an
+// extension origin (docs/dashboard.md), and a content script running on
+// github.com has none, so `api/assign` and the assign form's listings are sent
+// from here; the same rule is why the read streams live here too.
 import { endpoint, factoryUrl, factoryLabel, originPattern } from "./factory-url.js";
 
 const BACKOFF_MIN_MS = 1000;
@@ -24,11 +29,14 @@ const factories = new Map();
 /// Open ports from content scripts.
 const ports = new Set();
 
-/// `{label, url, source, timer, attempts, snapshot, error, lastFrameAt}`
+/// `{label, url, writes, source, timer, attempts, snapshot, error, lastFrameAt}`
 function newEntry(url, label) {
   return {
     url,
     label,
+    /// The options page's per-factory switch. Off means no write goes out and
+    /// the content script draws no form.
+    writes: true,
     source: null,
     timer: null,
     attempts: 0,
@@ -53,6 +61,7 @@ function payload() {
     factories: [...factories.values()].map((entry) => ({
       label: entry.label,
       url: entry.url,
+      writes: entry.writes,
       state: state(entry, now),
       error: entry.error,
       lastFrameAt: entry.lastFrameAt || null,
@@ -140,6 +149,105 @@ function errorText(data) {
   return String(data).slice(0, 300);
 }
 
+/// The error text out of a response body, in the words the server used.
+function errorBody(parsed, text, status) {
+  const detail = String(parsed?.error ?? "").trim();
+  if (detail) return detail;
+  const raw = String(text ?? "").trim();
+  if (raw) return raw.slice(0, 300);
+  return `the factory answered ${status} with no error text`;
+}
+
+/// A write to one factory. Sent from here and never from a content script: the
+/// server accepts a write only from an extension origin, and a request from a
+/// github.com page would carry `https://github.com` and be refused.
+///
+/// One request, no retry. A refused assign belongs to the person who asked for
+/// it, who sees the server's own words and decides whether to repeat it.
+async function post(entry, path, body) {
+  let response;
+  try {
+    response = await fetch(endpoint(entry.url, path), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (error) {
+    return { ok: false, error: `could not reach the factory (${error})` };
+  }
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Not JSON; the raw text is the best description available.
+  }
+  if (!response.ok) {
+    return { ok: false, error: errorBody(parsed, text, response.status) };
+  }
+  return { ok: true, result: parsed ?? text };
+}
+
+/// A read of one of a factory's own listings, for the assign form's pickers.
+/// Read from here for the same reason writes are sent from here.
+async function get(entry, path) {
+  let response;
+  try {
+    response = await fetch(endpoint(entry.url, path));
+  } catch (error) {
+    return { ok: false, error: `could not reach the factory (${error})` };
+  }
+  const text = await response.text();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Not JSON; the raw text is the best description available.
+  }
+  if (!response.ok) {
+    return { ok: false, error: errorBody(parsed, text, response.status) };
+  }
+  return { ok: true, body: parsed ?? text };
+}
+
+/// `api/assign` for the item the content script names: the same write `ssf
+/// assign` makes, with the factory chosen by the caller.
+async function assign(message) {
+  const entry = factories.get(message.url);
+  if (!entry) return { ok: false, error: "that factory is no longer configured" };
+  if (!entry.writes) {
+    return {
+      ok: false,
+      error: "writes are turned off for this factory on the extension's options page",
+    };
+  }
+  const body = {
+    repo: message.repo,
+    number: message.number,
+    harness: message.harness,
+  };
+  // Model and effort are the factory's own defaults when left out, so an
+  // unset picker sends no key at all rather than an empty one.
+  if (message.model) body.model = message.model;
+  if (message.effort) body.effort = message.effort;
+  return post(entry, "assign", body);
+}
+
+async function listing(message, path) {
+  const entry = factories.get(message.url);
+  if (!entry) return { ok: false, error: "that factory is no longer configured" };
+  return get(entry, path);
+}
+
+/// What the content script may ask this worker to do to a factory. Nothing
+/// else is routed, and the content script holds no factory fetch of its own.
+const HANDLERS = {
+  "ssf:assign": assign,
+  "ssf:agents": (message) => listing(message, "agents"),
+  "ssf:models": (message) =>
+    listing(message, `models/${encodeURIComponent(message.harness)}`),
+};
+
 /// Bring the running streams in line with the stored factory list. Called on
 /// every worker start and whenever the options page saves.
 async function configure() {
@@ -148,7 +256,11 @@ async function configure() {
   for (const item of stored) {
     const url = factoryUrl(item?.url);
     if (!url) continue;
-    wanted.set(url, { label: String(item?.label ?? "").trim() || factoryLabel(url) });
+    wanted.set(url, {
+      label: String(item?.label ?? "").trim() || factoryLabel(url),
+      // Absent means on: the switch is a deliberate refusal, not a default.
+      writes: item?.writes !== false,
+    });
   }
   for (const [url, entry] of factories) {
     if (wanted.has(url)) continue;
@@ -159,9 +271,11 @@ async function configure() {
     const entry = factories.get(url);
     if (entry) {
       entry.label = wanted_.label;
+      entry.writes = wanted_.writes;
       continue;
     }
     const fresh = newEntry(url, wanted_.label);
+    fresh.writes = wanted_.writes;
     factories.set(url, fresh);
     open(fresh);
   }
@@ -185,6 +299,14 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+  const handler = HANDLERS[message?.type];
+  if (handler) {
+    handler(message).then(respond, (error) => {
+      respond({ ok: false, error: String(error) });
+    });
+    // Kept open for the async reply above.
+    return true;
+  }
   if (message?.type !== "ssf:snapshot") return false;
   respond(payload());
   return false;
