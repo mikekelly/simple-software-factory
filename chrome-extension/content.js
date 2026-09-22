@@ -545,24 +545,31 @@
     return node;
   }
 
-  /// The Assign agent form for `key`, inside the card of the first factory that
-  /// may take the write. This is a fresh node per call, from the module's own
-  /// state, so the card and an open popover each get their own and neither moves
-  /// the other's out of the tree.
+  /// The Assign agent form for `itemKey`, inside the card of the first factory
+  /// that may take the write. This is a fresh node per call, from the module's
+  /// own state, so the card and an open popover each get their own and neither
+  /// moves the other's out of the tree.
   ///
   /// Nothing is added for an item that has an agent, and nothing when no factory
-  /// that knows the item accepts writes for it.
-  function withAssignForm(section, matches, key) {
+  /// that knows the item accepts writes for it. `itemKey` is the item the card
+  /// is *about*: for a pull request page that is the issue its body closes, not
+  /// the pull request, so the write starts a session on the same item the card
+  /// names.
+  function withAssignForm(section, matches, itemKey) {
     const assignableMatches = matches.filter(assignable);
     if (!assignableMatches.length) return section;
-    const [repo, number] = key.split("#");
+    const [repo, number] = itemKey.split("#");
     const form = globalThis.ssfAssignForm?.render({
       factories: assignableMatches.map((match) => match.factory),
       repo,
       number: Number(number),
     });
     if (!form) return section;
-    const card = section.querySelector(".ssf-card") ?? section;
+    // The card of that factory, not the first card in the section: a factory
+    // that already has an agent on the item draws a card too, and the form
+    // belongs with the one it would write through.
+    const cards = section.querySelectorAll(".ssf-card");
+    const card = cards[matches.indexOf(assignableMatches[0])] ?? section;
     card.append(form);
     return section;
   }
@@ -818,7 +825,16 @@
           const matches = matchesFor(target.key);
           const unreadable = unreadableFactories();
           if (matches.length || unreadable.length) {
-            wanted.set(`card:${key}`, { matches, unreadable, target, key, anchor: null });
+            wanted.set(`card:${key}`, {
+              matches,
+              unreadable,
+              target,
+              // `key` names the page; `target.key` names the item the card is
+              // about, which on a pull request page is the issue it resolves
+              // through. The form assigns that item.
+              key: target.key,
+              anchor: null,
+            });
           }
         }
       } else if (chipPage(location.pathname)) {
