@@ -79,12 +79,18 @@ requests, strict Host/Origin checks, and a restrictive content security policy.
 It also serves the status API: `/api/status` for one snapshot, `/api/events`
 for a server-sent events stream of every change, `/api/agents` and
 `/api/models/<harness>` for the pickers `ssf agents` and `ssf models` fill, and
-`POST /api/assign`, which runs `ssf assign` on the daemon. The one write is
-refused unless the origin is a Chrome extension's, the media type is JSON and
-the body is within 4 KiB, and every accepted write is logged with its origin and
-item; the card model carries each card's `tool`, workspace `branch` and
-originating `factory` for the overlay. See [Session dashboard](dashboard.md) for
-configuration and proxy expectations.
+`POST /api/assign`, which runs `ssf assign` on the daemon. The three
+factory-facing routes are asked through the factory's own client — the status
+stream's transport, which forwards into the guest when the factory runs in a VM
+— so a listener on a VM's host reports the guest's harnesses and starts sessions
+there rather than answering from the host. The one write is refused unless the
+origin is a Chrome extension's, the media type is JSON and the body is within
+4 KiB, and every accepted write is logged with its origin and item; the card
+model carries each card's `tool`, workspace `branch` and originating `factory`
+for the overlay. The client's daemon protocol is reachable from a host as
+`ssf __request <json>`, a hidden command that prints the daemon's answer with
+the refusal's kind, which is what the endpoint reads. See [Session
+dashboard](dashboard.md) for configuration and proxy expectations.
 
 ## Polling and delivery
 

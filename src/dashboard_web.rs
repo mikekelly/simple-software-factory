@@ -2,7 +2,7 @@
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{future::Future, io::Read, time::Duration};
+use std::{future::Future, io::Read, path::Path, path::PathBuf, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -19,6 +19,14 @@ const MAX_HEADERS: usize = 8192;
 /// Longest body the endpoint reads: `POST api/assign` carries a handful of
 /// fields, and it is bounded before any of it is read.
 const MAX_BODY: usize = 4096;
+/// How long a listing may wait on the factory: the client walks `PATH` and
+/// may run a harness's own listing command.
+const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a write may wait on the factory. An assign's slow part is its
+/// GitHub round trip, and the daemon's own client waits three minutes for
+/// one; past this the client is given up on, though what the daemon was
+/// doing may still land.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 const KEEPALIVE: Duration = Duration::from_secs(25);
 
 /// The latest status snapshot, or the error that prevented loading one.
@@ -47,6 +55,11 @@ where
         return daemon.await;
     };
     let token = capability()?;
+    // The factory this listener answers for is asked through its own client,
+    // the same way the status stream below is: for a factory in a VM the
+    // daemon and the harnesses are in the guest, and the client is what
+    // forwards there.
+    let client = crate::server_executable()?;
     tracing::info!(
         "Server web dashboard: http://{}/{token}/",
         listener.local_addr()?
@@ -82,7 +95,7 @@ where
     tokio::select! {
         result = daemon => result,
         result = stream => result,
-        result = serve(listener, token, latest_rx) => result.context("server web dashboard stopped"),
+        result = serve(listener, token, latest_rx, client) => result.context("server web dashboard stopped"),
     }
 }
 
@@ -111,19 +124,26 @@ fn capability() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-async fn serve(listener: TcpListener, token: String, latest: Latest) -> Result<()> {
+async fn serve(
+    listener: TcpListener,
+    token: String,
+    latest: Latest,
+    client: PathBuf,
+) -> Result<()> {
     let host: std::sync::Arc<str> = listener.local_addr()?.to_string().into();
     let token: std::sync::Arc<str> = token.into();
+    let client: std::sync::Arc<PathBuf> = client.into();
     loop {
         let (stream, _) = listener.accept().await?;
-        let (host, token, latest) = (host.clone(), token.clone(), latest.clone());
+        let (host, token, latest, client) =
+            (host.clone(), token.clone(), latest.clone(), client.clone());
         // Each connection gets its own task so a long-lived event stream
         // does not stop the listener from answering anyone else.
-        tokio::spawn(async move { handle(stream, &host, &token, latest).await });
+        tokio::spawn(async move { handle(stream, &host, &token, latest, &client).await });
     }
 }
 
-async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Latest) {
+async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Latest, client: &Path) {
     let request = timeout(REQUEST_TIMEOUT, read_request(&mut stream)).await;
     let routed = match &request {
         Ok(Ok(request)) => classify(request, host, token),
@@ -135,8 +155,8 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
             events(&mut stream, &mut latest, KEEPALIVE, REQUEST_TIMEOUT).await;
             return;
         }
-        Ok(Routed::Read(relative)) => read(relative, &mut latest).await,
-        Ok(Routed::Write(write)) => assign(&mut stream, write).await,
+        Ok(Routed::Read(relative)) => read(relative, &mut latest, client).await,
+        Ok(Routed::Write(write)) => assign(&mut stream, write, client).await,
         Err(status) => (
             status,
             "application/json",
@@ -148,15 +168,15 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
 
 /// Answer a read route: the status snapshot, the browser assets, what
 /// `ssf agents` lists, or one harness's model ids.
-async fn read(relative: &str, latest: &mut Latest) -> (u16, &'static str, String) {
+async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'static str, String) {
     match relative {
         "api/status" => snapshot(latest).await,
         "" | "index.html" => (200, "text/html; charset=utf-8", INDEX.to_owned()),
         "dashboard.css" => (200, "text/css; charset=utf-8", CSS.to_owned()),
         "dashboard.js" => (200, "text/javascript; charset=utf-8", JS.to_owned()),
-        "api/agents" => agents().await,
+        "api/agents" => agents(client).await,
         _ => match relative.strip_prefix("api/models/") {
-            Some(harness) => models(harness).await,
+            Some(harness) => models(harness, client).await,
             None => not_found(),
         },
     }
@@ -175,37 +195,43 @@ async fn snapshot(latest: &mut Latest) -> (u16, &'static str, String) {
     }
 }
 
-/// What `ssf agents` lists, as `ssf agents --json` prints it. The lookup
-/// walks `PATH` and asks `mise` what it has installed: blocking work that
-/// must not hold a runtime worker, so it runs off the runtime.
-async fn agents() -> (u16, &'static str, String) {
-    match tokio::task::spawn_blocking(crate::agents::list).await {
-        Ok(list) => as_json(list),
-        Err(error) => failure_of(&anyhow::Error::from(error)),
+/// What `ssf agents` lists, as `ssf agents --json` prints it. The command is
+/// the factory's own: it walks `PATH`, asks `mise` what it has installed and
+/// reads the machine's default agent, so it has to run where the sessions
+/// run rather than in this process.
+async fn agents(client: &Path) -> (u16, &'static str, String) {
+    match ask(client, &["agents", "--json"], LISTING_TIMEOUT).await {
+        Ok(output) => listed(output, "the agent list"),
+        Err(error) => failure_of(&error),
     }
 }
 
-/// One harness's model ids, as `ssf models <harness> --json` prints them: a
-/// harness ssf does not know is `404`, and one that takes no model setting
-/// is `400` (nothing is wrong with a request that asks what a harness
-/// offers; there is simply nothing to list).
-async fn models(harness: &str) -> (u16, &'static str, String) {
+/// One harness's model ids, as `ssf models <harness> --json` prints them. A
+/// harness ssf does not know is `404`, and one that takes no model setting is
+/// `400` (nothing is wrong with a request that asks what a harness offers;
+/// there is simply nothing to list). Both are facts of ssf's own tables
+/// rather than of any one machine, so they are settled here; only the ids
+/// themselves come from the factory.
+async fn models(harness: &str, client: &Path) -> (u16, &'static str, String) {
     if !crate::agents::is_known(harness) {
         return not_found();
     }
-    // The ids may come from the harness's own listing command, which is
-    // another blocking lookup.
-    let harness = harness.to_owned();
-    match tokio::task::spawn_blocking(move || crate::models::available(&harness)).await {
-        Ok(Ok(available)) => as_json(available),
-        Ok(Err(error)) => failure_of(&error),
-        Err(error) => failure_of(&anyhow::Error::from(error)),
+    if !crate::models::supports_model(harness) {
+        return bad(crate::models::no_model_setting(harness));
+    }
+    match ask(client, &["models", harness, "--json"], LISTING_TIMEOUT).await {
+        Ok(output) => listed(output, "the model list"),
+        Err(error) => failure_of(&error),
     }
 }
 
 /// The one write: `ssf assign`'s own code path for the item, answered with
 /// its `--json` result or with the refusal that stopped it, verbatim.
-async fn assign(stream: &mut TcpStream, write: Assign<'_>) -> (u16, &'static str, String) {
+async fn assign(
+    stream: &mut TcpStream,
+    write: Assign<'_>,
+    client: &Path,
+) -> (u16, &'static str, String) {
     let body = match timeout(REQUEST_TIMEOUT, read_body(stream, write.length)).await {
         Ok(Ok(body)) => body,
         // A body the client never finished sending, or one that never
@@ -230,17 +256,47 @@ async fn assign(stream: &mut TcpStream, write: Assign<'_>) -> (u16, &'static str
         effort = request.effort.as_deref().unwrap_or(""),
         "web API assign"
     );
-    match crate::ipc::exchange(&crate::ipc::Request::Assign {
+    let request = crate::ipc::Request::Assign {
         item,
         harness: request.harness,
         model: request.model,
         effort: request.effort,
         by: None,
-    })
-    .await
-    {
+    };
+    let Ok(request) = serde_json::to_string(&request) else {
+        return failure(None, "the assign request could not be written down");
+    };
+    let output = match ask(client, &["__request", &request], WRITE_TIMEOUT).await {
+        Ok(output) => output,
+        Err(error) => return failure_of(&error),
+    };
+    // The client prints the daemon's answer and exits with whether it
+    // agreed, so the answer itself is what decides the response here.
+    match serde_json::from_slice::<crate::ipc::Response>(&output.stdout) {
         Ok(response) => answer(response),
-        Err(error) => failure_of(&error),
+        Err(_) => failure(None, client_error(&output, "the assign request")),
+    }
+}
+
+/// Ask this factory one client command and take its output. The transport is
+/// the status stream's own: a client run in this process's service identity,
+/// which forwards into the guest when the factory is in a VM. Without it a
+/// listener bound by a VM's host — the topology `ssf setup` creates — would
+/// answer from the host, where neither the daemon nor the harnesses are.
+async fn ask(client: &Path, args: &[&str], limit: Duration) -> Result<std::process::Output> {
+    let mut command = crate::dashboard_transport::local_client_command(
+        client,
+        args,
+        crate::server_catalog::service_local_context(),
+        crate::server_catalog::selected_vm_context()?.as_ref(),
+        crate::server_catalog::selected_target_identity()?.as_ref(),
+    );
+    match timeout(limit, command.output()).await {
+        // A write the factory never answered is not a write that did not
+        // happen: the daemon may still be working on it, and the message
+        // says that rather than the tidy lie.
+        Err(_) => bail!("the factory did not answer in time; what it was doing may still land"),
+        Ok(output) => output.context("running the ssf client"),
     }
 }
 
@@ -252,11 +308,33 @@ fn not_found() -> (u16, &'static str, String) {
     )
 }
 
-/// A value as a `200`'s JSON body, or the failure of serializing it.
-fn as_json(value: impl serde::Serialize) -> (u16, &'static str, String) {
-    match serde_json::to_string(&value) {
-        Ok(body) => (200, "application/json", body),
-        Err(error) => failure_of(&anyhow::Error::from(error)),
+/// A client command's output as the `200` body it printed, or the factory's
+/// failure with its own words.
+fn listed(output: std::process::Output, what: &str) -> (u16, &'static str, String) {
+    if output.status.success() {
+        return (
+            200,
+            "application/json",
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        );
+    }
+    failure(None, client_error(&output, what))
+}
+
+/// Why a client command stopped, as it printed it: a command tells a person
+/// on stderr, and that is the message this endpoint reports.
+fn client_error(output: &std::process::Output, what: &str) -> String {
+    let detail = String::from_utf8_lossy(&output.stderr);
+    let detail = detail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if detail.is_empty() {
+        format!("{what} could not be read")
+    } else {
+        detail
     }
 }
 
@@ -598,6 +676,7 @@ fn presentation(payload: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     async fn assert_listener_closed(address: std::net::SocketAddr) {
         timeout(Duration::from_secs(1), async {
@@ -863,78 +942,149 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         response
     }
 
-    /// A daemon socket that answers the next request with `answer` and
-    /// reports what it was asked, at the path `ssf` looks for it on. A
-    /// sandbox must be alive: that is what makes the path temporary.
-    async fn stub_daemon(
-        answer: crate::ipc::Response,
-    ) -> tokio::task::JoinHandle<crate::ipc::Request> {
-        let path = crate::ipc::socket_path();
-        let _ = std::fs::remove_file(&path);
-        let listener = tokio::net::UnixListener::bind(&path).unwrap();
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let request = crate::ipc::read_request(&mut stream).await.unwrap();
-            crate::ipc::write_response(&mut stream, &answer)
-                .await
-                .unwrap();
-            request
-        })
+    /// A stand-in for the `ssf` client the endpoint runs commands with: the
+    /// endpoint asks the factory through a client process — the status
+    /// stream's own transport, which forwards into a VM — so this is what a
+    /// factory looks like to it. The script records the arguments it was
+    /// given and prints one canned answer.
+    struct Client {
+        root: PathBuf,
     }
 
-    /// The pickers the extension's assign form is built from: what `ssf
-    /// agents` lists, and what `ssf models <harness>` lists. A harness ssf
-    /// does not know is `404`; one that takes no model setting has nothing
-    /// to list and says so with `400`.
-    #[tokio::test]
-    async fn serves_the_agent_and_model_listings_the_cli_prints() {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        let (_tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
-        let agents = fetch(address, "/secret/api/agents").await;
-        assert!(agents.starts_with("HTTP/1.1 200"), "{agents}");
-        let body: Value = serde_json::from_str(agents.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        let claude = body
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|agent| agent["id"] == "claude")
-            .expect("the agent list carries claude");
-        assert_eq!(claude["name"], "Claude Code");
-        let models = fetch(address, "/secret/api/models/claude").await;
-        assert!(models.starts_with("HTTP/1.1 200"), "{models}");
-        let body: Value = serde_json::from_str(models.split("\r\n\r\n").nth(1).unwrap()).unwrap();
-        assert_eq!(body["harness"], "claude");
-        assert!(!body["models"].as_array().unwrap().is_empty());
-        assert!(body["source"]["kind"].is_string());
-        let unknown = fetch(address, "/secret/api/models/not-a-harness").await;
-        assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
-        let no_models = fetch(address, "/secret/api/models/crush").await;
-        assert!(no_models.starts_with("HTTP/1.1 400"), "{no_models}");
-        assert!(
-            no_models.contains("does not take a model setting"),
-            "{no_models}"
-        );
-        task.abort();
+    impl Client {
+        fn new(name: &str, answer: &str, exit: u8) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "ssf-web-client-{name}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{args}'\nprintf '%s' '{answer}'\nexit {exit}\n",
+                args = root.join("args").display(),
+                // The canned answer is a shell single-quoted string: no
+                // fixture contains a quote of its own.
+                answer = answer.replace('\'', "'\\''"),
+                exit = exit,
+            );
+            let program = root.join("ssf");
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Self { root }
+        }
+
+        fn program(&self) -> PathBuf {
+            self.root.join("ssf")
+        }
+
+        /// What the client was last run as, or nothing when it has not been
+        /// run at all: one argument per line, as it wrote them.
+        fn args(&self) -> Vec<String> {
+            std::fs::read_to_string(self.root.join("args"))
+                .map(|text| text.lines().map(str::to_string).collect())
+                .unwrap_or_default()
+        }
     }
 
-    /// The write itself: the daemon is asked exactly what `ssf assign` asks
-    /// it, and its answer is the `200` body.
-    #[tokio::test]
-    async fn the_assign_write_runs_the_request_ssf_assign_sends() {
-        let _sandbox = crate::config::test_support::sandbox();
-        let result = json!({"session":"o/r#7","title":"Fix it","assigned":true,
-            "overrides_written":true,"open":true,"poll_interval_secs":10});
-        let daemon = stub_daemon(crate::ipc::Response::ok(result.clone())).await;
+    impl Drop for Client {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// A listener serving one factory's client.
+    async fn served(
+        client: &Client,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<()>>) {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        std::mem::forget(tx);
+        (
+            address,
+            tokio::spawn(serve(listener, "secret".into(), rx, client.program())),
+        )
+    }
+
+    /// The pickers the extension's assign form is built from: what `ssf
+    /// agents` lists, and what `ssf models <harness>` lists — asked of the
+    /// factory as those commands are. A harness ssf does not know is `404`;
+    /// one that takes no model setting has nothing to list and says so with
+    /// `400` without asking anyone.
+    #[tokio::test]
+    async fn serves_the_agent_and_model_listings_the_cli_prints() {
+        let agents = json!([{"id":"claude","name":"Claude Code","installed":true}]);
+        let models =
+            json!({"harness":"claude","models":["opus"],"source":{"kind":"table","detail":""}});
+        let client = Client::new("listings", &agents.to_string(), 0);
+        let (address, task) = served(&client).await;
+        let response = fetch(address, "/secret/api/agents").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(
+            response.split("\r\n\r\n").nth(1).unwrap(),
+            agents.to_string(),
+            "the listing is the command's own output"
+        );
+        assert_eq!(client.args(), ["__client", "agents", "--json"]);
+        // The model ids come from the factory too: its catalogues and its
+        // harnesses' listing commands are there, not here.
+        let client = Client::new("models", &models.to_string(), 0);
+        let (address, task2) = served(&client).await;
+        let response = fetch(address, "/secret/api/models/claude").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(
+            response.split("\r\n\r\n").nth(1).unwrap(),
+            models.to_string()
+        );
+        assert_eq!(client.args(), ["__client", "models", "claude", "--json"]);
+        // A harness ssf does not know, and one that takes no model setting:
+        // both are ssf's own tables, so neither asks the factory anything.
+        for (path, expected) in [
+            ("/secret/api/models/not-a-harness", "HTTP/1.1 404"),
+            ("/secret/api/models/crush", "HTTP/1.1 400"),
+        ] {
+            let asked = client.args();
+            let response = fetch(address, path).await;
+            assert!(response.starts_with(expected), "{response}");
+            assert_eq!(client.args(), asked, "the factory was asked for {path}");
+        }
+        assert!(
+            fetch(address, "/secret/api/models/crush")
+                .await
+                .contains("does not take a model setting"),
+            "the refusal says why"
+        );
+        // A factory that cannot answer is the factory's failure, reported
+        // with its own words.
+        let broken = Client::new("broken", "", 1);
+        // stderr is where a command says why it stopped; the script's own
+        // is empty, so the endpoint names what it could not read.
+        let (address, task3) = served(&broken).await;
+        let response = fetch(address, "/secret/api/agents").await;
+        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+        assert!(
+            response.contains("the agent list could not be read"),
+            "{response}"
+        );
+        task.abort();
+        task2.abort();
+        task3.abort();
+    }
+
+    /// The write itself: the factory is asked with exactly the request `ssf
+    /// assign` sends its daemon, and the daemon's answer is the `200` body.
+    #[tokio::test]
+    async fn the_assign_write_runs_the_request_ssf_assign_sends() {
+        let result = json!({"session":"o/r#7","title":"Fix it","assigned":true,
+            "overrides_written":true,"open":true,"poll_interval_secs":10});
+        let answer = json!({"ok":true,"data":result}).to_string();
+        let client = Client::new("assign", &answer, 0);
+        let (address, task) = served(&client).await;
         let response = write(
             address,
             "/secret/api/assign",
@@ -945,8 +1095,14 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         let body: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(body, result);
+        // The client is run as `ssf __client __request '<json>'`, and that
+        // JSON is the request `ssf assign` sends: the same code path on the
+        // daemon, reached the way every command reaches a factory in a VM.
+        let args = client.args();
+        assert_eq!(args.len(), 3, "{args:?}");
+        assert_eq!(&args[..2], ["__client", "__request"]);
         assert_eq!(
-            daemon.await.unwrap(),
+            serde_json::from_str::<crate::ipc::Request>(&args[2]).unwrap(),
             crate::ipc::Request::Assign {
                 item: "o/r#7".into(),
                 harness: "claude".into(),
@@ -956,43 +1112,34 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 by: None,
             }
         );
-        drop(tx);
         task.abort();
     }
 
-    /// What the daemon refuses comes back as the CLI prints it, with the
+    /// What the daemon refuses comes back as the command prints it, with the
     /// status the extension needs to tell the two apart.
     #[tokio::test]
     async fn a_refusal_is_answered_with_the_daemons_own_words() {
-        let _sandbox = crate::config::test_support::sandbox();
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        let (_tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
         for (answer, expected) in [
             (
-                crate::ipc::Response {
-                    ok: false,
-                    error: Some("o/r#7 already has a session".into()),
-                    kind: Some(crate::ipc::RefusalKind::Conflict),
-                    data: Value::Null,
-                },
+                json!({"ok":false,"error":"o/r#7 already has a session",
+                       "kind":"conflict"}),
                 "HTTP/1.1 409 Conflict",
             ),
             (
-                crate::ipc::Response {
-                    ok: false,
-                    error: Some("claude is not installed where the daemon runs".into()),
-                    kind: None,
-                    data: Value::Null,
-                },
+                // A factory failure carries no kind: it was not the request
+                // that stopped it.
+                json!({"ok":false,"error":"claude is not installed where the daemon runs"}),
                 "HTTP/1.1 502 Bad Gateway",
             ),
+            (
+                json!({"ok":false,"error":"o/r is not a watched repository",
+                       "kind":"bad_input"}),
+                "HTTP/1.1 400 Bad Request",
+            ),
         ] {
-            let message = answer.error.clone().unwrap();
-            let daemon = stub_daemon(answer).await;
+            let message = answer["error"].as_str().unwrap();
+            let client = Client::new("refusal", &answer.to_string(), 1);
+            let (address, task) = served(&client).await;
             let response = write(
                 address,
                 "/secret/api/assign",
@@ -1007,23 +1154,20 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 json!({"error": message}),
                 "{response}"
             );
-            daemon.await.unwrap();
+            task.abort();
         }
-        task.abort();
     }
 
-    /// Every write rule, over a real socket, with no daemon to reach: the
-    /// answer is the rule's own status rather than the `502` a write that got
-    /// through would come back with, which is what says nothing was done.
+    /// Every write rule, over a real socket: each refused for what the
+    /// request carried, with the client never run at all — which is what
+    /// says nothing was done.
     #[tokio::test]
-    async fn refuses_writes_that_break_a_rule_before_asking_the_daemon() {
-        let _sandbox = crate::config::test_support::sandbox();
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        let address = listener.local_addr().unwrap();
-        let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+    async fn refuses_writes_that_break_a_rule_before_asking_the_factory() {
+        // The program is one no shell could run: if a rule let a request
+        // through, the answer would be the `502` of failing to start it.
+        let client = Client::new("unreached", "", 0);
+        std::fs::remove_file(client.program()).unwrap();
+        let (address, task) = served(&client).await;
         let body = assign_body();
         let own = format!("Origin: http://{address}\r\nContent-Type: application/json\r\n");
         for (path, extra, expected) in [
@@ -1042,6 +1186,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             let response = write(address, path, extra, &body).await;
             assert!(response.starts_with(expected), "{response}");
         }
+        assert!(client.args().is_empty(), "a refused write ran the client");
         // A body over the bound is refused for its length alone, before any of
         // it is read: the connection is closed with the answer rather than
         // waiting for 4 KiB that will not come.
@@ -1093,7 +1238,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         )
         .await;
         assert!(misplaced.starts_with("HTTP/1.1 405"), "{misplaced}");
-        drop(tx);
+        assert!(client.args().is_empty(), "a refused write ran the client");
         task.abort();
     }
 
@@ -1105,7 +1250,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let address = listener.local_addr().unwrap();
         assert!(address.ip().is_loopback());
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
         let rejected = fetch(address, "/api/status").await;
         assert!(rejected.starts_with("HTTP/1.1 404"));
         let html = fetch(address, "/secret/").await;
@@ -1222,7 +1367,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
         let mut buffer = Vec::new();
         let (mut stream, headers) =
             timeout(Duration::from_secs(5), open_events(address, &mut buffer))
@@ -1267,7 +1412,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
         let mut buffer = Vec::new();
         let (_stream, headers) = timeout(Duration::from_secs(5), open_events(address, &mut buffer))
             .await

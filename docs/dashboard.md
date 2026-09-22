@@ -151,6 +151,15 @@ The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so a Chrome extension's service worker can read
 them; the `Host` header must still match the configured bind address and port.
 
+Everything above the status stream is answered by *the factory*, through the
+same client the TUI and the commands use: with `[vm] enabled` the listener is
+bound by the host that supervises the VM while the daemon, the harnesses and
+their model catalogues are in the guest, so the agent and model listings, and
+the assign write, are asked there and forwarded rather than answered from the
+host. A factory the host cannot reach — a VM that is not running, a stopped
+daemon — is a `502` naming what could not be reached, never a listing of the
+host's own harnesses.
+
 #### Assigning from the API
 
 `POST /<capability>/api/assign` takes one assign request as JSON:
@@ -175,9 +184,9 @@ what happened:
   be applied to — it already has a session (`ssf handover` is what moves one),
   a handover or release of it is pending, or it is worked by another item's
   session.
-- `502` with `{"error": ...}` when the factory could not do it: the daemon is
-  not running, or the harness is not installed or not signed in where the
-  sessions run.
+- `502` with `{"error": ...}` when the factory could not do it: it could not be
+  reached, the assign took longer than a minute, or the harness is not installed
+  or not signed in where the sessions run.
 
 The `error` is the message `ssf assign` would have printed, verbatim.
 
