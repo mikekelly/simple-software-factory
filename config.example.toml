@@ -163,7 +163,8 @@ effort = "high"                              # effort/thinking level (claude: lo
 
 # Optional server browser dashboard. Restart ssf-server after changes.
 # In VM mode this section belongs to the host, not the guest.
-# Only loopback is accepted; use an authenticated TLS reverse proxy for remote access.
+# Only loopback or a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) is
+# accepted; use an authenticated TLS reverse proxy for any other remote access.
 [dashboard]
 # enabled = false
 # bind = "127.0.0.1"

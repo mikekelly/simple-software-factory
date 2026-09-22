@@ -89,8 +89,11 @@ pub struct Config {
     pub repos: Vec<RepoConfig>,
 }
 
-/// Direct web exposure is restricted to loopback. Remote access requires an
-/// authenticated TLS reverse proxy (including Tailscale Serve) or SSH forwarding.
+/// Direct web exposure is restricted to loopback or a Tailscale address
+/// (IPv4 in 100.64.0.0/10, IPv6 in fd7a:115c:a1e0::/48), where WireGuard
+/// encrypts the transport and tailnet policy limits who can reach the port.
+/// Any other remote access requires an authenticated TLS reverse proxy
+/// (including Tailscale Serve) or SSH forwarding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DashboardConfig {
@@ -110,10 +113,27 @@ impl Default for DashboardConfig {
 }
 
 impl DashboardConfig {
+    /// `Some("loopback")` or `Some("tailscale")` for an accepted bind address,
+    /// `None` for anything else (`0.0.0.0`, `::`, LAN or public addresses).
+    pub fn bind_scope(&self) -> Option<&'static str> {
+        if self.bind.is_loopback() {
+            return Some("loopback");
+        }
+        let tailscale = match self.bind {
+            // Tailscale hands out CGNAT addresses, 100.64.0.0/10.
+            std::net::IpAddr::V4(v4) => {
+                v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1])
+            }
+            // and ULA addresses in fd7a:115c:a1e0::/48.
+            std::net::IpAddr::V6(v6) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        };
+        tailscale.then_some("tailscale")
+    }
+
     pub fn validate(&self) -> Result<()> {
-        if self.enabled && !self.bind.is_loopback() {
+        if self.enabled && self.bind_scope().is_none() {
             bail!(
-                "dashboard.bind must be loopback; use an authenticated TLS reverse proxy or SSH tunnel for remote access"
+                "dashboard.bind must be a loopback or Tailscale address (100.64.0.0/10 or fd7a:115c:a1e0::/48); use an authenticated TLS reverse proxy or SSH tunnel for any other remote access"
             );
         }
         Ok(())

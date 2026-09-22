@@ -19,6 +19,12 @@ Ask these qualitative questions:
 - **Proportional validation:** Are checks and independent review matched to
   risk, with lightweight documentation checks and stronger checks for unsafe
   behavior? Are repeated builds/reviews justified by substantive changes?
+- **Network exposure:** When a project runs the web dashboard/API with a
+  non-loopback bind, is it unreachable from outside the private network in
+  practice: no Tailscale Funnel, no port forward or proxy in front of it,
+  tailnet ACLs limiting who reaches the port, and the capability URL held
+  only by the extension and tailnet browsers? This is a judgment call
+  `ssf doctor` cannot make deterministically.
 - **Bounded review:** Is there a stopping rule, a distinction between confirmed
   defects and optional polish, and a path to simplify or ask a maintainer
   when substantive defects remain?

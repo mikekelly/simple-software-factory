@@ -71,11 +71,13 @@ This selects across tabs and workspaces on the current Herdr server and leaves
 the dashboard process in its original pane. The integration uses the pane's
 inherited Herdr environment; SSF's remote target does not change Herdr servers.
 
-The optional server web listener is disabled by default, loopback only, and
-shares the server process lifetime. Browser assets are used by the server
-endpoint; the client opens no browser. Each server start creates a fresh
-capability URL, with bounded HTTP headers and requests, strict Host/Origin
-checks, and a restrictive content security policy. See
+The optional server web listener is disabled by default, restricted to
+loopback and Tailscale bind addresses, and shares the server process lifetime.
+Browser assets are used by the server endpoint; the client opens no browser.
+Each server start creates a fresh capability URL, with bounded HTTP headers and
+requests, strict Host/Origin checks, and a restrictive content security policy.
+It also serves the status API: `/api/status` for one snapshot and `/api/events`
+for a server-sent events stream of every change. See
 [Session dashboard](dashboard.md) for configuration and proxy expectations.
 
 ## Polling and delivery

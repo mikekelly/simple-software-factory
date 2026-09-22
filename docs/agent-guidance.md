@@ -203,10 +203,11 @@ one `status --json --watch` stream per server. Only driver-reported agents
 become cards; monitored items without an agent are listed separately.
 Keyboard and mouse selection focus a matched agent when running inside
 herdr, scoped to that herdr server. The web UI is off by default;
-`[dashboard] enabled = true` enables a loopback listener on port 8787
-after restarting ssf-server; non-loopback binds are refused, remote access
-needs an authenticated TLS reverse proxy, and the logged capability URL is
-a secret. In VM mode `dashboard.*` settings belong to the host. See [the
+`[dashboard] enabled = true` enables a listener on port 8787 after
+restarting ssf-server; the bind must be a loopback or Tailscale address,
+anything else is refused, remote access beyond a tailnet needs an
+authenticated TLS reverse proxy, and the logged capability URL is a
+secret. In VM mode `dashboard.*` settings belong to the host. See [the
 dashboard document](dashboard.md).
 
 ### Omarchy
