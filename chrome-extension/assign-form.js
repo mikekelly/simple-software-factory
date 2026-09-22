@@ -26,8 +26,6 @@
 // person's to repeat, in the server's own words.
 (() => {
   const DEFAULT = "";
-  /// The effort levels criterion 1 names, offered for every harness.
-  const EFFORTS = [DEFAULT, "low", "medium", "high"];
   /// How long "Assigning…" waits for a snapshot that shows the item with an
   /// agent before it shows what the factory said instead.
   const TIMEOUT_MS = 30000;
@@ -130,17 +128,19 @@
     state.error = null;
   }
 
-  /// The agent ids, display names and effort levels out of `ssf agents`'
-  /// listing, which is an array of records; a bare array of ids also reads.
+  /// The agents out of `ssf agents --json`, which is an array of records; a
+  /// bare array of ids also reads. A harness says which of the optional
+  /// settings it takes at all, and `ssf assign` refuses one it does not.
   function agentList(body) {
     const rows = Array.isArray(body) ? body : (body?.agents ?? []);
     return rows
       .map((row) =>
         typeof row === "string"
-          ? { id: row, name: row, efforts: [] }
+          ? { id: row, name: row, takesModel: true, efforts: [] }
           : {
               id: String(row?.id ?? ""),
               name: String(row?.name ?? row?.id ?? ""),
+              takesModel: row?.takes_model !== false,
               efforts: Array.isArray(row?.effort_levels) ? row.effort_levels : [],
             },
       )
@@ -221,9 +221,16 @@
   }
 
   /// What the pickers hold, given what this factory has answered so far.
+  ///
+  /// Model and effort are offered only as far as the chosen harness takes
+  /// them: `ssf assign` refuses a setting a harness does not accept, so
+  /// offering one would be offering a refusal. A harness that lists no effort
+  /// levels takes none, which is why nothing but the default appears.
   function stack(state) {
     const agents = state.agents ?? [];
     const chosen = agents.find((agent) => agent.id === state.harness);
+    const models = chosen && !chosen.takesModel ? [] : (state.models ?? []);
+    const levels = chosen?.efforts ?? [];
     return {
       harnesses: [
         { value: DEFAULT, text: state.agentsPending ? "loading…" : "Choose a harness" },
@@ -231,16 +238,11 @@
       ],
       models: [
         { value: DEFAULT, text: "harness default" },
-        ...(state.models ?? []).map((id) => ({ value: id, text: id })),
+        ...models.map((id) => ({ value: id, text: id })),
       ],
       efforts: [
         { value: DEFAULT, text: "harness default" },
-        // A harness that lists its own levels narrows the offering; one that
-        // says nothing about them gets the four.
-        ...(chosen?.efforts.length ? chosen.efforts : EFFORTS.slice(1)).map((level) => ({
-          value: level,
-          text: level,
-        })),
+        ...levels.map((level) => ({ value: level, text: level })),
       ],
       ready: Boolean(chosen),
     };

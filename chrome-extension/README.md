@@ -3,8 +3,9 @@
 A Chrome extension (Manifest V3) that overlays live SSF agent state on
 github.com. Every screen it touches answers one question — **is an agent on
 this, and does it need me?** — at a glance, with the detail one click away. It
-is **read-only**: it reads the same canonical dashboard model as the TUI and
-the server's web UI, and it never acts on the factory.
+reads the same canonical dashboard model as the TUI and the server's web UI,
+and the one thing it does to a factory is start a session on an item that has
+none, described under [Assigning an agent](#assigning-an-agent).
 
 Both the endpoint it reads and the exposure rules for reaching it are described
 in the [dashboard guide](../docs/dashboard.md).
@@ -121,6 +122,38 @@ Several factories merge by repository: a chip is unique per item, and a factory
 that does not host the repository contributes nothing. When more than one
 factory knows the item, each card is named with its factory label.
 
+## Assigning an agent
+
+An item the factories have no agent on — the `no agent` state, whether ssf
+monitors it or not — carries an **Assign agent** form: on the issue or pull
+request card, and in the popover a list, search result or board card opens. An
+item with an agent shows no form.
+
+![An issue page whose sidebar card carries the Assign agent form: harness,
+model and effort pickers above an Assign button](docs/assign-form.png)
+
+- **Harness** comes from the factory's own `ssf agents`, and is required.
+  **Model** comes from `ssf models <harness>` with the harness's own default
+  first, and **Effort** offers the harness's levels. Leaving either at *harness
+  default* sends no model or effort at all, so the factory's own rules apply.
+- Which factory takes the session is decided for you when one factory that
+  knows the item accepts writes; when more than one does, a **Factory** picker
+  comes first.
+- **Assign** starts the session with the factory's own `ssf assign`: the same
+  item, harness, model and effort `ssf assign <item> --harness ID` would use.
+  The form reads *Assigning…* until a frame shows the item with an agent. If
+  none does within 30 seconds, what the factory returned is shown with a link
+  to its dashboard.
+- A refusal — an item that already has a session, a repository the factory does
+  not watch, a harness it does not know — is shown in the server's own words,
+  inline, with the form still there. Nothing is retried for you.
+
+Each factory on the options page carries a **Writes** switch, on by default.
+Turning it off hides the form for that factory and refuses the write in the
+service worker. It is the extension's own side of the rule the factory
+enforces: the server accepts a write only from an extension origin, so nothing
+else that can reach a capability URL can start a session through it.
+
 ## Reaching a factory on a tailnet
 
 A tailnet factory needs `dashboard.bind` set to a Tailscale address; see
@@ -145,16 +178,23 @@ forward, and keep tailnet ACLs restrictive.
   re-renders rather than collapsing under a stream that repaints every couple of
   seconds. Every node is built with `textContent` and lives in a shadow root, so
   no factory text is ever parsed as HTML and no GitHub style leaks in.
+- The **service worker** also carries the write and the two listings the form's
+  pickers need. A factory accepts a write only from an extension origin, and a
+  page on github.com has none, so the content script never fetches a factory
+  itself and no page the factory serves can start a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are
   `optional_host_permissions`, requested at runtime from the options page, so
   the extension only holds access to the factories you added.
 
 ## Limitations
 
-- Read-only: there are no actions from the browser in this version.
+- The overlay starts sessions and does nothing else: no hand over, release or
+  message from the browser yet.
 - The capability URL changes when the server restarts; the options page must be
   updated to match, or the factory reads as unreachable.
 - A project board chip depends on the board rendering its cards as links to the
   issue or pull request, as GitHub's board and list views do.
 - Chrome prompts for each factory address once; until it is allowed, the page
   says so rather than showing state it cannot read.
+- Whether a factory watches a repository is read from that factory's snapshot,
+  so a factory with nothing on the repository shows no form for it.
