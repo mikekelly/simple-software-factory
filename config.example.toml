@@ -39,6 +39,14 @@
 # SSF is built on herdr, which runs the agent workspaces and terminals.
 # driver = "herdr"
 
+# Context a session's harness may fill before it compacts its own history, in
+# tokens, for every repository that does not set its own (`repo.auto_compaction_tokens`).
+# A conservative threshold, because an unattended session that compacts only at
+# the model's own limit pays for its whole history on every turn. Applied to the
+# harnesses that take such a setting (claude, codex, omp); the others ignore it.
+# 0 leaves each harness's own default alone.
+# auto_compaction_tokens = 300000
+
 [herdr]
 # command = "herdr"                            # the herdr CLI; a herdr session must be running. A bare name not on PATH
 #                                              # is also looked for at ~/.local/bin/<name>, where herdr's installer puts it
@@ -123,6 +131,7 @@ harness = "claude"                             # agent id: see `ssf agents`
 # Required by repo add/set when supported; doctor fails if missing in legacy config.
 model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush. `ssf models <agent>` lists what the installed agent itself offers, else ssf's table; choosing one: docs/setup.md
 effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
+# auto_compaction_tokens = 300000              # context this repository's sessions may fill before the harness compacts its own history; overrides the top-level key (0: the harness's own default; claude requires 100000-1000000; claude/codex/omp only)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
 # path = "~/code/name"                         # use an existing checkout instead of cloning
 # base_branch = "origin/main"                 # branch new worktrees start from (default: origin's default branch); `ssf doctor` counts a worktree's commits beyond it

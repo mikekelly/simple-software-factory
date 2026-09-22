@@ -250,12 +250,14 @@ impl Engine {
                     .context("recording the first prompt before delivery")?;
                 let eff = self.effective(repo, issue.number);
                 let title = format!("{} · #{}", eff.harness, issue.number);
+                let tokens = self.cfg.auto_compaction_tokens_for(&eff);
                 let cmd = self.launch_command(
                     repo,
                     issue.number,
                     &issue.html_url,
-                    &eff.harness_command(),
+                    &eff.harness_command(tokens),
                     Some(&eff.stack()),
+                    tokens,
                 );
                 let text = self.initial_text(repo, issue, &mine);
                 let handle = match self

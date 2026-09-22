@@ -505,6 +505,14 @@ The daemon records GitHub's immutable repository id on its first pass. Later
 renames and transfers should happen through GitHub as usual; ssf periodically
 detects the new canonical name and repairs its configuration and checkouts.
 
+Nothing needs setting for context: ssf starts each session with a
+conservative compaction threshold (`auto_compaction_tokens`, 300,000 tokens,
+applied to `claude`, `codex` and `omp`) so a long unattended session does not
+grow until the model's own limit and re-send its whole history every turn.
+Override it per instance or per repository when a project's items justify more
+or less room, or set `0` to leave the harness's own default alone; see
+[Context compaction](configuration.md#context-compaction).
+
 The first successful poll after `ssf repo add` does not automatically start
 allocations that are already assigned to, mention, or request review from the
 bot. It records them as candidates instead. This avoids accidentally competing
@@ -583,7 +591,8 @@ it, and check the harness's model-selection rules before budgeting for
 subagents. There is no required three-tier agent hierarchy.
 
 Keep model and effort out of `repo.command`: ssf appends those flags
-itself. Clearing a supported model or effort setting is rejected.
+itself, and the context-compaction threshold with them. Clearing a supported
+model or effort setting is rejected.
 Existing files with missing settings still load and run, but `ssf doctor`
 fails with a repair command. SSF cannot establish who chose values already
 present in a config file; setup agents must obtain human confirmation.

@@ -76,6 +76,16 @@ session running one from another build takes no events at all — its item's
 every event is held and its agent never hears that the item closed (#402).
 Restarting the session is what loads the bridge this daemon serves.
 
+The same state directory holds the context-compaction overlay an OMP session is
+started with, one file per threshold (`omp-compaction-<tokens>.yml`), because
+OMP takes that setting only through its own configuration: `ssf launch` writes
+the file and names it in `PI_CONFIG_FILES`, which a session reads at startup and
+`omp --config <file>` is not (see
+[Context compaction](configuration.md#context-compaction)). A write that fails
+leaves the session on OMP's own threshold and says so on stderr rather than
+keeping the session from starting. The other two harnesses that have the setting
+take it on the command line, so nothing is written for them.
+
 The mailbox lives under the factory state directory at
 `delivery/<owner>/<repo>/<issue>/`. Its ready marker is the running
 extension's own attestation that events left there will be taken, and the

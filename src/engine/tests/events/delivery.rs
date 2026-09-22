@@ -336,6 +336,15 @@ async fn a_model_only_handover_keeps_the_repository_command() {
         "{launched:?}"
     );
     assert!(launched[0].contains("opus"), "{launched:?}");
+    // The context-compaction threshold travels with the launch: onto the
+    // command line for the harness that takes it there, and to the wrapper,
+    // which cannot resolve it for an item whose overrides the config it reads
+    // does not describe.
+    assert!(launched[0].contains("--autocompact 300000"), "{launched:?}");
+    assert!(
+        launched[0].contains("--auto-compaction-tokens 300000"),
+        "{launched:?}"
+    );
     // A handover on the same harness is where a transcript is most
     // easily mixed up, so the item says one happened whether or not
     // an id was ever captured for the session that left.

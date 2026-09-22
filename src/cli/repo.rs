@@ -19,6 +19,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             command,
             model,
             effort,
+            auto_compaction_tokens,
             instructions,
             prompt_file,
             allowed_users,
@@ -44,6 +45,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 command,
                 model: model.map(|m| m.trim().to_string()),
                 effort: effort.map(|e| e.trim().to_string()),
+                auto_compaction_tokens,
                 clone_url,
                 path,
                 base_branch,
@@ -80,6 +82,12 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 cfg.repos.push(entry);
                 "Added"
             };
+            // What the config has to satisfy, checked before it is written:
+            // the file loaded, so this refuses nothing but the entry just
+            // added, and a value no load accepts would otherwise stop the
+            // daemon and every `ssf` command until someone edited the TOML by
+            // hand.
+            cfg.validate()?;
             cfg.save_to(config_file)?;
             println!("{action} {name} in {}", config_file.display());
             if action == "Added" {
@@ -99,6 +107,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             command,
             model,
             effort,
+            auto_compaction_tokens,
             instructions,
             prompt_file,
             allowed_users,
@@ -123,10 +132,13 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             if let Some(h) = harness {
                 check_harness(&h);
                 if h != entry.harness {
-                    // Model ids and effort levels belong to a harness;
-                    // switching requires a fresh explicit selection.
+                    // Model ids, effort levels and the compaction threshold
+                    // belong to a harness; switching requires a fresh
+                    // explicit selection of the first two, and drops the
+                    // third back to the instance's value, else ssf's default.
                     entry.model = None;
                     entry.effort = None;
+                    entry.auto_compaction_tokens = None;
                 }
                 entry.harness = h;
             }
@@ -153,6 +165,9 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
             }
             if let Some(e) = effort {
                 entry.effort = Some(e.trim().to_string());
+            }
+            if let Some(t) = auto_compaction_tokens {
+                entry.auto_compaction_tokens = Some(t);
             }
             if instructions.is_some() {
                 entry.instructions = instructions;
@@ -192,6 +207,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                     "command" => entry.command = None,
                     "model" => entry.model = None,
                     "effort" => entry.effort = None,
+                    "auto_compaction_tokens" => entry.auto_compaction_tokens = None,
                     "instructions" => entry.instructions = None,
                     "prompt_file" => entry.prompt_file = None,
                     "allowed_users" => {
@@ -250,6 +266,9 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 }
                 if let Some(e) = &r.effort {
                     extra.push(format!("effort={e}"));
+                }
+                if let Some(t) = r.auto_compaction_tokens {
+                    extra.push(format!("auto_compaction_tokens={t}"));
                 }
                 if let Some(p) = &r.path {
                     extra.push(format!("path={p}"));
@@ -446,6 +465,12 @@ pub(super) fn config_cmd(command: ConfigCommand) -> Result<()> {
             let cfg = Config::load()?;
             if key == "driver" && cfg.driver.is_none() {
                 println!("{}", cfg.default_driver());
+                return Ok(());
+            }
+            // Unset in the file, but the value sessions are started with is
+            // the conservative default, not nothing.
+            if key == "auto_compaction_tokens" && cfg.auto_compaction_tokens.is_none() {
+                println!("{}", cfg.auto_compaction_tokens_default());
                 return Ok(());
             }
             let value: toml::Value = toml::Value::try_from(&cfg)?;

@@ -329,6 +329,11 @@ pub(super) enum Command {
         /// Effort level this session runs.
         #[arg(long)]
         effort: Option<String>,
+        /// Context the session's harness may fill before it compacts its own
+        /// history, in tokens; the daemon resolves it and passes it on. Unset:
+        /// resolved from the config for the repository named by `--repo`.
+        #[arg(long)]
+        auto_compaction_tokens: Option<u64>,
         /// Command line to run (through `sh -c`).
         #[arg(trailing_var_arg = true, required = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -577,6 +582,11 @@ pub(super) enum RepoCommand {
         /// Effort level, required in the resulting config when supported (levels: `ssf agents --json`).
         #[arg(long)]
         effort: Option<String>,
+        /// Context the harness may fill before it compacts its own history, in tokens
+        /// (default: 300000; 0 leaves the harness's own default alone). Applied to the
+        /// harnesses that take such a setting: claude, codex, omp.
+        #[arg(long, value_name = "TOKENS")]
+        auto_compaction_tokens: Option<u64>,
         /// Extra instructions appended to the initial prompt for this repo.
         #[arg(long)]
         instructions: Option<String>,
@@ -621,6 +631,11 @@ pub(super) enum RepoCommand {
         /// Effort level, required in the resulting config when supported (levels: `ssf agents --json`).
         #[arg(long)]
         effort: Option<String>,
+        /// Context the harness may fill before it compacts its own history, in tokens
+        /// (default: 300000; 0 leaves the harness's own default alone). Applied to the
+        /// harnesses that take such a setting: claude, codex, omp.
+        #[arg(long, value_name = "TOKENS")]
+        auto_compaction_tokens: Option<u64>,
         #[arg(long)]
         instructions: Option<String>,
         /// SSF agent guidance appended to the main session, relative to the worktree unless absolute (default: SSF.md).
@@ -649,7 +664,7 @@ pub(super) enum RepoCommand {
         /// Who pushes over HTTPS: bot, token:<gh login>, file:<token file>, or a git credential helper string.
         #[arg(long, value_name = "WHO")]
         git_credential: Option<String>,
-        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, instructions, prompt_file, allowed_users,
+        /// Clear an optional field: driver, path, clone_url, base_branch, command, model, effort, auto_compaction_tokens, instructions, prompt_file, allowed_users,
         /// event_comments, git (the whole [repo.git] table) or git.name, git.email, git.signing_key, git.credential.
         #[arg(long, value_name = "FIELD")]
         clear: Vec<String>,

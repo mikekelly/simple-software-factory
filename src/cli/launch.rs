@@ -5,6 +5,7 @@ pub(super) fn launch(
     issue: Option<u64>,
     issue_url: Option<String>,
     stack: Option<origin::Stack>,
+    auto_compaction_tokens: Option<u64>,
     command: Vec<String>,
 ) -> Result<()> {
     let cfg = Config::load().unwrap_or_default();
@@ -86,6 +87,39 @@ pub(super) fn launch(
         for (name, value) in [("SSF_MODEL", &stack.model), ("SSF_EFFORT", &stack.effort)] {
             if let Some(value) = value {
                 cmd.env(name, value);
+            }
+        }
+    }
+    // What the harness may fill its context to before it compacts its own
+    // history. Two of the three harnesses that take a threshold take it on the
+    // command line, so the value is already in `command`; omp takes it only
+    // through its settings, so it is handed down as an overlay the session is
+    // pointed at. `PI_CONFIG_FILES` is the way that reaches a real session:
+    // omp reads it at startup, while `omp --config <file>` is honoured by its
+    // model listing and not by a session. A session started by hand, with no
+    // `--auto-compaction-tokens`, resolves the value here the way the daemon
+    // does for a repository; nothing is set for a harness without a threshold,
+    // and an overlay inherited from the operator's own shell is cleared either
+    // way, since it belongs to that shell and not to this session.
+    cmd.env_remove("PI_CONFIG_FILES");
+    let harness = stack
+        .as_ref()
+        .map(|s| s.harness.as_str())
+        .or_else(|| repo_cfg.map(|r| r.harness.as_str()));
+    if harness == Some("omp") {
+        let tokens = auto_compaction_tokens.unwrap_or_else(|| match repo_cfg {
+            Some(r) => cfg.auto_compaction_tokens_for(r),
+            None => cfg.auto_compaction_tokens_default(),
+        });
+        if tokens > 0 {
+            match crate::models::write_omp_compaction_overlay(tokens) {
+                Ok(path) => {
+                    cmd.env("PI_CONFIG_FILES", path);
+                }
+                Err(e) => eprintln!(
+                    "ssf launch: could not write the omp compaction overlay ({e:#}); this session \
+compacts at omp's own threshold"
+                ),
             }
         }
     }

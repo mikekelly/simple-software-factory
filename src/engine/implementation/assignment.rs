@@ -83,6 +83,7 @@ session to another stack"
         // is an item that has nothing running and the two are the same.
         let from = self.effective(&repo, number);
         let to = repo.with_overrides(Some(&overrides));
+        self.check_auto_compaction(&to)?;
         // The same comparison `ssf handover` refuses on, except that
         // asking for the stack the item already runs is allowed here (it
         // is where an unassigned item starts) and writes nothing: an

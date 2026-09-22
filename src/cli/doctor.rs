@@ -333,7 +333,7 @@ pub(super) async fn doctor() -> Result<()> {
                 ),
             },
         }
-        let cmd = r.harness_command();
+        let cmd = r.harness_command(cfg.auto_compaction_tokens_for(r));
         let bin = cmd.split_whitespace().next().unwrap_or("");
         let ok = which(bin).is_some() || installed.iter().any(|a| a.id == r.harness && a.installed);
         check(ok, format!("{}: harness `{}` installed", r.name, r.harness));

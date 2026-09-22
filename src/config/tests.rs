@@ -83,6 +83,7 @@ fn per_item_overrides_follow_the_three_rules() {
         command: Some("claude --dangerously-skip-permissions".into()),
         model: Some("fable-5.1".into()),
         effort: Some("high".into()),
+        auto_compaction_tokens: Some(200_000),
         ..Default::default()
     };
     // Nothing overridden: the config as it stands.
@@ -91,6 +92,7 @@ fn per_item_overrides_follow_the_three_rules() {
     assert_eq!(same.command, repo.command);
     assert_eq!(same.model.as_deref(), Some("fable-5.1"));
     assert_eq!(same.effort.as_deref(), Some("high"));
+    assert_eq!(same.auto_compaction_tokens, Some(200_000));
     // The repository's own harness: the command stays, and each of
     // model and effort is the override's or, unset, the repository's.
     let o = crate::state::Overrides {
@@ -103,19 +105,26 @@ fn per_item_overrides_follow_the_three_rules() {
     assert_eq!(eff.command, repo.command, "the command belongs to claude");
     assert_eq!(eff.model.as_deref(), Some("opus"));
     assert_eq!(eff.effort.as_deref(), Some("high"), "the repository's");
+    assert_eq!(
+        eff.auto_compaction_tokens,
+        Some(200_000),
+        "the repository's, the harness being the same one"
+    );
     assert!(
-        eff.harness_command()
+        eff.harness_command(200_000)
             .starts_with("claude --dangerously-skip-permissions"),
         "{}",
-        eff.harness_command()
+        eff.harness_command(200_000)
     );
     assert!(
-        eff.harness_command().contains("opus"),
+        eff.harness_command(200_000).contains("opus"),
         "{}",
-        eff.harness_command()
+        eff.harness_command(200_000)
     );
     // Another harness: the command goes with the harness it belonged
-    // to, and nothing falls back to the repository's settings.
+    // to, and nothing falls back to the repository's settings -- the
+    // threshold included, since one chosen for claude need not be one the
+    // new harness can take.
     let o = crate::state::Overrides {
         harness: "pi".into(),
         model: None,
@@ -126,11 +135,12 @@ fn per_item_overrides_follow_the_three_rules() {
     assert_eq!(eff.command, None);
     assert_eq!(eff.model, None, "not the repository's claude model");
     assert_eq!(eff.effort.as_deref(), Some("medium"));
+    assert_eq!(eff.auto_compaction_tokens, None);
     assert!(
-        eff.harness_command()
+        eff.harness_command(300_000)
             .starts_with(&crate::models::default_command("pi")),
         "{}",
-        eff.harness_command()
+        eff.harness_command(300_000)
     );
     // Everything else about the repository is untouched.
     assert_eq!(eff.name, "o/r");
@@ -331,7 +341,7 @@ slash_commands = false
 }
 
 #[test]
-fn model_and_effort_are_applied_to_the_command() {
+fn model_effort_and_auto_compaction_are_applied_to_the_command() {
     let cfg = parse(
         r#"
 [[repo]]
@@ -343,9 +353,10 @@ effort = "high"
 "#,
     )
     .unwrap();
+    // The conservative default applies with nothing configured.
     assert_eq!(
-        cfg.repos[0].harness_command(),
-        "claude --dangerously-skip-permissions --model opus --effort high"
+        cfg.repos[0].harness_command(cfg.auto_compaction_tokens_for(&cfg.repos[0])),
+        "claude --dangerously-skip-permissions --model opus --effort high --autocompact 300000"
     );
     let cfg = parse(
         r#"
@@ -353,13 +364,139 @@ effort = "high"
 name = "acme/widgets"
 harness = "codex"
 model = "gpt-5.5"
+auto_compaction_tokens = 150000
 "#,
     )
     .unwrap();
     assert_eq!(
-        cfg.repos[0].harness_command(),
-        "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
+        cfg.repos[0].harness_command(cfg.auto_compaction_tokens_for(&cfg.repos[0])),
+        "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5 -c model_auto_compact_token_limit=150000"
     );
+}
+
+#[test]
+fn the_instances_auto_compaction_tokens_is_the_repositorys_until_it_says_otherwise() {
+    let cfg = parse(
+        r#"
+auto_compaction_tokens = 500000
+
+[[repo]]
+name = "acme/plain"
+harness = "claude"
+
+[[repo]]
+name = "acme/own"
+harness = "claude"
+auto_compaction_tokens = 200000
+
+[[repo]]
+name = "acme/off"
+harness = "claude"
+auto_compaction_tokens = 0
+
+[[repo]]
+name = "acme/other"
+harness = "codex"
+"#,
+    )
+    .unwrap();
+    let tokens = |i: usize| cfg.auto_compaction_tokens_for(&cfg.repos[i]);
+    assert_eq!(tokens(0), 500_000, "[repo] inherits the instance value");
+    assert_eq!(tokens(1), 200_000, "the repository has the last word");
+    assert_eq!(tokens(2), 0, "0 is the harness's own default");
+    assert_eq!(tokens(3), 500_000);
+    // 0 reaches no harness as a count: each keeps its own default.
+    assert_eq!(
+        cfg.repos[2].harness_command(tokens(2)),
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'"
+    );
+    assert!(
+        cfg.repos[0]
+            .harness_command(tokens(0))
+            .contains("--autocompact 500000")
+    );
+    // A harness with no such setting is unaffected, whatever is configured.
+    assert_eq!(
+        parse(
+            r#"
+auto_compaction_tokens = 150000
+
+[[repo]]
+name = "acme/gemini"
+harness = "gemini"
+model = "gemini-2.5-pro"
+"#
+        )
+        .unwrap()
+        .repos[0]
+            .harness_command(150_000),
+        "gemini --yolo --skip-trust -m gemini-2.5-pro"
+    );
+}
+
+/// A count the harness refuses to start with is refused while the config is
+/// read, rather than handed to a launch that never comes up.
+#[test]
+fn a_threshold_the_harness_cannot_take_is_rejected_at_load() {
+    let err = parse(
+        r#"
+auto_compaction_tokens = 50000
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+model = "opus"
+effort = "high"
+"#,
+    )
+    .unwrap_err();
+    let text = format!("{err:#}");
+    assert!(text.contains("100000"), "{text}");
+    assert!(text.contains("acme/widgets"), "{text}");
+    // 50k is fine for a harness that has no ceiling of its own.
+    assert!(
+        parse(
+            r#"
+auto_compaction_tokens = 50000
+
+[[repo]]
+name = "acme/widgets"
+harness = "codex"
+model = "gpt-5.5"
+"#
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_threshold_that_is_not_configured_is_not_written_and_the_default_stands() {
+    let _sandbox = crate::config::test_support::sandbox();
+    // No repositories, nothing configured: ssf's own conservative default.
+    let cfg = Config::default();
+    assert_eq!(cfg.auto_compaction_tokens_default(), 300_000);
+    let text = toml::to_string_pretty(&cfg).unwrap();
+    assert!(!text.contains("auto_compaction_tokens"), "{text}");
+    // A repository that sets nothing resolves to the instance's value, and
+    // one that sets `0` to its harness's own default.
+    let cfg = parse(
+        r#"
+auto_compaction_tokens = 500000
+
+[[repo]]
+name = "acme/widgets"
+harness = "claude"
+model = "opus"
+effort = "high"
+"#,
+    )
+    .unwrap();
+    assert_eq!(cfg.auto_compaction_tokens_for(&cfg.repos[0]), 500_000);
+    // Written for whoever reads the file next, and read back the same.
+    let round = toml::to_string_pretty(&cfg).unwrap();
+    assert!(round.contains("auto_compaction_tokens = 500000"), "{round}");
+    let back = parse(&round).unwrap();
+    assert_eq!(back.auto_compaction_tokens, Some(500_000));
 }
 
 #[test]
@@ -381,19 +518,22 @@ harness = "aider"
 "#,
     )
     .unwrap();
+    let cmd =
+        |i: usize| cfg.repos[i].harness_command(cfg.auto_compaction_tokens_for(&cfg.repos[i]));
     assert_eq!(
-        cfg.repos[0].harness_command(),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'"
+        cmd(0),
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}' --autocompact 300000"
     );
     assert_eq!(
-        cfg.repos[1].harness_command(),
-        "claude --permission-mode acceptEdits"
+        cmd(1),
+        "claude --permission-mode acceptEdits --autocompact 300000"
     );
-    assert_eq!(cfg.repos[2].harness_command(), "aider");
+    // A harness ssf knows no threshold for is started as given.
+    assert_eq!(cmd(2), "aider");
     // Resuming builds on the same base.
     assert_eq!(
-        crate::sessions::resume_command("claude", &cfg.repos[0].harness_command(), "abc").unwrap(),
-        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}' --resume abc"
+        crate::sessions::resume_command("claude", &cmd(0), "abc").unwrap(),
+        "claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}' --autocompact 300000 --resume abc"
     );
 }
 
