@@ -197,6 +197,7 @@ button.primary {
 }
 
 .health {
+  grid-column: 1 / -1;
   margin: 6px 0 0;
   font-size: 12px;
   color: var(--muted, #57606a);

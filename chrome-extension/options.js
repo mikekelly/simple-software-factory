@@ -20,6 +20,9 @@ const save = document.getElementById("save");
 let entries = [];
 /// origin pattern -> whether Chrome currently allows it.
 let granted = new Map();
+/// How often the page pings the worker to keep it from being evicted. The same
+/// interval the content script uses.
+const PING_MS = 20000;
 
 function show(message) {
   status.textContent = message;
@@ -204,9 +207,17 @@ let factories = [];
 function showHealth() {
   for (const node of rows.querySelectorAll(".health")) {
     const url = node.dataset.url;
-    const factory = factories.find((one) => one.url === url);
-    if (!url || !factory) {
+    // A row with no usable URL yet -- one just added, or not saved -- has
+    // nothing to report, but a factory the worker has not named yet reads "not
+    // answered yet" rather than nothing: a line that goes blank at the moment
+    // someone saves a factory is the silence this exists to remove (#435).
+    if (!url) {
       node.textContent = "";
+      continue;
+    }
+    const factory = factories.find((one) => one.url === url);
+    if (!factory) {
+      node.textContent = "not answered yet.";
       continue;
     }
     const watched = factory.repositories?.length ?? 0;
@@ -223,14 +234,28 @@ function showHealth() {
 }
 
 // The worker pushes a snapshot when the page connects and on every change, so
-// these lines stay current without polling: a URL just saved reads "not
-// answered yet" until its stream connects, and then says what came back.
-const worker = chrome.runtime.connect({ name: "ssf-overlay" });
-worker.onMessage.addListener((message) => {
-  if (message?.type !== "snapshot") return;
-  factories = message.payload?.factories ?? [];
-  showHealth();
-});
+// these lines stay current without polling. The ping is what keeps the worker
+// alive -- an open port does not reset its idle timer, only messages do -- and a
+// worker that is stopped closes the port, so the page opens another: without
+// both, a page left open would freeze its lines and a factory saved afterwards
+// would read blank, which is the silence these lines exist to remove (#435).
+function connect() {
+  const worker = chrome.runtime.connect({ name: "ssf-overlay" });
+  worker.onMessage.addListener((message) => {
+    if (message?.type !== "snapshot") return;
+    factories = message.payload?.factories ?? [];
+    showHealth();
+  });
+  worker.onDisconnect.addListener(() => setTimeout(connect, 1000));
+  setInterval(() => {
+    try {
+      worker.postMessage({ type: "ping" });
+    } catch {
+      // The port is gone; `onDisconnect` opens another.
+    }
+  }, PING_MS);
+}
+connect();
 
 /// Ask for every address the saved list needs and Chrome does not allow yet.
 /// Must run inside the click's user gesture.

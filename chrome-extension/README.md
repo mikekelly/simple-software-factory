@@ -68,7 +68,10 @@ those two lines together answer the two ways an expected card can be missing:
 | `live · reports no watched repositories` | The factory answered but publishes none, so the overlay cannot offer the form for an item it has no record of — either it watches none, or it is an older `ssf-server` that does not publish them (see [Assigning an agent](#assigning-an-agent)). It is the server that needs updating, not the extension. |
 | `stale · reports …` | The stream stopped; the states shown are from the last snapshot. |
 | `unreachable: …` | The factory did not answer, in its own words or the extension's. A capability URL changes when the server restarts, so a URL saved before a restart reads here. |
-| `not answered yet.` | The stream is connecting. |
+| `not answered yet.` | The stream is connecting — shown for a factory just saved too. |
+
+The lines are pushed by the extension's service worker, which the page keeps
+awake while the page is open, so they keep up as factories come and go.
 
 ## The five states
 
