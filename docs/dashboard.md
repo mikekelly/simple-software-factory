@@ -133,8 +133,10 @@ Five endpoints under the capability path serve the canonical dashboard model:
   command or ssf's built-in table answered. A harness ssf does not know is
   `404`; one that takes no model setting (see `ssf agents`) is `400` with that
   reason, since the request's shape is not what is wrong with it.
-- `POST /<capability>/api/assign` runs `ssf assign` for one item and returns
-  its result. See [Assigning from the API](#assigning-from-the-api).
+- `POST /<capability>/api/assign`, `POST /<capability>/api/handover`,
+  `POST /<capability>/api/release` and `POST /<capability>/api/message` run one
+  `ssf` command each for one item and return its result. See
+  [Writing from the API](#writing-from-the-api).
 
 Each card in `/api/status` and `/api/events` carries, besides the fields the
 dashboard and TUI render: `tool`, the session's current tool call formatted as
@@ -144,7 +146,11 @@ dashboard and TUI render: `tool`, the session's current tool call formatted as
 started as one (`ssf-server --target …`), else its hostname. A client holding
 several factories can then label a card without asking which stream it came
 from; the TUI and the server's own browser page ignore the three fields and are
-unchanged.
+unchanged. `effort` is the level the card's stack is on (`harness` and `model`
+are beside it), so a client that offers to move a session to another stack can
+prefill the picker with what it is on now; it is empty while `next_launch` is
+set, since the running session was launched with a stack ssf does not have on
+the record.
 
 The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so a Chrome extension's service worker can read
@@ -154,44 +160,71 @@ Everything above the status stream is answered by *the factory*, through the
 same client the TUI and the commands use: with `[vm] enabled` the listener is
 bound by the host that supervises the VM while the daemon, the harnesses and
 their model catalogues are in the guest, so the agent and model listings, and
-the assign write, are asked there and forwarded rather than answered from the
-host. A factory the host cannot reach — a VM that is not running, a stopped
-daemon — is a `502` naming what could not be reached, never a listing of the
-host's own harnesses.
+every write, are asked there and forwarded rather than answered from the host. A
+factory the host cannot reach — a VM that is not running, a stopped daemon — is
+a `502` naming what could not be reached, never a listing of the host's own
+harnesses.
 
-#### Assigning from the API
+#### Writing from the API
 
-`POST /<capability>/api/assign` takes one assign request as JSON:
+Four POST routes, each one `ssf` command for one item, named as the repository
+and the number. Their bodies are the command's own arguments; a field a route
+does not take is refused rather than ignored, so a misspelled one cannot ask for
+something nobody meant.
 
 ```json
-{"repo": "owner/name", "number": 42, "harness": "claude", "model": "opus", "effort": "low"}
+POST /<capability>/api/assign   {"repo": "owner/name", "number": 42, "harness": "claude", "model": "opus", "effort": "low"}
+POST /<capability>/api/handover {"repo": "owner/name", "number": 42, "harness": "omp", "model": "deepseek/deepseek-flash", "effort": "high", "note": "carry on from here"}
+POST /<capability>/api/release  {"repo": "owner/name", "number": 42}
+POST /<capability>/api/message  {"repo": "owner/name", "number": 42, "text": "the test is red again"}
 ```
 
-`repo` must be a repository this factory watches, and `harness` an id from
-`/api/agents`; `model` and `effort` are optional and default to what the harness
-itself uses, exactly as `ssf assign --model/--effort` leave them. The request is
-the one the `ssf assign` command sends the daemon, so it answers with the same
-JSON that command prints under `--json` (`session`, `title`, `from`, `to`,
-`assigned`, `overrides_written`, `open`, `poll_interval_secs`). The status says
-what happened:
+- **assign** starts a session on an item that has none: the bot is assigned on
+  GitHub and the item's stack is written in the same request, exactly as
+  `ssf assign` does it.
+- **handover** moves the item's running session to another stack. `model` and
+  `effort` are optional and default to what the harness itself uses; `note` is
+  optional and is the summary the new session reads before the item's story
+  (`ssf handover --summary`), checked the same way — at most 8,000 characters,
+  and refused if it would read as a harness's sign-in screen, since it is pasted
+  into the new session's terminal.
+- **release** removes the item's session workspace, never forced: the workspace
+  checks are the point of doing it from a browser, and a person who has looked
+  at the workspace passes `--force` at a shell.
+- **message** delivers `text` to the agent that acts on the item the way the
+  item's own activity does — the daemon's delivery path, which brings a gone
+  workspace and agent back first and holds a prompt for a session that is at its
+  sign-in prompt. `text` is capped at 2 KiB here, counted in bytes so that a
+  message the cap accepts always fits the request that carries it; anything
+  longer belongs on the item as a comment.
+
+Each answers with the same JSON its command prints under `--json`. The status
+says what happened:
 
 - `200` with that result.
 - `400` with `{"error": ...}` when the request itself is at fault: a repository
   this factory does not watch, a harness ssf does not know, a model or effort
-  that harness does not take, or a body that is not the JSON above.
-- `409` with `{"error": ...}` when the item is not in a state an assignment can
-  be applied to — it already has a session (`ssf handover` is what moves one),
-  a handover or release of it is pending, or it is worked by another item's
-  session.
+  that harness does not take, a message that is empty or over the cap, a summary
+  that is empty or too long, or a body that is not the JSON above.
+- `409` with `{"error": ...}` when the item is not in a state the write can be
+  applied to — for assign, an item that already has a session, a handover or
+  release pending on it, or one worked by another item's session; for handover,
+  an item with no running session or one already on that stack; for release, a
+  workspace that holds work that is not on origin, an item that still owns open
+  ones, or one with no workspace left; for message, an item with no agent, or a
+  session that is blocked at its harness's sign-in prompt.
 - `502` with `{"error": ...}` when the factory could not do it: it could not be
-  reached, the assign took longer than a minute, or the harness is not installed
+  reached, the write took longer than a minute, or the harness is not installed
   or not signed in where the sessions run.
 
-The `error` is the message `ssf assign` would have printed, verbatim.
+The `error` is the message the matching command would have printed, verbatim.
+A release the workspace refuses is one of those: the daemon answers it as a
+result rather than an error, and the endpoint words it exactly as `ssf release`
+does, one check per line.
 
 #### Write rules
 
-Reads answer on the rules above. The one write is held to stricter ones, all of
+Reads answer on the rules above. The writes are held to stricter ones, all of
 them decided from the request line and headers before any body is read, and each
 refused without anything having been done:
 
@@ -202,9 +235,11 @@ refused without anything having been done:
 - `Content-Type` must be `application/json` (`415`).
 - The body must be at most 4 KiB, by its `Content-Length` (`413`); a chunked
   body is refused outright (`400`), and so is one with two lengths.
+- The path must be one of the four write routes: `POST` anywhere else under the
+  capability is `405`, and the write routes are not readable (`404`).
 
-Every accepted write is logged at info with the origin and the item, so starting
-a session from a browser is visible in the server's journal.
+Every accepted write is logged at info with the origin and the item, so acting
+on a session from a browser is visible in the server's journal.
 
 The optional [Chrome extension](../chrome-extension/README.md) is the client
 these endpoints are for: it overlays this state on github.com instead of in a
@@ -224,10 +259,23 @@ a live factory and an unavailable or stale snapshot.
 An item in the **No agent** state carries an **Assign agent** form, on the card
 and in the popover: harness from `api/agents`, model from
 `api/models/<harness>`, effort from the levels that harness takes, and Assign.
-It is the one write this client makes, sent from its service worker and never
-from its content script, so the Origin is the extension's; each configured
-factory has a **Writes** switch on its options page, on by default, which hides
-the form and refuses the write when off.
+An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
+carries an **Actions** row instead — *Message* (a textarea and Send),
+*Hand over…* (the assign pickers, prefilled with the stack the card is on, plus
+a note) and *Release* (a confirm step naming the workspace branch). Every one of
+them is sent from the service worker and never from the content script, so the
+Origin is the extension's; each configured factory has a **Writes** switch on
+its options page, on by default, which hides both and refuses the write when
+off. A refusal is shown in the daemon's own words with the form kept, and
+nothing is retried.
+
+| Message | Hand over… | Release |
+| --- | --- | --- |
+| ![An item's card with the Actions row, a message box and Send](../chrome-extension/docs/actions.png) | ![The hand-over step, prefilled with the item's stack and a note box](../chrome-extension/docs/action-handover.png) | ![The release confirm naming the item and its branch](../chrome-extension/docs/action-release.png) |
+| ![The box after Send, reading "sent"](../chrome-extension/docs/action-message.png) | ![A hand-over refused: already on that stack, with the pickers kept](../chrome-extension/docs/action-handover-refused.png) | ![A release refused by the workspace's own checks, verbatim](../chrome-extension/docs/action-release-refused.png) |
+
+The [extension's own guide](../chrome-extension/README.md#acting-on-an-agent)
+has the full set, including the accepted hand-over and release results.
 
 The built-in endpoint provides neither TLS nor user accounts. Remote web access
 from outside a tailnet requires a reverse proxy that:

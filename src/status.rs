@@ -1144,7 +1144,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             .map(|row| row["next_launch"].clone())
             .find(|value| !value.is_null())
             .unwrap_or(Value::Null);
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"tool":optional("tool"),"branch":optional("branch"),"factory":factory,"next_launch":next_launch,"agent_session_id":metadata("agent_session_id")}));
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"factory":factory,"next_launch":next_launch,"agent_session_id":metadata("agent_session_id")}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");
@@ -1194,7 +1194,7 @@ mod dashboard_tests {
         let snapshot = dashboard_presentation(&json!({"server":"factory-one","sessions":[
             {"id":"r#1","title":"Origin","active":false,"harness":"codex","url":"javascript:alert(1)"},
             {"id":"r#2","owner":"r#1","active":true,"agent_live":true,"agent_state":"working","last_activity_at":"2026-09-12T12:00:00Z","last_assistant_message":" Earlier "},
-            {"id":"r#3","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> ","tool":"Bash: cargo test","branch":"bot/issue-1-origin"},
+            {"id":"r#3","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> ","tool":"Bash: cargo test","branch":"bot/issue-1-origin","effort":"high"},
             {"id":"r#4","owner":"r#4","active":true,"subscriber_only":true}
         ]})).unwrap();
         let cards = snapshot["cards"].as_array().unwrap();
@@ -1206,6 +1206,9 @@ mod dashboard_tests {
         assert_eq!(cards[0]["harness"], "codex");
         assert_eq!(cards[0]["tool"], "Bash: cargo test");
         assert_eq!(cards[0]["branch"], "bot/issue-1-origin");
+        // The effort the card's stack is on, so a hand-over from the overlay
+        // can prefill every picker rather than only the harness and model.
+        assert_eq!(cards[0]["effort"], "high");
         assert_eq!(cards[0]["factory"], "factory-one");
         assert_eq!(
             cards[0]["last_assistant_message"],

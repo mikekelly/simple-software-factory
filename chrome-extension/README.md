@@ -3,9 +3,10 @@
 A Chrome extension (Manifest V3) that overlays live SSF agent state on
 github.com. Every screen it touches answers one question — **is an agent on
 this, and does it need me?** — at a glance, with the detail one click away. It
-reads the same canonical dashboard model as the TUI and the server's web UI,
-and the one thing it does to a factory is start a session on an item that has
-none, described under [Assigning an agent](#assigning-an-agent).
+reads the same canonical dashboard model as the TUI and the server's web UI, and
+what it does to a factory is what an item's card offers: start a session on an
+item that has none ([Assigning an agent](#assigning-an-agent)), or act on the
+one that is there ([Acting on an agent](#acting-on-an-agent)).
 
 Both the endpoint it reads and the exposure rules for reaching it are described
 in the [dashboard guide](../docs/dashboard.md).
@@ -161,11 +162,66 @@ A refusal is the server's own words, with the form kept and nothing retried:
   not watch, a harness it does not know — is shown in the server's own words,
   inline, with the form still there. Nothing is retried for you.
 
-Each factory on the options page carries a **Writes** switch, on by default.
-Turning it off hides the form for that factory and refuses the write in the
-service worker. It is the extension's own side of the rule the factory
-enforces: the server accepts a write only from an extension origin, so nothing
-else that can reach a capability URL can start a session through it.
+## Acting on an agent
+
+An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
+carries an **Actions** row on its card instead of the assign form — Message,
+Hand over… and Release, all three sent from the service worker and never from
+the page:
+
+![An item's card with the Actions row: a message box with Send, and Hand over… and Release](docs/actions.png)
+
+The same row is on the card a list, search or board chip opens as a popover, so
+an item can be acted on without leaving the board:
+
+![The same Actions row inside a chip's popover, reading "sent" after a message](docs/action-popover.png)
+
+- **Message** puts what you type into the item's agent the way a comment on the
+  item does — the same delivery path, so a workspace and agent that have gone
+  are brought back first, and a session sitting at its harness's sign-in prompt
+  is held rather than handed a prompt it cannot read. The box reads **sent**
+  until a frame shows the agent has dealt with the message, or 30 seconds pass:
+
+  ![The message box after Send, with a grey "sent" line under it](docs/action-message.png)
+
+  The server's 2 KiB limit is not applied by the box; typing past it is refused
+  in the factory's own words, with what you wrote still there. The hand-over
+  note is left the same way: the endpoint's own bounds answer for both:
+
+  ![The message box holding 2,500 characters with the refusal under it: the most a message carries is 2048](docs/action-message-refused.png)
+
+- **Hand over…** offers the same pickers as the assign form, **prefilled with
+  the stack the card is on**, plus an optional note the new session reads before
+  the item's story. Hand-over ends the session that is there and starts the new
+  one in the same workspace, on the daemon's next pass:
+
+  ![The Hand over step: harness, model and effort prefilled from the card, a note box, and Hand over and Cancel](docs/action-handover.png)
+
+  Asking for the stack the item is already on is the factory's own refusal, next
+  to the pickers that produced it; an accepted hand-over says what it recorded:
+
+  ![Hand over refused with "the item is already on omp with that model and effort"](docs/action-handover-refused.png)
+
+  ![Handover recorded, with the session, the stack it moves to, the note's length and the next pass](docs/action-handover-accepted.png)
+
+- **Release** asks first, naming the branch, because the workspace and the work
+  in it are what goes:
+
+  ![The release confirm: "Release this workspace?" with the item and its branch](docs/action-release.png)
+
+  It is never forced from here: the factory's own checks decide, and its refusal
+  is shown verbatim — one check per line — with the confirm still standing:
+
+  ![The same confirm with the factory's refusal: not released, the workspace holds work that is not on origin](docs/action-release-refused.png)
+
+  ![Release accepted, with the item and the daemon's next pass](docs/action-release-accepted.png)
+
+**Writes** switches on the options page, on by default, govern all of it.
+Turning one off hides the assign form and the Actions row for that factory and
+refuses every write in the service worker. It is the extension's own side of the
+rule the factory enforces: the server accepts a write only from an extension
+origin, so nothing else that can reach a capability URL can act on a session
+through it.
 
 ## Reaching a factory on a tailnet
 
@@ -191,18 +247,18 @@ forward, and keep tailnet ACLs restrictive.
   re-renders rather than collapsing under a stream that repaints every couple of
   seconds. Every node is built with `textContent` and lives in a shadow root, so
   no factory text is ever parsed as HTML and no GitHub style leaks in.
-- The **service worker** also carries the write and the two listings the form's
-  pickers need. A factory accepts a write only from an extension origin, and a
-  page on github.com has none, so the content script never fetches a factory
-  itself and no page the factory serves can start a session.
+- The **service worker** also carries every write and the two listings the
+  forms' pickers need: `api/assign`, `api/handover`, `api/release`,
+  `api/message`, `api/agents` and `api/models/<harness>`. A factory accepts a
+  write only from an extension origin, and a page on github.com has none, so the
+  content script never fetches a factory itself and no page the factory serves
+  can act on a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are
   `optional_host_permissions`, requested at runtime from the options page, so
   the extension only holds access to the factories you added.
 
 ## Limitations
 
-- The overlay starts sessions and does nothing else: no hand over, release or
-  message from the browser yet.
 - The capability URL changes when the server restarts; the options page must be
   updated to match, or the factory reads as unreachable.
 - A project board chip depends on the board rendering its cards as links to the
@@ -211,3 +267,7 @@ forward, and keep tailnet ACLs restrictive.
   says so rather than showing state it cannot read.
 - Whether a factory watches a repository is read from that factory's snapshot,
   so a factory with nothing on the repository shows no form for it.
+- The Actions row is on an item's own card, not on an item shown as *worked on
+  by the agent on #N*: that card is a pointer to the same session, and its own
+  card carries the actions. A message sent to a bound item still reaches the
+  session that works it.

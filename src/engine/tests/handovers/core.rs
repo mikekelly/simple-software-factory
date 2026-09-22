@@ -1,5 +1,52 @@
 use super::*;
 
+/// Handing over an item that has no running session is a refusal about the
+/// item — `409` on the web API, not a factory failure — and it names the
+/// command that fits: a first session on the item is `ssf assign`'s.
+#[tokio::test]
+async fn a_handover_is_refused_as_a_conflict_when_there_is_nothing_to_move() {
+    use crate::ipc::RefusalKind;
+    let mut e = engine();
+    e.cfg.repos.push(repo());
+    // An item ssf holds, with nothing running on it.
+    seeded(&mut e, 5, Some("bot/issue-5"), false);
+    let resp = e
+        .handle_request(Request::Handover {
+            session: "o/r#5".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            summary: None,
+            by: None,
+        })
+        .await;
+    assert!(!resp.ok);
+    assert_eq!(resp.kind, Some(RefusalKind::Conflict));
+    let error = resp.error.unwrap();
+    assert!(error.contains("no running session"), "{error}");
+    assert!(error.contains("ssf assign o/r#5"), "{error}");
+    // One ssf holds no session for at all is the same refusal: nothing to
+    // hand over, and nothing the request got wrong.
+    let resp = e
+        .handle_request(Request::Handover {
+            session: "o/r#8".into(),
+            harness: "pi".into(),
+            model: None,
+            effort: None,
+            summary: None,
+            by: None,
+        })
+        .await;
+    assert!(!resp.ok);
+    assert_eq!(resp.kind, Some(RefusalKind::Conflict));
+    assert!(
+        resp.error
+            .unwrap()
+            .contains("is not an agent session ssf knows"),
+        "the daemon's own words"
+    );
+}
+
 #[tokio::test]
 async fn handover_retires_native_routing_but_release_preserves_resume_binding() {
     let _sandbox = crate::config::test_support::sandbox();

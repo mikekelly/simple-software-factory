@@ -13,6 +13,9 @@ async fn release_is_refused_for_unknown_active_and_non_forced_dependent_sessions
         })
         .await;
     assert!(!resp.ok);
+    // The item's state, not the request's shape: this is what the web API
+    // answers `409` for rather than reporting a factory failure.
+    assert_eq!(resp.kind, Some(crate::ipc::RefusalKind::Conflict));
     assert!(resp.error.unwrap().contains("not an agent session"));
     // An owner with an open item bound to it keeps its workspace until
     // someone explicitly overrides that protection.
@@ -27,6 +30,7 @@ async fn release_is_refused_for_unknown_active_and_non_forced_dependent_sessions
         })
         .await;
     assert!(!resp.ok);
+    assert_eq!(resp.kind, Some(crate::ipc::RefusalKind::Conflict));
     assert!(resp.error.unwrap().contains("#4"));
     assert!(!e.entry(&r, 3).release_pending);
     // --force is still never allowed to remove a live owner's workspace.

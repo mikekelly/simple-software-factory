@@ -16,9 +16,20 @@ const CSS: &str = include_str!("../dashboard/dashboard.css");
 const JS: &str = include_str!("../dashboard/dashboard.js");
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEADERS: usize = 8192;
-/// Longest body the endpoint reads: `POST api/assign` carries a handful of
-/// fields, and it is bounded before any of it is read.
+/// Longest body the endpoint reads: a write carries a handful of fields, and
+/// it is bounded before any of it is read.
 const MAX_BODY: usize = 4096;
+/// Longest message `POST api/message` carries to an agent: a note a person
+/// typed into the overlay, not a document. Checked here rather than by the
+/// daemon, since the command a person would use for anything longer is a
+/// comment on the item.
+///
+/// Bytes, not characters, because that is what the request is measured in: a
+/// cap in characters would be a promise the 4 KiB body bound could break for
+/// text that is not ASCII, and a person refused for the size of a body rather
+/// than for a message over the cap. 2 KiB of message leaves the rest of the
+/// request ample room.
+const MAX_MESSAGE_BYTES: usize = 2048;
 /// How long a listing may wait on the factory: the client walks `PATH` and
 /// may run a harness's own listing command.
 const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -156,14 +167,47 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
             return;
         }
         Ok(Routed::Read(relative)) => read(relative, &mut latest, client).await,
-        Ok(Routed::Write(write)) => assign(&mut stream, write, client).await,
-        Err(status) => (
-            status,
-            "application/json",
-            json!({"error":"request rejected"}).to_string(),
-        ),
+        Ok(Routed::Write(accepted)) => write(&mut stream, accepted, client).await,
+        Err(status) => rejected(status),
     };
     let _ = timeout(REQUEST_TIMEOUT, respond(&mut stream, status, kind, &body)).await;
+}
+
+/// What a request refused before anything was read is told. Most of these are
+/// about the shape of the request, which the client that made it already knows;
+/// the body bound is the one a person can reach through the overlay's own
+/// message box, so it is the one worth naming.
+fn rejected(status: u16) -> (u16, &'static str, String) {
+    let message = match status {
+        413 => format!("the request body is longer than the {MAX_BODY} bytes this endpoint reads"),
+        _ => "request rejected".to_string(),
+    };
+    (
+        status,
+        "application/json",
+        json!({ "error": message }).to_string(),
+    )
+}
+
+/// Answer a write route: read its body and make the one `ssf` request that
+/// route stands for, answered with the daemon's own result or refusal.
+async fn write(
+    stream: &mut TcpStream,
+    write: Write<'_>,
+    client: &Path,
+) -> (u16, &'static str, String) {
+    let body = match timeout(REQUEST_TIMEOUT, read_body(stream, write.length)).await {
+        Ok(Ok(body)) => body,
+        // A body the client never finished sending, or one that never
+        // arrived: nothing has been read and nothing has been done.
+        Ok(Err(_)) | Err(_) => return bad("the request body was not read in full"),
+    };
+    match write.route {
+        Route::Assign => assign(&body, &write, client).await,
+        Route::Handover => handover(&body, &write, client).await,
+        Route::Release => release(&body, &write, client).await,
+        Route::Message => message(&body, &write, client).await,
+    }
 }
 
 /// Answer a read route: the status snapshot, the browser assets, what
@@ -225,22 +269,12 @@ async fn models(harness: &str, client: &Path) -> (u16, &'static str, String) {
     }
 }
 
-/// The one write: `ssf assign`'s own code path for the item, answered with
-/// its `--json` result or with the refusal that stopped it, verbatim.
-async fn assign(
-    stream: &mut TcpStream,
-    write: Assign<'_>,
-    client: &Path,
-) -> (u16, &'static str, String) {
-    let body = match timeout(REQUEST_TIMEOUT, read_body(stream, write.length)).await {
-        Ok(Ok(body)) => body,
-        // A body the client never finished sending, or one that never
-        // arrived: nothing has been read and nothing has been done.
-        Ok(Err(_)) | Err(_) => return bad("the request body was not read in full"),
-    };
-    let request: AssignRequest = match serde_json::from_slice(&body) {
+/// `POST api/assign`: `ssf assign`'s own code path for the item, answered
+/// with its `--json` result or with the refusal that stopped it, verbatim.
+async fn assign(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
+    let request: AssignRequest = match parse(body, "assign") {
         Ok(request) => request,
-        Err(error) => return bad(format!("bad assign request: {error}")),
+        Err(answer) => return answer,
     };
     if request.number == 0 {
         return bad("number must be the item's number, 1 or more");
@@ -256,17 +290,172 @@ async fn assign(
         effort = request.effort.as_deref().unwrap_or(""),
         "web API assign"
     );
-    let request = crate::ipc::Request::Assign {
+    carry(
+        client,
+        crate::ipc::Request::Assign {
+            item,
+            harness: request.harness,
+            model: request.model,
+            effort: request.effort,
+            by: None,
+        },
+        "the assign request",
+    )
+    .await
+}
+
+/// `POST api/handover`: `ssf handover`'s own code path for the item's session,
+/// answered with its `--json` result. The optional `note` is the handover's
+/// summary — what the new session is told before the item's story — and is
+/// checked by the daemon exactly as `ssf handover --summary` is.
+async fn handover(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
+    let request: HandoverRequest = match parse(body, "handover") {
+        Ok(request) => request,
+        Err(answer) => return answer,
+    };
+    if request.number == 0 {
+        return bad("number must be the item's number, 1 or more");
+    }
+    let item = format!("{}#{}", request.repo, request.number);
+    tracing::info!(
+        origin = write.origin,
         item,
-        harness: request.harness,
-        model: request.model,
-        effort: request.effort,
-        by: None,
+        harness = request.harness,
+        model = request.model.as_deref().unwrap_or(""),
+        effort = request.effort.as_deref().unwrap_or(""),
+        note_chars = request
+            .note
+            .as_deref()
+            .map(|n| n.chars().count())
+            .unwrap_or(0),
+        "web API handover"
+    );
+    carry(
+        client,
+        crate::ipc::Request::Handover {
+            session: item,
+            harness: request.harness,
+            model: request.model,
+            effort: request.effort,
+            summary: request.note,
+            by: None,
+        },
+        "the handover request",
+    )
+    .await
+}
+
+/// `POST api/release`: `ssf release` for the item, never forced — the
+/// workspace checks are the whole point of doing it from a browser, and a
+/// person who has looked at the workspace passes `--force` at a shell.
+///
+/// The daemon answers a refused release as a *result* rather than an error
+/// (`{"released": false, "check": …}`), because `ssf release` prints the
+/// checks itself; here that becomes the same refusal the command prints.
+async fn release(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
+    let request: ReleaseRequest = match parse(body, "release") {
+        Ok(request) => request,
+        Err(answer) => return answer,
     };
-    let Ok(request) = serde_json::to_string(&request) else {
-        return failure(None, "the assign request could not be written down");
+    if request.number == 0 {
+        return bad("number must be the item's number, 1 or more");
+    }
+    let item = format!("{}#{}", request.repo, request.number);
+    tracing::info!(origin = write.origin, item, "web API release");
+    let (status, kind, body) = carry(
+        client,
+        crate::ipc::Request::Release {
+            session: item,
+            force: false,
+        },
+        "the release request",
+    )
+    .await;
+    if status != 200 {
+        return (status, kind, body);
+    }
+    let answer: Value = match serde_json::from_str(&body) {
+        Ok(answer) => answer,
+        Err(error) => {
+            return failure(
+                None,
+                format!("the release answer could not be read: {error}"),
+            );
+        }
     };
-    let output = match ask(client, &["__request", &request], WRITE_TIMEOUT).await {
+    if answer.get("released").and_then(Value::as_bool) == Some(true) {
+        return (status, kind, body);
+    }
+    let session = answer.get("session").and_then(Value::as_str).unwrap_or("?");
+    let path = answer.get("path").and_then(Value::as_str).unwrap_or("");
+    let problems: Vec<&str> = answer
+        .pointer("/check/problems")
+        .and_then(Value::as_array)
+        .map(|problems| problems.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    failure(
+        Some(crate::ipc::RefusalKind::Conflict),
+        crate::cli::release_refused_text(session, path, &problems),
+    )
+}
+
+/// `POST api/message`: `text` reaches the agent that acts on the item the way
+/// the item's own activity does, through the daemon's delivery path — which
+/// brings a gone workspace and agent back first, and holds a prompt for a
+/// session that is at its sign-in prompt instead of losing it.
+async fn message(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
+    let request: MessageRequest = match parse(body, "message") {
+        Ok(request) => request,
+        Err(answer) => return answer,
+    };
+    if request.number == 0 {
+        return bad("number must be the item's number, 1 or more");
+    }
+    if request.text.trim().is_empty() {
+        return bad("the message is empty: write something to send");
+    }
+    let bytes = request.text.len();
+    if bytes > MAX_MESSAGE_BYTES {
+        return bad(format!(
+            "the message is {bytes} bytes; the most a message carries is {MAX_MESSAGE_BYTES}"
+        ));
+    }
+    let item = format!("{}#{}", request.repo, request.number);
+    tracing::info!(origin = write.origin, item, bytes, "web API message");
+    carry(
+        client,
+        crate::ipc::Request::Message {
+            item,
+            text: request.text,
+        },
+        "the message request",
+    )
+    .await
+}
+
+/// One write's body as its own request, or the `400` that names what about it
+/// could not be read. An unknown field is refused rather than ignored, so a
+/// misspelled one cannot silently ask for something nobody meant.
+fn parse<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    route: &str,
+) -> std::result::Result<T, (u16, &'static str, String)> {
+    serde_json::from_slice(body).map_err(|error| bad(format!("bad {route} request: {error}")))
+}
+
+/// One request taken to this factory's daemon, answered with what it said: its
+/// result as the `200` body, or its refusal in its own words. The request is
+/// exactly the one the matching `ssf` command sends, so the daemon's code path
+/// and the command's are the same one.
+async fn carry(
+    client: &Path,
+    request: crate::ipc::Request,
+    what: &str,
+) -> (u16, &'static str, String) {
+    let Ok(line) = serde_json::to_string(&request) else {
+        return failure(None, "the request could not be written down");
+    };
+    let output = match ask(client, &["__request", &line], WRITE_TIMEOUT).await {
         Ok(output) => output,
         Err(error) => return failure_of(&error),
     };
@@ -274,7 +463,7 @@ async fn assign(
     // agreed, so the answer itself is what decides the response here.
     match serde_json::from_slice::<crate::ipc::Response>(&output.stdout) {
         Ok(response) => answer(response),
-        Err(_) => failure(None, client_error(&output, "the assign request")),
+        Err(_) => failure(None, client_error(&output, what)),
     }
 }
 
@@ -499,16 +688,29 @@ async fn read_request(stream: &mut TcpStream) -> Result<String> {
 enum Routed<'a> {
     /// A read: the path under the capability.
     Read(&'a str),
-    /// The one write.
-    Write(Assign<'a>),
+    /// One of the writes.
+    Write(Write<'a>),
 }
 
-/// An accepted `POST <capability>/api/assign`.
-struct Assign<'a> {
+/// An accepted write: which of them, and the request's own facts.
+struct Write<'a> {
     /// The extension origin, which every accepted write is logged with.
     origin: &'a str,
+    /// What `ssf` request this route makes.
+    route: Route,
     /// Declared body length, within [`MAX_BODY`].
     length: usize,
+}
+
+/// The writes the endpoint accepts, each standing for one `ssf` request on
+/// the daemon. Nothing else is a write: a route that is not one of these is
+/// `405`, however it is posted.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Route {
+    Assign,
+    Handover,
+    Release,
+    Message,
 }
 
 /// The body of an assign write: `ssf assign`'s own arguments, with the item
@@ -530,6 +732,51 @@ struct AssignRequest {
     /// Effort level for the session; the harness's own default when absent.
     #[serde(default)]
     effort: Option<String>,
+}
+
+/// The body of a handover write: `ssf handover`'s own arguments for an item
+/// that has a session, with `note` as the summary the new session reads
+/// before the item's story.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HandoverRequest {
+    /// Watched repository, `owner/name`.
+    repo: String,
+    /// Issue or pull request number.
+    number: u64,
+    /// Harness the new session runs (`ssf agents` lists the ids).
+    harness: String,
+    /// Model for the new session; the harness's own default when absent.
+    #[serde(default)]
+    model: Option<String>,
+    /// Effort level for the new session; the harness's own default when absent.
+    #[serde(default)]
+    effort: Option<String>,
+    /// What the new session is told before the item's story.
+    #[serde(default)]
+    note: Option<String>,
+}
+
+/// The body of a release write: the item whose session's workspace goes.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseRequest {
+    /// Watched repository, `owner/name`.
+    repo: String,
+    /// Issue or pull request number.
+    number: u64,
+}
+
+/// The body of a message write: what the item's agent is told.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MessageRequest {
+    /// Watched repository, `owner/name`.
+    repo: String,
+    /// Issue or pull request number.
+    number: u64,
+    /// The message, delivered the way the item's own activity is.
+    text: String,
 }
 
 /// Check one request and say what it is. A read answers on the rules it
@@ -600,15 +847,25 @@ fn classify<'a>(request: &'a str, host: &str, token: &str) -> std::result::Resul
     let Some(origin) = origin.filter(|origin| origin.starts_with("chrome-extension://")) else {
         return Err(403);
     };
-    if relative != "api/assign" {
-        return Err(405);
-    }
+    let route = match relative {
+        "api/assign" => Route::Assign,
+        "api/handover" => Route::Handover,
+        "api/release" => Route::Release,
+        "api/message" => Route::Message,
+        // A write is only for the write routes, however the request is
+        // shaped; every other path under the capability is a read.
+        _ => return Err(405),
+    };
     if !content_type.is_some_and(is_json) {
         return Err(415);
     }
     match length {
         Some(length) if length > MAX_BODY => Err(413),
-        Some(length) => Ok(Routed::Write(Assign { origin, length })),
+        Some(length) => Ok(Routed::Write(Write {
+            origin,
+            route,
+            length,
+        })),
         None => Err(400),
     }
 }
@@ -807,6 +1064,21 @@ mod tests {
             classify(&with_charset, "127.0.0.1:123", "secret"),
             Ok(Routed::Write(_))
         ));
+        // Every write route is one, and each is the request it stands for.
+        for (path, route) in [
+            ("/secret/api/assign", Route::Assign),
+            ("/secret/api/handover", Route::Handover),
+            ("/secret/api/release", Route::Release),
+            ("/secret/api/message", Route::Message),
+        ] {
+            assert!(
+                matches!(
+                    classify(&post(path, "127.0.0.1:123", &headers, &body), "127.0.0.1:123", "secret"),
+                    Ok(Routed::Write(write)) if write.route == route
+                ),
+                "{path} is {route:?}"
+            );
+        }
         for (input, expected) in [
             // The bind host's own origin is a page the tailnet can load.
             (
@@ -876,13 +1148,23 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 ),
                 400,
             ),
-            // A write is only for the one route, and only by POST.
+            // A write is only for the write routes, and only by POST: a read
+            // path is not one however it is posted, and neither is a path
+            // that is not there at all.
             (
                 post("/secret/api/status", "127.0.0.1:123", &headers, &body),
                 405,
             ),
             (
                 post("/secret/api/events", "127.0.0.1:123", &headers, &body),
+                405,
+            ),
+            (
+                post("/secret/api/agents", "127.0.0.1:123", &headers, &body),
+                405,
+            ),
+            (
+                post("/secret/api/nothing", "127.0.0.1:123", &headers, &body),
                 405,
             ),
             (
@@ -940,6 +1222,18 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         response
+    }
+
+    /// One write as the extension's service worker sends it: the capability
+    /// path, an extension origin, a JSON media type and a body.
+    async fn post_json(address: std::net::SocketAddr, path: &str, body: &str) -> String {
+        write(
+            address,
+            path,
+            &format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n"),
+            body,
+        )
+        .await
     }
 
     /// A stand-in for the `ssf` client the endpoint runs commands with: the
@@ -1115,6 +1409,241 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         task.abort();
     }
 
+    /// Each of the four writes is the request its own `ssf` command sends the
+    /// daemon — the same code path, reached the way every command reaches a
+    /// factory in a VM — answered with the daemon's own result.
+    #[tokio::test]
+    async fn each_write_route_runs_the_request_its_command_sends() {
+        let assign_result = json!({"session":"o/r#7","title":"Fix it","assigned":true,
+            "overrides_written":true,"open":true,"poll_interval_secs":10});
+        let handover_result = json!({"session":"o/r#7","title":"Fix it",
+            "summary_chars":8,"poll_interval_secs":10});
+        let release_result = json!({"session":"o/r#7","title":"Fix it","released":true,
+            "pending":true,"poll_interval_secs":10});
+        let message_result = json!({"session":"o/r#7","title":"Fix it","delivered":true});
+        let handover_body = json!({"repo":"o/r","number":7,"harness":"omp",
+            "model":"deepseek/deepseek-flash","effort":"high","note":"carry on"})
+        .to_string();
+        let release_body = json!({"repo":"o/r","number":7}).to_string();
+        let message_body =
+            json!({"repo":"o/r","number":7,"text":"the test is red again"}).to_string();
+        for (name, path, body, result, expected) in [
+            (
+                "assign",
+                "/secret/api/assign",
+                assign_body(),
+                assign_result,
+                crate::ipc::Request::Assign {
+                    item: "o/r#7".into(),
+                    harness: "claude".into(),
+                    model: Some("opus".into()),
+                    effort: Some("low".into()),
+                    by: None,
+                },
+            ),
+            (
+                "handover",
+                "/secret/api/handover",
+                handover_body,
+                handover_result,
+                crate::ipc::Request::Handover {
+                    session: "o/r#7".into(),
+                    harness: "omp".into(),
+                    model: Some("deepseek/deepseek-flash".into()),
+                    effort: Some("high".into()),
+                    summary: Some("carry on".into()),
+                    by: None,
+                },
+            ),
+            (
+                "release",
+                "/secret/api/release",
+                release_body,
+                release_result,
+                // Never forced: the workspace checks are the point of doing
+                // this from a browser.
+                crate::ipc::Request::Release {
+                    session: "o/r#7".into(),
+                    force: false,
+                },
+            ),
+            (
+                "message",
+                "/secret/api/message",
+                message_body,
+                message_result,
+                crate::ipc::Request::Message {
+                    item: "o/r#7".into(),
+                    text: "the test is red again".into(),
+                },
+            ),
+        ] {
+            let client = Client::new(name, &json!({"ok":true,"data":result}).to_string(), 0);
+            let (address, task) = served(&client).await;
+            let response = post_json(address, path, &body).await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{name}: {response}");
+            assert_eq!(
+                serde_json::from_str::<Value>(response.split("\r\n\r\n").nth(1).unwrap()).unwrap(),
+                result,
+                "{name}: the daemon's result is the body"
+            );
+            // The client is run as `ssf __client __request '<json>'`, and that
+            // JSON is the request the matching `ssf` command sends.
+            let args = client.args();
+            assert_eq!(&args[..2], ["__client", "__request"], "{name}: {args:?}");
+            assert_eq!(
+                serde_json::from_str::<crate::ipc::Request>(&args[2]).unwrap(),
+                expected,
+                "{name}"
+            );
+            task.abort();
+        }
+    }
+
+    /// A release the workspace's own state refuses is the refusal `ssf release`
+    /// prints, in the same words: the daemon answers it as a *result* — it is
+    /// the command that words it — and the endpoint is the command here.
+    #[tokio::test]
+    async fn a_release_the_workspace_refuses_is_the_commands_own_refusal() {
+        let refused = json!({"released":false,"session":"o/r#7","title":"Fix it","path":"/w/7",
+            "check":{"state":"dirty","safe":false,
+            "problems":["2 files are not committed","the branch is not pushed"]}});
+        let client = Client::new("dirty", &json!({"ok":true,"data":refused}).to_string(), 0);
+        let (address, task) = served(&client).await;
+        let body = json!({"repo":"o/r","number":7}).to_string();
+        let response = post_json(address, "/secret/api/release", &body).await;
+        assert!(response.starts_with("HTTP/1.1 409"), "{response}");
+        let error =
+            serde_json::from_str::<Value>(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let message = error["error"].as_str().unwrap();
+        assert!(
+            message.starts_with("not released: the workspace of o/r#7 (/w/7)"),
+            "{message}"
+        );
+        for problem in ["2 files are not committed", "the branch is not pushed"] {
+            assert!(message.contains(problem), "{message}");
+        }
+        assert!(message.contains("nothing was removed"), "{message}");
+        task.abort();
+    }
+
+    /// A body a route cannot read is refused for it, with the factory never
+    /// asked: the item's number, the message's own bounds, and a field the
+    /// route does not take.
+    #[tokio::test]
+    async fn refuses_write_bodies_a_route_cannot_read() {
+        let client = Client::new("unread", "", 0);
+        std::fs::remove_file(client.program()).unwrap();
+        let (address, task) = served(&client).await;
+        let bad_json = "{ not json".to_string();
+        let zero_stack = json!({"repo":"o/r","number":0,"harness":"claude"}).to_string();
+        let zero_item = json!({"repo":"o/r","number":0}).to_string();
+        let zero_message = json!({"repo":"o/r","number":0,"text":"hi"}).to_string();
+        let no_number = json!({"repo":"o/r","harness":"claude"}).to_string();
+        let extra_field =
+            json!({"repo":"o/r","number":7,"harness":"claude","branch":"x"}).to_string();
+        let empty_text = json!({"repo":"o/r","number":7,"text":"   "}).to_string();
+        let long_text = json!({"repo":"o/r","number":7,
+            "text":"x".repeat(MAX_MESSAGE_BYTES + 1)})
+        .to_string();
+        // The cap counts bytes, so text that is not ASCII is refused for the
+        // cap rather than slipping through it: 700 characters (2,100 bytes) is
+        // under any character count, and over this cap only because of the
+        // bytes it takes to write.
+        let long_multibyte = json!({"repo":"o/r","number":7,
+            "text":"漢".repeat(700)})
+        .to_string();
+        assert!(long_multibyte.len() < MAX_BODY);
+        for (path, body, needle) in [
+            (
+                "/secret/api/assign",
+                bad_json.as_str(),
+                "bad assign request",
+            ),
+            (
+                "/secret/api/handover",
+                bad_json.as_str(),
+                "bad handover request",
+            ),
+            (
+                "/secret/api/release",
+                bad_json.as_str(),
+                "bad release request",
+            ),
+            (
+                "/secret/api/message",
+                bad_json.as_str(),
+                "bad message request",
+            ),
+            (
+                "/secret/api/assign",
+                zero_stack.as_str(),
+                "number must be the item's number",
+            ),
+            (
+                "/secret/api/handover",
+                zero_stack.as_str(),
+                "number must be the item's number",
+            ),
+            (
+                "/secret/api/release",
+                zero_item.as_str(),
+                "number must be the item's number",
+            ),
+            (
+                "/secret/api/message",
+                zero_message.as_str(),
+                "number must be the item's number",
+            ),
+            (
+                "/secret/api/message",
+                no_number.as_str(),
+                "bad message request",
+            ),
+            (
+                "/secret/api/handover",
+                extra_field.as_str(),
+                "unknown field",
+            ),
+            (
+                "/secret/api/message",
+                empty_text.as_str(),
+                "the message is empty",
+            ),
+            (
+                "/secret/api/message",
+                long_text.as_str(),
+                "the most a message carries is 2048",
+            ),
+            (
+                "/secret/api/message",
+                long_multibyte.as_str(),
+                "the message is 2100 bytes; the most a message carries is 2048",
+            ),
+        ] {
+            let response = post_json(address, path, body).await;
+            assert!(
+                response.starts_with("HTTP/1.1 400"),
+                "{path} {body}: {response}"
+            );
+            assert!(response.contains(needle), "{path} {body}: {response}");
+        }
+        assert!(client.args().is_empty(), "a refused write ran the client");
+        // The write routes are not reads: a GET of one is a `404` from the
+        // read side, which is what keeps a handover out of a link.
+        for path in [
+            "/secret/api/assign",
+            "/secret/api/handover",
+            "/secret/api/release",
+            "/secret/api/message",
+        ] {
+            let response = fetch(address, path).await;
+            assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
+        }
+        assert!(client.args().is_empty(), "a refused write ran the client");
+        task.abort();
+    }
+
     /// What the daemon refuses comes back as the command prints it, with the
     /// status the extension needs to tell the two apart.
     #[tokio::test]
@@ -1205,6 +1734,14 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+        // The one rejection a person can reach from the overlay's message box
+        // names the bound rather than saying only that the request was refused.
+        assert!(
+            response.contains(&format!(
+                "longer than the {MAX_BODY} bytes this endpoint reads"
+            )),
+            "{response}"
+        );
         // A bad body is the request's own fault, and a well-formed one that
         // names nothing is the daemon's answer to give.
         assert!(

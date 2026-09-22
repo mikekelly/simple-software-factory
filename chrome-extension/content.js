@@ -1,9 +1,9 @@
 // Overlays live ssf state on github.com.
 //
-// Read-only: it renders the factory's own dashboard model (`cards` and
-// `monitored_items` from the server's canonical status, see src/status.rs).
-// Every screen answers one question -- is an agent on this, and does it need
-// me? -- in one glance, and keeps the detail one click away:
+// It renders the factory's own dashboard model (`cards` and `monitored_items`
+// from the server's canonical status, see src/status.rs). Every screen answers
+// one question -- is an agent on this, and does it need me? -- in one glance,
+// and keeps the detail one click away:
 //
 //   * an issue or pull request page gets a card in the right sidebar, above
 //     Assignees;
@@ -17,8 +17,11 @@
 // tooltip, and a stale or unreachable factory is a modifier on top rather than
 // a state of its own, so a stale snapshot can never be mistaken for a live one.
 //
-// It never acts on the factory and never renders factory text as HTML: every
-// node is built with textContent.
+// The one thing it does to a factory is what an item's card offers: the Assign
+// agent form for an item with no agent, and the Actions row -- message, hand
+// over, release -- for one that has. Every write is the service worker's, never
+// this script's, and none of them is retried. Nothing factory-written is ever
+// parsed as HTML: every node is built with textContent.
 (() => {
   if (window.__ssfOverlayInstalled) return;
   window.__ssfOverlayInstalled = true;
@@ -116,7 +119,7 @@
   const sheet = new CSSStyleSheet();
   // The form's own rules live with it, so the two halves of the overlay cannot
   // drift apart.
-  sheet.replaceSync(STYLE + (globalThis.ssfAssignForm?.STYLE ?? ""));
+  sheet.replaceSync(STYLE + (globalThis.ssfWrites?.STYLE ?? ""));
 
   /// The last merged snapshot from the service worker, or null before the
   /// worker has answered. Nothing is rendered from a null snapshot.
@@ -555,14 +558,33 @@
   /// is *about*: for a pull request page that is the issue its body closes, not
   /// the pull request, so the write starts a session on the same item the card
   /// names.
-  function withAssignForm(section, matches, itemKey) {
+  function withWrites(section, matches, itemKey) {
     const assignableMatches = matches.filter(assignable);
-    if (!assignableMatches.length) return section;
     const [repo, number] = itemKey.split("#");
-    const form = globalThis.ssfAssignForm?.render({
+    const where = Number(number);
+    // An item with an agent gets the Actions row, on the card of the factory
+    // whose agent it is: the row writes through that factory, and the item it
+    // acts on is the one the card names.
+    if (!assignableMatches.length) {
+      const own = matches.find((match) => match.kind === "agent");
+      const row = own
+        ? globalThis.ssfWrites?.renderActions({
+            factories: [own.factory],
+            repo,
+            number: where,
+            item: own.item,
+          })
+        : null;
+      if (row) {
+        const cards = section.querySelectorAll(".ssf-card");
+        (cards[matches.indexOf(own)] ?? section).append(row);
+      }
+      return section;
+    }
+    const form = globalThis.ssfWrites?.render({
       factories: assignableMatches.map((match) => match.factory),
       repo,
-      number: Number(number),
+      number: where,
     });
     if (!form) return section;
     // The card of that factory, not the first card in the section: a factory
@@ -642,8 +664,9 @@
           })
         : chip(want.name, want.matches);
     entry.shadow.replaceChildren(body);
-    // The form is drawn after the cards, into the one it belongs to.
-    if (want.anchor === null) withAssignForm(entry.shadow, want.matches, want.key);
+    // The item's writes are drawn after the cards, into the card they belong
+    // to: the Assign agent form, or the Actions row.
+    if (want.anchor === null) withWrites(entry.shadow, want.matches, want.key);
     let placed = false;
     if (want.anchor === null) {
       const slot = sidebar();
@@ -773,7 +796,7 @@
     const previous = popover.entry.shadow.querySelector(".ssf-popover");
     const scrolled = previous ? previous.scrollTop : 0;
     popover.entry.shadow.replaceChildren(body);
-    withAssignForm(popover.entry.shadow, matches, popover.key);
+    withWrites(popover.entry.shadow, matches, popover.key);
     body.scrollTop = scrolled;
     measure(popover.entry);
     placePopover();
@@ -903,7 +926,7 @@
     snapshot = payload;
     // The form reads the same frames: a snapshot that shows the item it
     // assigned with an agent is what ends its "Assigning…".
-    globalThis.ssfAssignForm?.applySnapshot(payload);
+    globalThis.ssfWrites?.applySnapshot(payload);
     scheduleRender();
   }
 
@@ -979,7 +1002,7 @@
 
   // The form draws itself again through this script's own scheduler, so the
   // two never render over each other.
-  globalThis.ssfAssignForm?.onChange(scheduleRender);
+  globalThis.ssfWrites?.onChange(scheduleRender);
 
   chrome.runtime.sendMessage({ type: "ssf:snapshot" }).then(apply, () => {});
 

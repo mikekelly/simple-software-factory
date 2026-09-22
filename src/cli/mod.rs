@@ -48,7 +48,7 @@ mod prelude {
 pub use auth::auth_logout;
 pub use client::{client_main, server_main};
 pub use sessions::{
-    assign_recorded_text, handover_cancelled_text, handover_recorded_text,
+    assign_recorded_text, handover_cancelled_text, handover_recorded_text, release_refused_text,
     summary_quotes_a_sign_in_screen_text,
 };
 
