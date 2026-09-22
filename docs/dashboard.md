@@ -158,6 +158,16 @@ for that item, with `branch` when the driver reports one. An item that has one i
 not one `ssf assign` accepts — it is refused, because `ssf release` is what frees
 it — so a client that offers the write draws no form for it.
 
+`dashboard.repositories` lists the repositories the factory watches, as
+`owner/name`. A factory watches a repository rather than the items in it, so its
+cards and monitored items say nothing about an item nobody has assigned yet —
+and without this list a client cannot tell such an item, which takes a session,
+from one the factory has never heard of, which is refused. The extension reads
+it to draw the Assign form for an item in a watched repository that has no card
+and is not monitored (#435). A server that does not publish it sends an empty
+list, and a client that reads it then offers the form only for items it has a
+record of, as before.
+
 The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so a Chrome extension's service worker can read
 them; the `Host` header must still match the configured bind address and port.
@@ -251,11 +261,16 @@ The optional [Chrome extension](../chrome-extension/README.md) is the client
 these endpoints are for: it overlays this state on github.com instead of in a
 browser tab. It collapses every state ssf and the harnesses report onto five —
 **Working**, **Waiting on you**, **Done**, **Problem** and **No agent** — each
-with a fixed colour and icon, and shows the raw state the TUI prints on hover. An
+with a fixed colour and icon, and shows the raw state the TUI prints on hover
+(the one reading ssf did not make is *no record*, for an item in a watched
+repository that has no card and is not monitored, which its tooltip says in
+those words). An
 issue or pull request page gets a card in the right sidebar above Assignees (a
 pull request resolves through the issue its body closes, `Closes` before
-`Refs`); lists, search results and project boards get one chip per tracked item,
-whose click opens the same card as a popover. The card's `Details` section
+`Refs`); lists, search results and project boards get one chip per tracked item —
+a board also chipping one the factory has no record of, when it watches that
+repository, since a board card is where an item is picked up — whose click opens
+the same card as a popover. The card's `Details` section
 carries the current tool call, the factory label, the workspace branch and the
 agent session id. A factory whose stream has dropped, or which flags its own
 snapshot as unreliable, is shown with the icon outlined and the time as "as of
@@ -265,9 +280,13 @@ a live factory and an unavailable or stale snapshot.
 An item in the **No agent** state carries an **Assign agent** form, on the card
 and in the popover: harness from `api/agents`, model from
 `api/models/<harness>`, effort from the levels that harness takes, and Assign.
-An item that already has a workspace is refused by `ssf assign` (`ssf release` is
-what frees it), so its card carries *Has a workspace; release it first* instead
-of a form, which is what `has_workspace` above is published for.
+That includes an item no factory has a record of — in none of its cards and in
+none of its monitored items — when the factory watches the item's repository:
+`dashboard.repositories` is what tells the two apart, and the form is drawn on
+the item's own page and on its project board card. An item that already has a
+workspace is refused by `ssf assign` (`ssf release` is what frees it), so its
+card carries *Has a workspace; release it first* instead of a form, which is
+what `has_workspace` above is published for.
 An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
 carries an **Actions** row on the card of the factory that has it — *Message* (a
 textarea and Send), *Hand over…* (the assign pickers, prefilled with the stack

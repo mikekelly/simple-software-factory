@@ -76,6 +76,12 @@ function payload() {
       warning: entry.snapshot?.warning ?? null,
       cards: entry.snapshot?.cards ?? [],
       monitoredItems: entry.snapshot?.monitored_items ?? [],
+      /// The repositories this factory watches, so the content script can
+      /// offer the Assign form for an item the factory has no record of -- an
+      /// item that has no card and is not monitored, which is what `ssf assign`
+      /// is for. A factory that has not answered yet cannot say, and publishes
+      /// none, so nothing is offered on its behalf.
+      repositories: entry.snapshot?.repositories ?? [],
     })),
   };
 }

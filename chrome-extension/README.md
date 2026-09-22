@@ -58,11 +58,17 @@ fixed colour and icon so the same state reads the same on every screen:
 | 🟡 **Waiting on you** | the agent is idle or blocked; its last message is probably a question or a handoff | `idle`, `blocked` |
 | ⚪ **Done** | the agent finished its turn and delivered | `done` |
 | 🔴 **Problem** | ssf tracks the item but the agent or workspace is gone, or the driver is unreachable | `no-agent`, `no-workspace`, `unknown` |
-| ⚫ **No agent** | ssf monitors the item; nothing is attached | `unbound`, monitored items |
+| ⚫ **No agent** | ssf monitors the item with nothing attached, or the factory watches its repository and has no record of it | `unbound`, monitored items, or — for the last case — none; the overlay's own reading, shown as `no record` |
 
 The raw word is never hidden: hovering a state line shows `ssf state: idle`, and
 so does a chip's tooltip, so the overlay and the TUI always agree about what the
-factory actually said.
+factory actually said. The one reading ssf did not make is the second half of
+that row: an item in a repository a factory watches that the factory has no
+record of — no card, and not monitored. ssf has said nothing about such an item,
+so its tooltip leads with `ssf state: no record` and says where that came from,
+and the overlay draws it only where it can offer the one thing that belongs to
+it, the **Assign agent** form. `ssf assign` accepts any open item in a watched
+repository, which is what makes "no record" actionable rather than empty (#435).
 
 **An item the page shows closed or merged is not a Problem.** A merged item whose
 workspace was released reads `no-workspace`, and one the daemon no longer tracks
@@ -114,13 +120,28 @@ says `for #N`:
 
 ![A pull request page whose sidebar card reads "for #412"](docs/pr-card.png)
 
-When the body names nothing the factory knows, the pull request's own number is
-used if the factory tracks it; otherwise the page gets nothing.
+On a pull request page, the issue the body names resolves whether or not the
+factory has a record of it: naming an item in a watched repository puts the form
+for that item on the page, as it would on the item's own page. When the body
+names nothing a factory watches or records, the card falls back to the pull
+request itself, and the form starts a session on the pull request. Either way
+the write is for the item the card names, never for an issue the page merely
+mentions.
 
 **Lists, search results and project boards get one chip per tracked item** —
 icon, state word and relative last activity:
 
 ![A list of issues, each tracked one carrying a small ssf chip after its title](docs/issue-list.png)
+
+**A project board is the one list that also chips an item no factory has a
+record of**, when the factory watches its repository: a board card stands for
+one item and picking one up is what a board is for, so its chip opens the same
+**Assign agent** form the item's own page carries. The issue and pull request
+lists and search results keep one chip per tracked item, since a watched
+repository's whole backlog as a column of grey chips is not what those pages are
+read for:
+
+![A board whose cards carry ssf chips, the untracked ones reading No agent alongside a tracked one reading Working, with one chip's popover open showing the Assign agent form](docs/no-record-board.png)
 
 Hovering a chip shows `harness · model`, the absolute time and the first line of
 the last message. Clicking it opens the same card as the issue page, as a
@@ -133,13 +154,33 @@ settings are left alone even when they link to issues.
 
 Several factories merge by repository: a chip is unique per item, and a factory
 that does not host the repository contributes nothing. When more than one
-factory knows the item, each card is named with its factory label.
+factory knows the item, each card is named with its factory label. The word on a
+chip comes from a factory with something to report, so a factory that only
+watches the repository — and has no record of the item, which is what puts the
+form on the item's own page — never displaces the state of the factory that has
+it. Both readings are in the chip's tooltip and both cards are in its popover.
 
 ## Assigning an agent
 
 An item the factories have no agent on — the `no agent` state, whether ssf
 monitors it or not — carries an **Assign agent** form, beside the item's state
 on its issue or pull request page. An item with an agent shows no form.
+
+**That includes an item no factory has a record of at all.** A factory watches a
+repository, not the items in it: an item nobody has ever assigned is in none of
+its cards and in none of its monitored items, and the status model used to carry
+no way to tell it apart from an item the factory has never heard of — which is
+why the form was missing for exactly the items `ssf assign` exists for (#435).
+Each factory now publishes the repositories it watches
+(`dashboard.repositories`), and an item in one of them that has no record reads
+**No agent** and carries the form, on its own page and on a board card:
+
+![An agentless issue whose sidebar card reads No agent with the Assign agent form beneath it](docs/no-record-assign-form.png)
+
+An item the page shows **closed or merged** carries the form like any other: the
+write is deferred rather than refused — `ssf assign` assigns the bot and its own
+result says no session starts until the item is open again — which is how a
+tracked closed item already behaves.
 
 An item ssf already has a workspace for is the exception: `ssf assign` refuses
 it, because `ssf release` is what frees it, so the overlay offers no form and its
@@ -300,8 +341,11 @@ forward, and keep tailnet ACLs restrictive.
   state mark below that badge, so the reading holds on every surface measured.
 - Chrome prompts for each factory address once; until it is allowed, the page
   says so rather than showing state it cannot read.
-- Whether a factory watches a repository is read from that factory's snapshot,
-  so a factory with nothing on the repository shows no form for it.
+- The board chip for an item no factory has a record of depends on the factory
+  publishing the repositories it watches (`dashboard.repositories`, added for
+  this). A factory running an older `ssf-server` publishes none, and the overlay
+  then behaves as it did before: the item's page and its board card carry
+  nothing.
 - The Actions row is on an item's own card, not on an item shown as *worked on
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A message sent to a bound item still reaches the
