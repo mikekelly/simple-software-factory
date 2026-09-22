@@ -89,8 +89,8 @@ const PROBE_LIMIT: Duration = Duration::from_secs(60);
 const QUICK_LIMIT: Duration = Duration::from_secs(2 * 60);
 /// The liveness question as the forwarding gate asks it
 /// ([`Vm::running_now`]): once in front of every command the host sends
-/// into the guest, with a person waiting on the answer and the bar
-/// widget asking a few times a minute. It reads local bookkeeping, so
+/// into the guest, with a person waiting on the answer and a
+/// dashboard asking a few times a minute. It reads local bookkeeping, so
 /// seconds are already generous, and the gate treats "could not ask" as
 /// "cannot tell" and forwards anyway -- so cutting a pathologically slow
 /// answer short costs nothing but the answer. The supervisor's own

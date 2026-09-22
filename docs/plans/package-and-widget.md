@@ -1,5 +1,12 @@
 # Package-owned application and Omarchy widget
 
+> **Historical record.** The Omarchy bar widget described here was removed in
+> [#413](https://github.com/mikekelly/simple-software-factory/issues/413),
+> superseded by the Chrome extension in
+> [#412](https://github.com/mikekelly/simple-software-factory/issues/412). Only
+> the **Factory** menu entries remain; the split between the package and
+> per-user setup still stands.
+
 ## Decision
 
 Replace the custom marketplace installer with the separation agreed with the

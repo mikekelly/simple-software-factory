@@ -408,7 +408,7 @@ nothing more: the restarted screen is clean.
   `BLOCKED:` line naming the harness, since when and the command to run;
   `--json` carries it as `blocked` on the session, with `harness_name`,
   `detail`, `since` and `fix`, and `blocked_sessions` at the top), in
-  `ssf peers`, and in the bar widget (urgent, with the same line on the
+  `ssf peers`, and in the dashboards (with the same line on the
   session's row).
 - **Nothing is delivered.** Activity on the item, FYIs and the
   closing message are held: the item's bookkeeping is left as it was

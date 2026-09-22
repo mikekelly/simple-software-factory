@@ -301,6 +301,20 @@ fn verify_existing_config() -> Result<()> {
 
 fn finish_setup() -> Result<()> {
     enable_linger()?;
+    // The bar widget the package used to ship is gone (#413); this is the
+    // per-user setup step, so an upgraded installation that runs it again is
+    // cleaned up without anyone remembering to. Nothing is there on a fresh
+    // install, and nothing here is Omarchy-specific beyond the widget itself.
+    match crate::ui::remove_superseded_widget() {
+        Ok(crate::ui::RemovedWidget::Removed) => {
+            println!("disabled and removed the superseded Omarchy bar widget")
+        }
+        Ok(crate::ui::RemovedWidget::Disabled) => println!(
+            "disabled the superseded Omarchy bar widget; `omarchy plugin remove ssf.factory` removes the checkout"
+        ),
+        Ok(crate::ui::RemovedWidget::Nothing) => {}
+        Err(e) => eprintln!("warning: could not remove the superseded Omarchy bar widget: {e:#}"),
+    }
     std::fs::create_dir_all(config::state_dir()).context("creating the SSF state directory")?;
     let vm_target = crate::server_catalog::selected_target_identity()?
         .is_some_and(|identity| identity.transport == "vm");

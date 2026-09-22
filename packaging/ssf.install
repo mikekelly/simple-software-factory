@@ -35,5 +35,5 @@ post_upgrade() {
   done
 }
 post_remove() {
-  echo "==> ssf removed; user configuration, state, projects, VM data, and the Omarchy widget were preserved."
+  echo "==> ssf removed; user configuration, state, projects and VM data were preserved."
 }

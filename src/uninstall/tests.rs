@@ -111,7 +111,7 @@ fn facts() -> Facts {
     Facts {
         service_active: true,
         service_enabled: true,
-        desktop_present: true,
+        menu_present: true,
         bot: Some("bot".into()),
         has_token: true,
         key_ids: true,
@@ -232,7 +232,7 @@ fn render_lists_what_goes_and_what_stays() {
         "{text}"
     );
     assert!(
-        text.contains("installed Omarchy widget and menu entries (remove them through Omarchy)"),
+        text.contains("installed Factory menu entries (remove them with `ssf ui uninstall`)"),
         "{text}"
     );
     assert!(text.contains("clean and pushed (ssf purge)"), "{text}");
@@ -369,7 +369,7 @@ fn render_says_what_is_already_gone() {
     let f = Facts {
         service_active: false,
         service_enabled: false,
-        desktop_present: false,
+        menu_present: false,
         bot: None,
         has_token: false,
         key_ids: false,
@@ -381,7 +381,7 @@ fn render_says_what_is_already_gone() {
     };
     let text = render(&f, &Report::default(), &Opts::default());
     assert!(!text.contains("stop:"), "{text}");
-    assert!(!text.contains("bar widget"), "{text}");
+    assert!(!text.contains("menu entries"), "{text}");
     assert!(
         text.contains("remove:  workspaces of closed items: not purged"),
         "{text}"

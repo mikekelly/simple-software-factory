@@ -143,8 +143,8 @@ impl Drop for TheMachineItself {
 }
 
 /// The sandbox's stand-in for `$HOME`, for the paths outside ssf's own
-/// directories that the daemon writes to (`crate::ui`, which installs
-/// and removes the Omarchy widget under `~/.config/omarchy`).
+/// directories that the daemon writes to (`crate::ui`, which writes and
+/// removes the Omarchy menu entries under `~/.config/omarchy`).
 pub(crate) fn home() -> PathBuf {
     require("home")
 }

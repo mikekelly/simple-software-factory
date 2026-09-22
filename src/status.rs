@@ -1,8 +1,8 @@
-//! The joined view behind `ssf status`, `ssf peers` and the bar widget: what
-//! ssf knows about each item (issue or PR, GitHub state, triggers, prompts,
-//! session id) next to what herdr reports about the workspace working on it
-//! (agent state, last assistant message, current tool, last activity, board
-//! column, branch). The widget reads this and never talks to herdr itself.
+//! The joined view behind `ssf status` and `ssf peers`: what ssf knows about
+//! each item (issue or PR, GitHub state, triggers, prompts, session id) next
+//! to what herdr reports about the workspace working on it (agent state, last
+//! assistant message, current tool, last activity, board column, branch). The
+//! dashboards read this and never talk to herdr themselves.
 
 use anyhow::Context;
 use serde::Serialize;
@@ -17,7 +17,7 @@ use crate::github::PrInfo;
 use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
-/// the bar widget polls this, so it must never hang.
+/// the dashboards poll this, so it must never hang.
 const DRIVER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Session identity: `owner/repo#N`, the same form `--as` takes.
@@ -260,7 +260,7 @@ impl HandoverView {
     }
 }
 
-/// A session's block, for `ssf status --json` and the widget.
+/// A session's block, for `ssf status --json` and the dashboards.
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockedView {
     pub reason: String,
@@ -494,10 +494,10 @@ impl Snapshot {
             "last_error": self.state.last_error,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
             "config_path": crate::config::config_path(),
-            // The wildcard allow-list is in effect somewhere: the widget
-            // shows a warning while it is.
+            // The wildcard allow-list is in effect somewhere: the
+            // dashboards show a warning while it is.
             "anyone_allowed": self.cfg.anyone_allowed_anywhere(),
-            // Sessions whose harness is not signed in (the widget shows an
+            // Sessions whose harness is not signed in (the dashboards show an
             // urgent line per one).
             "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
             "driver": driver_status,

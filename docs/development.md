@@ -11,8 +11,7 @@ export SSF_CONFIG_DIR=/tmp/ssf-dev SSF_STATE_DIR=/tmp/ssf-dev SSF_GITHUB_TOKEN=$
 ./target/debug/ssf repo add you/sandbox --harness claude --model opus --effort high   # a repository the real factory does not watch
 ./target/debug/ssf-server --once  # one pass; agents launched by this run read the same SSF_* locations
 unset SSF_CONFIG_DIR SSF_STATE_DIR SSF_GITHUB_TOKEN   # in a guest shell, restore SSF_STATE_DIR=/var/lib/ssf/state
-SSF_PLUGIN_DIR=$PWD/omarchy-plugin ./target/debug/ssf ui install   # on Omarchy: writes the REAL ~/.config/omarchy
-omarchy plugin validate ./omarchy-plugin
+./target/debug/ssf ui install                                       # on Omarchy: writes the REAL ~/.config/omarchy
 cd packaging && makepkg -fd          # rebuild the package; commit the pkgver bump it makes to PKGBUILD
 ```
 
@@ -59,7 +58,8 @@ account its token belongs to (run `gh auth status` before the recipe —
 `SSF_GITHUB_TOKEN` wins over everything, and in your own shell it is you),
 whether commands are forwarded to a microVM. Some of it no setting reaches
 at all: `ssf ui install` writes the real `~/.config/omarchy`, undone by
-`ssf ui uninstall && ssf ui install` from the packaged binary; `ssf ui
+`ssf ui uninstall` (both also deal with the superseded bar widget, up to a
+plugin manager checkout, which they disable and leave); `ssf ui
 service` acts on the real unit; and agents use the harness's own sessions.
 
 Assume a scratch factory shares all of it with the real one unless you have
@@ -108,9 +108,9 @@ thread, so two running in parallel cannot see each other's `state.json`.
 `sandbox.config_dir()`, `sandbox.state_dir()`, `sandbox.home()` and
 `sandbox.root()` are the paths, for a test that wants to lay a fixture
 down first. `ui::home()` is guarded the same way and answers
-`sandbox.home()`, since the Omarchy widget's install and uninstall write
-and delete under `~/.config/omarchy`, which is nobody's temporary
-directory either.
+`sandbox.home()`, since the Omarchy menu install and the superseded bar
+widget's removal write and delete under `~/.config/omarchy`, which is
+nobody's temporary directory either.
 
 `cfg(test)` is what makes any of this hold, and that in turn rests on
 `ssf` having no `[lib]` target: the tests are all inline, so they are the
@@ -248,7 +248,7 @@ busy turn completes). Claude 2.1.268 passed these gates on
 drop-in below pointing the unit at the build, then `systemctl --user
 daemon-reload && systemctl --user restart ssf.service`, and runs the
 build's `doctor`. The package has to be installed once for the unit and
-the widget (`cd packaging && makepkg -si`); the script stops and says so
+the Factory menu (`cd packaging && makepkg -si`); the script stops and says so
 otherwise. Keep the build outside any worktree an agent might release.
 The drop-in survives package upgrades, so the service keeps running the
 dev build until `packaging/dev-install.sh --undo` removes it and restarts
@@ -393,10 +393,10 @@ from the release either way.
 | `src/ipc.rs` | the CLI-to-daemon socket behind `sub`, `unsub`, `handover`, `assign`, `release` and `purge` |
 | `src/dashboard.rs`, `src/dashboard_herdr.rs`, `src/dashboard_transport.rs` | terminal dashboard, optional Herdr focus, and reusable SSH status transport |
 | `src/dashboard_web.rs`, `dashboard/` | optional server HTTP dashboard and embedded browser assets |
-| `src/status.rs` | the joined item/session view behind `status`, `peers` and the widget |
+| `src/status.rs` | the joined item/session view behind `status`, `peers` and the dashboards |
 | `src/agents.rs`, `src/models.rs` | supported harness catalogue; model, effort and permission-free commands per harness |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
-| `src/ui.rs`, `omarchy-plugin/`, `bin/ssf-ui` | Omarchy integration: the Quickshell bar widget (a dashboard of the factory's state), the menu entries, and the helper behind both (service toggle, log, status terminal, open a workspace) |
+| `src/ui.rs`, `bin/ssf-ui` | Omarchy integration: the **Factory** menu entries, the removal of the superseded bar widget, and the helper behind them (service toggle, log, status terminal) |
 | `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
 | `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-tap` |

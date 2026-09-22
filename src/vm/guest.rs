@@ -495,7 +495,7 @@ impl Vm {
 
     /// [`Vm::exec_ssf`] with the guest's stdout captured, its stderr left
     /// on this terminal. For the caller that has to answer even when the
-    /// guest does not: `status --json`, which the bar widget parses.
+    /// guest does not: `status --json`, which the dashboards parse.
     pub fn capture_ssf(&self, args: &[String]) -> Result<std::process::Output> {
         self.capture_ssf_command(args, Path::new("/tmp"))?
             .stdin(Stdio::null())

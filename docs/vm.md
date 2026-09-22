@@ -546,7 +546,7 @@ rotation Claude Code does on expiry, ends both; a guest agent that runs
 guest a login of its own and never logs anything out.
 
 When a login expires or is revoked under a running session, ssf notices
-(the session shows as blocked in `ssf status` and the widget, and its
+(the session shows as blocked in `ssf status` and the dashboards, and its
 item gets one comment naming `ssf vm login <harness>`), holds its
 activity, and resumes the session on its own once the guest is signed in
 again (see [A harness that is not signed
@@ -582,7 +582,7 @@ falls back to editing host factory settings. Start it with `ssf vm start`
 and retry. `ssf config get|set vm.<key>` and `ssf vm ...` operate on the
 host. `ssf vm status` diagnoses host infrastructure; `ssf status`,
 `ssf doctor`, `ssf auth status` and repository listing inspect the guest
-factory. The bar widget and `ssf status --json` work as
+factory. The dashboards and `ssf status --json` work as
 before; `ssf vm run -- <args>` does it explicitly and `ssf vm ssh
 [-- cmd]` gives a shell. `ssf vm attach` attaches to herdr's session in
 the guest in your terminal; `ssf vm ssh-config` prints an `~/.ssh/config`
@@ -608,8 +608,9 @@ inside the guest.
 `ssf-server --once` is a guest command too. While the guest's `ssf.service`
 owns its state it refuses; let its next poll do the work. The host adds the
 VM name after the guest's refusal.
-Clicking a session in the bar widget (Omarchy) opens a terminal attached
-to the guest. `ssf vm logs` follows the guest daemon's journal and `ssf
+`ssf vm attach` opens a terminal attached to the guest, which is how a
+session's workspace is reached now that the bar widget is gone (`ssf peers`
+lists the sessions). `ssf vm logs` follows the guest daemon's journal and `ssf
 vm console` shows the serial console. Under lima, `limactl shell
 ssf-default` is a second way in, as lima's own user rather than `ssf`.
 
@@ -722,8 +723,8 @@ start`) outlives that shell and any later `ssf` command. The service
 `ssf-server` starts the VM if it is not up and owns it from then on, so
 stopping or restarting the service shuts the guest down cleanly, and a
 crash of the host daemon ends it with the service's cgroup on Linux.
-With the VM stopped, `ssf status` says so instead of forwarding (the bar
-widget shows the service as stopped), and the other forwarded commands
+With the VM stopped, `ssf status` says so instead of forwarding (the
+dashboards show the service as stopped), and the other forwarded commands
 refuse with `the factory runs in VM <name>, which is not running`. Only a
 definite answer does that. The liveness question forks `limactl` under
 lima, and a `limactl` that fails, or does not answer within fifteen
@@ -743,14 +744,14 @@ is `running`, `stopped` or `unknown`, and the service line is this
 machine's) and no sessions or repositories, which are the guest's to
 know. That covers the window after `limactl start` when lima says
 `Running` before the guest's sshd does, as well as a probe that could
-not be made at all. The bar widget shows the same panel either way --
-it reads sessions, not `vm` -- but its service toggle reads the truth
-rather than the empty object it falls back to, and a `jq` over the
-command gets a field rather than a parse error.
+not be made at all. The dashboards show the same panel either way --
+they read sessions, not `vm` -- but a service toggle that reads the
+command's JSON reads the truth rather than the empty object it falls back
+to, and a `jq` over the command gets a field rather than a parse error.
 
 A probe that could not be made is never read as a stopped factory:
 reading it that way refused `release`, `purge` and `doctor` over
-a running VM and showed the widget an idle one. The supervisor inside
+a running VM and showed a dashboard an idle one. The supervisor inside
 `ssf-server` asks the same question on its own loop, where a slow answer is
 waited out rather than cut short at fifteen seconds, since it gives up on
 a VM only after ten rounds with no answer at all.

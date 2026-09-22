@@ -27,7 +27,7 @@
 //! ssh on `127.0.0.1:<ssh_port>`
 //! with a key made per VM. With `[vm] enabled = true` the daemon-facing
 //! commands are run inside the guest that way, so `ssf status --json` for
-//! the bar widget works as before; `ssf-server`
+//! the dashboards works as before; `ssf-server`
 //! on the host starts the VM and watches it, so the service is unchanged.
 
 mod lima;
