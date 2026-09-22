@@ -8,7 +8,7 @@ fn web_dashboard_defaults_and_security() {
         toml::from_str("[dashboard]\nenabled = true\nbind = '::1'\nport = 9090").unwrap();
     configured.dashboard.validate().unwrap();
     assert_eq!(configured.dashboard.port, 9090);
-    for address in ["0.0.0.0", "::", "100.64.0.1", "192.168.1.4"] {
+    for address in ["0.0.0.0", "::", "100.32.0.1", "192.168.1.4"] {
         let mut config = configured.dashboard.clone();
         config.bind = address.parse().unwrap();
         assert!(
@@ -1185,4 +1185,57 @@ fn without_a_sandbox_the_state_directory_is_refused() {
 #[should_panic(expected = "reached the real config directory")]
 fn without_a_sandbox_the_config_directory_is_refused() {
     let _ = config_dir();
+}
+
+#[test]
+fn dashboard_bind_accepts_loopback_and_tailscale_only() {
+    let scope = |bind: &str| {
+        DashboardConfig {
+            enabled: true,
+            bind: bind.parse().unwrap(),
+            ..Default::default()
+        }
+        .bind_scope()
+    };
+    for bind in ["127.0.0.1", "127.0.0.5", "::1"] {
+        assert_eq!(scope(bind), Some("loopback"), "{bind}");
+    }
+    for bind in [
+        "100.64.0.1",
+        "100.101.102.103",
+        "100.127.255.255",
+        "fd7a:115c:a1e0::1",
+        "fd7a:115c:a1e0:ab12:4843:cd96:1234:5678",
+    ] {
+        assert_eq!(scope(bind), Some("tailscale"), "{bind}");
+    }
+    for bind in [
+        "0.0.0.0",
+        "::",
+        "192.168.1.10",
+        "10.0.0.1",
+        "100.63.255.255",
+        "100.128.0.1",
+        "203.0.113.5",
+        "fd7a:115c:a1e1::1",
+        "2001:db8::1",
+    ] {
+        assert_eq!(scope(bind), None, "{bind}");
+        let config = DashboardConfig {
+            enabled: true,
+            bind: bind.parse().unwrap(),
+            ..Default::default()
+        };
+        let error = config.validate().unwrap_err().to_string();
+        assert!(error.contains("loopback or Tailscale address"), "{error}");
+        // A disabled dashboard never binds, so its address is not policed.
+        assert!(
+            DashboardConfig {
+                enabled: false,
+                ..config
+            }
+            .validate()
+            .is_ok()
+        );
+    }
 }

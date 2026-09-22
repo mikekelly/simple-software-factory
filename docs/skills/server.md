@@ -54,6 +54,6 @@ settings and its SSH key belong on the host. For development, follow
 `docs/development.md` in the repository before running a scratch daemon:
 config/state overrides alone do not isolate credentials, drivers or workspaces.
 
-The optional web UI is off by default. See `ssf skill dashboard` for its
-loopback listener and authenticated remote access requirements. Prefer
-`ssf dashboard` for a terminal view.
+The optional web UI is off by default. See `ssf skill dashboard` for the bind
+addresses it accepts, the Tailscale exposure rules and the authenticated
+remote access requirements. Prefer `ssf dashboard` for a terminal view.

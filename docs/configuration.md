@@ -190,7 +190,7 @@ instructions = "Run `make test` before opening a PR."
 | `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
 | `herdr.tui_idle_timeout_ms` | `90000` | How long a freshly started agent gets to show up in its pane |
 | `dashboard.enabled` | `false` | Enable the optional server web UI; restart required |
-| `dashboard.bind` | `127.0.0.1` | Loopback IP address only; non-loopback exposure requires an authenticated TLS reverse proxy |
+| `dashboard.bind` | `127.0.0.1` | Loopback or Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) only; any other exposure requires an authenticated TLS reverse proxy |
 | `dashboard.port` | `8787` | Server web UI port; restart required |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
 | `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it in live messages (normally noise; a session started again is always shown its own posts in the catch-up story — see [Identity and bylines](identity-and-bylines.md)) |

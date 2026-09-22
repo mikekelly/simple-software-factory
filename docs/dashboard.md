@@ -88,10 +88,47 @@ to repository details and session summaries. It changes on server restart.
 The listener remains available until the server stops, even with no browser
 open. An enabled listener that cannot bind causes an explicit startup error.
 
-Only loopback IP addresses are accepted, including `::1`. Direct binds to a
-LAN address, Tailscale address, `0.0.0.0` or `::` are refused. The built-in
-endpoint provides neither TLS nor user accounts. Remote web access requires
-a reverse proxy that:
+Only loopback addresses (including `::1`) and Tailscale addresses (IPv4 in
+`100.64.0.0/10`, IPv6 in `fd7a:115c:a1e0::/48`) are accepted. Direct binds to a
+LAN address, a public address, `0.0.0.0` or `::` are refused. `ssf doctor`
+reports which of the two an enabled bind is.
+
+When bound to a Tailscale address the transport is plain HTTP, encrypted by
+WireGuard between tailnet devices and by nothing else. Paste the capability URL
+only into the SSF Chrome extension or a browser on the tailnet, and never expose
+the port through [Tailscale
+Funnel](https://tailscale.com/kb/1223/funnel) or a router port forward.
+Restrict who can reach the port with tailnet ACLs; anyone who can reach it and
+learns the capability URL has the same access you do.
+
+### Status API
+
+Two endpoints under the capability path serve the canonical dashboard model:
+
+- `GET /<capability>/api/status` returns the current snapshot as JSON, or a
+  `502` with `{"error": ...}` when the status stream cannot be read.
+- `GET /<capability>/api/events` is a [server-sent
+  events](https://developer.mozilla.org/docs/Web/API/Server-sent_events) stream.
+  It sends the current snapshot immediately as an `event: status` frame whose
+  `data` is the same JSON `/api/status` returns, then another `status` frame for
+  every snapshot the server's status stream produces, an `event: error` frame
+  with `{"error": ...}` when a snapshot cannot be loaded, and a `: keepalive`
+  comment line every 25 seconds while no snapshot arrives. The connection stays
+  open until the client or the server closes it.
+
+  Frames follow the status stream rather than dashboard changes: the stream
+  publishes a fresh snapshot about every 2 seconds, `ssf status --json --watch`'s
+  own cadence, so a frame means the snapshot was refreshed and only `refreshed_at`
+  is guaranteed to differ. The keepalive covers a stream that has gone quiet,
+  which is a stalled or disconnected status source rather than a dashboard that
+  happens to be unchanged.
+
+Both endpoints accept an `Origin` of `http://<bind>:<port>` or any
+`chrome-extension://...` origin, so a Chrome extension's service worker can read
+them; the `Host` header must still match the configured bind address and port.
+
+The built-in endpoint provides neither TLS nor user accounts. Remote web access
+from outside a tailnet requires a reverse proxy that:
 
 - Terminates TLS and authenticates and authorizes each user before forwarding.
 - Keeps the upstream loopback-only and preserves the capability path.

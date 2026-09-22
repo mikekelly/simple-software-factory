@@ -33,6 +33,19 @@ pub(super) async fn doctor() -> Result<()> {
             Config::default()
         }
     };
+    if cfg.dashboard.enabled {
+        let bind = cfg.dashboard.bind;
+        // Loading a config already refuses a bind that is neither, so this
+        // normally answers the accepted case; the other arm never reports "ok"
+        // for a bind it cannot name.
+        match cfg.dashboard.bind_scope() {
+            Some(scope) => check(true, format!("dashboard bind {bind} is {scope}")),
+            None => check(
+                false,
+                format!("dashboard bind {bind} is neither loopback nor Tailscale"),
+            ),
+        }
+    }
     match cfg.github_token() {
         Ok(token) => match github::GitHub::new(&cfg.github.api_url, &token) {
             Ok(gh) => match gh.whoami().await {
