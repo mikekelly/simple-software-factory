@@ -792,6 +792,52 @@ fn repo_add_and_set_carry_the_auto_compaction_threshold_and_clear_puts_it_back()
 }
 
 #[test]
+fn repo_add_refuses_a_threshold_the_harness_cannot_take_and_writes_nothing() {
+    let dir = std::env::temp_dir().join(format!(
+        "ssf-repo-add-compaction-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(&path, "").unwrap();
+    let add = |auto_compaction_tokens: Option<u64>| RepoCommand::Add {
+        name: "o/r".into(),
+        harness: "claude".into(),
+        driver: None,
+        path: None,
+        clone_url: None,
+        base_branch: None,
+        command: None,
+        model: Some("opus".into()),
+        effort: Some("high".into()),
+        auto_compaction_tokens,
+        instructions: None,
+        prompt_file: None,
+        allowed_users: None,
+        accept_anyone_risk: false,
+        event_comments: None,
+    };
+    // Written, it would be a config no load accepts: the daemon and every
+    // `ssf` command read the file the same way, so nothing could repair it.
+    let err = repo_at(&path, add(Some(50_000))).unwrap_err();
+    assert!(format!("{err:#}").contains("100000"), "{err:#}");
+    assert!(
+        Config::load_from(&path).unwrap().repos.is_empty(),
+        "nothing was written"
+    );
+    repo_at(&path, add(Some(150_000))).unwrap();
+    assert_eq!(
+        Config::load_from(&path).unwrap().repos[0].auto_compaction_tokens,
+        Some(150_000)
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn live_sessions_are_the_active_items_with_a_workspace() {
     let mut state = state::State::default();
     let mut rs = state::RepoState::default();

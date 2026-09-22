@@ -116,6 +116,15 @@ impl Rpc {
     }
 }
 
+/// The configuration overrides ssf itself puts on a codex command line, and
+/// the only ones this channel accepts: an override ssf did not write is one it
+/// has not checked against the codex that will run, and a native delivery is
+/// not the place to find out what it does. Both of these are ssf's own — the
+/// effort level (`models::codex_effort`) and the context-compaction threshold
+/// (`models::codex_compaction`), which is appended to an operator's
+/// `repo.command` too, so a native-delivery launcher carries it.
+const VERIFIED_OVERRIDES: &[&str] = &["model_reasoning_effort=", "model_auto_compact_token_limit="];
+
 /// None is a standalone TUI: terminal fallback remains available. An explicit
 /// remote launch that fails validation is held, never silently pasted into.
 fn endpoint(info: &Value) -> Result<Option<(PathBuf, PathBuf)>> {
@@ -180,7 +189,8 @@ fn endpoint(info: &Value) -> Result<Option<(PathBuf, PathBuf)>> {
             } else {
                 None
             };
-            if override_value.is_some_and(|v| !v.starts_with("model_reasoning_effort=")) {
+            if override_value.is_some_and(|v| !VERIFIED_OVERRIDES.iter().any(|k| v.starts_with(k)))
+            {
                 bail!("Codex native delivery refuses unverified configuration overrides");
             }
         }
@@ -493,12 +503,39 @@ mod tests {
         let (sandbox, socket, _, _) = fixture();
         let good = info(&socket, sandbox.root());
         assert!(endpoint(&good).unwrap().is_some());
+        // The overrides ssf itself appends are the ones this channel accepts:
+        // the effort level, and the context-compaction threshold that goes on
+        // every codex command, a native-delivery launcher included.
+        for flag in [
+            "-cmodel_reasoning_effort=high",
+            "-cmodel_auto_compact_token_limit=300000",
+            "--config=model_auto_compact_token_limit=300000",
+        ] {
+            let mut changed = good.clone();
+            changed["process_info"]["foreground_processes"][0]["argv"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!(flag));
+            assert!(endpoint(&changed).unwrap().is_some(), "{flag}");
+        }
+        // The form ssf actually emits: `-c` and its value as separate
+        // arguments, the way `models::codex_compaction` writes them.
+        let mut changed = good.clone();
+        changed["process_info"]["foreground_processes"][0]["argv"]
+            .as_array_mut()
+            .unwrap()
+            .extend([json!("-c"), json!("model_auto_compact_token_limit=300000")]);
+        assert!(endpoint(&changed).unwrap().is_some(), "-c <key>=<value>");
         for flag in [
             "--sandbox=workspace-write",
             "-sread-only",
             "--profile=other",
             "--config=approval_policy=on-request",
             "-capproval_policy=on-request",
+            // A key ssf does not write, and one that only starts with a key
+            // ssf writes.
+            "-cmodel_context_window=200000",
+            "-cmodel_auto_compact_token_limit_scope=body_after_prefix",
         ] {
             let mut changed = good.clone();
             changed["process_info"]["foreground_processes"][0]["argv"]

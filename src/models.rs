@@ -450,15 +450,34 @@ fn auto_compaction(harness: &str) -> Option<&'static Compaction> {
         .map(|(_, c)| c)
 }
 
+/// The counts `harness` takes, when it caps them: Claude Code refuses to start
+/// outside its own window.
+fn auto_compaction_range(harness: &str) -> Option<std::ops::RangeInclusive<u64>> {
+    match auto_compaction(harness) {
+        Some(Compaction::Args { tokens, .. }) => tokens.clone(),
+        _ => None,
+    }
+}
+
 /// Arguments that give `harness` the context-compaction threshold `tokens`:
-/// none for `0` (leave the harness's own default alone), and none for a
-/// harness that takes it another way.
+/// none for `0` (leave the harness's own default alone), none for a harness
+/// that takes it another way, and none for a count outside the range the
+/// harness accepts — dropped the way `launch_args` drops an effort level the
+/// harness does not take. Every boundary that writes or loads a count has
+/// already refused such a value out loud (`validate_auto_compaction`); the one
+/// that can still reach a launch is a stored per-item override written before
+/// the count was checked, and a session that starts on its harness's own
+/// default is worth more than one that never comes up.
 pub fn auto_compaction_args(harness: &str, tokens: u64) -> Vec<String> {
     if tokens == 0 {
         return Vec::new();
     }
     match auto_compaction(harness) {
-        Some(Compaction::Args { args, .. }) => args(tokens),
+        Some(Compaction::Args { args, .. })
+            if auto_compaction_range(harness).is_none_or(|r| r.contains(&tokens)) =>
+        {
+            args(tokens)
+        }
         _ => Vec::new(),
     }
 }
@@ -471,10 +490,7 @@ pub fn validate_auto_compaction(harness: &str, tokens: u64) -> Result<()> {
     if tokens == 0 {
         return Ok(());
     }
-    if let Some(Compaction::Args {
-        tokens: Some(range),
-        ..
-    }) = auto_compaction(harness)
+    if let Some(range) = auto_compaction_range(harness)
         && !range.contains(&tokens)
     {
         bail!(
@@ -975,6 +991,18 @@ mod tests {
         // 0 is "leave the harness's own default alone".
         assert!(auto_compaction_args("claude", 0).is_empty());
         assert!(auto_compaction_args("codex", 0).is_empty());
+        // A count the harness refuses is dropped rather than shelled into a
+        // launch that would not come up: this is the one way a count that was
+        // never checked can still reach a launch, a stored per-item override
+        // written before it was checked.
+        assert!(auto_compaction_args("claude", 50_000).is_empty());
+        assert!(auto_compaction_args("claude", 1_000_001).is_empty());
+        assert_eq!(
+            apply_to_command("claude", "claude", Some("opus"), None, 50_000),
+            "claude --model opus"
+        );
+        // Codex caps nothing of its own, so any count reaches it.
+        assert!(!auto_compaction_args("codex", 50_000).is_empty());
     }
 
     /// Claude Code refuses to start outside its own window, so a count it

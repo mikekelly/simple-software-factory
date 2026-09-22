@@ -82,6 +82,12 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 cfg.repos.push(entry);
                 "Added"
             };
+            // What the config has to satisfy, checked before it is written:
+            // the file loaded, so this refuses nothing but the entry just
+            // added, and a value no load accepts would otherwise stop the
+            // daemon and every `ssf` command until someone edited the TOML by
+            // hand.
+            cfg.validate()?;
             cfg.save_to(config_file)?;
             println!("{action} {name} in {}", config_file.display());
             if action == "Added" {
