@@ -56,7 +56,13 @@
   line-height: 1.5; text-align: left; color: var(--fgColor-default, #1f2328); }
 .ssf-title { margin: 0 0 8px; font-size: 12px; font-weight: 600;
   color: var(--fgColor-muted, #59636e); }
-.ssf-popover { width: ${POPOVER_WIDTH}px; padding: 10px 12px; border-radius: 8px;
+.ssf-popover { box-sizing: border-box; width: min(${POPOVER_WIDTH}px, calc(100vw - 16px));
+  padding: 10px 12px; border-radius: 8px;
+  /* A card's message can be thousands of characters, and expanding it must not
+     grow the popover past the viewport, or its own less toggle and Details
+     would be out of reach. Border-box, so this is the whole box and
+     placePopover's clamp always finds room for it. */
+  max-height: calc(100vh - 16px); overflow: auto;
   border: 1px solid var(--borderColor-default, #d1d9e0);
   background: var(--bgColor-default, #ffffff);
   box-shadow: 0 8px 24px rgba(31, 35, 40, 0.2); }
@@ -149,6 +155,15 @@
   /// of each kind wins, per the layout decided on #408.
   const CLOSING_REF = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)/gi;
   const REFS_REF = /\b(?:refs?|references?)\s*:?\s+#(\d+)/gi;
+
+  /// The pages that carry chips: the issue and pull request lists, search
+  /// results, and project boards. Anywhere else gets nothing, however many issue
+  /// links the page happens to contain -- including the new-issue form, which
+  /// lives under `/issues` but is not a list of items.
+  function chipPage(path) {
+    if (/\/(?:issues|pulls)\/new(?:\/|$)/.test(path)) return false;
+    return CHIP_PATHS.some((pattern) => pattern.test(path));
+  }
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -267,10 +282,11 @@
     }
   }
 
-  /// One icon per state: a solid disc carrying a white glyph for the four
-  /// states that have a glyph, a plain grey disc for `no agent`, and -- when the
-  /// snapshot behind it is stale -- the same shape outlined and dashed instead
-  /// of filled, so a stale snapshot can never render as a working agent.
+  /// One icon per state: a solid disc carrying a white glyph for the three
+  /// states that have a glyph (waiting, done, problem; Working and No agent are
+  /// the bare disc), and -- when the snapshot behind it is stale -- the same
+  /// shape outlined and dashed instead of filled, so a stale snapshot can never
+  /// render as a working agent.
   function icon(kind, stale) {
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 12 12");
@@ -692,7 +708,8 @@
     placePopover();
   }
 
-  /// Keep the popover next to its chip, inside the viewport.
+  /// Keep the popover next to its chip, inside the viewport on both axes. The
+  /// CSS bounds its height to the viewport, so the clamp always has room.
   function placePopover() {
     if (!popover) return;
     const { host } = popover.entry;
@@ -700,10 +717,10 @@
     const box = host.getBoundingClientRect();
     const left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8));
     const below = anchor.bottom + 6;
-    const top =
-      below + box.height + 8 > innerHeight
-        ? Math.max(8, anchor.top - box.height - 6)
-        : below;
+    const preferred = below + box.height + 8 > innerHeight
+      ? anchor.top - box.height - 6
+      : below;
+    const top = Math.max(8, Math.min(preferred, innerHeight - box.height - 8));
     host.style.left = `${left}px`;
     host.style.top = `${top}px`;
   }
@@ -740,7 +757,7 @@
             wanted.set(`card:${key}`, { matches, unreadable, target, anchor: null });
           }
         }
-      } else if (CHIP_PATHS.some((pattern) => pattern.test(location.pathname))) {
+      } else if (chipPage(location.pathname)) {
         for (const [key, anchor] of listAnchors()) {
           const matches = matchesFor(key);
           if (matches.length) wanted.set(`chip:${key}`, { matches, anchor });
