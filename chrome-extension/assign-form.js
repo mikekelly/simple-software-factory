@@ -191,12 +191,15 @@
     if (!state.url || !harness || state.modelsFor === harness) return;
     // A harness that takes no model setting has nothing to list, and the
     // factory answers 400 for one. The picker already offers only its default,
-    // so settle here rather than ask on every render.
+    // so settle here rather than ask on every render -- and settle the pending
+    // flag too, or a listing still in the air for the harness the form just
+    // left would leave Assign disabled for good.
     const chosen = (state.agents ?? []).find((agent) => agent.id === harness);
     if (chosen && !chosen.takesModel) {
       state.models = [];
       state.modelsFor = harness;
       state.modelsError = null;
+      state.modelsPending = false;
       return;
     }
     const url = state.url;
