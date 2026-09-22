@@ -107,6 +107,10 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),
             },
+            Request::Message { item, text } => match self.message(&item, &text).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::refused(&e),
+            },
         }
     }
 
@@ -268,13 +272,17 @@ impl Engine {
 
     /// The session (`owner/repo#N`, normalised to the owning session)
     /// behind a session id the CLI gave. It must be one ssf has a workspace
-    /// for.
+    /// for. A reference ssf cannot read at all is the input's own fault
+    /// ([`locate`]); one that reads but names no session ssf holds is the
+    /// item's state, which is what the web API answers `409` for.
     pub(super) fn known_session(&self, id: &str) -> Result<(RepoConfig, u64, String)> {
         let (repo, n) = self.locate(id)?;
         let number = self.owner_of(&repo, n);
         let known = self.peek(&repo, number).is_some_and(|s| s.seeded);
         if !known {
-            anyhow::bail!("{id} is not an agent session ssf knows (see `ssf peers --all`)");
+            anyhow::bail!(Refused::conflict(format!(
+                "{id} is not an agent session ssf knows (see `ssf peers --all`)"
+            )));
         }
         let id = session_id(&repo.name, number);
         Ok((repo, number, id))

@@ -958,5 +958,6 @@ mod invitations;
 mod listings;
 #[path = "login.rs"]
 mod login_tests;
+mod messages;
 mod releases;
 mod state;

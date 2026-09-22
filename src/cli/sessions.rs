@@ -322,6 +322,23 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
     Ok(())
 }
 
+/// What a release refused for the workspace's own state says: the daemon's
+/// checks, one per line, and its own invitation to commit and push. Shared
+/// with the web API's `POST api/release`, so the refusal a person reads in the
+/// overlay is the one `ssf release` prints.
+pub fn release_refused_text(session: &str, path: &str, problems: &[&str]) -> String {
+    let mut msg = format!(
+        "not released: the workspace of {session} ({path}) holds work that is not on origin:\n"
+    );
+    for p in problems {
+        msg.push_str(&format!("  - {p}\n"));
+    }
+    msg.push_str(
+        "nothing was removed. Commit, push and try again; a kept workspace costs nothing.",
+    );
+    msg
+}
+
 pub(super) async fn release(
     item: Option<&str>,
     as_: Option<&str>,
@@ -359,16 +376,7 @@ pub(super) async fn release(
         .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
         .unwrap_or_default();
     if v.get("released").and_then(|b| b.as_bool()) != Some(true) {
-        let mut msg = format!(
-            "not released: the workspace of {session} ({path}) holds work that is not on origin:\n"
-        );
-        for p in &problems {
-            msg.push_str(&format!("  - {p}\n"));
-        }
-        msg.push_str(
-            "nothing was removed. Commit, push and try again; a kept workspace costs nothing.",
-        );
-        bail!("{msg}");
+        bail!("{}", release_refused_text(session, path, &problems));
     }
     if v.get("already_gone").and_then(|b| b.as_bool()) == Some(true) {
         println!("{session}: the workspace was already gone; recorded as released.");

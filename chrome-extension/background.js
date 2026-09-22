@@ -13,10 +13,11 @@
 // is stopped anyway, the next port event starts it again and the module body
 // below rebuilds every stream. Nothing here depends on running continuously.
 //
-// This worker also carries every write. A factory accepts one only from an
-// extension origin (docs/dashboard.md), and a content script running on
-// github.com has none, so `api/assign` and the assign form's listings are sent
-// from here; the same rule is why the read streams live here too.
+// This worker also carries every write -- `api/assign`, `api/handover`,
+// `api/release`, `api/message` -- and the listings the forms' pickers need. A
+// factory accepts a write only from an extension origin (docs/dashboard.md), and
+// a content script running on github.com has none, so these are sent from here;
+// the same rule is why the read streams live here too.
 import { endpoint, factoryUrl, factoryLabel, originPattern } from "./factory-url.js";
 
 const BACKOFF_MIN_MS = 1000;
@@ -228,9 +229,11 @@ async function get(entry, path) {
   return { ok: true, body: parsed ?? text };
 }
 
-/// `api/assign` for the item the content script names: the same write `ssf
-/// assign` makes, with the factory chosen by the caller.
-async function assign(message) {
+/// One write to one factory, with that factory's own switch applied. Every
+/// write goes through here and none of them is ever sent from a content script:
+/// the server accepts a write only from an extension origin, and a request from
+/// a github.com page would carry `https://github.com` and be refused.
+async function writeTo(message, path, body) {
   const entry = factories.get(message.url);
   if (!entry) return { ok: false, error: "that factory is no longer configured" };
   if (!entry.writes) {
@@ -239,6 +242,12 @@ async function assign(message) {
       error: "writes are turned off for this factory on the extension's options page",
     };
   }
+  return post(entry, path, body);
+}
+
+/// `api/assign` for the item the content script names: the same write `ssf
+/// assign` makes, with the factory chosen by the caller.
+async function assign(message) {
   const body = {
     repo: message.repo,
     number: message.number,
@@ -248,7 +257,37 @@ async function assign(message) {
   // unset picker sends no key at all rather than an empty one.
   if (message.model) body.model = message.model;
   if (message.effort) body.effort = message.effort;
-  return post(entry, "assign", body);
+  return writeTo(message, "assign", body);
+}
+
+/// `api/handover`: the same write `ssf handover <item> --harness …` makes, with
+/// the note as the summary the new session reads first.
+async function handover(message) {
+  const body = {
+    repo: message.repo,
+    number: message.number,
+    harness: message.harness,
+  };
+  if (message.model) body.model = message.model;
+  if (message.effort) body.effort = message.effort;
+  if (message.note) body.note = message.note;
+  return writeTo(message, "handover", body);
+}
+
+/// `api/release`: `ssf release` for the item, never forced -- the workspace
+/// checks are the whole point of doing it from a browser.
+async function release(message) {
+  return writeTo(message, "release", { repo: message.repo, number: message.number });
+}
+
+/// `api/message`: the text reaches the item's agent the way the item's own
+/// activity does. Named apart from the `message` argument every handler takes.
+async function sendMessage(message) {
+  return writeTo(message, "message", {
+    repo: message.repo,
+    number: message.number,
+    text: message.text,
+  });
 }
 
 async function listing(message, path) {
@@ -261,6 +300,9 @@ async function listing(message, path) {
 /// else is routed, and the content script holds no factory fetch of its own.
 const HANDLERS = {
   "ssf:assign": assign,
+  "ssf:handover": handover,
+  "ssf:release": release,
+  "ssf:message": sendMessage,
   "ssf:agents": (message) => listing(message, "agents"),
   "ssf:models": (message) =>
     listing(message, `models/${encodeURIComponent(message.harness)}`),
