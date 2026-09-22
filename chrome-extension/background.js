@@ -23,6 +23,10 @@ const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 60000;
 // Three missed 25s keepalives: the stream is gone even though nothing errored.
 const STALE_AFTER_MS = 90000;
+// A write and a listing are answered or given up on. A factory that accepts the
+// connection and then never answers must not leave the form on "Assigning…"
+// with nothing the person can do about it; the reply is an ordinary error.
+const WRITE_TIMEOUT_MS = 30000;
 
 /// url -> entry, one per configured factory.
 const factories = new Map();
@@ -158,6 +162,15 @@ function errorBody(parsed, text, status) {
   return `the factory answered ${status} with no error text`;
 }
 
+/// Why a request did not get an answer: a factory that is not there at all, and
+/// one that took the request and went quiet are different problems.
+function reachError(error, entry) {
+  if (error?.name === "TimeoutError") {
+    return `the factory did not answer within ${WRITE_TIMEOUT_MS / 1000} seconds (${entry.url})`;
+  }
+  return `could not reach the factory (${error})`;
+}
+
 /// A write to one factory. Sent from here and never from a content script: the
 /// server accepts a write only from an extension origin, and a request from a
 /// github.com page would carry `https://github.com` and be refused.
@@ -171,9 +184,10 @@ async function post(entry, path, body) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WRITE_TIMEOUT_MS),
     });
   } catch (error) {
-    return { ok: false, error: `could not reach the factory (${error})` };
+    return { ok: false, error: reachError(error, entry) };
   }
   const text = await response.text();
   let parsed = null;
@@ -193,9 +207,11 @@ async function post(entry, path, body) {
 async function get(entry, path) {
   let response;
   try {
-    response = await fetch(endpoint(entry.url, path));
+    response = await fetch(endpoint(entry.url, path), {
+      signal: AbortSignal.timeout(WRITE_TIMEOUT_MS),
+    });
   } catch (error) {
-    return { ok: false, error: `could not reach the factory (${error})` };
+    return { ok: false, error: reachError(error, entry) };
   }
   const text = await response.text();
   let parsed = null;

@@ -136,6 +136,9 @@ function row(entry) {
         : `Chrome did not allow ${pattern}; the overlay will not read this factory until it does.`,
     );
     await refresh();
+    // Everything typed on the page survives the re-render, the Writes switch
+    // included: it is drawn from `entries`, which only `collect` refreshes.
+    entries = collect().list;
     render();
   });
 
@@ -246,10 +249,12 @@ save.addEventListener("click", async () => {
 
 chrome.permissions.onAdded.addListener(async () => {
   await refresh();
+  entries = collect().list;
   render();
 });
 chrome.permissions.onRemoved.addListener(async () => {
   await refresh();
+  entries = collect().list;
   render();
 });
 

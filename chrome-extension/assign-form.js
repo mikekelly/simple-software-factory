@@ -29,6 +29,9 @@
   /// How long "Assigning…" waits for a snapshot that shows the item with an
   /// agent before it shows what the factory said instead.
   const TIMEOUT_MS = 30000;
+  /// How many items' form state the module keeps. A person visits a handful of
+  /// items in a session; the rest are dead weight.
+  const REMEMBER_ITEMS = 16;
 
   const STYLE = `
 .ssf-assign { display: flex; flex-direction: column; gap: 6px; min-width: 0;
@@ -189,7 +192,10 @@
     const url = state.url;
     state.modelsPending = true;
     ask({ type: "ssf:models", url, harness }).then((reply) => {
-      if (state.url !== url) return;
+      // An answer for the factory or the harness the form has since left is
+      // not an answer: applying it would offer one harness's model ids under
+      // another's name.
+      if (state.url !== url || state.harness !== harness) return;
       state.modelsPending = false;
       state.modelsFor = harness;
       if (reply?.ok) {
@@ -367,6 +373,10 @@
   }
 
   function submit(state) {
+    // One write per intent. The button stays live until content.js redraws
+    // (its scheduler is debounced), so a double click would otherwise post
+    // twice and let the two answers race over the state.
+    if (state.busy || state.pending) return;
     state.error = null;
     state.result = null;
     // Drawn at once rather than after the round trip; `pending` starts only
@@ -400,13 +410,28 @@
     });
   }
 
+  /// Stop remembering an item: its wait, if one is in flight, is the module's
+  /// only promise that anything still cares, and the timer goes with it.
+  function forget(key) {
+    const state = forms.get(key);
+    if (!state) return;
+    if (state.pending) clearTimeout(state.pending.timer);
+    forms.delete(key);
+  }
+
   /// The node to draw for one item, in whatever state the form is now, or
   /// `null` when nothing may be drawn for it: no factory that watches this
   /// item accepts writes.
   function render({ factories, repo, number }) {
     const key = `${repo}#${number}`;
     const state = forms.get(key) ?? fresh(repo, number);
+    // content.js draws one item at a time and rebuilds its nodes on every
+    // GitHub mutation, so this map is the only thing that outlives a page. A
+    // session keeps the items it has visited, most recent last, and forgets the
+    // rest: their factories, agents and models are not coming back.
+    forms.delete(key);
     forms.set(key, state);
+    while (forms.size > REMEMBER_ITEMS) forget(forms.keys().next().value);
     const choices = contenders(factories);
     if (!choices.length) return null;
     chooseFactory(state, choices, choices.some((one) => one.url === state.url) ? state.url : choices[0].url);
