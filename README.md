@@ -1,52 +1,60 @@
-# Simple Software Factory (ssf)
+# Simple Software Factory
 
-Run a team of coding agents from your GitHub issues.
+[![CI](https://github.com/mikekelly/simple-software-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/mikekelly/simple-software-factory/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/mikekelly/simple-software-factory)](https://github.com/mikekelly/simple-software-factory/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Linux](https://img.shields.io/badge/platform-Linux-informational)](docs/setup.md)
 
-Write down what you want as an issue, assign it to your bot, and get on
-with something else. An agent picks it up, asks you what it needs to know
-on the issue, plans the work, breaks it up, and drives it through to merged
-pull requests. Several agents can work at once, on the same project, talking
-to each other on GitHub as colleagues would. You are pulled in only for the
-things that need a person: what to build, the calls that matter, the merge.
+**Run a team of coding agents from your GitHub issues.** Assign an issue to
+your bot and a dedicated agent picks it up in its own terminal and its own
+worktree, plans the work with you on the issue, delivers it as pull
+requests, and coordinates with the other agents by commenting on their
+issues. GitHub is the interface; your terminal is the back door.
 
-ssf runs the factory on a machine you control: in a microVM on your own
-computer, or on a server you rent. It needs Linux, `gh`, a bot GitHub
-account, [herdr](https://herdr.dev/) (the terminal multiplexer that holds
-the workspaces) and any of the coding agents you already have: Claude Code,
-Codex, Gemini, Copilot, Grok, OpenCode, Pi, Oh My Pi or Crush. macOS is
-next.
+- **Multiplayer by default.** Your whole team, and every agent, in the same
+  issue threads, with rich Markdown, @mentions and notifications.
+- **Watchable and steerable.** Every agent is a real terminal session you
+  can shell into, read, and take over like any coding session of your own.
+- **Self-hosted.** A microVM on your machine or a server you rent; the
+  agents you already pay for; nothing in anyone else's cloud.
 
 ## Why
 
-Coding agents are good at working an issue. Managing them is the problem:
-one chat per agent, each waiting on you, with the outcome copied by hand
-into the place the work is actually tracked. Tools that fix that put the
-agents in their cloud and the conversation in their product.
+Coding agents are good at working an issue. Managing several is the
+problem: one chat window per agent, each waiting on you, and the outcome
+copied by hand into the place the work is actually tracked. The tools that
+promise to fix that put the agents in their cloud and the conversation in
+their product, where nobody else on your team can see it.
 
-ssf starts from the other end. GitHub is already where work is described,
-discussed, reviewed and merged, so that is where the agents live: the issue
-is the unit of work, the assignment is the trigger, the comment thread is
-the conversation, the pull request is the deliverable and the board is the
-status. What that buys you:
+Your team already has a place where work is described, discussed, reviewed
+and merged, and it is already multiplayer: GitHub. ssf puts the agents
+there. The issue is the unit of work, the assignment is the trigger, the
+comment thread is the conversation, the pull request is the deliverable and
+the board is the status. A person is pulled in only where a person is
+needed: to say what to build, to make the calls the agents cannot, and to
+merge. Everything else, plan, decisions, review and result, is on the
+record where you would have looked anyway.
 
-- **Parallel work that coordinates itself.** Several sessions on one
-  repository at once, talking on each other's issues, with a person pulled
-  in only where a decision is theirs.
-- **The right model for each job.** Pick the harness, model and effort per
-  issue (`ssf assign`), hand an item to another mid-flight (`ssf handover`),
-  and let your `SSF.md` send deliberation to a strong model and execution to
-  a cheap one.
-- **A record that is already where you look.** Every plan, decision, review
-  and result is on the issue or pull request, with a byline saying which
-  session wrote it. No vendor dashboard, no transcript to export.
-- **A boundary you can see.** In the microVM the agents never touch your
-  home directory or keyring; the bot's credentials stay on the guest.
-- **Nothing to babysit.** Sessions survive terminal loss, daemon restarts
-  and reboots, and are told when the item closes to push and tidy up.
+And because every agent is an ordinary terminal session in a git worktree,
+the escape hatch is always open. Shell into the factory, open the agent's
+terminal, read what it is doing, type to it, or finish the job yourself.
 
-The factory is small enough to read: a daemon that polls GitHub, a terminal
-per item, and one file in your repository saying how its sessions should
-behave.
+## Key concepts
+
+| Concept | What it means in ssf |
+|---|---|
+| **GitHub is the GUI** | People and agents collaborate in issue and pull request comments: rich content, user tagging, notifications, reviews. No second interface to learn. |
+| **The issue is the unit of work** | Every task is an issue. Assign it to the bot and it is being worked; close it and the work is wrapped up. Boards say where it stands. |
+| **One long-lived agent per issue** | Each issue gets its own agent session in a terminal, from assignment until close, and every comment, review, label and push on the issue is delivered into it. |
+| **Agents talk on GitHub** | Sessions that depend on each other comment on each other's issues. That is the only channel between them, so the record is complete. |
+| **One worktree per agent** | Each session works in its own git worktree on its own branch, so parallel sessions on one repository never collide. |
+| **Terminals you can enter** | Sessions run in [herdr](https://herdr.dev/), a terminal multiplexer. Attach to see what an agent is doing, steer it, or take over. |
+| **Your repository sets the rules** | An `SSF.md` at the root tells sessions how to own work, communicate, review and hand off. Build and test policy stays in `AGENTS.md`. |
+
+ssf runs on Linux, in a microVM on your own computer or on a server you
+rent, with `gh`, a bot GitHub account, herdr and any of the coding agents you
+already have: Claude Code, Codex, Gemini, Copilot, Grok, OpenCode, Pi,
+Oh My Pi or Crush. macOS is next.
 
 ## How a feature gets built
 
@@ -84,8 +92,9 @@ Choose the installation for the machine:
 
 Download the package from
 [GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases)
-and install it with the package manager, which resolves `gh` and, on
-Omarchy, `herdr` (on Arch install `herdr` from the AUR first; on Debian and
+(Arch family including [Omarchy](https://omarchy.org/), Debian family
+including Ubuntu) and install it with the package manager, which resolves
+`gh` and, on Omarchy, `herdr` (on Arch install `herdr` from the AUR first; on Debian and
 Ubuntu install it by hand for host mode, and Debian 12 needs GitHub's apt
 repository for a recent `gh`):
 
@@ -143,27 +152,12 @@ and resumes the same conversation, including after a reboot. When the item is
 closed the agent is told to push what is worth keeping and, only then, to
 release its workspace ([Under the hood](docs/internals.md)).
 
-Packages cover the Arch family (including [Omarchy](https://omarchy.org/))
-and the Debian family (including Ubuntu).
-
-- **One agent per issue or pull request.** Each gets its own workspace (a
-  git worktree on its own branch, in herdr) and its own session, from the
-  moment the bot is assigned, @mentioned or asked to review until the item
-  is closed. An agent is told the issue, everything that has happened on it,
-  the boards it is on and the operating guidance in your repository's
-  `SSF.md`: how it owns and communicates work, who to ask, what the columns
-  mean, who merges ([Writing SSF.md](docs/ssf-md.md)). Build and test
-  policy stays in `AGENTS.md`, as for any agent.
-- **Everything is on GitHub.** Agents talk to people, and to each other,
-  through issue and pull request comments. Every post carries the byline of
-  the session that made it, and the item is the only channel between
-  sessions: nothing reaches an agent off the record. Watching, nudging or
-  rescuing a session is done at its terminal through herdr.
-- **No hosted service.** The daemon polls GitHub, creates workspaces
-  and starts the agents you have installed, with the bot's credentials, so
-  what the agents do on GitHub is done as the bot. Only people you allow
-  can drive it: by default the repository's collaborators with push access
-  ([Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
+Only people you allow can drive it: by default the repository's
+collaborators with push access, or a list you set
+([Who may drive the factory](docs/configuration.md#who-may-drive-the-factory)).
+Every post an agent makes is made as the bot, with a byline naming its
+session, harness, model and effort
+([Identity and bylines](docs/identity-and-bylines.md)).
 
 ## Everyday commands
 
