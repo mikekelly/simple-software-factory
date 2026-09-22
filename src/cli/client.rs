@@ -24,6 +24,14 @@ pub async fn client_main() -> Result<()> {
         return super::skill::print(topic);
     }
     let catalog = server_catalog::Catalog::load()?;
+    // The factory this process belongs to, when the daemon named one in the
+    // environment: a session's pane inherits it. `SSF_CONFIG_DIR` there is the
+    // factory's own directory, which holds no `servers.toml`, so the catalog
+    // cannot answer from it -- and answering for the singleton instead makes
+    // the service check look at `ssf.service` rather than at the instance unit
+    // the factory runs as, which a healthy factory reports as a stopped
+    // service (#428).
+    let inherited = server_catalog::selected_target_identity()?;
     let routes = if matches!(cli.command, Command::Dashboard) {
         catalog.resolve_dashboard(servers)?
     } else {
@@ -56,17 +64,7 @@ pub async fn client_main() -> Result<()> {
             routes
                 .into_iter()
                 .map(|route| dashboard::ServerRoute {
-                    identity: route
-                        .name
-                        .as_ref()
-                        .map(|name| server_catalog::TargetIdentity {
-                            name: name.clone(),
-                            transport: catalog
-                                .get(name)
-                                .expect("a resolved route")
-                                .transport()
-                                .into(),
-                        }),
+                    identity: route_identity(&route, &catalog, inherited.as_ref()),
                     label: route.name,
                     destination: route.destination,
                     local_context: route.local_context,
@@ -83,7 +81,7 @@ pub async fn client_main() -> Result<()> {
     };
     let doctor = matches!(cli.command, Command::Doctor);
     if doctor {
-        return run_doctor_client(route, &catalog, &args);
+        return run_doctor_client(route, &catalog, inherited.as_ref(), &args);
     }
 
     let err = match &route.destination {
@@ -103,14 +101,10 @@ pub async fn client_main() -> Result<()> {
                 .env_remove("SSF_SERVER")
                 .env_remove(server_catalog::SELECTED_VM_ENV)
                 .env_remove(server_catalog::SELECTED_TARGET_ENV);
-            if let Some(name) = &route.name {
-                let transport = catalog.get(name).expect("a resolved route").transport();
+            if let Some(identity) = route_identity(route, &catalog, inherited.as_ref()) {
                 command.env(
                     server_catalog::SELECTED_TARGET_ENV,
-                    serde_json::to_string(&server_catalog::TargetIdentity {
-                        name: name.clone(),
-                        transport: transport.into(),
-                    })?,
+                    serde_json::to_string(&identity)?,
                 );
             }
             if let Some(context) = &route.local_context {
@@ -133,23 +127,13 @@ pub async fn client_main() -> Result<()> {
 fn run_doctor_client(
     route: &server_catalog::Route,
     catalog: &server_catalog::Catalog,
+    inherited: Option<&server_catalog::TargetIdentity>,
     args: &[String],
 ) -> Result<()> {
     let client_version =
         std::env::var(CLIENT_VERSION_ENV).unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
     let already_reported = std::env::var_os(VERSION_REPORTED_ENV).is_some();
-    let identity = route
-        .name
-        .as_ref()
-        .map(|name| server_catalog::TargetIdentity {
-            name: name.clone(),
-            transport: route
-                .name
-                .as_deref()
-                .and_then(|name| catalog.get(name))
-                .map_or("ssh", server_catalog::Target::transport)
-                .into(),
-        });
+    let identity = route_identity(route, catalog, inherited);
     // An SSH catalog name belongs to this client. Sending it to the remote
     // host would make doctor inspect an unrelated `ssf@NAME` service there.
     let endpoint_identity = if route.destination.is_none() {
@@ -336,6 +320,36 @@ fn refuse_unsafe_global_command(route: &server_catalog::Route, command: &Command
         );
     }
     Ok(())
+}
+
+/// The factory a route answers for, as the environment the command it starts
+/// runs with: the server the catalog resolved, or — for a local route that
+/// names none, with no `--server` of its own — the factory this process
+/// inherited from the daemon. A session's pane belongs to a factory it cannot
+/// look up in the client's catalog (`SSF_CONFIG_DIR` there is the factory's
+/// own directory, which holds no `servers.toml`), and a command run there has
+/// to answer for it: the service check names the instance unit the factory
+/// runs as (`ssf@<target>.service`), so a pane that fell back to the singleton
+/// reported a running factory as a stopped service (#428).
+///
+/// A route with a destination answers for another host, whose own environment
+/// decides, so it gets nothing from here.
+fn route_identity(
+    route: &server_catalog::Route,
+    catalog: &server_catalog::Catalog,
+    inherited: Option<&server_catalog::TargetIdentity>,
+) -> Option<server_catalog::TargetIdentity> {
+    match route.name.as_deref() {
+        Some(name) => Some(server_catalog::TargetIdentity {
+            name: name.to_owned(),
+            transport: catalog
+                .get(name)
+                .map_or("ssh", server_catalog::Target::transport)
+                .into(),
+        }),
+        None if route.destination.is_none() => inherited.cloned(),
+        None => None,
+    }
 }
 
 fn has_server_argument(args: &[String]) -> bool {

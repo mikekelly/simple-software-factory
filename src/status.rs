@@ -717,7 +717,7 @@ fn join(
             .map(|w| w.path.clone())
             .or_else(|| item.worktree_path.clone()),
         branch: ws
-            .and_then(|w| w.branch.clone())
+            .and_then(|w| w.branch.as_deref().map(strip_ref))
             .or_else(|| item.branch.as_deref().map(strip_ref)),
         agent_session_id: item.agent_session_id.clone(),
         prompts_sent: item.prompts_sent,
@@ -1046,8 +1046,22 @@ fn issue(row: &Value, fallback: &str) -> Value {
         .as_str()
         .and_then(|url| reqwest::Url::parse(url).ok())
         .filter(|url| matches!(url.scheme(), "http" | "https") && url.host_str().is_some());
+    // Whether ssf has a workspace recorded for the item, and the branch it is
+    // on when the driver reports one. A client cannot ask a factory to start a
+    // session on an item that already has a workspace -- `ssf assign` refuses
+    // it, because `ssf release` is what frees it -- so the client that offers
+    // the write has to be able to tell (#428). An item bound to another
+    // session's workspace carries that one's, which is why this is the
+    // record's own `worktree_id` and not a workspace the driver happens to
+    // report.
+    let has_workspace = row["worktree_id"].as_str().is_some_and(|id| !id.is_empty());
+    let branch = match text(row, "branch") {
+        "" => Value::Null,
+        branch => Value::String(branch.to_owned()),
+    };
     json!({"id":id,"title":row["title"].as_str().unwrap_or(id),"url":url.map(|url|url.to_string()),
-        "kind":row["kind"].as_str().unwrap_or("issue"),"active":row["active"] == true})
+        "kind":row["kind"].as_str().unwrap_or("issue"),"active":row["active"] == true,
+        "has_workspace":has_workspace,"branch":branch})
 }
 
 /// The factory a payload came from, on every card: the name the server was
@@ -1274,5 +1288,32 @@ mod dashboard_tests {
         assert!(snapshot["cards"].as_array().unwrap().is_empty());
         assert_eq!(snapshot["monitored_items"].as_array().unwrap().len(), 2);
         assert_eq!(snapshot["monitored_items"][0]["id"], "r#226");
+    }
+
+    /// A monitored item says whether ssf has a workspace for it, and on which
+    /// branch: `ssf assign` refuses an item that has one, so the client that
+    /// offers the write has to be able to tell it apart from an item that
+    /// takes one (#428).
+    #[test]
+    fn monitored_items_say_whether_a_workspace_is_in_the_way() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#1","title":"Has a workspace","owner":"r#1","active":true,
+                "agent_live":false,"agent_state":"no-agent","worktree_id":"w1",
+                "branch":"bot/issue-1-thing"},
+            {"id":"r#2","title":"Recorded, no longer in the driver","owner":"r#2","active":true,
+                "agent_live":false,"agent_state":"no-workspace","worktree_id":"w2"},
+            {"id":"r#3","title":"Free","owner":"r#3","active":true,
+                "agent_live":false,"agent_state":"unbound"}
+        ]}))
+        .unwrap();
+        let monitored = snapshot["monitored_items"].as_array().unwrap();
+        assert_eq!(monitored.len(), 3);
+        assert_eq!(monitored[0]["has_workspace"], true);
+        // The branch is the workspace's, as the model normalises it: the
+        // `refs/heads/` prefix is stripped however the driver reported it.
+        assert_eq!(monitored[0]["branch"], "bot/issue-1-thing");
+        assert_eq!(monitored[1]["has_workspace"], true);
+        assert!(monitored[1]["branch"].is_null());
+        assert_eq!(monitored[2]["has_workspace"], false);
     }
 }

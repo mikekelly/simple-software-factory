@@ -228,6 +228,17 @@ pub fn service_unit() -> String {
         .unwrap_or_else(|| SERVICE.into())
 }
 
+/// How a message names the service instance this machine runs: the target's
+/// unit on Linux (`ssf@NAME.service`), the launchd label on macOS, where a
+/// service of that unit's name does not exist.
+pub fn service_instance() -> String {
+    if is_macos() {
+        launchd_label()
+    } else {
+        service_unit()
+    }
+}
+
 fn launchd_label() -> String {
     service_target()
         .map(|target| format!("dev.ssf.server.{target}"))
@@ -749,6 +760,20 @@ mod tests {
         let here = service_hint("stop");
         assert!(
             here == service_hint_for("linux", "stop") || here == service_hint_for("macos", "stop")
+        );
+    }
+
+    #[test]
+    fn the_service_instance_is_named_for_the_platform() {
+        // A pane's inherited routing environment would make this the selected
+        // target's instance rather than the unselected default's.
+        let _sandbox = crate::config::test_support::sandbox();
+        let here = service_instance();
+        // A Mac has no unit of that name: it has Homebrew's launchd label.
+        assert_eq!(is_macos(), here == launchd_label());
+        assert!(
+            here == service_name_for("linux") || here == launchd_label(),
+            "{here}"
         );
     }
 

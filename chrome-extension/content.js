@@ -84,6 +84,10 @@
   font: inherit; font-weight: 600; color: var(--fgColor-accent, #0969da);
   cursor: pointer; }
 .ssf-also { margin-top: 6px; color: var(--fgColor-muted, #59636e); }
+/* Where the Assign agent form would be drawn, for an item the write would be
+   refused for: the same rule above the text as the form itself carries. */
+.ssf-hold { margin: 6px 0 0; padding-top: 6px;
+  border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
 .ssf-also a { color: var(--fgColor-accent, #0969da); text-decoration: none; }
 .ssf-also a:hover { text-decoration: underline; }
 .ssf-details { margin-top: 6px; }
@@ -152,6 +156,39 @@
   /// tooltip still carries the word itself.
   const PROBLEM = { label: "Problem", kind: "problem" };
 
+  /// The state icons GitHub draws for an item, and which of them mean there is
+  /// nothing left to run.
+  const ITEM_ICONS = [
+    "svg.octicon-issue-opened",
+    "svg.octicon-issue-closed",
+    "svg.octicon-git-pull-request",
+    "svg.octicon-git-pull-request-closed",
+    "svg.octicon-git-pull-request-draft",
+    "svg.octicon-git-merge",
+    "svg.octicon-check-circle",
+  ];
+  const FINISHED_ICONS = [
+    "svg.octicon-issue-closed",
+    "svg.octicon-git-pull-request-closed",
+    "svg.octicon-git-merge",
+    "svg.octicon-check-circle",
+  ];
+  /// Every mark GitHub has been seen to draw for an item's own state: the state
+  /// container the issue list carries (which reads "Status: Closed
+  /// (completed)."), the tooltip wrapper the pull request list uses ("Merged
+  /// Pull Request"), and the state icon itself, which is all the search results
+  /// carry.
+  const STATE_MARKS = [
+    '[data-testid="list-row-state-icon"]',
+    ".tooltipped[aria-label]",
+    ".tooltipped[title]",
+    ...ITEM_ICONS,
+  ].join(", ");
+  /// The state words a mark names, and the word that marks a *linked* item
+  /// instead ("1 linked issue", "1 linked PR").
+  const STATE_WORD = /^(?:status:\s*)?(open|closed|merged|draft)\b/i;
+  const LINKED_WORD = /\blinked\b/i;
+
   /// A pull request's body names the issue it delivers, and that issue's card is
   /// what a PR page shows. Closing keywords win over `Refs`, and the first match
   /// of each kind wins, per the layout decided on #408.
@@ -186,13 +223,121 @@
   /// `ssf handover` moves.
   const NO_AGENT_STATES = new Set(["unbound", "no-agent"]);
 
-  /// Whether the Assign agent form belongs on this match: the overlay's own No
-  /// agent, which is the only state a session can be started on.
-  function assignable(match) {
+  /// Whether the state the overlay draws for `match` is its own No agent, which
+  /// is the only state a session can be started on.
+  function noAgent(match) {
     return (
       match.kind === "monitored" ||
       NO_AGENT_STATES.has(String(match.item.agent_state ?? "").trim())
     );
+  }
+
+  /// An item with no agent that ssf already has a workspace for. `ssf assign`
+  /// refuses one -- `ssf release` is what frees it -- and a monitored item is
+  /// where the overlay used to meet that refusal: monitored entries carried no
+  /// workspace fact, so the form was drawn and the write came back 409 (#421,
+  /// #428). An item bound to another session's workspace carries its id, so
+  /// the record's own `worktree_id` answers for that case too.
+  function held(match) {
+    return noAgent(match) && match.item.has_workspace === true;
+  }
+
+  /// Whether the Assign agent form belongs on `match`: its own No agent, with
+  /// nothing in the way.
+  function assignable(match) {
+    return noAgent(match) && !held(match);
+  }
+
+  /// The state a mark names, where GitHub names one: its own `aria-label`,
+  /// `title` or text (the issue list's state container reads "Status: Closed
+  /// (completed)."), or the nearest ancestor's label (the older rows wrap the
+  /// icon in the words, and `1 linked issue` names a linked item's own mark).
+  /// `"linked"` when the mark is about a linked item rather than this row's own,
+  /// and `null` where nothing names one at all -- which is every search result.
+  function namedState(mark) {
+    const own = [
+      mark.getAttribute?.("aria-label"),
+      mark.getAttribute?.("title"),
+      mark.textContent,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    if (LINKED_WORD.test(own)) return "linked";
+    const word = STATE_WORD.exec(own);
+    if (word) return word[1].toLowerCase();
+    let node = mark.parentElement;
+    for (let depth = 0; node && depth < 4; depth += 1, node = node.parentElement) {
+      const name = (node.getAttribute("aria-label") ?? node.getAttribute("title") ?? "").trim();
+      if (!name) continue;
+      if (LINKED_WORD.test(name)) return "linked";
+      const named = STATE_WORD.exec(name);
+      if (named) return named[1].toLowerCase();
+    }
+    return null;
+  }
+
+  /// Whether a state mark says the item is finished: by the state it names,
+  /// where the row names one, and by the icon it is where it does not.
+  function finishedMark(mark) {
+    const state = namedState(mark);
+    if (state) return state === "closed" || state === "merged";
+    return FINISHED_ICONS.some((icon) => mark.matches(icon));
+  }
+
+  /// The state marks inside `root`, outermost first: the marks that stand for
+  /// an item's own state. A mark inside one already kept is the same item's
+  /// state drawn twice (the issue list's state container and the icon in it),
+  /// and is counted once; a linked item's mark is a reference to another item
+  /// and a comment count is not a state, so neither is one.
+  function stateMarks(root) {
+    const marks = [];
+    for (const mark of root.querySelectorAll(STATE_MARKS)) {
+      if (marks.some((kept) => kept.contains(mark))) continue;
+      const state = namedState(mark);
+      if (state === "linked") continue;
+      if (!state && !ITEM_ICONS.some((icon) => mark.matches(icon))) continue;
+      marks.push(mark);
+    }
+    return marks;
+  }
+
+  /// Whether `root` holds a link to an item other than `key`: the boundary of
+  /// the item's own area, past which any state mark belongs to something else.
+  /// A card's own cross-reference badge is a link to another item too, and a
+  /// card rendering one above its state mark keeps the factory's report rather
+  /// than losing it to the badge -- the reading then falls back to a red
+  /// Problem, never to a claim that a live item is done.
+  function holdsOtherItem(root, key) {
+    for (const link of root.querySelectorAll("a[href]")) {
+      const match = LINK_PATH.exec(link.pathname);
+      if (match && `${match[1]}/${match[2]}#${match[3]}` !== key) return true;
+    }
+    return false;
+  }
+
+  /// Whether the page shows the item `key` as closed or merged, read from the
+  /// state mark GitHub draws in the same row, card or search result as the
+  /// link. ssf's own `github_state` cannot answer it: it is the item's state as
+  /// of the last poll, and it is missing altogether for items bound before ssf
+  /// recorded it (#409).
+  ///
+  /// The row is the nearest ancestor holding exactly one item's state mark,
+  /// inside the item's own area: a link to another item is where that area
+  /// ends, so a row whose state mark this version cannot read -- a shape it
+  /// does not know, or more than one mark -- leaves the state as the factory
+  /// reported it, rather than reading a neighbouring item's mark, which would
+  /// be a claim that a live item is done.
+  function closedInDom(anchor, key) {
+    let node = anchor;
+    while (node?.parentElement) {
+      node = node.parentElement;
+      if (key && holdsOtherItem(node, key)) return false;
+      const marks = stateMarks(node);
+      if (marks.length === 1) return finishedMark(marks[0]);
+      if (marks.length > 1) return false;
+    }
+    return false;
   }
 
   function element(tag, className, text) {
@@ -344,12 +489,21 @@
   /// `stale` is the overlay's own modifier -- an inactive service, an
   /// unreachable VM, an unavailable driver or an overdue poll also make the
   /// snapshot untrustworthy, which is what `warning` carries.
-  function stateFact(factory, match) {
+  ///
+  /// `closed` is the page's own fact about the item: see `closedInDom`.
+  function stateFact(factory, match, closed = false) {
     const raw =
       match.kind === "monitored"
         ? "unbound"
         : String(match.item.agent_state ?? "").trim() || "unknown";
     const shown = PRESENTATION[raw] ?? PROBLEM;
+    // An item the page shows closed or merged is not a problem: ssf has nothing
+    // running on it because there is nothing left to run, and a released
+    // workspace reads `no-workspace`, which would otherwise be the Problem
+    // colour -- a red chip on a merged item (#426's board, #411). The raw word
+    // is still what the tooltip leads with.
+    const finished =
+      closed && (shown.kind === "problem" || shown.kind === "no-agent");
     // A snapshot is trustworthy only when the stream is live and the factory has
     // not flagged it: its own warning means the TUI paints the same snapshot
     // UNAVAILABLE / STALE, so a solid state here would contradict it.
@@ -357,6 +511,9 @@
     const detail = [`ssf state: ${raw}`];
     if (match.kind === "monitored") {
       detail.push("ssf monitors this item but has no agent on it");
+    }
+    if (finished) {
+      detail.push("the page shows this item closed or merged, so nothing is left to run");
     }
     if (factory.warning) {
       detail.push(`the factory says its status may be incomplete: ${factory.warning}`);
@@ -374,13 +531,20 @@
     if (factory.state === "error") time = "unreachable";
     else if (live) time = ago(match.item.last_activity_at) ?? "no activity recorded";
     else time = `as of ${clock(factory.lastFrameAt)}`;
-    return { label: shown.label, kind: shown.kind, raw, stale: !live, time, detail };
+    return {
+      label: finished ? "Done" : shown.label,
+      kind: finished ? "done" : shown.kind,
+      raw,
+      stale: !live,
+      time,
+      detail,
+    };
   }
 
   /// `match` -> the facts a tooltip shows for it: the raw state word, the stack,
   /// the absolute time and the first line of the last message.
-  function tooltip(factory, match) {
-    const state = stateFact(factory, match);
+  function tooltip(factory, match, closed = false) {
+    const state = stateFact(factory, match, closed);
     const lines = [`ssf state: ${state.raw}`];
     const stack = [match.item.harness, match.item.model].filter(Boolean).join(" · ");
     const when =
@@ -438,8 +602,8 @@
 
   /// The state line every screen shares: the icon, the state word, and either
   /// the relative last activity or, for a stale snapshot, when it was taken.
-  function stateLine(factory, match) {
-    const state = stateFact(factory, match);
+  function stateLine(factory, match, closed = false) {
+    const state = stateFact(factory, match, closed);
     const line = element("div", "ssf-state");
     // Hover always names the raw state word the TUI prints, so "Waiting on you"
     // never hides the fact that ssf says `idle`, and the factory's own reason
@@ -502,7 +666,7 @@
     const facts = [
       ["Tool", match.kind === "monitored" ? null : match.item.tool],
       ["Factory", match.item.factory ?? factory.label],
-      ["Branch", match.kind === "monitored" ? null : match.item.branch],
+      ["Branch", match.item.branch],
       ["Session", match.kind === "monitored" ? null : match.item.agent_session_id],
     ];
     for (const [term, value] of facts) {
@@ -518,14 +682,14 @@
   /// One factory's card for an item. An issue that is an additional item of
   /// another agent leads with `worked on by the agent on #N`, so the card never
   /// claims an agent that belongs to a different issue.
-  function card(name, factory, match) {
+  function card(name, factory, match, closed = false) {
     const node = element("div", "ssf-card");
     if (match.kind === "additional") {
       const via = element("div", "ssf-via");
       via.append("worked on by the agent on ", itemLink(match.item.origin?.id));
       node.append(via);
     }
-    node.append(stateLine(factory, match));
+    node.append(stateLine(factory, match, closed));
     const stack = [match.item.harness, match.item.model].filter(Boolean).join(" · ");
     if (stack) node.append(element("div", "ssf-stack", stack));
     const message = messageBlock(name, factory, match);
@@ -546,8 +710,9 @@
   }
 
   /// The Assign agent form for `itemKey`, inside the card of the first factory
-  /// that may take the write. This is a fresh node per call, from the module's
-  /// own state, so the card and an open popover each get their own and neither
+  /// that may take the write, and the note the cards of the factories that may
+  /// not carry instead. This is a fresh node per call, from the module's own
+  /// state, so the card and an open popover each get their own and neither
   /// moves the other's out of the tree.
   ///
   /// Nothing is added for an item that has an agent, and nothing when no factory
@@ -556,6 +721,16 @@
   /// the pull request, so the write starts a session on the same item the card
   /// names.
   function withAssignForm(section, matches, itemKey) {
+    const cards = section.querySelectorAll(".ssf-card");
+    // An item ssf already has a workspace for is one the write would be refused
+    // for, so its card says what frees it rather than offering the form; a
+    // factory whose answer is the one that takes the write draws the form
+    // whether or not another factory's card carries the note.
+    for (const match of matches.filter(held)) {
+      cards[matches.indexOf(match)]?.append(
+        element("p", "ssf-hold", "Has a workspace; release it first."),
+      );
+    }
     const assignableMatches = matches.filter(assignable);
     if (!assignableMatches.length) return section;
     const [repo, number] = itemKey.split("#");
@@ -568,7 +743,6 @@
     // The card of that factory, not the first card in the section: a factory
     // that already has an agent on the item draws a card too, and the form
     // belongs with the one it would write through.
-    const cards = section.querySelectorAll(".ssf-card");
     const card = cards[matches.indexOf(assignableMatches[0])] ?? section;
     card.append(form);
     return section;
@@ -577,15 +751,19 @@
   /// Every card that belongs in one place: one per factory that knows the item,
   /// plus one per factory that could not be read at all. `forLabel` is the issue
   /// a pull request page resolved through, so its card says which issue it is
-  /// about; `popover` swaps the sidebar's margin for the popover's own frame.
-  function cards(name, matches, unreadable, { forLabel = null, popover = false } = {}) {
+  /// about; `popover` swaps the sidebar's margin for the popover's own frame;
+  /// `closed` is the page's own fact about the item, which only a chip and its
+  /// own popover have (a sidebar card is about the page's item, or -- on a pull
+  /// request page -- about the issue it resolves through, whose state the page
+  /// does not show).
+  function cards(name, matches, unreadable, { forLabel = null, popover = false, closed = false } = {}) {
     const section = element("div", popover ? "ssf-popover" : "ssf-section");
     section.append(element("h3", "ssf-title", "SSF agent"));
     // The factory is named only when there is more than one to tell apart.
     const label = (snapshot?.factories?.length ?? 0) > 1;
     let first = true;
     for (const match of matches) {
-      const node = card(name, match.factory, match);
+      const node = card(name, match.factory, match, closed);
       if (first && forLabel) node.prepend(element("div", "ssf-via", `for ${forLabel}`));
       if (label) node.prepend(element("div", "ssf-via", match.factory.label));
       first = false;
@@ -611,9 +789,9 @@
   /// result: icon, state word, relative last activity. The tooltip carries the
   /// harness, the model, the absolute time and the first line of the last
   /// message; the popover on a click carries the whole card.
-  function chip(name, matches) {
+  function chip(name, matches, closed = false) {
     const first = matches[0];
-    const state = stateFact(first.factory, first);
+    const state = stateFact(first.factory, first, closed);
     const node = element("div", "ssf-chip");
     node.setAttribute("role", "button");
     node.setAttribute("tabindex", "0");
@@ -625,7 +803,9 @@
     const when = element("span", "ssf-when", state.time);
     if (state.stale) when.dataset.stale = "true";
     node.append(when);
-    node.title = matches.map((match) => tooltip(match.factory, match)).join("\n\n");
+    node.title = matches
+      .map((match) => tooltip(match.factory, match, closed))
+      .join("\n\n");
     return node;
   }
 
@@ -635,12 +815,14 @@
   /// The placement is a no-op when nothing moved, so the script's own writes do
   /// not feed the observer that drives it.
   function update(entry, want) {
+    const closed = want.closed === true;
     const body =
       want.anchor === null
         ? cards(want.name, want.matches, want.unreadable ?? [], {
             forLabel: want.target?.label ?? null,
+            closed,
           })
-        : chip(want.name, want.matches);
+        : chip(want.name, want.matches, closed);
     entry.shadow.replaceChildren(body);
     // The form is drawn after the cards, into the one it belongs to.
     if (want.anchor === null) withAssignForm(entry.shadow, want.matches, want.key);
@@ -765,7 +947,12 @@
       closePopover();
       return;
     }
-    const body = cards(popover.name, matches, unreadable, { popover: true });
+    const body = cards(popover.name, matches, unreadable, {
+      popover: true,
+      // The chip the popover belongs to sits in the item's own row, so the row's
+      // state mark answers for this item here too.
+      closed: closedInDom(popover.anchor, popover.key),
+    });
     // A message too tall for the popover scrolls inside it, and the stream
     // repaints every couple of seconds: without this, the reader's place at the
     // end of a long message -- where the `less` toggle is -- would jump back to
@@ -840,7 +1027,15 @@
       } else if (chipPage(location.pathname)) {
         for (const [key, anchor] of listAnchors()) {
           const matches = matchesFor(key);
-          if (matches.length) wanted.set(`chip:${key}`, { matches, anchor });
+          if (matches.length) {
+            wanted.set(`chip:${key}`, {
+              matches,
+              anchor,
+              // The page's own fact about this item, read where the chip goes:
+              // the row's state mark says whether there is anything left to run.
+              closed: closedInDom(anchor, key),
+            });
+          }
         }
       }
       for (const [name, entry] of injected) {

@@ -823,7 +823,7 @@ pub(super) async fn doctor() -> Result<()> {
         factory_ui::service_active(),
         format!(
             "{} running{}",
-            platform::service_name(),
+            platform::service_instance(),
             if factory_ui::service_enabled() {
                 ""
             } else {

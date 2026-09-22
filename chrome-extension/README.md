@@ -63,6 +63,18 @@ The raw word is never hidden: hovering a state line shows `ssf state: idle`, and
 so does a chip's tooltip, so the overlay and the TUI always agree about what the
 factory actually said.
 
+**An item the page shows closed or merged is not a Problem.** A merged item whose
+workspace was released reads `no-workspace`, and one the daemon no longer tracks
+reads `unbound`; both would otherwise be red, on an item there is nothing left to
+run. A chip on a row the page marks closed or merged therefore renders a muted
+**Done**, and keeps the raw word in its tooltip. **Working**, **Waiting on you**
+and **Done** are shown as reported whatever the row says, so a closed item whose
+agent is still attached still reads as its agent does. The reading comes from the
+page, not from ssf's own `github_state`, which the model leaves unset for items
+bound before it was recorded (#409).
+
+![A list of closed issues, each tracked one carrying a muted Done chip where it used to carry a red Problem or a grey No agent](docs/closed-item-chips.png)
+
 A snapshot the overlay cannot trust carries a **stale modifier** on top of the
 state: the icon loses its solid fill and becomes a dashed outline, and the time
 becomes `as of HH:MM` — when the snapshot was taken. That happens when the
@@ -127,6 +139,16 @@ factory knows the item, each card is named with its factory label.
 An item the factories have no agent on — the `no agent` state, whether ssf
 monitors it or not — carries an **Assign agent** form, beside the item's state
 on its issue or pull request page. An item with an agent shows no form.
+
+An item ssf already has a workspace for is the exception: `ssf assign` refuses
+it, because `ssf release` is what frees it, so the overlay offers no form and its
+card says **Has a workspace; release it first** instead. The status model
+publishes that fact per item (`has_workspace`, with the workspace `branch` when
+the driver reports one), which is what lets the overlay tell such an item from
+one that takes a session — before, the form was drawn and the write came back
+`409`.
+
+![A project board chip's popover for a monitored item that has a workspace: its state, then Has a workspace; release it first, and no form](docs/assign-workspace-held.png)
 
 The three frames below are one assignment of `omp · deepseek/deepseek-flash ·
 high` on an issue page: the factory is a throwaway that serves the server's own
@@ -207,6 +229,18 @@ forward, and keep tailnet ACLs restrictive.
   updated to match, or the factory reads as unreachable.
 - A project board chip depends on the board rendering its cards as links to the
   issue or pull request, as GitHub's board and list views do.
+- The closed-or-merged reading is a chip's, from the state mark GitHub draws in
+  the item's own area — the nearest ancestor holding exactly one state mark,
+  stopping at the first link to a different item, so a board column or a search
+  results list cannot answer for a card. The chip's popover agrees with it. A
+  sidebar card keeps the factory's own report, because on a pull request page
+  the page's state belongs to the pull request while the card is about the issue
+  it resolves through. A card whose own cross-reference badge (a board card's
+  `#N` token, an issue list's linked-PR button) sits between the title and the
+  state mark also keeps the factory's own report, so the worst case is a red
+  **Problem** on a closed item rather than a claim that a live item is done;
+  GitHub's board, issue list, pull request list and search results all put the
+  state mark below that badge, so the reading holds on every surface measured.
 - Chrome prompts for each factory address once; until it is allowed, the page
   says so rather than showing state it cannot read.
 - Whether a factory watches a repository is read from that factory's snapshot,
