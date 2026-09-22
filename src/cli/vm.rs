@@ -16,7 +16,7 @@ pub(super) enum Gate {
 /// Only a definite "not running" refuses. "Could not ask" is not an
 /// answer to guess from: under lima the probe forks `limactl`, and one
 /// fork that failed refused `release`, `purge` and `doctor` over
-/// a factory that was up, and had `status --json` -- the bar widget's
+/// a factory that was up, and had `status --json` -- the dashboard's
 /// source -- report an idle one. The command goes to the guest instead,
 /// to succeed or fail on its own terms, having said first why ssf cannot
 /// tell and what the host is missing: otherwise a person whose `limactl`
@@ -68,7 +68,7 @@ pub(super) fn probe_word(probe: &Result<bool, String>) -> &'static str {
 }
 
 /// What `status --json` says for a guest the host could not reach. The
-/// bar widget parses this and has no other source, so it is answered
+/// dashboards parse this and have no other source, so it is answered
 /// rather than left empty; `vm` is the one field the host can still fill
 /// in, and the sessions and repositories it could not ask after are
 /// empty rather than invented.

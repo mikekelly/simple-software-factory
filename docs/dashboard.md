@@ -60,8 +60,7 @@ pane on that Herdr server when pane navigation is wanted. Missing context,
 unmatched conversations and stale panes show a message and leave the dashboard
 usable. The [Herdr plugin](../herdr-plugin/README.md) is only a launch shortcut.
 
-On Omarchy, the Factory menu's **Dashboard** entry and widget's **Session
-dashboard** button open the TUI in a terminal.
+On Omarchy, the Factory menu's **Dashboard** entry opens the TUI in a terminal.
 
 ## Optional server web dashboard
 

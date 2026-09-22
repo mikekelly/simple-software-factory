@@ -231,7 +231,7 @@ for a server-sent events stream of every change. See
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. The service comes back from any exit, a clean one
-  included (`Restart=always`, [setup](setup.md#service-and-optional-omarchy-widget)):
+  included (`Restart=always`, [setup](setup.md#service-and-the-optional-omarchy-menu)):
   systemd counts a SIGTERM as a clean exit, so `on-failure` left the factory
   inactive after the unexplained one of #344. An explicit `systemctl stop`,
   and anything else that stops the unit, is not undone. A machine restart
@@ -307,7 +307,7 @@ driver. Its `sessions` array has one entry per item:
 
 `repos[].issues[]` carries the same objects, `repos[].allowed_users` says
 who may drive each repository (`anyone_allowed` at the top is whether the
-wildcard is on anywhere; the bar widget warns while it is), and the `driver`
+wildcard is on anywhere; the dashboards warn while it is), and the `driver`
 key (`available`, `error`, `workspaces`, `down`) says whether herdr answered.
 `ssf peers` prints the same data as a terminal table: by default the
 active sessions on `$SSF_REPO` (so an agent sees who else is on its
@@ -330,8 +330,11 @@ agents about it.
 - `ssf status` asks every driver in use for its workspace list on every call
   (a few hundred milliseconds); when a driver is not running the ssf side is
   still reported and its sessions' agent states show as unknown.
-- The bar widget and menu entries are installed per user on first service
-  start; `ssf ui uninstall` removes them, `ssf ui install` puts them back.
+- The **Factory** menu entries are installed per user by `ssf ui install`;
+  `ssf ui uninstall` removes them, and both it and `ssf setup` remove a bar
+  widget left by a version before #413 — everything but a checkout
+  `omarchy plugin add` made, which they disable and leave to the plugin
+  manager (`omarchy plugin remove ssf.factory`).
 - Logs: `journalctl --user -fu ssf.service`, or on macOS, where the service
   is launchd's, `tail -f $(brew --prefix)/var/log/ssf.log` (inside the VM,
   `ssf vm logs`).

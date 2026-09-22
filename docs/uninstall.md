@@ -21,9 +21,8 @@ still selected, only when that data loss is explicitly intended.
    the order the pieces depend on each other: `purge` of the clean and
    pushed workspaces of closed items (needs the running daemon; skipped
    when it is down), `ui service disable` (with `vm.enabled` that shuts
-   the guest down; on macOS this is `brew services stop ssf`), `ui
-   uninstall` (the bar widget and menu, Omarchy only), `auth logout`
-   (revokes the bot's keys on GitHub and forgets it), `vm destroy`
+   the guest down; on macOS this is `brew services stop ssf`), `auth
+   logout` (revokes the bot's keys on GitHub and forgets it), `vm destroy`
    (under the lima backend the lima instance `ssf-default` and its disk
    `ssf-default` too, on whichever OS you run it; whether there is a VM
    at all is a question for the backend rather than for `[vm] dir`, so
@@ -43,7 +42,9 @@ still selected, only when that data loss is explicitly intended.
    while the daemon might still be working, so a service that would not
    stop leaves the machine as it was and tells you to stop it by hand
    (`systemctl --user stop ssf.service`, or `brew services stop ssf`)
-   and run `ssf uninstall` again.
+   and run `ssf uninstall` again. The Omarchy **Factory** menu entries are
+   left in place: they are the desktop's, and `ssf ui uninstall` removes
+   them.
 2. `sudo pacman -R ssf` or `sudo apt remove ssf` (**you**: sudo; nothing
    in ssf runs it). The command prints the one for this machine last.
 

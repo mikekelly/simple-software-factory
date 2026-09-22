@@ -4,7 +4,7 @@ Use **standalone Linux binaries + host mode** on a dedicated Linux host,
 VPS, or container where you want the factory to run directly, including hosts
 without usable KVM or a systemd user session. This path runs herdr and the
 factory as your Unix user; agents can access that user's files and credentials.
-No VM, linger, `ssf setup`, or desktop widget is needed.
+No VM, linger, `ssf setup`, or desktop integration is needed.
 
 Choose steps from the host's actual OS, architecture, permissions, available
 init/service manager, and KVM access. A hosting provider or assistant product
@@ -230,6 +230,6 @@ Check that the daemon is answering, not merely that doctor exits successfully.
 Assign a small issue to the bot (or @mention it), then run `ssf status` and
 `ssf doctor` again. Within a poll interval (10 seconds by default), expect a
 workspace and an agent that comments on the issue. `ssf dashboard` provides a
-terminal view without a desktop widget. Resolve remaining doctor failures;
+terminal view. Resolve remaining doctor failures;
 for 404s recheck acceptance, and for board moves recheck board Write and token
 scope separately. This completes a watching host factory without systemd.

@@ -198,17 +198,6 @@ fn nfpm_owns_every_vm_directory_in_the_rpm() {
 }
 
 #[test]
-fn nfpm_owns_the_marketplace_resource_directory_in_the_rpm() {
-    let nfpm = read(NFPM);
-    assert!(
-        nfpm.contains(
-            "- dst: /usr/share/ssf/omarchy-plugin/marketplace\n    type: dir\n    packager: rpm\n"
-        ),
-        "{NFPM} must own the nested marketplace resource directory in the rpm"
-    );
-}
-
-#[test]
 fn packages_leave_service_enablement_to_explicit_setup() {
     for path in [PKGBUILD, NFPM] {
         let manifest = read(path);

@@ -5,7 +5,7 @@
 #   packaging/dev-install.sh          # build target/release/ssf, point the unit at it, restart
 #   packaging/dev-install.sh --undo   # back to the package's binary
 #
-# The package has to be installed once for the unit and the bar widget
+# The package has to be installed once for the unit and the Factory menu
 # (`cd packaging && makepkg -si`); this script says so if it is not. The
 # drop-in it writes survives package upgrades, so the service keeps running
 # the dev build until --undo removes it. Nothing here touches ~/.config/ssf
@@ -32,7 +32,7 @@ case "${1:-}" in
 esac
 
 pacman -Qq ssf >/dev/null 2>&1 || {
-  echo "dev-install.sh: the ssf package is not installed; install it once for the unit and the widget:" >&2
+  echo "dev-install.sh: the ssf package is not installed; install it once for the unit and the Factory menu:" >&2
   echo "  cd $repo/packaging && makepkg -si" >&2
   exit 1
 }

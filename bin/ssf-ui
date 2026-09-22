@@ -1,9 +1,14 @@
 #!/bin/bash
-# Desktop glue for Simple Software Factory's bar widget and Omarchy menu: the
-# service toggle, the log, a status-and-doctor terminal, the session list, and
-# opening a session's workspace. It shows and reaches state; it does not set
-# anything up. Setup (signing the bot in, watching repositories) is `ssf auth`
-# and `ssf repo` from a terminal, following docs/setup.md.
+# Desktop glue for Simple Software Factory's Omarchy **Factory** menu: the
+# service toggle, the log, and a status-and-doctor terminal. It shows and
+# reaches state; it does not set anything up. Setup (signing the bot in,
+# watching repositories) is `ssf auth` and `ssf repo` from a terminal,
+# following docs/setup.md.
+#
+# The bar widget this package used to ship had two actions of its own here, a
+# session list and opening a session's workspace; the widget is gone (#413)
+# and so are they. `ssf peers`, `ssf dashboard` and `ssf vm attach` are the
+# commands for what they did.
 
 set -euo pipefail
 
@@ -14,8 +19,6 @@ Usage: ssf-ui <command>
   service <enable|disable|toggle|restart|is-enabled>
   logs                  Follow the service log in a terminal
   status                Show status, then the doctor report
-  peers                 Show the agent sessions and what each is doing
-  open-workspace <worktree-id> [issue-url]
 
 Setup is not here: \`ssf auth login\` signs the bot in, \`ssf repo add\` watches
 a repository (docs/setup.md walks through it).
@@ -57,44 +60,10 @@ cmd_status() {
   fi
 }
 
-cmd_peers() {
-  if command -v omarchy-launch-floating-terminal-with-presentation >/dev/null 2>&1 && [[ -z ${SSF_UI_PRESENTED:-} && ! -t 0 ]]; then
-    SSF_UI_PRESENTED=1 exec omarchy-launch-floating-terminal-with-presentation ssf-ui peers
-  fi
-  ssf peers --all || true
-  if [[ -t 0 ]]; then
-    echo
-    read -rsn1 -p "Press any key to close"
-  fi
-}
-
-cmd_open_workspace() {
-  local id="${1:-}" url="${2:-}"
-  # The factory in a VM: the workspace is in the guest's herdr; attach to it.
-  if [[ -n $id ]] && ssf vm status --json 2>/dev/null | jq -e '.enabled and (.running != false)' >/dev/null 2>&1; then
-    if command -v omarchy-launch-terminal >/dev/null 2>&1; then
-      omarchy-launch-terminal ssf vm attach
-    else
-      "${TERMINAL:-alacritty}" -e ssf vm attach
-    fi
-    return
-  fi
-  if [[ -n $id && $id == w*@* ]] && command -v "${HERDR_COMMAND:-herdr}" >/dev/null 2>&1; then
-    if "${HERDR_COMMAND:-herdr}" workspace focus "${id%%@*}" >/dev/null 2>&1; then
-      return
-    fi
-  fi
-  if [[ -n $url ]]; then
-    omarchy-launch-browser "$url" 2>/dev/null || xdg-open "$url"
-  fi
-}
-
 case "${1:-}" in
   service) shift; cmd_service "$@" ;;
   logs) shift; cmd_logs "$@" ;;
   status) shift; cmd_status "$@" ;;
-  peers) shift; cmd_peers "$@" ;;
-  open-workspace) shift; cmd_open_workspace "$@" ;;
   -h|--help|help|"") usage ;;
   *) echo "ssf-ui: unknown command $1" >&2; usage; exit 1 ;;
 esac

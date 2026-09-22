@@ -66,12 +66,6 @@ contents:
   - dst: /usr/share/ssf
     type: dir
     packager: rpm
-  - dst: /usr/share/ssf/omarchy-plugin
-    type: dir
-    packager: rpm
-  - dst: /usr/share/ssf/omarchy-plugin/marketplace
-    type: dir
-    packager: rpm
   - dst: /usr/share/ssf/harness
     type: dir
     packager: rpm
@@ -117,14 +111,6 @@ contents:
       mode: 0644
   - src: packaging/linux/ssf@.service
     dst: /usr/lib/systemd/user/ssf@.service
-    file_info:
-      mode: 0644
-  - src: manifest.json
-    dst: /usr/share/ssf/omarchy-plugin/manifest.json
-    file_info:
-      mode: 0644
-  - src: marketplace/FactoryPanel.qml
-    dst: /usr/share/ssf/omarchy-plugin/marketplace/FactoryPanel.qml
     file_info:
       mode: 0644
   - src: config.example.toml

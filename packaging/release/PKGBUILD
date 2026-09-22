@@ -23,7 +23,7 @@ depends=('gcc-libs' 'glibc' 'jq' 'systemd' 'github-cli' 'herdr' 'openssh')
 makedepends=('cargo')
 checkdepends=('git')
 optdepends=(
-  'omarchy: bar widget, menu entries and floating-terminal flows'
+  'omarchy: Factory menu entries and floating-terminal flows'
   'gum: nicer prompts in ssf-ui'
   'fakeroot: builds the microVM image (ssf vm build)'
   'libarchive: bsdtar, unpacks the Ubuntu root tarball for the microVM image'
@@ -67,8 +67,6 @@ package() {
   install -Dm644 'packaging/ssf@.service' "$pkgdir/usr/lib/systemd/user/ssf@.service"
   install -Dm755 packaging/package-pre-remove.sh "$pkgdir/usr/lib/ssf/package-pre-remove"
   install -Dm644 packaging/ssf-pre-remove.hook "$pkgdir/usr/share/libalpm/hooks/ssf-pre-remove.hook"
-  install -Dm644 manifest.json "$pkgdir/usr/share/ssf/omarchy-plugin/manifest.json"
-  install -Dm644 marketplace/FactoryPanel.qml "$pkgdir/usr/share/ssf/omarchy-plugin/marketplace/FactoryPanel.qml"
   install -Dm644 config.example.toml "$pkgdir/usr/share/ssf/config.example.toml"
   install -Dm644 harness/ssf-delivery.ts "$pkgdir/usr/share/ssf/harness/ssf-delivery.ts"
   install -Dm755 harness/ssf-pi-launch "$pkgdir/usr/share/ssf/harness/ssf-pi-launch"

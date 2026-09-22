@@ -139,8 +139,8 @@ where
 pub struct Facts {
     pub service_active: bool,
     pub service_enabled: bool,
-    /// The widget files or the menu block are in place.
-    pub desktop_present: bool,
+    /// The Factory menu block is in place.
+    pub menu_present: bool,
     /// `[github] login`: the bot account.
     pub bot: Option<String>,
     pub has_token: bool,
@@ -210,7 +210,7 @@ impl Facts {
         Facts {
             service_active: ui::service_active(),
             service_enabled: ui::service_enabled(),
-            desktop_present: ui::desktop_present(),
+            menu_present: ui::menu_present(),
             bot: cfg.github.login.clone(),
             has_token: config::token_path().exists(),
             key_ids: cfg.github.ssh_key_id.is_some() || cfg.github.signing_key_id.is_some(),
@@ -508,10 +508,9 @@ pub fn render(facts: &Facts, report: &Report, opts: &Opts) -> String {
 
     // keep
     let mut keep = Vec::new();
-    if facts.desktop_present {
+    if facts.menu_present {
         keep.push(
-            "the installed Omarchy widget and menu entries (remove them through Omarchy)"
-                .to_string(),
+            "the installed Factory menu entries (remove them with `ssf ui uninstall`)".to_string(),
         );
     }
     for p in &facts.projects {

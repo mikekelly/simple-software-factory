@@ -106,12 +106,13 @@ ssf setup
 
 `ssf setup` is the per-user step: it creates the managed VM target
 `ssf-server`, enables its user service and turns on systemd linger (via
-`sudo`) so the service survives logout and starts at boot. On
-Omarchy the optional bar widget shows the factory's state and toggles the
-service; it never installs or upgrades ssf:
+`sudo`) so the service survives logout and starts at boot. On Omarchy,
+`ssf ui install` adds the optional **Factory** menu (status, the service
+toggle, restart, logs) to the desktop menu; it never installs or upgrades
+ssf:
 
 ```sh
-omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --enable
+ssf ui install
 ```
 
 ## First run
@@ -196,7 +197,7 @@ can reconfigure the factory. Things to know when operating it:
   on a pull request the bot opened: the agent that wrote it runs the review
   its `SSF.md` asks for, and `SSF.md` says who merges (a person, as
   shipped). A `review` label does nothing.
-- **Stopping.** The widget toggle or `ssf ui service disable` stops the
+- **Stopping.** `ssf ui service disable` stops the
   service and keeps it from starting at login; running agents are left where
   they are. Upgrade with the package manager; remove with `ssf uninstall`,
   then the package ([Stopping and

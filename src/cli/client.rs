@@ -619,7 +619,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
     // With the factory in a VM, the commands that talk to the daemon run
     // inside the guest, where the daemon is. With the VM down, `status`
     // says so the way it says the service is stopped on bare metal (the
-    // bar widget polls it); the others cannot do anything.
+    // dashboards poll it); the others cannot do anything.
     if let Some(name) = forwarded_name(&cli.command)
         && !factory_vm::in_guest()
         && let cfg = Config::load()?
@@ -693,6 +693,16 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                         probe_word(&probe)
                     );
                 }
+                // The guest answers `doctor`, and the one thing it is asked
+                // about the desktop integration -- a bar widget left by a
+                // version before #413 -- is a fact of this host's
+                // `~/.config/omarchy`, which nothing inside the VM can read.
+                // So it is said here, where the report will not carry it.
+                if matches!(cli.command, Command::Doctor)
+                    && let Some(note) = factory_ui::superseded_widget_note()
+                {
+                    eprintln!("note {note}");
+                }
                 let args = forwarded_args;
                 // `status --json` is answered even when the guest does
                 // not answer it: an ssh that fails -- the VM down behind
@@ -700,7 +710,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 // start` where lima says Running before sshd does --
                 // would otherwise print nothing at all. What that buys
                 // is a document to parse, whose `service_enabled` and
-                // `vm` are read from this host and true: the bar widget
+                // `vm` are read from this host and true: a dashboard
                 // coerces anything it cannot parse to an empty object,
                 // where its own service toggle reads as disabled, and a
                 // `jq` over this command gets a field rather than a
