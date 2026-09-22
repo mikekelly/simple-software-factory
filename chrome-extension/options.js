@@ -74,6 +74,7 @@ function render() {
     return;
   }
   entries.forEach((entry) => rows.append(row(entry)));
+  showHealth();
 }
 
 function row(entry) {
@@ -178,9 +179,55 @@ function row(entry) {
   describeWrites();
   writes.append(writesLabel, writesNote);
 
-  box.append(label, url, state, allow, remove, writes);
+  // What the overlay is getting from this factory right now; see `showHealth`.
+  const health = document.createElement("p");
+  health.className = "health";
+  health.dataset.url = entry.url ?? "";
+
+  box.append(label, url, state, allow, remove, writes, health);
   return box;
 }
+
+/// The last snapshot the worker sent, so a re-render keeps its health lines.
+let factories = [];
+
+/// Fill in each row's health line from the worker's snapshot. The line says
+/// whether the factory answered and, when it did, whether it reports the
+/// repositories it watches -- which is what the assign form for an item the
+/// factory has no record of is drawn from. Without it the two ways that form can
+/// be missing from a page (an older `ssf-server` that publishes no repositories,
+/// and a capability URL the server has since changed) are both just an absence
+/// (#435).
+function showHealth() {
+  for (const node of rows.querySelectorAll(".health")) {
+    const url = node.dataset.url;
+    const factory = factories.find((one) => one.url === url);
+    if (!url || !factory) {
+      node.textContent = "";
+      continue;
+    }
+    const watched = factory.repositories?.length ?? 0;
+    if (factory.state === "error") {
+      node.textContent = `unreachable: ${factory.error ?? "the factory did not answer"}`;
+    } else if (factory.state === "connecting") {
+      node.textContent = "not answered yet.";
+    } else if (watched) {
+      node.textContent = `${factory.state} · reports ${watched} watched ${watched === 1 ? "repository" : "repositories"}.`;
+    } else {
+      node.textContent = `${factory.state} · reports no watched repositories, so the overlay cannot offer the assign form for an item it has no record of. Either this factory watches none, or it is an older ssf-server that does not publish them.`;
+    }
+  }
+}
+
+// The worker pushes a snapshot when the page connects and on every change, so
+// these lines stay current without polling: a URL just saved reads "not
+// answered yet" until its stream connects, and then says what came back.
+const worker = chrome.runtime.connect({ name: "ssf-overlay" });
+worker.onMessage.addListener((message) => {
+  if (message?.type !== "snapshot") return;
+  factories = message.payload?.factories ?? [];
+  showHealth();
+});
 
 /// Ask for every address the saved list needs and Chrome does not allow yet.
 /// Must run inside the click's user gesture.
@@ -268,3 +315,10 @@ chrome.permissions.onRemoved.addListener(async () => {
   await refresh();
   render();
 })();
+
+// The version of the code the browser is actually running, so a copy loaded
+// before an update can be told from the current one: `chrome://extensions`
+// shows it too, but the page a reader is already on should answer "is this the
+// build with the fix?" without them going to look (#435).
+document.getElementById("version").textContent =
+  `ssf overlay ${chrome.runtime.getManifest().version} — press Reload on chrome://extensions after updating this directory`;

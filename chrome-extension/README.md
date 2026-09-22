@@ -47,6 +47,29 @@ There is no build step, no npm dependency and no bundler: the extension is the
 plain JavaScript, HTML and CSS in this directory. It is not part of the Arch
 package; nothing here affects `makepkg`.
 
+### Updating a loaded copy
+
+The browser keeps the copy it loaded, so an edited checkout changes nothing
+until you reload it: open `chrome://extensions` and press **Reload** on the
+extension. The options page names the version the browser is actually running
+(its `manifest.json` `version`), which is how you tell a copy loaded before an
+update from the current one — `chrome://extensions` shows the same number. The
+behaviour of the extension changes with this version, so a fix that is in the
+checkout but not in this line is not in the browser.
+
+Each factory also carries a line saying what the overlay is getting from it, and
+those two lines together answer the two ways an expected card can be missing:
+
+![The options page for a live factory: the version line, then pwnbox reading live · reports 2 watched repositories](docs/options-health.png)
+
+| The page shows | What it means |
+| --- | --- |
+| `live · reports N watched repositories` | The factory answered and publishes the repositories it watches, so an item it has no record of carries the Assign form. |
+| `live · reports no watched repositories` | The factory answered but publishes none, so the overlay cannot offer the form for an item it has no record of — either it watches none, or it is an older `ssf-server` that does not publish them (see [Assigning an agent](#assigning-an-agent)). It is the server that needs updating, not the extension. |
+| `stale · reports …` | The stream stopped; the states shown are from the last snapshot. |
+| `unreachable: …` | The factory did not answer, in its own words or the extension's. A capability URL changes when the server restarts, so a URL saved before a restart reads here. |
+| `not answered yet.` | The stream is connecting. |
+
 ## The five states
 
 Every state ssf and the harnesses use collapses onto one of five, each with a
@@ -345,7 +368,8 @@ forward, and keep tailnet ACLs restrictive.
   publishing the repositories it watches (`dashboard.repositories`, added for
   this). A factory running an older `ssf-server` publishes none, and the overlay
   then behaves as it did before: the item's page and its board card carry
-  nothing.
+  nothing. The options page says `reports no watched repositories` for such a
+  factory, so it is not a silent difference.
 - The Actions row is on an item's own card, not on an item shown as *worked on
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A message sent to a bound item still reaches the
