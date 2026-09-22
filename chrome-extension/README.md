@@ -129,8 +129,11 @@ monitors it or not — carries an **Assign agent** form, beside the item's state
 on its issue or pull request page. An item with an agent shows no form.
 
 The three frames below are one assignment of `omp · deepseek/deepseek-flash ·
-high`, against a factory whose `POST api/assign` was real and whose snapshot
-arrived over its own `api/events`:
+high` on an issue page: the factory is a throwaway that serves the server's own
+contract (the same `api/status` model, `api/agents`, `api/models/<harness>` and
+the write in `POST api/assign`), so the frames are the real `api/events` path
+and the write is a real `POST` with `Origin: chrome-extension://…`. The refusal
+below is a real factory's own words, forwarded unchanged.
 
 | Before | While it starts | After the frame |
 | --- | --- | --- |
