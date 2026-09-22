@@ -511,7 +511,14 @@ applied to `claude`, `codex` and `omp`) so a long unattended session does not
 grow until the model's own limit and re-send its whole history every turn.
 Override it per instance or per repository when a project's items justify more
 or less room, or set `0` to leave the harness's own default alone; see
-[Context compaction](configuration.md#context-compaction).
+[Context compaction](configuration.md#context-compaction). The first message
+of a session is bounded the same way — the newest events of a busy item
+rather than its whole timeline, with the rest pointed at on GitHub — so a
+handover or a restart on an item with a long history does not spend the
+window before the session has done any work; `daemon.first_prompt_max_events`
+and `daemon.first_prompt_max_chars`, or their `repo.` counterparts, tune it
+and `0` restores the whole history (see
+[What the agent is told](prompts.md#the-messages-an-agent-receives)).
 
 The first successful poll after `ssf repo add` does not automatically start
 allocations that are already assigned to, mention, or request review from the

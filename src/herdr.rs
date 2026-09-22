@@ -39,10 +39,13 @@ const PASTE_END: &str = "\x1b[201~";
 /// whose argument is longer than `MAX_ARG_STRLEN` (128 KiB in 4 KiB-page
 /// Linux) with `E2BIG` -- reported as "spawning herdr (is herdr
 /// installed?): Argument list too long (os error 7)", which is neither
-/// true nor actionable. An item's story is its body plus every comment, so
-/// a busy item passes that cap and a handover to a new session fails to
-/// start at all. The cap is below the kernel's, because the limit counts
-/// the argument's terminator and a different page size changes it.
+/// true nor actionable. A delivery carries whatever activity arrived
+/// since the daemon's last pass, so a pane left overnight or a daemon
+/// restarted after a long outage passes that cap -- it once did so with
+/// an item's story and **prevented a handover from starting at all**
+/// (pg-cbor-schema#33; a first prompt's activity is capped since #406,
+/// deliveries are not). The cap is below the kernel's, because the limit
+/// counts the argument's terminator and a different page size changes it.
 const HERDR_ARG_LIMIT: usize = 96 * 1024;
 
 /// Bytes of prompt text in one `pane send-text` write, for text too long

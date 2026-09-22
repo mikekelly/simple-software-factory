@@ -50,6 +50,8 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 path,
                 base_branch,
                 conflict_check_interval_secs: None,
+                first_prompt_max_events: None,
+                first_prompt_max_chars: None,
                 instructions,
                 prompt_file,
                 allowed_users: None,

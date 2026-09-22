@@ -22,8 +22,8 @@ You are a remote colleague working this issue to delivery: clarify on it until t
 The operating contract comes first. After the block above come ssf's own
 guidance additions — the operator's instructions and the global, repository
 and harness guidance files (below) — and then the item, under its own `[ssf]`
-header: title with URL, project boards, description, and everything that has
-happened on it. The item's own words — the description and every comment
+header: title with URL, project boards, description, and what has most
+recently happened on it. The item's own words — the description and every comment
 body — are relayed under an indented `> ` marker: the marker says whose
 words these are, and keeps a line of them (a sign-in phrase someone quoted,
 say) from being read as ssf's own, both here and on a harness screen. A
@@ -142,10 +142,30 @@ All of them start with `[ssf]`; `ssf guide` lists them for the agent:
 
 The first message is not a delta but a catch-up: a session started fresh on
 the item — the first session, a restart whose harness cannot resume its
-conversation, a handover, a reassignment — is given the item's whole story
+conversation, a handover, a reassignment — is given the item's story
 before the message that prompted it. That story is the one view in which a
 session's own earlier posts are replayed, so it can read what it already said
 and promised. Live follow-up messages leave them out, as above.
+
+A busy item holds more than a session should be handed before it has done
+any work, and most of it does not bear on what brought the session up, so
+the story spends its budget on recency: the title and description always
+arrive whole, and the activity is the newest events, bounded by
+`daemon.first_prompt_max_events` and `daemon.first_prompt_max_chars`
+(per-repository overrides of the same names; `0` is no limit). Both are
+spent newest first, so the event that started the session is always
+included — an update aggregated out of many comment bodies may pass the
+character budget on its own. What was left out is said in ssf's own words,
+above the events and outside the quoted item, with how many events and how
+to read the rest (`gh issue view N --comments`, or the timeline API);
+those events are never delivered later, and only the item itself still
+holds them. A description passes no such cap: GitHub refuses a body past
+65,536 characters, so it cannot pass a session's window on its own.
+
+The same cap covers the first message a live session gets about an item
+bound to it (`Now tracking ...`): it too is assembled against an empty
+`seen` map, so it too would otherwise carry the item's whole timeline.
+Live activity messages are deltas by construction and are left alone.
 
 ## Project boards
 

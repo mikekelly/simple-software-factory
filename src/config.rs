@@ -728,6 +728,20 @@ pub struct DaemonConfig {
     /// Maximum characters of a single comment body included in a prompt.
     #[serde(default = "default_max_body_chars")]
     pub max_body_chars: usize,
+    /// Most timeline events a first prompt carries, newest first: the
+    /// newest activity is what usually started the session. What is left
+    /// out is never delivered later, so the prompt says so and where to
+    /// read it. Zero means no limit; `repo.first_prompt_max_events`
+    /// overrides it per repository.
+    #[serde(default = "default_first_prompt_max_events")]
+    pub first_prompt_max_events: usize,
+    /// Character budget for those events together, spent newest first, so
+    /// an item whose recent activity is a few very long bodies carries
+    /// fewer of them. The newest event is kept whatever its size. Zero
+    /// means no limit; `repo.first_prompt_max_chars` overrides it per
+    /// repository.
+    #[serde(default = "default_first_prompt_max_chars")]
+    pub first_prompt_max_chars: usize,
     /// Extra instructions appended to every initial prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -825,6 +839,8 @@ impl Default for DaemonConfig {
             include_own_events: false,
             ignored_events: default_ignored_events(),
             max_body_chars: default_max_body_chars(),
+            first_prompt_max_events: default_first_prompt_max_events(),
+            first_prompt_max_chars: default_first_prompt_max_chars(),
             instructions: None,
             cleanup_on_close: true,
             cleanup_grace_secs: None,
@@ -853,6 +869,15 @@ fn default_ignored_events() -> Vec<String> {
 }
 fn default_max_body_chars() -> usize {
     8000
+}
+/// Conservative: enough of a busy item's recent history to see what is
+/// going on, nowhere near enough to fill a session's context before it has
+/// done anything.
+fn default_first_prompt_max_events() -> usize {
+    50
+}
+fn default_first_prompt_max_chars() -> usize {
+    32_000
 }
 fn default_true() -> bool {
     true
@@ -924,6 +949,14 @@ pub struct RepoConfig {
     /// disables the check for this repository.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict_check_interval_secs: Option<u64>,
+    /// Most timeline events this repository's first prompts carry,
+    /// overriding `daemon.first_prompt_max_events`. Zero means no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_prompt_max_events: Option<usize>,
+    /// Character budget for those events, overriding
+    /// `daemon.first_prompt_max_chars`. Zero means no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_prompt_max_chars: Option<usize>,
     /// Repo-specific instructions appended to the initial prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<String>,
@@ -961,6 +994,18 @@ impl RepoConfig {
     pub fn matches_name(&self, name: &str) -> bool {
         self.name.eq_ignore_ascii_case(name)
             || self.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    }
+
+    /// What this repository's first prompts may spend on an item's
+    /// activity: how many events, and how many characters of them. The
+    /// repository's own settings, else the daemon's; zero means no limit.
+    pub fn first_prompt_caps(&self, daemon: &DaemonConfig) -> (usize, usize) {
+        (
+            self.first_prompt_max_events
+                .unwrap_or(daemon.first_prompt_max_events),
+            self.first_prompt_max_chars
+                .unwrap_or(daemon.first_prompt_max_chars),
+        )
     }
 
     pub fn split(&self) -> Result<(&str, &str)> {

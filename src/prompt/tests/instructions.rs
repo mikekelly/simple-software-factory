@@ -60,6 +60,8 @@ fn initial_prompt_mentions_bot_and_issue() {
         path: None,
         base_branch: None,
         conflict_check_interval_secs: None,
+        first_prompt_max_events: None,
+        first_prompt_max_chars: None,
         instructions: Some("Run the tests.".into()),
         prompt_file: None,
         allowed_users: None,
