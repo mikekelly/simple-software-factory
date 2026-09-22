@@ -5,6 +5,10 @@
 // permission for it, and Chrome only grants that after a prompt. The prompt
 // needs a user gesture, so it is requested from the Save and Allow buttons
 // rather than on load.
+//
+// Each factory also carries a Writes switch, on unless turned off. Off, the
+// service worker refuses an assign and the content script draws no form, so
+// this page is the one place a factory is made read-only.
 import { factoryUrl, originPattern } from "./factory-url.js";
 
 const rows = document.getElementById("rows");
@@ -38,7 +42,13 @@ function collect() {
     if (!text && !label) continue;
     const url = factoryUrl(text);
     if (!url) invalid.push(text || `the row labelled ${label}`);
-    list.push({ box, label, text, url });
+    list.push({
+      box,
+      label,
+      text,
+      url,
+      writes: box.querySelector(".writes").checked,
+    });
   }
   return { list, invalid };
 }
@@ -126,6 +136,9 @@ function row(entry) {
         : `Chrome did not allow ${pattern}; the overlay will not read this factory until it does.`,
     );
     await refresh();
+    // Everything typed on the page survives the re-render, the Writes switch
+    // included: it is drawn from `entries`, which only `collect` refreshes.
+    entries = collect().list;
     render();
   });
 
@@ -139,7 +152,33 @@ function row(entry) {
     show("Removed. Save to keep the change.");
   });
 
-  box.append(label, url, state, allow, remove);
+  // On unless this factory was saved with it off; an entry from before the
+  // switch existed has no value, and reads as on.
+  const writes = document.createElement("div");
+  writes.className = "writes-field";
+  const writesLabel = document.createElement("label");
+  writesLabel.className = "writes-toggle";
+  const writesBox = document.createElement("input");
+  writesBox.type = "checkbox";
+  writesBox.className = "writes";
+  writesBox.checked = entry.writes !== false;
+  writesLabel.append(writesBox, document.createTextNode("Writes"));
+  const writesNote = document.createElement("span");
+  writesNote.className = "writes-note";
+  // What the switch does, in the factory's own terms. The server refuses a
+  // write from any origin but an extension's, so this is the only place the
+  // extension itself is told not to write; nothing outside the extension can
+  // write through this factory either way.
+  const describeWrites = () => {
+    writesNote.textContent = writesBox.checked
+      ? "On: the overlay can start a session through this factory. The factory refuses writes from any origin but an extension's, so nothing else on this machine can start one through it."
+      : "Off: the overlay starts no session through this factory and draws no assign form for it.";
+  };
+  writesBox.addEventListener("change", describeWrites);
+  describeWrites();
+  writes.append(writesLabel, writesNote);
+
+  box.append(label, url, state, allow, remove, writes);
   return box;
 }
 
@@ -159,7 +198,7 @@ async function requestMissing() {
 
 add.addEventListener("click", () => {
   entries = collect().list;
-  entries.push({ label: "", text: "", url: null });
+  entries.push({ label: "", text: "", url: null, writes: true });
   render();
   const inputs = rows.querySelectorAll(".url");
   inputs[inputs.length - 1]?.focus();
@@ -172,9 +211,17 @@ save.addEventListener("click", async () => {
     return;
   }
   const stored = (await chrome.storage.local.get("factories")).factories ?? [];
-  entries = list.map((entry) => ({ label: entry.label, url: entry.url }));
+  entries = list.map((entry) => ({
+    label: entry.label,
+    url: entry.url,
+    writes: entry.writes,
+  }));
   await chrome.storage.local.set({
-    factories: entries.map((entry) => ({ label: entry.label, url: entry.url })),
+    factories: entries.map((entry) => ({
+      label: entry.label,
+      url: entry.url,
+      writes: entry.writes,
+    })),
   });
   // The list is saved before Chrome is asked, so a refused or unanswered
   // prompt leaves a factory to allow later rather than losing the edit.
@@ -202,10 +249,12 @@ save.addEventListener("click", async () => {
 
 chrome.permissions.onAdded.addListener(async () => {
   await refresh();
+  entries = collect().list;
   render();
 });
 chrome.permissions.onRemoved.addListener(async () => {
   await refresh();
+  entries = collect().list;
   render();
 });
 
@@ -214,6 +263,7 @@ chrome.permissions.onRemoved.addListener(async () => {
   entries = stored.map((entry) => ({
     label: String(entry?.label ?? ""),
     url: String(entry?.url ?? ""),
+    writes: entry?.writes !== false,
   }));
   await refresh();
   render();
