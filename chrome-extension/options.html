@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ssf factories</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>ssf factories</h1>
+      <p>
+        Each factory is the capability URL <code>ssf-server</code> logs, such as
+        <code>http://127.0.0.1:8787/&lt;secret&gt;/</code>. Keep it private: it
+        grants access to repository details and session summaries. The badge on
+        github.com reads these factories.
+      </p>
+      <div id="rows"></div>
+      <p class="actions">
+        <button id="add" type="button">Add factory</button>
+        <button id="save" type="button" class="primary">Save</button>
+      </p>
+      <p id="status" role="status" aria-live="polite"></p>
+      <p class="note">
+        Chrome asks permission for each factory's address the first time; that
+        permission is what lets the extension read the factory without allowing
+        it anywhere else. Use <strong>Allow</strong> beside a factory to ask
+        again after a refusal.
+      </p>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
