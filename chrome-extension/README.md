@@ -1,10 +1,10 @@
 # Optional SSF overlay for github.com
 
 A Chrome extension (Manifest V3) that overlays live SSF agent state on
-github.com: a badge beside the title of an issue or pull request, and a small
-state indicator on issue and pull request lists, search results and project
-boards. It is **read-only**. It reads the same canonical dashboard model as the
-TUI and the server's web UI, and it never acts on the factory.
+github.com. Every screen it touches answers one question — **is an agent on
+this, and does it need me?** — at a glance, with the detail one click away. It
+is **read-only**: it reads the same canonical dashboard model as the TUI and
+the server's web UI, and it never acts on the factory.
 
 Both the endpoint it reads and the exposure rules for reaching it are described
 in the [dashboard guide](../docs/dashboard.md).
@@ -45,45 +45,80 @@ There is no build step, no npm dependency and no bundler: the extension is the
 plain JavaScript, HTML and CSS in this directory. It is not part of the Arch
 package; nothing here affects `makepkg`.
 
+## The five states
+
+Every state ssf and the harnesses use collapses onto one of five, each with a
+fixed colour and icon so the same state reads the same on every screen:
+
+| Shown as | Means | Raw state |
+| --- | --- | --- |
+| 🟢 **Working** | the agent is in a turn right now | `working` |
+| 🟡 **Waiting on you** | the agent is idle or blocked; its last message is probably a question or a handoff | `idle`, `blocked` |
+| ⚪ **Done** | the agent finished its turn and delivered | `done` |
+| 🔴 **Problem** | ssf tracks the item but the agent or workspace is gone, or the driver is unreachable | `no-agent`, `no-workspace`, `unknown` |
+| ⚫ **No agent** | ssf monitors the item; nothing is attached | `unbound`, monitored items |
+
+The raw word is never hidden: hovering a state line shows `ssf state: idle`, and
+so does a chip's tooltip, so the overlay and the TUI always agree about what the
+factory actually said.
+
+A snapshot the overlay cannot trust carries a **stale modifier** on top of the
+state: the icon loses its solid fill and becomes a dashed outline, and the time
+becomes `as of HH:MM` — when the snapshot was taken. That happens when the
+stream stops, when the factory cannot be reached at all (`Problem ·
+unreachable`), and also when a factory flags its own snapshot as unreliable — an
+inactive service, an unreachable VM, an unavailable driver, an overdue poll —
+which the TUI paints `UNAVAILABLE / STALE` and the server's web UI describes as
+"Status may be incomplete". A stale snapshot therefore never renders a solid
+**Working**. A factory that has never answered is named on the page rather than
+left out, since staying silent would read as "no agent".
+
 ## What it shows
 
-An issue or pull request page gets a badge beside the title, one row per factory
-that knows the item:
+**An issue or pull request page gets a card in the right sidebar, above
+Assignees:**
 
-![An issue page with the ssf badge beside the title, reading the harness, model,
-agent state, last activity and the session's latest message](docs/issue-badge.png)
+![An issue page whose right sidebar carries an ssf agent card above Assignees: harness, model, the Waiting on you state with relative time, the last message with a `more` toggle, "also on" links and a collapsed Details section](docs/issue-card.png)
 
-```
-ssf  omp · deepseek/deepseek-flash · working · 12m ago
-     π Build and test Chrome extension
-```
+Always visible: the state line with the relative time, `harness · model`, and
+the last message trimmed to two lines behind a `more` toggle that appears only
+when the text is really clipped. Then:
 
-Lists, search results and project boards get a small pill beside each item's
-title:
+- **also on: #a #b** — the other issues this agent has taken on;
+- **Details**, collapsed — the current tool call, the factory label, the
+  workspace branch and the agent session id. The overlay's own factory label is
+  used until the server sends the card's factory name, and the other three read
+  "not reported" until the server sends them.
 
-![A list of issues, each with a small ssf pill after its title](docs/issue-list.png)
+An issue that is an *additional* item of another agent shows `worked on by the
+agent on #N`, with #N linked, instead of a card claiming its own agent.
 
-Both images are a scratch factory whose server runs outside the systemd unit it
-names, so every row in them also carries the `· incomplete` marker described
-below.
+**A pull request page resolves through the issue its body names:** `Closes`,
+`Fixes` or `Resolves #N` first, then `Refs #N`, first match winning, and the card
+says `for #N`:
 
-- The harness, model, agent state and last activity are the factory's own
-  fields, and the second line is the session's latest message or summary.
-- An item SSF monitors without an agent reads `no agent` with the item's title.
-- A factory whose stream has failed keeps the cards it last sent and marks them
-  `stale`, and a factory that has never answered is named on every issue page as
-  `unknown` with the reason. A broken factory is never silently shown as an idle
-  one; the TUI makes the same distinction in [the dashboard
-  guide](../docs/dashboard.md#session-dashboard).
-- A factory that flags its own snapshot as unreliable — an inactive service, an
-  unreachable VM, an unavailable driver, an overdue poll — reads
-  `… · incomplete`, with the factory's own words on hover. The TUI and the
-  server's web UI say the same thing about the same snapshot.
-- Items the factories do not know about are left alone.
+![A pull request page whose sidebar card reads "for #412"](docs/pr-card.png)
 
-A card matches a page by `owner/repo#number`, from its originating issue or from
-any of the item's additional issues, so a session started on another issue and
-bound to this one still shows up here.
+When the body names nothing the factory knows, the pull request's own number is
+used if the factory tracks it; otherwise the page gets nothing.
+
+**Lists, search results and project boards get one chip per tracked item** —
+icon, state word and relative last activity:
+
+![A list of issues, each tracked one carrying a small ssf chip after its title](docs/issue-list.png)
+
+Hovering a chip shows `harness · model`, the absolute time and the first line of
+the last message. Clicking it opens the same card as the issue page, as a
+popover, so you never leave the board to see what an agent said:
+
+![A project board whose cards each carry an ssf chip, with one chip's popover open below it showing the same card as the issue page](docs/board.png)
+
+**Other pages get nothing.** The repository home, code, commits, milestones and
+settings are left alone even when they link to issues.
+
+Several factories merge by repository: a chip is unique per item, and a factory
+that does not host the repository contributes nothing. When more than one
+factory knows the item, each card is named with its factory label.
 
 ## Reaching a factory on a tailnet
 
@@ -104,9 +139,11 @@ forward, and keep tailnet ACLs restrictive.
   scripts, one factory's failure never affecting another's.
 - The **content script** on `https://github.com/*` renders from that snapshot,
   re-rendering on GitHub's client-side navigation and DOM updates without
-  duplicating what it has already drawn. Every node is built with `textContent`
-  and lives in a shadow root, so no factory text is ever parsed as HTML and no
-  GitHub style leaks in.
+  duplicating what it has already drawn. What the reader has opened — the full
+  last message, the Details section, an open popover — survives those
+  re-renders rather than collapsing under a stream that repaints every couple of
+  seconds. Every node is built with `textContent` and lives in a shadow root, so
+  no factory text is ever parsed as HTML and no GitHub style leaks in.
 - `host_permissions` is `https://github.com/*`. Factory addresses are
   `optional_host_permissions`, requested at runtime from the options page, so
   the extension only holds access to the factories you added.
@@ -116,7 +153,10 @@ forward, and keep tailnet ACLs restrictive.
 - Read-only: there are no actions from the browser in this version.
 - The capability URL changes when the server restarts; the options page must be
   updated to match, or the factory reads as unreachable.
-- A project board indicator depends on the board rendering its cards as links to
-  the issue or pull request, as GitHub's board and list views do.
-- Chrome prompts for each factory address once; until it is allowed, the badge
+- A project board chip depends on the board rendering its cards as links to the
+  issue or pull request, as GitHub's board and list views do.
+- Chrome prompts for each factory address once; until it is allowed, the page
   says so rather than showing state it cannot read.
+- The **Details** fields other than the factory label need the card fields added
+  by [#419](https://github.com/mikekelly/simple-software-factory/issues/419); on
+  an older server they read "not reported".

@@ -128,7 +128,20 @@ Both endpoints accept an `Origin` of `http://<bind>:<port>` or any
 them; the `Host` header must still match the configured bind address and port.
 
 The optional [Chrome extension](../chrome-extension/README.md) is that client:
-it overlays this state on github.com instead of in a browser tab.
+it overlays this state on github.com instead of in a browser tab. It collapses
+every state ssf and the harnesses report onto five — **Working**, **Waiting on
+you**, **Done**, **Problem** and **No agent** — each with a fixed colour and
+icon, and shows the raw state the TUI prints on hover. An issue or pull request
+page gets a card in the right sidebar above Assignees (a pull request resolves
+through the issue its body closes, `Closes` before `Refs`); lists, search
+results and project boards get one chip per tracked item, whose click opens the
+same card as a popover. The card's `Details` section carries the current tool,
+the factory label, the workspace branch and the agent session id, which the
+card fields added for it in [#419](https://github.com/mikekelly/simple-software-factory/issues/419)
+supply. A factory whose stream has dropped, or which flags its own snapshot as
+unreliable, is shown with the icon outlined and the time as "as of HH:MM", never
+as a solid live state — the same distinction the TUI draws between a live factory
+and an unavailable or stale snapshot.
 
 The built-in endpoint provides neither TLS nor user accounts. Remote web access
 from outside a tailnet requires a reverse proxy that:
