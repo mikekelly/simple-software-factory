@@ -470,7 +470,7 @@
   /// tool call, the workspace branch, the factory's label and the agent session
   /// id. A field the server does not send reads "not reported" rather than being
   /// invented; the factory row falls back to this extension's configured label,
-  /// which is a name the reader chose rather than one invented for them.
+  /// or to the factory's URL host when the options page has no label for it.
   function detailsBlock(name, factory, match) {
     const key = `${name}|${factory.url}`;
     const flags = opened.get(key) ?? {};

@@ -89,7 +89,7 @@ when the text is really clipped. Then:
   workspace branch and the agent session id, from the status model's own
   fields. A field the server does not send reads "not reported" rather than
   being invented; **Factory** falls back to the label you gave the factory on
-  the options page.
+  the options page, or to its URL host when you gave none.
 
 An issue that is an *additional* item of another agent shows `worked on by the
 agent on #N`, with #N linked, instead of a card claiming its own agent.
