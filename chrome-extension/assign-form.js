@@ -351,18 +351,19 @@
     return body;
   }
 
-  /// The two facts worth reading out of `ssf assign --json`: the stack it
-  /// started and whether the assignment itself landed on GitHub.
+  /// The result line: what `ssf assign --json` answered, in the terms its own
+  /// text output uses. The three facts worth reading are the session, the stack
+  /// it starts on, and whether the item is closed (in which case nothing starts
+  /// yet, which is a fact about the item and not a failure of the write).
   function resultLine(state) {
     const result = state.result;
     if (!result || typeof result !== "object") return String(result ?? "");
     const to = result.to ?? {};
-    const stack = [to.harness, to.model, to.effort].filter(Boolean).join(" \u00b7 ");
     const facts = [];
     if (result.session) facts.push(String(result.session));
+    const stack = [to.harness, to.model, to.effort].filter(Boolean).join(" · ");
     if (stack) facts.push(stack);
-    facts.push(result.assigned === false ? "not assigned on GitHub" : "assigned on GitHub");
-    if (result.overrides_written === false) facts.push("this item's model settings were not written");
+    if (result.open === false) facts.push("the item is closed, so no session starts yet");
     return facts.join(" \u00b7 ");
   }
 
