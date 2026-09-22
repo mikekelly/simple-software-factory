@@ -7,7 +7,7 @@ macOS-specific settings below document work in progress.
 Every key in `~/.config/ssf/config.toml`, the SSF agent guidance file, model and effort settings, the permission-free commands each agent is started with, and who may drive the factory. For whoever sets up or tunes a factory; agents need none of it.
 
 `~/.config/ssf/config.toml` is mostly written for you by `ssf repo add` and
-`ssf config set` (the bar widget only shows the state of the factory);
+`ssf config set` (the dashboards only show the state of the factory);
 [`config.example.toml`](../config.example.toml) (installed as
 `/usr/share/ssf/config.example.toml`, and on macOS as
 `$(brew --prefix)/share/ssf/config.example.toml`) shows every key with a
@@ -269,9 +269,8 @@ Environment overrides: `SSF_GITHUB_TOKEN` (the token), `SSF_CONFIG_DIR`
 and `SSF_STATE_DIR` (where config and state live; a scratch factory uses
 its own, and [Development](development.md) says what they do and do not
 move), `HERDR_COMMAND` (the herdr CLI),
-`SSF_VM_DIR` (the VM image scripts), `SSF_PLUGIN_DIR` (the bar widget's
-source, for development), `SSF_LOG` or `RUST_LOG` (log verbosity, what
-`--log` reads).
+`SSF_VM_DIR` (the VM image scripts), `SSF_LOG` or `RUST_LOG` (log
+verbosity, what `--log` reads).
 
 ## The SSF agent guidance file
 
@@ -479,7 +478,7 @@ has running sessions. The change waits for that session's next launch,
 resume, relaunch or re-creation, and until then `ssf status` and `ssf
 peers` show both sides (`harness codex → omp next launch (model
 deepseek/deepseek-flash, effort high)`, and `next_launch` beside
-`harness` in `--json`; the dashboard cards and the bar widget show
+`harness` in `--json`; the dashboard cards show
 `codex → omp next launch`). The running session's own model and effort
 are left out while the two differ: only the harness is the driver's to
 report, and ssf does not have the stack that session was started with.
@@ -668,5 +667,5 @@ refuse it unless you type `yes` (nothing shorter) to the risk at the terminal or
 `--accept-anyone-risk`, either of which writes `accepted_anyone_risk = true`
 next to the list (setting a plain list again removes it). A hand-edited
 file with `"*"` and no marker is refused at load with the fix spelled out,
-`ssf status` prints a warning while the wildcard is in effect, and the bar
-widget shows one and turns its icon urgent.
+`ssf status` prints a warning while the wildcard is in effect, and the
+dashboards show one.

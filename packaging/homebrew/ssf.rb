@@ -13,7 +13,7 @@
 # .github/workflows/release.yml).
 #
 # Differences from the Arch package (packaging/release/PKGBUILD): no ssf-ui
-# and no Omarchy bar widget (both Omarchy-only), no systemd unit (the
+# and no Omarchy Factory menu (both Omarchy-only), no systemd unit (the
 # `service` block below is the launchd agent), and no herdr dependency: the
 # factory runs in a lima VM on macOS and herdr lives in the guest.
 class Ssf < Formula
@@ -38,7 +38,7 @@ class Ssf < Formula
 
   def install
     # Cargo installs the ssf client and ssf-server daemon; bin/ssf-ui is the
-    # Omarchy bar widget's helper and is not installed here.
+    # Omarchy Factory menu's helper and is not installed here.
     system "cargo", "install", *std_cargo_args
 
     # #{HOMEBREW_PREFIX}/share/ssf/vm is where `ssf vm build` looks for the

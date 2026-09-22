@@ -848,17 +848,19 @@ pub(super) async fn doctor() -> Result<()> {
             }
         );
     }
-    // The widget lives on the host; inside the guest there is no Omarchy
-    // shell to check.
+    // The desktop integration lives on the host; inside the guest there is
+    // no Omarchy shell to check. The menu entries are the whole of it now,
+    // so there is nothing to check them against -- but the bar widget the
+    // package used to ship is still there until `ssf setup` or `ssf ui
+    // install` runs, and an upgraded installation that otherwise looks fine
+    // is the one place nobody would look (#413). The guest has no way to
+    // read the host's files, so it points at where the check happens and
+    // the host prints the note itself before forwarding this command
+    // (`cli::client`).
     if factory_vm::in_guest() {
-        println!("note bar widget: checked on the host, not inside the VM");
-    } else if !platform::is_omarchy() {
-        println!("note bar widget: not on Omarchy, nothing to enable");
-    } else {
-        check(
-            factory_ui::widget_enabled().unwrap_or(false),
-            "bar widget enabled in ~/.config/omarchy/shell.json".into(),
-        );
+        println!("note superseded bar widget: checked on the host, not inside the VM");
+    } else if let Some(note) = factory_ui::superseded_widget_note() {
+        println!("note {note}");
     }
     check(
         true,

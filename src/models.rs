@@ -364,6 +364,14 @@ pub fn supports_model(harness: &str) -> bool {
     catalogue(harness).is_some()
 }
 
+/// What ssf says when asked for a harness's model ids and there are none to
+/// give, because it is not a harness that takes the setting at all. One
+/// wording for the command and the web endpoint that answer the same
+/// question.
+pub fn no_model_setting(harness: &str) -> String {
+    format!("{harness} does not take a model setting")
+}
+
 /// The ids the built-in table seeds for `harness`.
 fn seeded_models(cat: &Catalogue) -> Vec<String> {
     cat.models.iter().map(|m| (*m).to_string()).collect()
@@ -658,7 +666,7 @@ impl Source {
 /// the table goes stale between releases (#382).
 pub fn available(harness: &str) -> Result<Available> {
     let Some(cat) = catalogue(harness) else {
-        bail!("{harness} does not take a model setting");
+        bail!(crate::ipc::Refused::bad_input(no_model_setting(harness)));
     };
     // A catalogue that will not read, or lists nothing, is no answer at all:
     // the table is better than an empty list, and `source` says which one

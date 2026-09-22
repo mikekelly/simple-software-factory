@@ -23,6 +23,9 @@ pub(crate) struct StatusSource {
 }
 
 impl StatusSource {
+    /// A source that selects no target: the tests' own shape of
+    /// `new_with_context`.
+    #[cfg(test)]
     pub(crate) fn new(server: Option<String>) -> Result<Self> {
         Self::new_with_context(server, None, None, None)
     }
@@ -124,54 +127,23 @@ impl Drop for StatusSource {
     }
 }
 
-fn status_command(
-    server: Option<&str>,
+/// The client of the factory this process serves: `executable` run as the
+/// `ssf` client, in this process's own service identity and directories,
+/// with the routing a pane inherits cleared, so the command answers for this
+/// factory rather than for whatever target some environment names. A daemon
+/// that answers for a catalog target, or that supervises a VM's factory, has
+/// to pass all of that on; a plain client passes nothing and gets exactly
+/// what a command run by hand gets.
+pub(crate) fn local_client_command(
     executable: &Path,
-    control_dir: Option<&Path>,
+    args: &[&str],
     local_context: Option<&crate::server_catalog::LocalContext>,
     vm_context: Option<&crate::server_catalog::SelectedVmContext>,
     identity: Option<&crate::server_catalog::TargetIdentity>,
 ) -> Command {
-    let mut command = if let Some(host) = server {
-        let mut command = Command::new("ssh");
-        command.args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "ServerAliveInterval=5",
-            "-o",
-            "ServerAliveCountMax=2",
-            "-o",
-            "ControlMaster=auto",
-            "-o",
-            "ControlPersist=60",
-        ]);
-        command.arg("-o").arg(format!(
-            "ControlPath={}",
-            control_dir
-                .expect("remote source has private control directory")
-                .join("ssh")
-                .display()
-        ));
-        command
-            .arg("--")
-            .arg(host)
-            .arg(crate::remote_client_command(
-                &["status".into(), "--json".into(), "--watch".into()],
-                None,
-                None,
-            ));
-        command
-    } else {
-        let mut command = Command::new(executable);
-        command.args(["__client", "status", "--json", "--watch"]);
-        command
-    };
-    if server.is_none()
-        && let Some(context) = local_context
-    {
+    let mut command = Command::new(executable);
+    command.arg("__client").args(args);
+    if let Some(context) = local_context {
         command
             .env("SSF_CONFIG_DIR", &context.config_dir)
             .env("SSF_STATE_DIR", &context.state_dir);
@@ -180,22 +152,73 @@ fn status_command(
         .env_remove("SSF_SERVER")
         .env_remove(crate::server_catalog::SELECTED_VM_ENV)
         .env_remove(crate::server_catalog::SELECTED_TARGET_ENV);
-    if server.is_none()
-        && let Some(identity) = identity
-    {
+    if let Some(identity) = identity {
         command.env(
             crate::server_catalog::SELECTED_TARGET_ENV,
             serde_json::to_string(identity).expect("serializing selected target identity"),
         );
     }
-    if server.is_none()
-        && let Some(context) = vm_context
-    {
+    if let Some(context) = vm_context {
         command.env(
             crate::server_catalog::SELECTED_VM_ENV,
             serde_json::to_string(context).expect("serializing selected VM context"),
         );
     }
+    command.stdin(Stdio::null()).kill_on_drop(true);
+    command
+}
+
+fn status_command(
+    server: Option<&str>,
+    executable: &Path,
+    control_dir: Option<&Path>,
+    local_context: Option<&crate::server_catalog::LocalContext>,
+    vm_context: Option<&crate::server_catalog::SelectedVmContext>,
+    identity: Option<&crate::server_catalog::TargetIdentity>,
+) -> Command {
+    let Some(host) = server else {
+        return local_client_command(
+            executable,
+            &["status", "--json", "--watch"],
+            local_context,
+            vm_context,
+            identity,
+        );
+    };
+    let mut command = Command::new("ssh");
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "ServerAliveInterval=5",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        "ControlPersist=60",
+    ]);
+    command.arg("-o").arg(format!(
+        "ControlPath={}",
+        control_dir
+            .expect("remote source has private control directory")
+            .join("ssh")
+            .display()
+    ));
+    command
+        .arg("--")
+        .arg(host)
+        .arg(crate::remote_client_command(
+            &["status".into(), "--json".into(), "--watch".into()],
+            None,
+            None,
+        ));
+    command
+        .env_remove("SSF_SERVER")
+        .env_remove(crate::server_catalog::SELECTED_VM_ENV)
+        .env_remove(crate::server_catalog::SELECTED_TARGET_ENV);
     command.stdin(Stdio::null()).kill_on_drop(true);
     command
 }

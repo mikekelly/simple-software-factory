@@ -41,6 +41,17 @@ pub(super) enum Command {
     /// Initialize persistent guest factory state (called by the guest boot service).
     #[command(hide = true)]
     VmInit { seed: PathBuf },
+    /// Send one request to this factory's daemon and print its answer — the
+    /// protocol's own `{"ok":…,"error":…,"kind":…,"data":…}` — for a program
+    /// that has to ask the factory rather than print for a person, and needs
+    /// what the refusal was about rather than only its message. Not for
+    /// people: it is how the server's web endpoint reaches a factory whose
+    /// daemon is in a VM, the way every command does.
+    #[command(name = "__request", hide = true)]
+    Request {
+        /// The request, as the daemon's protocol has it.
+        request: String,
+    },
     /// List and inspect the client computer's configured SSF servers.
     Server {
         #[command(subcommand)]
@@ -268,14 +279,14 @@ pub(super) enum Command {
     },
     /// Check that GitHub, the drivers in use and the configured harnesses are usable.
     Doctor,
-    /// Omarchy desktop integration: bar widget, menu entries, background service.
+    /// Omarchy desktop integration: Factory menu entries and background service.
     Ui {
         #[command(subcommand)]
         command: UiCommand,
     },
     /// Take this machine back to just the package: purge closed workspaces,
     /// stop and disable the service, sign the bot out (revoking its keys on
-    /// GitHub), and destroy the microVM. Omarchy owns its widget and menu.
+    /// GitHub), and destroy the microVM. Omarchy owns its menu entries.
     /// Reports first and asks once. Leaves the package (`sudo pacman -R ssf`,
     /// `apt remove` or `dnf remove`; the command prints the one for this
     /// machine), the projects directory (clones and worktrees), and, without
@@ -703,12 +714,13 @@ pub(super) enum ConfigCommand {
 
 #[derive(Subcommand)]
 pub(super) enum UiCommand {
-    /// Copy the bar widget into ~/.config/omarchy/plugins, enable it, add menu entries.
+    /// Add the Factory menu entries to the Omarchy menu, disabling and
+    /// removing the bar widget this package used to ship.
     Install {
         #[arg(long)]
         quiet: bool,
     },
-    /// Remove the bar widget and menu entries.
+    /// Remove the Factory menu entries and any superseded bar widget.
     Uninstall,
     /// Control the selected server's background service.
     Service {

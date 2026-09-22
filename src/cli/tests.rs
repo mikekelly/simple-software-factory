@@ -88,6 +88,9 @@ fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
         vec!["ssf", "config", "set", "daemon.poll_interval_secs", "30"],
         vec!["ssf", "agents"],
         vec!["ssf", "models", "claude"],
+        // The web endpoint's own use of the daemon protocol: a factory in a
+        // VM is asked there, like every other factory command.
+        vec!["ssf", "__request", r#"{"op":"ping"}"#],
     ] {
         let cli = Cli::try_parse_from(&args).unwrap();
         let name =
@@ -190,8 +193,8 @@ fn only_a_definite_no_keeps_a_command_out_of_the_guest() {
     // "The probe could not be made" is neither answer. Under lima it
     // forks `limactl`, and one fork that fails -- or is cut off by
     // LIVENESS_LIMIT -- must not refuse every forwarded command over
-    // a factory that is running, nor report a stopped VM to the bar
-    // widget. The command goes to the guest, and says why first: the
+    // a factory that is running, nor report a stopped VM to a
+    // dashboard. The command goes to the guest, and says why first: the
     // reason is not in the log at every log level.
     let probe = Err("asking lima whether ssf-default is running: fork/exec: \
 resource temporarily unavailable"
@@ -231,7 +234,7 @@ resource temporarily unavailable"
 }
 
 #[test]
-fn the_widget_gets_an_answer_for_a_guest_that_did_not_give_one() {
+fn a_dashboard_gets_an_answer_for_a_guest_that_did_not_give_one() {
     // The document names the host service, which is read from the
     // state directory: a test's must be its own (#140).
     let _sandbox = crate::config::test_support::sandbox();
@@ -240,7 +243,7 @@ fn the_widget_gets_an_answer_for_a_guest_that_did_not_give_one() {
     // it can fill in is the VM, and each of the three answers the
     // probe can give reaches the document as itself. An ssh failure
     // with nothing put in its place is the case this exists to stop:
-    // the widget parses that as a factory with nothing in it.
+    // a dashboard parses that as a factory with nothing in it.
     assert_eq!(probe_word(&Ok(true)), "running");
     assert_eq!(probe_word(&Ok(false)), "stopped");
     assert_eq!(probe_word(&Err("no answer".into())), "unknown");

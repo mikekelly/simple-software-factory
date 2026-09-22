@@ -27,7 +27,7 @@
 //! ssh on `127.0.0.1:<ssh_port>`
 //! with a key made per VM. With `[vm] enabled = true` the daemon-facing
 //! commands are run inside the guest that way, so `ssf status --json` for
-//! the bar widget works as before; `ssf-server`
+//! the dashboards works as before; `ssf-server`
 //! on the host starts the VM and watches it, so the service is unchanged.
 
 mod lima;
@@ -78,10 +78,27 @@ const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 
 /// Commands that act on the daemon and so run inside the guest when the
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
-/// VM from the host).
-pub const FORWARDED: [&str; 17] = [
-    "status", "peers", "sub", "unsub", "subs", "release", "handover", "assign", "purge", "doctor",
-    "run", "repo", "config", "auth", "token", "agents", "models",
+/// VM from the host). `__request` is the web endpoint's own use of the
+/// daemon protocol.
+pub const FORWARDED: [&str; 18] = [
+    "status",
+    "peers",
+    "sub",
+    "unsub",
+    "subs",
+    "release",
+    "handover",
+    "assign",
+    "purge",
+    "doctor",
+    "run",
+    "repo",
+    "config",
+    "auth",
+    "token",
+    "agents",
+    "models",
+    "__request",
 ];
 
 mod firecracker;

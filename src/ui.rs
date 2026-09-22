@@ -1,38 +1,20 @@
-//! Desktop integration for Omarchy: the bar widget plugin (a dashboard of the
-//! factory's state), the menu entries (status, the service toggle, restart,
-//! logs) and the background service toggle. Setup is not done from here:
-//! `ssf auth` and `ssf repo` are the CLI for that.
+//! Desktop integration for Omarchy: the Factory menu entries (status, the
+//! service toggle, restart, logs) and the background service toggle. Setup is
+//! not done from here: `ssf auth` and `ssf repo` are the CLI for that.
 
 use crate::platform;
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 use std::process::Command;
-use tracing::{info, warn};
+use tracing::info;
 
-pub const PLUGIN_ID: &str = "ssf.factory";
+/// The Omarchy plugin id of the bar widget this package used to ship. It is
+/// gone from ssf (#413), but an upgraded installation still has it in its
+/// shell config and plugin directory until something removes it.
+const SUPERSEDED_WIDGET_ID: &str = "ssf.factory";
 const MENU_BEGIN: &str =
     "  // ssf:begin (managed by `ssf ui install`; edits inside are overwritten)";
 const MENU_END: &str = "  // ssf:end";
-
-/// Where the package installs the plugin sources.
-pub fn plugin_source_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("SSF_PLUGIN_DIR") {
-        return PathBuf::from(d);
-    }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .unwrap_or_default();
-    let candidates = [
-        PathBuf::from("/usr/share/ssf/omarchy-plugin"),
-        exe_dir.join("../share/ssf/omarchy-plugin"),
-        exe_dir.join("../.."),
-    ];
-    candidates
-        .into_iter()
-        .find(|p| p.join("manifest.json").exists())
-        .unwrap_or_else(|| PathBuf::from("/usr/share/ssf/omarchy-plugin"))
-}
 
 /// The home directory the Omarchy integration writes into
 /// (`~/.config/omarchy/...`). Guarded like `config::state_dir()`: the test
@@ -49,8 +31,11 @@ fn home() -> PathBuf {
     }
 }
 
-pub fn plugin_target_dir() -> PathBuf {
-    home().join(".config/omarchy/plugins").join(PLUGIN_ID)
+/// Where the bar widget's copy lived, still checked to find one to remove.
+fn plugin_target_dir() -> PathBuf {
+    home()
+        .join(".config/omarchy/plugins")
+        .join(SUPERSEDED_WIDGET_ID)
 }
 
 pub fn menu_extension_path() -> PathBuf {
@@ -95,132 +80,122 @@ fn run_quiet_path(
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Copy the packaged plugin into the user's plugin directory (the shell
-/// refuses symlinked plugins) and add the widget to the bar. Idempotent: files
-/// are rewritten only when the packaged copy differs. Off Omarchy there is
-/// no bar: nothing is written.
-pub fn install_plugin() -> Result<bool> {
-    if !platform::is_omarchy() {
-        return Ok(false);
-    }
-    let src = plugin_source_dir();
-    if !src.join("manifest.json").exists() {
-        bail!("plugin sources not found at {}", src.display());
-    }
-    let dst = plugin_target_dir();
-    // `omarchy plugin add` installs the whole repository here as a git
-    // checkout. A packaged ssf discovered later must never replace files in
-    // that user-managed checkout with its packaged widget copy.
-    let marketplace_checkout = dst.join(".git").exists();
-    let mut changed = false;
-    if let Ok(meta) = std::fs::symlink_metadata(&dst)
-        && meta.file_type().is_symlink()
-    {
-        std::fs::remove_file(&dst)?;
-        changed = true;
-    }
-    std::fs::create_dir_all(&dst).with_context(|| format!("creating {}", dst.display()))?;
-    let files = ["manifest.json", "marketplace/FactoryPanel.qml"];
-    for relative in files {
-        if marketplace_checkout {
-            continue;
-        }
-        let from = src.join(relative);
-        if !from.is_file() {
-            bail!("plugin source missing {}", from.display());
-        }
-        let to = dst.join(relative);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let data = std::fs::read(&from)?;
-        if std::fs::read(&to).ok().as_deref() != Some(data.as_slice()) {
-            crate::config::write_atomic(&to, &data, 0o644)?;
-            changed = true;
-        }
-    }
-    if changed {
-        info!(path = %dst.display(), "installed bar widget files");
-    }
-    if platform::which("omarchy-plugin-enable").is_none() {
-        warn!(
-            "omarchy shell commands not found; widget files installed but not enabled in the bar"
-        );
-        return Ok(changed);
-    }
-    if !widget_enabled()? {
-        // Sit next to the Agents widget when it is present, otherwise on the right.
-        let res = run_quiet(
-            "omarchy-plugin-enable",
-            &[
-                PLUGIN_ID,
-                "--section",
-                "right",
-                "--before",
-                "omarchy.agents",
-            ],
-        )
-        .or_else(|_| run_quiet("omarchy-plugin-enable", &[PLUGIN_ID, "--section", "right"]));
-        match res {
-            Ok(_) => {
-                info!("enabled {PLUGIN_ID} in the Omarchy bar");
-                changed = true;
-            }
-            Err(e) => warn!("could not enable bar widget: {e:#}"),
-        }
-    }
-    Ok(changed)
+/// What [`remove_superseded_widget`] did, so its callers can say it without
+/// guessing at the state it left behind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovedWidget {
+    /// Nothing to do: none was here, or it had already been dealt with. A
+    /// plugin manager checkout that is already disabled lands here too -- it
+    /// is not this package's to remove, and [`superseded_widget_note`] is
+    /// what reports it.
+    Nothing,
+    /// The widget is disabled and the package's copy of it is gone.
+    Removed,
+    /// The widget is disabled; a plugin manager checkout remains, and
+    /// `omarchy plugin remove ssf.factory` is what removes that.
+    Disabled,
 }
 
-pub fn widget_enabled() -> Result<bool> {
+/// Disable and remove the Omarchy bar widget this package used to ship
+/// (#413). A marketplace git checkout is left for `omarchy plugin remove
+/// ssf.factory`, which owns it, but its widget is disabled all the same, so
+/// nothing is left in the bar.
+pub fn remove_superseded_widget() -> Result<RemovedWidget> {
+    remove_superseded_widget_with(platform::is_omarchy(), || {
+        run_quiet("omarchy-plugin-disable", &[SUPERSEDED_WIDGET_ID])
+    })
+}
+
+fn remove_superseded_widget_with(
+    is_omarchy: bool,
+    mut disable: impl FnMut() -> Result<String>,
+) -> Result<RemovedWidget> {
+    if !is_omarchy {
+        return Ok(RemovedWidget::Nothing);
+    }
+    let mut disabled = false;
+    if widget_enabled()? {
+        // Disable first: deleting the files under a widget the shell still
+        // shows would leave it in the bar with nothing behind it.
+        disable().context("could not disable the superseded bar widget")?;
+        disabled = true;
+    }
+    let dst = plugin_target_dir();
+    if dst.join(".git").exists() {
+        return Ok(match disabled {
+            true => RemovedWidget::Disabled,
+            // Disabled already, by an earlier run: what is left is the
+            // plugin manager's.
+            false => RemovedWidget::Nothing,
+        });
+    }
+    let mut removed = disabled;
+    if let Ok(meta) = std::fs::symlink_metadata(&dst) {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&dst)?;
+            removed = true;
+        } else if meta.is_dir() {
+            std::fs::remove_dir_all(&dst)?;
+            removed = true;
+        }
+    }
+    if removed {
+        info!("removed the superseded Omarchy bar widget");
+    }
+    Ok(match removed {
+        true => RemovedWidget::Removed,
+        false => RemovedWidget::Nothing,
+    })
+}
+
+/// The line `ssf doctor` prints about the bar widget this package used to
+/// ship, or `None` when there is nothing to say (#413): another desktop has
+/// none, and neither has an installation that has already upgraded.
+///
+/// What it says follows what is actually left. `ssf setup` and `ssf ui
+/// install` disable the widget and remove the package's copy of it, but a
+/// checkout `omarchy plugin add` made is the plugin manager's and stays
+/// ([`remove_superseded_widget_with`]); once it is disabled, those commands
+/// have nothing left to do and the note must not send anyone back to them.
+///
+/// `ssf doctor` is answered inside the guest when the factory is in a VM,
+/// and no guest can read this host's `~/.config/omarchy`, so the host prints
+/// this same line before it forwards the command there.
+pub fn superseded_widget_note() -> Option<String> {
+    superseded_widget_note_with(platform::is_omarchy())
+}
+
+fn superseded_widget_note_with(is_omarchy: bool) -> Option<String> {
+    if !is_omarchy {
+        return None;
+    }
+    let target = plugin_target_dir();
+    let enabled = widget_enabled().unwrap_or(false);
+    if !enabled && target.join(".git").exists() {
+        return Some(
+            "superseded bar widget: disabled; `omarchy plugin remove ssf.factory` removes the checkout"
+                .to_string(),
+        );
+    }
+    (enabled || std::fs::symlink_metadata(&target).is_ok()).then(|| {
+        "superseded bar widget: still installed; `ssf ui install` or `ssf setup` disables and removes it"
+            .to_string()
+    })
+}
+
+fn widget_enabled() -> Result<bool> {
     let path = home().join(".config/omarchy/shell.json");
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return Ok(false);
     };
-    Ok(raw.contains(&format!("\"{PLUGIN_ID}\"")))
+    Ok(raw.contains(&format!("\"{SUPERSEDED_WIDGET_ID}\"")))
 }
 
-/// Is any of the desktop integration in place: the widget files (a
-/// directory, or the symlink older installs made) or the menu block?
-pub fn desktop_present() -> bool {
-    let widget = std::fs::symlink_metadata(plugin_target_dir()).is_ok();
-    let menu = std::fs::read_to_string(menu_extension_path())
+/// Is the Factory menu block in place?
+pub fn menu_present() -> bool {
+    std::fs::read_to_string(menu_extension_path())
         .map(|t| t.contains(MENU_BEGIN))
-        .unwrap_or(false);
-    widget || menu
-}
-
-/// Removes the bar widget; `Ok(true)` when there was one to remove.
-pub fn uninstall_plugin() -> Result<bool> {
-    uninstall_plugin_with(platform::is_omarchy(), || {
-        run_quiet("omarchy-plugin-disable", &[PLUGIN_ID])
-    })
-}
-
-fn uninstall_plugin_with(
-    is_omarchy: bool,
-    mut disable: impl FnMut() -> Result<String>,
-) -> Result<bool> {
-    if is_omarchy && widget_enabled()? {
-        disable().context("could not disable bar widget before removing desktop integration")?;
-    }
-    let dst = plugin_target_dir();
-    // The marketplace owns its git checkout and `omarchy plugin remove`
-    // removes it. `ssf uninstall` disables the widget above but preserves the
-    // checkout, including this bootstrap helper, for that explicit final step.
-    if dst.join(".git").exists() {
-        return Ok(false);
-    }
-    if let Ok(meta) = std::fs::symlink_metadata(&dst) {
-        if meta.file_type().is_symlink() {
-            std::fs::remove_file(&dst)?;
-            return Ok(true);
-        } else if meta.is_dir() {
-            std::fs::remove_dir_all(&dst)?;
-            return Ok(true);
-        }
-    }
-    Ok(false)
+        .unwrap_or(false)
 }
 
 /// The Factory submenu: what shows state and the one control. Nothing here
@@ -555,15 +530,23 @@ pub fn install_all(quiet: bool) -> Result<()> {
     if !platform::is_omarchy() {
         // Nothing under ~/.config/omarchy is made on another desktop.
         if !quiet {
-            println!("not on Omarchy: no bar widget or menu to install");
+            println!("not on Omarchy: no Factory menu entries to install");
         }
         return Ok(());
     }
     let mut notes = Vec::new();
-    match install_plugin() {
-        Ok(true) => notes.push("bar widget installed".to_string()),
-        Ok(false) => notes.push("bar widget already installed".to_string()),
-        Err(e) => notes.push(format!("bar widget: {e:#}")),
+    // The widget was this package's too, so an upgraded installation still
+    // showing one is cleaned up here: `ssf ui install` is the one step it
+    // takes to get rid of it (#413). It says what it did -- a plugin
+    // manager's checkout is disabled and left, not removed.
+    match remove_superseded_widget() {
+        Ok(RemovedWidget::Removed) => notes.push("superseded bar widget removed".to_string()),
+        Ok(RemovedWidget::Disabled) => notes.push(
+            "superseded bar widget disabled; `omarchy plugin remove ssf.factory` removes the checkout"
+                .to_string(),
+        ),
+        Ok(RemovedWidget::Nothing) => {}
+        Err(e) => notes.push(format!("superseded bar widget: {e:#}")),
     }
     match install_menu() {
         Ok(true) => notes.push("menu entries installed".to_string()),
@@ -579,12 +562,34 @@ pub fn install_all(quiet: bool) -> Result<()> {
 }
 
 pub fn uninstall_all() -> Result<()> {
-    let widget = uninstall_plugin()?;
+    // The two are independent, and both run: the leftover widget is no longer
+    // this package's, so its disable failing -- a host without the Omarchy
+    // shell commands can -- must not leave ssf's own menu entries in place
+    // (#413). The failure is said out loud, as `install_all` says it, and the
+    // menu entries come out either way.
+    let widget = match remove_superseded_widget() {
+        Ok(what) => what,
+        Err(e) => {
+            eprintln!("warning: could not remove the superseded bar widget: {e:#}");
+            RemovedWidget::Nothing
+        }
+    };
     let menu = uninstall_menu()?;
-    if !widget && !menu && !platform::is_omarchy() {
-        println!("not on Omarchy: no bar widget or menu to remove");
-    } else {
-        println!("removed the Factory bar widget and menu entries");
+    match widget {
+        RemovedWidget::Removed => println!("removed the superseded bar widget"),
+        RemovedWidget::Disabled => println!(
+            "disabled the superseded bar widget; `omarchy plugin remove ssf.factory` removes the checkout"
+        ),
+        RemovedWidget::Nothing => {}
+    }
+    if menu {
+        println!("removed the Factory menu entries");
+    } else if widget == RemovedWidget::Nothing {
+        if platform::is_omarchy() {
+            println!("no Factory menu entries to remove");
+        } else {
+            println!("not on Omarchy: no Factory menu entries to remove");
+        }
     }
     Ok(())
 }
@@ -609,13 +614,19 @@ mod tests {
         std::fs::set_permissions(&command, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         assert_eq!(
-            run_quiet_path(&command, "omarchy-plugin-disable", &[PLUGIN_ID], None).unwrap(),
+            run_quiet_path(
+                &command,
+                "omarchy-plugin-disable",
+                &[SUPERSEDED_WIDGET_ID],
+                None
+            )
+            .unwrap(),
             "disabled"
         );
         let custom = run_quiet_path(
             &command,
             "omarchy-plugin-disable",
-            &[PLUGIN_ID],
+            &[SUPERSEDED_WIDGET_ID],
             Some("/custom/omarchy".into()),
         )
         .unwrap_err();
@@ -628,96 +639,117 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// The widget is disabled before anything of it is deleted, the outcome
+    /// says what was actually done, and a marketplace checkout -- the plugin
+    /// manager's, not the package's -- is left behind even then.
     #[test]
-    fn a_disable_failure_preserves_the_marketplace_checkout() {
+    fn removing_the_superseded_widget_disables_it_before_deleting_anything() {
         let sandbox = crate::config::test_support::sandbox();
-        let checkout = plugin_target_dir();
-        std::fs::create_dir_all(checkout.join(".git")).unwrap();
         let shell_config = sandbox.home().join(".config/omarchy/shell.json");
         std::fs::create_dir_all(shell_config.parent().unwrap()).unwrap();
-        std::fs::write(&shell_config, format!("{{\"right\":[\"{PLUGIN_ID}\"]}}")).unwrap();
+        std::fs::write(
+            &shell_config,
+            format!("{{\"right\":[\"{SUPERSEDED_WIDGET_ID}\"]}}"),
+        )
+        .unwrap();
 
-        let err = uninstall_plugin_with(true, || anyhow::bail!("disable refused")).unwrap_err();
+        assert_eq!(
+            remove_superseded_widget_with(false, || unreachable!("off Omarchy")).unwrap(),
+            RemovedWidget::Nothing,
+            "another desktop has no Omarchy widget to remove"
+        );
+
+        let checkout = plugin_target_dir();
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        let err =
+            remove_superseded_widget_with(true, || anyhow::bail!("disable refused")).unwrap_err();
         assert!(format!("{err:#}").contains("disable refused"));
         assert!(
             checkout.join(".git").is_dir(),
             "a failed disable must abort before the checkout can be removed"
         );
+
+        let disabled = std::cell::Cell::new(0);
+        assert_eq!(
+            remove_superseded_widget_with(true, || {
+                disabled.set(disabled.get() + 1);
+                Ok("disabled".to_string())
+            })
+            .unwrap(),
+            RemovedWidget::Disabled,
+            "a checkout is disabled and left, and the outcome says so"
+        );
+        assert_eq!(disabled.get(), 1);
+        assert!(
+            checkout.join(".git").is_dir(),
+            "the plugin manager removes its own checkout"
+        );
+
+        // Disabled already -- what `omarchy-plugin-disable` leaves in the
+        // shell config -- so the leftover is the plugin manager's, and this
+        // command has nothing left to do with it.
+        std::fs::write(&shell_config, "{\"right\":[\"omarchy.agents\"]}").unwrap();
+        assert_eq!(
+            remove_superseded_widget_with(true, || unreachable!("already disabled")).unwrap(),
+            RemovedWidget::Nothing,
+            "a disabled checkout is not this package's to remove"
+        );
+
+        // A copy the package made is not so protected.
+        std::fs::remove_dir_all(&checkout).unwrap();
+        std::fs::create_dir_all(checkout.join("marketplace")).unwrap();
+        assert_eq!(
+            remove_superseded_widget_with(true, || Ok("disabled".to_string())).unwrap(),
+            RemovedWidget::Removed,
+            "the packaged copy is removed, and the outcome says so"
+        );
+        assert!(!checkout.exists(), "the packaged copy is removed");
     }
 
-    // ssf-ui is Linux desktop glue and is not shipped by the macOS package.
-    #[cfg(target_os = "linux")]
+    /// `ssf doctor` must not send anyone back to a command that will do
+    /// nothing: after `ssf ui install` has disabled a checkout made by
+    /// `omarchy plugin add`, the only thing left is the plugin manager's, and
+    /// the note has to say so instead.
     #[test]
-    fn workspace_attachment_accepts_an_unknown_vm_state_but_not_a_stopped_one() {
-        let root = std::env::temp_dir().join(format!(
-            "ssf-ui-status-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let bin = root.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let log = root.join("terminal.log");
-        let ssf = bin.join("ssf");
-        let terminal = bin.join("omarchy-launch-terminal");
-        let browser = bin.join("omarchy-launch-browser");
+    fn the_doctor_note_says_what_is_still_to_do() {
+        let sandbox = crate::config::test_support::sandbox();
+        assert_eq!(
+            superseded_widget_note_with(false),
+            None,
+            "another desktop has no widget to report"
+        );
+        assert_eq!(
+            superseded_widget_note_with(true),
+            None,
+            "an upgraded installation is not nagged about"
+        );
+
+        let target = plugin_target_dir();
+        std::fs::create_dir_all(target.join("marketplace")).unwrap();
+        let note = superseded_widget_note_with(true).expect("the package's copy is reported");
+        assert!(note.contains("still installed"), "{note}");
+        assert!(note.contains("`ssf ui install` or `ssf setup`"), "{note}");
+
+        std::fs::remove_dir_all(&target).unwrap();
+        std::fs::create_dir_all(target.join(".git")).unwrap();
+        let note = superseded_widget_note_with(true).expect("a disabled checkout is reported");
+        assert!(note.contains("disabled"), "{note}");
+        assert!(note.contains("omarchy plugin remove ssf.factory"), "{note}");
+        assert!(
+            !note.contains("ssf ui install"),
+            "what is left is the plugin manager's to remove: {note}"
+        );
+
+        // Enabled again: whatever else is there, the upgrade step has work.
+        let shell_config = sandbox.home().join(".config/omarchy/shell.json");
+        std::fs::create_dir_all(shell_config.parent().unwrap()).unwrap();
         std::fs::write(
-            &terminal,
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$SSF_UI_TEST_LOG\"\n",
+            &shell_config,
+            format!("{{\"right\":[\"{SUPERSEDED_WIDGET_ID}\"]}}"),
         )
         .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&terminal, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        std::fs::write(&browser, "#!/bin/sh\nexit 0\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&browser, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/ssf-ui");
-        for (name, status, attaches) in [
-            ("running", r#"{"enabled":true,"running":true}"#, true),
-            ("unknown", r#"{"enabled":true,"running":null}"#, true),
-            ("stopped", r#"{"enabled":true,"running":false}"#, false),
-            ("disabled", r#"{"enabled":false,"running":true}"#, false),
-        ] {
-            std::fs::write(&ssf, format!("#!/bin/sh\nprintf '%s\\n' '{status}'\n")).unwrap();
-            #[cfg(unix)]
-            std::fs::set_permissions(&ssf, {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::Permissions::from_mode(0o755)
-            })
-            .unwrap();
-            let before = std::fs::read_to_string(&log).unwrap_or_default();
-            let mut paths = vec![bin.clone()];
-            paths.extend(std::env::split_paths(
-                &std::env::var_os("PATH").unwrap_or_default(),
-            ));
-            let path = std::env::join_paths(paths).unwrap();
-            let output = std::process::Command::new("bash")
-                .arg(&script)
-                .args(["open-workspace", "workspace", "https://example.com"])
-                .env("PATH", path)
-                .env("TERMINAL", &terminal)
-                .env("SSF_UI_PRESENTED", "1")
-                .env("SSF_UI_TEST_LOG", &log)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{name}: {output:?}");
-            let after = std::fs::read_to_string(&log).unwrap_or_default();
-            if attaches {
-                assert_eq!(after, format!("{before}ssf vm attach\n"), "{name}");
-            } else {
-                assert_eq!(after, before, "{name} status should not attach");
-            }
-        }
-        std::fs::remove_dir_all(root).unwrap();
+        let note = superseded_widget_note_with(true).expect("an enabled widget is reported");
+        assert!(note.contains("still installed"), "{note}");
     }
 
     #[test]
@@ -813,14 +845,14 @@ mod tests {
         assert_eq!(parsed.as_object().map(|o| o.len()), Some(6));
     }
 
-    /// The shipped widget and its helper script only show and reach state.
-    /// The setup flows (sign in, add or edit a repository) are gone; what
-    /// remains reads `ssf status --json`, toggles the service, opens the log,
-    /// the status-and-doctor terminal and a session's workspace.
+    /// `bin/ssf-ui` is what the **Factory** menu entries call; it only shows
+    /// and reaches state. The setup flows (sign in, add or edit a
+    /// repository) went in #110, and the two commands the removed bar widget
+    /// had of its own -- the session list and opening a session's workspace
+    /// (#413) -- are gone with it.
     #[test]
-    fn widget_and_helper_have_no_setup_flows() {
+    fn helper_keeps_only_the_menu_commands() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let panel = std::fs::read_to_string(root.join("marketplace/FactoryPanel.qml")).unwrap();
         let helper = std::fs::read_to_string(root.join("bin/ssf-ui")).unwrap();
         for gone in [
             "ssf-ui login",
@@ -830,20 +862,7 @@ mod tests {
             "omarchy-menu-input",
             "omarchy-menu-select",
         ] {
-            assert!(!panel.contains(gone), "FactoryPanel.qml still has {gone:?}");
             assert!(!helper.contains(gone), "ssf-ui still has {gone:?}");
-        }
-        // Naming the commands in advice text is fine; running them is not.
-        for gone in [
-            "\"ssf auth",
-            "\"ssf repo",
-            "run(\"ssf auth",
-            "run(\"ssf repo",
-        ] {
-            assert!(
-                !panel.contains(gone),
-                "FactoryPanel.qml still runs {gone:?}"
-            );
         }
         for gone in [
             "ssf auth login --",
@@ -856,21 +875,18 @@ mod tests {
         ] {
             assert!(!helper.contains(gone), "ssf-ui still runs {gone:?}");
         }
-        for kept in [
-            "\"status\", \"--json\"",
-            "/usr/bin/ssf",
-            "ui service toggle",
-            "ui service restart",
-            "ui open-workspace",
-            "blocked_sessions",
-            "anyone_allowed",
-        ] {
-            assert!(panel.contains(kept), "FactoryPanel.qml lost {kept:?}");
-        }
-        for cmd in ["service)", "logs)", "status)", "peers)", "open-workspace)"] {
+        // The commands the menu block names, and nothing else.
+        for cmd in ["service)", "logs)", "status)"] {
             assert!(helper.contains(cmd), "ssf-ui lost the {cmd} command");
         }
-        for gone in ["login)", "add-repo)", "edit-repo)", "manage-repos)"] {
+        for gone in [
+            "login)",
+            "add-repo)",
+            "edit-repo)",
+            "manage-repos)",
+            "peers)",
+            "open-workspace)",
+        ] {
             assert!(!helper.contains(gone), "ssf-ui still dispatches {gone}");
         }
     }
@@ -887,9 +903,10 @@ mod tests {
         assert!(!out.contains("\"old\""));
     }
 
-    /// The widget's install and uninstall write and delete under
-    /// `~/.config/omarchy`; in a test they must land in the sandbox
-    /// instead, and without one they are refused (#140).
+    /// The menu's install and uninstall write and delete under
+    /// `~/.config/omarchy`, and the superseded widget is removed under it
+    /// too; in a test they must land in the sandbox instead, and without one
+    /// they are refused (#140).
     #[test]
     fn the_omarchy_paths_hang_off_the_sandbox() {
         let sb = crate::config::test_support::sandbox();

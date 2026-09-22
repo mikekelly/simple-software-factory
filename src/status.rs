@@ -1,8 +1,8 @@
-//! The joined view behind `ssf status`, `ssf peers` and the bar widget: what
-//! ssf knows about each item (issue or PR, GitHub state, triggers, prompts,
-//! session id) next to what herdr reports about the workspace working on it
-//! (agent state, last assistant message, current tool, last activity, board
-//! column, branch). The widget reads this and never talks to herdr itself.
+//! The joined view behind `ssf status` and `ssf peers`: what ssf knows about
+//! each item (issue or PR, GitHub state, triggers, prompts, session id) next
+//! to what herdr reports about the workspace working on it (agent state, last
+//! assistant message, current tool, last activity, board column, branch). The
+//! dashboards read this and never talk to herdr themselves.
 
 use anyhow::Context;
 use serde::Serialize;
@@ -17,7 +17,7 @@ use crate::github::PrInfo;
 use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover, State};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
-/// the bar widget polls this, so it must never hang.
+/// the dashboards poll this, so it must never hang.
 const DRIVER_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Session identity: `owner/repo#N`, the same form `--as` takes.
@@ -260,7 +260,7 @@ impl HandoverView {
     }
 }
 
-/// A session's block, for `ssf status --json` and the widget.
+/// A session's block, for `ssf status --json` and the dashboards.
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockedView {
     pub reason: String,
@@ -494,10 +494,10 @@ impl Snapshot {
             "last_error": self.state.last_error,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
             "config_path": crate::config::config_path(),
-            // The wildcard allow-list is in effect somewhere: the widget
-            // shows a warning while it is.
+            // The wildcard allow-list is in effect somewhere: the
+            // dashboards show a warning while it is.
             "anyone_allowed": self.cfg.anyone_allowed_anywhere(),
-            // Sessions whose harness is not signed in (the widget shows an
+            // Sessions whose harness is not signed in (the dashboards show an
             // urgent line per one).
             "blocked_sessions": sessions.iter().filter(|s| s.blocked.is_some()).map(|s| s.id.clone()).collect::<Vec<_>>(),
             "driver": driver_status,
@@ -1050,10 +1050,30 @@ fn issue(row: &Value, fallback: &str) -> Value {
         "kind":row["kind"].as_str().unwrap_or("issue"),"active":row["active"] == true})
 }
 
+/// The factory a payload came from, on every card: the name the server was
+/// started under when it answers for a catalog target (`ssf-server --target
+/// …`; the status stream names it in `server`), else the machine's own
+/// hostname. A client holding several factories needs it on the card rather
+/// than only on the page it came from.
+fn factory_label(payload: &Value) -> String {
+    match &payload["server"] {
+        Value::String(name) if !name.is_empty() => name.clone(),
+        server => {
+            let hostname = text(server, "hostname");
+            if hostname.is_empty() {
+                crate::hostname()
+            } else {
+                hostname.to_owned()
+            }
+        }
+    }
+}
+
 pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     let rows = payload["sessions"]
         .as_array()
         .context("SSF returned status data in an unexpected format")?;
+    let factory = factory_label(payload);
     let relevant: Vec<_> = rows
         .iter()
         .filter(|row| {
@@ -1106,6 +1126,16 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
                 value.to_owned()
             }
         };
+        // What a card carries as null: the tool call an idle agent is not
+        // making, and the branch of an item with no workspace.
+        let optional = |key| {
+            let value = metadata(key);
+            if value.is_empty() {
+                Value::Null
+            } else {
+                Value::String(value)
+            }
+        };
         // The stack the next launch uses when it is not the one running:
         // the owning row's own, or the live row's (a bound item is worked
         // in its owner's workspace, so the pane there is what is running).
@@ -1114,7 +1144,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             .map(|row| row["next_launch"].clone())
             .find(|value| !value.is_null())
             .unwrap_or(Value::Null);
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"next_launch":next_launch,"agent_session_id":metadata("agent_session_id")}));
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"tool":optional("tool"),"branch":optional("branch"),"factory":factory,"next_launch":next_launch,"agent_session_id":metadata("agent_session_id")}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");
@@ -1161,10 +1191,10 @@ mod dashboard_tests {
     use super::*;
     #[test]
     fn presents_server_ownership_and_latest_message_safely() {
-        let snapshot = dashboard_presentation(&json!({"sessions":[
+        let snapshot = dashboard_presentation(&json!({"server":"factory-one","sessions":[
             {"id":"r#1","title":"Origin","active":false,"harness":"codex","url":"javascript:alert(1)"},
             {"id":"r#2","owner":"r#1","active":true,"agent_live":true,"agent_state":"working","last_activity_at":"2026-09-12T12:00:00Z","last_assistant_message":" Earlier "},
-            {"id":"r#3","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> "},
+            {"id":"r#3","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle","last_activity_at":"2026-09-12T13:00:00Z","last_assistant_message":" <script>latest</script> ","tool":"Bash: cargo test","branch":"bot/issue-1-origin"},
             {"id":"r#4","owner":"r#4","active":true,"subscriber_only":true}
         ]})).unwrap();
         let cards = snapshot["cards"].as_array().unwrap();
@@ -1174,10 +1204,28 @@ mod dashboard_tests {
         assert_eq!(cards[0]["additional"].as_array().unwrap().len(), 2);
         assert_eq!(cards[0]["agent_state"], "idle");
         assert_eq!(cards[0]["harness"], "codex");
+        assert_eq!(cards[0]["tool"], "Bash: cargo test");
+        assert_eq!(cards[0]["branch"], "bot/issue-1-origin");
+        assert_eq!(cards[0]["factory"], "factory-one");
         assert_eq!(
             cards[0]["last_assistant_message"],
             "<script>latest</script>"
         );
+    }
+
+    /// A card says which factory it came from, and what an item without a
+    /// live agent has none of: a tool call to show, or a workspace branch.
+    #[test]
+    fn cards_name_the_factory_and_leave_what_is_absent_null() {
+        let snapshot = dashboard_presentation(&json!({
+            "server":{"hostname":"host-one","location":"local"},
+            "sessions":[{"id":"r#2","owner":"r#2","active":true,"agent_live":true,"agent_state":"idle"}]
+        }))
+        .unwrap();
+        let card = &snapshot["cards"][0];
+        assert_eq!(card["factory"], "host-one");
+        assert!(card["tool"].is_null());
+        assert!(card["branch"].is_null());
     }
 
     #[test]

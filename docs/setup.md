@@ -23,7 +23,7 @@ setup runs the daemon, herdr and agents inside a Firecracker microVM. In the
 host alternative, agents run as your Unix user and can access your home
 directory and credentials. That alternative is in
 [step 6](#alternative-on-the-host-in-herdr).
-The bar widget and **Factory** menu are available only on Omarchy.
+The **Factory** menu is available only on Omarchy.
 
 For everyday commands see the [README](../README.md#everyday-commands).
 The installed guide is `/usr/share/doc/ssf/docs/setup.md`. The
@@ -72,8 +72,8 @@ repositories provide a sufficiently recent GitHub CLI. Debian 12 needs the
 additional GitHub apt repository described below.
 
 Package installation only installs SSF's files. It does not create user
-configuration, authenticate a bot, enable the service, or install the optional
-Omarchy widget. Prepare the current user explicitly after installation. The
+configuration, authenticate a bot, enable the service, or add the optional
+Omarchy menu. Prepare the current user explicitly after installation. The
 recommended path creates one managed VM server named `ssf-server`, selected
 implicitly because it is the only target, and enables only its target service:
 
@@ -136,7 +136,7 @@ cannot provide:
   The Firecracker guest is Ubuntu 24.04 LTS on every supported Linux host;
   the host does not need to run Ubuntu.
 
-### Service and optional Omarchy widget
+### Service and the optional Omarchy menu
 
 `ssf setup` is the only package setup step. The Linux unit works in Wayland,
 X11, and headless sessions and starts through the user's `default.target`.
@@ -154,14 +154,18 @@ everything that stops the same way (`ssf ui service disable`, `ssf uninstall`,
 package removal) is not undone. In the guest the same policy applies to the
 `ssf` system unit.
 
-On Omarchy, install the widget separately if you want its status display and
-service controls:
+On Omarchy, `ssf ui install` adds the optional **Factory** menu entries
+(status, the service toggle, restart, logs) to the desktop menu:
 
 ```sh
-omarchy plugin add https://github.com/mikekelly/simple-software-factory.git --enable
+ssf ui install
 ```
 
-The widget never installs, upgrades, starts, or removes the SSF package.
+They never install, upgrade, start, or remove the SSF package, and `ssf ui
+uninstall` takes them away again. The bar widget earlier versions shipped is
+gone ([#413](https://github.com/mikekelly/simple-software-factory/issues/413)):
+`ssf setup` and `ssf ui install` both disable and remove one left behind, and
+`ssf doctor` says which of the two is still there until then.
 
 For a live terminal view of active agents, run `ssf dashboard` in any terminal.
 The Linux client includes it; no plugin or Python installation is
@@ -182,7 +186,7 @@ The packages install the same paths on every distribution:
 |------|------|
 | `/usr/bin/ssf` | management client; locally invokes `ssf-server`, or reaches one over SSH with `--server` |
 | `/usr/bin/ssf-server` | daemon and the server-side command endpoint |
-| `/usr/bin/ssf-ui` | the bar widget's and menu's helper: service toggle, log, status terminal, open a workspace |
+| `/usr/bin/ssf-ui` | the desktop helper behind the **Factory** menu: service toggle, log, status terminal |
 | `/usr/lib/systemd/user/ssf.service` | legacy singleton service retained for unmigrated installations |
 | `/usr/lib/systemd/user/ssf@.service` | one target-qualified background service instance per named local or VM server |
 | `/usr/share/ssf/SSF.example.md` | a starting point for your repository's `SSF.md` ([Writing SSF.md](ssf-md.md)) |
@@ -778,15 +782,34 @@ an upgrade through.
 Your config, state, keys and the VM's disks are preserved by an upgrade. After
 the upgrade, `ssf doctor` should look as it did before.
 
+**Omarchy, upgraded from a version that had the widget:** the bar widget this
+package used to ship is gone. An upgrade leaves the widget files and the
+shell's own configuration alone; `ssf setup` (which the package asks you to run
+after installation) and `ssf ui install` both clean it up, and `ssf doctor`
+says what is left until one of them runs:
+
+```sh
+ssf ui install
+```
+
+That is the same command that installs the **Factory** menu entries, so an
+upgrade on Omarchy needs nothing else. It disables the widget in the shell
+first, then deletes the copy under `~/.config/omarchy/plugins`. A plugin
+checkout made with `omarchy plugin add` is the plugin manager's and is only
+disabled — `ssf doctor` then says so, rather than sending you back to a
+command with nothing left to do, and `omarchy plugin remove ssf.factory`
+removes the checkout. Nothing else under `~/.config`, ssf's state, projects
+or VM data is touched.
+
 ## 12. Stopping and uninstalling
 
 ### Stop or restart later
 
 `ssf ui service disable` stops the service and keeps it stopped across
 logins. `ssf ui service enable` enables it again on Linux, including machines
-without the Omarchy widget. A stop nobody asked for is different: the unit
+without the Omarchy menu. A stop nobody asked for is different: the unit
 restarts the daemon after any exit
-([see above](#service-and-optional-omarchy-widget)), so a crash or an
+([see above](#service-and-the-optional-omarchy-menu)), so a crash or an
 unexplained SIGTERM costs one `RestartSec` rather than the factory.
 
 Host agent terminals survive a daemon stop; activity is delivered when

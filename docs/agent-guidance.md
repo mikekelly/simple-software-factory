@@ -212,9 +212,11 @@ dashboard document](dashboard.md).
 
 ### Omarchy
 
-The bar widget is independent of the service: `omarchy plugin remove
-ssf.factory` removes only its checkout and leaves the factory running; a
-reinstall uses `ssf setup` for the user and adds the widget separately.
+The **Factory** menu entries come from `ssf ui install` and can be removed
+with `ssf ui uninstall`; neither touches the running factory. The bar widget
+this package used to ship is gone (#413): `ssf setup` and `ssf ui install`
+disable and remove one left by an earlier version, and `ssf doctor` says what
+is left until one of them runs.
 Preserved configuration, state, clones and worktrees are reused unless the
 person explicitly chose `--data` at uninstall.
 
