@@ -86,9 +86,9 @@ when the text is really clipped. Then:
 
 - **also on: #a #b** — the other issues this agent has taken on;
 - **Details**, collapsed — the current tool call, the factory label, the
-  workspace branch and the agent session id. The overlay's own factory label is
-  used until the server sends the card's factory name, and the other three read
-  "not reported" until the server sends them.
+  workspace branch and the agent session id, from the status model's own
+  fields. A field the server does not send reads "not reported" rather than
+  being invented.
 
 An issue that is an *additional* item of another agent shows `worked on by the
 agent on #N`, with #N linked, instead of a card claiming its own agent.
@@ -157,6 +157,3 @@ forward, and keep tailnet ACLs restrictive.
   issue or pull request, as GitHub's board and list views do.
 - Chrome prompts for each factory address once; until it is allowed, the page
   says so rather than showing state it cannot read.
-- The **Details** fields other than the factory label need the card fields added
-  by [#419](https://github.com/mikekelly/simple-software-factory/issues/419); on
-  an older server they read "not reported".

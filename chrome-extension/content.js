@@ -454,9 +454,10 @@
   }
 
   /// The always-visible detail: what the agent is doing, where it is running and
-  /// which session it is. `tool`, `branch` and `factory` are not on the card
-  /// until the server sends them (#419); until then the extension's own factory
-  /// label is what it knows, and the rest reads "not reported".
+  /// which session it is. The fields are the status model's own -- the current
+  /// tool call, the workspace branch, the factory's label and the agent session
+  /// id -- and one the server does not send reads "not reported" rather than
+  /// being invented.
   function detailsBlock(name, factory, match) {
     const key = `${name}|${factory.url}`;
     const flags = opened.get(key) ?? {};
