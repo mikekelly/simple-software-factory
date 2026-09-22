@@ -23,10 +23,12 @@ const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 60000;
 // Three missed 25s keepalives: the stream is gone even though nothing errored.
 const STALE_AFTER_MS = 90000;
-// A write and a listing are answered or given up on. A factory that accepts the
-// connection and then never answers must not leave the form on "Assigning…"
-// with nothing the person can do about it; the reply is an ordinary error.
-const WRITE_TIMEOUT_MS = 30000;
+// A write and a listing are answered or given up on. The factory's own
+// deadlines are narrower than this -- a minute for a write, thirty seconds for
+// a listing, docs/dashboard.md -- so this only stops the form waiting on a
+// connection that was accepted and then went quiet, and never reports a
+// factory's own slow answer as a failure.
+const REQUEST_TIMEOUT_MS = 90000;
 
 /// url -> entry, one per configured factory.
 const factories = new Map();
@@ -166,7 +168,7 @@ function errorBody(parsed, text, status) {
 /// one that took the request and went quiet are different problems.
 function reachError(error, entry) {
   if (error?.name === "TimeoutError") {
-    return `the factory did not answer within ${WRITE_TIMEOUT_MS / 1000} seconds (${entry.url})`;
+    return `the factory did not answer within ${REQUEST_TIMEOUT_MS / 1000} seconds (${entry.url})`;
   }
   return `could not reach the factory (${error})`;
 }
@@ -184,7 +186,7 @@ async function post(entry, path, body) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(WRITE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     return { ok: false, error: reachError(error, entry) };
@@ -208,7 +210,7 @@ async function get(entry, path) {
   let response;
   try {
     response = await fetch(endpoint(entry.url, path), {
-      signal: AbortSignal.timeout(WRITE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
     return { ok: false, error: reachError(error, entry) };

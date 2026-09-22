@@ -189,6 +189,16 @@
 
   function loadModels(state, harness) {
     if (!state.url || !harness || state.modelsFor === harness) return;
+    // A harness that takes no model setting has nothing to list, and the
+    // factory answers 400 for one. The picker already offers only its default,
+    // so settle here rather than ask on every render.
+    const chosen = (state.agents ?? []).find((agent) => agent.id === harness);
+    if (chosen && !chosen.takesModel) {
+      state.models = [];
+      state.modelsFor = harness;
+      state.modelsError = null;
+      return;
+    }
     const url = state.url;
     state.modelsPending = true;
     ask({ type: "ssf:models", url, harness }).then((reply) => {
