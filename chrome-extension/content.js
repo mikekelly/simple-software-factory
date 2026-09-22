@@ -99,10 +99,21 @@
   }
 
   /// `state` as this factory reports it, with a stale or unreachable factory
-  /// said out loud rather than shown as its last known state.
+  /// said out loud rather than shown as its last known state. A factory can
+  /// also flag its own snapshot as unreliable -- an inactive service, an
+  /// unreachable VM, an unavailable driver, an overdue poll -- which the TUI
+  /// paints as `UNAVAILABLE / STALE` and the server's web UI as "Status may be
+  /// incomplete"; that reads `incomplete` here.
   function reportedState(factory, state) {
     const name = state || "unknown";
     if (factory.state === "live") {
+      if (factory.warning) {
+        return {
+          text: `${name} \u00b7 incomplete`,
+          kind: "stale",
+          detail: `the factory says its status may be incomplete: ${factory.warning}`,
+        };
+      }
       return { text: name, kind: KIND[name] ?? "muted" };
     }
     if (factory.state === "stale") {
@@ -206,7 +217,7 @@
       described.push(
         `${factory.label}: ${facts.map((fact) => fact.text).join(" \u00b7 ")}${
           summary ? ` \u2014 ${summary}` : ""
-        }`,
+        }${factory.warning ? ` (status may be incomplete: ${factory.warning})` : ""}`,
       );
     }
     for (const factory of unreadable) {
@@ -237,7 +248,10 @@
       description: [
         fact.detail,
         ...matches.map(
-          ({ factory }) => `ssf factory ${factory.label} (${factory.state})`,
+          ({ factory }) =>
+            `ssf factory ${factory.label} (${factory.state}${
+              factory.warning ? ", status may be incomplete" : ""
+            })`,
         ),
       ]
         .filter(Boolean)

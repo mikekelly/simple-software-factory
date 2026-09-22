@@ -128,8 +128,7 @@ Both endpoints accept an `Origin` of `http://<bind>:<port>` or any
 them; the `Host` header must still match the configured bind address and port.
 
 The optional [Chrome extension](../chrome-extension/README.md) is that client:
-it overlays this state on github.com, reading these endpoints rather than a
-browser tab.
+it overlays this state on github.com instead of in a browser tab.
 
 The built-in endpoint provides neither TLS nor user accounts. Remote web access
 from outside a tailnet requires a reverse proxy that:

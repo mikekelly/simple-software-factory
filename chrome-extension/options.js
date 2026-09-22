@@ -24,17 +24,21 @@ function show(message) {
 /// The list as edited, with each URL in its canonical form. Returns the rows
 /// that are not usable factory URLs, so Save can name them instead of storing
 /// them.
+///
+/// Each entry carries the row element it came from and the text as typed, so a
+/// control acts on that row rather than on a position: rows nobody filled in
+/// are skipped, so a position in this list is not a position among the rows.
 function collect() {
   const list = [];
   const invalid = [];
-  for (const row of rows.querySelectorAll("[data-row]")) {
-    const label = row.querySelector(".label").value.trim();
-    const raw = row.querySelector(".url").value.trim();
+  for (const box of rows.querySelectorAll("[data-row]")) {
+    const label = box.querySelector(".label").value.trim();
+    const text = box.querySelector(".url").value.trim();
     // A row nobody filled in is not a factory.
-    if (!raw && !label) continue;
-    const url = factoryUrl(raw);
-    if (!url) invalid.push(raw || `the row labelled ${label}`);
-    list.push({ label, url });
+    if (!text && !label) continue;
+    const url = factoryUrl(text);
+    if (!url) invalid.push(text || `the row labelled ${label}`);
+    list.push({ box, label, text, url });
   }
   return { list, invalid };
 }
@@ -59,13 +63,13 @@ function render() {
     rows.append(empty);
     return;
   }
-  entries.forEach((entry, index) => rows.append(row(entry, index)));
+  entries.forEach((entry) => rows.append(row(entry)));
 }
 
-function row(entry, index) {
+function row(entry) {
   const box = document.createElement("div");
   box.className = "row";
-  box.dataset.row = String(index);
+  box.dataset.row = "";
 
   const label = document.createElement("label");
   label.className = "field label-field";
@@ -85,16 +89,17 @@ function row(entry, index) {
   urlInput.type = "text";
   urlInput.spellcheck = false;
   urlInput.placeholder = "http://host:8787/<secret>/";
-  urlInput.value = entry.url ?? "";
+  // What was typed, so a row that is not a factory URL yet keeps its text
+  // through Add, Remove and the re-render they cause.
+  urlInput.value = entry.url ?? entry.text ?? "";
   url.append(urlInput);
 
   const state = document.createElement("span");
   state.className = "state";
-  const canonical = factoryUrl(entry.url);
-  if (!canonical) {
-    state.textContent = entry.url ? "not a factory URL" : "not saved yet";
+  if (!entry.url) {
+    state.textContent = urlInput.value ? "not a factory URL" : "not saved yet";
     state.dataset.state = "missing";
-  } else if (granted.get(originPattern(canonical))) {
+  } else if (granted.get(originPattern(entry.url))) {
     state.textContent = "allowed";
     state.dataset.state = "allowed";
   } else {
@@ -106,7 +111,7 @@ function row(entry, index) {
   allow.type = "button";
   allow.className = "allow";
   allow.textContent = "Allow";
-  allow.disabled = !canonical || Boolean(granted.get(originPattern(canonical)));
+  allow.disabled = !entry.url || Boolean(granted.get(originPattern(entry.url)));
   allow.addEventListener("click", async () => {
     const current = factoryUrl(box.querySelector(".url").value);
     if (!current) {
@@ -129,7 +134,7 @@ function row(entry, index) {
   remove.className = "remove";
   remove.textContent = "Remove";
   remove.addEventListener("click", () => {
-    entries = collect().list.filter((_, position) => position !== index);
+    entries = collect().list.filter((entry) => entry.box !== box);
     render();
     show("Removed. Save to keep the change.");
   });
@@ -154,7 +159,7 @@ async function requestMissing() {
 
 add.addEventListener("click", () => {
   entries = collect().list;
-  entries.push({ label: "", url: "" });
+  entries.push({ label: "", text: "", url: null });
   render();
   const inputs = rows.querySelectorAll(".url");
   inputs[inputs.length - 1]?.focus();

@@ -63,6 +63,10 @@ title:
 
 ![A list of issues, each with a small ssf pill after its title](docs/issue-list.png)
 
+Both images are a scratch factory whose server runs outside the systemd unit it
+names, so every row in them also carries the `· incomplete` marker described
+below.
+
 - The harness, model, agent state and last activity are the factory's own
   fields, and the second line is the session's latest message or summary.
 - An item SSF monitors without an agent reads `no agent` with the item's title.
@@ -71,6 +75,10 @@ title:
   `unknown` with the reason. A broken factory is never silently shown as an idle
   one; the TUI makes the same distinction in [the dashboard
   guide](../docs/dashboard.md#session-dashboard).
+- A factory that flags its own snapshot as unreliable — an inactive service, an
+  unreachable VM, an unavailable driver, an overdue poll — reads
+  `… · incomplete`, with the factory's own words on hover. The TUI and the
+  server's web UI say the same thing about the same snapshot.
 - Items the factories do not know about are left alone.
 
 A card matches a page by `owner/repo#number`, from its originating issue or from
