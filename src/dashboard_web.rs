@@ -30,8 +30,9 @@ pub(crate) async fn bind(config: &crate::config::DashboardConfig) -> Result<Opti
         .map(Some)
 }
 
-/// The listener and daemon share a lifetime. Dropping either future closes its
-/// resources; there is no detached web task or browser idle expiration.
+/// The listener and daemon share a lifetime. Dropping either future closes the
+/// listener, and every connection it accepted ends with the status stream the
+/// handler reads; there is no browser idle expiration.
 pub(crate) async fn with_daemon<F>(listener: Option<TcpListener>, daemon: F) -> Result<()>
 where
     F: Future<Output = Result<()>>,
@@ -114,7 +115,7 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
     };
     if let Ok("api/events") = route {
         // Ends quietly when the client goes away or the daemon stops.
-        let _ = events(&mut stream, &mut latest, KEEPALIVE).await;
+        events(&mut stream, &mut latest, KEEPALIVE, REQUEST_TIMEOUT).await;
         return;
     }
     let (status, kind, body) = match route {
@@ -165,18 +166,30 @@ async fn next_tick(latest: &mut Latest, keepalive: Duration) -> Tick {
     }
 }
 
+/// Writes one chunk of an event stream, bounded the way the ordinary response
+/// is: a client that stops reading must not pin this task, so the stream ends
+/// instead of blocking on a socket nobody drains. Reports whether to go on.
+async fn write_frame(stream: &mut TcpStream, frame: &[u8], write_timeout: Duration) -> bool {
+    matches!(
+        timeout(write_timeout, stream.write_all(frame)).await,
+        Ok(Ok(()))
+    )
+}
+
 /// Server-sent events: the current snapshot, then every later one, with a
-/// comment line while nothing changes so idle connections stay open.
-async fn events(stream: &mut TcpStream, latest: &mut Latest, keepalive: Duration) -> Result<()> {
-    stream
-        .write_all(
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n{SECURITY_HEADERS}\r\n"
-            )
-            .as_bytes(),
-        )
-        .await?;
-    stream.flush().await?;
+/// comment line while no snapshot arrives so idle connections stay open.
+async fn events(
+    stream: &mut TcpStream,
+    latest: &mut Latest,
+    keepalive: Duration,
+    write_timeout: Duration,
+) {
+    let headers = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n{SECURITY_HEADERS}\r\n"
+    );
+    if !write_frame(stream, headers.as_bytes(), write_timeout).await {
+        return;
+    }
     let mut pending = true;
     loop {
         // Only the first snapshot and then each change is a frame: the channel
@@ -193,19 +206,21 @@ async fn events(stream: &mut TcpStream, latest: &mut Latest, keepalive: Duration
                     },
                     Err(error) => error_frame(&error),
                 };
-                stream.write_all(frame.as_bytes()).await?;
-                stream.flush().await?;
+                if !write_frame(stream, frame.as_bytes(), write_timeout).await {
+                    return;
+                }
             }
         }
         match next_tick(latest, keepalive).await {
             Tick::Changed => pending = true,
             Tick::Idle => {
-                stream.write_all(b": keepalive\n\n").await?;
-                stream.flush().await?;
+                if !write_frame(stream, b": keepalive\n\n", write_timeout).await {
+                    return;
+                }
             }
             // The daemon stopping ends its event streams instead of leaving
             // them re-sending the snapshot it can no longer refresh.
-            Tick::Closed => return Ok(()),
+            Tick::Closed => return,
         }
     }
 }
@@ -606,7 +621,8 @@ mod tests {
         let (tx, mut rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
         let mut stream = TcpStream::connect(address).await.unwrap();
         let (mut server, _) = listener.accept().await.unwrap();
-        let writer = tokio::spawn(async move { events(&mut server, &mut rx, SHORT).await });
+        let writer =
+            tokio::spawn(async move { events(&mut server, &mut rx, SHORT, REQUEST_TIMEOUT).await });
         let mut buffer = Vec::new();
         let first = timeout(
             Duration::from_secs(5),
@@ -660,7 +676,41 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&rest)
         );
-        writer.await.unwrap().unwrap();
+        writer.await.unwrap();
+    }
+
+    /// A tool window can leave a stream open and stop draining it, and a
+    /// suspended host does the same. The frame then cannot be written at all,
+    /// so the task must give up rather than park in the write for good.
+    #[tokio::test]
+    async fn a_stream_nobody_reads_ends_instead_of_blocking() {
+        // Larger than the loopback socket and receive buffers together, so the
+        // write cannot finish however the kernel sizes them.
+        let big = "x".repeat(4 * 1024 * 1024);
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (_tx, mut rx) =
+            tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[{"owner":big}]}}))));
+        let _reader = TcpStream::connect(address).await.unwrap();
+        let (mut server, _) = listener.accept().await.unwrap();
+        let writer = tokio::spawn(async move {
+            events(
+                &mut server,
+                &mut rx,
+                Duration::from_secs(30),
+                Duration::from_millis(1),
+            )
+            .await
+        });
+        // `_reader` is held open and never read, so the only way out of the
+        // write is the bound. Without it the task stays parked and this times
+        // out instead.
+        timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("a stream nobody read left its task parked in the write")
+            .unwrap();
     }
 
     #[tokio::test]

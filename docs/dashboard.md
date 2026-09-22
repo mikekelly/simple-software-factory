@@ -110,11 +110,18 @@ Two endpoints under the capability path serve the canonical dashboard model:
 - `GET /<capability>/api/events` is a [server-sent
   events](https://developer.mozilla.org/docs/Web/API/Server-sent_events) stream.
   It sends the current snapshot immediately as an `event: status` frame whose
-  `data` is the same JSON `/api/status` returns, then another `status` frame on
-  every change, an `event: error` frame with `{"error": ...}` when a snapshot
-  cannot be loaded, and a `: keepalive` comment line every 25 seconds while
-  nothing changes. The connection stays open until the client or the server
-  closes it.
+  `data` is the same JSON `/api/status` returns, then another `status` frame for
+  every snapshot the server's status stream produces, an `event: error` frame
+  with `{"error": ...}` when a snapshot cannot be loaded, and a `: keepalive`
+  comment line every 25 seconds while no snapshot arrives. The connection stays
+  open until the client or the server closes it.
+
+  Frames follow the status stream rather than dashboard changes: the stream
+  publishes a fresh snapshot about every 2 seconds, `ssf status --json --watch`'s
+  own cadence, so a frame means the snapshot was refreshed and only `refreshed_at`
+  is guaranteed to differ. The keepalive covers a stream that has gone quiet,
+  which is a stalled or disconnected status source rather than a dashboard that
+  happens to be unchanged.
 
 Both endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so a Chrome extension's service worker can read
