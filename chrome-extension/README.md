@@ -125,25 +125,35 @@ factory knows the item, each card is named with its factory label.
 ## Assigning an agent
 
 An item the factories have no agent on — the `no agent` state, whether ssf
-monitors it or not — carries an **Assign agent** form: on the issue or pull
-request card, and in the popover a list, search result or board card opens. An
-item with an agent shows no form.
+monitors it or not — carries an **Assign agent** form, beside the item's state
+on its issue or pull request page. An item with an agent shows no form.
 
-![An issue page whose sidebar card carries the Assign agent form: harness,
-model and effort pickers above an Assign button](docs/assign-form.png)
+The three frames below are one assignment of `omp · deepseek/deepseek-flash ·
+high`, against a factory whose `POST api/assign` was real and whose snapshot
+arrived over its own `api/events`:
+
+| Before | While it starts | After the frame |
+| --- | --- | --- |
+| ![The Assign agent form under the item's state](docs/assign-form.png) | ![Assigning… with the chosen stack](docs/assign-assigning.png) | ![The state replaced by the agent's own](docs/assign-working.png) |
+
+A refusal is the server's own words, with the form kept and nothing retried:
+
+![The form showing "already has a session", the factory's own refusal](docs/assign-refused.png)
 
 - **Harness** comes from the factory's own `ssf agents`, and is required.
   **Model** comes from `ssf models <harness>` with the harness's own default
   first, and **Effort** offers the harness's levels. Leaving either at *harness
   default* sends no model or effort at all, so the factory's own rules apply.
+  A harness that takes no model setting, or no effort level, is offered
+  neither: `ssf assign` would refuse one.
 - Which factory takes the session is decided for you when one factory that
   knows the item accepts writes; when more than one does, a **Factory** picker
   comes first.
 - **Assign** starts the session with the factory's own `ssf assign`: the same
   item, harness, model and effort `ssf assign <item> --harness ID` would use.
-  The form reads *Assigning…* until a frame shows the item with an agent. If
-  none does within 30 seconds, what the factory returned is shown with a link
-  to its dashboard.
+  The form reads *Assigning…* until a frame shows the item with an agent, which
+  is the frame that ends it. If none does within 30 seconds, what the factory
+  returned is shown with a link to its dashboard.
 - A refusal — an item that already has a session, a repository the factory does
   not watch, a harness it does not know — is shown in the server's own words,
   inline, with the form still there. Nothing is retried for you.

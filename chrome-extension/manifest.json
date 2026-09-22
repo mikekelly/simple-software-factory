@@ -14,7 +14,7 @@
   "content_scripts": [
     {
       "matches": ["https://github.com/*"],
-      "js": ["content.js"],
+      "js": ["assign-form.js", "content.js"],
       "run_at": "document_idle"
     }
   ],

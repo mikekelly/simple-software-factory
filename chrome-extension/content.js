@@ -114,7 +114,9 @@
 `;
 
   const sheet = new CSSStyleSheet();
-  sheet.replaceSync(STYLE);
+  // The form's own rules live with it, so the two halves of the overlay cannot
+  // drift apart.
+  sheet.replaceSync(STYLE + (globalThis.ssfAssignForm?.STYLE ?? ""));
 
   /// The last merged snapshot from the service worker, or null before the
   /// worker has answered. Nothing is rendered from a null snapshot.
@@ -175,6 +177,22 @@
   /// links the page happens to contain.
   function chipPage(path) {
     return !newItemForm(path) && CHIP_PATHS.some((pattern) => pattern.test(path));
+  }
+
+  /// The states the overlay reads as No agent: ssf holds the item and nothing
+  /// is running on it. `unbound` is an item ssf knows without a session, and a
+  /// monitored item is one whose agent has gone. Both are `ssf assign`'s to
+  /// start; every other state is either an agent at work or a session
+  /// `ssf handover` moves.
+  const NO_AGENT_STATES = new Set(["unbound", "no-agent"]);
+
+  /// Whether the Assign agent form belongs on this match: the overlay's own No
+  /// agent, which is the only state a session can be started on.
+  function assignable(match) {
+    return (
+      match.kind === "monitored" ||
+      NO_AGENT_STATES.has(String(match.item.agent_state ?? "").trim())
+    );
   }
 
   function element(tag, className, text) {
@@ -527,6 +545,28 @@
     return node;
   }
 
+  /// The Assign agent form for `key`, inside the card of the first factory that
+  /// may take the write. This is a fresh node per call, from the module's own
+  /// state, so the card and an open popover each get their own and neither moves
+  /// the other's out of the tree.
+  ///
+  /// Nothing is added for an item that has an agent, and nothing when no factory
+  /// that knows the item accepts writes for it.
+  function withAssignForm(section, matches, key) {
+    const assignableMatches = matches.filter(assignable);
+    if (!assignableMatches.length) return section;
+    const [repo, number] = key.split("#");
+    const form = globalThis.ssfAssignForm?.render({
+      factories: assignableMatches.map((match) => match.factory),
+      repo,
+      number: Number(number),
+    });
+    if (!form) return section;
+    const card = section.querySelector(".ssf-card") ?? section;
+    card.append(form);
+    return section;
+  }
+
   /// Every card that belongs in one place: one per factory that knows the item,
   /// plus one per factory that could not be read at all. `forLabel` is the issue
   /// a pull request page resolved through, so its card says which issue it is
@@ -595,6 +635,8 @@
           })
         : chip(want.name, want.matches);
     entry.shadow.replaceChildren(body);
+    // The form is drawn after the cards, into the one it belongs to.
+    if (want.anchor === null) withAssignForm(entry.shadow, want.matches, want.key);
     let placed = false;
     if (want.anchor === null) {
       const slot = sidebar();
@@ -724,6 +766,7 @@
     const previous = popover.entry.shadow.querySelector(".ssf-popover");
     const scrolled = previous ? previous.scrollTop : 0;
     popover.entry.shadow.replaceChildren(body);
+    withAssignForm(popover.entry.shadow, matches, popover.key);
     body.scrollTop = scrolled;
     measure(popover.entry);
     placePopover();
@@ -775,7 +818,7 @@
           const matches = matchesFor(target.key);
           const unreadable = unreadableFactories();
           if (matches.length || unreadable.length) {
-            wanted.set(`card:${key}`, { matches, unreadable, target, anchor: null });
+            wanted.set(`card:${key}`, { matches, unreadable, target, key, anchor: null });
           }
         }
       } else if (chipPage(location.pathname)) {
@@ -842,6 +885,9 @@
 
   function apply(payload) {
     snapshot = payload;
+    // The form reads the same frames: a snapshot that shows the item it
+    // assigned with an agent is what ends its "Assigning…".
+    globalThis.ssfAssignForm?.applySnapshot(payload);
     scheduleRender();
   }
 
@@ -914,6 +960,10 @@
   }
   const observer = new MutationObserver(navigated);
   observer.observe(document.documentElement, { childList: true, subtree: true });
+
+  // The form draws itself again through this script's own scheduler, so the
+  // two never render over each other.
+  globalThis.ssfAssignForm?.onChange(scheduleRender);
 
   chrome.runtime.sendMessage({ type: "ssf:snapshot" }).then(apply, () => {});
 

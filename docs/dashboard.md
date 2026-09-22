@@ -221,6 +221,14 @@ snapshot as unreliable, is shown with the icon outlined and the time as "as of
 HH:MM", never as a solid live state — the same distinction the TUI draws between
 a live factory and an unavailable or stale snapshot.
 
+An item in the **No agent** state carries an **Assign agent** form, on the card
+and in the popover: harness from `api/agents`, model from
+`api/models/<harness>`, effort from the levels that harness takes, and Assign.
+It is the one write this client makes, sent from its service worker and never
+from its content script, so the Origin is the extension's; each configured
+factory has a **Writes** switch on its options page, on by default, which hides
+the form and refuses the write when off.
+
 The built-in endpoint provides neither TLS nor user accounts. Remote web access
 from outside a tailnet requires a reverse proxy that:
 
