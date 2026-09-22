@@ -745,6 +745,63 @@ fn a_pane_answers_for_the_factory_the_daemon_named() {
     assert_eq!(status["active"], false);
 }
 
+/// A pane inherits one factory's identity, but an explicit `--server` (or
+/// `SSF_SERVER`) names another: the catalog name selected on the command line
+/// wins over whatever the daemon put in the environment.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_explicit_server_overrides_the_inherited_pane_identity() {
+    let root = Temp::new("explicit-over-inherited");
+    let local = root.0.join("local");
+    let other = root.0.join("other");
+    root.catalog(&format!(
+        "[servers.local]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n\n[servers.other]\ntransport = \"local\"\nconfig_dir = {:?}\nstate_dir = {:?}\n",
+        local.join("config"),
+        local.join("state"),
+        other.join("config"),
+        other.join("state"),
+    ));
+    root.use_real_server();
+    script(
+        &root.0.join("systemctl"),
+        "case \"$*\" in *is-enabled*ssf@other.service*|*is-active*ssf@other.service*) exit 0;; esac\nexit 1",
+    );
+    let identity = r#"{"name":"local","transport":"local"}"#;
+
+    let output = root
+        .client()
+        .env("SSF_INTERNAL_SELECTED_TARGET", identity)
+        .args(["--server", "other", "ui", "service", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "other");
+    assert_eq!(status["unit"], "ssf@other.service");
+    assert_eq!(status["active"], true);
+
+    let output = root
+        .client()
+        .env("SSF_INTERNAL_SELECTED_TARGET", identity)
+        .env("SSF_SERVER", "other")
+        .args(["ui", "service", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "other");
+    assert_eq!(status["unit"], "ssf@other.service");
+    assert_eq!(status["active"], true);
+}
+
 #[test]
 fn server_target_is_resolved_before_factory_configuration() {
     let root = Temp::new("server-target-context");
