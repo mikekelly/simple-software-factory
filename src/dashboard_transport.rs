@@ -23,6 +23,9 @@ pub(crate) struct StatusSource {
 }
 
 impl StatusSource {
+    /// A source that selects no target: the tests' own shape of
+    /// `new_with_context`.
+    #[cfg(test)]
     pub(crate) fn new(server: Option<String>) -> Result<Self> {
         Self::new_with_context(server, None, None, None)
     }

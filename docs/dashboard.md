@@ -103,7 +103,7 @@ learns the capability URL has the same access you do.
 
 ### Status API
 
-Two endpoints under the capability path serve the canonical dashboard model:
+Five endpoints under the capability path serve the canonical dashboard model:
 
 - `GET /<capability>/api/status` returns the current snapshot as JSON, or a
   `502` with `{"error": ...}` when the status stream cannot be read.
@@ -122,13 +122,85 @@ Two endpoints under the capability path serve the canonical dashboard model:
   is guaranteed to differ. The keepalive covers a stream that has gone quiet,
   which is a stalled or disconnected status source rather than a dashboard that
   happens to be unchanged.
+- `GET /<capability>/api/agents` returns what `ssf agents` lists, in the shape
+  `ssf agents --json` prints: one object per harness ssf knows, with its `id`,
+  display `name`, whether it is `installed` on the factory, whether it is the
+  Omarchy `default`, the model ids ssf knows for it, and the effort levels it
+  takes. This is the factory's own answer, so it names what is installed where
+  the sessions run.
+- `GET /<capability>/api/models/<harness>` returns what `ssf models <harness>
+  --json` prints: the harness's `models` in the order their source lists them,
+  and `source`, saying whether the harness's own catalogue file, its listing
+  command or ssf's built-in table answered. A harness ssf does not know is
+  `404`; one that takes no model setting (see `ssf agents`) is `400` with that
+  reason, since the request's shape is not what is wrong with it.
+- `POST /<capability>/api/assign` runs `ssf assign` for one item and returns
+  its result. See [Assigning from the API](#assigning-from-the-api).
 
-Both endpoints accept an `Origin` of `http://<bind>:<port>` or any
+Each card in `/api/status` and `/api/events` carries, besides the fields the
+dashboard and TUI render: `tool`, the session's current tool call formatted as
+`ssf status --json` formats it (`null` when the agent is not making one),
+`branch`, the workspace's branch (`null` when the item has no workspace), and
+`factory`, the name the server answers for — its catalog target name when it was
+started as one (`ssf-server --target …`), else its hostname. A client holding
+several factories can then label a card without asking which stream it came
+from; the TUI and the server's own browser page ignore the three fields and are
+unchanged.
+
+The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so a Chrome extension's service worker can read
 them; the `Host` header must still match the configured bind address and port.
 
-The optional [Chrome extension](../chrome-extension/README.md) is that client:
-it overlays this state on github.com instead of in a browser tab.
+#### Assigning from the API
+
+`POST /<capability>/api/assign` takes one assign request as JSON:
+
+```json
+{"repo": "owner/name", "number": 42, "harness": "claude", "model": "opus", "effort": "low"}
+```
+
+`repo` must be a repository this factory watches, and `harness` an id from
+`/api/agents`; `model` and `effort` are optional and default to what the harness
+itself uses, exactly as `ssf assign --model/--effort` leave them. The request is
+the one the `ssf assign` command sends the daemon, so it answers with the same
+JSON that command prints under `--json` (`session`, `title`, `from`, `to`,
+`assigned`, `overrides_written`, `open`, `poll_interval_secs`). The status says
+what happened:
+
+- `200` with that result.
+- `400` with `{"error": ...}` when the request itself is at fault: a repository
+  this factory does not watch, a harness ssf does not know, a model or effort
+  that harness does not take, or a body that is not the JSON above.
+- `409` with `{"error": ...}` when the item is not in a state an assignment can
+  be applied to — it already has a session (`ssf handover` is what moves one),
+  a handover or release of it is pending, or it is worked by another item's
+  session.
+- `502` with `{"error": ...}` when the factory could not do it: the daemon is
+  not running, or the harness is not installed or not signed in where the
+  sessions run.
+
+The `error` is the message `ssf assign` would have printed, verbatim.
+
+#### Write rules
+
+Reads answer on the rules above. The one write is held to stricter ones, all of
+them decided from the request line and headers before any body is read, and each
+refused without anything having been done:
+
+- The `Origin` must begin `chrome-extension://`. The bind host's own origin is
+  refused for a write, so a page loaded from a browser on the tailnet cannot
+  start a session even if it learns the capability URL; an ordinary HTTP client
+  with no `Origin` is refused too (`403`).
+- `Content-Type` must be `application/json` (`415`).
+- The body must be at most 4 KiB, by its `Content-Length` (`413`); a chunked
+  body is refused outright (`400`), and so is one with two lengths.
+
+Every accepted write is logged at info with the origin and the item, so starting
+a session from a browser is visible in the server's journal.
+
+The optional [Chrome extension](../chrome-extension/README.md) is the client these
+endpoints are for: it overlays this state on github.com instead of in a browser
+tab.
 
 The built-in endpoint provides neither TLS nor user accounts. Remote web access
 from outside a tailnet requires a reverse proxy that:

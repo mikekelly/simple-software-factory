@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::ipc::Refused;
 use tracing::info;
 
 impl Engine {
@@ -30,24 +31,26 @@ impl Engine {
         // way, a binding to another item's workspace) is the one the other
         // command acts on.
         if let Some(h) = st.as_ref().and_then(|s| s.handover.as_ref()) {
-            anyhow::bail!(
-                "{id}: a handover to {} is already pending; it is carried out on the next pass, \
-or called off with `ssf handover {id} --cancel`",
+            anyhow::bail!(Refused::conflict(format!(
+                "{id}: a handover to {} is already pending; it is carried out on the next \
+pass, or called off with `ssf handover {id} --cancel`",
                 h.harness
-            );
+            )));
         }
         if st.as_ref().is_some_and(|s| s.release_pending) {
-            anyhow::bail!(
+            anyhow::bail!(Refused::conflict(format!(
                 "{id}: a release of this item's workspace is pending; assign it again once the \
 pass has removed the workspace"
-            );
+            )));
         }
         // An item bound to another item's session runs that session's
         // stack (`overrides_of` reads the owner's record), so overrides
         // written here would be inert.
         let recorded = self.owner_of(&repo, number);
         if recorded != number {
-            anyhow::bail!("{}", self.bound_refusal(&repo, &id, recorded, harness));
+            anyhow::bail!(Refused::conflict(
+                self.bound_refusal(&repo, &id, recorded, harness)
+            ));
         }
         // A retired item is not a seat: nothing is running, and it is
         // exactly where a first session on a chosen stack comes from --
@@ -59,10 +62,10 @@ pass has removed the workspace"
             .as_ref()
             .is_some_and(|s| s.active && s.worktree_id.is_some())
         {
-            anyhow::bail!(
+            anyhow::bail!(Refused::conflict(format!(
                 "{id} already has a session; `ssf handover {id} --harness {harness}` moves that \
 session to another stack"
-            );
+            )));
         }
         self.check_stack(harness, model, effort).await?;
         let (owner, name) = repo.split()?;
@@ -71,7 +74,9 @@ session to another stack"
         // it onboards (an origin tag naming another item, or another
         // session's branch), which its record does not have until then.
         if let Some(o) = self.bound_in_github(&repo, number, &issue).await? {
-            anyhow::bail!("{}", self.bound_refusal(&repo, &id, o, harness));
+            anyhow::bail!(Refused::conflict(
+                self.bound_refusal(&repo, &id, o, harness)
+            ));
         }
         let overrides = Overrides {
             harness: harness.to_string(),

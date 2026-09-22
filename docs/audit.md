@@ -23,8 +23,13 @@ Ask these qualitative questions:
   non-loopback bind, is it unreachable from outside the private network in
   practice: no Tailscale Funnel, no port forward or proxy in front of it,
   tailnet ACLs limiting who reaches the port, and the capability URL held
-  only by the extension and tailnet browsers? This is a judgment call
-  `ssf doctor` cannot make deterministically.
+  only by the extension and tailnet browsers? The API can now start a
+  session (`POST /<capability>/api/assign`), so the URL is not only a
+  read credential: anyone who reaches the port and learns it can put an
+  agent to work on a watched repository. Writes are refused unless the
+  `Origin` is a Chrome extension's and are logged with it, which bounds
+  a browser-based cross-site request but not a client that has the URL.
+  This is a judgment call `ssf doctor` cannot make deterministically.
 - **Bounded review:** Is there a stopping rule, a distinction between confirmed
   defects and optional polish, and a path to simplify or ask a maintainer
   when substantive defects remain?

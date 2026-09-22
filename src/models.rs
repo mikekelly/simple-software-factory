@@ -658,7 +658,9 @@ impl Source {
 /// the table goes stale between releases (#382).
 pub fn available(harness: &str) -> Result<Available> {
     let Some(cat) = catalogue(harness) else {
-        bail!("{harness} does not take a model setting");
+        bail!(crate::ipc::Refused::bad_input(format!(
+            "{harness} does not take a model setting"
+        )));
     };
     // A catalogue that will not read, or lists nothing, is no answer at all:
     // the table is better than an empty list, and `source` says which one

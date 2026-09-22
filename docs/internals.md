@@ -76,9 +76,15 @@ loopback and Tailscale bind addresses, and shares the server process lifetime.
 Browser assets are used by the server endpoint; the client opens no browser.
 Each server start creates a fresh capability URL, with bounded HTTP headers and
 requests, strict Host/Origin checks, and a restrictive content security policy.
-It also serves the status API: `/api/status` for one snapshot and `/api/events`
-for a server-sent events stream of every change. See
-[Session dashboard](dashboard.md) for configuration and proxy expectations.
+It also serves the status API: `/api/status` for one snapshot, `/api/events`
+for a server-sent events stream of every change, `/api/agents` and
+`/api/models/<harness>` for the pickers `ssf agents` and `ssf models` fill, and
+`POST /api/assign`, which runs `ssf assign` on the daemon. The one write is
+refused unless the origin is a Chrome extension's, the media type is JSON and
+the body is within 4 KiB, and every accepted write is logged with its origin and
+item; the card model carries each card's `tool`, workspace `branch` and
+originating `factory` for the overlay. See [Session dashboard](dashboard.md) for
+configuration and proxy expectations.
 
 ## Polling and delivery
 

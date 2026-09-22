@@ -7,7 +7,7 @@ use tracing::{debug, error, info, warn};
 
 use super::{Engine, github_state, mentions_bot};
 use crate::config::RepoConfig;
-use crate::ipc::{Request, Response};
+use crate::ipc::{Refused, Request, Response};
 use crate::origin::Origin;
 use crate::status::session_id;
 
@@ -37,23 +37,23 @@ impl Engine {
             Request::Ping => Response::ok(serde_json::json!({"login": self.login})),
             Request::Candidates { repo } => match self.candidates(repo.as_deref()) {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Adopt { items } => match self.adopt(&items).await {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Sub { from, target } => match self.subscribe(&from, &target).await {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Unsub { from, target } => match self.unsubscribe(&from, &target) {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Release { session, force } => match self.release(&session, force).await {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Handover {
                 session,
@@ -74,11 +74,11 @@ impl Engine {
                 .await
             {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::CancelHandover { session } => match self.cancel_handover(&session).await {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Assign {
                 item,
@@ -97,7 +97,7 @@ impl Engine {
                 .await
             {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
             Request::Purge {
                 dry_run,
@@ -105,7 +105,7 @@ impl Engine {
                 force,
             } => match self.purge(dry_run, older_than_days, force).await {
                 Ok(v) => Response::ok(v),
-                Err(e) => Response::err(format!("{e:#}")),
+                Err(e) => Response::refused(&e),
             },
         }
     }
@@ -249,16 +249,20 @@ impl Engine {
     }
 
     /// A watched repository and an item number out of `owner/repo#N` (a
-    /// session or item reference from the CLI).
+    /// session or item reference from the CLI). What it fails on is the
+    /// reference itself: an item named in a shape ssf does not read, or a
+    /// repository the factory does not watch.
     pub(in crate::engine) fn locate(&self, item: &str) -> Result<(RepoConfig, u64)> {
-        let o = Origin::parse(item).with_context(|| format!("{item}: expected owner/repo#N"))?;
+        let o = Origin::parse(item)
+            .ok_or_else(|| Refused::bad_input(format!("{item}: expected owner/repo#N")))?;
         let repo = self
             .cfg
             .repos
             .iter()
             .find(|r| r.matches_name(&o.repo))
             .cloned()
-            .with_context(|| format!("{} is not a watched repository", o.repo))?;
+            .with_context(|| format!("{} is not a watched repository", o.repo))
+            .map_err(|e| Refused::bad_input(format!("{e:#}")))?;
         Ok((repo, o.number))
     }
 
