@@ -156,13 +156,25 @@
   const CLOSING_REF = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s+#(\d+)/gi;
   const REFS_REF = /\b(?:refs?|references?)\s*:?\s+#(\d+)/gi;
 
+  /// `/issues/new` and `/owner/repo/issues/new`, with their `choose` subpage,
+  /// live under a chip path but are forms rather than lists of items. Matched by
+  /// the path's tail, so an owner actually named `issues` or a repository named
+  /// `new` is not caught by it.
+  function newItemForm(path) {
+    const parts = path.split("/").filter(Boolean);
+    const section = (index) =>
+      parts.at(index) === "issues" || parts.at(index) === "pulls";
+    return (
+      (section(-2) && parts.at(-1) === "new") ||
+      (section(-3) && parts.at(-2) === "new" && parts.at(-1) === "choose")
+    );
+  }
+
   /// The pages that carry chips: the issue and pull request lists, search
   /// results, and project boards. Anywhere else gets nothing, however many issue
-  /// links the page happens to contain -- including the new-issue form, which
-  /// lives under `/issues` but is not a list of items.
+  /// links the page happens to contain.
   function chipPage(path) {
-    if (/\/(?:issues|pulls)\/new(?:\/|$)/.test(path)) return false;
-    return CHIP_PATHS.some((pattern) => pattern.test(path));
+    return !newItemForm(path) && CHIP_PATHS.some((pattern) => pattern.test(path));
   }
 
   function element(tag, className, text) {
@@ -456,8 +468,9 @@
   /// The always-visible detail: what the agent is doing, where it is running and
   /// which session it is. The fields are the status model's own -- the current
   /// tool call, the workspace branch, the factory's label and the agent session
-  /// id -- and one the server does not send reads "not reported" rather than
-  /// being invented.
+  /// id. A field the server does not send reads "not reported" rather than being
+  /// invented; the factory row falls back to this extension's configured label,
+  /// which is a name the reader chose rather than one invented for them.
   function detailsBlock(name, factory, match) {
     const key = `${name}|${factory.url}`;
     const flags = opened.get(key) ?? {};
@@ -704,7 +717,14 @@
       return;
     }
     const body = cards(popover.name, matches, unreadable, { popover: true });
+    // A message too tall for the popover scrolls inside it, and the stream
+    // repaints every couple of seconds: without this, the reader's place at the
+    // end of a long message -- where the `less` toggle is -- would jump back to
+    // the top under them.
+    const previous = popover.entry.shadow.querySelector(".ssf-popover");
+    const scrolled = previous ? previous.scrollTop : 0;
     popover.entry.shadow.replaceChildren(body);
+    body.scrollTop = scrolled;
     measure(popover.entry);
     placePopover();
   }
