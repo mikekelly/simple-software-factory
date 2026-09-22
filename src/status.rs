@@ -1083,6 +1083,27 @@ fn factory_label(payload: &Value) -> String {
     }
 }
 
+/// The repositories this factory watches, as `owner/name`: the one fact that
+/// lets a client offering to start a session tell an item ssf has no record of
+/// from an item the factory does not know at all. `ssf assign` accepts the
+/// first -- any open item in a watched repository takes a session -- and
+/// refuses the second, and without this the two are the same nothing in the
+/// model, so a client that could offer the write for one offers it for neither
+/// (#435). A payload without the repository list publishes an empty one, and a
+/// client that reads it falls back to what it drew before.
+fn watched_repositories(payload: &Value) -> Vec<String> {
+    payload["repos"]
+        .as_array()
+        .map(|repos| {
+            repos
+                .iter()
+                .map(|repo| text(repo, "name").to_owned())
+                .filter(|name| !name.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     let rows = payload["sessions"]
         .as_array()
@@ -1196,7 +1217,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         None
     };
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"repositories":watched_repositories(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1318,5 +1339,28 @@ mod dashboard_tests {
         assert_eq!(monitored[1]["has_workspace"], true);
         assert!(monitored[1]["branch"].is_null());
         assert_eq!(monitored[2]["has_workspace"], false);
+    }
+
+    /// The model names the repositories the factory watches, so a client that
+    /// offers `ssf assign` can tell an item this factory has no record of --
+    /// which takes a session -- from an item it does not know at all, which
+    /// the write refuses. Before this the two were the same emptiness in the
+    /// model, and the client offered neither (#435).
+    #[test]
+    fn the_model_names_the_repositories_the_factory_watches() {
+        let snapshot = dashboard_presentation(&json!({
+            "sessions":[],
+            "repos":[{"name":"o/r","harness":"omp"},{"name":"o/other"},{"harness":"omp"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            snapshot["repositories"],
+            json!(["o/r", "o/other"]),
+            "every configured repository, in the order the factory lists them"
+        );
+        // A payload from a server that does not publish them leaves the fact
+        // empty rather than absent, so a client reads one shape.
+        let older = dashboard_presentation(&json!({"sessions":[]})).unwrap();
+        assert_eq!(older["repositories"], json!([]));
     }
 }

@@ -30,6 +30,15 @@
   const DETAIL_PATH = /^\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/|$)/;
   /// A link to exactly one issue or pull request, as lists and boards make them.
   const LINK_PATH = /^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?$/;
+  /// The two shapes a project board has. A board carries a card for an item
+  /// the factory watches but has no record of -- that is where an item is
+  /// picked up -- where the lists and search results carry a chip only for an
+  /// item that already moves, since a watched repository's whole backlog as a
+  /// column of grey chips is not what those pages are read for.
+  const BOARD_PATHS = [
+    /^\/(?:users|orgs)\/[^/]+\/projects\/\d+(?:\/|$)/,
+    /^\/[^/]+\/[^/]+\/projects\/\d+(?:\/|$)/,
+  ];
   /// The only pages besides a detail page that carry a chip: the issue and pull
   /// request lists, search results, and project boards. Anywhere else gets
   /// nothing, however many issue links the page happens to contain.
@@ -37,8 +46,7 @@
     /^\/(?:issues|pulls)(?:\/|$)/,
     /^\/[^/]+\/[^/]+\/(?:issues|pulls)(?:\/|$)/,
     /^\/search\/?$/,
-    /^\/(?:users|orgs)\/[^/]+\/projects\/\d+(?:\/|$)/,
-    /^\/[^/]+\/[^/]+\/projects\/\d+(?:\/|$)/,
+    ...BOARD_PATHS,
   ];
   const PING_MS = 20000;
   const RENDER_DEBOUNCE_MS = 200;
@@ -159,6 +167,16 @@
   /// tooltip still carries the word itself.
   const PROBLEM = { label: "Problem", kind: "problem" };
 
+  /// An item in a repository a factory watches that the factory has no record
+  /// of: no card, and not in its monitored list. ssf has said nothing about it
+  /// -- there is no session and no record to report one from -- so the reading
+  /// is the overlay's own and the tooltip says where it comes from rather than
+  /// putting a word ssf never said behind it. It reads as No agent because that
+  /// is the state `ssf assign` starts a session on, which is the whole of what
+  /// such an item offers.
+  const NO_RECORD = "no record";
+  const NO_AGENT = { label: "No agent", kind: "no-agent" };
+
   /// The state icons GitHub draws for an item, and which of them mean there is
   /// nothing left to run.
   const ITEM_ICONS = [
@@ -219,6 +237,12 @@
     return !newItemForm(path) && CHIP_PATHS.some((pattern) => pattern.test(path));
   }
 
+  /// Whether this page is a project board, the one place a chip stands for an
+  /// item the factory has no record of.
+  function boardPage(path) {
+    return BOARD_PATHS.some((pattern) => pattern.test(path));
+  }
+
   /// The states the overlay reads as No agent: ssf holds the item and nothing
   /// is running on it. `unbound` is an item ssf knows without a session, and a
   /// monitored item is one whose agent has gone. Both are `ssf assign`'s to
@@ -227,10 +251,13 @@
   const NO_AGENT_STATES = new Set(["unbound", "no-agent"]);
 
   /// Whether the state the overlay draws for `match` is its own No agent, which
-  /// is the only state a session can be started on.
+  /// is the only state a session can be started on. `assignable` is the
+  /// overlay's own reading of an item the factory has no record of, which is
+  /// the same nothing-running case read from the other side.
   function noAgent(match) {
     return (
       match.kind === "monitored" ||
+      match.kind === "assignable" ||
       NO_AGENT_STATES.has(String(match.item.agent_state ?? "").trim())
     );
   }
@@ -495,11 +522,13 @@
   ///
   /// `closed` is the page's own fact about the item: see `closedInDom`.
   function stateFact(factory, match, closed = false) {
-    const raw =
-      match.kind === "monitored"
+    const assignable = match.kind === "assignable";
+    const raw = assignable
+      ? NO_RECORD
+      : match.kind === "monitored"
         ? "unbound"
         : String(match.item.agent_state ?? "").trim() || "unknown";
-    const shown = PRESENTATION[raw] ?? PROBLEM;
+    const shown = assignable ? NO_AGENT : (PRESENTATION[raw] ?? PROBLEM);
     // An item the page shows closed or merged is not a problem: ssf has nothing
     // running on it because there is nothing left to run, and a released
     // workspace reads `no-workspace`, which would otherwise be the Problem
@@ -514,6 +543,11 @@
     const detail = [`ssf state: ${raw}`];
     if (match.kind === "monitored") {
       detail.push("ssf monitors this item but has no agent on it");
+    }
+    if (assignable) {
+      detail.push(
+        "the factory watches this repository and has no record of this item, so no session is running on it; `ssf assign` starts one here",
+      );
     }
     if (finished) {
       detail.push("the page shows this item closed or merged, so nothing is left to run");
@@ -561,6 +595,10 @@
   }
 
   function messageFor(match) {
+    // An item the factory has no record of has no message either: ssf has
+    // never run anything on it, and the overlay does not invent one from the
+    // page's own title.
+    if (match.kind === "assignable") return "";
     const message =
       match.kind === "monitored" ? match.item.title : match.item.last_assistant_message;
     return message ? String(message).trim() : "";
@@ -575,7 +613,16 @@
   /// the item is an additional one of another agent -- that agent, or an item
   /// ssf monitors without an agent. A factory that never answered cannot say
   /// whether it knows the item and is reported separately.
-  function matchesFor(key) {
+  ///
+  /// `unrecorded` also matches a factory that *watches the item's repository*
+  /// and has no record of the item at all: no card and not monitored. ssf has
+  /// said nothing about such an item, which is exactly the item `ssf assign`
+  /// starts a session on, and the factory publishes the repositories it watches
+  /// for this (#435). The caller decides where that reading belongs: an item's
+  /// own page and a board card, where there is one row per item and the form is
+  /// the point, but not a list or a search result, where a watched repository's
+  /// whole backlog as a column of grey chips is not what the page is read for.
+  function matchesFor(key, { unrecorded = false } = {}) {
     const out = [];
     for (const factory of snapshot?.factories ?? []) {
       const own = factory.cards.find((card) => card.origin?.id === key);
@@ -591,9 +638,27 @@
         continue;
       }
       const monitored = factory.monitoredItems.find((item) => item?.id === key);
-      if (monitored) out.push({ factory, item: monitored, kind: "monitored" });
+      if (monitored) {
+        out.push({ factory, item: monitored, kind: "monitored" });
+        continue;
+      }
+      if (unrecorded && watches(factory, key)) {
+        // The key is `owner/name#number`. A record carries a title, a branch
+        // and a workspace; this reading has none of them to carry, and
+        // `has_workspace` is false because `ssf assign` refuses an item that
+        // has one -- so the form is only ever drawn where there is nothing in
+        // the way.
+        out.push({ factory, item: { id: key, has_workspace: false }, kind: "assignable" });
+      }
     }
     return out;
+  }
+
+  /// Whether one factory watches the repository `key` names. A factory that has
+  /// not answered publishes no repositories, so it claims none.
+  function watches(factory, key) {
+    const repo = key.slice(0, key.indexOf("#"));
+    return (factory.repositories ?? []).includes(repo);
   }
 
   /// A factory that has never answered cannot say whether it knows the item, so
@@ -707,8 +772,13 @@
       });
       node.append(line);
     }
-    // A factory that never answered has nothing to report about this item.
-    if (match.kind !== "unreadable") node.append(detailsBlock(name, factory, match));
+    // A factory that never answered has nothing to report about this item, and
+    // neither has one with no record of it: there is no tool call, branch,
+    // workspace or session to read "not reported" beside, and four rows of it
+    // would be noise around the one thing the card offers.
+    if (match.kind !== "unreadable" && match.kind !== "assignable") {
+      node.append(detailsBlock(name, factory, match));
+    }
     return node;
   }
 
@@ -781,13 +851,18 @@
   function cards(name, matches, unreadable, { forLabel = null, popover = false, closed = false } = {}) {
     const section = element("div", popover ? "ssf-popover" : "ssf-section");
     section.append(element("h3", "ssf-title", "SSF agent"));
-    // The factory is named only when there is more than one to tell apart.
+    // The factory is named only when there is more than one to tell apart --
+    // except on a card for an item the factory has no record of, which is drawn
+    // because that factory watches the repository and whose write goes to it, so
+    // it is named whoever else is in the snapshot.
     const label = (snapshot?.factories?.length ?? 0) > 1;
     let first = true;
     for (const match of matches) {
       const node = card(name, match.factory, match, closed);
       if (first && forLabel) node.prepend(element("div", "ssf-via", `for ${forLabel}`));
-      if (label) node.prepend(element("div", "ssf-via", match.factory.label));
+      if (label || match.kind === "assignable") {
+        node.prepend(element("div", "ssf-via", match.factory.label));
+      }
       first = false;
       section.append(node);
     }
@@ -812,7 +887,13 @@
   /// harness, the model, the absolute time and the first line of the last
   /// message; the popover on a click carries the whole card.
   function chip(name, matches, closed = false) {
-    const first = matches[0];
+    // The word a chip carries comes from a factory with something to report.
+    // The overlay's own reading of an item no factory has a record of is the
+    // fallback for when no other factory knows the item, and on a board where
+    // one factory works an item and another only watches its repository both
+    // match -- so the reading must not displace a report ssf did make (#435).
+    // The tooltip still carries every matching factory's reading.
+    const first = matches.find((match) => match.kind !== "assignable") ?? matches[0];
     const state = stateFact(first.factory, first, closed);
     const node = element("div", "ssf-chip");
     node.setAttribute("role", "button");
@@ -838,6 +919,10 @@
   /// not feed the observer that drives it.
   function update(entry, want) {
     const closed = want.closed === true;
+    // What a click on this chip reads when it opens its popover: the same
+    // reading the chip was drawn from, so a board card's popover knows the item
+    // is one the factory has no record of (#435).
+    entry.unrecorded = want.unrecorded === true;
     const body =
       want.anchor === null
         ? cards(want.name, want.matches, want.unreadable ?? [], {
@@ -929,7 +1014,10 @@
   /// The issue a pull request page is about: the first one its body closes, or
   /// failing that the first it refs. A factory with no card for that issue but
   /// one for the pull request itself still resolves, so a pull request page is
-  /// never emptier than its own number.
+  /// never emptier than its own number -- and, in a repository the factory
+  /// watches, an item it has no record of resolves too, whether the body named
+  /// it or it is the pull request itself, since starting a session on it is what
+  /// the form on this page is for (#435).
   function pullTarget(page) {
     const own = `${page.owner}/${page.repo}#${page.number}`;
     const body = document.querySelector(
@@ -938,9 +1026,9 @@
     const linked = body ? linkedNumber(body.textContent) : null;
     if (linked) {
       const key = `${page.owner}/${page.repo}#${linked}`;
-      if (matchesFor(key).length) return { key, label: `#${linked}` };
+      if (matchesFor(key, { unrecorded: true }).length) return { key, label: `#${linked}` };
     }
-    if (matchesFor(own).length) return { key: own, label: null };
+    if (matchesFor(own, { unrecorded: true }).length) return { key: own, label: null };
     return null;
   }
 
@@ -954,27 +1042,30 @@
     return null;
   }
 
-  function openPopover(name, key, anchor) {
+  function openPopover(name, key, anchor, unrecorded) {
     closePopover();
     const entry = shadowHost("data-ssf-popover", name);
-    popover = { name, key, anchor, entry };
+    popover = { name, key, anchor, entry, unrecorded };
     document.body.append(entry.host);
     renderPopover();
   }
 
   function renderPopover() {
     if (!popover) return;
-    const matches = matchesFor(popover.key);
+    // The reading the chip was drawn from, so a popover of a board card for an
+    // item the factory has no record of still knows the repository is watched.
+    const matches = matchesFor(popover.key, { unrecorded: popover.unrecorded });
     const unreadable = unreadableFactories();
     if (!matches.length && !unreadable.length) {
       closePopover();
       return;
     }
+    const closed = closedInDom(popover.anchor, popover.key);
     const body = cards(popover.name, matches, unreadable, {
       popover: true,
       // The chip the popover belongs to sits in the item's own row, so the row's
       // state mark answers for this item here too.
-      closed: closedInDom(popover.anchor, popover.key),
+      closed,
     });
     // A message too tall for the popover scrolls inside it, and the stream
     // repaints every couple of seconds: without this, the reader's place at the
@@ -983,7 +1074,7 @@
     const previous = popover.entry.shadow.querySelector(".ssf-popover");
     const scrolled = previous ? previous.scrollTop : 0;
     popover.entry.shadow.replaceChildren(body);
-    withWrites(popover.entry.shadow, matches, popover.key);
+    withWrites(popover.entry.shadow, matches, popover.key, closed);
     body.scrollTop = scrolled;
     measure(popover.entry);
     placePopover();
@@ -1032,7 +1123,10 @@
             ? pullTarget({ owner: page[1], repo: page[2], number: page[4] })
             : { key, label: null };
         if (target) {
-          const matches = matchesFor(target.key);
+          // The item's own page is where an item the factory has no record of
+          // is picked up: it is one row, the reader is looking straight at it,
+          // and the Assign form is the whole of what is offered here (#435).
+          const matches = matchesFor(target.key, { unrecorded: true });
           const unreadable = unreadableFactories();
           if (matches.length || unreadable.length) {
             wanted.set(`card:${key}`, {
@@ -1048,8 +1142,14 @@
           }
         }
       } else if (chipPage(location.pathname)) {
+        // A board card stands for one item, and picking an item up is what a
+        // board is for, so an item the factory watches but has no record of
+        // carries a chip there too. A list or a search result gets a chip only
+        // for an item that moves: its rows are read in bulk, and a watched
+        // repository's whole backlog as a column of grey chips is noise.
+        const unrecorded = boardPage(location.pathname);
         for (const [key, anchor] of listAnchors()) {
-          const matches = matchesFor(key);
+          const matches = matchesFor(key, { unrecorded });
           if (matches.length) {
             wanted.set(`chip:${key}`, {
               matches,
@@ -1057,6 +1157,7 @@
               // The page's own fact about this item, read where the chip goes:
               // the row's state mark says whether there is anything left to run.
               closed: closedInDom(anchor, key),
+              unrecorded,
             });
           }
         }
@@ -1106,7 +1207,11 @@
     event.stopPropagation();
     const name = entry.host.getAttribute("data-ssf-list");
     if (popoverOpen(name)) closePopover();
-    else openPopover(name, entry.host.dataset.ssfKey, entry.host);
+    else {
+      // The reading the chip was drawn from, so a board card's popover knows
+      // the same item is assignable as its chip does (#435).
+      openPopover(name, entry.host.dataset.ssfKey, entry.host, entry.unrecorded === true);
+    }
   }
 
   function scheduleRender() {
