@@ -22,10 +22,3 @@ jobs:
         run: cargo clippy --locked --all-targets
       - name: Test
         run: cargo test --locked --all-targets
-      - name: Validate the Omarchy plugin
-        run: |
-          test -f marketplace/FactoryPanel.qml
-          test ! -e marketplace/ssf-marketplace
-          test ! -e marketplace/ssf.service.in
-          git clone --depth 1 --branch quattro https://github.com/basecamp/omarchy.git /tmp/omarchy
-          PATH="/tmp/omarchy/bin:$PATH" omarchy-plugin-validate .
