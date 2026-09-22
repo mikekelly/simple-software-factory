@@ -180,9 +180,12 @@ function row(entry) {
   writes.append(writesLabel, writesNote);
 
   // What the overlay is getting from this factory right now; see `showHealth`.
+  // The worker keys factories by the canonical URL, so this does too: an entry
+  // whose stored URL is not in that form would otherwise match nothing and read
+  // as a blank line while its state is known.
   const health = document.createElement("p");
   health.className = "health";
-  health.dataset.url = entry.url ?? "";
+  health.dataset.url = factoryUrl(entry.url) ?? "";
 
   box.append(label, url, state, allow, remove, writes, health);
   return box;
