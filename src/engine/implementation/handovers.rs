@@ -54,6 +54,7 @@ session with `ssf assign {id} --harness {harness}` instead)"
         }
         let from = self.current_stack(&repo, number);
         let to = repo.with_overrides(Some(&overrides));
+        self.check_auto_compaction(&to)?;
         if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
             anyhow::bail!("the item is already on {harness} with that model and effort");
         }
@@ -387,12 +388,14 @@ which harness is running in its workspaces"
         let eff = self.effective(repo, number);
         let to_launch = self.launch_of(repo, number);
         let title = format!("{} · #{number}", eff.harness);
+        let tokens = self.cfg.auto_compaction_tokens_for(&eff);
         let cmd = self.launch_command(
             repo,
             number,
             &st.html_url,
-            &eff.harness_command(),
+            &eff.harness_command(tokens),
             Some(&eff.stack()),
+            tokens,
         );
         self.entry(repo, number).launched_at = Some(now_iso());
         let handle = match self

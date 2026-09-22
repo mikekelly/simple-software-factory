@@ -232,6 +232,17 @@ impl Engine {
         Ok(())
     }
 
+    /// The context-compaction threshold `eff` will be launched with, checked
+    /// against the harness that will launch: `ssf handover` and `ssf assign`
+    /// may name a harness the repository's or the instance's value does not
+    /// fit, and a launch handed a count its harness refuses never comes up.
+    pub(in crate::engine) fn check_auto_compaction(&self, eff: &RepoConfig) -> Result<()> {
+        crate::models::validate_auto_compaction(
+            &eff.harness,
+            self.cfg.auto_compaction_tokens_for(eff),
+        )
+    }
+
     /// The overrides that govern an item: its own, or, for an item bound
     /// to another item's session, that session's (they share the
     /// workspace, so they share the harness in it).

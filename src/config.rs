@@ -46,6 +46,13 @@ impl std::fmt::Display for DriverKind {
     }
 }
 
+/// What a session's harness may fill its context to before it compacts its
+/// own history, when neither the repository nor the instance says: a
+/// conservative threshold, because an unattended session that compacts only
+/// at the model's own limit pays for the whole history on every turn, and the
+/// summary it keeps is the one thing it cannot recover (#404).
+pub const DEFAULT_AUTO_COMPACTION_TOKENS: u64 = 300_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -55,6 +62,13 @@ pub struct Config {
     /// commands can preserve whether it was explicitly configured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<DriverKind>,
+    /// Context a session's harness may fill before it compacts its own
+    /// history, in tokens, for every repository that does not set its own;
+    /// unset is [`DEFAULT_AUTO_COMPACTION_TOKENS`], and `0` leaves the
+    /// harness's own default alone. A harness that takes no such setting is
+    /// unaffected (#404).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compaction_tokens: Option<u64>,
     #[serde(default)]
     pub github: GithubConfig,
     #[serde(default)]
@@ -889,6 +903,12 @@ pub struct RepoConfig {
     /// (`low`, `medium`, `high`, `xhigh`, ...); see `ssf agents --json`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Context the harness may fill before it compacts its own history, in
+    /// tokens, overriding the instance's `auto_compaction_tokens`; `0` leaves
+    /// the harness's own default alone. Ignored for a harness that takes no
+    /// such setting (#404).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_compaction_tokens: Option<u64>,
     /// Clone URL used when ssf has no checkout for this repo yet.
     /// Defaults to `https://github.com/owner/name.git`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -969,10 +989,12 @@ impl RepoConfig {
         if p.is_absolute() { p } else { worktree.join(p) }
     }
 
-    /// The command that starts the harness, with the configured model and
-    /// effort level applied: `command` when set, else the harness's
-    /// permission-free default.
-    pub fn harness_command(&self) -> String {
+    /// The command that starts the harness, with the configured model, effort
+    /// level and context-compaction threshold applied: `command` when set,
+    /// else the harness's permission-free default. `auto_compaction_tokens`
+    /// is what the instance's and this repository's settings resolve to; `0`
+    /// leaves the harness's own default alone.
+    pub fn harness_command(&self, auto_compaction_tokens: u64) -> String {
         let base = self
             .command
             .clone()
@@ -982,6 +1004,7 @@ impl RepoConfig {
             &self.harness,
             self.model.as_deref(),
             self.effort.as_deref(),
+            auto_compaction_tokens,
         )
     }
 
@@ -1003,7 +1026,10 @@ impl RepoConfig {
     /// repository's model and effort; one that changes the harness drops
     /// the command (it belongs to the old harness, so the new harness's
     /// own default command is used) and falls back to the new harness's
-    /// own defaults rather than the repository's.
+    /// own defaults rather than the repository's. A threshold set on the
+    /// repository goes the same way as the model: it is checked against the
+    /// harness that takes it, so it belongs to the harness it was chosen for
+    /// and a switch falls back to the instance's value, else the default.
     pub fn with_overrides(&self, overrides: Option<&crate::state::Overrides>) -> Self {
         let Some(o) = overrides else {
             return self.clone();
@@ -1020,6 +1046,7 @@ impl RepoConfig {
             command: None,
             model: o.model.clone(),
             effort: o.effort.clone(),
+            auto_compaction_tokens: None,
             ..self.clone()
         }
     }
@@ -1252,6 +1279,8 @@ impl Config {
                 bail!("repo {}: harness must not be empty", r.name);
             }
             r.validate_launch_prefs()?;
+            crate::models::validate_auto_compaction(&r.harness, self.auto_compaction_tokens_for(r))
+                .with_context(|| format!("repo {}", r.name))?;
             r.git.validate(&format!("repo {}: git", r.name))?;
             self.git
                 .merged(&r.git)
@@ -1319,6 +1348,22 @@ impl Config {
     pub fn conflict_check_interval_secs(&self, repo: &RepoConfig) -> u64 {
         repo.conflict_check_interval_secs
             .unwrap_or(self.daemon.conflict_check_interval_secs)
+    }
+
+    /// The context-compaction threshold this repository's sessions are
+    /// started with: the repository's own, else the instance's, else the
+    /// conservative default. `0` means the harness's own default stands.
+    pub fn auto_compaction_tokens_for(&self, repo: &RepoConfig) -> u64 {
+        repo.auto_compaction_tokens
+            .or(self.auto_compaction_tokens)
+            .unwrap_or(DEFAULT_AUTO_COMPACTION_TOKENS)
+    }
+
+    /// The same for a launch that names no configured repository: the
+    /// instance's value, else the conservative default.
+    pub fn auto_compaction_tokens_default(&self) -> u64 {
+        self.auto_compaction_tokens
+            .unwrap_or(DEFAULT_AUTO_COMPACTION_TOKENS)
     }
 
     /// Whether the wildcard is in effect for a repository.

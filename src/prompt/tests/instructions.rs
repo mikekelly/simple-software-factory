@@ -54,6 +54,7 @@ fn initial_prompt_mentions_bot_and_issue() {
         driver: None,
         model: None,
         effort: None,
+        auto_compaction_tokens: None,
         command: None,
         clone_url: None,
         path: None,

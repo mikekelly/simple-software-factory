@@ -29,6 +29,11 @@ impl Engine {
     /// started with, which the wrapper exports for the byline; the stack a
     /// resume is launched with is the same one, since a resume changes the
     /// conversation and not the harness, model or effort.
+    /// `auto_compaction_tokens` is what the item resolved that to
+    /// (`Config::auto_compaction_tokens_for` over the effective config), passed
+    /// to the wrapper rather than read again there: an item handed over to
+    /// another harness resolves it off its own record, which the wrapper
+    /// cannot see.
     pub(in crate::engine) fn launch_command(
         &self,
         repo: &RepoConfig,
@@ -36,6 +41,7 @@ impl Engine {
         url: &str,
         inner: &str,
         stack: Option<&Stack>,
+        auto_compaction_tokens: u64,
     ) -> String {
         let me = crate::client_executable()
             .ok()
@@ -55,7 +61,15 @@ impl Engine {
         let server =
             launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
         let wrapper = format!("{prefix}{}{server}", shell_quote(&me));
-        render_launch_command(&wrapper, repo, number, url, inner, stack)
+        render_launch_command(
+            &wrapper,
+            repo,
+            number,
+            url,
+            inner,
+            stack,
+            auto_compaction_tokens,
+        )
     }
 
     /// Deliver a prompt to the agent that acts on an item (its own session,
@@ -168,17 +182,19 @@ impl Engine {
         // launched with what the item runs, which is what the byline of
         // everything the session posts will say.
         let stack = eff.stack();
+        let tokens = self.cfg.auto_compaction_tokens_for(&eff);
         let resume = st
             .agent_session_id
             .as_deref()
-            .and_then(|id| sessions::resume_command(&eff.harness, &eff.harness_command(), id))
-            .map(|c| self.launch_command(repo, st.number, &st.html_url, &c, Some(&stack)));
+            .and_then(|id| sessions::resume_command(&eff.harness, &eff.harness_command(tokens), id))
+            .map(|c| self.launch_command(repo, st.number, &st.html_url, &c, Some(&stack), tokens));
         let relaunch = self.launch_command(
             repo,
             st.number,
             &st.html_url,
-            &eff.harness_command(),
+            &eff.harness_command(tokens),
             Some(&stack),
+            tokens,
         );
         let channel = self.driver(repo).delivery_channel(
             &repo.name,
@@ -722,6 +738,7 @@ fn render_launch_command(
     url: &str,
     inner: &str,
     stack: Option<&Stack>,
+    auto_compaction_tokens: u64,
 ) -> String {
     // What the session runs, for the byline of everything it posts. Naming
     // only the parts that are set keeps `ssf launch`'s reading of an unset
@@ -735,6 +752,12 @@ fn render_launch_command(
             }
         }
     }
+    // Named whatever the harness does with it: it is a fact about the session
+    // the wrapper needs, and a harness that takes no threshold simply has
+    // nothing done with it. A bare count, like `--issue`.
+    flags.push_str(&format!(
+        " --auto-compaction-tokens {auto_compaction_tokens}"
+    ));
     format!(
         "{wrapper} launch --repo {} --issue {} --issue-url {}{flags} -- {}",
         shell_quote(&repo.name),
@@ -776,9 +799,10 @@ mod launch_command_tests {
                 42,
                 "https://example.test/owner/repo/issues/42",
                 "agent --flag",
-                None
+                None,
+                300_000
             ),
-            "'/bin/ssf' --server 'local' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent --flag'"
+            "'/bin/ssf' --server 'local' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' --auto-compaction-tokens 300000 -- 'agent --flag'"
         );
         assert_eq!(
             render_launch_command(
@@ -787,15 +811,19 @@ mod launch_command_tests {
                 42,
                 "https://example.test/owner/repo/issues/42",
                 "agent",
-                None
+                None,
+                0
             ),
-            "'/bin/ssf' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' -- 'agent'"
+            "'/bin/ssf' launch --repo 'owner/repo' --issue 42 --issue-url 'https://example.test/owner/repo/issues/42' --auto-compaction-tokens 0 -- 'agent'"
         );
     }
 
     /// The stack the session is started on travels to the wrapper, which
     /// exports it for the byline; only the parts that are set are named, so
-    /// the wrapper reads an unset one as the harness's own default.
+    /// the wrapper reads an unset one as the harness's own default. The
+    /// compaction threshold goes with it: the wrapper cannot resolve it for an
+    /// item handed over to another harness, which the config it reads does not
+    /// describe.
     #[test]
     fn the_launch_names_what_the_session_runs() {
         let repo = crate::config::RepoConfig {
@@ -810,18 +838,23 @@ mod launch_command_tests {
                 "https://example.test/owner/repo/issues/42",
                 "agent",
                 stack,
+                300_000,
             )
         };
         assert!(line(Some(&stack())).contains(
             "launch --repo 'owner/repo' --issue 42 --issue-url \
-'https://example.test/owner/repo/issues/42' --harness 'claude' --model 'opus' --effort 'high' -- 'agent'"
+'https://example.test/owner/repo/issues/42' --harness 'claude' --model 'opus' --effort 'high' \
+--auto-compaction-tokens 300000 -- 'agent'"
         ));
         let bare = Stack {
             harness: "omp".into(),
             model: None,
             effort: None,
         };
-        assert!(line(Some(&bare)).contains("--harness 'omp' -- 'agent'"));
+        assert!(
+            line(Some(&bare))
+                .contains("--harness 'omp' --auto-compaction-tokens 300000 -- 'agent'")
+        );
         assert!(!line(Some(&bare)).contains("--model"));
         assert!(!line(None).contains("--harness"));
     }

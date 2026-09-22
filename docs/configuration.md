@@ -185,6 +185,7 @@ instructions = "Run `make test` before opening a PR."
 | `git.signing_key` | the bot's key for the bot, unsigned for a person | SSH key to sign commits and tags with (a path), or `false` for unsigned |
 | `git.credential` | `bot` | Who pushes over HTTPS: `bot` (the bot's token), `token:<login>` (the token gh holds for that account where the agents run), `file:<path>` (a token file), or a git credential helper string used as `credential.helper`. SSH remotes always use the bot's key |
 | `driver` | `herdr` | What runs the agents. Herdr is currently the only supported value (see [Workspaces and terminals](drivers.md)); the key may be left unset |
+| `auto_compaction_tokens` | `300000` | Context a session's harness may fill before it compacts its own history, in tokens, for every repository that does not set its own (`repo.auto_compaction_tokens`). Applied to the harnesses that take such a setting — `claude`, `codex` and `omp` — and ignored by the rest, so one instance value can sit above a mixed set of repositories. `0` leaves each harness's own default alone (see [Context compaction](#context-compaction)) |
 | `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
 | `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
 | `herdr.tui_idle_timeout_ms` | `90000` | How long a freshly started agent gets to show up in its pane |
@@ -229,6 +230,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
 | `repo.model` | required by repo add/set when supported | Model id accepted by the agent; `provider/model` for `pi`, `omp` and `opencode`, and `auto` or a model name for `copilot` (`ssf models <agent>` lists known values; other ids pass through) |
 | `repo.effort` | required by repo add/set when supported | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
+| `repo.auto_compaction_tokens` | `auto_compaction_tokens` | Context this repository's sessions may fill before the harness compacts its own history, overriding the instance value. `0` leaves the harness's own default alone; `claude` accepts `100000`-`1000000` only, and a count outside that is refused while the config loads. Dropped when `ssf repo set --harness` switches harness, like the model and effort, since a threshold chosen for one harness need not be one the new harness takes |
 | `repo.path` | | Register an existing checkout instead of cloning |
 | `repo.clone_url` | `https://github.com/owner/name.git` | Use an SSH URL for private repositories (the bot's enrolled key is used) |
 | `repo.base_branch` | the driver's default base for the repository | Base ref for issue worktrees, e.g. `origin/main` |
@@ -242,8 +244,9 @@ instructions = "Run `make test` before opening a PR."
 
 The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with
 `--driver`, `--path`, `--clone-url`, `--base-branch`, `--command`,
-`--model`, `--effort`, `--instructions`, `--prompt-file`,
-`--allowed-users`, `--accept-anyone-risk` and `--event-comments`;
+`--model`, `--effort`, `--auto-compaction-tokens`, `--instructions`,
+`--prompt-file`, `--allowed-users`, `--accept-anyone-risk` and
+`--event-comments`;
 `ssf repo set` changes some
 of those, sets `--git-name`, `--git-email`, `--git-signing-key` and
 `--git-credential`, and `--clear <field>` unsets one (`git` for the whole
@@ -479,6 +482,40 @@ are left out while the two differ: only the harness is the driver's to
 report, and ssf does not have the stack that session was started with.
 `ssf handover <item> --harness <the configured one> ...` is how to move
 one onto it now (see [Handover](sessions.md#handover)).
+
+## Context compaction
+
+An unattended session that runs long enough fills its context window. Each
+harness that grows one summarises its own history when the context crosses a
+threshold, and ssf sets that threshold conservatively — `300000` tokens by
+default — because the alternative is not free: every turn re-sends the whole
+conversation, so an agent left to grow until the model's own limit pays for
+its entire history on each request, and that cost grows with the square of the
+turns. A smaller window is a deliberate trade of detail for cost: the summary
+keeps the gist, not the file paths and the reasoning on them. `0` in either key
+turns ssf's value off and leaves the harness's own default alone, for an
+operator who would rather decide that per model than per machine.
+
+| Agent | How ssf sets it | Notes |
+|-------|-----------------|-------|
+| `claude` | `--autocompact <tokens>` on the launch command, resumes included | Claude Code accepts `100000`-`1000000` and refuses to start outside it, so a count it cannot take is refused while the config loads, and again when `ssf config set` or `ssf repo set` would write one. It is a flag of its own rather than a key in the `--settings` JSON that carries `crossSessionInbound`, whose count ssf requires to stay at one |
+| `codex` | `-c model_auto_compact_token_limit=<tokens>`, the same route the effort level takes | codex type-checks the key and reports a bad value at startup |
+| `omp` | `PI_CONFIG_FILES` pointed at a one-key overlay under the state directory, written by `ssf launch` | omp has no flag and no environment variable for the value; `PI_CONFIG_FILES` is what a session reads at startup, where `omp --config <file>` is honoured by its model listing and not by a session. An overlay of your own in the environment is replaced for the session, and one listed later still wins |
+| everything else | nothing | `pi`, `opencode`, `gemini`, `grok`, `copilot` and `crush` have no such setting; a value configured above them is unused rather than an error, so one instance value can sit above a mixed set of repositories |
+
+A repository's own value belongs to its harness: `ssf repo set --harness`
+drops it, exactly as it drops the model and effort, and an item handed to
+another harness (`ssf handover`) falls back to the instance value or the
+default rather than carrying a count the new harness may refuse. A custom
+`repo.command` does not replace ssf's value: the flags and the overlay are
+appended to whatever command you configured, so a repository that runs the
+harness its own way still gets the threshold, and one that already sets
+`PI_CONFIG_FILES` for itself keeps its own overlays, layered after ssf's.
+
+Different projects need different answers, which is why the setting is per
+repository as well as per instance: a large-context model can afford more
+room than a 200K one, and a repository whose items carry long histories is
+where a small window costs the most.
 
 ## Codex native delivery
 

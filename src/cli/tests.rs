@@ -623,6 +623,7 @@ fn repo_add_and_set_switch_the_post_flag_and_clear_puts_it_back() {
         command: None,
         model: Some("opus".into()),
         effort: Some("high".into()),
+        auto_compaction_tokens: None,
         instructions: None,
         prompt_file: None,
         allowed_users: None,
@@ -639,6 +640,7 @@ fn repo_add_and_set_switch_the_post_flag_and_clear_puts_it_back() {
         command: None,
         model: None,
         effort: None,
+        auto_compaction_tokens: None,
         instructions: None,
         prompt_file: None,
         allowed_users: None,
@@ -681,6 +683,111 @@ fn repo_add_and_set_switch_the_post_flag_and_clear_puts_it_back() {
         enrollment,
         "updating settings is not a new enrollment"
     );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn repo_add_and_set_carry_the_auto_compaction_threshold_and_clear_puts_it_back() {
+    // `ssf repo set` warns the live sessions when the stack changed, which
+    // reads the state directory.
+    let _sandbox = crate::config::test_support::sandbox();
+    let dir = std::env::temp_dir().join(format!(
+        "ssf-repo-compaction-test-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("config.toml");
+    let set = |harness: &str,
+               model: &str,
+               effort: &str,
+               auto_compaction_tokens: Option<u64>,
+               clear: Vec<String>| RepoCommand::Set {
+        name: "o/r".into(),
+        harness: Some(harness.into()),
+        driver: None,
+        path: None,
+        clone_url: None,
+        base_branch: None,
+        command: None,
+        model: Some(model.into()),
+        effort: Some(effort.into()),
+        auto_compaction_tokens,
+        instructions: None,
+        prompt_file: None,
+        allowed_users: None,
+        accept_anyone_risk: false,
+        event_comments: None,
+        git_name: None,
+        git_email: None,
+        git_signing_key: None,
+        git_credential: None,
+        clear,
+    };
+    repo_at(
+        &path,
+        RepoCommand::Add {
+            name: "o/r".into(),
+            harness: "codex".into(),
+            driver: None,
+            path: None,
+            clone_url: None,
+            base_branch: None,
+            command: None,
+            model: Some("gpt-5.5".into()),
+            effort: Some("high".into()),
+            auto_compaction_tokens: Some(120_000),
+            instructions: None,
+            prompt_file: None,
+            allowed_users: None,
+            accept_anyone_risk: false,
+            event_comments: None,
+        },
+    )
+    .unwrap();
+    let loaded = || Config::load_from(&path).unwrap();
+    assert_eq!(loaded().repos[0].auto_compaction_tokens, Some(120_000));
+    assert!(
+        loaded().repos[0]
+            .harness_command(loaded().auto_compaction_tokens_for(&loaded().repos[0]))
+            .contains("model_auto_compact_token_limit=120000")
+    );
+    // Unset leaves it alone; set replaces it; cleared goes back to the
+    // instance's value, else ssf's default.
+    repo_at(&path, set("codex", "gpt-5.5", "high", None, vec![])).unwrap();
+    assert_eq!(loaded().repos[0].auto_compaction_tokens, Some(120_000));
+    repo_at(&path, set("codex", "gpt-5.5", "high", Some(90_000), vec![])).unwrap();
+    assert_eq!(loaded().repos[0].auto_compaction_tokens, Some(90_000));
+    repo_at(
+        &path,
+        set(
+            "codex",
+            "gpt-5.5",
+            "high",
+            None,
+            vec!["auto_compaction_tokens".into()],
+        ),
+    )
+    .unwrap();
+    let cfg = loaded();
+    assert_eq!(cfg.repos[0].auto_compaction_tokens, None);
+    assert_eq!(cfg.auto_compaction_tokens_for(&cfg.repos[0]), 300_000);
+    // Switching harness drops a threshold chosen for the old one, the way it
+    // drops the model and effort, rather than leaving a count the new harness
+    // may refuse.
+    repo_at(&path, set("codex", "gpt-5.5", "high", Some(90_000), vec![])).unwrap();
+    repo_at(&path, set("claude", "opus", "high", None, vec![])).unwrap();
+    let cfg = loaded();
+    assert_eq!(cfg.repos[0].harness, "claude");
+    assert_eq!(cfg.repos[0].auto_compaction_tokens, None);
+    // ...and one that would not fit claude is refused at the write, not
+    // written and left to break a launch.
+    let err = repo_at(&path, set("claude", "opus", "high", Some(50_000), vec![])).unwrap_err();
+    assert!(format!("{err:#}").contains("100000"), "{err:#}");
+    assert_eq!(loaded().repos[0].auto_compaction_tokens, None);
     std::fs::remove_dir_all(&dir).ok();
 }
 

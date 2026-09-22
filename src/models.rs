@@ -1,4 +1,4 @@
-//! Per-harness model and effort launch preferences.
+//! Per-harness model, effort and context-compaction launch preferences.
 //!
 //! A model id is passed to the harness as-is (Claude Code family aliases such
 //! as `opus`, Codex ids such as `gpt-5.5`), and an effort level is one of the
@@ -7,7 +7,10 @@
 //! OpenRouter among them) and, where they have one, a thinking or reasoning
 //! level. This module knows how each harness takes those on its command
 //! line, seeds or lists the model ids shown by the menus, and validates
-//! effort levels; unknown model ids still pass through to the harness.
+//! effort levels; unknown model ids still pass through to the harness. It
+//! also knows the one harness that takes its context-compaction threshold
+//! through a settings file rather than a flag (`omp`), which is why the
+//! overlay for it is written from here.
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -60,6 +63,20 @@ fn grok_effort(level: &str) -> Vec<String> {
 }
 fn thinking(level: &str) -> Vec<String> {
     vec!["--thinking".into(), level.into()]
+}
+/// Claude Code's own one-launch window (100k-1M tokens), which its settings
+/// merge into nothing: it is a flag, not part of the one `--settings` JSON
+/// the unattended posture needs (`claude_delivery::unattended`).
+fn claude_compaction(tokens: u64) -> Vec<String> {
+    vec!["--autocompact".into(), tokens.to_string()]
+}
+/// Codex takes it as a configuration override, the same route the effort
+/// level goes (`codex_delivery::endpoint` accepts the pair ssf writes).
+fn codex_compaction(tokens: u64) -> Vec<String> {
+    vec![
+        "-c".into(),
+        format!("model_auto_compact_token_limit={tokens}"),
+    ]
 }
 
 fn run(bin: &str, args: &[&str]) -> Result<String> {
@@ -384,6 +401,123 @@ pub fn effort_levels(harness: &str) -> &'static [&'static str] {
     catalogue(harness).map(|c| c.effort_levels).unwrap_or(&[])
 }
 
+/// What a harness takes as its context-compaction threshold: how full its
+/// context may get before it summarises its own history. ssf sets a
+/// conservative one (`auto_compaction_tokens`) so an unattended session does
+/// not grow until the model's own limit does, and a harness ssf knows no way
+/// for is left alone whatever the configuration asks: an instance-wide value
+/// has to be able to sit above a repository running something else (#404).
+enum Compaction {
+    /// Flags appended to the launch command, with the counts the harness
+    /// accepts (`None`: any count it is given). Claude Code refuses to start
+    /// outside its own range, so a count it cannot take is refused while the
+    /// configuration is read rather than handed to a launch that would not
+    /// come up.
+    Args {
+        args: fn(u64) -> Vec<String>,
+        tokens: Option<std::ops::RangeInclusive<u64>>,
+    },
+    /// Through its settings, and only that way: `ssf launch` writes the value
+    /// as an overlay and points the session at it with `PI_CONFIG_FILES`, omp
+    /// having neither a flag nor an environment variable for it.
+    Overlay,
+}
+
+const AUTO_COMPACTION: &[(&str, Compaction)] = &[
+    (
+        "claude",
+        Compaction::Args {
+            args: claude_compaction,
+            tokens: Some(100_000..=1_000_000),
+        },
+    ),
+    (
+        "codex",
+        Compaction::Args {
+            args: codex_compaction,
+            tokens: None,
+        },
+    ),
+    ("omp", Compaction::Overlay),
+];
+
+/// How `harness` takes a context-compaction threshold, when it takes one at
+/// all.
+fn auto_compaction(harness: &str) -> Option<&'static Compaction> {
+    AUTO_COMPACTION
+        .iter()
+        .find(|(h, _)| *h == harness)
+        .map(|(_, c)| c)
+}
+
+/// Arguments that give `harness` the context-compaction threshold `tokens`:
+/// none for `0` (leave the harness's own default alone), and none for a
+/// harness that takes it another way.
+pub fn auto_compaction_args(harness: &str, tokens: u64) -> Vec<String> {
+    if tokens == 0 {
+        return Vec::new();
+    }
+    match auto_compaction(harness) {
+        Some(Compaction::Args { args, .. }) => args(tokens),
+        _ => Vec::new(),
+    }
+}
+
+/// Check a context-compaction threshold against what `harness` accepts, so a
+/// value that would keep a launch from coming up is refused while the
+/// configuration is read. `0` is "leave the harness's own default alone" and
+/// passes; a harness with no threshold is not a harness to check.
+pub fn validate_auto_compaction(harness: &str, tokens: u64) -> Result<()> {
+    if tokens == 0 {
+        return Ok(());
+    }
+    if let Some(Compaction::Args {
+        tokens: Some(range),
+        ..
+    }) = auto_compaction(harness)
+        && !range.contains(&tokens)
+    {
+        bail!(
+            "auto_compaction_tokens {tokens} is not a threshold {harness} accepts ({} to {}); 0 leaves its own default alone",
+            range.start(),
+            range.end()
+        );
+    }
+    Ok(())
+}
+
+/// The settings overlay that carries the threshold for the harness that takes
+/// it no other way, and the YAML it holds: omp's `compaction.thresholdTokens`.
+/// One file per value, under the directory the session's own harness files
+/// live in, so a launch can point at it without a flag. A file of ours that is
+/// already right is left alone, so pointing a session at it never rewrites one
+/// another session is reading.
+fn omp_compaction_overlay(tokens: u64) -> (PathBuf, String) {
+    (
+        crate::config::state_dir()
+            .join("harness")
+            .join(format!("omp-compaction-{tokens}.yml")),
+        format!(
+            "# Written by ssf for the sessions it starts; the value comes from\n\
+             # auto_compaction_tokens in its configuration. An overlay of your own\n\
+             # still applies, and one naming this key after it would win.\n\
+             compaction:\n  thresholdTokens: {tokens}\n"
+        ),
+    )
+}
+
+/// Write that overlay, when this build has not written it already.
+pub fn write_omp_compaction_overlay(tokens: u64) -> Result<PathBuf> {
+    let (path, body) = omp_compaction_overlay(tokens);
+    if std::fs::read_to_string(&path).is_ok_and(|on_disk| on_disk == body) {
+        return Ok(path);
+    }
+    let dir = path.parent().expect("the overlay has a parent directory");
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    crate::config::write_atomic(&path, body.as_bytes(), 0o644)?;
+    Ok(path)
+}
+
 /// Flags that make a harness run without stopping for approval: every tool
 /// call is allowed and the first-run trust question, where a flag can answer
 /// it, is answered. ssf's terminals are unmanned, so nothing could answer a
@@ -610,15 +744,21 @@ pub fn launch_args(harness: &str, model: Option<&str>, effort: Option<&str>) -> 
     args
 }
 
-/// `command` with the model and effort arguments appended, shell-quoted.
+/// `command` with the model, effort and context-compaction arguments
+/// appended, shell-quoted. `auto_compaction_tokens` is `0` when the harness's
+/// own default is to be left alone.
 pub fn apply_to_command(
     command: &str,
     harness: &str,
     model: Option<&str>,
     effort: Option<&str>,
+    auto_compaction_tokens: u64,
 ) -> String {
     let mut out = command.trim_end().to_string();
-    for arg in launch_args(harness, model, effort) {
+    for arg in launch_args(harness, model, effort)
+        .into_iter()
+        .chain(auto_compaction_args(harness, auto_compaction_tokens))
+    {
         out.push(' ');
         out.push_str(&shell_word(&arg));
     }
@@ -649,21 +789,25 @@ mod tests {
                 "claude --dangerously-skip-permissions",
                 "claude",
                 Some("opus"),
-                Some("high")
+                Some("high"),
+                0
             ),
             "claude --dangerously-skip-permissions --model opus --effort high"
         );
         assert_eq!(
-            apply_to_command("claude", "claude", None, Some("max")),
+            apply_to_command("claude", "claude", None, Some("max"), 0),
             "claude --effort max"
         );
-        assert_eq!(apply_to_command("claude", "claude", None, None), "claude");
+        assert_eq!(
+            apply_to_command("claude", "claude", None, None, 0),
+            "claude"
+        );
     }
 
     #[test]
     fn codex_uses_short_model_flag_and_config_override() {
         assert_eq!(
-            apply_to_command("codex", "codex", Some("gpt-5.5"), Some("xhigh")),
+            apply_to_command("codex", "codex", Some("gpt-5.5"), Some("xhigh"), 0),
             "codex -m gpt-5.5 -c model_reasoning_effort=xhigh"
         );
     }
@@ -671,11 +815,11 @@ mod tests {
     #[test]
     fn grok_and_gemini_flags() {
         assert_eq!(
-            apply_to_command("grok", "grok", Some("grok-4.6"), Some("xhigh")),
+            apply_to_command("grok", "grok", Some("grok-4.6"), Some("xhigh"), 0),
             "grok -m grok-4.6 --reasoning-effort xhigh"
         );
         assert_eq!(
-            apply_to_command("gemini", "gemini", Some("gemini-2.5-pro"), None),
+            apply_to_command("gemini", "gemini", Some("gemini-2.5-pro"), None, 0),
             "gemini -m gemini-2.5-pro"
         );
     }
@@ -687,20 +831,21 @@ mod tests {
                 "pi",
                 "pi",
                 Some("openrouter/anthropic/claude-sonnet-4"),
-                Some("high")
+                Some("high"),
+                0
             ),
             "pi --model openrouter/anthropic/claude-sonnet-4 --thinking high"
         );
         assert_eq!(
-            apply_to_command("omp", "omp", Some("openai-codex/gpt-5.4"), Some("auto")),
+            apply_to_command("omp", "omp", Some("openai-codex/gpt-5.4"), Some("auto"), 0),
             "omp --model openai-codex/gpt-5.4 --thinking auto"
         );
         assert_eq!(
-            apply_to_command("opencode", "opencode", Some("openrouter/x"), None),
+            apply_to_command("opencode", "opencode", Some("openrouter/x"), None, 0),
             "opencode -m openrouter/x"
         );
         assert_eq!(
-            apply_to_command("copilot", "copilot", Some("auto"), Some("xhigh")),
+            apply_to_command("copilot", "copilot", Some("auto"), Some("xhigh"), 0),
             "copilot --model auto --effort xhigh"
         );
         assert!(validate("pi", None, Some("auto")).is_err());
@@ -723,17 +868,17 @@ mod tests {
     #[test]
     fn unsupported_settings_are_dropped_from_the_command() {
         assert_eq!(
-            apply_to_command("crush", "crush", Some("x"), Some("high")),
+            apply_to_command("crush", "crush", Some("x"), Some("high"), 0),
             "crush"
         );
         // Gemini has no effort setting.
         assert_eq!(
-            apply_to_command("gemini", "gemini", None, Some("high")),
+            apply_to_command("gemini", "gemini", None, Some("high"), 0),
             "gemini"
         );
         // A level the harness does not accept is not passed on.
         assert_eq!(
-            apply_to_command("claude", "claude", None, Some("ultra")),
+            apply_to_command("claude", "claude", None, Some("ultra"), 0),
             "claude"
         );
     }
@@ -783,7 +928,7 @@ mod tests {
         assert_eq!(default_command("aider"), "aider");
         // Model and effort go after the flags.
         assert_eq!(
-            apply_to_command(&default_command("codex"), "codex", Some("gpt-5.5"), None),
+            apply_to_command(&default_command("codex"), "codex", Some("gpt-5.5"), None, 0),
             "codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust -m gpt-5.5"
         );
     }
@@ -791,9 +936,96 @@ mod tests {
     #[test]
     fn odd_model_ids_are_quoted() {
         assert_eq!(
-            apply_to_command("claude", "claude", Some("it's"), None),
+            apply_to_command("claude", "claude", Some("it's"), None, 0),
             "claude --model 'it'\\''s'"
         );
+    }
+
+    /// The three harnesses that take a context-compaction threshold, each the
+    /// way that harness takes it, and the rest left alone however the config
+    /// is set.
+    #[test]
+    fn a_context_compaction_threshold_reaches_the_harnesses_that_take_one() {
+        // claude and codex on the command line, after the model and effort.
+        assert_eq!(
+            apply_to_command("claude", "claude", Some("opus"), Some("high"), 300_000),
+            "claude --model opus --effort high --autocompact 300000"
+        );
+        assert_eq!(
+            apply_to_command("codex", "codex", Some("gpt-5.5"), None, 300_000),
+            "codex -m gpt-5.5 -c model_auto_compact_token_limit=300000"
+        );
+        // omp has no flag or environment variable for it: its value is an
+        // overlay `ssf launch` writes, so nothing goes on the command line.
+        assert!(auto_compaction_args("omp", 300_000).is_empty());
+        assert!(matches!(auto_compaction("omp"), Some(Compaction::Overlay)));
+        // A harness without one is unaffected, and a count its harness
+        // refuses is dropped rather than shelled into a launch that would
+        // not come up.
+        for harness in [
+            "pi", "opencode", "gemini", "grok", "copilot", "crush", "aider",
+        ] {
+            assert!(
+                auto_compaction_args(harness, 300_000).is_empty(),
+                "{harness}"
+            );
+            assert!(auto_compaction(harness).is_none(), "{harness}");
+        }
+        assert!(auto_compaction_args("claude", 500_000) == ["--autocompact", "500000"]);
+        // 0 is "leave the harness's own default alone".
+        assert!(auto_compaction_args("claude", 0).is_empty());
+        assert!(auto_compaction_args("codex", 0).is_empty());
+    }
+
+    /// Claude Code refuses to start outside its own window, so a count it
+    /// cannot take is refused while the configuration is read; a harness
+    /// without a ceiling of its own takes any count.
+    #[test]
+    fn a_threshold_outside_the_harnesss_own_range_is_refused() {
+        assert!(validate_auto_compaction("claude", 100_000).is_ok());
+        assert!(validate_auto_compaction("claude", 1_000_000).is_ok());
+        assert!(validate_auto_compaction("claude", 300_000).is_ok());
+        let err = validate_auto_compaction("claude", 99_999).unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("100000"), "{text}");
+        assert!(text.contains("1000000"), "{text}");
+        assert!(validate_auto_compaction("claude", 1_000_001).is_err());
+        for harness in ["codex", "omp", "pi", "aider"] {
+            assert!(validate_auto_compaction(harness, 1).is_ok(), "{harness}");
+            assert!(
+                validate_auto_compaction(harness, 10_000_000).is_ok(),
+                "{harness}"
+            );
+        }
+        // 0 is each harness's own default, whatever that harness is.
+        assert!(validate_auto_compaction("claude", 0).is_ok());
+    }
+
+    /// omp's overlay: the one key it reads its threshold from, under the state
+    /// directory `ssf launch` already materialises the bridge and launcher in.
+    #[test]
+    fn the_omp_overlay_carries_the_threshold_and_nothing_else() {
+        let sandbox = crate::config::test_support::sandbox();
+        let path = write_omp_compaction_overlay(300_000).unwrap();
+        assert!(path.starts_with(sandbox.root()), "{}", path.display());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            body.contains("compaction:\n  thresholdTokens: 300000\n"),
+            "{body}"
+        );
+        // The comment says where the value comes from, so an operator who
+        // finds the file knows what wrote it.
+        assert!(body.contains("auto_compaction_tokens"), "{body}");
+        // Another count is another file: one session's overlay is never
+        // rewritten under a running session.
+        let other = write_omp_compaction_overlay(150_000).unwrap();
+        assert_ne!(other, path);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            body,
+            "the first overlay is left alone"
+        );
+        assert!(std::fs::read_to_string(&other).unwrap().contains("150000"));
     }
 
     fn write(path: &Path, body: &str) {
