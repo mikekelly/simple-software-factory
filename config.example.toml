@@ -95,6 +95,8 @@
 # include_own_events = false                   # deliver the bot's own commits/cross-references and each session's posts back to it
 # ignored_events = ["mentioned", "subscribed", "unsubscribed"]
 # max_body_chars = 8000
+# first_prompt_max_events = 50                 # events a session's first message carries, newest first; 0 is no limit, and what is left out is never delivered later
+# first_prompt_max_chars = 32000               # character budget for those events together, spent newest first so the newest is always included; 0 is no limit
 # instructions = """
 # House rules appended to every initial prompt.
 # """
@@ -143,6 +145,8 @@ effort = "high"                              # effort/thinking level (claude: lo
 # event_comments = false                       # this repository's items get no ssf event posts (default: daemon.event_comments)
 # slash_commands = false                      # no longer used: see daemon.slash_commands above; still accepted so old files load
 # conflict_check_interval_secs = 0             # disable conflict notices for this repository (default: daemon.conflict_check_interval_secs)
+# first_prompt_max_events = 0                  # no limit: this repository's first messages carry the whole timeline again (default: daemon.first_prompt_max_events)
+# first_prompt_max_chars = 0                   # likewise for the character budget (default: daemon.first_prompt_max_chars)
 # [repo.git]                                   # this repository's commit identity, each key over the [git] table above
 # name = "Ann Person"
 # email = "ann@example.com"

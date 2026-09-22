@@ -1372,6 +1372,13 @@ esac
 /// installed?): Argument list too long (os error 7)" -- and the handover
 /// left the item blocked with nothing running. The prompt has to reach the
 /// pane in pieces that fit.
+///
+/// The prompt here is built by hand rather than assembled: the test needs
+/// one past the kernel's 128 KiB, which a story from `initial_prompt` does
+/// not necessarily reach now that #406 caps its activity -- one whose caps
+/// are lifted, or whose description sits at GitHub's 65,536-character
+/// maximum, still can. Live deliveries remain unbounded, and both take
+/// this path.
 #[tokio::test]
 async fn a_first_prompt_too_long_for_one_argument_reaches_the_pane_whole() {
     use std::os::unix::fs::PermissionsExt;

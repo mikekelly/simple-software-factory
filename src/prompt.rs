@@ -426,15 +426,93 @@ pub fn initial_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
         quote_lines(body)
     });
     s.push_str("\n\n## Activity so far\n\n");
-    if events.is_empty() {
+    let (shown, omitted) = first_prompt_events(events, ctx);
+    if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
+        s.push_str(&note);
+        s.push('\n');
+    }
+    if shown.is_empty() {
         s.push_str("(no activity yet)\n");
     } else {
-        for e in events {
+        for e in shown {
             s.push_str(&e.text);
             s.push('\n');
         }
     }
     s
+}
+
+/// The events the first message about an item carries, and how many of the
+/// item's earlier ones that leaves out: the newest, up to the repository's
+/// event count, and of those only as many as fit its character budget. The
+/// newest is kept whatever its size -- an update aggregated out of many
+/// bodies can pass the budget on its own, and an activity section with
+/// nothing in it reads as "nothing happened". A cap of zero means no limit.
+///
+/// Used for the first message of a fresh session (`initial_prompt`) and
+/// for the first message a live session gets about an item bound to it
+/// (`tracked_prompt`): both are assembled against an empty `seen` map, so
+/// both would otherwise carry the item's whole timeline. Follow-up
+/// messages carry a delta by construction and are left alone.
+fn first_prompt_events<'a>(events: &'a [Rendered], ctx: &PromptContext) -> (&'a [Rendered], usize) {
+    let (max_events, max_chars) = ctx.repo.first_prompt_caps(ctx.daemon);
+    let mut from = 0;
+    if max_events > 0 && events.len() > max_events {
+        from = events.len() - max_events;
+    }
+    if max_chars > 0 {
+        let mut used = 0;
+        let mut keep = 0;
+        for e in events[from..].iter().rev() {
+            let size = e.text.chars().count() + 1;
+            if keep > 0 && used + size > max_chars {
+                break;
+            }
+            used += size;
+            keep += 1;
+        }
+        from = events.len() - keep;
+    }
+    (&events[from..], from)
+}
+
+/// What a first message about an item says about the events it left out,
+/// in ssf's own words and outside the quoted item: how many, that they
+/// will not arrive later, and where to read them. The point of saying so
+/// is that the item still holds them -- and that reading all of it can
+/// fill a session's context.
+fn omitted_notice(
+    issue: &Issue,
+    ctx: &PromptContext,
+    shown: usize,
+    omitted: usize,
+) -> Option<String> {
+    if omitted == 0 {
+        return None;
+    }
+    let (kind, view) = if ctx.pr.is_some() {
+        ("pull request", "pr")
+    } else {
+        ("issue", "issue")
+    };
+    let repo = &ctx.repo.name;
+    let n = issue.number;
+    let left = if omitted == 1 {
+        "1 earlier event is left out and will not be delivered later.".to_string()
+    } else {
+        format!("{omitted} earlier events are left out and will not be delivered later.")
+    };
+    let follow = if shown == 1 {
+        "The newest one follows below.".to_string()
+    } else {
+        format!("The {shown} newest follow below.")
+    };
+    Some(format!(
+        "ssf note: this {kind} carries more history than this first message: {left} {follow} Read \
+the rest from the {kind} itself when the work needs it -- `gh {view} view {n} --comments` for the \
+comments, `gh api repos/{repo}/issues/{n}/timeline` for every event -- rather than reading all of \
+it, which can fill this session's context."
+    ))
 }
 
 /// ssf's own prompt: what ssf is, how it spawned this session and the rules
@@ -599,10 +677,15 @@ pub fn tracked_prompt(issue: &Issue, events: &[Rendered], ctx: &PromptContext) -
         ));
     }
     s.push_str("\n\nActivity so far:\n\n");
-    if events.is_empty() {
+    let (shown, omitted) = first_prompt_events(events, ctx);
+    if let Some(note) = omitted_notice(issue, ctx, shown.len(), omitted) {
+        s.push_str(&note);
+        s.push('\n');
+    }
+    if shown.is_empty() {
         s.push_str("(no activity yet)\n");
     }
-    for e in events {
+    for e in shown {
         s.push_str(&e.text);
         s.push('\n');
     }

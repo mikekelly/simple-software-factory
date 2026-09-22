@@ -196,6 +196,8 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it in live messages (normally noise; a session started again is always shown its own posts in the catch-up story — see [Identity and bylines](identity-and-bylines.md)) |
 | `daemon.ignored_events` | `["mentioned", "subscribed", "unsubscribed"]` | Timeline event types that are never delivered |
 | `daemon.max_body_chars` | `8000` | Longest comment body quoted in a prompt, in characters |
+| `daemon.first_prompt_max_events` | `50` | Most timeline events a session's first message carries, newest first; `0` is no limit. What is left out is never delivered later, and the message says so and where to read it (see [What the agent is told](prompts.md#the-messages-an-agent-receives)) |
+| `daemon.first_prompt_max_chars` | `32000` | Character budget for those events together, spent newest first so the newest is always included; `0` is no limit |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
 | `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)); still accepted so old files load |
 | `daemon.cleanup_grace_secs` | | No longer used: it timed the reviewer sessions out, which went with #115 (see [Second opinions](sessions.md#second-opinions-the-gauntlet)); still accepted so old files load, and `ssf doctor` says so while it stays |
@@ -240,6 +242,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
 | `repo.event_comments` | `daemon.event_comments` | Whether the daemon posts its events on this repository's items (`ssf repo set <owner/name> --event-comments false`) |
 | `repo.conflict_check_interval_secs` | `daemon.conflict_check_interval_secs` | Conflict-check interval for this repository; `0` disables |
+| `repo.first_prompt_max_events`, `repo.first_prompt_max_chars` | `daemon.first_prompt_max_events`, `daemon.first_prompt_max_chars` | How much of this repository's items' activity a session's first message carries, for repositories whose items differ from the instance's (a spec-heavy issue is not a bug thread); `0` is no limit. File-only, like `repo.conflict_check_interval_secs` |
 | `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |
 
 The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with
