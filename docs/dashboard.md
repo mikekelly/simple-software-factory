@@ -297,7 +297,12 @@ on, each through its own factory. Every one of them is sent from the
 service worker and never from the content script, so the Origin is the
 extension's; each configured factory has a **Writes** switch on its options page,
 on by default, which hides both and refuses the write when off. A refusal is
-shown in the daemon's own words with the form kept, and nothing is retried.
+shown in the daemon's own words with the form kept, and nothing is retried. That
+page also names the version the browser is running and what each factory reports
+— whether it answered, and how many watched repositories — so a form that is
+missing because the loaded extension or the running server is older than the
+change is answered there rather than guessed at
+([the guide's table](../chrome-extension/README.md#updating-a-loaded-copy)).
 
 | Message | Hand over… | Release |
 | --- | --- | --- |

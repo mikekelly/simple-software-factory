@@ -20,6 +20,9 @@ const save = document.getElementById("save");
 let entries = [];
 /// origin pattern -> whether Chrome currently allows it.
 let granted = new Map();
+/// How often the page pings the worker to keep it from being evicted. The same
+/// interval the content script uses.
+const PING_MS = 20000;
 
 function show(message) {
   status.textContent = message;
@@ -74,6 +77,7 @@ function render() {
     return;
   }
   entries.forEach((entry) => rows.append(row(entry)));
+  showHealth();
 }
 
 function row(entry) {
@@ -178,9 +182,84 @@ function row(entry) {
   describeWrites();
   writes.append(writesLabel, writesNote);
 
-  box.append(label, url, state, allow, remove, writes);
+  // What the overlay is getting from this factory right now; see `showHealth`.
+  // The worker keys factories by the canonical URL, so this does too: an entry
+  // whose stored URL is not in that form would otherwise match nothing and read
+  // as a blank line while its state is known.
+  const health = document.createElement("p");
+  health.className = "health";
+  health.dataset.url = factoryUrl(entry.url) ?? "";
+
+  box.append(label, url, state, allow, remove, writes, health);
   return box;
 }
+
+/// The last snapshot the worker sent, so a re-render keeps its health lines.
+let factories = [];
+
+/// Fill in each row's health line from the worker's snapshot. The line says
+/// whether the factory answered and, when it did, whether it reports the
+/// repositories it watches -- which is what the assign form for an item the
+/// factory has no record of is drawn from. Without it the two ways that form can
+/// be missing from a page (an older `ssf-server` that publishes no repositories,
+/// and a capability URL the server has since changed) are both just an absence
+/// (#435).
+function showHealth() {
+  for (const node of rows.querySelectorAll(".health")) {
+    const url = node.dataset.url;
+    // A row with no usable URL yet -- one just added, or not saved -- has
+    // nothing to report, but a factory the worker has not named yet reads "not
+    // answered yet" rather than nothing: a line that goes blank at the moment
+    // someone saves a factory is the silence this exists to remove (#435).
+    if (!url) {
+      node.textContent = "";
+      continue;
+    }
+    const factory = factories.find((one) => one.url === url);
+    if (!factory) {
+      node.textContent = "not answered yet.";
+      continue;
+    }
+    const watched = factory.repositories?.length ?? 0;
+    if (factory.state === "error") {
+      node.textContent = `unreachable: ${factory.error ?? "the factory did not answer"}`;
+    } else if (factory.state === "connecting") {
+      node.textContent = "not answered yet.";
+    } else if (watched) {
+      node.textContent = `${factory.state} · reports ${watched} watched ${watched === 1 ? "repository" : "repositories"}.`;
+    } else {
+      node.textContent = `${factory.state} · reports no watched repositories, so the overlay cannot offer the assign form for an item it has no record of. Either this factory watches none, or it is an older ssf-server that does not publish them.`;
+    }
+  }
+}
+
+// The worker pushes a snapshot when the page connects and on every change, so
+// these lines stay current without polling. The ping is what keeps the worker
+// alive -- an open port does not reset its idle timer, only messages do -- and a
+// worker that is stopped closes the port, so the page opens another: without
+// both, a page left open would freeze its lines and a factory saved afterwards
+// would read blank, which is the silence these lines exist to remove (#435).
+// The timer is replaced rather than added to on each reconnect, so a page that
+// reconnects many times still holds one.
+let pingTimer = null;
+function connect() {
+  const worker = chrome.runtime.connect({ name: "ssf-overlay" });
+  worker.onMessage.addListener((message) => {
+    if (message?.type !== "snapshot") return;
+    factories = message.payload?.factories ?? [];
+    showHealth();
+  });
+  worker.onDisconnect.addListener(() => setTimeout(connect, 1000));
+  clearInterval(pingTimer);
+  pingTimer = setInterval(() => {
+    try {
+      worker.postMessage({ type: "ping" });
+    } catch {
+      // The port is gone; `onDisconnect` opens another.
+    }
+  }, PING_MS);
+}
+connect();
 
 /// Ask for every address the saved list needs and Chrome does not allow yet.
 /// Must run inside the click's user gesture.
@@ -268,3 +347,10 @@ chrome.permissions.onRemoved.addListener(async () => {
   await refresh();
   render();
 })();
+
+// The version of the code the browser is actually running, so a copy loaded
+// before an update can be told from the current one: `chrome://extensions`
+// shows it too, but the page a reader is already on should answer "is this the
+// build with the fix?" without them going to look (#435).
+document.getElementById("version").textContent =
+  `ssf overlay ${chrome.runtime.getManifest().version} — press Reload on chrome://extensions after updating this directory`;

@@ -190,6 +190,23 @@ button.primary {
   font-size: 12px;
 }
 
+.version {
+  margin: -4px 0 12px;
+  font-size: 12px;
+  color: var(--muted, #57606a);
+}
+
+.health {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--muted, #57606a);
+}
+
+.health:empty {
+  display: none;
+}
+
 .empty {
   padding: 12px;
   border: 1px dashed var(--border);
