@@ -747,7 +747,12 @@ fn a_pane_answers_for_the_factory_the_daemon_named() {
 
 /// A pane inherits one factory's identity, but an explicit `--server` (or
 /// `SSF_SERVER`) names another: the catalog name selected on the command line
-/// wins over whatever the daemon put in the environment.
+/// wins over whatever the daemon put in the environment, and the rest of what
+/// the pane inherited does not follow it. A VM context is the one that would
+/// send the command looking for another factory's guest, so it is asserted
+/// separately: for a local route the name is set by the route anyway, and only
+/// this half notices the pair left behind (`client_main` clears both before
+/// setting the route's own).
 #[cfg(target_os = "linux")]
 #[test]
 fn an_explicit_server_overrides_the_inherited_pane_identity() {
@@ -762,16 +767,89 @@ fn an_explicit_server_overrides_the_inherited_pane_identity() {
         other.join("state"),
     ));
     root.use_real_server();
+    // The stub is what the child runs, so recording its own environment is what
+    // makes these assertions about what the command received rather than about
+    // what the wrapper meant to pass it.
     script(
         &root.0.join("systemctl"),
-        "case \"$*\" in *is-enabled*ssf@other.service*|*is-active*ssf@other.service*) exit 0;; esac\nexit 1",
+        "printf '%s | target=%s | vm=%s\\n' \"$*\" \"${SSF_INTERNAL_SELECTED_TARGET:-absent}\" \"${SSF_INTERNAL_SELECTED_VM:-absent}\" >> \"$TEST_ROOT/systemctl-args\"\ncase \"$*\" in *is-enabled*ssf@other.service*|*is-active*ssf@other.service*) exit 0;; esac\nexit 1",
     );
     let identity = r#"{"name":"local","transport":"local"}"#;
+    // A pane of a VM-hosted factory inherits both selectors; neither may reach a
+    // child that a selection sent elsewhere.
+    let pane = || {
+        let mut command = root.client();
+        command.env("SSF_INTERNAL_SELECTED_TARGET", identity).env(
+            "SSF_INTERNAL_SELECTED_VM",
+            r#"{"name":"pane-vm","config":{}}"#,
+        );
+        command
+    };
+    let run = |command: &mut std::process::Command| {
+        let _ = std::fs::remove_file(root.0.join("systemctl-args"));
+        let output = command
+            .args(["ui", "service", "status", "--json"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let calls = std::fs::read_to_string(root.0.join("systemctl-args")).unwrap();
+        assert_eq!(status["server"], "other");
+        assert_eq!(status["unit"], "ssf@other.service");
+        assert_eq!(status["active"], true);
+        assert!(
+            !calls.contains("ssf@local.service"),
+            "the inherited name reached the service check: {calls}"
+        );
+        assert!(
+            calls.contains(r#"target={"name":"other","transport":"local"}"#),
+            "the child did not answer for the selection: {calls}"
+        );
+        assert!(
+            calls.contains("vm=absent"),
+            "the pane's VM context reached the child: {calls}"
+        );
+    };
+
+    let mut command = pane();
+    command.args(["--server", "other"]);
+    run(&mut command);
+
+    let mut command = pane();
+    command.env("SSF_SERVER", "other");
+    run(&mut command);
+}
+
+/// The same boundary for a destination: `--server HOST` is not a catalog name,
+/// so there is no catalog entry to answer for it, and the host that does answer
+/// is reached by a command line that carries none of what the pane inherited.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_explicit_destination_carries_none_of_an_inherited_pane_identity() {
+    let root = Temp::new("explicit-over-inherited-ssh");
+    // No catalog: a bare destination is passed through as the legacy meaning of
+    // `--server HOST`, which is the shape that has no name to answer with.
+    root.use_real_server();
+    script(
+        &root.0.join("ssh"),
+        "printf '%s\\n' \"$@\" > \"$TEST_ROOT/ssh-args\"; exit 0",
+    );
 
     let output = root
         .client()
-        .env("SSF_INTERNAL_SELECTED_TARGET", identity)
-        .args(["--server", "other", "ui", "service", "status", "--json"])
+        .env(
+            "SSF_INTERNAL_SELECTED_TARGET",
+            r#"{"name":"local","transport":"local"}"#,
+        )
+        .env(
+            "SSF_INTERNAL_SELECTED_VM",
+            r#"{"name":"pane-vm","config":{}}"#,
+        )
+        .args(["--server", "factory.example", "status", "--json"])
         .output()
         .unwrap();
     assert!(
@@ -779,27 +857,10 @@ fn an_explicit_server_overrides_the_inherited_pane_identity() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(status["server"], "other");
-    assert_eq!(status["unit"], "ssf@other.service");
-    assert_eq!(status["active"], true);
-
-    let output = root
-        .client()
-        .env("SSF_INTERNAL_SELECTED_TARGET", identity)
-        .env("SSF_SERVER", "other")
-        .args(["ui", "service", "status", "--json"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(status["server"], "other");
-    assert_eq!(status["unit"], "ssf@other.service");
-    assert_eq!(status["active"], true);
+    let argv = std::fs::read_to_string(root.0.join("ssh-args")).unwrap();
+    assert!(argv.contains("factory.example"), "{argv}");
+    assert!(!argv.contains("SSF_INTERNAL"), "{argv}");
+    assert!(!argv.contains("local"), "{argv}");
 }
 
 #[test]
