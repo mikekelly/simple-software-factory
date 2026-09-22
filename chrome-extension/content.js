@@ -1,9 +1,9 @@
 // Overlays live ssf state on github.com.
 //
-// Read-only: it renders the factory's own dashboard model (`cards` and
-// `monitored_items` from the server's canonical status, see src/status.rs).
-// Every screen answers one question -- is an agent on this, and does it need
-// me? -- in one glance, and keeps the detail one click away:
+// It renders the factory's own dashboard model (`cards` and `monitored_items`
+// from the server's canonical status, see src/status.rs). Every screen answers
+// one question -- is an agent on this, and does it need me? -- in one glance,
+// and keeps the detail one click away:
 //
 //   * an issue or pull request page gets a card in the right sidebar, above
 //     Assignees;
@@ -17,8 +17,11 @@
 // tooltip, and a stale or unreachable factory is a modifier on top rather than
 // a state of its own, so a stale snapshot can never be mistaken for a live one.
 //
-// It never acts on the factory and never renders factory text as HTML: every
-// node is built with textContent.
+// The one thing it does to a factory is what an item's card offers: the Assign
+// agent form for an item with no agent, and the Actions row -- message, hand
+// over, release -- for one that has. Every write is the service worker's, never
+// this script's, and none of them is retried. Nothing factory-written is ever
+// parsed as HTML: every node is built with textContent.
 (() => {
   if (window.__ssfOverlayInstalled) return;
   window.__ssfOverlayInstalled = true;
@@ -120,7 +123,7 @@
   const sheet = new CSSStyleSheet();
   // The form's own rules live with it, so the two halves of the overlay cannot
   // drift apart.
-  sheet.replaceSync(STYLE + (globalThis.ssfAssignForm?.STYLE ?? ""));
+  sheet.replaceSync(STYLE + (globalThis.ssfWrites?.STYLE ?? ""));
 
   /// The last merged snapshot from the service worker, or null before the
   /// worker has answered. Nothing is rendered from a null snapshot.
@@ -709,18 +712,17 @@
     return node;
   }
 
-  /// The Assign agent form for `itemKey`, inside the card of the first factory
-  /// that may take the write, and the note the cards of the factories that may
-  /// not carry instead. This is a fresh node per call, from the module's own
-  /// state, so the card and an open popover each get their own and neither
-  /// moves the other's out of the tree.
+  /// An item's writes for `itemKey`, on the card of the factory they belong to:
+  /// the Assign agent form where it may be started, the note that says what
+  /// frees an item ssf already holds a workspace for, and an Actions row on the
+  /// card of each factory that has an agent on the item. This is a fresh node
+  /// per call, from the module's own state, so the card and an open popover each
+  /// get their own and neither moves the other's out of the tree.
   ///
-  /// Nothing is added for an item that has an agent, and nothing when no factory
-  /// that knows the item accepts writes for it. `itemKey` is the item the card
-  /// is *about*: for a pull request page that is the issue its body closes, not
-  /// the pull request, so the write starts a session on the same item the card
-  /// names.
-  function withAssignForm(section, matches, itemKey) {
+  /// `itemKey` is the item the card is *about*: for a pull request page that is
+  /// the issue its body closes, not the pull request, so the write acts on the
+  /// same item the card names.
+  function withWrites(section, matches, itemKey) {
     const cards = section.querySelectorAll(".ssf-card");
     // An item ssf already has a workspace for is one the write would be refused
     // for, so its card says what frees it rather than offering the form; a
@@ -731,18 +733,38 @@
         element("p", "ssf-hold", "Has a workspace; release it first."),
       );
     }
-    const assignableMatches = matches.filter(assignable);
-    if (!assignableMatches.length) return section;
     const [repo, number] = itemKey.split("#");
-    const form = globalThis.ssfAssignForm?.render({
+    const where = Number(number);
+    // Every factory with an agent on the item gets its own row: a row writes
+    // through one factory, and an agent is that factory's, so two factories
+    // with a session each are two sessions to act on and each needs its own.
+    for (const match of matches.filter((one) => one.kind === "agent")) {
+      const row = globalThis.ssfWrites?.renderActions({
+        factories: [match.factory],
+        repo,
+        number: where,
+        item: match.item,
+      });
+      if (row) cards[matches.indexOf(match)]?.append(row);
+    }
+    // The Assign agent form goes where a session can still be started: a card
+    // with no agent, with nothing in the way. A card that carries a row is one
+    // the factory already has a session for -- `ssf assign` refuses it, and the
+    // row's own Message and Release are what work there -- so it is left to its
+    // row. One card offers one write: the card a row is on is never also offered
+    // a form, which is what makes the two branches a decision rather than a
+    // coincidence of the states ssf reports today. The card the form belongs on
+    // may be another factory's, one with nothing on the item at all.
+    const assignableMatches = matches.filter(
+      (match) => match.kind !== "agent" && assignable(match),
+    );
+    if (!assignableMatches.length) return section;
+    const form = globalThis.ssfWrites?.render({
       factories: assignableMatches.map((match) => match.factory),
       repo,
-      number: Number(number),
+      number: where,
     });
     if (!form) return section;
-    // The card of that factory, not the first card in the section: a factory
-    // that already has an agent on the item draws a card too, and the form
-    // belongs with the one it would write through.
     const card = cards[matches.indexOf(assignableMatches[0])] ?? section;
     card.append(form);
     return section;
@@ -824,8 +846,9 @@
           })
         : chip(want.name, want.matches, closed);
     entry.shadow.replaceChildren(body);
-    // The form is drawn after the cards, into the one it belongs to.
-    if (want.anchor === null) withAssignForm(entry.shadow, want.matches, want.key);
+    // The item's writes are drawn after the cards, into the card they belong
+    // to: the Assign agent form, or the Actions row.
+    if (want.anchor === null) withWrites(entry.shadow, want.matches, want.key);
     let placed = false;
     if (want.anchor === null) {
       const slot = sidebar();
@@ -960,7 +983,7 @@
     const previous = popover.entry.shadow.querySelector(".ssf-popover");
     const scrolled = previous ? previous.scrollTop : 0;
     popover.entry.shadow.replaceChildren(body);
-    withAssignForm(popover.entry.shadow, matches, popover.key);
+    withWrites(popover.entry.shadow, matches, popover.key);
     body.scrollTop = scrolled;
     measure(popover.entry);
     placePopover();
@@ -1098,7 +1121,7 @@
     snapshot = payload;
     // The form reads the same frames: a snapshot that shows the item it
     // assigned with an agent is what ends its "Assigning…".
-    globalThis.ssfAssignForm?.applySnapshot(payload);
+    globalThis.ssfWrites?.applySnapshot(payload);
     scheduleRender();
   }
 
@@ -1174,7 +1197,7 @@
 
   // The form draws itself again through this script's own scheduler, so the
   // two never render over each other.
-  globalThis.ssfAssignForm?.onChange(scheduleRender);
+  globalThis.ssfWrites?.onChange(scheduleRender);
 
   chrome.runtime.sendMessage({ type: "ssf:snapshot" }).then(apply, () => {});
 

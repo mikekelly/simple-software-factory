@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::ipc::Refused;
 use tracing::{debug, error, info, warn};
 
 impl Engine {
@@ -14,18 +15,21 @@ impl Engine {
         let (repo, number, id) = self.known_session(session)?;
         let st = self.entry(&repo, number).clone();
         if !st.active || st.worktree_id.is_none() {
-            anyhow::bail!(
+            anyhow::bail!(Refused::conflict(format!(
                 "{id}: the item has no running session; nothing to hand over (start its first \
 session with `ssf assign {id} --harness {harness}` instead)"
-            );
+            )));
         }
         let harness = harness.trim();
         self.check_stack(harness, model, effort).await?;
         if let Some(h) = st.handover.as_ref() {
-            anyhow::bail!("a handover to {} is already pending", h.harness);
+            anyhow::bail!(Refused::conflict(format!(
+                "a handover to {} is already pending",
+                h.harness
+            )));
         }
         if st.release_pending {
-            anyhow::bail!("a release is pending on this item");
+            anyhow::bail!(Refused::conflict("a release is pending on this item"));
         }
         // Trimmed as `models::validate` reads them, or a stray space
         // would be shell-quoted into the launch command and the harness
@@ -56,29 +60,32 @@ session with `ssf assign {id} --harness {harness}` instead)"
         let to = repo.with_overrides(Some(&overrides));
         self.check_auto_compaction(&to)?;
         if to.harness == from.harness && to.model == from.model && to.effort == from.effort {
-            anyhow::bail!("the item is already on {harness} with that model and effort");
+            anyhow::bail!(Refused::conflict(format!(
+                "the item is already on {harness} with that model and effort"
+            )));
         }
         if summary.is_some_and(|s| s.trim().is_empty()) {
-            anyhow::bail!("the summary is empty: write a summary or hand over with no summary");
+            anyhow::bail!(Refused::bad_input(
+                "the summary is empty: write a summary or hand over with no summary"
+            ));
         }
         let chars = summary.map(|s| s.chars().count());
         if let Some(n) = chars.filter(|n| *n > crate::ipc::MAX_SUMMARY_CHARS) {
-            anyhow::bail!(
+            anyhow::bail!(Refused::bad_input(format!(
                 "the summary is {n} characters; the most a handover carries is {}",
                 crate::ipc::MAX_SUMMARY_CHARS
-            );
+            )));
         }
         // The summary is pasted into the new session's terminal, where the
         // login check reads the screen: one that quotes a sign-in prompt
         // would block the session it starts. The CLI refuses it too, where
         // the author can fix it; this is the daemon's own guard.
         if let Some(line) = summary.and_then(crate::driver::login_prompt_line) {
-            anyhow::bail!(
-                "{}",
+            anyhow::bail!(Refused::bad_input(
                 crate::summary_quotes_a_sign_in_screen_text(&crate::driver::redact_login_phrases(
                     &line
                 ))
-            );
+            ));
         }
         let pending = PendingHandover {
             harness: overrides.harness.clone(),
@@ -587,34 +594,41 @@ which harness is running in its workspaces"
         let st = self.entry(&repo, number).clone();
         if st.active {
             let (why, fix) = why_active(&st.triggers);
-            anyhow::bail!("{id} {why}; its workspace is in use. {fix} first");
+            anyhow::bail!(Refused::conflict(format!(
+                "{id} {why}; its workspace is in use. {fix} first"
+            )));
         }
         if let Some(h) = st.handover.as_ref() {
-            anyhow::bail!("{id}: a handover to {} is pending", h.harness);
+            anyhow::bail!(Refused::conflict(format!(
+                "{id}: a handover to {} is pending",
+                h.harness
+            )));
         }
         let deps = self.active_dependents(&repo, number);
         if !deps.is_empty() && !force {
             let deps: Vec<String> = deps.iter().map(|n| format!("#{n}")).collect();
-            anyhow::bail!(
-                "{id} still owns open items ({}); close them first, or a person can release the workspace with `ssf release --as {id} --force` (work in it may be lost)",
+            anyhow::bail!(Refused::conflict(format!(
+                "{id} still owns open items ({}); close them first, or a person can release \
+the workspace with `ssf release --as {id} --force` (work in it may be lost)",
                 deps.join(", ")
-            );
+            )));
         }
         if st.release_refusals >= MAX_RELEASE_REFUSALS && !force {
-            anyhow::bail!(
-                "{id}: release given up after {} refusals by the daemon's own re-check; the workspace is kept for a person (`ssf release --as {id} --force` from a shell, or `ssf purge`)",
+            anyhow::bail!(Refused::conflict(format!(
+                "{id}: release given up after {} refusals by the daemon's own re-check; the \
+workspace is kept for a person (`ssf release --as {id} --force` from a shell, or `ssf purge`)",
                 st.release_refusals
-            );
+            )));
         }
         let Some(wid) = st.worktree_id.clone() else {
-            anyhow::bail!(
+            anyhow::bail!(Refused::conflict(format!(
                 "{id} has no workspace{}",
                 if st.released_at.is_some() {
                     " (already released)"
                 } else {
                     ""
                 }
-            );
+            )));
         };
         // The driver not answering is not a reason to refuse: the pass checks
         // again before removing anything.
