@@ -41,6 +41,17 @@ pub(super) enum Command {
     /// Initialize persistent guest factory state (called by the guest boot service).
     #[command(hide = true)]
     VmInit { seed: PathBuf },
+    /// Send one request to this factory's daemon and print its answer — the
+    /// protocol's own `{"ok":…,"error":…,"kind":…,"data":…}` — for a program
+    /// that has to ask the factory rather than print for a person, and needs
+    /// what the refusal was about rather than only its message. Not for
+    /// people: it is how the server's web endpoint reaches a factory whose
+    /// daemon is in a VM, the way every command does.
+    #[command(name = "__request", hide = true)]
+    Request {
+        /// The request, as the daemon's protocol has it.
+        request: String,
+    },
     /// List and inspect the client computer's configured SSF servers.
     Server {
         #[command(subcommand)]

@@ -783,6 +783,15 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         Command::VmInit { seed } => {
             factory_vm::initialize_guest_factory(&seed, &config::config_dir())
         }
+        Command::Request { request } => {
+            let request: ipc::Request =
+                serde_json::from_str(&request).context("parsing the request")?;
+            let answer = ipc::exchange(&request).await?;
+            println!("{}", serde_json::to_string(&answer)?);
+            // The answer is the output either way; a script that only cares
+            // whether the daemon agreed reads the exit status.
+            std::process::exit(i32::from(!answer.ok));
+        }
         Command::Server { .. } => bail!("run `ssf server` on the client computer"),
         Command::Setup => setup::run(),
         Command::Auth { command } => auth(command).await,

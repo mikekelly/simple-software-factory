@@ -118,6 +118,9 @@ pub(super) fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Assign { .. } => "assign",
         Command::Purge { .. } => "purge",
         Command::Doctor => "doctor",
+        // Not for people, but it is a factory command like any other: a
+        // daemon in a VM is reached the same way, by forwarding.
+        Command::Request { .. } => "__request",
         _ => return None,
     };
     factory_vm::forwards(name).then_some(name)

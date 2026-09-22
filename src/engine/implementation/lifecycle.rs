@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::ipc::Refused;
 use tracing::{debug, info, warn};
 
 impl Engine {
@@ -214,9 +215,12 @@ impl Engine {
         effort: Option<&str>,
     ) -> Result<()> {
         if !crate::agents::is_known(harness) {
-            anyhow::bail!("{harness} is not a harness ssf knows (see `ssf agents`)");
+            anyhow::bail!(Refused::bad_input(format!(
+                "{harness} is not a harness ssf knows (see `ssf agents`)"
+            )));
         }
-        crate::models::validate(harness, model, effort)?;
+        crate::models::validate(harness, model, effort)
+            .map_err(|e| Refused::bad_input(format!("{e:#}")))?;
         let name = login::display_name(harness);
         if !(self.installed)(harness) {
             anyhow::bail!("{name} is not installed where the daemon runs (see `ssf agents`)");

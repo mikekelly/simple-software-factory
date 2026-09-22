@@ -1,18 +1,32 @@
 //! Optional server-owned capability HTTP endpoint for canonical dashboard status.
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{future::Future, io::Read, time::Duration};
+use std::{future::Future, io::Read, path::Path, path::PathBuf, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     time::timeout,
 };
 
+use crate::ipc::Refused;
+
 const INDEX: &str = include_str!("../dashboard/index.html");
 const CSS: &str = include_str!("../dashboard/dashboard.css");
 const JS: &str = include_str!("../dashboard/dashboard.js");
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_HEADERS: usize = 8192;
+/// Longest body the endpoint reads: `POST api/assign` carries a handful of
+/// fields, and it is bounded before any of it is read.
+const MAX_BODY: usize = 4096;
+/// How long a listing may wait on the factory: the client walks `PATH` and
+/// may run a harness's own listing command.
+const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long a write may wait on the factory. An assign's slow part is its
+/// GitHub round trip, and the daemon's own client waits three minutes for
+/// one; past this the client is given up on, though what the daemon was
+/// doing may still land.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 const KEEPALIVE: Duration = Duration::from_secs(25);
 
 /// The latest status snapshot, or the error that prevented loading one.
@@ -41,11 +55,26 @@ where
         return daemon.await;
     };
     let token = capability()?;
+    // The factory this listener answers for is asked through its own client,
+    // the same way the status stream below is: for a factory in a VM the
+    // daemon and the harnesses are in the guest, and the client is what
+    // forwards there.
+    let client = crate::server_executable()?;
     tracing::info!(
         "Server web dashboard: http://{}/{token}/",
         listener.local_addr()?
     );
-    let mut source = crate::dashboard_transport::StatusSource::new(None)?;
+    // The status the listener serves is the factory this server answers
+    // for: started as a catalog target, the stream has to know which one,
+    // or it would read the default factory's configuration and label every
+    // card with the machine's hostname (`StatusSource::new_with_context`,
+    // which the TUI's own client uses the same way).
+    let mut source = crate::dashboard_transport::StatusSource::new_with_context(
+        None,
+        crate::server_catalog::service_local_context().cloned(),
+        crate::server_catalog::selected_vm_context()?,
+        crate::server_catalog::selected_target_identity()?,
+    )?;
     let (latest_tx, latest_rx) =
         tokio::sync::watch::channel(None::<std::result::Result<Value, String>>);
     let stream = async move {
@@ -66,7 +95,7 @@ where
     tokio::select! {
         result = daemon => result,
         result = stream => result,
-        result = serve(listener, token, latest_rx) => result.context("server web dashboard stopped"),
+        result = serve(listener, token, latest_rx, client) => result.context("server web dashboard stopped"),
     }
 }
 
@@ -95,52 +124,39 @@ fn capability() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-async fn serve(listener: TcpListener, token: String, latest: Latest) -> Result<()> {
+async fn serve(
+    listener: TcpListener,
+    token: String,
+    latest: Latest,
+    client: PathBuf,
+) -> Result<()> {
     let host: std::sync::Arc<str> = listener.local_addr()?.to_string().into();
     let token: std::sync::Arc<str> = token.into();
+    let client: std::sync::Arc<PathBuf> = client.into();
     loop {
         let (stream, _) = listener.accept().await?;
-        let (host, token, latest) = (host.clone(), token.clone(), latest.clone());
+        let (host, token, latest, client) =
+            (host.clone(), token.clone(), latest.clone(), client.clone());
         // Each connection gets its own task so a long-lived event stream
         // does not stop the listener from answering anyone else.
-        tokio::spawn(async move { handle(stream, &host, &token, latest).await });
+        tokio::spawn(async move { handle(stream, &host, &token, latest, &client).await });
     }
 }
 
-async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Latest) {
+async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Latest, client: &Path) {
     let request = timeout(REQUEST_TIMEOUT, read_request(&mut stream)).await;
-    let route = match &request {
-        Ok(Ok(request)) => route(request, host, token),
+    let routed = match &request {
+        Ok(Ok(request)) => classify(request, host, token),
         _ => Err(400),
     };
-    if let Ok("api/events") = route {
-        // Ends quietly when the client goes away or the daemon stops.
-        events(&mut stream, &mut latest, KEEPALIVE, REQUEST_TIMEOUT).await;
-        return;
-    }
-    let (status, kind, body) = match route {
-        Ok("api/status") => {
-            let snapshot = match timeout(Duration::from_secs(30), load(&mut latest)).await {
-                Ok(result) => result.and_then(|value| presentation(&value)),
-                Err(_) => Err(anyhow::anyhow!("SSF status timed out after 30 seconds")),
-            };
-            match snapshot {
-                Ok(value) => (200, "application/json", value.to_string()),
-                Err(error) => (
-                    502,
-                    "application/json",
-                    json!({"error": format!("{error:#}")}).to_string(),
-                ),
-            }
+    let (status, kind, body) = match routed {
+        Ok(Routed::Read("api/events")) => {
+            // Ends quietly when the client goes away or the daemon stops.
+            events(&mut stream, &mut latest, KEEPALIVE, REQUEST_TIMEOUT).await;
+            return;
         }
-        Ok("" | "index.html") => (200, "text/html; charset=utf-8", INDEX.to_owned()),
-        Ok("dashboard.css") => (200, "text/css; charset=utf-8", CSS.to_owned()),
-        Ok("dashboard.js") => (200, "text/javascript; charset=utf-8", JS.to_owned()),
-        Ok(_) => (
-            404,
-            "application/json",
-            json!({"error":"not found"}).to_string(),
-        ),
+        Ok(Routed::Read(relative)) => read(relative, &mut latest, client).await,
+        Ok(Routed::Write(write)) => assign(&mut stream, write, client).await,
         Err(status) => (
             status,
             "application/json",
@@ -148,6 +164,239 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
         ),
     };
     let _ = timeout(REQUEST_TIMEOUT, respond(&mut stream, status, kind, &body)).await;
+}
+
+/// Answer a read route: the status snapshot, the browser assets, what
+/// `ssf agents` lists, or one harness's model ids.
+async fn read(relative: &str, latest: &mut Latest, client: &Path) -> (u16, &'static str, String) {
+    match relative {
+        "api/status" => snapshot(latest).await,
+        "" | "index.html" => (200, "text/html; charset=utf-8", INDEX.to_owned()),
+        "dashboard.css" => (200, "text/css; charset=utf-8", CSS.to_owned()),
+        "dashboard.js" => (200, "text/javascript; charset=utf-8", JS.to_owned()),
+        "api/agents" => agents(client).await,
+        _ => match relative.strip_prefix("api/models/") {
+            Some(harness) => models(harness, client).await,
+            None => not_found(),
+        },
+    }
+}
+
+/// The current snapshot as `/api/status` has always answered it: presented
+/// the same way the event stream presents it, or the honest error.
+async fn snapshot(latest: &mut Latest) -> (u16, &'static str, String) {
+    let snapshot = match timeout(Duration::from_secs(30), load(latest)).await {
+        Ok(result) => result.and_then(|value| presentation(&value)),
+        Err(_) => Err(anyhow::anyhow!("SSF status timed out after 30 seconds")),
+    };
+    match snapshot {
+        Ok(value) => (200, "application/json", value.to_string()),
+        Err(error) => failure_of(&error),
+    }
+}
+
+/// What `ssf agents` lists, as `ssf agents --json` prints it. The command is
+/// the factory's own: it walks `PATH`, asks `mise` what it has installed and
+/// reads the machine's default agent, so it has to run where the sessions
+/// run rather than in this process.
+async fn agents(client: &Path) -> (u16, &'static str, String) {
+    match ask(client, &["agents", "--json"], LISTING_TIMEOUT).await {
+        Ok(output) => listed(output, "the agent list"),
+        Err(error) => failure_of(&error),
+    }
+}
+
+/// One harness's model ids, as `ssf models <harness> --json` prints them. A
+/// harness ssf does not know is `404`, and one that takes no model setting is
+/// `400` (nothing is wrong with a request that asks what a harness offers;
+/// there is simply nothing to list). Both are facts of ssf's own tables
+/// rather than of any one machine, so they are settled here; only the ids
+/// themselves come from the factory.
+async fn models(harness: &str, client: &Path) -> (u16, &'static str, String) {
+    if !crate::agents::is_known(harness) {
+        return not_found();
+    }
+    if !crate::models::supports_model(harness) {
+        return bad(crate::models::no_model_setting(harness));
+    }
+    match ask(client, &["models", harness, "--json"], LISTING_TIMEOUT).await {
+        Ok(output) => listed(output, "the model list"),
+        Err(error) => failure_of(&error),
+    }
+}
+
+/// The one write: `ssf assign`'s own code path for the item, answered with
+/// its `--json` result or with the refusal that stopped it, verbatim.
+async fn assign(
+    stream: &mut TcpStream,
+    write: Assign<'_>,
+    client: &Path,
+) -> (u16, &'static str, String) {
+    let body = match timeout(REQUEST_TIMEOUT, read_body(stream, write.length)).await {
+        Ok(Ok(body)) => body,
+        // A body the client never finished sending, or one that never
+        // arrived: nothing has been read and nothing has been done.
+        Ok(Err(_)) | Err(_) => return bad("the request body was not read in full"),
+    };
+    let request: AssignRequest = match serde_json::from_slice(&body) {
+        Ok(request) => request,
+        Err(error) => return bad(format!("bad assign request: {error}")),
+    };
+    if request.number == 0 {
+        return bad("number must be the item's number, 1 or more");
+    }
+    // What `ssf assign owner/repo#N --harness …` sends the daemon, with no
+    // `--as`: a person is asking, not a session.
+    let item = format!("{}#{}", request.repo, request.number);
+    tracing::info!(
+        origin = write.origin,
+        item,
+        harness = request.harness,
+        model = request.model.as_deref().unwrap_or(""),
+        effort = request.effort.as_deref().unwrap_or(""),
+        "web API assign"
+    );
+    let request = crate::ipc::Request::Assign {
+        item,
+        harness: request.harness,
+        model: request.model,
+        effort: request.effort,
+        by: None,
+    };
+    let Ok(request) = serde_json::to_string(&request) else {
+        return failure(None, "the assign request could not be written down");
+    };
+    let output = match ask(client, &["__request", &request], WRITE_TIMEOUT).await {
+        Ok(output) => output,
+        Err(error) => return failure_of(&error),
+    };
+    // The client prints the daemon's answer and exits with whether it
+    // agreed, so the answer itself is what decides the response here.
+    match serde_json::from_slice::<crate::ipc::Response>(&output.stdout) {
+        Ok(response) => answer(response),
+        Err(_) => failure(None, client_error(&output, "the assign request")),
+    }
+}
+
+/// Ask this factory one client command and take its output. The transport is
+/// the status stream's own: a client run in this process's service identity,
+/// which forwards into the guest when the factory is in a VM. Without it a
+/// listener bound by a VM's host — the topology `ssf setup` creates — would
+/// answer from the host, where neither the daemon nor the harnesses are.
+async fn ask(client: &Path, args: &[&str], limit: Duration) -> Result<std::process::Output> {
+    let mut command = crate::dashboard_transport::local_client_command(
+        client,
+        args,
+        crate::server_catalog::service_local_context(),
+        crate::server_catalog::selected_vm_context()?.as_ref(),
+        crate::server_catalog::selected_target_identity()?.as_ref(),
+    );
+    match timeout(limit, command.output()).await {
+        // A write the factory never answered is not a write that did not
+        // happen: the daemon may still be working on it, and the message
+        // says that rather than the tidy lie.
+        Err(_) => bail!("the factory did not answer in time; what it was doing may still land"),
+        Ok(output) => output.context("running the ssf client"),
+    }
+}
+
+fn not_found() -> (u16, &'static str, String) {
+    (
+        404,
+        "application/json",
+        json!({"error":"not found"}).to_string(),
+    )
+}
+
+/// A client command's output as the `200` body it printed, or the factory's
+/// failure with its own words.
+fn listed(output: std::process::Output, what: &str) -> (u16, &'static str, String) {
+    if output.status.success() {
+        return (
+            200,
+            "application/json",
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+        );
+    }
+    failure(None, client_error(&output, what))
+}
+
+/// Why a client command stopped, as it printed it: a command tells a person
+/// on stderr, and that is the message this endpoint reports.
+fn client_error(output: &std::process::Output, what: &str) -> String {
+    let detail = String::from_utf8_lossy(&output.stderr);
+    let detail = detail
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if detail.is_empty() {
+        format!("{what} could not be read")
+    } else {
+        detail
+    }
+}
+
+/// The daemon's answer to a write, as HTTP: its result is the `200` the
+/// command prints, a refusal carries the daemon's own words in `error` with
+/// the status that goes with it, and a failure the request cannot be blamed
+/// for is `502`.
+fn answer(response: crate::ipc::Response) -> (u16, &'static str, String) {
+    if response.ok {
+        return (200, "application/json", response.data.to_string());
+    }
+    failure(
+        response.kind,
+        response.error.unwrap_or_else(|| "request failed".into()),
+    )
+}
+
+/// A `400` with the reason: the request itself is what ssf refused.
+fn bad(message: impl Into<String>) -> (u16, &'static str, String) {
+    failure(Some(crate::ipc::RefusalKind::BadInput), message)
+}
+
+/// [`failure`] for an error: a [`Refused`] anywhere in its chain decides the
+/// status, and everything else is the factory failing to serve the request.
+fn failure_of(error: &anyhow::Error) -> (u16, &'static str, String) {
+    failure(
+        error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<Refused>())
+            .map(|refused| refused.kind),
+        format!("{error:#}"),
+    )
+}
+
+/// What a refusal is worth in HTTP: the request's own fault (`400`) or the
+/// item's state (`409`), and `502` when it is neither and the factory simply
+/// failed. The message goes in `error` as the daemon wrote it.
+fn failure(
+    kind: Option<crate::ipc::RefusalKind>,
+    message: impl Into<String>,
+) -> (u16, &'static str, String) {
+    let status = match kind {
+        Some(crate::ipc::RefusalKind::BadInput) => 400,
+        Some(crate::ipc::RefusalKind::Conflict) => 409,
+        None => 502,
+    };
+    (
+        status,
+        "application/json",
+        json!({"error": message.into()}).to_string(),
+    )
+}
+
+/// Read the body of a write, at the length its headers declared and within
+/// the bound [`classify`] already applied.
+async fn read_body(stream: &mut TcpStream, length: usize) -> Result<Vec<u8>> {
+    let mut body = vec![0u8; length];
+    stream
+        .read_exact(&mut body[..])
+        .await
+        .context("reading the request body")?;
+    Ok(body)
 }
 
 /// What an event stream wakes on: a newer snapshot, a keepalive that is due,
@@ -245,7 +494,51 @@ async fn read_request(stream: &mut TcpStream) -> Result<String> {
     bail!("HTTP headers too large")
 }
 
-fn route<'a>(request: &'a str, host: &str, token: &str) -> std::result::Result<&'a str, u16> {
+/// What a request is, once its method, host, origin, capability and (for a
+/// write) media type and body bound have been checked.
+enum Routed<'a> {
+    /// A read: the path under the capability.
+    Read(&'a str),
+    /// The one write.
+    Write(Assign<'a>),
+}
+
+/// An accepted `POST <capability>/api/assign`.
+struct Assign<'a> {
+    /// The extension origin, which every accepted write is logged with.
+    origin: &'a str,
+    /// Declared body length, within [`MAX_BODY`].
+    length: usize,
+}
+
+/// The body of an assign write: `ssf assign`'s own arguments, with the item
+/// named as the repository and the number. An unknown field is refused
+/// rather than ignored, so a misspelled one cannot silently assign a stack
+/// nobody asked for.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssignRequest {
+    /// Watched repository, `owner/name`.
+    repo: String,
+    /// Issue or pull request number.
+    number: u64,
+    /// Harness the session runs (`ssf agents` lists the ids).
+    harness: String,
+    /// Model for the session; the harness's own default when absent.
+    #[serde(default)]
+    model: Option<String>,
+    /// Effort level for the session; the harness's own default when absent.
+    #[serde(default)]
+    effort: Option<String>,
+}
+
+/// Check one request and say what it is. A read answers on the rules it
+/// always has. A write is held to the stricter ones: only a Chrome
+/// extension's own origin, so a page the tailnet can load cannot post, and
+/// never the bind host's; a JSON media type; and a body bounded before a
+/// byte of it is read. Every answer here is a status, so a refusal has done
+/// nothing.
+fn classify<'a>(request: &'a str, host: &str, token: &str) -> std::result::Result<Routed<'a>, u16> {
     let mut lines = request.split("\r\n");
     let parts: Vec<_> = lines
         .next()
@@ -255,37 +548,88 @@ fn route<'a>(request: &'a str, host: &str, token: &str) -> std::result::Result<&
     if parts.len() != 3 || !matches!(parts[2], "HTTP/1.0" | "HTTP/1.1") {
         return Err(400);
     }
-    if parts[0] != "GET" {
-        return Err(405);
-    }
+    let write = match parts[0] {
+        "GET" => false,
+        "POST" => true,
+        _ => return Err(405),
+    };
     let mut hosts = Vec::new();
     let mut origins = Vec::new();
+    let mut content_type = None;
+    let mut length = None;
     for line in lines.take_while(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':').ok_or(400u16)?;
+        let value = value.trim();
         if name.eq_ignore_ascii_case("host") {
-            hosts.push(value.trim());
-        }
-        if name.eq_ignore_ascii_case("origin") {
-            origins.push(value.trim());
-        }
-        if name.eq_ignore_ascii_case("transfer-encoding")
-            || name.eq_ignore_ascii_case("content-length")
-        {
+            hosts.push(value);
+        } else if name.eq_ignore_ascii_case("origin") {
+            origins.push(value);
+        } else if name.eq_ignore_ascii_case("content-type") {
+            content_type = Some(value);
+        } else if name.eq_ignore_ascii_case("content-length") {
+            // A body with two lengths has two readings; refuse it rather
+            // than pick one.
+            if length.is_some() {
+                return Err(400);
+            }
+            length = Some(value.parse::<usize>().map_err(|_| 400u16)?);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            // A body is read at the length its headers declare, or not at
+            // all: a chunked one would need its own framing.
             return Err(400);
         }
     }
-    if hosts != [host]
-        || origins.len() > 1
-        || origins.first().is_some_and(|origin| {
-            // A Chrome MV3 extension's service worker sends its own origin.
-            *origin != format!("http://{host}") && !origin.starts_with("chrome-extension://")
-        })
-    {
+    if hosts != [host] || origins.len() > 1 {
         return Err(403);
     }
-    let path = parts[1].strip_prefix('/').ok_or(404u16)?;
+    let origin = origins.first().copied();
+    let relative = under_capability(token, parts[1])?;
+    if !write {
+        // A read carries no body.
+        if length.is_some() {
+            return Err(400);
+        }
+        if origin.is_some_and(|origin| {
+            // A Chrome MV3 extension's service worker sends its own origin.
+            origin != format!("http://{host}") && !origin.starts_with("chrome-extension://")
+        }) {
+            return Err(403);
+        }
+        return Ok(Routed::Read(relative));
+    }
+    let Some(origin) = origin.filter(|origin| origin.starts_with("chrome-extension://")) else {
+        return Err(403);
+    };
+    if relative != "api/assign" {
+        return Err(405);
+    }
+    if !content_type.is_some_and(is_json) {
+        return Err(415);
+    }
+    match length {
+        Some(length) if length > MAX_BODY => Err(413),
+        Some(length) => Ok(Routed::Write(Assign { origin, length })),
+        None => Err(400),
+    }
+}
+
+/// Whether a `Content-Type` names JSON: its media type, whatever parameters
+/// follow it.
+fn is_json(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .eq_ignore_ascii_case("application/json")
+}
+
+/// The path under the capability, or `404` when the request did not carry
+/// this server's: every capability byte is compared, without exposing
+/// matching prefixes.
+fn under_capability<'a>(token: &str, target: &'a str) -> std::result::Result<&'a str, u16> {
+    let path = target.strip_prefix('/').ok_or(404u16)?;
     let (provided, relative) = path.split_once('/').ok_or(404u16)?;
-    // Compare all capability bytes, without exposing matching prefixes.
     let mismatch = provided.len() ^ token.len();
     let mismatch = provided
         .bytes()
@@ -306,6 +650,9 @@ async fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: &str) ->
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         _ => "Bad Gateway",
     };
     let headers = format!(
@@ -329,6 +676,7 @@ fn presentation(payload: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     async fn assert_listener_closed(address: std::net::SocketAddr) {
         timeout(Duration::from_secs(1), async {
@@ -343,16 +691,46 @@ mod tests {
     fn request(path: &str, host: &str, extra: &str) -> String {
         format!("GET {path} HTTP/1.1\r\nHost: {host}\r\n{extra}\r\n")
     }
+
+    /// A `POST` as the extension's service worker sends it: the capability
+    /// path, an extension origin, a JSON media type and a body.
+    fn post(path: &str, host: &str, extra: &str, body: &str) -> String {
+        format!(
+            "POST {path} HTTP/1.1\r\nHost: {host}\r\n{extra}Content-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn read_route(routed: std::result::Result<Routed<'_>, u16>) -> std::result::Result<&str, u16> {
+        match routed {
+            Ok(Routed::Read(relative)) => Ok(relative),
+            Ok(Routed::Write(_)) => panic!("expected a read"),
+            Err(status) => Err(status),
+        }
+    }
+
+    /// The assign body the extension sends, and the headers that carry it.
+    fn assign_body() -> String {
+        json!({"repo":"o/r","number":7,"harness":"claude","model":"opus","effort":"low"})
+            .to_string()
+    }
+
+    const EXTENSION_ORIGIN: &str =
+        "Origin: chrome-extension://abcdefghijklmnopabcdefghijklmnop\r\n";
+
     #[test]
     fn checks_capability_host_origin_and_method() {
         let good = request("/secret/api/status", "127.0.0.1:123", "");
-        assert_eq!(route(&good, "127.0.0.1:123", "secret"), Ok("api/status"));
-        for extra in [
-            "Origin: http://127.0.0.1:123\r\n",
-            "Origin: chrome-extension://abcdefghijklmnopabcdefghijklmnop\r\n",
-        ] {
+        assert_eq!(
+            read_route(classify(&good, "127.0.0.1:123", "secret")),
+            Ok("api/status")
+        );
+        for extra in ["Origin: http://127.0.0.1:123\r\n", EXTENSION_ORIGIN] {
             let request = request("/secret/api/events", "127.0.0.1:123", extra);
-            assert_eq!(route(&request, "127.0.0.1:123", "secret"), Ok("api/events"));
+            assert_eq!(
+                read_route(classify(&request, "127.0.0.1:123", "secret")),
+                Ok("api/events")
+            );
         }
         for (input, expected) in [
             (request("/wrong/api/status", "127.0.0.1:123", ""), 404),
@@ -381,7 +759,7 @@ mod tests {
                 ),
                 403,
             ),
-            (good.replacen("GET", "POST", 1), 405),
+            (good.replacen("GET", "POST", 1), 403),
             (
                 request(
                     "/secret/api/status",
@@ -391,10 +769,142 @@ mod tests {
                 400,
             ),
         ] {
-            assert_eq!(route(&input, "127.0.0.1:123", "secret"), Err(expected));
+            assert_eq!(
+                read_route(classify(&input, "127.0.0.1:123", "secret")),
+                Err(expected)
+            );
         }
         assert_eq!(capability().unwrap().len(), 64);
         assert_ne!(capability().unwrap(), capability().unwrap());
+    }
+
+    /// The write rules, one rejection at a time: only an extension's own
+    /// origin, only JSON, and only a body within the bound. Each is decided
+    /// from the request line and the headers, so none of them reads a byte
+    /// of the body — and none of them can have done anything.
+    #[test]
+    fn accepts_only_an_extension_write_within_the_body_bound() {
+        let body = assign_body();
+        let headers = format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n");
+        let accepted = post("/secret/api/assign", "127.0.0.1:123", &headers, &body);
+        assert!(
+            matches!(
+                classify(&accepted, "127.0.0.1:123", "secret"),
+                Ok(Routed::Write(write))
+                    if write.origin == "chrome-extension://abcdefghijklmnopabcdefghijklmnop"
+                        && write.length == body.len()
+            ),
+            "an extension's own POST is the write"
+        );
+        // A media type may carry parameters.
+        let with_charset = post(
+            "/secret/api/assign",
+            "127.0.0.1:123",
+            &format!("{EXTENSION_ORIGIN}Content-Type: application/json; charset=utf-8\r\n"),
+            &body,
+        );
+        assert!(matches!(
+            classify(&with_charset, "127.0.0.1:123", "secret"),
+            Ok(Routed::Write(_))
+        ));
+        for (input, expected) in [
+            // The bind host's own origin is a page the tailnet can load.
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    "Origin: http://127.0.0.1:123\r\nContent-Type: application/json\r\n",
+                    &body,
+                ),
+                403,
+            ),
+            // No origin at all: an ordinary client, not the extension.
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    "Content-Type: application/json\r\n",
+                    &body,
+                ),
+                403,
+            ),
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    "Origin: https://github.com\r\nContent-Type: application/json\r\n",
+                    &body,
+                ),
+                403,
+            ),
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    &format!("{EXTENSION_ORIGIN}Content-Type: text/plain\r\n"),
+                    &body,
+                ),
+                415,
+            ),
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    EXTENSION_ORIGIN,
+                    &body,
+                ),
+                415,
+            ),
+            (
+                format!(
+                    "POST /secret/api/assign HTTP/1.1\r\nHost: 127.0.0.1:123\r\n{EXTENSION_ORIGIN}\
+Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    MAX_BODY + 1
+                ),
+                413,
+            ),
+            // A body longer than the bound is refused for its length alone;
+            // two lengths at all have two readings and are refused outright.
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    &format!(
+                        "{EXTENSION_ORIGIN}Content-Type: application/json\r\nContent-Length: 1\r\n"
+                    ),
+                    &body,
+                ),
+                400,
+            ),
+            // A write is only for the one route, and only by POST.
+            (
+                post("/secret/api/status", "127.0.0.1:123", &headers, &body),
+                405,
+            ),
+            (
+                post("/secret/api/events", "127.0.0.1:123", &headers, &body),
+                405,
+            ),
+            (
+                post(
+                    "/secret/api/assign",
+                    "127.0.0.1:123",
+                    &format!(
+                        "{EXTENSION_ORIGIN}Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n"
+                    ),
+                    &body,
+                ),
+                400,
+            ),
+        ] {
+            assert_eq!(
+                classify(&input, "127.0.0.1:123", "secret").err(),
+                Some(expected),
+                "{input}"
+            );
+        }
+        assert!(is_json("APPLICATION/JSON"));
+        assert!(!is_json("application/jsonx"));
     }
 
     #[test]
@@ -419,6 +929,319 @@ mod tests {
         response
     }
 
+    /// One write over a real socket, as the extension's service worker sends
+    /// it.
+    async fn write(address: std::net::SocketAddr, path: &str, extra: &str, body: &str) -> String {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(post(path, &address.to_string(), extra, body).as_bytes())
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        response
+    }
+
+    /// A stand-in for the `ssf` client the endpoint runs commands with: the
+    /// endpoint asks the factory through a client process — the status
+    /// stream's own transport, which forwards into a VM — so this is what a
+    /// factory looks like to it. The script records the arguments it was
+    /// given and prints one canned answer.
+    struct Client {
+        root: PathBuf,
+    }
+
+    impl Client {
+        fn new(name: &str, answer: &str, exit: u8) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "ssf-web-client-{name}-{}-{:?}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir(&root).unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{args}'\nprintf '%s' '{answer}'\nexit {exit}\n",
+                args = root.join("args").display(),
+                // The canned answer is a shell single-quoted string: no
+                // fixture contains a quote of its own.
+                answer = answer.replace('\'', "'\\''"),
+                exit = exit,
+            );
+            let program = root.join("ssf");
+            std::fs::write(&program, script).unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            Self { root }
+        }
+
+        fn program(&self) -> PathBuf {
+            self.root.join("ssf")
+        }
+
+        /// What the client was last run as, or nothing when it has not been
+        /// run at all: one argument per line, as it wrote them.
+        fn args(&self) -> Vec<String> {
+            std::fs::read_to_string(self.root.join("args"))
+                .map(|text| text.lines().map(str::to_string).collect())
+                .unwrap_or_default()
+        }
+    }
+
+    impl Drop for Client {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// A listener serving one factory's client.
+    async fn served(
+        client: &Client,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<Result<()>>) {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
+        std::mem::forget(tx);
+        (
+            address,
+            tokio::spawn(serve(listener, "secret".into(), rx, client.program())),
+        )
+    }
+
+    /// The pickers the extension's assign form is built from: what `ssf
+    /// agents` lists, and what `ssf models <harness>` lists — asked of the
+    /// factory as those commands are. A harness ssf does not know is `404`;
+    /// one that takes no model setting has nothing to list and says so with
+    /// `400` without asking anyone.
+    #[tokio::test]
+    async fn serves_the_agent_and_model_listings_the_cli_prints() {
+        let agents = json!([{"id":"claude","name":"Claude Code","installed":true}]);
+        let models =
+            json!({"harness":"claude","models":["opus"],"source":{"kind":"table","detail":""}});
+        let client = Client::new("listings", &agents.to_string(), 0);
+        let (address, task) = served(&client).await;
+        let response = fetch(address, "/secret/api/agents").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(
+            response.split("\r\n\r\n").nth(1).unwrap(),
+            agents.to_string(),
+            "the listing is the command's own output"
+        );
+        assert_eq!(client.args(), ["__client", "agents", "--json"]);
+        // The model ids come from the factory too: its catalogues and its
+        // harnesses' listing commands are there, not here.
+        let client = Client::new("models", &models.to_string(), 0);
+        let (address, task2) = served(&client).await;
+        let response = fetch(address, "/secret/api/models/claude").await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(
+            response.split("\r\n\r\n").nth(1).unwrap(),
+            models.to_string()
+        );
+        assert_eq!(client.args(), ["__client", "models", "claude", "--json"]);
+        // A harness ssf does not know, and one that takes no model setting:
+        // both are ssf's own tables, so neither asks the factory anything.
+        for (path, expected) in [
+            ("/secret/api/models/not-a-harness", "HTTP/1.1 404"),
+            ("/secret/api/models/crush", "HTTP/1.1 400"),
+        ] {
+            let asked = client.args();
+            let response = fetch(address, path).await;
+            assert!(response.starts_with(expected), "{response}");
+            assert_eq!(client.args(), asked, "the factory was asked for {path}");
+        }
+        assert!(
+            fetch(address, "/secret/api/models/crush")
+                .await
+                .contains("does not take a model setting"),
+            "the refusal says why"
+        );
+        // A factory that cannot answer is the factory's failure, reported
+        // with its own words.
+        let broken = Client::new("broken", "", 1);
+        // stderr is where a command says why it stopped; the script's own
+        // is empty, so the endpoint names what it could not read.
+        let (address, task3) = served(&broken).await;
+        let response = fetch(address, "/secret/api/agents").await;
+        assert!(response.starts_with("HTTP/1.1 502"), "{response}");
+        assert!(
+            response.contains("the agent list could not be read"),
+            "{response}"
+        );
+        task.abort();
+        task2.abort();
+        task3.abort();
+    }
+
+    /// The write itself: the factory is asked with exactly the request `ssf
+    /// assign` sends its daemon, and the daemon's answer is the `200` body.
+    #[tokio::test]
+    async fn the_assign_write_runs_the_request_ssf_assign_sends() {
+        let result = json!({"session":"o/r#7","title":"Fix it","assigned":true,
+            "overrides_written":true,"open":true,"poll_interval_secs":10});
+        let answer = json!({"ok":true,"data":result}).to_string();
+        let client = Client::new("assign", &answer, 0);
+        let (address, task) = served(&client).await;
+        let response = write(
+            address,
+            "/secret/api/assign",
+            &format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n"),
+            &assign_body(),
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        let body: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body, result);
+        // The client is run as `ssf __client __request '<json>'`, and that
+        // JSON is the request `ssf assign` sends: the same code path on the
+        // daemon, reached the way every command reaches a factory in a VM.
+        let args = client.args();
+        assert_eq!(args.len(), 3, "{args:?}");
+        assert_eq!(&args[..2], ["__client", "__request"]);
+        assert_eq!(
+            serde_json::from_str::<crate::ipc::Request>(&args[2]).unwrap(),
+            crate::ipc::Request::Assign {
+                item: "o/r#7".into(),
+                harness: "claude".into(),
+                model: Some("opus".into()),
+                effort: Some("low".into()),
+                // A person at the overlay, not a session.
+                by: None,
+            }
+        );
+        task.abort();
+    }
+
+    /// What the daemon refuses comes back as the command prints it, with the
+    /// status the extension needs to tell the two apart.
+    #[tokio::test]
+    async fn a_refusal_is_answered_with_the_daemons_own_words() {
+        for (answer, expected) in [
+            (
+                json!({"ok":false,"error":"o/r#7 already has a session",
+                       "kind":"conflict"}),
+                "HTTP/1.1 409 Conflict",
+            ),
+            (
+                // A factory failure carries no kind: it was not the request
+                // that stopped it.
+                json!({"ok":false,"error":"claude is not installed where the daemon runs"}),
+                "HTTP/1.1 502 Bad Gateway",
+            ),
+            (
+                json!({"ok":false,"error":"o/r is not a watched repository",
+                       "kind":"bad_input"}),
+                "HTTP/1.1 400 Bad Request",
+            ),
+        ] {
+            let message = answer["error"].as_str().unwrap();
+            let client = Client::new("refusal", &answer.to_string(), 1);
+            let (address, task) = served(&client).await;
+            let response = write(
+                address,
+                "/secret/api/assign",
+                &format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n"),
+                &assign_body(),
+            )
+            .await;
+            assert!(response.starts_with(expected), "{response}");
+            // The daemon's message verbatim, as `{"error": …}`.
+            assert_eq!(
+                serde_json::from_str::<Value>(response.split("\r\n\r\n").nth(1).unwrap()).unwrap(),
+                json!({"error": message}),
+                "{response}"
+            );
+            task.abort();
+        }
+    }
+
+    /// Every write rule, over a real socket: each refused for what the
+    /// request carried, with the client never run at all — which is what
+    /// says nothing was done.
+    #[tokio::test]
+    async fn refuses_writes_that_break_a_rule_before_asking_the_factory() {
+        // The program is one no shell could run: if a rule let a request
+        // through, the answer would be the `502` of failing to start it.
+        let client = Client::new("unreached", "", 0);
+        std::fs::remove_file(client.program()).unwrap();
+        let (address, task) = served(&client).await;
+        let body = assign_body();
+        let own = format!("Origin: http://{address}\r\nContent-Type: application/json\r\n");
+        for (path, extra, expected) in [
+            ("/secret/api/assign", own.as_str(), "HTTP/1.1 403"),
+            (
+                "/secret/api/assign",
+                "Content-Type: application/json\r\n",
+                "HTTP/1.1 403",
+            ),
+            (
+                "/secret/api/assign",
+                &format!("{EXTENSION_ORIGIN}Content-Type: text/plain\r\n"),
+                "HTTP/1.1 415",
+            ),
+        ] {
+            let response = write(address, path, extra, &body).await;
+            assert!(response.starts_with(expected), "{response}");
+        }
+        assert!(client.args().is_empty(), "a refused write ran the client");
+        // A body over the bound is refused for its length alone, before any of
+        // it is read: the connection is closed with the answer rather than
+        // waiting for 4 KiB that will not come.
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "POST /secret/api/assign HTTP/1.1\r\nHost: {address}\r\n{EXTENSION_ORIGIN}\
+Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    MAX_BODY + 1
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        assert!(response.starts_with("HTTP/1.1 413"), "{response}");
+        // A bad body is the request's own fault, and a well-formed one that
+        // names nothing is the daemon's answer to give.
+        assert!(
+            write(
+                address,
+                "/secret/api/assign",
+                &format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n"),
+                "{ not json"
+            )
+            .await
+            .starts_with("HTTP/1.1 400")
+        );
+        assert!(
+            write(
+                address,
+                "/secret/api/assign",
+                &format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n"),
+                &json!({"repo":"o/r","number":0,"harness":"claude"}).to_string()
+            )
+            .await
+            .starts_with("HTTP/1.1 400")
+        );
+        // The write's route is not a read, and nothing else is a write.
+        let as_read = fetch(address, "/secret/api/assign").await;
+        assert!(as_read.starts_with("HTTP/1.1 404"), "{as_read}");
+        let misplaced = write(
+            address,
+            "/secret/api/status",
+            &format!("{EXTENSION_ORIGIN}Content-Type: application/json\r\n"),
+            &body,
+        )
+        .await;
+        assert!(misplaced.starts_with("HTTP/1.1 405"), "{misplaced}");
+        assert!(client.args().is_empty(), "a refused write ran the client");
+        task.abort();
+    }
+
     #[tokio::test]
     async fn http_serves_assets_status_and_honest_errors() {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -427,7 +1250,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         assert!(address.ip().is_loopback());
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
         let rejected = fetch(address, "/api/status").await;
         assert!(rejected.starts_with("HTTP/1.1 404"));
         let html = fetch(address, "/secret/").await;
@@ -544,7 +1367,7 @@ mod tests {
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
         let mut buffer = Vec::new();
         let (mut stream, headers) =
             timeout(Duration::from_secs(5), open_events(address, &mut buffer))
@@ -589,7 +1412,7 @@ mod tests {
             .unwrap();
         let address = listener.local_addr().unwrap();
         let (tx, rx) = tokio::sync::watch::channel(Some(Ok(json!({"dashboard":{"cards":[]}}))));
-        let task = tokio::spawn(serve(listener, "secret".into(), rx));
+        let task = tokio::spawn(serve(listener, "secret".into(), rx, "unused".into()));
         let mut buffer = Vec::new();
         let (_stream, headers) = timeout(Duration::from_secs(5), open_events(address, &mut buffer))
             .await

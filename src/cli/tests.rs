@@ -88,6 +88,9 @@ fn factory_cli_routes_to_guest_but_vm_and_dashboard_settings_stay_on_host() {
         vec!["ssf", "config", "set", "daemon.poll_interval_secs", "30"],
         vec!["ssf", "agents"],
         vec!["ssf", "models", "claude"],
+        // The web endpoint's own use of the daemon protocol: a factory in a
+        // VM is asked there, like every other factory command.
+        vec!["ssf", "__request", r#"{"op":"ping"}"#],
     ] {
         let cli = Cli::try_parse_from(&args).unwrap();
         let name =
