@@ -105,6 +105,18 @@ fn joins_by_worktree_id() {
     assert!(s.workspace.is_some());
 }
 
+/// The branch the model carries is a plain name whatever the driver reported:
+/// a workspace's own branch is a full ref, and every consumer of the model --
+/// the terminal, the web cards, the overlay's Details -- shows the name.
+#[test]
+fn a_workspace_branch_loses_its_ref_prefix() {
+    let st = state_with(vec![item(1, Some("r1::/w/one"))]);
+    let mut ws = workspace("r1::/w/one", None, None);
+    ws.branch = Some("refs/heads/bot/issue-1".into());
+    let s = sessions(&cfg(), &st, Some(&[ws]));
+    assert_eq!(s[0].branch.as_deref(), Some("bot/issue-1"));
+}
+
 #[test]
 fn falls_back_to_driver_link_when_binding_is_stale() {
     let st = state_with(vec![item(7, Some("r1::/w/gone"))]);

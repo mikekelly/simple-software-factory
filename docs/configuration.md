@@ -118,6 +118,12 @@ Selection has no configurable default:
   `ssf dashboard`, which connects to all entries when neither selector is set.
 - A command-line selector overrides the environment. Unknown catalog names are
   errors and are never tried as SSH hosts.
+- A command the factory runs itself answers for that factory. The daemon names
+  its target in the environment of its service and of every session pane under
+  it, so `ssf status`, `ssf ui service status` and `ssf doctor` there report that
+  factory's own unit (`ssf@NAME.service`) and state without `--server`, though
+  the pane's config directory is the factory's own and holds no catalog to look
+  the name up in.
 
 `ssf server list [--json]` and `ssf server show NAME [--json]` inspect the
 catalog. They are client-wide and ignore `SSF_SERVER`; passing `--server` to

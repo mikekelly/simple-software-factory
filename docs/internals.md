@@ -47,7 +47,10 @@ server's last successful cards and error state. The server's status model builds
 `dashboard.cards` only from driver-reported live agents, including the origin,
 additional assigned issues, agent session ID, state, activity and latest message.
 Active monitored items without an agent are exposed as
-`dashboard.monitored_items`. Both UIs consume this presentation; neither
+`dashboard.monitored_items`, each saying whether ssf has a workspace recorded for
+it (`has_workspace`, with the `branch` when one is known), so a client offering
+`ssf assign` can tell an item that takes a session from one the command refuses.
+Both UIs consume this presentation; neither
 reconstructs factory ownership.
 The TUI retains the last successful view with an explicit stale warning when
 transport fails. Driver/VM failures, inactive services and overdue daemon polling are separate

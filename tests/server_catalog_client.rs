@@ -682,6 +682,69 @@ fn a_named_local_service_uses_only_its_target_unit() {
     assert!(!calls.contains("enable --now ssf@local.service"), "{calls}");
 }
 
+/// A session's pane belongs to a factory it cannot look up: the daemon names it
+/// in `SSF_INTERNAL_SELECTED_TARGET`, and `SSF_CONFIG_DIR` is that factory's own
+/// directory, which holds no `servers.toml`. A command run there must still
+/// answer for it, or the service check asks after the singleton and reports a
+/// running factory as a stopped service (#428).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pane_answers_for_the_factory_the_daemon_named() {
+    let root = Temp::new("inherited-target");
+    root.use_real_server();
+    script(
+        &root.0.join("systemctl"),
+        "printf '%s\\n' \"$*\" >> \"$TEST_ROOT/systemctl-args\"\ncase \"$*\" in *is-enabled*ssf@local.service*|*is-active*ssf@local.service*) exit 0;; *is-failed*) exit 1;; *is-enabled*ssf.service*|*is-active*ssf.service*) exit 1;; esac",
+    );
+    let identity = r#"{"name":"local","transport":"local"}"#;
+    let pane = || {
+        let mut command = root.client();
+        command.env("SSF_INTERNAL_SELECTED_TARGET", identity);
+        command
+    };
+
+    let output = pane()
+        .args(["ui", "service", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["server"], "local");
+    assert_eq!(status["unit"], "ssf@local.service");
+    assert_eq!(status["active"], true);
+    assert_eq!(status["enabled"], true);
+
+    let output = pane().args(["ui", "service", "enable"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = std::fs::read_to_string(root.0.join("systemctl-args")).unwrap();
+    assert!(
+        calls.contains("--user enable --now ssf@local.service"),
+        "{calls}"
+    );
+    assert!(!calls.contains("enable --now ssf.service"), "{calls}");
+
+    // Nothing inherited: still the singleton, with no target invented for it.
+    let output = root
+        .client()
+        .env_remove("SSF_INTERNAL_SELECTED_TARGET")
+        .args(["ui", "service", "status", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(status["server"].is_null());
+    assert_eq!(status["unit"], "ssf.service");
+    assert_eq!(status["active"], false);
+}
+
 #[test]
 fn server_target_is_resolved_before_factory_configuration() {
     let root = Temp::new("server-target-context");

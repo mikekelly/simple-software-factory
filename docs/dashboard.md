@@ -146,6 +146,12 @@ several factories can then label a card without asking which stream it came
 from; the TUI and the server's own browser page ignore the three fields and are
 unchanged.
 
+Each item in `dashboard.monitored_items`, and each card's `origin` and
+`additional` items, carries `has_workspace`: whether ssf has a workspace recorded
+for that item, with `branch` when the driver reports one. An item that has one is
+not one `ssf assign` accepts — it is refused, because `ssf release` is what frees
+it — so a client that offers the write draws no form for it.
+
 The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so a Chrome extension's service worker can read
 them; the `Host` header must still match the configured bind address and port.
@@ -224,10 +230,20 @@ a live factory and an unavailable or stale snapshot.
 An item in the **No agent** state carries an **Assign agent** form, on the card
 and in the popover: harness from `api/agents`, model from
 `api/models/<harness>`, effort from the levels that harness takes, and Assign.
-It is the one write this client makes, sent from its service worker and never
+An item that already has a workspace is refused by `ssf assign` (`ssf release` is
+what frees it), so its card carries *Has a workspace; release it first* instead
+of a form, which is what `has_workspace` above is published for. It is the one
+write this client makes, sent from its service worker and never
 from its content script, so the Origin is the extension's; each configured
 factory has a **Writes** switch on its options page, on by default, which hides
 the form and refuses the write when off.
+
+A chip on an item the page itself shows closed or merged renders a muted **Done**
+rather than a red **Problem**: a released workspace reads `no-workspace` and an
+item the daemon no longer tracks reads `unbound`, neither of which is a fault of
+a finished item. The raw state word stays in the tooltip, a chip's popover agrees
+with the chip, and a state the overlay does not read as Problem or No agent is
+shown as the factory reports it either way.
 
 The built-in endpoint provides neither TLS nor user accounts. Remote web access
 from outside a tailnet requires a reverse proxy that:
