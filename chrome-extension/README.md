@@ -433,11 +433,13 @@ forward, and keep tailnet ACLs restrictive.
   text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
-  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`.
-  The terminal reads `api/pane/<session>` itself: it is the extension's own
-  page (`terminal.html`), framed over github.com and listed in
-  `web_accessible_resources` for github.com alone, so the stream still carries
-  the extension's origin. A factory accepts a write only from an extension
+  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`,
+  and it reads the terminal's `api/pane/<session>` stream and passes it on a
+  port. The terminal is the extension's own page (`terminal.html`), framed over
+  github.com and listed in `web_accessible_resources` for github.com alone; it
+  talks to no factory itself, since Chrome's local-network rules can hold a
+  request from a frame under a public page to a factory on a private or
+  tailnet address. A factory accepts a write only from an extension
   origin, and a page on github.com has none, so the content script never fetches
   a factory itself and no page the factory serves can act on a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are

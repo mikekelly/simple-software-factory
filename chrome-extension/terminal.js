@@ -13,10 +13,13 @@
 // factory's Writes switch applies to it -- one request at a time, in order.
 //
 // This page is the extension's own, framed over the GitHub page by Open
-// (pane-overlay.js, #477), so the stream it reads carries the extension's origin
-// and the permission the options page granted for the factory.
+// (pane-overlay.js, #477), and it talks to no factory itself: a frame under
+// github.com is where Chrome's local-network rules can hold a request to a
+// factory on a private or tailnet address. The service worker reads the stream
+// with the extension's permission and passes it on a port (`ssf-pane`), as it
+// sends what is typed.
 import { Terminal } from "./vendor/xterm/xterm.mjs";
-import { endpoint, factoryUrl } from "./factory-url.js";
+import { factoryUrl } from "./factory-url.js";
 
 /// The body bound of a write is 4096 bytes and a control character is six
 /// once it is JSON, so typed text goes in pieces well under it.
@@ -25,6 +28,13 @@ const CHUNK = 500;
 /// Failures in a row, with no frame between them, before the page stops
 /// asking: a reader that cannot start is not asked again every few seconds.
 const MAX_FAILURES = 3;
+
+/// How long a stream that failed waits before it is asked for again.
+const RETRY_MS = 3000;
+
+/// The port carries the stream, and a port that is used is what keeps the
+/// service worker holding it awake: the frames it sends do not.
+const PING_MS = 20000;
 
 /// The next piece of `text` to send: at most CHUNK characters, never ending
 /// inside an escape sequence, which the pane would read as two keys.
@@ -125,56 +135,86 @@ async function start() {
     ? "live · view only"
     : "live · view only: comment on the item to speak to its agent";
   const reconnect = document.getElementById("reconnect");
-  let source = null;
+  let port = null;
+  let retry = null;
   let failures = 0;
+
+  function hangUp() {
+    clearTimeout(retry);
+    const held = port;
+    port = null;
+    held?.disconnect();
+  }
 
   /// Stop reading: the factory is not asked again until the person says so.
   function stop(text) {
-    source?.close();
-    source = null;
+    hangUp();
     say(text, true);
     reconnect.hidden = false;
   }
 
-  function connect() {
-    reconnect.hidden = true;
-    failures = 0;
-    say("connecting…");
-    source = new EventSource(endpoint(url, `pane/${encodeURIComponent(session)}`));
-    source.addEventListener("screen", (event) => {
+  /// A read that failed or ended, asked for again a few times before the page
+  /// gives up and offers Reconnect.
+  function dropped(error) {
+    failures += 1;
+    if (failures >= MAX_FAILURES) {
+      stop(error ? `the stream stopped (${error})` : "the stream stopped");
+      return;
+    }
+    say("the stream stopped; reconnecting…", true);
+    retry = setTimeout(watch, RETRY_MS);
+  }
+
+  function heard(message) {
+    if (message?.type === "screen") {
       failures = 0;
       try {
-        draw(JSON.parse(event.data).screen ?? "");
+        draw(JSON.parse(message.data).screen ?? "");
         say(typing ? "live" : viewOnly);
       } catch (error) {
         say(`the factory sent a frame that could not be read (${error})`, true);
       }
-    });
-    source.addEventListener("error", (event) => {
-      if (typeof event.data === "string" && event.data) {
-        let detail = event.data;
-        try {
-          detail = JSON.parse(event.data).error ?? detail;
-        } catch {
-          // Not JSON; the raw text is the best description available.
-        }
-        // The factory's reader has stopped; reconnecting would start it
-        // again only to hear the same.
-        stop(detail);
-        return;
-      }
-      if (!source) return;
-      failures += 1;
-      if (failures >= MAX_FAILURES) {
-        stop("the stream stopped");
-        return;
-      }
-      // EventSource tries again by itself.
-      say("the stream stopped; reconnecting…", true);
-    });
+    } else if (message?.type === "refused") {
+      // The factory said no, or its reader has stopped; asking again would
+      // only hear the same.
+      stop(String(message.error ?? "the factory refused the stream"));
+    } else if (message?.type === "dropped") {
+      dropped(message.error);
+    }
+  }
+
+  /// Ask the service worker for the stream, on a port of its own: a worker
+  /// that is stopped anyway takes the port with it, which is a dropped read.
+  function watch() {
+    if (!port) {
+      const opened = chrome.runtime.connect({ name: "ssf-pane" });
+      port = opened;
+      opened.onMessage.addListener(heard);
+      opened.onDisconnect.addListener(() => {
+        if (port !== opened) return;
+        port = null;
+        dropped("the extension's service worker stopped");
+      });
+    }
+    port.postMessage({ type: "watch", url, session });
+  }
+
+  function connect() {
+    hangUp();
+    reconnect.hidden = true;
+    failures = 0;
+    say("connecting…");
+    watch();
   }
   reconnect.addEventListener("click", connect);
   connect();
+  setInterval(() => {
+    try {
+      port?.postMessage({ type: "ping" });
+    } catch {
+      // The port is gone; its disconnect has already been heard.
+    }
+  }, PING_MS);
 
   if (!typing) return;
 
