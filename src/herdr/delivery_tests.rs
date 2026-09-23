@@ -102,8 +102,7 @@ esac
         let id = format!("{:020}-{:x}", 1, Sha256::digest(text.as_bytes()));
         std::fs::write(
             self.mailbox.join(format!("claude-{id}.json")),
-            json!({"transcript": "/nowhere.jsonl", "content": text, "confirmed": true})
-                .to_string(),
+            json!({"transcript": "/nowhere.jsonl", "content": text, "confirmed": true}).to_string(),
         )
         .unwrap();
     }
@@ -138,7 +137,11 @@ async fn terminal_delivery_goes_to_any_live_agent_when_the_saved_pane_is_gone() 
         .await
         .unwrap();
     assert_eq!(delivered(&d), ("w7:p2", false, false));
-    assert!(f.calls().contains("agent prompt w7:p2 event"), "{}", f.calls());
+    assert!(
+        f.calls().contains("agent prompt w7:p2 event"),
+        "{}",
+        f.calls()
+    );
     assert!(!f.calls().contains("process-info"), "{}", f.calls());
 }
 

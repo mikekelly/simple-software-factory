@@ -22,11 +22,14 @@
 //! installed one is from another build (#402).
 
 use anyhow::{Context, Result};
+use futures_util::future::BoxFuture;
 use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::Instant;
+
+use crate::herdr::{Channel, Herdr, Journal};
 
 /// How long one attempt waits for the harness to record the event before the
 /// pass moves on.  The record lands at the agent's next step boundary, so a
@@ -285,10 +288,6 @@ fn wrong_mode(path: &Path, mode: u32) -> bool {
         .unwrap_or(true)
 }
 
-pub(crate) fn supports(harness: &str) -> bool {
-    matches!(harness, "omp" | "pi")
-}
-
 pub(crate) fn available(path: &Path) -> bool {
     let pid = std::fs::read(path.join("ready.json"))
         .ok()
@@ -437,6 +436,76 @@ pub(crate) async fn deliver(path: &Path, sequence: u64, text: &str) -> Result<Re
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Ok(Receipt::Published)
+}
+
+/// Say what became of an out-of-band delivery.  `Published` is not a failure:
+/// the mailbox holds the event until the session's transcript records it, but
+/// the operator should be able to see that the agent has not taken it yet.
+fn report_receipt(receipt: Receipt, handle: &str, mailbox: &Path) {
+    if receipt == Receipt::Published {
+        // Logged under herdr, where this line was before #446.
+        tracing::info!(
+            target: "ssf::herdr",
+            pane_id = handle,
+            mailbox = %mailbox.display(),
+            "out-of-band delivery is in the mailbox; the session has not recorded it yet"
+        );
+    }
+}
+
+/// The mailbox channel OMP and Pi take events through: the daemon publishes
+/// to the session's mailbox and the bridge the session was launched with
+/// injects it.
+pub(crate) struct Mailbox;
+
+impl Channel for Mailbox {
+    fn bridged(&self) -> bool {
+        true
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        _herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let (mailbox, sequence) = journal.context("native harness delivery has no mailbox")?;
+            let receipt = deliver(mailbox, sequence, text).await?;
+            // The event is published either way; a mailbox without the
+            // record yet is a busy session, not a lost event (#390).
+            report_receipt(receipt, pane, mailbox);
+            Ok(())
+        })
+    }
+
+    fn has_record(&self, mailbox: &Path, sequence: u64, text: &str) -> bool {
+        has_record(mailbox, sequence, text)
+    }
+
+    /// The per-session Pi/OMP command resumes the transcript. Its bridge
+    /// either finds this delivery ID there and acknowledges it, or injects
+    /// the still-pending event. In neither case should the relaunch path
+    /// submit the same body through the terminal.
+    fn relaunched<'a>(
+        &'a self,
+        _herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        recorded: bool,
+        _resumed: bool,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let Some((mailbox, sequence)) = journal.filter(|_| recorded) else {
+                return Ok(false);
+            };
+            let receipt = deliver(mailbox, sequence, text).await?;
+            report_receipt(receipt, pane, mailbox);
+            Ok(true)
+        })
+    }
 }
 
 #[cfg(test)]

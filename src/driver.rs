@@ -472,10 +472,7 @@ impl Driver {
         sequence: u64,
     ) -> Option<(PathBuf, u64)> {
         match self {
-            Driver::Herdr(_)
-                if crate::delivery_channel::supports(harness)
-                    || matches!(harness, "claude" | "codex") =>
-            {
+            Driver::Herdr(_) if crate::harness::channel(harness).journaled() => {
                 Some((mailbox(), sequence))
             }
             // The OMP/Pi channel is a mailbox on disk, which the stub can name
@@ -483,7 +480,7 @@ impl Driver {
             // gets the channel a real driver's session would have. The Claude
             // and Codex channels are their own protocols and stay unavailable.
             #[cfg(test)]
-            Driver::Stub(_) if crate::delivery_channel::supports(harness) => {
+            Driver::Stub(_) if crate::harness::channel(harness).bridged() => {
                 Some((mailbox(), sequence))
             }
             _ => None,

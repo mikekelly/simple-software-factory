@@ -383,7 +383,7 @@ Reply with the single token RECOVERED-279 and nothing else.",
 #[ignore]
 async fn herdr_live_native_delivery() {
     let harness = std::env::var("SSF_LIVE_HARNESS").unwrap_or_else(|_| "omp".into());
-    assert!(crate::delivery_channel::supports(&harness));
+    assert!(crate::harness::channel(&harness).bridged());
     let base = std::env::temp_dir().join(format!(
         "ssf-native-delivery-{harness}-{}",
         std::process::id()

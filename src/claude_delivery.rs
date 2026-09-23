@@ -4,6 +4,7 @@
 //! against the target's persistent transcript, never blindly resend them.
 
 use anyhow::{Context, Result, bail};
+use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
+
+use crate::herdr::{Channel, Herdr, Journal};
 
 fn root() -> PathBuf {
     #[cfg(test)]
@@ -287,6 +290,64 @@ pub(crate) async fn deliver(
     let _ = stream.shutdown().await;
     confirm(&path, record).await?;
     Ok(true)
+}
+
+/// Claude Code's delivery channel: its peer inbox, found from the pane's
+/// foreground process, with the terminal as the fallback while no inbox is
+/// there to take the event.
+pub(crate) struct Claude;
+
+impl Channel for Claude {
+    fn session_bound(&self) -> bool {
+        true
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let (mailbox, sequence) = journal.context("Claude delivery has no journal")?;
+            let inbox = herdr.claude_inbox(pane).await;
+            if !deliver(inbox.as_ref(), mailbox, sequence, text).await? {
+                // Logged under herdr, where this line was before #446.
+                tracing::warn!(
+                    target: "ssf::herdr",
+                    pane_id = pane,
+                    "Claude inbox unavailable; using terminal fallback"
+                );
+                herdr.send_prompt(pane, text).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn has_record(&self, mailbox: &Path, sequence: u64, text: &str) -> bool {
+        has_record(mailbox, sequence, text)
+    }
+
+    /// An event on record is reconciled against the resumed session's
+    /// transcript; anything else goes to the terminal.
+    fn relaunched<'a>(
+        &'a self,
+        _herdr: &'a Herdr,
+        _pane: &'a str,
+        journal: Journal<'a>,
+        recorded: bool,
+        _resumed: bool,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            let Some((mailbox, sequence)) = journal.filter(|_| recorded) else {
+                return Ok(false);
+            };
+            deliver(None, mailbox, sequence, text).await?;
+            Ok(true)
+        })
+    }
 }
 
 #[cfg(test)]

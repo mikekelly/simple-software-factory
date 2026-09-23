@@ -25,6 +25,9 @@ use crate::driver::{
     checkout_of_worktree, find_local_worktree, number_of_name, remove_local_worktree,
 };
 
+mod channel;
+pub(crate) use channel::{Channel, Journal, Terminal};
+
 /// Human-readable label; checkout names remain the recovery key.
 fn workspace_label(repo: &str, number: u64) -> String {
     let name = repo.rsplit('/').next().unwrap_or(repo);
@@ -122,19 +125,6 @@ fn chunk_end(text: &str) -> usize {
 fn is_not_found(e: &anyhow::Error) -> bool {
     let msg = e.to_string().to_lowercase();
     msg.contains("not_found") || msg.contains("not found")
-}
-
-/// Say what became of an out-of-band delivery.  `Published` is not a failure:
-/// the mailbox holds the event until the session's transcript records it, but
-/// the operator should be able to see that the agent has not taken it yet.
-fn report_receipt(receipt: crate::delivery_channel::Receipt, handle: &str, mailbox: &Path) {
-    if receipt == crate::delivery_channel::Receipt::Published {
-        info!(
-            pane_id = handle,
-            mailbox = %mailbox.display(),
-            "out-of-band delivery is in the mailbox; the session has not recorded it yet"
-        );
-    }
 }
 
 pub fn make_id(workspace_id: &str, path: &str) -> String {
@@ -1367,7 +1357,8 @@ accepting the successful Enter without retrying: {e:#}"
         let (ws, _) = split_id(workspace_id);
         let agents = self.agents().await?;
         let live: Vec<&Agent> = agents.iter().filter(|a| a.workspace_id == ws).collect();
-        let target = if matches!(relaunch.harness, "claude" | "codex") {
+        let channel = crate::harness::channel(relaunch.harness);
+        let target = if channel.session_bound() {
             // A saved pane is an address, not a preference. Never deliver to a
             // neighbour if its agent exits or its pane hosts a different harness.
             match preferred_handle {
@@ -1394,41 +1385,11 @@ accepting the successful Enter without retrying: {e:#}"
         .map(|a| a.pane_id.clone());
         if let Some(handle) = target {
             match relaunch.first_prompt {
-                FirstPrompt::No if relaunch.harness == "codex" => {
-                    let (mailbox, sequence) =
-                        relaunch.channel.context("Codex delivery has no journal")?;
-                    let info = self
-                        .run(&["pane", "process-info", "--pane", &handle])
-                        .await?;
-                    if !crate::codex_delivery::deliver(Some(&info), mailbox, sequence, text).await?
-                    {
-                        self.send_prompt(&handle, text).await?;
-                    }
-                }
-                FirstPrompt::No if relaunch.harness == "claude" => {
-                    let (mailbox, sequence) =
-                        relaunch.channel.context("Claude delivery has no journal")?;
-                    let inbox = self.claude_inbox(&handle).await;
-                    if !crate::claude_delivery::deliver(inbox.as_ref(), mailbox, sequence, text)
+                FirstPrompt::No => {
+                    channel
+                        .deliver(self, &handle, relaunch.channel, text)
                         .await?
-                    {
-                        warn!(
-                            pane_id = handle,
-                            "Claude inbox unavailable; using terminal fallback"
-                        );
-                        self.send_prompt(&handle, text).await?;
-                    }
                 }
-                FirstPrompt::No if crate::delivery_channel::supports(relaunch.harness) => {
-                    let (mailbox, sequence) = relaunch
-                        .channel
-                        .context("native harness delivery has no mailbox")?;
-                    let receipt = crate::delivery_channel::deliver(mailbox, sequence, text).await?;
-                    // The event is published either way; a mailbox without the
-                    // record yet is a busy session, not a lost event (#390).
-                    report_receipt(receipt, &handle, mailbox);
-                }
-                FirstPrompt::No => self.send_prompt(&handle, text).await?,
                 FirstPrompt::Send => self.send_first_prompt(&handle, text).await?,
                 FirstPrompt::Recover => self.recover_first_prompt(&handle, text).await?,
             }
@@ -1438,30 +1399,23 @@ accepting the successful Enter without retrying: {e:#}"
                 resumed: false,
             });
         }
-        let claude_retry = relaunch.channel.filter(|(mailbox, sequence)| {
-            relaunch.harness == "claude"
-                && crate::claude_delivery::has_record(mailbox, *sequence, text)
-        });
-        let codex_retry = relaunch.channel.filter(|(mailbox, sequence)| {
-            relaunch.harness == "codex"
-                && crate::codex_delivery::has_record(mailbox, *sequence, text)
-        });
-        let codex_bound = relaunch.harness == "codex"
-            && relaunch
-                .channel
-                .is_some_and(|(mailbox, _)| crate::codex_delivery::has_binding(mailbox));
-        if (claude_retry.is_some() || codex_retry.is_some() || codex_bound)
-            && relaunch.resume_command.is_none()
-        {
+        // An earlier attempt at this event, or a binding to one conversation,
+        // is settled in that conversation: a session-bound channel with one
+        // outstanding is resumed or nothing, never started afresh.
+        let recorded = relaunch
+            .channel
+            .is_some_and(|(mailbox, sequence)| channel.has_record(mailbox, sequence, text));
+        let held = channel.session_bound()
+            && (recorded
+                || relaunch
+                    .channel
+                    .is_some_and(|(mailbox, _)| channel.has_binding(mailbox)));
+        if held && relaunch.resume_command.is_none() {
             bail!(
                 "{} has an outstanding native delivery journal but no saved session to resume (no terminal fallback)",
                 relaunch.harness
             );
         }
-        let native_retry = relaunch.channel.filter(|(mailbox, sequence)| {
-            crate::delivery_channel::supports(relaunch.harness)
-                && crate::delivery_channel::has_record(mailbox, *sequence, text)
-        });
         let mut resumed = false;
         let mut handle = None;
         // A resumed agent already at work takes the message as a steering
@@ -1524,7 +1478,7 @@ keeping it"
                 }
             }
         }
-        if (claude_retry.is_some() || codex_retry.is_some() || codex_bound) && handle.is_none() {
+        if held && handle.is_none() {
             bail!(
                 "{} could not resume its outstanding native delivery; refusing a fresh terminal submission",
                 relaunch.harness
@@ -1547,45 +1501,12 @@ keeping it"
                 .await?
             }
         };
-        if let Some((mailbox, sequence)) = claude_retry {
-            crate::claude_delivery::deliver(None, mailbox, sequence, text).await?;
-            return Ok(Delivery {
-                handle,
-                relaunched: true,
-                resumed: true,
-            });
-        }
-        if let Some((mailbox, sequence)) = codex_retry {
-            if !self.codex_channel_available(&handle, mailbox).await? {
-                bail!("Codex resumed without its native channel; refusing terminal fallback");
-            }
-            crate::codex_delivery::deliver(None, mailbox, sequence, text).await?;
-            return Ok(Delivery {
-                handle,
-                relaunched: true,
-                resumed: true,
-            });
-        }
-        if resumed && relaunch.harness == "codex" {
-            let (mailbox, sequence) = relaunch.channel.context("Codex delivery has no journal")?;
-            let info = self
-                .run(&["pane", "process-info", "--pane", &handle])
-                .await?;
-            if crate::codex_delivery::deliver(Some(&info), mailbox, sequence, text).await? {
-                return Ok(Delivery {
-                    handle,
-                    relaunched: true,
-                    resumed: true,
-                });
-            }
-        }
-        if let Some((mailbox, sequence)) = native_retry {
-            // The per-session Pi/OMP command resumes the transcript. Its
-            // bridge either finds this delivery ID there and acknowledges it,
-            // or injects the still-pending event. In neither case should the
-            // relaunch path submit the same body through the terminal.
-            let receipt = crate::delivery_channel::deliver(mailbox, sequence, text).await?;
-            report_receipt(receipt, &handle, mailbox);
+        // A channel that takes the event here has the harness's own
+        // conversation to take it in (a Pi/OMP launch resumes its transcript).
+        if channel
+            .relaunched(self, &handle, relaunch.channel, recorded, resumed, text)
+            .await?
+        {
             return Ok(Delivery {
                 handle,
                 relaunched: true,

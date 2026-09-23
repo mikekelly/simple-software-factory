@@ -2,15 +2,20 @@
 //! is installed and started unattended, the model and effort settings it
 //! takes, how it takes a context-compaction threshold, the words its sign-in
 //! screen shows, the API-key variables that stand in for a sign-in, and
-//! whether ssf reads its local transcript. Adding a harness is one row in
-//! [`HARNESSES`] (#446).
+//! whether ssf reads its local transcript, and the channel an event reaches it
+//! through. Adding a harness is one row in [`HARNESSES`] (#446).
 //!
 //! Every harness ssf launches has a row; a capability a harness lacks is an
 //! empty or `None` field, not a missing row. An id with no row is one ssf does
 //! not know. What stays elsewhere, because it is logic rather than data: the
 //! transcript readers (`sessions`), the sign-in probes (`login`), the VM login
-//! flows (`vm::LOGINS`) and the delivery channels.
+//! flows (`vm::LOGINS`) and the delivery channels' implementations, which a
+//! row names.
 
+use crate::claude_delivery::Claude;
+use crate::codex_delivery::Codex;
+use crate::delivery_channel::Mailbox;
+use crate::herdr::{Channel, Terminal};
 use crate::models::{self, Catalogue, Compaction};
 
 pub struct Harness {
@@ -46,11 +51,20 @@ pub struct Harness {
     /// dates a conversation (`sessions::last_activity`) and resumes one
     /// (`sessions::resume_command`).
     pub reads_transcript: bool,
+    /// How an event reaches it while it runs: its own channel, or the
+    /// terminal.
+    pub channel: &'static dyn Channel,
 }
 
 /// The descriptor for `id`, when ssf knows the harness.
 pub fn harness(id: &str) -> Option<&'static Harness> {
     HARNESSES.iter().find(|h| h.id == id)
+}
+
+/// The delivery channel for `id`: the terminal for a harness ssf does not
+/// know, which is what reaches any harness.
+pub fn channel(id: &str) -> &'static dyn Channel {
+    harness(id).map_or(&Terminal, |h| h.channel)
 }
 
 /// Keys that stand in for a sign-in with a harness reaching many providers.
@@ -105,6 +119,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["ANTHROPIC_API_KEY"],
         reads_transcript: true,
+        channel: &Claude,
     },
     Harness {
         id: "codex",
@@ -142,6 +157,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["OPENAI_API_KEY"],
         reads_transcript: true,
+        channel: &Codex,
     },
     // Pi, Oh My Pi and OpenCode use their own `provider/model` identifiers.
     Harness {
@@ -166,6 +182,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: PI_LOGIN_PHRASES,
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        channel: &Mailbox,
     },
     Harness {
         id: "pi",
@@ -188,6 +205,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: PI_LOGIN_PHRASES,
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        channel: &Mailbox,
     },
     Harness {
         id: "opencode",
@@ -209,6 +227,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: &["run /connect to add an ai provider"],
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        channel: &Terminal,
     },
     Harness {
         id: "gemini",
@@ -239,6 +258,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         reads_transcript: false,
+        channel: &Terminal,
     },
     Harness {
         id: "copilot",
@@ -260,6 +280,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: &["run /login"],
         api_key_vars: &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
         reads_transcript: false,
+        channel: &Terminal,
     },
     Harness {
         id: "grok",
@@ -284,6 +305,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["XAI_API_KEY"],
         reads_transcript: false,
+        channel: &Terminal,
     },
     Harness {
         id: "crush",
@@ -297,6 +319,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: &["let's choose a provider and model"],
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        channel: &Terminal,
     },
 ];
 
@@ -342,5 +365,15 @@ mod tests {
             ["claude", "codex", "omp"]
         );
         assert_eq!(ids(|h| h.reads_transcript), ["claude", "codex"]);
+        // The delivery if-chain `Herdr::deliver` had before its channels
+        // were a field: Claude and Codex by id, OMP and Pi by
+        // `delivery_channel::supports`, the terminal for everyone else.
+        assert_eq!(ids(|h| h.channel.session_bound()), ["claude", "codex"]);
+        assert_eq!(ids(|h| h.channel.bridged()), ["omp", "pi"]);
+        assert_eq!(
+            ids(|h| h.channel.journaled()),
+            ["claude", "codex", "omp", "pi"]
+        );
+        assert!(!channel("nope").journaled());
     }
 }
