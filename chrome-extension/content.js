@@ -1303,7 +1303,11 @@
     const query = new URLSearchParams(location.search);
     if (query.get("pane") !== "issue") return null;
     const named = (query.get("issue") ?? "").split("|");
-    if (named.length !== 3) return null;
+    // The number is checked the way a detail page's own path checks it, so a
+    // URL that names no item -- hand-edited, or pasted from somewhere that
+    // mangled it -- draws no card and offers no form for an item that is not
+    // there.
+    if (named.length !== 3 || !/^\d+$/.test(named[2])) return null;
     return { owner: named[0], repo: named[1], number: named[2], pull: false };
   }
 
