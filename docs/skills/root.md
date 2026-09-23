@@ -1,54 +1,72 @@
-# Simple Software Factory (ssf)
+# Simple Software Factory (ssf): where to start
 
-SSF turns GitHub issues assigned to a bot into coding-agent sessions in managed
-workspaces. A client (`ssf`) controls a factory daemon (`ssf-server`), locally,
-in a VM, or over SSH.
+For an agent helping a person install, configure, operate or repair a factory.
+ssf turns GitHub issues and pull requests assigned to a bot account into
+coding-agent sessions, one per item, each in its own git worktree and terminal
+under herdr. People collaborate with the agents in the item's comments; the
+`ssf` client configures and inspects the factory daemon (`ssf-server`)
+locally, in a VM, or over SSH.
 
-## Key commands
+## Route by what the person asked
 
-- `ssf setup`: prepare a packaged installation for this user.
-- `ssf server list`: inspect the client-owned server catalog.
-- `ssf auth login`: enroll the separate bot account.
-- `ssf agents` / `ssf models <harness>`: inspect harness and model choices.
-- `ssf repo add` / `ssf repo set`: configure watched repositories and agents.
-- `ssf config` / `ssf config set`: inspect or change factory settings.
-- `ssf doctor` / `ssf status`: diagnose and inspect a factory.
-- `ssf dashboard`: watch factories in a terminal.
-- `ssf vm`: manage the factory VM from its host.
-- `ssf guide`: read the session-specific agent collaboration reference.
-- `ssf peers`, `ssf handover`, `ssf assign`, `ssf sub`: coordinate sessions.
-- `ssf release` / `ssf purge`: retire workspaces after checking their work.
-
-Use `ssf <command> --help` for arguments. Inspect existing targets and their
-health before changing setup. Bot credentials belong to the bot, never the
-person's account. Preserve uncommitted and unpushed work.
-
-## Read only the topic needed
-
-| Command | Bundled document / purpose |
+| The person wants | Do this |
 | --- | --- |
-| `ssf skill setup` | `docs/setup.md`: first factory, authentication, harness/model selection |
-| `ssf skill agent` | `docs/agent-guidance.md`: rules for an agent installing or operating a factory for a person, with labelled setup-specific notes |
-| `ssf skill ssf-md` | `docs/ssf-md.md`: writing a repository's `SSF.md`, and what belongs in `AGENTS.md` instead |
-| `ssf skill liaison` | `docs/liaison.md`: the assistant that acts for a person, on the factory host or from their machine |
-| `ssf skill client-cli` | `docs/skills/client-cli.md`: everyday CLI and target selection |
-| `ssf skill server` | `docs/skills/server.md`: daemon, services, diagnosis |
-| `ssf skill config` | `docs/configuration.md`: options, repositories, allowed users |
-| `ssf skill vm` | `docs/vm.md`: VM lifecycle and host/guest ownership |
-| `ssf skill headless` | `docs/headless-host.md`: VPS / headless Linux host path |
-| `ssf skill install-binaries` | `docs/install-binaries.md`: standalone / client-only installation |
-| `ssf skill drivers` | `docs/drivers.md`: harnesses and workspace drivers |
-| `ssf skill sessions` | `docs/sessions.md`: collaboration and workspace lifecycle |
-| `ssf skill dashboard` | `docs/dashboard.md`: terminal and web interfaces |
-| `ssf skill uninstall` | `docs/uninstall.md`: removal and retained data |
+| ssf installed and their first repository watched | `ssf skill setup`. It opens with a resource check that decides between a local VM, host mode and a rented host, then runs to the first issue. Before `ssf` is installed, the same document is `docs/install.md` in the repository. |
+| a repository added to a factory that already runs | `ssf skill repo`: access for the bot, choosing harness, model and effort with the person, `ssf repo add`, a minimal `SSF.md`, `ssf candidates` and `ssf adopt`, the first issue. |
+| to know what is running, change a setting, upgrade, stop | `ssf skill operate`: targets, `doctor` and `status` before any change, the service, versions. `ssf skill config` for every key. |
+| something is not working | `ssf skill troubleshoot`: triage sequence, then symptom, check and remedy. |
+| an `SSF.md` written or reviewed for a project | `ssf skill ssf-md`, then `SSF.example.md` in the repository; `ssf skill audit` for a bounded review of existing guidance. |
+| an always-on assistant that drives the factory for them | `ssf skill liaison`. |
+| details for their distro, macOS, a rented host, a harness's quirks, or an old installation | `ssf skill specifics`. Nothing there is needed on the generic path. |
 
-For setup, agents should read both `setup` and `agent`, or `headless` and `agent`
-for a stripped host. Deeper documents retain their repository-relative links;
-the table maps those documents to offline CLI commands. Other links refer to
-files in https://github.com/mikekelly/simple-software-factory.
+Every topic prints from the executing binary, so it matches the installed
+version. They need no configuration, daemon, VM or network; `--server` and
+`SSF_SERVER` do not redirect them. When client and server versions differ, run
+`ssf skill` on the server machine for its version.
 
-All skill topics print from the executing binary, even with `--server` or
-`SSF_SERVER` set. They need no configuration, daemon, VM, or network connection.
-When client and server versions differ, run `ssf skill` on the server machine
-for its version's guidance. A session ssf started on an issue reads `ssf guide`,
-not these topics.
+A session that ssf itself started on an issue reads `ssf guide`, not these
+topics: the first prompt already carries what that session needs.
+
+## Rules that apply on every route
+
+Read `ssf skill agent` once; the short form:
+
+- Inspect before changing: `ssf server list`, then `ssf --server NAME doctor`
+  and `ssf --server NAME status` for the target you are about to touch. One
+  healthy target says nothing about another.
+- The bot's credentials belong to the bot account, never to the person's
+  account. Only `ssf auth` handles them.
+- Ask the person before creating accounts, spending money, using `sudo`,
+  choosing a model and effort, allowing anyone to drive the factory, or
+  passing `--force` to anything. Decide the rest yourself.
+- Preserve work: ssf never removes a workspace on its own, and `release` and
+  `purge` refuse anything not on origin. Do not bypass that on someone's
+  behalf.
+- Prefer the validating commands (`ssf repo add|set`, `ssf config set`,
+  `ssf auth login`) to editing configuration by hand; `ssf <command> --help`
+  before a mutation.
+
+## All topics
+
+| `ssf skill ...` | Document | Covers |
+| --- | --- | --- |
+| `setup` | `docs/install.md` | fresh machine to first issue, all install paths |
+| `repo` | `docs/repositories.md` | adding and configuring a repository, `SSF.md`, first issue |
+| `operate` | `docs/operate.md` | targets, inspection, service, upgrade, stopping |
+| `troubleshoot` | `docs/troubleshooting.md` | symptom, check, remedy |
+| `specifics` | `docs/platform-specifics.md` | distro, macOS, rented hosts, Tailscale, harness notes, older installs |
+| `agent` | `docs/agent-guidance.md` | rules for an agent acting for a person |
+| `ssf-md` | `docs/ssf-md.md` | writing a repository's `SSF.md` |
+| `liaison` | `docs/liaison.md` | an assistant that acts for a person |
+| `audit` | `docs/audit.md` | a bounded review of a project's guidance |
+| `config` | `docs/configuration.md` | every key, models and effort, who may drive |
+| `vm` | `docs/vm.md` | VM lifecycle, sizing, host versus guest |
+| `drivers` | `docs/drivers.md` | herdr workspaces and how activity reaches a harness |
+| `sessions` | `docs/sessions.md` | ownership, following, handover, release and purge |
+| `dashboard` | `docs/dashboard.md` | terminal dashboard and optional web UI |
+| `uninstall` | `docs/uninstall.md` | safe removal and retained data |
+
+Not topics, in the repository only: `docs/prompts.md` (what a session is
+told), `docs/identity-and-bylines.md` (how posts are attributed),
+`docs/internals.md` (polling, delivery, `ssf status --json`),
+`docs/development.md` (working on ssf itself).

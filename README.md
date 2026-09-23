@@ -3,7 +3,7 @@
 [![CI](https://github.com/mikekelly/simple-software-factory/actions/workflows/ci.yml/badge.svg)](https://github.com/mikekelly/simple-software-factory/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/mikekelly/simple-software-factory)](https://github.com/mikekelly/simple-software-factory/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Linux](https://img.shields.io/badge/platform-Linux-informational)](docs/setup.md)
+[![Linux and macOS](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-informational)](docs/install.md)
 
 **Run a team of coding agents from your GitHub issues.** Assign an issue to
 your bot and a dedicated agent picks it up in its own terminal and its own
@@ -51,10 +51,10 @@ terminal, read what it is doing, type to it, or finish the job yourself.
 | **Terminals you can enter** | Sessions run in [herdr](https://herdr.dev/), a terminal multiplexer. Attach to see what an agent is doing, steer it, or take over. |
 | **Your repository sets the rules** | An `SSF.md` at the root tells sessions how to own work, communicate, review and hand off. Build and test policy stays in `AGENTS.md`. |
 
-ssf runs on Linux, in a microVM on your own computer or on a server you
-rent, with `gh`, a bot GitHub account, herdr and any of the coding agents you
-already have: Claude Code, Codex, Gemini, Copilot, Grok, OpenCode, Pi,
-Oh My Pi or Crush. macOS is next.
+ssf runs on Linux and macOS, in a microVM on your own computer, on the
+host itself, or on a server you rent, with `gh`, a bot GitHub account, herdr
+and any of the coding agents you already have: Claude Code, Codex, Gemini,
+Copilot, Grok, OpenCode, Pi, Oh My Pi or Crush.
 
 ## How a feature gets built
 
@@ -81,77 +81,45 @@ one issue from plan through review rounds to merge and release.
 
 ## Install
 
-Choose the installation for the machine:
+ssf runs on Linux and macOS: on your own machine, with the agents in a
+microVM (Firecracker on Linux, lima on macOS) or directly on the host, or on
+a server you rent, operated from your machine over SSH. Packages for the
+Arch, Debian and Fedora families and a Homebrew formula are on
+[GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases).
 
-- **Omarchy, Arch, Debian or Ubuntu with KVM and a systemd user session:**
-  the package below, then [Setup](docs/setup.md).
-- **A VPS, container or Linux without KVM or a user session:** standalone
-  binaries in host mode, from [VPS / headless host](docs/headless-host.md).
-- **Only controlling an existing factory over SSH:** the
-  [standalone client](docs/install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
+The install document is written for the coding agent you already have.
+Point it at this repository and say "help me set up ssf":
 
-Download the package from
-[GitHub Releases](https://github.com/mikekelly/simple-software-factory/releases)
-(Arch family including [Omarchy](https://omarchy.org/), Debian family
-including Ubuntu) and install it with the package manager, which resolves
-`gh` and, on Omarchy, `herdr` (on Arch install `herdr` from the AUR first; on Debian and
-Ubuntu install it by hand for host mode, and Debian 12 needs GitHub's apt
-repository for a recent `gh`):
+- with `ssf` not yet installed, it reads [docs/install.md](docs/install.md),
+  which opens with a check of your machine's resources and settles, with
+  you, where the factory should run, then goes to the first issue;
+- with `ssf` installed, `ssf skill` prints the same guidance from the
+  installed version, routed by what you ask for, and
+  `npx skills add mikekelly/simple-software-factory -g` installs the
+  `working-with-ssf` skill that points agents at it.
 
-```sh
-sudo pacman -U ./ssf-<version>-1-x86_64.pkg.tar.zst    # Omarchy, Arch
-sudo apt install ./ssf_<version>-1_amd64.deb            # Debian 12+, Ubuntu 24.04+
-ssf setup
-```
-
-`ssf setup` is the per-user step: it creates the managed VM target
-`ssf-server`, enables its user service and turns on systemd linger (via
-`sudo`) so the service survives logout and starts at boot. On Omarchy,
-`ssf ui install` adds the optional **Factory** menu (status, the service
-toggle, restart, logs) to the desktop menu; it never installs or upgrades
-ssf:
-
-```sh
-ssf ui install
-```
-
-## First run
-
-[Setup](docs/setup.md) is the document, top to bottom. The short form:
-
-1. **The bot account.** A GitHub account of its own, created for the
-   factory rather than yours, with Write access on each repository it works
-   and on their project boards. Every agent post is made as it.
-2. **The VM.** `ssf vm build` builds the guest, then `ssf auth login --web`
-   runs GitHub's device flow inside it: approve the printed code in a
-   browser signed in as the bot. Then `ssf vm login <harness>` signs your
-   coding agent in there too. Token, key and harness login stay on the
-   guest's data disk. The alternative is host mode, with both logins on the
-   host.
-3. **A repository.** `ssf repo add owner/name --harness claude --model
-   fable --effort medium` (`ssf agents` lists the harnesses; model and
-   effort are an explicit choice), and an `SSF.md` at its root, starting
-   from [`SSF.example.md`](SSF.example.md).
-
-`ssf doctor` after each step says what is still missing. Then assign an
-issue to the bot. A good first issue is small, says what "done" looks like
-and names what to run before opening a pull request. Within a couple of
-minutes the agent comments with what it is about to do, and later with the
-pull request; read it, answer or merge as you would for a colleague, and
-close the issue.
+You need a GitHub account of the bot's own, with Write access on each
+repository it works, and a coding agent signed in where the agents run:
+Claude Code, Codex, Gemini, Copilot, Grok, OpenCode, Pi, Oh My Pi or Crush.
+Then assign an issue to the bot. A good first issue is small, says what
+"done" looks like and names what to run before opening a pull request.
+Within a couple of minutes the agent comments with what it is about to do,
+and later with the pull request; read it, answer or merge as you would for
+a colleague, and close the issue.
 
 ## How it works
 
-Every ten seconds (by default) ssf asks GitHub for the open issues and pull requests that
-involve the bot. For a new one it creates a workspace in herdr, checked out
-on a branch for the issue (or on the pull request's branch, so pushes update
-the pull request), and starts the agent there with the whole story so far.
-From then on every comment, review, label or push on the item is delivered
-into that agent's terminal: it steers the agent if it is busy and wakes it if
-it is idle. If a terminal is gone, or the whole workspace, ssf brings it back
-and resumes the same conversation, including after a reboot. When the item is
-closed the agent is told to push what is worth keeping and, only then, to
-release its workspace ([Under the hood](docs/internals.md)).
+Every ten seconds (by default) ssf asks GitHub for the open issues and pull
+requests that involve the bot. For a new one it creates a workspace in herdr,
+checked out on a branch for the issue (or on the pull request's branch, so
+pushes update the pull request), and starts the agent there with the whole
+story so far. From then on every comment, review, label or push on the item
+is delivered into that agent's terminal: it steers the agent if it is busy
+and wakes it if it is idle. If a terminal is gone, or the whole workspace,
+ssf brings it back and resumes the same conversation, including after a
+reboot. When the item is closed the agent is told to push what is worth
+keeping and, only then, to release its workspace
+([Under the hood](docs/internals.md)).
 
 Only people you allow can drive it: by default the repository's
 collaborators with push access, or a list you set
@@ -160,78 +128,52 @@ Every post an agent makes is made as the bot, with a byline naming its
 session, harness, model and effort
 ([Identity and bylines](docs/identity-and-bylines.md)).
 
-## Everyday commands
-
-The shape of the client; `ssf --help` has the rest, and every command takes
-`--server NAME` for another factory ([Server
-catalog](docs/configuration.md#server-catalog)):
-
-```sh
-ssf status | ssf dashboard | ssf peers          # what is running and what each agent is doing
-ssf repo add owner/name ... | ssf config set ... # configure; picked up on the next poll
-ssf assign 12 --harness codex ... | ssf handover ... # start an item on a chosen stack; pass one on mid-flight
-ssf sub 12                                       # follow an item from this session
-ssf release | ssf purge                          # give back a workspace; sweep those of closed items
-ssf doctor                                       # what is missing, and which checkouts still hold work
-```
-
-Everything except the credentials is scriptable, so an agent on the machine
-can reconfigure the factory. Things to know when operating it:
+Things to know when operating it:
 
 - **ssf never removes a workspace on its own.** Closing an item tells the
   agent to push, comment and `ssf release`; `ssf purge` is your sweep for
-  what was left. Both refuse when anything is not on origin unless
-  `--force`. A tab closed by hand in herdr leaves its checkout behind, and
-  `ssf doctor` names every one holding work with no agent on it
-  ([Workspaces after close](docs/sessions.md#workspaces-after-close-release-and-purge)).
+  what was left. Both refuse when anything is not on origin.
 - **Nothing reaches an agent off the record.** Every message it gets is
   activity on an item it works on or follows. Decisions go on the item.
 - **A comment is never a command.** Everyone collaborates in the item's
   comments, agent and person alike. Directing the factory is a terminal
   command: `ssf handover` changes an item's stack, `ssf assign` starts the
-  first session of an item that has none
-  ([Sessions](docs/sessions.md#directing-an-item-comments-ssf-handover-ssf-assign)).
+  first session of an item that has none.
 - **Restarts are invisible to agents.** A daemon restart delivers what was
   missed when it comes back; a reboot relaunches the interrupted sessions.
 - **The bot reviews its own pull requests.** ssf starts no second session
   on a pull request the bot opened: the agent that wrote it runs the review
-  its `SSF.md` asks for, and `SSF.md` says who merges (a person, as
-  shipped). A `review` label does nothing.
-- **Stopping.** `ssf ui service disable` stops the
-  service and keeps it from starting at login; running agents are left where
-  they are. Upgrade with the package manager; remove with `ssf uninstall`,
-  then the package ([Stopping and
-  uninstalling](docs/setup.md#12-stopping-and-uninstalling)).
+  its `SSF.md` asks for, and `SSF.md` says who merges.
 
 ## The rest of the story
 
-One file per area, installed under `/usr/share/doc/ssf/docs/`. Read them in
-this order the first time.
+For agents, `ssf skill` prints these from the installed binary; in the
+repository they are one file per area under `docs/`, installed under
+`/usr/share/doc/ssf/docs/` (or Homebrew's `share/doc/ssf/docs/`).
 
 | Read | When you want to know |
 |------|-----------------------|
-| [Setup](docs/setup.md) | from a fresh machine to the first issue: prerequisites, the package, the bot, the VM or the host, the first repository, upgrading, uninstalling |
-| [VPS / headless host](docs/headless-host.md) | standalone binaries and host mode on a server or container |
-| [Standalone binaries](docs/install-binaries.md) | the release binaries, ARM64, and the client-only install |
-| [Inside a VM](docs/vm.md) | the Firecracker microVM on Linux, and the work-in-progress lima backend for macOS |
+| [Install](docs/install.md) | from a fresh machine to the first issue, on every supported path |
+| [Repositories](docs/repositories.md) | adding a repository to a running factory, `SSF.md`, the first issue |
+| [Operate](docs/operate.md) | targets, inspecting before changing, the service, upgrading, stopping |
+| [Troubleshooting](docs/troubleshooting.md) | symptom, check and remedy |
+| [Platform specifics](docs/platform-specifics.md) | your distro, macOS, rented hosts, Tailscale, harness notes, upgrading from an older ssf |
 | [Configuration](docs/configuration.md) | every key in `config.toml`; models and effort; who may drive the factory; the server catalog |
 | [Writing SSF.md](docs/ssf-md.md) | the operating guidance your repository gives its sessions, and what belongs in `AGENTS.md` instead |
-| [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards |
-| [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and which session posted what |
+| [Guidance audit](docs/audit.md) | a bounded review of a project's `SSF.md` and `AGENTS.md` |
+| [Agent operating guidance](docs/agent-guidance.md) | rules for an agent installing, operating or upgrading a factory for a person |
+| [Use an assistant as the liaison](docs/liaison.md) | an always-on assistant that watches the factory and drives it on your behalf |
+| [Inside a VM](docs/vm.md) | the Firecracker microVM on Linux and the lima instance on macOS |
 | [Sessions](docs/sessions.md) | who owns an item, second opinions, following and messaging other sessions, handovers, release and purge |
 | [Session dashboard](docs/dashboard.md) | `ssf dashboard` across one or several factories, and the optional browser dashboard |
 | [Workspaces and terminals](docs/drivers.md) | how ssf uses herdr for workspaces, terminals and agent state |
-| [Use an assistant as the liaison](docs/liaison.md) | an always-on assistant that watches the factory and drives it on your behalf |
-| [Agent operating guidance](docs/agent-guidance.md) | for an agent installing, operating or upgrading a factory for a person |
-| [Guidance audit](docs/audit.md) | a bounded review of a project's `SSF.md` and `AGENTS.md` |
+| [Uninstall](docs/uninstall.md) | work-preservation checks and retained data |
+| [What the agent is told](docs/prompts.md) | the first prompt, the messages an agent receives, project boards |
+| [Identity and bylines](docs/identity-and-bylines.md) | how `gh` and `git` act as the bot inside a session, and which session posted what |
 | [Under the hood](docs/internals.md) | polling, delivery, resume and restarts; `ssf status --json`; known limits |
-| [Uninstall reference](docs/uninstall.md) | work-preservation checks, recovery cases and retained data |
 | [Development](docs/development.md) | building, scratch runs, a dev build as the service, the source layout |
 
-For agents: `ssf guide` is a session's collaboration reference and `ssf
-skill` the operating topics, both printed by the running binary so they
-cannot drift from it. `npx skills add mikekelly/simple-software-factory -g`
-installs the `working-with-ssf` skill that points agents at them.
+Inside a session ssf started, `ssf guide` is the collaboration reference.
 
 ## License
 

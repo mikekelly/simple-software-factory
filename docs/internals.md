@@ -246,7 +246,7 @@ dashboard](dashboard.md) for configuration and proxy expectations.
 - **Restarts.** A daemon restart is invisible to
   agents: the state is on disk, the driver keeps the terminals, and delivery
   finds them again. The service comes back from any exit, a clean one
-  included (`Restart=always`, [setup](setup.md#service-and-the-optional-omarchy-menu)):
+  included (`Restart=always`, [operate](operate.md#the-background-service)):
   systemd counts a SIGTERM as a clean exit, so `on-failure` left the factory
   inactive after the unexplained one of #344. An explicit `systemctl stop`,
   and anything else that stops the unit, is not undone. A machine restart

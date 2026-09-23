@@ -346,7 +346,7 @@ in host mode they are in the host user's home. `SSF.<harness>.md` at the
 repository root does the same for one repository. `repo.model` selects the
 session's model, not its subagents' models; subagent preferences belong in
 this guidance and depend on what the harness supports (see [Choosing the
-harness and the model](setup.md#choosing-the-harness-and-the-model)).
+harness and the model](repositories.md#2-choose-harness-model-and-effort-with-the-person)).
 
 ## Models and effort levels
 
@@ -360,7 +360,7 @@ about the tiers below the session is the model register the repository's
 `SSF.md` puts in the prompt: a model and effort per harness for
 deliberation and for execution (see [Writing SSF.md](ssf-md.md)). Which model to put where, and how to work it out
 from what the person can run and what a task costs, is [Choosing the
-harness and the model](setup.md#choosing-the-harness-and-the-model) in
+harness and the model](repositories.md#2-choose-harness-model-and-effort-with-the-person) in
 the setup document; the rest of this section is the mechanics.
 
 `repo.model` and `repo.effort` use identifiers accepted by the selected

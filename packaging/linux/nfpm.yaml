@@ -22,7 +22,7 @@ description: |
   assigned to the bot account, or a pull request it is asked to review, becomes
   a coding-agent workspace in herdr (by default inside a microVM).
   The agent reports back on GitHub. herdr, the default driver, is not packaged
-  for Debian or Fedora and is installed separately (docs/setup.md, step 1).
+  for Debian or Fedora and is installed separately (docs/install.md).
 
 depends:
   - git

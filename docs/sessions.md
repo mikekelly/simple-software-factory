@@ -364,7 +364,7 @@ Run `omp` interactively as the factory user on the host (inside the guest in
 VM mode) and finish or press Esc through setup. SSF resumes deliveries when
 the pane leaves setup, or checks again on its normal restart backoff after
 setup is completed in another terminal. See the
-[headless setup guide](headless-host.md#5-give-the-harness-persistent-credentials).
+[harness notes](platform-specifics.md).
 
 ## A harness that is not signed in
 
@@ -382,7 +382,7 @@ are the harnesses' own, as seen on their screens; `driver::login_dialog`
 has the list per harness), marks the session **blocked**. The harness
 those phrases are checked against is the one the driver reports for that
 pane, not the one the item's record would launch: a config edit under a
-live session ([`ssf repo set`](setup.md#8-watch-a-repository)) leaves the
+live session ([`ssf repo set`](repositories.md)) leaves the
 pane on the harness it was started with, and judging its codex screen by
 OMP's phrases would miss the block and keep pasting into it. Two things
 keep an agent's own screen from tripping this: only the bottom of an idle
@@ -524,7 +524,7 @@ done, and anything it starts now is thrown away with its pane.
   against the harness its pane is running (not the one its record would
   launch): `ssf handover <item> --harness <the configured one>` is the
   accepted way to bring a session left behind by a
-  [`ssf repo set`](setup.md#8-watch-a-repository) onto the configured
+  [`ssf repo set`](repositories.md) onto the configured
   stack, and an operator who asks for what is genuinely already running
   is still refused;
 - the summary is longer than 8,000 characters;

@@ -4,7 +4,7 @@ Supported release packages are for Arch-family Linux (including Omarchy) and
 Debian-family Linux (including Ubuntu). macOS support is planned next;
 macOS-specific removal notes below document work in progress.
 
-For the normal removal sequence, see [Stopping and uninstalling](setup.md#12-stopping-and-uninstalling).
+For the normal removal sequence, see [Stopping and uninstalling](operate.md#stopping).
 This page details work-preservation checks, recovery cases and retained data.
 
 For a named multi-server installation, `ssf uninstall` currently refuses rather

@@ -908,14 +908,16 @@ fn skill_topics_work_without_server_binary_or_valid_configuration() {
     for topic in [
         "",
         "setup",
+        "repo",
+        "operate",
+        "troubleshoot",
+        "specifics",
         "agent",
+        "ssf-md",
         "liaison",
-        "client-cli",
-        "server",
+        "audit",
         "config",
         "vm",
-        "headless",
-        "install-binaries",
         "drivers",
         "sessions",
         "dashboard",
@@ -959,7 +961,7 @@ fn skill_help_and_invalid_topics_are_handled_before_catalog_loading() {
     let help = root.client().args(["skill", "--help"]).output().unwrap();
     assert!(help.status.success());
     let text = String::from_utf8(help.stdout).unwrap();
-    for topic in ["setup", "client-cli", "server"] {
+    for topic in ["setup", "repo", "operate", "troubleshoot"] {
         assert!(text.contains(topic));
     }
     let invalid = root

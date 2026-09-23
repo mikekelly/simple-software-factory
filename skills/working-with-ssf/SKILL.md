@@ -1,15 +1,49 @@
 ---
 name: working-with-ssf
-description: Work with Simple Software Factory (ssf) — operating a factory, working as an ssf-spawned agent on a GitHub issue, acting as a liaison for a person, writing SSF.md project guidance, auditing project guidance, and installing or upgrading a factory.
+description: Work with Simple Software Factory (ssf) on a person's behalf: install a factory and watch its first repository, add a repository, operate and troubleshoot a running factory, write or audit a project's SSF.md, act as a liaison. Use when asked to set up, configure, manage or fix ssf.
 ---
 
 # Working with Simple Software Factory (ssf)
 
-SSF turns GitHub issues and pull requests assigned to a bot account into coding
-agent sessions in managed workspaces on herdr. People drive it by commenting on
-GitHub; an `ssf` client controls a factory daemon locally, in a VM, or over SSH.
+ssf turns GitHub issues and pull requests assigned to a bot account into
+coding-agent sessions, one per item, each in its own git worktree and
+terminal under herdr. People collaborate with the agents in the item's
+comments; the `ssf` client configures and inspects the factory daemon
+locally, in a VM, or over SSH. Linux and macOS are supported.
 
-Install this skill globally so every project's agent can find it:
+## Start here
+
+1. Is `ssf` on `PATH`? If yes, run `ssf skill`. It prints a router keyed on
+   what the person asked, from the version actually installed, and
+   `ssf skill <topic>` prints each topic. Read those, not this file.
+2. If not, the person wants ssf installed. Read
+   [docs/install.md](https://github.com/mikekelly/simple-software-factory/blob/master/docs/install.md)
+   (raw:
+   `https://raw.githubusercontent.com/mikekelly/simple-software-factory/master/docs/install.md`).
+   It opens with a resource check that decides, with the person, between a
+   local VM, host mode and a rented host, then runs to the first issue. Once
+   `ssf` is installed, continue from `ssf skill setup`, which is the same
+   document at the installed version.
+3. Inside a session that ssf itself started on an issue, read `ssf guide`
+   instead; the first prompt already carries what that session needs.
+
+| The person wants | Topic |
+| --- | --- |
+| ssf installed, first repository watched | `ssf skill setup` |
+| a repository added to a running factory | `ssf skill repo` |
+| to inspect, change, upgrade or stop a factory | `ssf skill operate`, `ssf skill config` |
+| a factory repaired | `ssf skill troubleshoot` |
+| an `SSF.md` written or reviewed | `ssf skill ssf-md`, `ssf skill audit` |
+| an assistant that drives the factory for them | `ssf skill liaison` |
+| their distro, macOS, a rented host, a harness's quirks, an old install | `ssf skill specifics` |
+
+Before any change: `ssf server list`, then `ssf --server NAME doctor` and
+`ssf --server NAME status` for the target you are about to touch. Ask the
+person before creating accounts, spending money, using `sudo`, choosing a
+model and effort, allowing anyone to drive the factory, or passing `--force`.
+The bot's credentials are the bot's, never the person's.
+
+## Installing this skill
 
 ```sh
 npx skills add mikekelly/simple-software-factory -g
@@ -18,36 +52,3 @@ npx skills add mikekelly/simple-software-factory -g
 Drop `-g` to install it for one project, or add `--skill working-with-ssf -y`
 to skip prompts. The [skills CLI](https://github.com/vercel-labs/skills)
 installs the skill for each detected harness.
-
-## Read the running binary, not this file
-
-This skill is a thin pointer on purpose, so it cannot drift from the version
-you have. Once `ssf` is on `PATH`, `ssf skill` prints the overview bundled with
-the executing binary, and `ssf skill <topic>` prints one topic: `setup`,
-`agent`, `ssf-md`, `liaison`, `client-cli`, `server`, `config`, `vm`,
-`headless`, `install-binaries`, `drivers`, `sessions`, `dashboard`,
-`uninstall`. They need
-no configuration, daemon, VM, or network access, and `--server` or
-`SSF_SERVER` does not redirect them. Inside a factory session, `ssf guide` is
-the context-aware collaboration reference.
-
-## Where to start
-
-| Situation | Start with |
-| --- | --- |
-| Installing or upgrading a factory | [Install](https://github.com/mikekelly/simple-software-factory#install) in the repository, then `ssf skill setup`; `ssf skill headless` or `ssf skill install-binaries` for a VPS/container or a client-only host; `ssf doctor` after an upgrade |
-| Operating a running factory | `ssf skill server`, `ssf skill client-cli`, `ssf skill config`, `ssf skill dashboard` |
-| Working as an ssf-spawned agent on an assigned issue | `ssf guide` (the first prompt already carries what a session needs) |
-| Acting as a liaison for a person, on the factory host or from their machine | `ssf skill liaison` |
-| Writing `SSF.md` for a project or a factory | `ssf skill ssf-md`, then [SSF.example.md](https://github.com/mikekelly/simple-software-factory/blob/master/SSF.example.md) |
-| Auditing a project's existing agent guidance | [Bounded project guidance audit](https://github.com/mikekelly/simple-software-factory/blob/master/docs/audit.md) |
-
-## Acting as a liaison
-
-A liaison drives the factory on a person's behalf, from the factory host (a
-Grok Bot, Hermes or OpenClaw beside `ssf-server`) or from the person's
-machine over SSH. Its GitHub access is its own, never the bot's. `ssf skill
-liaison` has the general rules and one labelled setup section per side.
-
-Platform support and installation live in the repository and `ssf skill
-setup`, not here.
