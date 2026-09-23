@@ -394,7 +394,8 @@ from the release either way.
 | `src/dashboard.rs`, `src/dashboard_herdr.rs`, `src/dashboard_transport.rs` | terminal dashboard, optional Herdr focus, and reusable SSH status transport |
 | `src/dashboard_web.rs`, `dashboard/` | optional server HTTP dashboard and embedded browser assets |
 | `src/status.rs` | the joined item/session view behind `status`, `peers` and the dashboards |
-| `src/agents.rs`, `src/models.rs` | supported harness catalogue; model, effort and permission-free commands per harness |
+| `src/harness.rs` | the harness descriptor: one row per supported harness (names, install, unattended flags, model and effort settings, compaction, sign-in phrases, API-key variables, transcript support); adding a harness starts here |
+| `src/agents.rs`, `src/models.rs` | installed-harness listing; model, effort and permission-free launch commands built from the descriptor |
 | `src/keys.rs`, `src/ghcli.rs` | SSH key enrollment; the GitHub CLI's keyring |
 | `src/ui.rs`, `bin/ssf-ui` | Omarchy integration: the **Factory** menu entries, the removal of the superseded bar widget, and the helper behind them (service toggle, log, status terminal) |
 | `packaging/` | the development PKGBUILD, the Omarchy systemd unit, pacman install script, `dev-install.sh` (the service on a dev build); `release/` is the release PKGBUILD and Omarchy metadata, the directory that goes into omarchy-pkgs; `linux/` is the .deb and .rpm: `nfpm.yaml`, `build.sh`, the `default.target` unit and the post-install and post-remove hooks; `homebrew/` is the macOS formula, its render script and the tap notes |
