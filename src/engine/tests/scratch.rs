@@ -138,3 +138,52 @@ async fn scratch_sessions_subscribe_and_appear_in_status() {
     assert_eq!(v["owner_login"], "alice");
     assert_eq!(v["branch"], "scratch/k3f9");
 }
+
+#[tokio::test]
+async fn a_scratch_session_is_not_told_while_it_is_being_released() {
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    seed_scratch(&mut e, &r, "/nonexistent/scratch");
+    d.seed("w9", "t9", READY_SCREEN);
+    e.state
+        .repos
+        .get_mut(&r.name)
+        .unwrap()
+        .scratch
+        .get_mut("k3f9")
+        .unwrap()
+        .release_pending = true;
+    let err = e.deliver_scratch(&r, "k3f9", "hi", None).await.unwrap_err();
+    assert!(format!("{err:#}").contains("being released"), "{err:#}");
+    assert!(d.log().is_empty(), "nothing relaunched");
+}
+
+#[test]
+fn a_scratch_session_does_not_get_its_own_posts_back() {
+    let mut e = engine();
+    e.cfg.repos = vec![repo()];
+    let rendered = |key: &str, origin: Option<&str>| crate::prompt::Rendered {
+        key: key.into(),
+        text: String::new(),
+        origin: origin.map(str::to_string),
+        assignee: None,
+        state_change: false,
+    };
+    let events = vec![
+        rendered("commented:1", Some("o/r~k3f9")),
+        rendered("commented:2", Some("o/r#1")),
+        rendered("commented:3", None),
+    ];
+    let keys = |v: Vec<crate::prompt::Rendered>| v.into_iter().map(|r| r.key).collect::<Vec<_>>();
+    assert_eq!(
+        keys(e.for_recipient(&events, "o/r~k3f9", OwnPosts::Hidden)),
+        vec!["commented:2", "commented:3"]
+    );
+    assert_eq!(
+        keys(e.for_recipient(&events, "o/r#1", OwnPosts::Hidden)).len(),
+        2
+    );
+}

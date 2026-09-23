@@ -29,7 +29,7 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-use crate::origin::{Origin, Stack, stamp_with};
+use crate::origin::{Origin, Poster, Stack, stamp_with};
 use session::Session;
 
 /// Keep individual body arguments well below exec limits, including Linux’s
@@ -168,7 +168,7 @@ pub fn run() -> ! {
     match (utf8, session.origin()) {
         (Some(args), Some(origin)) => {
             let shim = Shim {
-                origin: &origin,
+                origin: origin.as_ref(),
                 bot: bot.as_deref(),
                 gh_repo: gh_repo.as_deref(),
                 stack: stack.as_ref(),
@@ -446,7 +446,7 @@ fn item_url(a: &str) -> Option<String> {
 /// `GH_REPO` gh honours over the checkout; `stack` is what the session was
 /// launched with, for the byline.
 pub struct Shim<'a> {
-    pub origin: &'a Origin,
+    pub origin: &'a dyn Poster,
     pub bot: Option<&'a str>,
     pub gh_repo: Option<&'a str>,
     pub stack: Option<&'a Stack>,

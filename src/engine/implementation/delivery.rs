@@ -173,12 +173,14 @@ impl Engine {
                 continue;
             }
             // A scratch session hears about what it follows while it has a
-            // workspace; one that was killed is not brought back for an FYI.
+            // workspace that is not being released; one that was killed, or
+            // is being, is not brought back for an FYI.
             let scratch = crate::origin::Scratch::parse(&sub);
             let known = match &scratch {
-                Some(_) => self
-                    .scratch(&sub)
-                    .map(|(r, s, st)| (r, 0, s.to_string(), st.worktree_id.is_some())),
+                Some(_) => self.scratch(&sub).map(|(r, s, st)| {
+                    let live = st.worktree_id.is_some() && !st.release_pending;
+                    (r, 0, s.to_string(), live)
+                }),
                 None => self
                     .known_session(&sub)
                     .map(|(r, n, sid)| (r, n, sid, false)),

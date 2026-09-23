@@ -12,7 +12,8 @@ pub struct Rendered {
     pub key: String,
     pub text: String,
     /// For a post by the bot, the session its origin tag names
-    /// (`owner/repo#N`); `None` when the post carries no tag.
+    /// (`owner/repo#N`, or a scratch session's `owner/repo~id`); `None`
+    /// when the post carries no tag.
     pub origin: Option<String>,
     /// For an `assigned`/`unassigned` event, the assignee's login.
     pub assignee: Option<String>,
@@ -130,10 +131,10 @@ fn body_and_session(body: &str, author: &str, bot: &str) -> (String, String) {
     if !author.eq_ignore_ascii_case(bot) {
         return (body.to_string(), String::new());
     }
-    match origin::parse(body) {
-        Some(t) => (
+    match origin::session(body) {
+        Some(session) => (
             origin::strip(body),
-            format!(" (from the agent on {})", t.origin),
+            format!(" (from the agent on {session})"),
         ),
         None => (body.to_string(), " (not from a session)".to_string()),
     }
@@ -144,7 +145,7 @@ fn post_origin(body: &str, author: &str, bot: &str) -> Option<String> {
     if !author.eq_ignore_ascii_case(bot) {
         return None;
     }
-    origin::parse(body).map(|t| t.origin.to_string())
+    origin::session(body)
 }
 
 /// Render one timeline event, or `None` if it is not worth showing. `bot` is

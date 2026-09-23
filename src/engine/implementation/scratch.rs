@@ -243,6 +243,14 @@ impl Engine {
 brings it back"
             )));
         };
+        // A kill is under way: the workspace is about to go, and nothing is
+        // started in it again.
+        if st.release_pending {
+            anyhow::bail!(Refused::conflict(format!(
+                "{session} is being released; `ssf scratch resume {session}` brings it back \
+once it has been"
+            )));
+        }
         if !self.driver(repo).worktree_exists(&wid).await? {
             anyhow::bail!(Refused::conflict(format!(
                 "{session}'s workspace is gone; `ssf scratch resume {session}` re-creates it"
@@ -408,7 +416,12 @@ removed the workspace"
         session: &str,
         force: bool,
     ) -> Result<Value> {
-        let (repo, s, st) = self.scratch(session)?;
+        let (repo, s, _) = self.scratch(session)?;
+        // The conversation id is what a resume needs: capture it now, while
+        // the workspace path is still recorded, rather than trust a pass to
+        // have got to it first.
+        self.capture_scratch(&repo);
+        let st = self.scratch_entry(&repo, &s.id).clone();
         let id = s.to_string();
         let title = st.title();
         let Some(wid) = st.worktree_id.clone() else {

@@ -586,9 +586,10 @@ can have any number of them.
 Each has its own worktree on branch `scratch/<id>`, cut from the default
 branch. Inside it `SSF_SESSION` names the session and `SSF_ISSUE` is unset;
 `ssf sub`, `ssf unsub`, `ssf subs` and `ssf release` act for it, and the
-items it follows deliver to it as they would to an item's session. What it
-posts on GitHub carries no session tag, and there is no item for ssf to
-report a signed-out harness on. `ssf handover` does not apply: start another
+items it follows deliver to it as they would to an item's session, without
+its own posts. What it posts on GitHub carries the byline `🤖~<id> says:` and
+its own origin tag, so it names no item; there is no item for ssf to report a
+signed-out harness on either. While a release is pending it is told nothing. `ssf handover` does not apply: start another
 scratch session on the other stack instead.
 
 A scratch session lives until it is killed. Closing, merging and `ssf purge`

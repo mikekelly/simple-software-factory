@@ -15,6 +15,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::process::Command;
 
 use super::{Origin, Stack};
+use crate::origin::{Poster, Scratch};
 
 /// What marks an environment as a session's: `ssf launch` exports the item it
 /// was started for, and neither the daemon nor a person's shell has one. The
@@ -51,11 +52,16 @@ impl Session {
             .map(|(_, value)| value.to_string_lossy().into_owned())
     }
 
-    /// The item this process's session works on, as the shim stamps posts.
-    pub(super) fn origin(&self) -> Option<Origin> {
+    /// Who this process's session is, as the shim stamps posts: the
+    /// scratch session `SSF_SESSION` names, else the item `SSF_REPO` and
+    /// `SSF_ISSUE` name.
+    pub(super) fn origin(&self) -> Option<Box<dyn Poster>> {
+        if let Some(s) = self.var("SSF_SESSION").and_then(|s| Scratch::parse(&s)) {
+            return Some(Box::new(s));
+        }
         let repo = self.var("SSF_REPO")?;
         let number = self.var("SSF_ISSUE")?.trim().parse().ok()?;
-        Origin::new(&repo, number)
+        Some(Box::new(Origin::new(&repo, number)?))
     }
 
     /// What this session was launched with, as the byline names it: the
