@@ -14,6 +14,7 @@ At the end:
 - One repository is watched, with a harness, model and effort the person chose.
 - One small issue assigned to the bot has produced an agent comment on GitHub.
 - `ssf doctor` passes.
+- When the agents run on a VM or a rented server: that machine is reachable over SSH, the agents can become root on it without asking anyone (so they administer their own environment), and it is saved in the person's local herdr, so the person and any agents on their machine can oversee the sessions there.
 
 Work through the sections in order. Every step says what a good result looks like and what is safe to re-run.
 
@@ -214,6 +215,19 @@ ssf doctor
 
 Expect doctor to say the driver (herdr, the only one) is reachable and ready. Details in [drivers.md](drivers.md).
 
+### Oversee the agents from the person's machine
+
+The machine the agents run on should be reachable over SSH and visible in the person's own herdr, beside Local in the sidebar. For a local VM, `ssf vm ssh-config` prints the `~/.ssh/config` entry, and `herdr --remote ssf-server` attaches. For a rented host, save it once from the person's machine, in an interactive terminal:
+
+```sh
+herdr machine add user@host --label factory
+herdr machine list
+```
+
+`herdr machine add` inspects the remote herdr and may offer to install, update or replace it; say No to replacing a running server unless the person asks, because its panes are live sessions. Details and the limits of what a local herdr command reaches are in [liaison.md](liaison.md#inspect-the-factorys-herdr-server).
+
+Root: agents in a VM or on a rented server should be able to `sudo` without a password, so they can install what their work needs without stopping. The guest's `ssf` user already has it. On a rented host grant it to the factory account ([Rented hosts](platform-specifics.md#rented-hosts)). Never grant it on the person's own machine in host mode: there, the agents are already running as the person.
+
 ## 6. The bot account
 
 The factory acts on GitHub as an account of its own. Every agent post carries a byline naming the session and what it runs, and a post from the bot *without* a byline is read as typed by a person, so sharing the person's own account confuses who said what. The bot is a default, not a security boundary: agents run as a Unix user and the account only bounds what `gh` does by default.
@@ -338,6 +352,7 @@ Upgrade by installing the next release's package the same way it was installed; 
 - [ ] `ssf --version` and `ssf-server` both present, from the same release.
 - [ ] `ssf setup` complete and the service enabled (package and Homebrew paths).
 - [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
+- [ ] VM or rented host: reachable over SSH, agents have passwordless `sudo`, and it is saved in the person's herdr (`herdr machine add`).
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
 - [ ] Allowed users are deliberate; `*` only with the person's consent.
