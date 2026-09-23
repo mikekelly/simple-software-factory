@@ -320,3 +320,9 @@ these endpoints are for: it overlays session state on github.com instead of in
 a browser tab, and offers assign, hand-over and release through the
 write routes. Its own guide covers installation, the states it draws and the
 options page.
+
+On a pull request page the extension shows the factory's own card for the pull
+request when there is one — the binding by session tag or branch, which is what
+a delegated pull request has — and otherwise the card of the issue the body
+closes or refs, marked `for #N`. A closed or merged item's page reads **Done**
+and offers no Assign form.
