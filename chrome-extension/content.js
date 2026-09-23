@@ -145,11 +145,11 @@
   /// name -> {more, details}, so a stream that repaints every couple of seconds
   /// cannot collapse what the reader has just opened.
   const opened = new Map();
-  /// name -> whether the last layout pass found the message overflowing its
-  /// two-line clamp. A frame draws the `more` toggle from this, so a frame that
-  /// restates the message does not hide the toggle and have the next pass show
-  /// it again -- the toggle a frame draws and the toggle the page has stay one
-  /// and the same node, saying the same thing.
+  /// name -> whether the last layout pass found the message clipped, which is
+  /// when the `more` toggle belongs on screen. A frame draws the toggle from
+  /// this, so a frame that restates the message does not hide the toggle and
+  /// have the next pass show it again -- the toggle a frame draws and the
+  /// toggle the page has stay one and the same node, saying the same thing.
   const overflowed = new Map();
   /// The open popover, or null: `{name, key, anchor, entry}`.
   let popover = null;
@@ -807,7 +807,12 @@
     body.dataset.clamped = String(!flags.more);
     const more = element("button", "ssf-more", flags.more ? "less" : "more");
     more.type = "button";
-    more.hidden = !flags.more && overflowed.get(key) !== true;
+    // Up when the reader has the message open, or when the last layout pass
+    // found the trimmed message really is clipped. Drawn here rather than
+    // written by the pass afterwards, so a frame that says what the page
+    // already says leaves this node -- and everything else in the block --
+    // alone.
+    more.hidden = !(flags.more || overflowed.get(key) === true);
     more.setAttribute("aria-expanded", String(Boolean(flags.more)));
     more.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1083,19 +1088,23 @@
   }
 
   /// Show a `more` toggle only where the trimmed message really is clipped, and
-  /// keep what layout said against the block's own key: a frame after this one
-  /// draws the toggle the way it is, so the button is not hidden on every frame
-  /// and shown again here.
+  /// keep that against the block's own key: a frame after this one draws the
+  /// toggle the way it is, so the button is not hidden on every frame and shown
+  /// again here.
+  ///
+  /// A message the reader has expanded keeps its `less`: the clamp is off, so
+  /// there is no overflow left to measure and nothing to take the toggle away
+  /// for.
   function measure(entry) {
     for (const wrap of entry.shadow.querySelectorAll(".ssf-said")) {
       const message = wrap.querySelector(".ssf-message");
       const more = wrap.querySelector(".ssf-more");
       if (!more || !message) continue;
-      const over =
-        message.dataset.clamped === "true" &&
+      const toggle =
+        message.dataset.clamped !== "true" ||
         message.scrollHeight > message.clientHeight + 1;
-      if (wrap.ssfKey) overflowed.set(wrap.ssfKey, over);
-      if (more.hidden !== !over) more.hidden = !over;
+      if (wrap.ssfKey) overflowed.set(wrap.ssfKey, toggle);
+      if (more.hidden !== !toggle) more.hidden = !toggle;
     }
   }
 

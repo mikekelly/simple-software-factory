@@ -28,9 +28,14 @@ function show(node, visible) {
 }
 
 // The item's own number, and its title after it where the list carries one.
+//
+// The href is compared against the attribute rather than read back from
+// `anchor.href`: that getter returns the URL as the DOM resolved it, which can
+// differ from what the payload carried, and the difference would rewrite the
+// attribute on every poll.
 function issueLink(anchor, issue, title) {
   fill(anchor, title === undefined ? issue.id : `${issue.id} — ${title}`);
-  if (issue.url && anchor.href !== issue.url) anchor.href = issue.url;
+  if (issue.url && anchor.getAttribute("href") !== issue.url) anchor.href = issue.url;
 }
 
 function activityLabel(value) {
@@ -59,6 +64,7 @@ function stackLabel(card) {
 // moving anything: a node that moves loses the focus inside it, so nothing
 // moves that does not have to, and a list redrawn as it stands writes nothing.
 function place(parent, nodes) {
+  const focused = document.activeElement;
   const wanted = new Set(nodes);
   for (const node of [...parent.childNodes]) {
     if (!wanted.has(node)) node.remove();
@@ -68,6 +74,12 @@ function place(parent, nodes) {
     const at = parent.childNodes[index];
     if (at !== node) parent.insertBefore(node, at ?? null);
     index += 1;
+  }
+  // Re-inserting a node drops the focus inside it, so the element that had it
+  // is put back: a poll that reorders the list is not a reason to lose the link
+  // you were reading.
+  if (focused?.isConnected && document.activeElement !== focused) {
+    focused.focus({preventScroll: true});
   }
 }
 
@@ -138,7 +150,8 @@ function monitoredRow(issue) {
 function render(cards, monitoredItems) {
   place(cardsNode, cards.map(cardNode));
   forget(mountedCards, new Set(cards.map((card) => card.origin.id)));
-  show(emptyNode, cards.length !== 0);
+  // The empty panel is what says so when there is nothing to show.
+  show(emptyNode, cards.length === 0);
 
   const monitoredList = monitoredNode.querySelector("ul");
   place(monitoredList, monitoredItems.map(monitoredRow));
