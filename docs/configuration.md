@@ -61,7 +61,7 @@ key).
 | Variable | Effect |
 |----------|--------|
 | `SSF_GITHUB_TOKEN` | the GitHub token to use |
-| `SSF_GITHUB_TOKEN_FILE` | a file holding the GitHub token, read after `SSF_GITHUB_TOKEN`; a daemon started with `SSF_GITHUB_TOKEN` hands its sessions the token this way (`launch-token`, mode 0600, in the state directory), so it never appears on a pane's command line |
+| `SSF_GITHUB_TOKEN_FILE` | a file holding the GitHub token. Precedence: `SSF_GITHUB_TOKEN`, then this file, then `[github].token`, then the token file `ssf auth login` writes, then the gh keyring; a missing or empty file is skipped. A daemon started with `SSF_GITHUB_TOKEN` hands its sessions the token this way (`launch-token`, mode 0600, in the state directory), so it never appears on a pane's command line; a daemon started without it removes that file at start. If the file cannot be written the daemon warns and the session falls back to `[github].token` or the keyring |
 | `SSF_CONFIG_DIR`, `SSF_STATE_DIR` | where config and state live; a scratch factory uses its own (see [development.md](development.md)) |
 | `SSF_SERVER` | the catalog target or SSH destination to act on |
 | `HERDR_COMMAND` | the herdr CLI |

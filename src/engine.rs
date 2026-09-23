@@ -379,9 +379,11 @@ mod implementation {
     mod lifecycle;
     mod onboarding;
     mod reconciliation;
-    mod releases;
+    pub(super) mod releases;
     pub(super) mod scratch;
 }
+
+pub(crate) use implementation::releases::forget_stale_launch_token;
 
 async fn conflict_default_base(root: &str) -> Result<String> {
     if let Ok(reference) = conflict_git(

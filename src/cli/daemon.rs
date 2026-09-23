@@ -18,6 +18,7 @@ pub(super) async fn run_factory(cfg: Config, once: bool) -> Result<()> {
     if cfg.repos.is_empty() && once {
         bail!("no repositories configured; run `ssf repo add owner/name --harness claude` first");
     }
+    crate::engine::forget_stale_launch_token();
     let engine = engine::Engine::new(cfg).await?;
     if once {
         let mut engine = engine;

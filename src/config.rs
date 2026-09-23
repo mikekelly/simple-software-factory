@@ -1706,7 +1706,13 @@ pub fn save_token(token: &str) -> Result<PathBuf> {
 /// The bot token a session's launch handed it in a file
 /// (`SSF_GITHUB_TOKEN_FILE`), rather than on the pane's command line.
 fn launch_token() -> Option<String> {
-    let path = std::env::var_os("SSF_GITHUB_TOKEN_FILE")?;
+    token_in(Path::new(&std::env::var_os("SSF_GITHUB_TOKEN_FILE")?))
+}
+
+/// The token in `path`, or `None` when the file is gone, unreadable or
+/// empty: a launch token a later daemon removed is no token, and the next
+/// source is asked.
+pub(crate) fn token_in(path: &Path) -> Option<String> {
     let token = std::fs::read_to_string(path).ok()?;
     let token = token.trim();
     (!token.is_empty()).then(|| token.to_string())

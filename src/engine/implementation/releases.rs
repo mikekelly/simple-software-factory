@@ -98,7 +98,7 @@ impl Engine {
             std::path::PathBuf::new()
         };
         let prefix = launch_env(&env, &token_file, |token| {
-            crate::config::write_atomic(&token_file, token.as_bytes(), 0o600)
+            hand_launch_token(&token_file, Some(token))
         });
         let server =
             launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
@@ -786,6 +786,38 @@ fn render_launch_command(
 /// Where a launch finds the daemon's bot token, in its state directory.
 const LAUNCH_TOKEN_FILE: &str = "launch-token";
 
+/// Write the token a launch hands its session (mode 0600), or, with none,
+/// remove the file an earlier daemon wrote: a session relaunched from a
+/// stored command still names it, and a stale token there would win over
+/// the config's and the keyring's. A file already gone is fine.
+fn hand_launch_token(path: &std::path::Path, token: Option<&str>) -> Result<()> {
+    match token {
+        Some(token) => crate::config::write_atomic(path, token.as_bytes(), 0o600),
+        None => match std::fs::remove_file(path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                Err(error).with_context(|| format!("removing {}", path.display()))
+            }
+            _ => Ok(()),
+        },
+    }
+}
+
+/// At daemon start: a daemon without `SSF_GITHUB_TOKEN` hands no token to
+/// its sessions, so one a previous daemon left is removed. The daemon's
+/// environment does not change while it runs, so this is the one moment
+/// it can.
+pub(crate) fn forget_stale_launch_token() {
+    if std::env::var("SSF_GITHUB_TOKEN").is_err() {
+        let path = crate::config::state_dir().join(LAUNCH_TOKEN_FILE);
+        if let Err(error) = hand_launch_token(&path, None) {
+            warn!(
+                error = format!("{error:#}"),
+                "could not remove a stale launch token"
+            );
+        }
+    }
+}
+
 /// The environment in front of the wrapper: each of `env` as `VAR='value' `,
 /// except the bot token. A herdr pane starts by showing the command it runs,
 /// and the pane mirror shows the pane in a browser, so the token is never on
@@ -855,7 +887,28 @@ fn render_launch(
 
 #[cfg(test)]
 mod launch_command_tests {
-    use super::{launch_env, launch_server_argument, render_launch_command};
+    use super::{hand_launch_token, launch_env, launch_server_argument, render_launch_command};
+
+    /// A token present is written for the session, owner-only; with none,
+    /// the file an earlier daemon left goes, and resolution reading it falls
+    /// through to the next source.
+    #[test]
+    fn a_launch_token_is_written_and_a_stale_one_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ssf-launch-token-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("launch-token");
+        hand_launch_token(&path, Some("gho_old")).unwrap();
+        assert_eq!(crate::config::token_in(&path).as_deref(), Some("gho_old"));
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+        hand_launch_token(&path, None).unwrap();
+        assert!(!path.exists());
+        assert_eq!(crate::config::token_in(&path), None);
+        // Already gone is not an error.
+        hand_launch_token(&path, None).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     /// The bot token never appears on the launch line -- a pane shows the
     /// command it starts, and the pane mirror shows the pane -- but reaches
