@@ -169,7 +169,11 @@ the harness's `models` in the order its source lists them plus `source`, saying
 whether the harness's own catalogue file, its listing command or ssf's built-in
 table answered. A harness ssf does not know is `404`; one that takes no model
 setting is `400` with that reason, since the request's shape is not what is
-wrong with it.
+wrong with it. A listing may start Claude Code once, to make it refresh a
+catalogue that is missing or past its own `staleAt` stamp, so a request for
+`claude` can take a second or two and needs the login the harness itself has
+(see [Models and effort](harnesses.md#models-and-effort)); every other
+harness answers from files and commands alone.
 
 ### Snapshot fields a client can rely on
 

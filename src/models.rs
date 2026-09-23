@@ -36,6 +36,11 @@ pub struct Catalogue {
     /// Ask the installed agent which models it has, when it can tell us: the
     /// command line that does it, and the parse of its output.
     list_models: Option<Listing>,
+    /// Make the installed agent rewrite the catalogue above, for a harness
+    /// with no way to be asked for its models at all. Run only when the
+    /// catalogue on this machine is missing, or past the freshness the
+    /// harness's own file stamps on it.
+    refresh: Option<fn()>,
 }
 
 /// What a harness writes down about itself.
@@ -43,11 +48,72 @@ struct Catalogued {
     /// The file that answered.
     path: PathBuf,
     models: Vec<String>,
+    /// The point the harness's own file says it goes stale, in the epoch
+    /// milliseconds it stamps it with. A file with no stamp is read as
+    /// current: only a harness that says when its list expires can be told
+    /// that it has.
+    stale_at: Option<i64>,
 }
 
 /// A command line the installed agent answers with its model ids
 /// (`pi --list-models`), and the parse of its output.
 type Listing = (&'static str, fn() -> Result<Vec<String>>);
+
+/// What a stub start does in the harness's place: write the catalogue the
+/// harness would have rewritten.
+#[cfg(test)]
+type StartHook = Box<dyn FnMut(&str)>;
+
+/// What a test's stub start is: the harnesses ssf asked to be started for their
+/// catalogue, in the order it asked, and what a start does in the harness's
+/// place.
+#[cfg(test)]
+#[derive(Default)]
+struct Started {
+    asked: Vec<String>,
+    /// Run where the harness would have run, so a test can write the catalogue
+    /// the harness would have rewritten. Nothing else stands in for it: no
+    /// test starts an agent.
+    hook: Option<StartHook>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The harnesses a test asked to be started for their catalogue, in order.
+    /// A refresh is a side effect on the machine the tests run on, so a test
+    /// records the request instead of making it (see `start_refresh`).
+    static STARTED: std::cell::RefCell<Started> = std::cell::RefCell::default();
+}
+
+/// Take the harnesses started since the last call, and clear the record.
+#[cfg(test)]
+fn started() -> Vec<String> {
+    STARTED.with(|started| std::mem::take(&mut started.borrow_mut().asked))
+}
+
+/// What a start does while it is being tested, in place of running the harness,
+/// until the guard this returns is dropped.
+///
+/// The guard is what keeps the seam in the test that set it: libtest reuses its
+/// worker threads, so a hook left installed would run inside the next test on
+/// that thread -- writing the catalogue it means to write into a sandbox that
+/// test has already dropped.
+#[cfg(test)]
+fn on_start(hook: impl FnMut(&str) + 'static) -> StartGuard {
+    STARTED.with(|started| started.borrow_mut().hook = Some(Box::new(hook)));
+    StartGuard
+}
+
+/// Puts the seam back when the test that installed a hook ends.
+#[cfg(test)]
+struct StartGuard;
+
+#[cfg(test)]
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        STARTED.with(|started| started.borrow_mut().hook = None);
+    }
+}
 
 fn no_effort(_: &str) -> Vec<String> {
     Vec::new()
@@ -93,6 +159,67 @@ fn run(bin: &str, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+/// Start `bin` with `args` so it rewrites its own model catalogue, and take
+/// nothing from the run: no output, no exit status. The file it leaves behind
+/// is what answers, and the caller reads that next.
+///
+/// The updater is off for this start. A listing is a read, and a harness that
+/// installs itself while answering one would be doing something nobody asked
+/// for on a machine whose agents are the package manager's to update.
+fn start_refresh(bin: &str, args: &[&str]) {
+    #[cfg(test)]
+    {
+        // Nothing is started under test: the agents on the machine running the
+        // tests are not the test's to start, the same rule `harness_dir`
+        // follows for the directories it reads. The request is recorded
+        // instead, and a test that needs the file a harness would have written
+        // writes it from its own hook.
+        let _ = args;
+        STARTED.with(|started| {
+            let mut started = started.borrow_mut();
+            started.asked.push(bin.to_string());
+            if let Some(hook) = started.hook.as_mut() {
+                hook(bin);
+            }
+        });
+    }
+    #[cfg(not(test))]
+    {
+        let mut command = Command::new(bin);
+        command
+            .args(args)
+            .env("DISABLE_AUTOUPDATER", "1")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = command.status();
+    }
+}
+
+/// The epoch milliseconds a catalogue's own freshness stamp is read against.
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// The catalogue on this machine, when it reads and lists something. One that
+/// will not read, or lists nothing, is no answer at all: the table is better
+/// than an empty list, and `source` says which one the ids came from.
+fn catalogue_of(cat: &Catalogue) -> Option<Catalogued> {
+    cat.catalogue
+        .and_then(|read| read().ok())
+        .filter(|own| !own.models.is_empty())
+}
+
+/// Whether the harness has to be started to answer: there is no catalogue on
+/// this machine, or the harness's own stamp says the one there is has gone
+/// stale. A file with no stamp is taken as current -- see `Catalogued`.
+fn needs_refresh(own: Option<&Catalogued>, now: i64) -> bool {
+    own.is_none_or(|own| own.stale_at.is_some_and(|stale| now >= stale))
 }
 
 /// `pi --list-models`: a table whose first two columns are provider and model.
@@ -202,7 +329,22 @@ fn codex_catalogue() -> Result<Catalogued> {
         };
         models.push(slug.to_string());
     }
-    Ok(Catalogued { path, models })
+    Ok(Catalogued {
+        path,
+        models,
+        stale_at: None,
+    })
+}
+
+/// Start Claude Code so it refreshes the model catalogue it keeps under
+/// `cache/model-catalog/`. It has no command that lists its models
+/// (`claude --help`), so this is the only way to ask it, and `--print` is what
+/// makes the ask a short one: it starts non-interactively, stops for lack of a
+/// prompt before it reaches any model call, and has fetched the catalogue by
+/// then. A start that stops earlier -- no login, no network -- leaves the
+/// catalogue as it was, which `available` then reads as before.
+fn claude_refresh() {
+    start_refresh("claude", &["--print"]);
 }
 
 /// Claude Code caches the model catalogue it fetched under
@@ -213,7 +355,7 @@ fn claude_catalogue() -> Result<Catalogued> {
     let dir = harness_dir("CLAUDE_CONFIG_DIR", ".claude")
         .context("no home directory for claude's model catalog")?
         .join("cache/model-catalog");
-    let mut newest: Option<(i64, PathBuf, Vec<String>)> = None;
+    let mut newest: Option<(i64, Catalogued)> = None;
     for entry in std::fs::read_dir(&dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
@@ -243,13 +385,22 @@ fn claude_catalogue() -> Result<Catalogued> {
             .unwrap_or(0);
         if newest
             .as_ref()
-            .is_none_or(|(newest, ..)| fetched_at > *newest)
+            .is_none_or(|(newest, _)| fetched_at > *newest)
         {
-            newest = Some((fetched_at, path, models));
+            newest = Some((
+                fetched_at,
+                Catalogued {
+                    path,
+                    models,
+                    // When this file goes stale, in its own words: it is what
+                    // tells `available` whether to start the CLI again (#442).
+                    stale_at: catalog.get("staleAt").and_then(serde_json::Value::as_i64),
+                },
+            ));
         }
     }
-    let (_, path, models) = newest.context("no claude model catalog on this machine")?;
-    Ok(Catalogued { path, models })
+    let (_, catalogued) = newest.context("no claude model catalog on this machine")?;
+    Ok(catalogued)
 }
 
 /// `catalog.config.models[].id`, in the order the catalogue lists them.
@@ -276,6 +427,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: claude_effort,
         catalogue: Some(claude_catalogue),
         list_models: None,
+        refresh: Some(claude_refresh),
     },
     Catalogue {
         harness: "codex",
@@ -291,6 +443,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: codex_effort,
         catalogue: Some(codex_catalogue),
         list_models: None,
+        refresh: None,
     },
     Catalogue {
         harness: "gemini",
@@ -305,6 +458,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: no_effort,
         catalogue: None,
         list_models: None,
+        refresh: None,
     },
     Catalogue {
         harness: "grok",
@@ -314,6 +468,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: grok_effort,
         catalogue: None,
         list_models: None,
+        refresh: None,
     },
     // These agents use their own `provider/model` identifiers.
     Catalogue {
@@ -324,6 +479,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: thinking,
         catalogue: None,
         list_models: Some(("pi --list-models", pi_models)),
+        refresh: None,
     },
     Catalogue {
         harness: "omp",
@@ -335,6 +491,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: thinking,
         catalogue: None,
         list_models: Some(("omp models --json", omp_models)),
+        refresh: None,
     },
     Catalogue {
         harness: "opencode",
@@ -344,6 +501,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: no_effort,
         catalogue: None,
         list_models: Some(("opencode models", opencode_models)),
+        refresh: None,
     },
     Catalogue {
         harness: "copilot",
@@ -353,6 +511,7 @@ const CATALOGUES: &[Catalogue] = &[
         effort_args: claude_effort,
         catalogue: None,
         list_models: None,
+        refresh: None,
     },
 ];
 
@@ -380,14 +539,16 @@ fn seeded_models(cat: &Catalogue) -> Vec<String> {
 /// Model ids ssf can offer without asking the installed agent: the catalogue
 /// that agent wrote on this machine when there is one, else the seeded ids.
 /// A harness that lists models only when asked has none here; `ssf models`
-/// asks it.
+/// asks it. Reading only, deliberately: this is what `ssf agents` prints, and
+/// what a configuration's model is checked against, so it never starts an
+/// agent the way `available` may (#442).
 pub fn known_models(harness: &str) -> Vec<String> {
     let Some(cat) = catalogue(harness) else {
         return Vec::new();
     };
-    match cat.catalogue.and_then(|read| read().ok()) {
-        Some(own) if !own.models.is_empty() => own.models,
-        _ => seeded_models(cat),
+    match catalogue_of(cat) {
+        Some(own) => own.models,
+        None => seeded_models(cat),
     }
 }
 
@@ -664,18 +825,30 @@ impl Source {
 /// Model ids to offer for `harness`: what the installed agent itself lists on
 /// this machine, else ssf's built-in table. The agent's own list wins because
 /// the table goes stale between releases (#382).
+///
+/// A harness that cannot be asked for its models at all (`claude`: it has no
+/// such command) is started to rewrite the catalogue it keeps, when that
+/// catalogue is missing or past the harness's own staleness stamp, so the list
+/// is the harness's own and current rather than ssf's table (#442). That is
+/// the only place an agent is started to answer: `ssf agents`, configuration
+/// loading and every other reader go on taking the file as they find it.
 pub fn available(harness: &str) -> Result<Available> {
     let Some(cat) = catalogue(harness) else {
         bail!(crate::ipc::Refused::bad_input(no_model_setting(harness)));
     };
+    let mut own = catalogue_of(cat);
+    if needs_refresh(own.as_ref(), now_ms())
+        && let Some(refresh) = cat.refresh
+    {
+        refresh();
+        own = catalogue_of(cat);
+    }
     // A catalogue that will not read, or lists nothing, is no answer at all:
     // the table is better than an empty list, and `source` says which one
     // the ids below came from.
     let mut source = Source::table();
     let mut models = Vec::new();
-    if let Some(own) = cat.catalogue.and_then(|read| read().ok())
-        && !own.models.is_empty()
-    {
+    if let Some(own) = own {
         source = Source::catalogue(&own.path);
         models = own.models;
     }
@@ -1142,6 +1315,127 @@ mod tests {
             "{}",
             available.source.detail
         );
+    }
+
+    /// A catalogue the harness's own stamp calls stale is not the list to
+    /// answer with: the harness is started to rewrite it, and what it wrote
+    /// answers. This is the case #442 opened with -- a model released after
+    /// this machine's Claude Code last ran.
+    #[test]
+    fn a_stale_catalogue_is_refreshed_and_the_rewritten_one_answers() {
+        let sandbox = crate::config::test_support::sandbox();
+        let dir = sandbox.home().join(".claude/cache/model-catalog");
+        write(
+            &dir.join("stale.json"),
+            r#"{"fetchedAt":10,"staleAt":20,"catalog":{"surface":"cc","config":{"models":[{"id":"claude-opus-4-6"}]}}}"#,
+        );
+        // What the harness does when it is started: fetch the catalogue it
+        // keeps and write it again, with the model released since. The guard
+        // takes the stand-in away again when this test ends, so no other test
+        // on this thread runs it.
+        let rewritten = dir.clone();
+        let _started = on_start(move |_| {
+            write(
+                &rewritten.join("fresh.json"),
+                r#"{"fetchedAt":30,"staleAt":9999999999999,"catalog":{"surface":"cc","config":{"models":[{"id":"claude-opus-5-5"}]}}}"#,
+            );
+        });
+        let available = available("claude").unwrap();
+        assert_eq!(started(), ["claude"]);
+        assert_eq!(available.models, vec!["claude-opus-5-5"]);
+        assert!(
+            available.source.detail.ends_with("fresh.json"),
+            "{}",
+            available.source.detail
+        );
+    }
+
+    /// A machine that has never run the harness has no catalogue to read, and
+    /// no ids but ssf's own: the harness is started once to write one, and the
+    /// table answers when it will not -- no login, no network, no CLI at all.
+    #[test]
+    fn a_missing_catalogue_is_refreshed_and_the_table_answers() {
+        let _sandbox = crate::config::test_support::sandbox();
+        // No stand-in of this test's: a start is bare here, so it leaves
+        // nothing behind and the table below is what ssf has to answer with.
+        let available = available("claude").unwrap();
+        assert_eq!(started(), ["claude"]);
+        assert_eq!(available.models, vec!["fable", "opus", "sonnet", "haiku"]);
+        assert_eq!(available.source.kind, SourceKind::Table);
+        assert_eq!(
+            available.source.describe("claude"),
+            "ssf's built-in table for claude"
+        );
+    }
+
+    /// A catalogue the harness still calls current is the list, with nothing
+    /// started for it. ssf lists models on every form render, and starting the
+    /// CLI for a list it already has would make a read cost a process.
+    #[test]
+    fn a_catalogue_that_is_still_current_is_not_refreshed() {
+        let sandbox = crate::config::test_support::sandbox();
+        write(
+            &sandbox.home().join(".claude/cache/model-catalog/cc.json"),
+            r#"{"fetchedAt":10,"staleAt":9999999999999,"catalog":{"surface":"cc","config":{"models":[{"id":"claude-opus-5"}]}}}"#,
+        );
+        let available = available("claude").unwrap();
+        assert_eq!(available.models, vec!["claude-opus-5"]);
+        assert!(started().is_empty());
+    }
+
+    /// A hook stands in for a start only while the test that installed it holds
+    /// the guard: libtest reuses its worker threads, so one left behind would
+    /// run inside the next test on that thread, writing the catalogue it means
+    /// to write into a sandbox that test has already dropped.
+    #[test]
+    fn a_start_is_stubbed_only_while_its_test_holds_the_guard() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let ran = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mark = std::rc::Rc::clone(&ran);
+        drop(on_start(move |_| mark.set(true)));
+        let available = available("claude").unwrap();
+        assert!(!ran.get(), "a start ran a hook an earlier test had left");
+        assert_eq!(started(), ["claude"]);
+        assert_eq!(available.source.kind, SourceKind::Table);
+    }
+
+    /// Whether the harness has to be started: nothing on the machine is
+    /// nothing to answer with, the harness's own stamp decides once there is,
+    /// and a file that says nothing about going stale is taken as current --
+    /// codex's cache, which has no such stamp, is never a reason to start an
+    /// agent.
+    #[test]
+    fn the_stamp_decides_whether_the_harness_is_started() {
+        // No stamp: current. The exact instant of the stamp is stale.
+        let unstamped = Catalogued {
+            path: PathBuf::from("/c"),
+            models: vec!["m".into()],
+            stale_at: None,
+        };
+        assert!(!needs_refresh(Some(&unstamped), 1_000));
+        assert!(needs_refresh(None, 1_000));
+        let stamped = |stale_at| Catalogued {
+            path: PathBuf::from("/c"),
+            models: vec!["m".into()],
+            stale_at: Some(stale_at),
+        };
+        assert!(!needs_refresh(Some(&stamped(1_001)), 1_000));
+        assert!(needs_refresh(Some(&stamped(1_000)), 1_000));
+        assert!(needs_refresh(Some(&stamped(999)), 1_000));
+    }
+
+    /// `ssf agents` and everything else that reads without asking -- a
+    /// configuration's model check among them -- never starts a harness, so a
+    /// stale catalogue answers as it stands instead of costing a process.
+    #[test]
+    fn a_reading_caller_never_starts_a_harness() {
+        let sandbox = crate::config::test_support::sandbox();
+        write(
+            &sandbox.home().join(".claude/cache/model-catalog/cc.json"),
+            r#"{"fetchedAt":10,"staleAt":20,"catalog":{"surface":"cc","config":{"models":[{"id":"claude-opus-4-6"}]}}}"#,
+        );
+        assert_eq!(known_models("claude"), vec!["claude-opus-4-6"]);
+        assert!(started().is_empty());
     }
 
     /// The two environment variables that move a harness's own directory,

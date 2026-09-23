@@ -313,7 +313,7 @@ ssf agents
 ssf models HARNESS
 ```
 
-On a VM target both run inside the guest, where the sessions run. `ssf models` names what answered: the harness's own catalogue, its listing command, or ssf's built-in table. `ssf agents --json` adds the supported effort levels and launch commands. Then:
+On a VM target both run inside the guest, where the sessions run. `ssf models` names what answered: the harness's own catalogue, its listing command, or ssf's built-in table — and for Claude Code it starts the CLI once to refresh a catalogue that is missing or expired, so the listing names models released since that file was written. `ssf agents --json` adds the supported effort levels and launch commands. Then:
 
 ```sh
 ssf repo add OWNER/NAME --harness HARNESS --model MODEL --effort EFFORT
@@ -370,6 +370,6 @@ Upgrade by installing the next release's package the same way it was installed; 
 | `ssf vm build` | re-run; it keeps an existing image and the data disk. `--force` remakes the image, and still keeps the data disk |
 | `ssf vm login` | re-run; it is also the fix for an expired login |
 | `ssf repo add` | re-run; it replaces that repository's settings |
-| `ssf doctor`, `ssf status`, `ssf models`, `ssf agents` | read-only, re-run at any time |
+| `ssf doctor`, `ssf status`, `ssf models`, `ssf agents` | re-run at any time; reads, except that `ssf models claude` refreshes Claude Code's own catalogue |
 
 Destructive and not to be re-run casually: `ssf vm destroy`, `ssf uninstall`, and anything with `--force`.

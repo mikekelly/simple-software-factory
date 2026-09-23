@@ -73,6 +73,8 @@ pub(super) enum Command {
     },
     /// List the model ids an agent takes, preferring the installed agent's
     /// own catalogue or listing command and saying which source answered.
+    /// Claude Code has no listing command, so a catalogue that is missing or
+    /// expired is refreshed by starting it once before the list is read.
     Models {
         /// Agent id (see `ssf agents`).
         harness: String,
