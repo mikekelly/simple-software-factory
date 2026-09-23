@@ -12,7 +12,7 @@
 # recipe commit only after the ordinary checksum-verified build succeeds.
 
 pkgname=ssf
-pkgver=0.13.0
+pkgver=0.13.1
 pkgrel=1
 pkgdesc="GitHub issues assigned to a bot become coding-agent sessions in herdr"
 arch=('x86_64' 'aarch64')
@@ -34,9 +34,9 @@ install=ssf.install
 # !debug: no ssf-debug split package. !lto: makepkg's -flto would reach
 # ring's C objects through the cc crate; cargo's release profile decides.
 options=('!debug' '!lto')
-_source_commit=cab5fc9faca04b65716abca232d032fb0ddb2c69
+_source_commit=a0451732f91edbb78936286a47ae430558b3f499
 source=("$pkgname-$pkgver.tar.gz::$url/archive/$_source_commit.tar.gz")
-sha256sums=('f3ee30bd884522335bca1e2284c7f994036f893cab903e93fead35cfdb66f88e')
+sha256sums=('6f6f5d9e389481533dc7e11b0afbf55b463fbab3ce8c01cfcf51026c4682b92e')
 
 # GitHub names the unpacked tree after the repository, not the package.
 _srcname="simple-software-factory-$_source_commit"
