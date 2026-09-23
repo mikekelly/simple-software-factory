@@ -201,6 +201,8 @@ reads **Done** and carries no Assign form, neither for itself nor for an issue a
 merged pull request's body names. An agent still on a finished item keeps its
 Actions row, so its workspace can still be released.
 
+![A closed issue's sidebar card reading Done, with no Assign form](docs/closed-item-card.png)
+
 **Lists, search results and project boards get one chip per tracked item** —
 icon and state word, with the relative last activity beside it where the factory
 has one, and the state alone where it does not:

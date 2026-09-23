@@ -394,7 +394,7 @@
   /// state as the factory reported it (#462).
   function pageClosed() {
     const mark = document.querySelector(
-      '[data-testid="header-state"], .gh-header-show .State, .gh-header-sticky .State',
+      '[data-testid="header-state"], [class*="PageHeader"] [data-component="StateLabel"], .gh-header-show .State, .gh-header-sticky .State',
     );
     return mark ? finishedMark(mark) : false;
   }
