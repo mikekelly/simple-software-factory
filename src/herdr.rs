@@ -662,7 +662,13 @@ impl Herdr {
         base_branch: Option<&str>,
     ) -> Result<Worktree> {
         let (path, branch) = add_local_worktree(repo_root, name, base_branch).await?;
-        let label = workspace_label(repo, number);
+        // A scratch session's workspace is labelled by its name, since it
+        // has no item number.
+        let label = if number == crate::driver::NO_ITEM {
+            format!("{}-{name}", repo.rsplit('/').next().unwrap_or(repo))
+        } else {
+            workspace_label(repo, number)
+        };
         let ws = match self.open(repo_root, &path, &label).await {
             Ok(ws) => ws,
             Err(e) => {

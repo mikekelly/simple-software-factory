@@ -14,7 +14,9 @@ use crate::config::{Config, DriverKind, RepoConfig};
 use crate::driver::{Drivers, WorkspaceInfo};
 use crate::engine::MAX_RELEASE_REFUSALS;
 use crate::github::PrInfo;
-use crate::state::{Blocked, HandoverNote, IssueState, Overrides, PendingHandover, State};
+use crate::state::{
+    Blocked, HandoverNote, IssueState, Overrides, PendingHandover, ScratchState, State,
+};
 
 /// How long `ssf status` waits for a driver before reporting it unavailable;
 /// the dashboards poll this, so it must never hang.
@@ -30,9 +32,14 @@ pub fn session_id(repo: &str, number: u64) -> String {
 pub struct Session {
     pub id: String,
     pub repo: String,
+    /// The item's number; 0 for a scratch session, which has none.
     pub number: u64,
-    /// `issue` or `pull_request`.
+    /// `issue`, `pull_request`, or `scratch` for a scratch session
+    /// (`owner/repo~id`, an agent session that works on no item).
     pub kind: String,
+    /// Whose scratch session this is (a GitHub login); null for a shared
+    /// one and for an item's session.
+    pub owner_login: Option<String>,
     pub title: String,
     pub url: String,
     /// `open`, `closed`, `merged`, or `unknown` for items bound before this was recorded.
@@ -356,6 +363,19 @@ impl Session {
         self.kind == "pull_request"
     }
 
+    pub fn is_scratch(&self) -> bool {
+        self.kind == "scratch"
+    }
+
+    /// How the text reports name the session in its repository's list:
+    /// `#N` for an item, `~id` for a scratch session.
+    pub fn label(&self) -> String {
+        match self.id.rsplit_once('~') {
+            Some((_, id)) if self.is_scratch() => format!("~{id}"),
+            _ => format!("#{}", self.number),
+        }
+    }
+
     /// The change waiting on this session, as the status commands word it:
     /// `harness codex → omp next launch`, with the model and effort the
     /// next launch uses. `None` while the pane is on the stack the record
@@ -568,8 +588,59 @@ pub fn sessions_with(
                 workspaces.is_some(),
             ));
         }
+        for st in rs.scratch.values() {
+            let ws = workspaces.and_then(|list| {
+                let id = st.worktree_id.as_deref()?;
+                list.iter().find(|w| w.worktree_id == id)
+            });
+            out.push(join_scratch(repo, st, ws, workspaces.is_some()));
+        }
     }
     out
+}
+
+/// A scratch session as a status row: the fields an item's session has, with
+/// `kind` `scratch`, no item behind it (number 0, no URL), and live exactly
+/// while it has a workspace.
+fn join_scratch(
+    repo: &RepoConfig,
+    st: &ScratchState,
+    ws: Option<&WorkspaceInfo>,
+    driver_available: bool,
+) -> Session {
+    // The fields shared with an item's row come from the same join, over a
+    // record that holds what the scratch session has of an item's.
+    let item = IssueState {
+        title: st.title(),
+        active: st.worktree_id.is_some(),
+        worktree_id: st.worktree_id.clone(),
+        worktree_path: st.worktree_path.clone(),
+        repo_id: st.repo_id.clone(),
+        worktree_name: Some(format!("{}{}", crate::driver::SCRATCH_PREFIX, st.id)),
+        branch: st.branch.clone(),
+        agent_session_id: st.agent_session_id.clone(),
+        release_pending: st.release_pending,
+        released_at: st.released_at.clone(),
+        last_prompt_at: st.last_prompt_at.clone(),
+        prompts_sent: st.prompts_sent,
+        bound_at: Some(st.created_at.clone()),
+        github_state: Some("open".into()),
+        kind: Some("scratch".into()),
+        ..Default::default()
+    };
+    let mut s = join(repo, &item, 0, Some(&st.stack), false, ws, driver_available);
+    let id = crate::origin::Scratch {
+        repo: repo.name.clone(),
+        id: st.id.clone(),
+    }
+    .to_string();
+    s.id = id.clone();
+    s.owner = id;
+    s.owner_login = st.owner_login.clone();
+    // The stack is the session's own, chosen when it was made, and not an
+    // override of the repository's.
+    s.overrides = None;
+    s
 }
 
 /// The driver workspace of a record: by id, else by its link to the
@@ -683,6 +754,7 @@ fn join(
                 "issue".into()
             }
         }),
+        owner_login: None,
         title: item.title.clone(),
         url: item.html_url.clone(),
         // Items bound before the state was recorded: an active item is open
@@ -790,7 +862,13 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
             out.push('\n');
             current_repo = &s.repo;
         }
-        let kind = if s.is_pull_request() { "PR" } else { "issue" };
+        let kind = if s.is_scratch() {
+            "scratch"
+        } else if s.is_pull_request() {
+            "PR"
+        } else {
+            "issue"
+        };
         let marker = if me == Some(s.id.as_str()) {
             " (you)"
         } else {
@@ -798,8 +876,8 @@ pub fn render_peers(sessions: &[Session], me: Option<&str>) -> String {
         };
         let activity = ago(s.last_activity_at.as_deref());
         out.push_str(&format!(
-            "  #{:<5} {:<5} {:<7} {:<12} {:>4}  {}{}\n",
-            s.number,
+            "  {:<6} {:<5} {:<7} {:<12} {:>4}  {}{}\n",
+            s.label(),
             kind,
             s.github_state,
             s.agent_state,
@@ -948,8 +1026,8 @@ pub fn render_status(snap: &Snapshot) -> String {
         }
         for s in mine {
             out.push_str(&format!(
-                "  #{:<6} {:<8} {:<7} {:<12} prompts={:<3} last={}  {}\n",
-                s.number,
+                "  {:<7} {:<8} {:<7} {:<12} prompts={:<3} last={}  {}\n",
+                s.label(),
                 if s.active { "active" } else { "retired" },
                 s.github_state,
                 s.agent_state,
@@ -1215,7 +1293,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         } else {
             None
         };
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id")}));
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id"),"owner_login":primary["owner_login"]}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");

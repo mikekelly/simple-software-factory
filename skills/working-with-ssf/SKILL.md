@@ -24,8 +24,10 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
    local VM, host mode and a rented host, then runs to the first issue. Once
    `ssf` is installed, continue from `ssf skill setup`, which is the same
    document at the installed version.
-3. Inside a session that ssf itself started on an issue, read `ssf guide`
-   instead; the first prompt already carries what that session needs.
+3. Inside a session that ssf itself started on an issue, or a scratch
+   session (`SSF_SESSION` set, started with `ssf scratch create`), read
+   `ssf guide` instead; the first prompt already carries what that session
+   needs.
 
 | The person wants | Topic |
 | --- | --- |

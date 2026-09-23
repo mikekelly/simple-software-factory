@@ -136,6 +136,94 @@ impl Origin {
     }
 }
 
+/// A scratch session: `owner/repo~id`, an agent session on a repository
+/// that works on no item. The id is generated (lowercase letters and
+/// digits); nobody names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scratch {
+    pub repo: String,
+    pub id: String,
+}
+
+impl fmt::Display for Scratch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}~{}", self.repo, self.id)
+    }
+}
+
+impl Scratch {
+    pub fn new(repo: &str, id: &str) -> Option<Self> {
+        let repo = repo.trim();
+        crate::config::split_repo_name(repo).ok()?;
+        let id = id.trim();
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return None;
+        }
+        Some(Self {
+            repo: repo.to_string(),
+            id: id.to_string(),
+        })
+    }
+
+    /// `owner/repo~id`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (repo, id) = s.trim().rsplit_once('~')?;
+        Self::new(repo, id)
+    }
+
+    /// The scratch session this process runs in, from `SSF_SESSION`.
+    pub fn from_env() -> Option<Self> {
+        Self::parse(&std::env::var("SSF_SESSION").ok()?)
+    }
+}
+
+/// Who a post is stamped as: an item's session (`Origin`) or a scratch
+/// session. Both write the same byline and tag, naming themselves.
+pub trait Poster {
+    /// The session's id as its tag carries it (`owner/repo#N`,
+    /// `owner/repo~id`).
+    fn session(&self) -> String;
+    /// The line the shim prepends to a post made on `on_repo`.
+    fn first_line(&self, on_repo: Option<&str>, delegate: bool, stack: Option<&Stack>) -> String;
+}
+
+impl Poster for Origin {
+    fn session(&self) -> String {
+        self.to_string()
+    }
+    fn first_line(&self, on_repo: Option<&str>, delegate: bool, stack: Option<&Stack>) -> String {
+        Origin::first_line(self, on_repo, delegate, stack)
+    }
+}
+
+impl Poster for Scratch {
+    fn session(&self) -> String {
+        self.to_string()
+    }
+    /// `🤖~id says:` on its own repository, `🤖owner/repo~id says:` on
+    /// another, with the stack as an item's byline has it.
+    fn first_line(&self, on_repo: Option<&str>, delegate: bool, stack: Option<&Stack>) -> String {
+        let who = match on_repo {
+            Some(r) if r.trim().eq_ignore_ascii_case(&self.repo) => format!("~{}", self.id),
+            _ => self.to_string(),
+        };
+        let stack = match stack.and_then(Stack::label) {
+            Some(label) => format!(" {label}"),
+            None => String::new(),
+        };
+        let mode = if delegate {
+            format!(" {MODE}={DELEGATE}")
+        } else {
+            String::new()
+        };
+        format!("{ROBOT}{who}{stack} {SAYS} {OPEN} {MARK} origin={self}{mode} {CLOSE}")
+    }
+}
+
 /// What a session was launched with, as its byline names it: the harness
 /// (its id, what `--harness` takes) and the configured model and effort,
 /// which are `None` where the harness's own default applies. `ssf launch`
@@ -285,6 +373,55 @@ pub fn tags(body: &str) -> Vec<Tag> {
     out
 }
 
+/// The tags on `line` that name any session, an item's or a scratch
+/// session's: its id, whether it is one of the daemon's event tags, and
+/// whether it marks a hand-off.
+fn session_tags(line: &str) -> Vec<(String, bool, bool)> {
+    let mut out = Vec::new();
+    for (start, end) in spans(line) {
+        if is_quoted(line, start) {
+            continue;
+        }
+        let inner = line[start + OPEN.len()..end].trim();
+        let Some(rest) = inner.strip_prefix(MARK) else {
+            continue;
+        };
+        let mut origin = None;
+        let mut event = false;
+        let mut delegate = false;
+        for field in rest.split_whitespace() {
+            match field.split_once('=') {
+                Some(("origin", v)) => origin = Some(v.to_string()),
+                Some((k, _)) if k == EVENT => event = true,
+                Some((k, v)) if k == MODE => delegate = v == DELEGATE,
+                _ => {}
+            }
+        }
+        if let Some(o) =
+            origin.filter(|o| Origin::parse(o).is_some() || Scratch::parse(o).is_some())
+        {
+            out.push((o, event, delegate));
+        }
+    }
+    out
+}
+
+/// The session a post says it came from, an item's or a scratch
+/// session's, read where `parse` reads an item's tag.
+pub fn session(body: &str) -> Option<String> {
+    let first = body.lines().find(|l| !l.trim().is_empty())?;
+    if !is_code(first)
+        && let Some((o, ..)) = session_tags(first).into_iter().next()
+    {
+        return Some(o);
+    }
+    let last = body.trim_end().lines().next_back()?;
+    if is_code(last) {
+        return None;
+    }
+    session_tags(last).pop().map(|(o, ..)| o)
+}
+
 /// The tag that identifies the post: the one on the body's first non-blank
 /// line, where the shim puts it (the first one on that line: the shim's
 /// line goes before anything the author wrote by hand), or failing that
@@ -295,6 +432,11 @@ pub fn tags(body: &str) -> Vec<Tag> {
 /// transcript or a quote, is content and does not count; nor does a first
 /// or last line that is itself quoted or indented as code.
 pub fn parse(body: &str) -> Option<Tag> {
+    // A scratch session's post names no item, even with an item's tag
+    // further down.
+    if session(body).is_some_and(|s| Scratch::parse(&s).is_some()) {
+        return None;
+    }
     parse_first(body).or_else(|| parse_last(body))
 }
 
@@ -336,14 +478,19 @@ fn is_code(line: &str) -> bool {
 /// goes on top.
 pub fn stamp_with(
     body: &str,
-    origin: &Origin,
+    origin: &dyn Poster,
     on_repo: Option<&str>,
     delegate: bool,
     stack: Option<&Stack>,
 ) -> String {
-    if parse_first(body).is_some_and(|t| {
-        &t.origin == origin && t.event().is_none() && (!delegate || t.is_delegate())
-    }) {
+    let first = body.lines().find(|l| !l.trim().is_empty());
+    let own = first
+        .filter(|l| !is_code(l))
+        .and_then(|l| session_tags(l).into_iter().next())
+        .is_some_and(|(o, event, handed_off)| {
+            o == origin.session() && !event && (!delegate || handed_off)
+        });
+    if own {
         return body.to_string();
     }
     let line = origin.first_line(on_repo, delegate, stack);
@@ -522,6 +669,10 @@ pub fn scan(issue: &Issue, timeline: &[Value], bot: &str) -> Scan {
                 }
                 s.origins.insert(key, t.origin.to_string());
             }
+            // A scratch session's post: whose it is, and no item's.
+            None if let Some(session) = session(body) => {
+                s.origins.insert(key, session);
+            }
             None => {
                 s.untagged.insert(key, url.to_string());
             }
@@ -598,6 +749,27 @@ mod tests {
 
     fn line() -> String {
         o().first_line(Some("acme/widgets"), false, None)
+    }
+
+    #[test]
+    fn scratch_ids_parse_and_print() {
+        let s = Scratch::parse(" acme/widgets~k3f9 ").unwrap();
+        assert_eq!(s.repo, "acme/widgets");
+        assert_eq!(s.id, "k3f9");
+        assert_eq!(s.to_string(), "acme/widgets~k3f9");
+        for bad in [
+            "acme/widgets#12",
+            "acme/widgets~",
+            "acme/widgets~K3F9",
+            "acme/widgets~k3-9",
+            "widgets~k3f9",
+            "~k3f9",
+        ] {
+            assert!(Scratch::parse(bad).is_none(), "{bad}");
+        }
+        // An item reference is never read as a scratch session, nor the
+        // other way round.
+        assert!(Origin::parse("acme/widgets~k3f9").is_none());
     }
 
     #[test]
@@ -1098,6 +1270,27 @@ mod tests {
             "🤖#1 said so",
             "the byline is only looked for on the tag's line"
         );
+    }
+
+    #[test]
+    fn scan_reads_a_scratch_sessions_post_as_its_and_no_items() {
+        let issue: Issue = serde_json::from_value(json!({
+            "number": 5, "title": "t", "body": "🤖~k3f9 says: <!-- ssf: origin=a/b~k3f9 -->\n\nopened",
+            "html_url": "https://gh/5", "state": "open", "user": {"login": "bot"},
+            "created_at": "x", "updated_at": "x"
+        }))
+        .unwrap();
+        let timeline = vec![
+            json!({"event":"commented","id":1,"user":{"login":"bot"},"body":"🤖~k3f9 says: <!-- ssf: origin=a/b~k3f9 -->\n\nhi","html_url":"u1"}),
+        ];
+        let s = scan(&issue, &timeline, "bot");
+        assert_eq!(s.origin.as_deref(), Some("a/b~k3f9"));
+        assert!(s.origin_tag.is_none(), "no item opened it");
+        assert_eq!(
+            s.origins.get("commented:1").map(String::as_str),
+            Some("a/b~k3f9")
+        );
+        assert!(s.untagged.is_empty());
     }
 
     #[test]

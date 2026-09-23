@@ -92,6 +92,8 @@ fn worktrees_go_next_to_the_checkout() {
         PathBuf::from("/p/widgets.worktrees")
     );
     assert_eq!(branch_for("issue-3-x"), "bot/issue-3-x");
+    assert_eq!(branch_for("scratch-k3f9"), "scratch/k3f9");
+    assert_eq!(number_of_name("scratch-k3f9"), None);
 }
 
 #[test]

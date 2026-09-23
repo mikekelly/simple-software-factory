@@ -43,6 +43,40 @@ impl Engine {
         stack: Option<&Stack>,
         auto_compaction_tokens: u64,
     ) -> String {
+        render_launch_command(
+            &self.launch_wrapper(),
+            repo,
+            number,
+            url,
+            inner,
+            stack,
+            auto_compaction_tokens,
+        )
+    }
+
+    /// [`Engine::launch_command`] for a scratch session: `session`
+    /// (`owner/repo~id`) in place of an item.
+    pub(in crate::engine) fn scratch_launch_command(
+        &self,
+        repo: &RepoConfig,
+        session: &str,
+        inner: &str,
+        stack: &Stack,
+        auto_compaction_tokens: u64,
+    ) -> String {
+        render_launch(
+            &self.launch_wrapper(),
+            repo,
+            &format!("--session {}", shell_quote(session)),
+            inner,
+            Some(stack),
+            auto_compaction_tokens,
+        )
+    }
+
+    /// `ssf` as a session's launch runs it: the daemon's own directories,
+    /// the executable, and the transport.
+    fn launch_wrapper(&self) -> String {
         let me = crate::client_executable()
             .ok()
             .map(|p| p.to_string_lossy().to_string())
@@ -60,16 +94,7 @@ impl Engine {
         }
         let server =
             launch_server_argument(crate::server_catalog::selected_target_name().as_deref());
-        let wrapper = format!("{prefix}{}{server}", shell_quote(&me));
-        render_launch_command(
-            &wrapper,
-            repo,
-            number,
-            url,
-            inner,
-            stack,
-            auto_compaction_tokens,
-        )
+        format!("{prefix}{}{server}", shell_quote(&me))
     }
 
     /// Deliver a prompt to the agent that acts on an item (its own session,
@@ -740,6 +765,26 @@ fn render_launch_command(
     stack: Option<&Stack>,
     auto_compaction_tokens: u64,
 ) -> String {
+    render_launch(
+        wrapper,
+        repo,
+        &format!("--issue {number} --issue-url {}", shell_quote(url)),
+        inner,
+        stack,
+        auto_compaction_tokens,
+    )
+}
+
+/// The `ssf launch` line for a session named by `who` (its `--issue` or
+/// `--session` flags).
+fn render_launch(
+    wrapper: &str,
+    repo: &RepoConfig,
+    who: &str,
+    inner: &str,
+    stack: Option<&Stack>,
+    auto_compaction_tokens: u64,
+) -> String {
     // What the session runs, for the byline of everything it posts. Naming
     // only the parts that are set keeps `ssf launch`'s reading of an unset
     // model or effort the harness's own.
@@ -759,10 +804,8 @@ fn render_launch_command(
         " --auto-compaction-tokens {auto_compaction_tokens}"
     ));
     format!(
-        "{wrapper} launch --repo {} --issue {} --issue-url {}{flags} -- {}",
+        "{wrapper} launch --repo {} {who}{flags} -- {}",
         shell_quote(&repo.name),
-        number,
-        shell_quote(url),
         shell_quote(inner)
     )
 }

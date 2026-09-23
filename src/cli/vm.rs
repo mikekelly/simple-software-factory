@@ -117,6 +117,7 @@ pub(super) fn forwarded_name(cmd: &Command) -> Option<&'static str> {
         Command::Release { .. } => "release",
         Command::Handover { .. } => "handover",
         Command::Assign { .. } => "assign",
+        Command::Scratch { .. } => "scratch",
         Command::Purge { .. } => "purge",
         Command::Doctor => "doctor",
         // Not for people, but it is a factory command like any other: a

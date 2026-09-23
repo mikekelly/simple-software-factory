@@ -380,6 +380,7 @@ mod implementation {
     mod onboarding;
     mod reconciliation;
     mod releases;
+    pub(super) mod scratch;
 }
 
 async fn conflict_default_base(root: &str) -> Result<String> {

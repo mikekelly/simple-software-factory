@@ -924,6 +924,60 @@ was interrupted and what remains."
     s
 }
 
+/// Where a scratch session is, for the messages it is started with.
+pub struct ScratchPlace<'a> {
+    /// `owner/repo~id`.
+    pub session: &'a str,
+    pub repo: &'a str,
+    /// Whose session it is; `None` for a shared one.
+    pub owner_login: Option<&'a str>,
+    pub branch: Option<&'a str>,
+    pub path: Option<&'a str>,
+}
+
+impl ScratchPlace<'_> {
+    fn describe(&self) -> String {
+        let whose = match self.owner_login {
+            Some(login) => format!(", for @{login}"),
+            None => ", shared by everyone on the repository".to_string(),
+        };
+        let branch = self
+            .branch
+            .map(|b| b.strip_prefix("refs/heads/").unwrap_or(b))
+            .map(|b| format!(" on branch `{b}`"))
+            .unwrap_or_default();
+        let path = self.path.map(|p| format!(" in `{p}`")).unwrap_or_default();
+        format!(
+            "scratch session {} on {}{whose}{branch}{path}",
+            self.session, self.repo
+        )
+    }
+}
+
+/// The first message of a new scratch session: what it is, and that its
+/// instructions come from the person at its terminal rather than an item.
+pub fn scratch_prompt(place: &ScratchPlace) -> String {
+    format!(
+        "[ssf] This is {}. A scratch session works on no issue or pull request: nothing arrives \
+here from GitHub unless you follow an item (`ssf sub owner/repo#N`), and your instructions come \
+from the person at this terminal. Your workspace is your own worktree, cut from the default \
+branch; commit and push there as usual. `ssf guide` is the reference for how sessions work. \
+The session lasts until a person ends it with `ssf release --as {}`; wait for instructions.",
+        place.describe(),
+        place.session
+    )
+}
+
+/// What a scratch session is told when it is started again: after a
+/// restart, or by `ssf scratch resume` in a re-created workspace.
+pub fn scratch_restarted_prompt(place: &ScratchPlace, why: &str) -> String {
+    format!(
+        "[ssf] This {} was {why}, so it has been started again. Work out where you got to (`git \
+status`, `git log`) and wait for the person at this terminal.",
+        place.describe()
+    )
+}
+
 pub struct LoginBack<'a> {
     /// The harness's display name (`Claude Code`).
     pub harness: &'a str,

@@ -72,7 +72,9 @@ impl Engine {
                 self.state.last_error = Some(format!("{}: {e:#}", repo.name));
             }
             self.capture_sessions(&repo);
+            self.capture_scratch(&repo);
             self.run_cleanups(&repo).await;
+            self.run_scratch_cleanups(&repo).await;
             if let Err(e) = self.state.save() {
                 error!("saving state: {e:#}");
             }
@@ -162,6 +164,7 @@ impl Engine {
                     error!("saving state: {e:#}");
                 }
             }
+            self.resume_scratch_sessions(&repo).await;
         }
         self.startup_pass = false;
     }

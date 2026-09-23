@@ -741,3 +741,32 @@ fn repositories_are_read_out_of_any_spelling() {
         assert_eq!(repo_of(given).as_deref(), want, "{given:?}");
     }
 }
+
+#[test]
+fn a_scratch_session_stamps_its_own_identity() {
+    let s = crate::origin::Scratch::new("acme/widgets", "k3f9").unwrap();
+    let shim = Shim {
+        origin: &s,
+        bot: None,
+        gh_repo: None,
+        stack: None,
+        read: &no_files,
+        checkout: &same_repo,
+    };
+    let out = shim.rewrite(args(&["issue", "comment", "3", "--body", "hello"]));
+    let body = &out[4];
+    assert!(
+        body.starts_with("\u{1F916}~k3f9 says: <!-- ssf: origin=acme/widgets~k3f9 -->\n\nhello"),
+        "{body}"
+    );
+    // Read back as the scratch session's, and as no item's.
+    assert_eq!(
+        crate::origin::session(body).as_deref(),
+        Some("acme/widgets~k3f9")
+    );
+    assert!(crate::origin::parse(body).is_none());
+    assert_eq!(crate::origin::strip(body), "hello");
+    // Stamped once.
+    let again = shim.rewrite(args(&["issue", "comment", "3", "--body", body]));
+    assert_eq!(&again[4], body);
+}

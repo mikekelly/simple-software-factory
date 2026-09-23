@@ -116,6 +116,29 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),
             },
+            Request::ScratchCreate {
+                repo,
+                harness,
+                model,
+                effort,
+                owner_login,
+            } => match self
+                .create_scratch(
+                    &repo,
+                    &harness,
+                    model.as_deref(),
+                    effort.as_deref(),
+                    owner_login.as_deref(),
+                )
+                .await
+            {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::refused(&e),
+            },
+            Request::ScratchResume { session } => match self.resume_scratch(&session).await {
+                Ok(v) => Response::ok(v),
+                Err(e) => Response::refused(&e),
+            },
         }
     }
 
@@ -293,8 +316,17 @@ impl Engine {
         Ok((repo, number, id))
     }
 
+    /// The session a subscription is made for: an item's (normalised to
+    /// the owning session), or a scratch session.
+    fn subscriber(&self, from: &str) -> Result<String> {
+        if crate::origin::Scratch::parse(from).is_some() {
+            return Ok(self.scratch(from)?.1.to_string());
+        }
+        Ok(self.known_session(from)?.2)
+    }
+
     async fn subscribe(&mut self, from: &str, target: &str, events: Events) -> Result<Value> {
-        let (_, _, me) = self.known_session(from)?;
+        let me = self.subscriber(from)?;
         let (repo, number) = self.locate(target)?;
         let (owner, name) = repo.split()?;
         let existing = self
@@ -387,7 +419,7 @@ impl Engine {
     }
 
     fn unsubscribe(&mut self, from: &str, target: &str) -> Result<Value> {
-        let (_, _, me) = self.known_session(from)?;
+        let me = self.subscriber(from)?;
         let (repo, number) = self.locate(target)?;
         let Some(st) = self
             .state

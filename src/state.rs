@@ -65,6 +65,12 @@ pub struct RepoState {
     /// repository. They do not own a workspace until a person adopts them.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub adoption_candidates: BTreeMap<u64, AdoptionCandidate>,
+    /// Scratch sessions (`owner/repo~id`), keyed by id: agent sessions on
+    /// the repository that work on no item. Kept apart from `issues` so
+    /// nothing an item goes through -- retirement, purge, the closed and
+    /// merged rules, dependents -- ever reaches one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub scratch: BTreeMap<String, ScratchState>,
     /// Reviewer sessions from before #115 (a second workspace per pull
     /// request, gone since): read so an old file still loads, dropped with
     /// one log line by [`State::load_from`], never written back.
@@ -506,6 +512,60 @@ impl IssueState {
     }
 }
 
+/// A scratch session (see [`RepoState::scratch`]): lives until a person
+/// kills it with `ssf release`, which removes only its workspace. The
+/// record, its branch and the harness conversation stay, so `ssf scratch
+/// resume` can bring it back.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ScratchState {
+    pub id: String,
+    /// Whose session this is (a GitHub login); `None` for a shared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_login: Option<String>,
+    /// What the session runs, chosen when it was created.
+    pub stack: Overrides,
+    pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    /// Git branch of the workspace (`refs/heads/scratch/<id>`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_handle: Option<String>,
+    /// Harness conversation id, kept across a kill for `ssf scratch resume`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launched_at: Option<String>,
+    /// `ssf release` passed its checks (or was forced): the workspace is
+    /// removed on the daemon's next pass.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub release_pending: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub release_forced: bool,
+    /// When the workspace was removed; cleared by a resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_prompt_at: Option<String>,
+    #[serde(default)]
+    pub prompts_sent: u64,
+}
+
+impl ScratchState {
+    /// What a scratch session is called where an item would show its title.
+    pub fn title(&self) -> String {
+        match &self.owner_login {
+            Some(login) => format!("Scratch for @{login}"),
+            None => "Scratch (shared)".to_string(),
+        }
+    }
+}
+
 /// The commit pair that identified one successfully delivered conflict
 /// notice. Files are deliberately not persisted: they are recomputed from
 /// the cached merge result when the pair is first seen after a restart.
@@ -852,7 +912,10 @@ impl State {
                 let gone: Vec<String> = st
                     .subscribers
                     .iter()
-                    .filter(|s| crate::origin::Origin::parse(s).is_none())
+                    .filter(|s| {
+                        crate::origin::Origin::parse(s).is_none()
+                            && crate::origin::Scratch::parse(s).is_none()
+                    })
                     .cloned()
                     .collect();
                 for s in gone {
@@ -974,6 +1037,14 @@ fn rewrite_levels(levels: &mut BTreeMap<String, Events>, old: &str, new: &str) -
 }
 
 fn rewrite_session_value(value: &mut String, old: &str, new: &str) -> bool {
+    if let Some(mut scratch) = crate::origin::Scratch::parse(value) {
+        if !scratch.repo.eq_ignore_ascii_case(old) {
+            return false;
+        }
+        scratch.repo = new.to_string();
+        *value = scratch.to_string();
+        return true;
+    }
     match crate::origin::Origin::parse(value) {
         Some(mut origin) if origin.repo.eq_ignore_ascii_case(old) => {
             origin.repo = new.to_string();
@@ -1035,6 +1106,60 @@ mod tests {
         assert!(err.to_string().contains("another ssf daemon is listening"));
         drop(first);
         StateLock::acquire_in(&sandbox.state_dir()).unwrap();
+    }
+
+    /// Scratch sessions round-trip in a map of their own; a state file from
+    /// before them loads with none, and a subscription one holds survives
+    /// the load (it is no item reference, and not a stale reviewer's).
+    #[test]
+    fn scratch_sessions_round_trip_and_old_state_loads_without_them() {
+        let path = crate::config::test_support::sandbox()
+            .state_dir()
+            .join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"repos":{"o/r":{"issues":{"1":{"number":1,"subscribers":["o/r#9"]}}}}}"#,
+        )
+        .unwrap();
+        let mut st = State::load_from(&path).unwrap();
+        assert!(st.repos["o/r"].scratch.is_empty());
+
+        let rs = st.repo_mut("o/r");
+        rs.scratch.insert(
+            "k3f9".into(),
+            ScratchState {
+                id: "k3f9".into(),
+                owner_login: Some("alice".into()),
+                stack: Overrides {
+                    harness: "claude".into(),
+                    model: Some("opus".into()),
+                    effort: None,
+                },
+                created_at: "2026-01-01T00:00:00Z".into(),
+                worktree_id: Some("w".into()),
+                agent_session_id: Some("conv".into()),
+                ..Default::default()
+            },
+        );
+        rs.issues
+            .get_mut(&1)
+            .unwrap()
+            .subscribe("o/r~k3f9", Events::All);
+        st.save_to(&path).unwrap();
+
+        let back = State::load_from(&path).unwrap();
+        let s = &back.repos["o/r"].scratch["k3f9"];
+        assert_eq!(s.owner_login.as_deref(), Some("alice"));
+        assert_eq!(s.stack.model.as_deref(), Some("opus"));
+        assert_eq!(s.agent_session_id.as_deref(), Some("conv"));
+        assert!(back.repos["o/r"].issues[&1].follows("o/r~k3f9"));
+        assert_eq!(
+            back.repos["o/r"].issues[&1].events_for("o/r~k3f9"),
+            Events::All
+        );
+        // No item record was made for it.
+        assert_eq!(back.repos["o/r"].issues.len(), 1);
     }
 
     /// A follow's level lives beside the subscriber list, not in it, and
