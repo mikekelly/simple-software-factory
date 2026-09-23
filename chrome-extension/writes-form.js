@@ -26,10 +26,13 @@
 // is not one of them, so turning it off hides the form for that factory here as
 // well as refusing the write in the service worker.
 //
-// Every piece of state lives here rather than in the nodes, because content.js
-// rebuilds what it draws on every GitHub mutation and every snapshot frame. A
-// picker half-way through being chosen, a half-written message or an open
-// confirm step would otherwise be thrown away twice a second.
+// Every piece of state lives here rather than in the nodes. content.js keeps
+// the nodes it has drawn -- a form is not replaced under a picker's open popup
+// or a caret -- but it draws a fresh tree on every GitHub mutation and every
+// snapshot frame, and puts a new node in place wherever a frame's own shape
+// differs, so a redraw must never be the thing that loses what the person was
+// in the middle of: the picker they were choosing from, the message they were
+// writing, the confirm step they had open.
 //
 // Nothing here talks to a factory. The service worker carries every write and
 // the two listings, so the request's Origin is the extension's; this module
@@ -89,10 +92,19 @@
   /// `owner/name#N` -> state, one per item the form is being drawn for.
   const forms = new Map();
 
-  function element(tag, className, text) {
+  /// Every node this module draws is a fresh one, and content.js writes a frame
+  /// into the nodes already on screen; a node it must not put a different one in
+  /// the place of carries `data-ssf-node`, its key, which is what that matching
+  /// reads. Only siblings need distinct keys: a picker whose role can shift
+  /// among its neighbours is the whole reason this exists -- a `<select>`'s
+  /// change listener is drawn with the node, and a node reused for another role
+  /// would keep the last frame's listener. The `.ssf-writes` body itself is
+  /// keyed by content.js, which draws it into a card.
+  function element(tag, className, text, key) {
     const node = document.createElement(tag);
     if (className) node.className = className;
     if (text !== undefined) node.textContent = text;
+    if (key) node.dataset.ssfNode = key;
     return node;
   }
 
@@ -156,9 +168,10 @@
 
   /// The state for one item, one mode and -- for the Actions row, which is drawn
   /// once per factory that has an agent on the item -- one factory, most recent
-  /// last. content.js draws one item at a time and rebuilds its nodes on every
-  /// GitHub mutation, so this map is the only thing that outlives a page; a
-  /// session keeps the items it has visited and forgets the rest.
+  /// last. content.js keeps the nodes it has drawn, but a host is taken off the
+  /// page when the item leaves the snapshot and drawn again when it returns, so
+  /// this map, and not the nodes, is what outlives a page; a session keeps the
+  /// items it has visited and forgets the rest.
   ///
   /// The factory is part of the key because the state is: two rows on one item
   /// write through two factories, and a state they shared would have one row
@@ -233,11 +246,11 @@
   /// only thing that clears it.
   function agentsRefused(state, head) {
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", head));
+    body.append(element("div", "ssf-writes-head", head, "head"));
     const picker = factoryPicker(state);
     if (picker) body.append(picker);
-    body.append(element("p", "ssf-writes-error", state.agentsError));
-    const retry = element("button", undefined, "Try again");
+    body.append(element("p", "ssf-writes-error", state.agentsError, "error"));
+    const retry = element("button", undefined, "Try again", "retry");
     retry.type = "button";
     retry.addEventListener("click", () => {
       state.agentsError = null;
@@ -343,8 +356,13 @@
   /// harness's own default. A value the card is on but the factory no longer
   /// lists is still what the session runs, so it is offered as itself rather
   /// than dropped -- and the factory's own answer decides whether it takes it.
+  ///
+  /// The field is keyed by its label, so a picker that appears beside the
+  /// others (the Factory picker, the moment a second factory starts accepting
+  /// the write) takes its own place rather than one of theirs -- the change
+  /// listener it carries is drawn with it.
   function select(label, values, chosen, onPick) {
-    const field = element("label", "ssf-writes-field");
+    const field = element("label", "ssf-writes-field", undefined, `field:${label}`);
     field.append(element("span", undefined, label));
     const box = element("select");
     const options =
@@ -392,7 +410,7 @@
 
   function form(state) {
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Assign agent"));
+    body.append(element("div", "ssf-writes-head", "Assign agent", "head"));
 
     // Two factories watching this repository: which one takes the session is
     // not something to guess. One: no picker, nothing to choose.
@@ -419,10 +437,12 @@
         state.effort = value;
       }),
     );
-    if (state.modelsError) body.append(element("p", "ssf-writes-error", state.modelsError));
-    if (state.error) body.append(element("p", "ssf-writes-error", state.error));
+    if (state.modelsError) {
+      body.append(element("p", "ssf-writes-error", state.modelsError, "error:models"));
+    }
+    if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
 
-    const actions = element("div", "ssf-writes-actions");
+    const actions = element("div", "ssf-writes-actions", undefined, "actions");
     const assign = element("button", "primary", "Assign");
     assign.type = "button";
     assign.disabled = !ready || state.modelsPending;
@@ -438,6 +458,7 @@
         ready
           ? "Starts a session on this item with the factory's own `ssf assign`."
           : "Pick a harness to start a session on this item.",
+        "note",
       ),
     );
     return body;
@@ -446,11 +467,11 @@
   /// A write in the air, or a wait for the frame that shows its agent.
   function submitting(state) {
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Assigning\u2026"));
+    body.append(element("div", "ssf-writes-head", "Assigning\u2026", "head"));
     const chosen = [state.harness, state.model, state.effort].filter(Boolean).join(" \u00b7 ");
     body.append(
-      element("p", "ssf-writes-stack", chosen),
-      element("p", "ssf-writes-note", "waiting for the factory to show an agent on this item"),
+      element("p", "ssf-writes-stack", chosen, "stack"),
+      element("p", "ssf-writes-note", "waiting for the factory to show an agent on this item", "note"),
     );
     return body;
   }
@@ -476,15 +497,15 @@
   function settled(state) {
     const body = element("div", "ssf-writes");
     body.append(
-      element("div", "ssf-writes-head", "Assign accepted"),
-      element("p", "ssf-writes-stack", resultLine(state)),
-      element("p", "ssf-writes-note", "the factory has not shown an agent on this item yet."),
+      element("div", "ssf-writes-head", "Assign accepted", "head"),
+      element("p", "ssf-writes-stack", resultLine(state), "stack"),
+      element("p", "ssf-writes-note", "the factory has not shown an agent on this item yet.", "note"),
     );
     const link = element("a", undefined, "Open the factory dashboard");
     link.href = state.url;
     link.target = "_blank";
     link.rel = "noreferrer";
-    const line = element("p", "ssf-writes-note");
+    const line = element("p", "ssf-writes-note", undefined, "note:link");
     line.append(link);
     body.append(line);
     return body;
@@ -534,7 +555,7 @@
   /// which is what the pickers are prefilled from and the confirm names.
   function actions(state) {
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Actions"));
+    body.append(element("div", "ssf-writes-head", "Actions", "head"));
     const picker = factoryPicker(state);
     if (picker) body.append(picker);
     if (state.actionResult) {
@@ -543,22 +564,23 @@
           "div",
           "ssf-writes-head",
           state.actionResult.kind === "release" ? "Release accepted" : "Handover recorded",
+          "result",
         ),
-        element("p", "ssf-writes-stack", actionLine(state)),
+        element("p", "ssf-writes-stack", actionLine(state), "result:stack"),
       );
     }
     body.append(messageRow(state));
-    if (state.messageSent) body.append(element("p", "ssf-writes-note", "sent"));
+    if (state.messageSent) body.append(element("p", "ssf-writes-note", "sent", "sent"));
     if (state.messageError) {
-      body.append(element("p", "ssf-writes-error", state.messageError));
+      body.append(element("p", "ssf-writes-error", state.messageError, "error:message"));
     }
     if (state.open === "handover") {
       body.append(handoverForm(state));
     } else if (state.open === "release") {
       body.append(releaseConfirm(state));
     } else {
-      if (state.error) body.append(element("p", "ssf-writes-error", state.error));
-      const actions = element("div", "ssf-writes-actions");
+      if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
+      const actions = element("div", "ssf-writes-actions", undefined, "actions");
       const hand = element("button", undefined, "Hand over\u2026");
       hand.type = "button";
       hand.addEventListener("click", () => openHandover(state));
@@ -580,15 +602,19 @@
   /// endpoint reads at 4 KiB — are refusals a person can read and act on, where
   /// a silent truncation of something pasted in would not be.
   function messageRow(state) {
-    const row = element("div", "ssf-writes-row");
+    // Keyed: a box the person is typing in must be their node across frames,
+    // whatever appears beside it -- the result lines a hand-over adds above it
+    // are the case that put this key here.
+    const row = element("div", "ssf-writes-row", undefined, "row");
     const box = element("textarea");
     box.rows = 2;
     box.placeholder = "Tell the agent something";
     box.value = state.message;
-    // Kept as it is typed rather than read off the node on every render:
-    // content.js rebuilds these nodes twice a second, and a box holding the
-    // caret would be thrown away with it. A refusal goes as soon as the text it
-    // was about does, so a stale one is never left standing over an empty box.
+    // Kept as it is typed rather than read off the node: a redraw draws from
+    // the state, and a box is written into -- never emptied and retyped -- so
+    // what the person has written survives a frame that has to put a new node
+    // in place. A refusal goes as soon as the text it was about does, so a
+    // stale one is never left standing over an empty box.
     box.addEventListener("input", () => {
       state.message = box.value;
       send.disabled = !canSend(state);
@@ -653,7 +679,7 @@
   /// effort level is offered neither.
   function handoverForm(state) {
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Hand over to"));
+    body.append(element("div", "ssf-writes-head", "Hand over to", "head"));
     const { harnesses, models, efforts, ready } = stack(state);
     body.append(
       select("Harness", harnesses, state.harness, (value) => {
@@ -672,8 +698,10 @@
         state.effort = value;
       }),
     );
-    if (state.modelsError) body.append(element("p", "ssf-writes-error", state.modelsError));
-    const note = element("textarea");
+    if (state.modelsError) {
+      body.append(element("p", "ssf-writes-error", state.modelsError, "error:models"));
+    }
+    const note = element("textarea", undefined, undefined, "note");
     note.rows = 2;
     note.placeholder = "What the new session should know (optional)";
     note.value = state.note;
@@ -681,8 +709,8 @@
       state.note = note.value;
     });
     body.append(note);
-    if (state.error) body.append(element("p", "ssf-writes-error", state.error));
-    const actions = element("div", "ssf-writes-actions");
+    if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
+    const actions = element("div", "ssf-writes-actions", undefined, "actions");
     const go = element("button", "primary", state.actionBusy ? "Handing over\u2026" : "Hand over");
     go.type = "button";
     go.disabled = !ready || state.modelsPending || state.actionBusy;
@@ -699,6 +727,7 @@
         // The session that is there ends and the new one starts in the same
         // workspace, which is what `ssf handover` says in its own words.
         "Ends this session on the daemon's next pass and starts the new one in the same workspace.",
+        "hint",
       ),
     );
     return body;
@@ -711,7 +740,7 @@
     const item = state.item ?? {};
     const branch = String(item.branch ?? "").trim();
     const body = element("div", "ssf-writes");
-    body.append(element("div", "ssf-writes-head", "Release this workspace?"));
+    body.append(element("div", "ssf-writes-head", "Release this workspace?", "head"));
     body.append(
       element(
         "p",
@@ -719,10 +748,11 @@
         branch
           ? `${state.itemId} works on ${branch}. Nothing is removed unless it is committed and pushed.`
           : `${state.itemId}'s workspace is removed only if it is committed and pushed.`,
+        "note",
       ),
     );
-    if (state.error) body.append(element("p", "ssf-writes-error", state.error));
-    const actions = element("div", "ssf-writes-actions");
+    if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
+    const actions = element("div", "ssf-writes-actions", undefined, "actions");
     const release = element("button", "danger", state.actionBusy ? "Releasing\u2026" : "Release");
     release.type = "button";
     release.disabled = state.actionBusy;
