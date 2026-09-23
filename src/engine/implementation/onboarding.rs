@@ -352,6 +352,9 @@ impl Engine {
             "bound to the owning session"
         );
         self.entry(repo, owner).cleanup_pending = false;
+        // What the item was before it was bound, so a delivery that does
+        // not land leaves no binding behind (below).
+        let before = self.entry(repo, issue.number).clone();
         {
             let e = self.entry(repo, issue.number);
             e.shares_workspace_of = Some(owner);
@@ -366,7 +369,20 @@ impl Engine {
         );
         let ctx = self.ctx(repo, &snapshot);
         let text = prompt::tracked_prompt(issue, &mine, &ctx);
-        let d = self.deliver_to(repo, issue.number, &text, None).await?;
+        // A delivery that does not land (a held mailbox, a harness that
+        // will not start) leaves the item to be looked at again, and until
+        // then it must not keep the binding this attempt wrote: an item
+        // that never seeded did not get that session, and the workspace it
+        // mirrors is the owner's. Left on, it would read as bound in
+        // `ssf status` with another session's workspace and outlive the
+        // item's own closing (#409).
+        let d = match self.deliver_to(repo, issue.number, &text, None).await {
+            Ok(d) => d,
+            Err(e) => {
+                *self.entry(repo, issue.number) = before;
+                return Err(e);
+            }
+        };
         let e = self.entry(repo, issue.number);
         e.terminal_handle = Some(d.handle);
         e.updated_at = Some(issue.updated_at.clone());

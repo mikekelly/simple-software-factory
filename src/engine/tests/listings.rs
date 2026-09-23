@@ -661,6 +661,11 @@ async fn an_ignored_item_is_asked_about_once_and_forgotten_when_it_is_gone() {
     stub.bump_created_etag();
     e.tick_repo(&r).await.unwrap();
     assert_eq!(ignored_numbers(&e, &r), vec![18]);
+    assert_eq!(
+        recorded_numbers(&e, &r),
+        vec![18],
+        "the closed item's own record goes with its ignore record (#409)"
+    );
     assert!(e.failures.is_empty(), "{:?}", e.failures);
 
     // #18 goes missing while open: looked at once, record kept, and
@@ -682,7 +687,114 @@ async fn an_ignored_item_is_asked_about_once_and_forgotten_when_it_is_gone() {
     stub.bump_created_etag();
     e.tick_repo(&r).await.unwrap();
     assert!(ignored_numbers(&e, &r).is_empty(), "the record goes");
+    assert!(
+        recorded_numbers(&e, &r).is_empty(),
+        "and so does the item's own record: {:?}",
+        recorded_numbers(&e, &r)
+    );
     assert_listings_only(&stub.hits());
+}
+
+// The records #409 is about are the shape an item ignored at creation
+// leaves: no session, no subscriber, no workspace. Anything else still
+// answers to something after the item stops being looked at, and keeps
+// its record when the ignore record goes.
+#[tokio::test]
+async fn forgetting_an_ignored_item_keeps_a_record_with_a_session() {
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    let created = vec!["created".to_string()];
+    for n in [18, 19] {
+        e.state
+            .repo_mut(&r.name)
+            .ignored
+            .insert(n, Ignored::new(&issue(n, "bot", None), &created));
+    }
+    // #18 was ignored at creation and picked up a session afterwards (an
+    // assignment between passes, say), so its record is one to retire
+    // through; #19 is only an ignore record.
+    seeded(&mut e, 18, Some("bot/issue-18"), false);
+    e.entry(&r, 18).worktree_id = Some("w18".into());
+    for n in [18, 19] {
+        e.entry(&r, n).github_state = Some("open".into());
+        stub.set_issue(n, untagged_listed(n, "closed"));
+    }
+    *stub.created.lock().unwrap() = vec![];
+
+    e.tick_repo(&r).await.unwrap();
+    assert!(ignored_numbers(&e, &r).is_empty(), "both records go");
+    assert_eq!(
+        recorded_numbers(&e, &r),
+        vec![18],
+        "the session's own record stays for the retirement and the cleanup"
+    );
+    assert!(e.failures.is_empty(), "{:?}", e.failures);
+}
+// A record that answers to nothing has no session to retire through it, no
+// subscriber to poll for and no workspace to release, so once its item is
+// on no listing the pass forgets it: the shape an onboarding that never
+// got a session onto the item leaves behind -- an item ignored at creation
+// whose ignore record has already gone, or a bind whose delivery never
+// landed (#409).
+#[tokio::test]
+async fn a_record_answering_to_nothing_is_forgotten_once_its_item_is_unlisted() {
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    let created = vec!["created".to_string()];
+
+    // #18 never got a session and has no ignore record (a bind whose
+    // delivery never landed, say). #20 is the same shape but was a
+    // session's, whose binding a run of failures gave up.
+    for n in [18, 20] {
+        let st = e.entry(&r, n);
+        st.kind = Some("pull_request".into());
+        st.github_state = Some("open".into());
+    }
+    {
+        let st = e.entry(&r, 20);
+        st.bound_at = Some("2026-09-20T09:21:40Z".into());
+        st.retired_at = Some("2026-09-20T09:46:28Z".into());
+        st.github_state = Some("merged".into());
+    }
+    // #19 is still being ignored: its clock decides, not this pass.
+    e.state
+        .repo_mut(&r.name)
+        .ignored
+        .insert(19, Ignored::new(&issue(19, "bot", None), &created));
+    e.entry(&r, 19).github_state = Some("open".into());
+    stub.set_issue(19, untagged_listed(19, "open"));
+
+    e.tick_repo(&r).await.unwrap();
+    assert_eq!(
+        recorded_numbers(&e, &r),
+        vec![19, 20],
+        "#18 is gone; the ignored item's clock and the session's record stay"
+    );
+    assert!(
+        !stub.hits().iter().any(|h| h.contains("/issues/18")),
+        "no request was spent on it: {:?}",
+        stub.hits()
+    );
+
+    // The clock does forget its item's record once GitHub says it closed
+    // -- the same moment the ignore record goes.
+    rewind_absence(&mut e, &r, 19, ABSENT_RECHECK);
+    stub.set_issue(19, untagged_listed(19, "closed"));
+    stub.bump_created_etag();
+    e.tick_repo(&r).await.unwrap();
+    assert!(ignored_numbers(&e, &r).is_empty());
+    assert_eq!(
+        recorded_numbers(&e, &r),
+        vec![20],
+        "the session's record stays"
+    );
+    assert!(e.failures.is_empty(), "{:?}", e.failures);
 }
 #[tokio::test]
 async fn an_ignored_item_gone_from_github_loses_its_record_but_a_failure_does_not() {

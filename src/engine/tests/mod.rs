@@ -155,6 +155,11 @@ fn ignored_numbers(e: &Engine, r: &RepoConfig) -> Vec<u64> {
     e.state.repos[&r.name].ignored.keys().copied().collect()
 }
 
+// The item numbers a pass holds a record of.
+fn recorded_numbers(e: &Engine, r: &RepoConfig) -> Vec<u64> {
+    e.state.repos[&r.name].issues.keys().copied().collect()
+}
+
 pub(super) fn seeded(e: &mut Engine, number: u64, branch: Option<&str>, active: bool) {
     let st = e.entry(&repo(), number);
     st.seeded = true;

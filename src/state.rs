@@ -72,6 +72,34 @@ pub struct RepoState {
     pub legacy_reviewers: BTreeMap<u64, serde_json::Value>,
 }
 
+impl RepoState {
+    /// Forget an item: its ignore record, and the record of the item
+    /// itself when that answers to nothing (see
+    /// [`IssueState::answers_to_nothing`]). A record with a session, a
+    /// subscriber, a workspace or something pending stays: each of those
+    /// still answers to something once the item stops being looked at.
+    pub fn forget(&mut self, number: u64) {
+        self.ignored.remove(&number);
+        if self
+            .issues
+            .get(&number)
+            .is_some_and(IssueState::answers_to_nothing)
+        {
+            self.issues.remove(&number);
+        }
+    }
+
+    /// The items whose record answers to nothing (see
+    /// [`IssueState::answers_to_nothing`]).
+    fn records_answering_to_nothing(&self) -> Vec<u64> {
+        self.issues
+            .values()
+            .filter(|st| st.answers_to_nothing())
+            .map(|st| st.number)
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdoptionCandidate {
     pub number: u64,
@@ -321,6 +349,65 @@ pub struct IssueState {
     pub blocked: Option<Blocked>,
 }
 
+impl IssueState {
+    /// Whether this record answers to nothing: no session of its own, no
+    /// subscriber, no workspace, no prompt ever sent or attempted, and
+    /// nothing waiting on it.
+    ///
+    /// `onboard` writes a record before it knows who acts on the item, and
+    /// what it writes there outlives the answer: an item the daemon
+    /// ignored at creation keeps such a record while it is on the `creator`
+    /// listing, and so does one whose onboarding never got a session onto
+    /// it. Both are consulted by nothing once the item leaves the
+    /// listings -- there is no session to retire through the record, no
+    /// subscriber to poll for, no workspace to release -- so the item's
+    /// record is forgotten with its ignore record
+    /// ([`RepoState::forget`]) and does not sit in `ssf status`, `ssf
+    /// peers` or the dashboard advertising a closed item as open (#409).
+    ///
+    /// What stops a record from being one of those: a session that was
+    /// bound to it and spoke on it ([`IssueState::had_a_session`]), a
+    /// delivery in flight or being retried ([`IssueState::active`],
+    /// [`IssueState::first_prompt_attempted`], a block), a subscription, a
+    /// workspace of its own, a pending release, cleanup or handover, or a
+    /// stack an assignment or a handover wrote for a session still to
+    /// come.
+    ///
+    /// The link to another item's session ([`IssueState::shares_workspace_of`])
+    /// deliberately does not count: a bind that lands seeds this record, so
+    /// a record that never seeded did not get that session, and what it
+    /// mirrors (the owner's workspace, the owner's branch) is still the
+    /// owner's to answer for.
+    pub fn answers_to_nothing(&self) -> bool {
+        !self.had_a_session()
+            && !self.seeded
+            && !self.active
+            && !self.first_prompt_attempted
+            && self.blocked.is_none()
+            && !self.subscriber_only
+            && self.subscribers.is_empty()
+            && self.worktree_id.is_none()
+            && !self.cleanup_pending
+            && !self.release_pending
+            && self.handover.is_none()
+            && self.handover_note.is_none()
+            && self.overrides.is_none()
+            && self.assigned_at.is_none()
+    }
+
+    /// Whether a session was ever bound to this item and spoken to on it.
+    /// A closed item's record is kept once one was: it holds the item's
+    /// story, the workspace to release and the way back in when it is
+    /// re-opened, even after a run of failures gave the binding up
+    /// ([`IssueState::seeded`] back to `false`).
+    fn had_a_session(&self) -> bool {
+        self.bound_at.is_some()
+            || self.last_prompt_at.is_some()
+            || self.prompts_sent > 0
+            || self.agent_session_id.is_some()
+    }
+}
+
 /// The commit pair that identified one successfully delivered conflict
 /// notice. Files are deliberately not persisted: they are recomputed from
 /// the cached merge result when the pair is first seen after a restart.
@@ -554,6 +641,7 @@ impl State {
             serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         st.drop_legacy_reviewers();
         st.drop_legacy_issue_bindings();
+        st.drop_records_answering_to_nothing();
         Ok(st)
     }
 
@@ -673,6 +761,42 @@ impl State {
                 subscribers = ?ghosts,
                 "dropping subscriptions held by sessions that no longer exist"
             );
+        }
+    }
+
+    /// Forget the records of items an ssf before #409 ignored at creation
+    /// and left behind: it dropped such an item's ignore record when the
+    /// item closed, merged or went off every listing, and kept the record
+    /// of the item itself, still saying `open`. Nothing visits one again
+    /// -- the item is on no listing, and the ignore record that would
+    /// bring it back is gone -- so `ssf status`, `ssf peers` and the
+    /// dashboard advertised a closed item for ever.
+    ///
+    /// Only records that answer to nothing go (see
+    /// [`IssueState::answers_to_nothing`]), and only once the ignore
+    /// record is gone: while it stands, the item is still being ignored
+    /// rather than forgotten, and its clock is what keeps a listing that
+    /// came back short from putting it through onboarding again (issue
+    /// #138).
+    fn drop_records_answering_to_nothing(&mut self) {
+        for (repo, rs) in self.repos.iter_mut() {
+            let numbers: Vec<u64> = rs
+                .records_answering_to_nothing()
+                .into_iter()
+                .filter(|n| !rs.ignored.contains_key(n))
+                .collect();
+            if numbers.is_empty() {
+                continue;
+            }
+            info!(
+                repo,
+                ?numbers,
+                "dropping the records of items an older ssf ignored at creation; they read open \
+for ever after the item closed"
+            );
+            for number in numbers {
+                rs.forget(number);
+            }
         }
     }
 
@@ -810,6 +934,58 @@ mod tests {
         assert_eq!(
             written["repos"]["mikekelly/overlay-mono"]["ignored"]["337"],
             serde_json::json!({"updated_at": "2026-09-03T00:19:46Z", "triggers": ["created"]})
+        );
+    }
+
+    #[test]
+    fn records_an_older_ssf_left_behind_for_ignored_items_are_dropped_on_load() {
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.state_dir().join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"repos":{"o/r":{
+                "issues":{
+                    "7":{"number":7,"title":"follow-up","kind":"issue","worktree_name":"issue-7-x","repo_id":"o/r","github_state":"open","triggers":["created"]},
+                    "8":{"number":8,"title":"still ignored","kind":"issue","github_state":"open","triggers":["created"]},
+                    "9":{"number":9,"title":"has a session","kind":"issue","seeded":true,"active":true,"worktree_id":"w9","github_state":"open","triggers":["created"]},
+                    "10":{"number":10,"title":"followed","kind":"issue","subscriber_only":true,"github_state":"open","triggers":["created"],"subscribers":["o/r#9"]},
+                    "11":{"number":11,"title":"bound to another session","kind":"pull_request","bound_at":"2026-09-20T09:21:40Z","github_state":"open","triggers":["created"],"shares_workspace_of":9,"origin":"o/r#9"},
+                    "12":{"number":12,"title":"workspace to clean up","kind":"pull_request","worktree_id":"w12","worktree_name":"issue-12","github_state":"closed","triggers":["created"]}},
+                "ignored":{"8":{"updated_at":"u8","triggers":["created"]}}}}}"#,
+        )
+        .unwrap();
+
+        let st = State::load_from(&path).unwrap();
+        let rs = &st.repos["o/r"];
+        assert!(
+            !rs.issues.contains_key(&7),
+            "the record of an item an older ssf ignored and forgot reads open for ever (#409)"
+        );
+        assert!(
+            rs.issues.contains_key(&8),
+            "still being ignored, not forgotten"
+        );
+        assert!(rs.issues.contains_key(&9), "a session retires through it");
+        assert!(
+            rs.issues.contains_key(&10),
+            "a subscriber is polled through it"
+        );
+        assert!(
+            rs.issues.contains_key(&11),
+            "a session was bound to it, so its record stays"
+        );
+        assert!(
+            rs.issues.contains_key(&12),
+            "a workspace is released through it"
+        );
+
+        st.save_to(&path).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert!(
+            written["repos"]["o/r"]["issues"].get("7").is_none(),
+            "{written}"
         );
     }
 
