@@ -90,6 +90,11 @@ async function start() {
   }
 
   const typing = params.get("input") === "1";
+  // An item's agent has somewhere else to be spoken to; a scratch session's
+  // pane is view-only only where this factory takes no writes.
+  const viewOnly = session.includes("~")
+    ? "live · view only"
+    : "live · view only: comment on the item to speak to its agent";
   const reconnect = document.getElementById("reconnect");
   let source = null;
   let failures = 0;
@@ -111,7 +116,7 @@ async function start() {
       failures = 0;
       try {
         draw(JSON.parse(event.data).screen ?? "");
-        say(typing ? "live" : "live · view only: comment on the item to speak to its agent");
+        say(typing ? "live" : viewOnly);
       } catch (error) {
         say(`the factory sent a frame that could not be read (${error})`, true);
       }

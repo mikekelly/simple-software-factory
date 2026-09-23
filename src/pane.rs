@@ -141,7 +141,11 @@ pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
         reads = reads.wrapping_add(1);
         if let Some((driver, pane)) = &target {
             let said = match driver.screen_ansi(pane).await {
-                Ok(screen) => emit(&mut out, &mut changes, json!({"screen": screen}))?,
+                Ok(screen) => emit(
+                    &mut out,
+                    &mut changes,
+                    json!({"screen": redact_tokens(&screen)}),
+                )?,
                 Err(error) => {
                     // Found again on the next read, or the watch ends.
                     target = None;
@@ -163,6 +167,38 @@ pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
         }
         tokio::time::sleep(interval).await;
     }
+}
+
+/// `screen` with every GitHub token in it (`ghp_`, `gho_`, `ghs_`, `ghu_`,
+/// `github_pat_` followed by its characters) replaced by `<redacted>`. The
+/// pane is shown in a browser; a token a harness or a command printed is
+/// not something to put there. The launch never prints the bot's (see
+/// `launch_env`); this is for what else may.
+pub(crate) fn redact_tokens(screen: &str) -> String {
+    let body = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(screen.len());
+    let mut rest = screen;
+    loop {
+        let found = ["ghp_", "gho_", "ghs_", "ghu_", "github_pat_"]
+            .iter()
+            .filter_map(|prefix| rest.find(prefix).map(|at| (at, prefix.len())))
+            .min();
+        let Some((at, prefix)) = found else { break };
+        let tail = &rest[at + prefix..];
+        let len = tail.find(|c: char| !body(c)).unwrap_or(tail.len());
+        // A token has a real body; `ghp_x` in prose is left alone. What
+        // comes before is not looked at: a colour escape (`\x1b[1m`) runs
+        // straight into the token.
+        if len >= 16 {
+            out.push_str(&rest[..at]);
+            out.push_str("<redacted>");
+        } else {
+            out.push_str(&rest[..at + prefix + len]);
+        }
+        rest = &tail[len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// One line, if it says something new, and whether it did. A reader that
@@ -237,6 +273,22 @@ mod tests {
         }
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text, "{\"screen\":\"one\"}\n{\"screen\":\"two\"}\n");
+    }
+
+    #[test]
+    fn tokens_are_not_shown() {
+        let screen = "$ SSF_GITHUB_TOKEN='gho_AbCdEf0123456789xyz' ssf launch\r\n\
+                      \x1b[1mghp_0123456789abcdefABCD\x1b[0m github_pat_11ABCDEFG0123456789_abcdefghij";
+        let shown = redact_tokens(screen);
+        assert!(!shown.contains("gho_AbC"), "{shown}");
+        assert!(!shown.contains("ghp_0123"), "{shown}");
+        assert!(!shown.contains("github_pat_11"), "{shown}");
+        assert_eq!(shown.matches("<redacted>").count(), 3, "{shown}");
+        // Prose and short look-alikes stay.
+        assert_eq!(
+            redact_tokens("the ghp_ prefix, ghs_x"),
+            "the ghp_ prefix, ghs_x"
+        );
     }
 
     #[test]

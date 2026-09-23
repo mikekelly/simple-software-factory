@@ -456,6 +456,9 @@
     return want.nodeType === Node.TEXT_NODE || mounted.tagName === want.tagName;
   }
 
+  /// The event handler properties a frame's nodes may carry; see `patch`.
+  const HANDLERS = ["onclick", "onchange", "oninput", "onkeydown", "onsubmit"];
+
   /// Draw `wanted` into `parent`, keeping the nodes already there.
   ///
   /// Every frame is drawn from scratch and nothing here is a framework: a node
@@ -526,6 +529,15 @@
     }
     for (const [name, value] of attributes) {
       if (mounted.getAttribute(name) !== value) mounted.setAttribute(name, value);
+    }
+    // A kept node takes the frame's handlers too: a handler is what a button
+    // does, and it closes over the frame that drew it, so a node reused for
+    // another button -- Kill anyway where Kill was -- must not keep doing what
+    // the old one did. The forms set every handler as one of these
+    // properties. (The few listeners this file adds with addEventListener act
+    // on the node they were added to, which is the one that stays.)
+    for (const name of HANDLERS) {
+      if (mounted[name] !== want[name]) mounted[name] = want[name];
     }
     reconcile(mounted, [...want.childNodes]);
     // A box or a picker holds its value as a property rather than an attribute,

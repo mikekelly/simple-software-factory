@@ -13,7 +13,10 @@
 //
 // `render` is the Assign agent form, for an item with no agent; one form per
 // item, its own Factory picker choosing among the factories that accept the
-// write. `renderActions` is the Actions row, for an item whose state is Working,
+// write. Handlers are set as `onclick`/`onchange`/`oninput` properties, never
+// with addEventListener: the page keeps a mounted node and copies a new
+// frame's handlers onto it, so a reused button does what the new one does.
+// `renderActions` is the Actions row, for an item whose state is Working,
 // Waiting on you, Done or Problem: Hand over… (the assign pickers, prefilled
 // with the stack the card is on, plus a note) and Release (a confirm step naming
 // the branch). It is drawn once per factory that has an agent on the item --
@@ -263,11 +266,11 @@
     body.append(element("p", "ssf-writes-error", state.agentsError, "error"));
     const retry = element("button", undefined, "Try again", "retry");
     retry.type = "button";
-    retry.addEventListener("click", () => {
+    retry.onclick = () => {
       state.agentsError = null;
       loadAgents(state);
       redraw();
-    });
+    };
     body.append(retry);
     return body;
   }
@@ -386,7 +389,8 @@
       box.append(option);
     }
     box.value = chosen;
-    box.addEventListener("change", () => onPick(box.value));
+    // The node the person changed, which may be an earlier frame's.
+    box.onchange = (event) => onPick(event.currentTarget.value);
     field.append(box);
     return field;
   }
@@ -457,7 +461,7 @@
     const assign = element("button", "primary", "Assign");
     assign.type = "button";
     assign.disabled = !ready || state.modelsPending;
-    assign.addEventListener("click", () => submit(state));
+    assign.onclick = () => submit(state);
     actions.append(assign);
     body.append(actions);
     body.append(
@@ -595,14 +599,14 @@
       const actions = element("div", "ssf-writes-actions", undefined, "actions");
       const hand = element("button", undefined, "Hand over\u2026");
       hand.type = "button";
-      hand.addEventListener("click", () => openHandover(state));
+      hand.onclick = () => openHandover(state);
       const release = element("button", "danger", "Release");
       release.type = "button";
-      release.addEventListener("click", () => {
+      release.onclick = () => {
         state.open = "release";
         state.error = null;
         redraw();
-      });
+      };
       const open = openButton(state, state.item?.owner ?? state.itemId, state.item?.pane_input === true);
       actions.append(hand, release, open);
       body.append(actions);
@@ -687,19 +691,19 @@
     note.rows = 2;
     note.placeholder = "What the new session should know (optional)";
     note.value = state.note;
-    note.addEventListener("input", () => {
-      state.note = note.value;
-    });
+    note.oninput = (event) => {
+      state.note = event.currentTarget.value;
+    };
     body.append(note);
     if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
     const actions = element("div", "ssf-writes-actions", undefined, "actions");
     const go = element("button", "primary", state.actionBusy ? "Handing over\u2026" : "Hand over");
     go.type = "button";
     go.disabled = !ready || state.modelsPending || state.actionBusy;
-    go.addEventListener("click", () => sendHandover(state));
+    go.onclick = () => sendHandover(state);
     const cancel = element("button", undefined, "Cancel");
     cancel.type = "button";
-    cancel.addEventListener("click", () => closeStep(state));
+    cancel.onclick = () => closeStep(state);
     actions.append(go, cancel);
     body.append(actions);
     body.append(
@@ -738,10 +742,10 @@
     const release = element("button", "danger", state.actionBusy ? "Releasing\u2026" : "Release");
     release.type = "button";
     release.disabled = state.actionBusy;
-    release.addEventListener("click", () => sendRelease(state));
+    release.onclick = () => sendRelease(state);
     const cancel = element("button", undefined, "Cancel");
     cancel.type = "button";
-    cancel.addEventListener("click", () => closeStep(state));
+    cancel.onclick = () => closeStep(state);
     actions.append(release, cancel);
     body.append(actions);
     return body;
@@ -814,13 +818,13 @@
     const open = element("button", undefined, "Open", "open");
     open.type = "button";
     open.title = "Show this agent's terminal";
-    open.addEventListener("click", () => {
+    open.onclick = () => {
       ask({ type: "ssf:open-pane", url: state.url, session, input }).then((reply) => {
         if (reply?.ok) return;
         state.error = reply?.error ?? "the extension could not open the terminal";
         redraw();
       });
-    });
+    };
     return open;
   }
 
@@ -833,7 +837,7 @@
       body.append(element("p", "ssf-writes-note", "No scratch sessions on this repository.", "none"));
     }
     for (const one of state.sessions) body.append(scratchRow(state, one));
-    if (state.rowNote) body.append(element("p", "ssf-writes-note", state.rowNote, "result"));
+    if (state.rowNote) body.append(element("p", "ssf-writes-note", state.rowNote.text, "result"));
     if (state.open === "new") {
       body.append(scratchForm(state));
       return body;
@@ -842,13 +846,13 @@
     const actions = element("div", "ssf-writes-actions", undefined, "actions");
     const create = element("button", "primary", "New scratch");
     create.type = "button";
-    create.addEventListener("click", () => {
+    create.onclick = () => {
       state.open = "new";
       state.error = null;
       state.rowNote = null;
       loadAgents(state);
       redraw();
-    });
+    };
     actions.append(create);
     body.append(actions);
     return body;
@@ -882,13 +886,13 @@
       const force = element("button", "danger", busy ? "Killing\u2026" : "Kill anyway");
       force.type = "button";
       force.disabled = busy;
-      force.addEventListener("click", () => sendKill(state, id, true));
+      force.onclick = () => sendKill(state, id, true);
       const cancel = element("button", undefined, "Cancel");
       cancel.type = "button";
-      cancel.addEventListener("click", () => {
+      cancel.onclick = () => {
         state.kill = null;
         redraw();
-      });
+      };
       actions.append(force, cancel);
       row.append(actions);
       return row;
@@ -899,13 +903,13 @@
       const kill = element("button", "danger", busy ? "Killing\u2026" : "Kill");
       kill.type = "button";
       kill.disabled = busy;
-      kill.addEventListener("click", () => sendKill(state, id, false));
+      kill.onclick = () => sendKill(state, id, false);
       actions.append(kill);
     } else {
       const resume = element("button", undefined, busy ? "Resuming\u2026" : "Resume");
       resume.type = "button";
       resume.disabled = busy;
-      resume.addEventListener("click", () => sendResume(state, id));
+      resume.onclick = () => sendResume(state, id);
       actions.append(resume);
     }
     row.append(actions);
@@ -950,10 +954,10 @@
     const go = element("button", "primary", state.busy ? "Starting\u2026" : "Start");
     go.type = "button";
     go.disabled = !ready || state.modelsPending || state.busy;
-    go.addEventListener("click", () => sendScratch(state));
+    go.onclick = () => sendScratch(state);
     const cancel = element("button", undefined, "Cancel");
     cancel.type = "button";
-    cancel.addEventListener("click", () => closeStep(state));
+    cancel.onclick = () => closeStep(state);
     actions.append(go, cancel);
     body.append(actions);
     body.append(
@@ -989,7 +993,12 @@
       }
       state.open = null;
       const session = reply.result?.session ?? "the session";
-      state.rowNote = `Started ${session}; it shows here once the factory reports it.`;
+      state.rowNote = rowNote(
+        state,
+        `Started ${session}; it shows here once the factory reports it.`,
+        session,
+        (row) => Boolean(row),
+      );
       redraw();
     });
   }
@@ -1007,15 +1016,30 @@
       state.rowBusy = null;
       if (reply?.ok) {
         state.kill = null;
-        state.rowNote = `Killed ${session}; the workspace is removed on the daemon's next pass.`;
+        state.rowNote = rowNote(
+          state,
+          `Killed ${session}; the workspace is removed on the daemon's next pass.`,
+          session,
+          (row) => !row?.active,
+        );
       } else if (!force && reply?.body?.check) {
         state.kill = { session, message: reply.error };
       } else {
         state.kill = null;
-        state.rowNote = reply?.error ?? "the factory did not answer";
+        state.rowNote = rowNote(state, reply?.error ?? "the factory did not answer", session);
       }
       redraw();
     });
+  }
+
+  /// A note under the scratch rows about `session`, standing until a frame
+  /// supersedes it: `settled(row)` says the factory now shows what the note
+  /// was waiting for. A note without one (an error) goes once the session's
+  /// row says something else than when the note was written.
+  function rowNote(state, text, session, settled) {
+    const label = (row) => (row ? `${row.stateLabel}|${row.active}|${row.released_at}` : "none");
+    const then = label(state.sessions.find((one) => one.id === session));
+    return { text, session, settled: settled ?? ((row) => label(row) !== then) };
   }
 
   function sendResume(state, session) {
@@ -1026,8 +1050,10 @@
     ask({ type: "ssf:scratch-resume", url: state.url, session }).then((reply) => {
       state.rowBusy = null;
       state.rowNote = reply?.ok
-        ? `Resuming ${session} on the daemon's next pass.`
-        : (reply?.error ?? "the factory did not answer");
+        ? rowNote(state, `Resuming ${session} on the daemon's next pass.`, session, (row) =>
+            Boolean(row?.active),
+          )
+        : rowNote(state, reply?.error ?? "the factory did not answer", session);
       redraw();
     });
   }
@@ -1097,6 +1123,10 @@
     chooseFactory(state, choices, choices[0].url);
     state.login = login || null;
     state.sessions = sessions ?? [];
+    const noted = state.rowNote;
+    if (noted && noted.settled(state.sessions.find((one) => one.id === noted.session))) {
+      state.rowNote = null;
+    }
     if (state.harness && !state.models && !state.modelsPending && !state.modelsError) {
       loadModels(state, state.harness);
     }

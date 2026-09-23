@@ -61,6 +61,7 @@ key).
 | Variable | Effect |
 |----------|--------|
 | `SSF_GITHUB_TOKEN` | the GitHub token to use |
+| `SSF_GITHUB_TOKEN_FILE` | a file holding the GitHub token, read after `SSF_GITHUB_TOKEN`; a daemon started with `SSF_GITHUB_TOKEN` hands its sessions the token this way (`launch-token`, mode 0600, in the state directory), so it never appears on a pane's command line |
 | `SSF_CONFIG_DIR`, `SSF_STATE_DIR` | where config and state live; a scratch factory uses its own (see [development.md](development.md)) |
 | `SSF_SERVER` | the catalog target or SSH destination to act on |
 | `HERDR_COMMAND` | the herdr CLI |

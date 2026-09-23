@@ -254,7 +254,9 @@ harness answers from files and commands alone.
 for an item, `owner%2Fname~id` for a scratch session). It sends an
 `event: screen` frame whose `data` is `{"screen": "..."}`, the pane's visible
 screen with its ANSI colours as `herdr pane read --source visible --format ansi`
-prints it, and another only when the screen changes; `event: error` with
+prints it, with anything that looks like a GitHub token (`ghp_`, `gho_`,
+`ghs_`, `ghu_`, `github_pat_`) replaced by `<redacted>`, and another only when
+the screen changes; `event: error` with
 `{"error": ...}` says the pane cannot be read (no workspace, no agent running)
 and ends the stream, so a client does not ask again on its own.
 The screen is read about four times a second, and only while someone watches:

@@ -1550,13 +1550,17 @@ impl Config {
         write_atomic(path, body.as_bytes(), 0o600)
     }
 
-    /// Resolve the bot token: env var, then config, then a pasted token file,
-    /// then the GitHub CLI's keyring for the signed-in bot account.
+    /// Resolve the bot token: env var, then the file a session's launch
+    /// names (`SSF_GITHUB_TOKEN_FILE`), then config, then a pasted token
+    /// file, then the GitHub CLI's keyring for the signed-in bot account.
     pub fn github_token(&self) -> Result<String> {
         if let Ok(t) = std::env::var("SSF_GITHUB_TOKEN") {
             if !t.trim().is_empty() {
                 return Ok(t.trim().to_string());
             }
+        }
+        if let Some(t) = launch_token() {
+            return Ok(t);
         }
         if let Some(t) = &self.github.token {
             if !t.trim().is_empty() {
@@ -1582,6 +1586,8 @@ impl Config {
     pub fn token_source(&self) -> &'static str {
         if std::env::var("SSF_GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
             "SSF_GITHUB_TOKEN"
+        } else if launch_token().is_some() {
+            "SSF_GITHUB_TOKEN_FILE"
         } else if self
             .github
             .token
@@ -1695,6 +1701,15 @@ pub fn save_token(token: &str) -> Result<PathBuf> {
     }
     write_atomic(&path, format!("{}\n", token.trim()).as_bytes(), 0o600)?;
     Ok(path)
+}
+
+/// The bot token a session's launch handed it in a file
+/// (`SSF_GITHUB_TOKEN_FILE`), rather than on the pane's command line.
+fn launch_token() -> Option<String> {
+    let path = std::env::var_os("SSF_GITHUB_TOKEN_FILE")?;
+    let token = std::fs::read_to_string(path).ok()?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {
