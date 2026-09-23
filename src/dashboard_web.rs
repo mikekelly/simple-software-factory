@@ -2582,14 +2582,40 @@ wait
             .parse()
             .unwrap();
         timeout(Duration::from_secs(5), async {
-            // SAFETY: signal 0 only asks whether the process is there.
-            while unsafe { libc::kill(child, 0) } == 0 {
+            while still_running(child) {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
         .expect("the reader's child outlived its last viewer");
         task.abort();
+    }
+
+    /// Whether `pid` is still running: field 3 of `/proc/<pid>/stat`, after
+    /// the parenthesized comm, which can hold spaces. A `Z` process has
+    /// exited and only waits to be reaped, which is what this test meets: the
+    /// group kill takes the reader and its child at once, so nothing in this
+    /// process is left to reap the child — where the namespace's init reaps
+    /// what it did not start (a machine's does; a test job's container need
+    /// not) it is gone, and where it does not, it sits as a zombie. Exited
+    /// either way, and not still reading a pane, though `kill(pid, 0)` counts
+    /// a zombie as present.
+    #[cfg(target_os = "linux")]
+    fn still_running(pid: i32) -> bool {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        stat.rsplit_once(") ")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .is_some_and(|state| state != "Z")
+    }
+
+    /// Without `/proc`, whether the process is there at all; the platforms
+    /// that have none reap orphaned children themselves.
+    #[cfg(not(target_os = "linux"))]
+    fn still_running(pid: i32) -> bool {
+        // SAFETY: signal 0 only asks whether the process is there.
+        unsafe { libc::kill(pid, 0) == 0 }
     }
 
     /// Two spellings of one session are one pane, read once.
