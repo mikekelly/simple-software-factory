@@ -97,6 +97,11 @@ See [Session dashboard](dashboard.md).
   `ssf-server --once` take it before reading state, and it is released when
   its owner exits. Do not unlink it to clear a refusal while an engine may
   still be running.
+- **The capability secret.** An enabled [server web
+  dashboard](dashboard.md#optional-server-web-dashboard) keeps its URL secret in
+  `dashboard-token` beside `state.json` (0600), generated on the first start
+  that serves the listener and read on every later one, so a restart does not
+  invalidate the URL a client was configured with.
 - **Retirement.** Closed or unassigned issues get one final message (push,
   final comment, then `ssf release` if everything is on origin) and are marked
   inactive; the workspace is marked completed in the driver and left in place.

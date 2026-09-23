@@ -118,10 +118,50 @@ async fn load(latest: &mut Latest) -> Result<Value> {
     }
 }
 
+/// The capability secret belongs to the factory, not to the run: it is
+/// kept under the state directory beside `state.json`, so a restarted
+/// server serves the URL a client was configured with. Deleting the file
+/// and restarting rotates that URL.
+fn capability_path() -> PathBuf {
+    crate::config::state_dir().join("dashboard-token")
+}
+
+/// A whole capability path: `classify` compares the segment byte for byte,
+/// so anything that could not be one is not one.
+fn is_capability(token: &str) -> bool {
+    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// The capability secret, generated once and then reused. A stored value
+/// that is not a whole secret is replaced, and the log says so: a
+/// capability path nothing was configured with is worse than a new one.
 fn capability() -> Result<String> {
+    let path = capability_path();
+    match std::fs::read_to_string(&path) {
+        Ok(stored) if is_capability(stored.trim()) => return Ok(stored.trim().to_string()),
+        Ok(stored) => tracing::warn!(
+            "{} does not hold a capability ({} characters, expected 64 hex); writing a new one",
+            path.display(),
+            stored.trim().len()
+        ),
+        // Absent is the ordinary first start; anything else the write
+        // below will fail on, with the path in the error.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => tracing::warn!("could not read {}: {error}", path.display()),
+    }
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    crate::config::write_atomic(&path, format!("{token}\n").as_bytes(), 0o600)?;
+    tracing::info!(
+        "Server web dashboard capability stored in {} (kept across restarts; delete it to rotate)",
+        path.display()
+    );
+    Ok(token)
 }
 
 async fn serve(
@@ -976,8 +1016,30 @@ mod tests {
                 Err(expected)
             );
         }
-        assert_eq!(capability().unwrap().len(), 64);
-        assert_ne!(capability().unwrap(), capability().unwrap());
+    }
+
+    /// The secret is minted once and then kept: a restart serves the URL the
+    /// extension was configured with, which is the whole point of storing it.
+    /// Content that is not a whole secret is replaced, never served as a path.
+    #[test]
+    fn the_capability_is_generated_once_and_kept() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let first = capability().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        let path = capability_path();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(capability().unwrap(), first, "a restart reuses the secret");
+        // A truncated or hand-edited file addresses nothing, so it is
+        // replaced with a whole secret rather than served as a path.
+        std::fs::write(&path, "not a secret").unwrap();
+        let replaced = capability().unwrap();
+        assert_eq!(replaced.len(), 64);
+        assert_ne!(replaced, first);
+        assert_eq!(capability().unwrap(), replaced);
     }
 
     /// The write rules, one rejection at a time: only an extension's own
@@ -1738,6 +1800,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
 
     #[tokio::test]
     async fn listener_lives_until_daemon_finishes_and_closes_with_it() {
+        let _sandbox = crate::config::test_support::sandbox();
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
@@ -1760,6 +1823,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
 
     #[tokio::test]
     async fn daemon_error_is_preserved_and_closes_listener() {
+        let _sandbox = crate::config::test_support::sandbox();
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();

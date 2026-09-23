@@ -29,8 +29,11 @@ in the [dashboard guide](../docs/dashboard.md).
    # ssf@NAME.service for a named target
    ```
 
-   It looks like `http://127.0.0.1:8787/<secret>/`. It changes on every server
-   restart, so re-save it when the server restarts.
+   It looks like `http://127.0.0.1:8787/<secret>/`. The secret is generated
+   once and kept in the factory's state directory, so this URL stays the same
+   across restarts: save it once below and it keeps working. It changes only if
+   someone rotates the secret by deleting that file, or if the `[dashboard]`
+   bind or port changes.
 
 3. Load the extension: open `chrome://extensions`, turn on **Developer mode**,
    choose **Load unpacked**, and select this `chrome-extension/` directory.
@@ -76,7 +79,7 @@ those two lines together answer the two ways an expected card can be missing:
 | `live · reports N watched repositories` | The factory answered and publishes the repositories it watches, so an item it has no record of carries the Assign form. |
 | `live · reports no watched repositories` | The factory answered but publishes none, so the overlay cannot offer the form for an item it has no record of — either it watches none, or it is an older `ssf-server` that does not publish them (see [Assigning an agent](#assigning-an-agent)). It is the server that needs updating, not the extension. |
 | `stale · reports …` | The stream stopped; the states shown are from the last snapshot. |
-| `unreachable: …` | The factory did not answer, in its own words or the extension's. A capability URL changes when the server restarts, so a URL saved before a restart reads here. |
+| `unreachable: …` | The factory did not answer, in its own words or the extension's: the server or its VM is not running, the bind or port moved, or the secret was rotated since the URL was saved. |
 | `not answered yet.` | The stream is connecting — shown for a factory just saved too. |
 
 The lines are pushed by the extension's service worker, which the page keeps
@@ -374,8 +377,11 @@ forward, and keep tailnet ACLs restrictive.
 
 ## Limitations
 
-- The capability URL changes when the server restarts; the options page must be
-  updated to match, or the factory reads as unreachable.
+- The capability URL is stable across restarts, so a saved factory keeps
+  working. It changes when the secret is rotated (deleting the factory state
+  directory's `dashboard-token`) or the `[dashboard]` bind or port moves; the
+  options page must then be updated to match, or the factory reads as
+  unreachable.
 - A project board chip depends on the board rendering its cards as links to the
   issue or pull request, as GitHub's board and list views do.
 - The closed-or-merged reading is a chip's, from the state mark GitHub draws in

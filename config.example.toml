@@ -143,6 +143,8 @@ effort = "high"                              # effort/thinking level; `ssf agent
 
 # Optional server browser dashboard. Restart ssf-server after changes.
 # In VM mode this section belongs to the host, not the guest.
+# The URL's secret is generated once and kept in the factory's state directory
+# (dashboard-token, 0600), so a restart serves the same URL a client saved.
 # Only loopback or a Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) is
 # accepted; use an authenticated TLS reverse proxy for any other remote access.
 [dashboard]
