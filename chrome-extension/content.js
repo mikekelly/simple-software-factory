@@ -1286,30 +1286,25 @@
   }
 
   /// The item a project view's side panel is showing, in the shape a detail
-  /// page's own path parses to, or null when no panel is open. The panel is a
-  /// detail view of one item drawn inside the board -- its own link to the
-  /// item, and the same sidebar container the item's page has -- so the item
-  /// belongs at the top of that sidebar exactly as it does on its own page
-  /// (#440).
+  /// page's own path parses to, or null when no item panel is open. The panel
+  /// is a detail view of one item drawn inside the board -- the same sidebar
+  /// container the item's page has -- so that item belongs at the top of that
+  /// sidebar exactly as it does on its own page (#440).
+  ///
+  /// GitHub states the open panel and the item it shows in the query string,
+  /// `?pane=issue&itemId=...&issue=owner%7Crepo%7Cnumber`, and that is the
+  /// panel's own state rather than a reading of its DOM: the parameter is there
+  /// while the panel is and gone when it is closed. Only the item panel carries
+  /// an `issue`, so the project information panel, which shares the panel's
+  /// accessible name, names no item; nor does a draft item's panel, a draft
+  /// having no issue URL to name. A panel names no pull request either, since
+  /// GitHub does not open a pull request in one.
   function sidePanel() {
-    // GitHub names the panel for assistive technology and gives its container
-    // its own class; either one finds it, so a reworded name is not a lost
-    // card.
-    const panel = document.querySelector(
-      '[role="dialog"][aria-label^="Side panel"], [class*="SidePanel-module__sidePanel"]',
-    );
-    if (!panel) return null;
-    const linked = [...panel.querySelectorAll("a[href]")].find((anchor) =>
-      LINK_PATH.test(anchor.pathname),
-    );
-    if (!linked) return null;
-    const match = LINK_PATH.exec(linked.pathname);
-    return {
-      owner: match[1],
-      repo: match[2],
-      number: match[3],
-      pull: linked.pathname.includes("/pull/"),
-    };
+    const query = new URLSearchParams(location.search);
+    if (query.get("pane") !== "issue") return null;
+    const named = (query.get("issue") ?? "").split("|");
+    if (named.length !== 3) return null;
+    return { owner: named[0], repo: named[1], number: named[2], pull: false };
   }
 
   /// The title links on a list, board or search page, one per issue. A side

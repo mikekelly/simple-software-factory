@@ -200,12 +200,16 @@ read for:
 
 **Opening an item from a board opens a side panel over it, and the panel shows
 the item's card rather than a chip.** GitHub draws that panel as a detail view
-of the one item — its own header, its own link to the item, the same sidebar the
-item's page has — and the overlay reads it the same way: the card sits at the
-top of the panel's sidebar, above Assignees, exactly as it does on the item's
-own page, and the panel's own links get no chips. A chip belongs on a row in a
-list, and the panel's links are the item itself and the issues its prose names
-(#440).
+of the one item — the same sidebar container the item's page has — and names the
+item it is showing in the query string (`pane=issue`, and an `issue` parameter
+of the form `owner|repo|number`), which is where the overlay reads it: the card
+sits at the top of the panel's sidebar, above Assignees, exactly as it does on
+the item's own page, and the panel's own links get no chips. A chip belongs on a
+row in a list, and the panel's links are the item itself and the issues its
+prose names (#440). The parameter is the panel's own state, so closing the panel
+is what takes the card away, and only the item panel carries an `issue` — the
+project information panel names none, and neither does a draft item's, a draft
+having no issue URL (#440).
 
 Hovering a chip shows the stack the session is on, the absolute time where there
 is one and the reason where there is not, and the first line of the last message.
@@ -387,9 +391,11 @@ forward, and keep tailnet ACLs restrictive.
   updated to match, or the factory reads as unreachable.
 - A project board chip depends on the board rendering its cards as links to the
   issue or pull request, as GitHub's board and list views do. The side panel's
-  card depends on the panel naming itself the way GitHub does — a dialog
-  labelled `Side panel:` — and carrying its own link to the item, which is how
-  the overlay knows which item the panel is showing.
+  card depends on the panel naming the item it shows in the query string
+  (`pane=issue` with an `issue` parameter), which GitHub does for the item panel
+  and for no other; a GitHub that renames that parameter takes the panel's card
+  away with it, and the panel's own links then get chips as they did before
+  #440.
 - The closed-or-merged reading is a chip's, from the state mark GitHub draws in
   the item's own area — the nearest ancestor holding exactly one state mark,
   stopping at the first link to a different item, so a board column or a search
