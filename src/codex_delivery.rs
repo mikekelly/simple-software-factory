@@ -4,6 +4,7 @@
 //! confirms the exact event. Never resend an ambiguous native write.
 
 use anyhow::{Context, Result, bail};
+use futures_util::future::BoxFuture;
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -14,6 +15,8 @@ use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Message, protocol::WebSocketConfig};
+
+use crate::herdr::{Channel, Herdr, Journal};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -431,6 +434,71 @@ pub(crate) async fn deliver(
             Err(error) => format!("Codex admission outcome is uncertain: {error:#}"),
         })?;
     Ok(true)
+}
+
+/// Codex's delivery channel: the app-server an explicitly attached TUI
+/// (`--remote unix://PATH`) runs against, with the terminal as the fallback
+/// for a standalone TUI.
+pub(crate) struct Codex;
+
+impl Channel for Codex {
+    fn session_bound(&self) -> bool {
+        true
+    }
+
+    fn deliver<'a>(
+        &'a self,
+        herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let (mailbox, sequence) = journal.context("Codex delivery has no journal")?;
+            let info = herdr.run(&["pane", "process-info", "--pane", pane]).await?;
+            if !deliver(Some(&info), mailbox, sequence, text).await? {
+                herdr.send_prompt(pane, text).await?;
+            }
+            Ok(())
+        })
+    }
+
+    fn has_record(&self, mailbox: &Path, sequence: u64, text: &str) -> bool {
+        has_record(mailbox, sequence, text)
+    }
+
+    fn has_binding(&self, mailbox: &Path) -> bool {
+        has_binding(mailbox)
+    }
+
+    /// An event on record is reconciled only through the resumed session's
+    /// native channel. A resumed session with nothing on record is offered
+    /// its native channel first, and a standalone one gets the terminal.
+    fn relaunched<'a>(
+        &'a self,
+        herdr: &'a Herdr,
+        pane: &'a str,
+        journal: Journal<'a>,
+        recorded: bool,
+        resumed: bool,
+        text: &'a str,
+    ) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            if let Some((mailbox, sequence)) = journal.filter(|_| recorded) {
+                if !herdr.codex_channel_available(pane, mailbox).await? {
+                    bail!("Codex resumed without its native channel; refusing terminal fallback");
+                }
+                deliver(None, mailbox, sequence, text).await?;
+                return Ok(true);
+            }
+            if !resumed {
+                return Ok(false);
+            }
+            let (mailbox, sequence) = journal.context("Codex delivery has no journal")?;
+            let info = herdr.run(&["pane", "process-info", "--pane", pane]).await?;
+            deliver(Some(&info), mailbox, sequence, text).await
+        })
+    }
 }
 
 #[cfg(test)]

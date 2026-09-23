@@ -363,11 +363,11 @@ pub(super) async fn doctor() -> Result<()> {
         let driver_rows = open_workspaces
             .get(&cfg.driver_for(r))
             .and_then(|rows| rows.as_ref().ok());
-        let uses_native_channel = crate::delivery_channel::supports(&r.harness)
+        let uses_native_channel = crate::harness::channel(&r.harness).bridged()
             || state.repos.get(&r.name).is_some_and(|repo_state| {
                 repo_state.issues.values().any(|session| {
                     session.overrides.as_ref().is_some_and(|overrides| {
-                        crate::delivery_channel::supports(&overrides.harness)
+                        crate::harness::channel(&overrides.harness).bridged()
                     })
                 })
             });
@@ -404,9 +404,7 @@ pub(super) async fn doctor() -> Result<()> {
                     .as_ref()
                     .map(|overrides| overrides.harness.as_str())
                     .unwrap_or(&r.harness);
-                if !crate::delivery_channel::supports(harness)
-                    && !matches!(harness, "claude" | "codex")
-                {
+                if !crate::harness::channel(harness).journaled() {
                     continue;
                 }
                 let live = session.worktree_id.as_deref().is_some_and(|id| {
