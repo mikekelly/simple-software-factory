@@ -173,9 +173,17 @@ that carries it (`activity_note`, below).
 An issue that is an *additional* item of another agent shows `worked on by the
 agent on #N`, with #N linked, instead of a card claiming its own agent.
 
-**A pull request page resolves through the issue its body names:** `Closes`,
-`Fixes` or `Resolves #N` first, then `Refs #N`, first match winning, and the card
-says `for #N`:
+**A pull request page shows the pull request's own card when a factory has
+one.** That card is the factory's binding — the session tag in the body, or the
+branch — so a delegated pull request shows its own session's state and its
+Actions row (Message, Hand over, Release), and those act on the pull request,
+not on the issue its body closes:
+
+![A delegated pull request page whose sidebar card is the pull request's own, with an Actions row](docs/pr-own-card.png)
+
+**Otherwise a pull request page resolves through the issue its body names:**
+`Closes`, `Fixes` or `Resolves #N` first, then `Refs #N`, first match winning,
+and the card says `for #N`:
 
 ![A pull request page whose sidebar card reads "for #412"](docs/pr-card.png)
 
@@ -186,6 +194,12 @@ names nothing a factory watches or records, the card falls back to the pull
 request itself, and the form starts a session on the pull request. Either way
 the write is for the item the card names, never for an issue the page merely
 mentions.
+
+**A closed or merged page offers no writes.** The sidebar card reads the state
+GitHub draws in the item's header, the way a chip reads its row: a finished item
+reads **Done** and carries no Assign form, neither for itself nor for an issue a
+merged pull request's body names. An agent still on a finished item keeps its
+Actions row, so its workspace can still be released.
 
 **Lists, search results and project boards get one chip per tracked item** —
 icon and state word, with the relative last activity beside it where the factory
@@ -409,9 +423,8 @@ forward, and keep tailnet ACLs restrictive.
   the item's own area — the nearest ancestor holding exactly one state mark,
   stopping at the first link to a different item, so a board column or a search
   results list cannot answer for a card. The chip's popover agrees with it. A
-  sidebar card keeps the factory's own report, because on a pull request page
-  the page's state belongs to the pull request while the card is about the issue
-  it resolves through. A card whose own cross-reference badge (a board card's
+  sidebar card reads the page header's state label instead; a page whose header
+  this version cannot read keeps the factory's own report. A card whose own cross-reference badge (a board card's
   `#N` token, an issue list's linked-PR button) sits between the title and the
   state mark also keeps the factory's own report, so the worst case is a red
   **Problem** on a closed item rather than a claim that a live item is done;

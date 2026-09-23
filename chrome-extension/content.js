@@ -388,6 +388,17 @@
   /// does not know, or more than one mark -- leaves the state as the factory
   /// reported it, rather than reading a neighbouring item's mark, which would
   /// be a claim that a live item is done.
+  /// Whether an item's own page -- or the side panel showing it -- says the
+  /// item is closed or merged, read from the state label GitHub draws in the
+  /// item's header. A page whose header this version cannot read keeps the
+  /// state as the factory reported it (#462).
+  function pageClosed() {
+    const mark = document.querySelector(
+      '[data-testid="header-state"], .gh-header-show .State, .gh-header-sticky .State',
+    );
+    return mark ? finishedMark(mark) : false;
+  }
+
   function closedInDom(anchor, key) {
     let node = anchor;
     while (node?.parentElement) {
@@ -1046,13 +1057,18 @@
   /// `itemKey` is the item the card is *about*: for a pull request page that is
   /// the issue its body closes, not the pull request, so the write acts on the
   /// same item the card names.
-  function withWrites(section, matches, itemKey) {
+  ///
+  /// `closed` is the page's own fact that the item is finished: a finished
+  /// item is not one to start a session on, so it gets neither the form nor
+  /// the note about what frees it. An agent still on it keeps its Actions row,
+  /// whose Release is what gives a kept workspace back.
+  function withWrites(section, matches, itemKey, closed = false) {
     const cards = section.querySelectorAll(".ssf-card");
     // An item ssf already has a workspace for is one the write would be refused
     // for, so its card says what frees it rather than offering the form; a
     // factory whose answer is the one that takes the write draws the form
     // whether or not another factory's card carries the note.
-    for (const match of matches.filter(held)) {
+    for (const match of closed ? [] : matches.filter(held)) {
       cards[matches.indexOf(match)]?.append(
         named(element("p", "ssf-hold", "Has a workspace; release it first."), "hold"),
       );
@@ -1082,7 +1098,7 @@
     const assignableMatches = matches.filter(
       (match) => match.kind !== "agent" && assignable(match),
     );
-    if (!assignableMatches.length) return section;
+    if (closed || !assignableMatches.length) return section;
     const form = globalThis.ssfWrites?.render({
       factories: assignableMatches.map((match) => match.factory),
       repo,
@@ -1209,7 +1225,7 @@
     // tree and before it is put in the page: the Assign agent form, or the
     // Actions row. Drawing them into this frame's own tree is what lets the
     // reconcile below keep the nodes of a form already on screen.
-    if (want.anchor === null) withWrites(body, want.matches, want.key);
+    if (want.anchor === null) withWrites(body, want.matches, want.key, closed);
     reconcile(entry.shadow, [body]);
     let placed = false;
     if (want.anchor === null) {
@@ -1327,15 +1343,22 @@
     return anchors;
   }
 
-  /// The issue a pull request page is about: the first one its body closes, or
-  /// failing that the first it refs. A factory with no card for that issue but
-  /// one for the pull request itself still resolves, so a pull request page is
-  /// never emptier than its own number -- and, in a repository the factory
-  /// watches, an item it has no record of resolves too, whether the body named
-  /// it or it is the pull request itself, since starting a session on it is what
-  /// the form on this page is for (#435).
+  /// The item a pull request page is about. A factory's own card for the pull
+  /// request wins: that is the factory's binding -- its session tag or its
+  /// branch -- and a delegated pull request is bound to its own session, not
+  /// to the issue its body closes (#462). Failing that, the first issue its
+  /// body closes, or the first it refs, which is how a delivery pull request
+  /// resolves through the issue it delivers. A factory with no card for that
+  /// issue but a record of the pull request still resolves, so a pull request
+  /// page is never emptier than its own number -- and, in a repository the
+  /// factory watches, an item it has no record of resolves too, whether the
+  /// body named it or it is the pull request itself, since starting a session
+  /// on it is what the form on this page is for (#435).
   function pullTarget(page) {
     const own = `${page.owner}/${page.repo}#${page.number}`;
+    if (matchesFor(own).some((match) => match.kind === "agent")) {
+      return { key: own, label: null };
+    }
     const body = document.querySelector(
       '[data-testid="issue-body"], #discussion_bucket .js-comment-body, .js-comment-body',
     );
@@ -1389,7 +1412,7 @@
     // different one.
     const previous = popover.entry.shadow.querySelector(".ssf-popover");
     const scrolled = previous ? previous.scrollTop : 0;
-    withWrites(body, matches, popover.key);
+    withWrites(body, matches, popover.key, closed);
     reconcile(popover.entry.shadow, [body]);
     if (body.scrollTop !== scrolled) body.scrollTop = scrolled;
     measure(popover.entry);
@@ -1460,6 +1483,10 @@
               // through. The form assigns that item.
               key: target.key,
               anchor: null,
+              // The page's own fact about its item, as a chip reads its row's:
+              // a finished page reads Done and offers no Assign form, neither
+              // for itself nor for the issue its body names (#462).
+              closed: pageClosed(),
             });
           }
         }
