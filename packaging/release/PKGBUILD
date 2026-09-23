@@ -34,9 +34,9 @@ install=ssf.install
 # !debug: no ssf-debug split package. !lto: makepkg's -flto would reach
 # ring's C objects through the cc crate; cargo's release profile decides.
 options=('!debug' '!lto')
-_source_commit=ad37fa67a3015e89a4aab37bf931394be0f0efe4
+_source_commit=cab5fc9faca04b65716abca232d032fb0ddb2c69
 source=("$pkgname-$pkgver.tar.gz::$url/archive/$_source_commit.tar.gz")
-sha256sums=('b2062ebffbacc4d5e5a6aac9a3d4eb2278465521a68d3f2dc693601a69d2b006')
+sha256sums=('f3ee30bd884522335bca1e2284c7f994036f893cab903e93fead35cfdb66f88e')
 
 # GitHub names the unpacked tree after the repository, not the package.
 _srcname="simple-software-factory-$_source_commit"
