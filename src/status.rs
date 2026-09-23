@@ -1064,6 +1064,25 @@ fn issue(row: &Value, fallback: &str) -> Value {
         "has_workspace":has_workspace,"branch":branch})
 }
 
+/// Why a card carries no `last_activity_at`, when it carries none: ssf dates a
+/// session from the local transcript its harness keeps, and every way that can
+/// be absent is a fact about the session rather than a silence. A client that
+/// printed "unknown" instead was making a claim about the agent out of a gap in
+/// the record, which is what the overlay did on every card of every factory
+/// whose sessions run OMP (#439).
+///
+/// The reasons are the model's own, one per way the fact can be missing, so
+/// every client says the same sentence rather than inventing its own.
+fn activity_note(runtime: &Value) -> Option<&'static str> {
+    if !crate::sessions::reports_activity(text(runtime, "harness")) {
+        return Some("the harness keeps no local transcript ssf can read");
+    }
+    if text(runtime, "agent_session_id").is_empty() {
+        return Some("the session's conversation is not identified yet");
+    }
+    Some("ssf has not found the session's transcript yet")
+}
+
 /// The factory a payload came from, on every card: the name the server was
 /// started under when it answers for a catalog target (`ssf-server --target
 /// …`; the status stream names it in `server`), else the machine's own
@@ -1179,7 +1198,23 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             .map(|row| row["next_launch"].clone())
             .find(|value| !value.is_null())
             .unwrap_or(Value::Null);
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"factory":factory,"next_launch":next_launch,"agent_session_id":metadata("agent_session_id")}));
+        // A handover the daemon has accepted and not carried out yet, same
+        // rows as the stack: it is the item's own fact, and it is waiting on
+        // this session's workspace (#439).
+        let handover = [primary, runtime]
+            .into_iter()
+            .map(|row| row["handover"].clone())
+            .find(|value| !value.is_null())
+            .unwrap_or(Value::Null);
+        // Why there is no activity time, where there is none: the card's own
+        // fact, so every client says the same sentence instead of "unknown"
+        // (#439).
+        let activity_note = if runtime["last_activity_at"].is_null() {
+            activity_note(runtime)
+        } else {
+            None
+        };
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id")}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");
@@ -1251,6 +1286,41 @@ mod dashboard_tests {
         );
     }
 
+    /// A card with no activity time says why it has none, in the model rather
+    /// than in each client: ssf dates a session from a local transcript, and
+    /// the ways that can be missing are different facts. Printing "unknown"
+    /// for all of them read as a claim about the agent (#439).
+    #[test]
+    fn cards_without_an_activity_time_say_why() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#1","owner":"r#1","active":true,"agent_live":true,"agent_state":"working",
+                "harness":"omp","agent_session_id":"abc"},
+            {"id":"r#2","owner":"r#2","active":true,"agent_live":true,"agent_state":"idle",
+                "harness":"claude"},
+            {"id":"r#3","owner":"r#3","active":true,"agent_live":true,"agent_state":"idle",
+                "harness":"codex","agent_session_id":"9f2c"},
+            {"id":"r#4","owner":"r#4","active":true,"agent_live":true,"agent_state":"idle",
+                "harness":"claude","agent_session_id":"9f2c","last_activity_at":"2026-09-12T13:00:00Z"}
+        ]}))
+        .unwrap();
+        let cards = snapshot["cards"].as_array().unwrap();
+        assert_eq!(
+            cards[0]["activity_note"],
+            "the harness keeps no local transcript ssf can read"
+        );
+        assert_eq!(
+            cards[1]["activity_note"],
+            "the session's conversation is not identified yet"
+        );
+        assert_eq!(
+            cards[2]["activity_note"],
+            "ssf has not found the session's transcript yet"
+        );
+        // A card with a time has nothing to explain.
+        assert!(cards[3]["activity_note"].is_null());
+        assert_eq!(cards[3]["last_activity_at"], "2026-09-12T13:00:00Z");
+    }
+
     /// A card says which factory it came from, and what an item without a
     /// live agent has none of: a tool call to show, or a workspace branch.
     #[test]
@@ -1264,6 +1334,34 @@ mod dashboard_tests {
         assert_eq!(card["factory"], "host-one");
         assert!(card["tool"].is_null());
         assert!(card["branch"].is_null());
+    }
+
+    /// Details on a card is drawn from the model's own fields, so every one the
+    /// overlay's rows read is published: where the session runs, and a handover
+    /// the daemon has accepted and not carried out (#439).
+    #[test]
+    fn cards_publish_the_workspace_and_a_pending_handover() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#1","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle",
+                "worktree_path":"/home/bot/ssf/projects/issue-1",
+                "handover":{"harness":"claude","harness_name":"Claude Code","model":"opus",
+                    "effort":"low","summary_chars":120,"by":"o/r#12",
+                    "requested_at":"2026-09-12T13:00:00Z"}}
+        ]}))
+        .unwrap();
+        let card = &snapshot["cards"][0];
+        assert_eq!(card["worktree_path"], "/home/bot/ssf/projects/issue-1");
+        assert_eq!(card["handover"]["harness"], "claude");
+        assert_eq!(card["handover"]["effort"], "low");
+        assert_eq!(card["handover"]["by"], "o/r#12");
+        // No handover pending is null, not an empty object: a client draws the
+        // row only where there is one.
+        let quiet = dashboard_presentation(&json!({"sessions":[
+            {"id":"r#1","owner":"r#1","active":true,"agent_live":true,"agent_state":"idle"}
+        ]}))
+        .unwrap();
+        assert!(quiet["cards"][0]["handover"].is_null());
+        assert!(quiet["cards"][0]["worktree_path"].is_null());
     }
 
     #[test]

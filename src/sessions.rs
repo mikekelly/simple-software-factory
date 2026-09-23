@@ -13,6 +13,14 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
+/// Whether ssf can date a conversation on `harness` at all: the harnesses that
+/// keep a local transcript it knows how to read. The rest report no activity
+/// time ever, which is a fact about the harness rather than about the agent, so
+/// a dashboard says which it is instead of leaving a gap (#439).
+pub fn reports_activity(harness: &str) -> bool {
+    matches!(harness, "claude" | "codex")
+}
+
 /// Last write to the live conversation's transcript. Herdr exposes a session
 /// reference, but no wall-clock activity time. Missing or unsupported transcripts
 /// stay unknown; a prompt delivery time is not a substitute for agent activity.

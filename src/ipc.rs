@@ -105,15 +105,6 @@ pub enum Request {
         effort: Option<String>,
         by: Option<String>,
     },
-    /// Deliver `text` to the agent that acts on `item` (`owner/repo#N`),
-    /// the way an item's own activity reaches it: the daemon's delivery
-    /// path, which brings a gone workspace and agent back first. The web
-    /// API's `POST api/message` is the caller; a person at a shell has the
-    /// item's comments and `ssf sub` for this.
-    Message {
-        item: String,
-        text: String,
-    },
     /// List, and unless `dry_run` remove, the workspaces of closed items
     /// whose agent is gone: the clean-and-pushed ones, or all of them with
     /// `force`. `older_than_days` keeps recently retired ones out of it.
@@ -334,13 +325,6 @@ mod tests {
         let j = serde_json::to_string(&s).unwrap();
         assert!(j.contains("\"op\":\"assign\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), s);
-        let m = Request::Message {
-            item: "o/r#2".into(),
-            text: "please look at the failing test".into(),
-        };
-        let j = serde_json::to_string(&m).unwrap();
-        assert!(j.contains("\"op\":\"message\""));
-        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), m);
         let a = Request::Adopt {
             items: vec!["o/r#3".into(), "x/y#4".into()],
         };

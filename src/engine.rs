@@ -377,7 +377,6 @@ mod implementation {
     mod identity;
     mod issues;
     mod lifecycle;
-    mod messages;
     mod onboarding;
     mod reconciliation;
     mod releases;

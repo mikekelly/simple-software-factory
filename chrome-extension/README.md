@@ -36,10 +36,19 @@ in the [dashboard guide](../docs/dashboard.md).
    choose **Load unpacked**, and select this `chrome-extension/` directory.
 
 4. Open the extension's options page (the toolbar icon, or **Details → Extension
-   options**) and add one entry per factory: a label and the capability URL.
-   Chrome asks permission for each factory's address the first time; that
-   permission is what lets the extension read that factory and nothing else.
-   **Save** stores the list in `chrome.storage.local`.
+   options**) and add one entry per factory: press **Add a factory**, give it a
+   label and the capability URL, and press **Save and allow**. Saving is the
+   whole of it: the same click stores the factory in `chrome.storage.local` and
+   asks Chrome for permission for that factory's address, which is what lets the
+   extension read that factory and nothing else. A saved factory is then a fact
+   on the page — its URL, its state, and **Edit** and **Remove** — rather than
+   fields left open to be re-saved by accident:
+
+   ![The add form: a label, the capability URL, a Writes switch, and Save and allow](docs/options-add-form.png)
+
+   Chrome's permission prompt appears on the first save. Refusing it leaves the
+   factory saved and its row offering **Allow**, so nothing is lost and nothing
+   is asked twice.
 
 5. Open any issue or pull request in the factory's repository.
 
@@ -60,7 +69,7 @@ checkout but not in this line is not in the browser.
 Each factory also carries a line saying what the overlay is getting from it, and
 those two lines together answer the two ways an expected card can be missing:
 
-![The options page for a live factory: the version line, then pwnbox reading live · reports 2 watched repositories](docs/options-health.png)
+![The options page for a live factory: pwnbox's row, its state reading allowed, and live · reports 1 watched repository](docs/options-health.png)
 
 | The page shows | What it means |
 | --- | --- |
@@ -124,18 +133,37 @@ left out, since staying silent would read as "no agent".
 **An issue or pull request page gets a card in the right sidebar, above
 Assignees:**
 
-![An issue page whose right sidebar carries an ssf agent card above Assignees: harness, model, the Waiting on you state with relative time, the last message with a `more` toggle, "also on" links and a collapsed Details section](docs/issue-card.png)
+![An issue page whose right sidebar carries an ssf agent card above Assignees: the state, the stack the session runs, the last message with a `more` toggle, "also on" links, a collapsed Details section, and the Actions row](docs/issue-card.png)
 
-Always visible: the state line with the relative time, `harness · model`, and
-the last message trimmed to two lines behind a `more` toggle that appears only
-when the text is really clipped. Then:
+Always visible: the state line, the stack the session is on — `harness · model ·
+effort`, the effort included because it is what the session's tokens cost and
+because it is a third of what the hand-over pickers move — and the last message
+trimmed to two lines behind a `more` toggle that appears only when the text is
+really clipped. Then:
 
 - **also on: #a #b** — the other issues this agent has taken on;
-- **Details**, collapsed — the current tool call, the factory label, the
-  workspace branch and the agent session id, from the status model's own
-  fields. A field the server does not send reads "not reported" rather than
-  being invented; **Factory** falls back to the label you gave the factory on
-  the options page, or to its URL host when you gave none.
+- **Details**, collapsed — every fact the card holds, one row each: what ssf
+  says the state is and the raw word behind it, the item, the stack, the stack a
+  **next launch** would use when it differs, what the agent is **doing**, the
+  **branch** and the **workspace**, the **session** id, the **factory**, when the
+  item was last **active** and why that is not known, and a **hand over** waiting
+  on the daemon. A fact the factory did not send is left out rather than filled
+  with "not reported" — a column of "not reported" around the one fact the card
+  has is what made this section read as missing information (#439). **Factory**
+  falls back to the label you gave the factory on the options page, or to its URL
+  host when you gave none:
+
+![The same card with Details open: State, Item, Stack, Doing, Branch, Workspace, Session, Factory and Active rows](docs/issue-card-details.png)
+
+Where there is no activity time to show, nothing is shown in its place. ssf dates
+a session from the local transcript its harness keeps, which is a thing an `omp`
+session does not have at all — so rather than printing "no activity recorded" as
+if it were a fact about the agent, the card's **Active** row says which of the
+ways this happened it was: `the harness keeps no local transcript ssf can read`,
+`ssf has not found the session's transcript yet`, or, for an item with no session
+to date, `no agent, so nothing is running to date`. The TUI, the server's web
+dashboard and the overlay all say the same sentence, because it is the model
+that carries it (`activity_note`, below).
 
 An issue that is an *additional* item of another agent shows `worked on by the
 agent on #N`, with #N linked, instead of a card claiming its own agent.
@@ -155,7 +183,8 @@ the write is for the item the card names, never for an issue the page merely
 mentions.
 
 **Lists, search results and project boards get one chip per tracked item** —
-icon, state word and relative last activity:
+icon and state word, with the relative last activity beside it where the factory
+has one, and the state alone where it does not:
 
 ![A list of issues, each tracked one carrying a small ssf chip after its title](docs/issue-list.png)
 
@@ -169,11 +198,12 @@ read for:
 
 ![A board whose cards carry ssf chips, the untracked ones reading No agent alongside a tracked one reading Working, with one chip's popover open showing the Assign agent form](docs/no-record-board.png)
 
-Hovering a chip shows `harness · model`, the absolute time and the first line of
-the last message. Clicking it opens the same card as the issue page, as a
-popover, so you never leave the board to see what an agent said:
+Hovering a chip shows the stack the session is on, the absolute time where there
+is one and the reason where there is not, and the first line of the last message.
+Clicking it opens the same card as the issue page, as a popover, so you never
+leave the board to see what an agent said — or to act on it:
 
-![A project board whose cards each carry an ssf chip, with one chip's popover open below it showing the same card as the issue page](docs/board.png)
+![A project board whose cards carry ssf chips, one chip's popover open below it showing the same card as the issue page](docs/board.png)
 
 **Other pages get nothing.** The repository home, code, commits, milestones and
 settings are left alone even when they link to issues.
@@ -254,31 +284,24 @@ A refusal is the server's own words, with the form kept and nothing retried:
 ## Acting on an agent
 
 An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
-carries an **Actions** row on the card of the factory that has it — Message,
-Hand over… and Release, all three sent from the service worker and never from
-the page. A second factory with an agent on the same item draws its own row, so
-each session is acted on through the factory that runs it:
+carries an **Actions** row on the card of the factory that has it — Hand over…
+and Release, both sent from the service worker and never from the page. A second
+factory with an agent on the same item draws its own row, so each session is
+acted on through the factory that runs it:
 
-![An item's card with the Actions row: a message box with Send, and Hand over… and Release](docs/actions.png)
+![An item's card with the Actions row: Hand over… and Release, and the line saying a comment on the item is how to talk to the agent](docs/actions.png)
+
+The row starts, moves and frees sessions. It does not talk to them: **a person
+speaks to an agent by commenting on the item**, which is what the note under the
+buttons says. A comment is delivered to the session the same way the item's own
+activity is, and it stays on the item afterwards, where everyone working it can
+read it. A text box on a card could only ever be a second conversation with
+nobody else in it (#439).
 
 The same row is on the card a list, search or board chip opens as a popover, so
 an item can be acted on without leaving the board:
 
-![The same Actions row inside a chip's popover, reading "sent" after a message](docs/action-popover.png)
-
-- **Message** puts what you type into the item's agent the way a comment on the
-  item does — the same delivery path, so a workspace and agent that have gone
-  are brought back first, and a session sitting at its harness's sign-in prompt
-  is held rather than handed a prompt it cannot read. The box reads **sent**
-  until a frame shows the agent has dealt with the message, or 30 seconds pass:
-
-  ![The message box after Send, with a grey "sent" line under it](docs/action-message.png)
-
-  The server's 2 KiB limit is not applied by the box; typing past it is refused
-  in the factory's own words, with what you wrote still there. The hand-over
-  note is left the same way: the endpoint's own bounds answer for both:
-
-  ![The message box holding 2,500 characters with the refusal under it: the most a message carries is 2048](docs/action-message-refused.png)
+![The same Actions row inside a chip's popover](docs/action-popover.png)
 
 - **Hand over…** offers the same pickers as the assign form, **prefilled with
   the stack the card is on**, plus an optional note the new session reads before
@@ -341,11 +364,10 @@ forward, and keep tailnet ACLs restrictive.
   node is built with `textContent` and lives in a shadow root, so no factory
   text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
-  forms' pickers need: `api/assign`, `api/handover`, `api/release`,
-  `api/message`, `api/agents` and `api/models/<harness>`. A factory accepts a
-  write only from an extension origin, and a page on github.com has none, so the
-  content script never fetches a factory itself and no page the factory serves
-  can act on a session.
+  forms' pickers need: `api/assign`, `api/handover`, `api/release`, `api/agents`
+  and `api/models/<harness>`. A factory accepts a write only from an extension
+  origin, and a page on github.com has none, so the content script never fetches
+  a factory itself and no page the factory serves can act on a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are
   `optional_host_permissions`, requested at runtime from the options page, so
   the extension only holds access to the factories you added.
@@ -378,5 +400,5 @@ forward, and keep tailnet ACLs restrictive.
   factory, so it is not a silent difference.
 - The Actions row is on an item's own card, not on an item shown as *worked on
   by the agent on #N*: that card is a pointer to the same session, and its own
-  card carries the actions. A message sent to a bound item still reaches the
-  session that works it.
+  card carries the actions. A comment on the item still reaches the session that
+  works it.

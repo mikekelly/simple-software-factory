@@ -38,9 +38,13 @@ Cards are created only when the session driver reports a live agent. Open items
 that SSF still monitors but which have no agent are listed separately as
 "Monitored without an agent"; issue monitoring state is never treated as agent
 presence. Cards show the originating issue, additional active assigned issues,
-agent state, last activity and latest message or summary. They use the server's
-canonical ownership model; missing activity is shown as unknown. Connection
-errors retain the last successful cards with an explicit stale-state warning.
+agent state, the stack the session runs (harness, model and effort), last
+activity and latest message or summary. They use the server's
+canonical ownership model; where there is no activity time, the row says why —
+the harness keeps no transcript ssf can read, the session's conversation is not
+identified yet, or ssf has not found its transcript yet — rather than "unknown",
+which read as a claim about the agent. Connection errors retain the last
+successful cards with an explicit stale-state warning.
 VM, driver, inactive service and stale daemon states are shown as problems, not as an
 empty healthy factory. Update the server too when upgrading from the old
 browser-based client: the TUI requires its canonical dashboard status fields.
@@ -133,10 +137,9 @@ Five endpoints under the capability path serve the canonical dashboard model:
   command or ssf's built-in table answered. A harness ssf does not know is
   `404`; one that takes no model setting (see `ssf agents`) is `400` with that
   reason, since the request's shape is not what is wrong with it.
-- `POST /<capability>/api/assign`, `POST /<capability>/api/handover`,
-  `POST /<capability>/api/release` and `POST /<capability>/api/message` run one
-  `ssf` command each for one item and return its result. See
-  [Writing from the API](#writing-from-the-api).
+- `POST /<capability>/api/assign`, `POST /<capability>/api/handover` and
+  `POST /<capability>/api/release` run one `ssf` command each for one item and
+  return its result. See [Writing from the API](#writing-from-the-api).
 
 Each card in `/api/status` and `/api/events` carries, besides the fields the
 dashboard and TUI render: `tool`, the session's current tool call formatted as
@@ -157,6 +160,20 @@ Each item in `dashboard.monitored_items`, and each card's `origin` and
 for that item, with `branch` when the driver reports one. An item that has one is
 not one `ssf assign` accepts — it is refused, because `ssf release` is what frees
 it — so a client that offers the write draws no form for it.
+
+A card also carries `worktree_path`, the workspace the session is running in
+(`null` when the item has none), `handover`, the hand-over waiting on the daemon
+for that item — `harness`, `model`, `effort`, `summary_chars`, `by` and
+`requested_at`, or `null` — and `activity_note`, why `last_activity_at` is null.
+ssf dates a session from the local transcript its harness keeps, and each way
+that can be missing is a different fact, so the model says which one it is
+rather than leaving a client to print "no activity recorded", which reads as a
+claim about the agent: `the harness keeps no local transcript ssf can read` for a
+harness that keeps none at all (`omp`), `the session's conversation is not
+identified yet`, or `ssf has not found the session's transcript yet`. Every
+client that shows a time — the TUI, this server's own page and the Chrome
+extension — shows that sentence where the time would be, instead of inventing
+one (#439).
 
 `dashboard.repositories` lists the repositories the factory watches, as
 `owner/name`. A factory watches a repository rather than the items in it, so its
@@ -183,7 +200,7 @@ harnesses.
 
 #### Writing from the API
 
-Four POST routes, each one `ssf` command for one item, named as the repository
+Three POST routes, each one `ssf` command for one item, named as the repository
 and the number. Their bodies are the command's own arguments; a field a route
 does not take is refused rather than ignored, so a misspelled one cannot ask for
 something nobody meant.
@@ -192,7 +209,6 @@ something nobody meant.
 POST /<capability>/api/assign   {"repo": "owner/name", "number": 42, "harness": "claude", "model": "opus", "effort": "low"}
 POST /<capability>/api/handover {"repo": "owner/name", "number": 42, "harness": "omp", "model": "deepseek/deepseek-flash", "effort": "high", "note": "carry on from here"}
 POST /<capability>/api/release  {"repo": "owner/name", "number": 42}
-POST /<capability>/api/message  {"repo": "owner/name", "number": 42, "text": "the test is red again"}
 ```
 
 - **assign** starts a session on an item that has none: the bot is assigned on
@@ -207,12 +223,6 @@ POST /<capability>/api/message  {"repo": "owner/name", "number": 42, "text": "th
 - **release** removes the item's session workspace, never forced: the workspace
   checks are the point of doing it from a browser, and a person who has looked
   at the workspace passes `--force` at a shell.
-- **message** delivers `text` to the agent that acts on the item the way the
-  item's own activity does — the daemon's delivery path, which brings a gone
-  workspace and agent back first and holds a prompt for a session that is at its
-  sign-in prompt. `text` is capped at 2 KiB here, counted in bytes so that a
-  message the cap accepts always fits the request that carries it; anything
-  longer belongs on the item as a comment.
 
 Each answers with the same JSON its command prints under `--json`. The status
 says what happened:
@@ -220,15 +230,14 @@ says what happened:
 - `200` with that result.
 - `400` with `{"error": ...}` when the request itself is at fault: a repository
   this factory does not watch, a harness ssf does not know, a model or effort
-  that harness does not take, a message that is empty or over the cap, a summary
-  that is empty or too long, or a body that is not the JSON above.
+  that harness does not take, a summary that is empty or too long, or a body
+  that is not the JSON above.
 - `409` with `{"error": ...}` when the item is not in a state the write can be
   applied to — for assign, an item that already has a session, a handover or
   release pending on it, or one worked by another item's session; for handover,
   an item with no running session or one already on that stack; for release, a
   workspace that holds work that is not on origin, an item that still owns open
-  ones, or one with no workspace left; for message, an item with no agent, or a
-  session that is blocked at its harness's sign-in prompt.
+  ones, or one with no workspace left.
 - `502` with `{"error": ...}` when the factory could not do it: it could not be
   reached, the write took longer than a minute, or the harness is not installed
   or not signed in where the sessions run.
@@ -237,6 +246,11 @@ The `error` is the message the matching command would have printed, verbatim.
 A release the workspace refuses is one of those: the daemon answers it as a
 result rather than an error, and the endpoint words it exactly as `ssf release`
 does, one check per line.
+
+There is no route that types at an agent. A person speaks to one by commenting
+on the item, which the harness delivers to the session the way the item's own
+activity is, and the exchange stays on the item where everyone working it can
+read it (#439).
 
 #### Write rules
 
@@ -288,12 +302,13 @@ workspace is refused by `ssf assign` (`ssf release` is what frees it), so its
 card carries *Has a workspace; release it first* instead of a form, which is
 what `has_workspace` above is published for.
 An item whose state is **Working**, **Waiting on you**, **Done** or **Problem**
-carries an **Actions** row on the card of the factory that has it — *Message* (a
-textarea and Send), *Hand over…* (the assign pickers, prefilled with the stack
-the card is on, plus a note) and *Release* (a confirm step naming the workspace
-branch, which is also what frees an item the note above stands on). One row per
-factory with an agent, so two factories working one item are two sessions to act
-on, each through its own factory. Every one of them is sent from the
+carries an **Actions** row on the card of the factory that has it — *Hand over…*
+(the assign pickers, prefilled with the stack the card is on, plus a note) and
+*Release* (a confirm step naming the workspace branch, which is also what frees an
+item the note above stands on). The row starts, moves and frees sessions; talking
+to one is a comment on the item, which is what the row's own note says. One row
+per factory with an agent, so two factories working one item are two sessions to
+act on, each through its own factory. Every write is sent from the
 service worker and never from the content script, so the Origin is the
 extension's; each configured factory has a **Writes** switch on its options page,
 on by default, which hides both and refuses the write when off. A refusal is
@@ -304,10 +319,10 @@ missing because the loaded extension or the running server is older than the
 change is answered there rather than guessed at
 ([the guide's table](../chrome-extension/README.md#updating-a-loaded-copy)).
 
-| Message | Hand over… | Release |
+| Actions | Hand over… | Release |
 | --- | --- | --- |
-| ![An item's card with the Actions row, a message box and Send](../chrome-extension/docs/actions.png) | ![The hand-over step, prefilled with the item's stack and a note box](../chrome-extension/docs/action-handover.png) | ![The release confirm naming the item and its branch](../chrome-extension/docs/action-release.png) |
-| ![The box after Send, reading "sent"](../chrome-extension/docs/action-message.png) | ![A hand-over refused: already on that stack, with the pickers kept](../chrome-extension/docs/action-handover-refused.png) | ![A release refused by the workspace's own checks, verbatim](../chrome-extension/docs/action-release-refused.png) |
+| ![An item's card with the Actions row: Hand over…, Release, and the line saying a comment on the item is how to talk to the agent](../chrome-extension/docs/actions.png) | ![The hand-over step, prefilled with the item's stack and a note box](../chrome-extension/docs/action-handover.png) | ![The release confirm naming the item and its branch](../chrome-extension/docs/action-release.png) |
+| ![The Actions row inside a chip's popover, so a session can be moved without leaving the board](../chrome-extension/docs/action-popover.png) | ![A hand-over refused: already on that stack, with the pickers kept](../chrome-extension/docs/action-handover-refused.png) | ![A release refused by the workspace's own checks, verbatim](../chrome-extension/docs/action-release-refused.png) |
 
 The [extension's own guide](../chrome-extension/README.md#acting-on-an-agent)
 has the full set, including the accepted hand-over and release results.

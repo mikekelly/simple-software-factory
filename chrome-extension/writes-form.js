@@ -13,13 +13,16 @@
 // `render` is the Assign agent form, for an item with no agent; one form per
 // item, its own Factory picker choosing among the factories that accept the
 // write. `renderActions` is the Actions row, for an item whose state is Working,
-// Waiting on you, Done or Problem: Message, Hand over… (the assign pickers,
-// prefilled with the stack the card is on, plus a note) and Release (a confirm
-// step naming the branch). It is drawn once per factory that has an agent on the
-// item -- `factories` is that one factory -- so two factories working one item
-// are two rows, each writing through its own factory, with its own state.
-// `item` is the card's item object, which is what the pickers are prefilled
-// from.
+// Waiting on you, Done or Problem: Hand over… (the assign pickers, prefilled
+// with the stack the card is on, plus a note) and Release (a confirm step naming
+// the branch). It is drawn once per factory that has an agent on the item --
+// `factories` is that one factory -- so two factories working one item are two
+// rows, each writing through its own factory, with its own state. `item` is the
+// card's item object, which is what the pickers are prefilled from.
+//
+// Nothing here types at an agent: a person speaks to one on the item, where the
+// exchange is in the item's record. This module starts, moves and frees
+// sessions -- the three things that are not a comment (#439).
 //
 // `factories` are the configured factories whose snapshot shows this item --
 // the same ones the card is drawn from. A factory whose Writes switch is off
@@ -31,7 +34,7 @@
 // or a caret -- but it draws a fresh tree on every GitHub mutation and every
 // snapshot frame, and puts a new node in place wherever a frame's own shape
 // differs, so a redraw must never be the thing that loses what the person was
-// in the middle of: the picker they were choosing from, the message they were
+// in the middle of: the picker they were choosing from, the note they were
 // writing, the confirm step they had open.
 //
 // Nothing here talks to a factory. The service worker carries every write and
@@ -43,14 +46,13 @@
   /// How long "Assigning…" waits for a snapshot that shows the item with an
   /// agent before it shows what the factory said instead.
   const TIMEOUT_MS = 30000;
-  /// How long "sent" stays after a message the factory accepted, when no frame
-  /// carries a different last message first.
-  const SENT_MS = 30000;
   /// How many items' form state the module keeps. A person visits a handful of
   /// items in a session; the rest are dead weight.
   const REMEMBER_ITEMS = 16;
 
   const STYLE = `
+/* The writes sit under the card's own text, behind the same 1px rule the card
+   uses to separate itself from the page. */
 .ssf-writes { display: flex; flex-direction: column; gap: 6px; min-width: 0;
   padding-top: 6px; border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
 .ssf-writes-head { font-weight: 600; color: var(--fgColor-default, #1f2328); }
@@ -61,8 +63,9 @@
   font: inherit; color: inherit; background: var(--bgColor-default, #ffffff);
   border: 1px solid var(--borderColor-default, #d1d9e0); border-radius: 6px;
   padding: 2px 4px; }
-.ssf-writes-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
-.ssf-writes textarea { flex: 1 1 auto; min-width: 0; max-width: 100%; resize: vertical;
+/* The hand-over note: the only text box left, and the only place this
+   extension takes typed text at all (#439). */
+.ssf-writes textarea { min-width: 0; max-width: 100%; resize: vertical;
   font: inherit; color: inherit; background: var(--bgColor-default, #ffffff);
   border: 1px solid var(--borderColor-default, #d1d9e0); border-radius: 6px;
   padding: 3px 6px; }
@@ -71,6 +74,7 @@
   background: var(--bgColor-default, #ffffff);
   border: 1px solid var(--borderColor-default, #d1d9e0); border-radius: 6px;
   padding: 3px 10px; cursor: pointer; }
+.ssf-writes button:hover:not(:disabled) { background: var(--bgColor-muted, #f6f8fa); }
 .ssf-writes button.primary { color: #ffffff; background: var(--fgColor-success, #1a7f37);
   border-color: transparent; font-weight: 600; }
 .ssf-writes button.danger { color: var(--fgColor-danger, #cf222e);
@@ -119,8 +123,8 @@
       number,
       itemId: `${repo}#${number}`,
       /// The card's own item object from the latest frame: the stack the
-      /// hand-over pickers are prefilled from, the branch the release confirm
-      /// names, and the last message a sent message is waiting to see change.
+      /// hand-over pickers are prefilled from, and the branch the release
+      /// confirm names.
       item: null,
       /// The factories that may take this write, and the one it goes to.
       choices: [],
@@ -138,9 +142,6 @@
       effort: DEFAULT,
       /// The server's words about a refused write; the form stays.
       error: null,
-      /// The server's words about a refused message, kept apart from the rest
-      /// so it is always drawn beside the box it belongs to.
-      messageError: null,
       /// A write is in the air: the asking, before the factory has answered.
       busy: false,
       /// `{at, result, timer, timedOut}` while the item waits for the snapshot
@@ -150,13 +151,6 @@
       /// The open step of the Actions row: `handover`, `release`, or null for
       /// the row itself.
       open: null,
-      /// What the message box holds, kept out of the node for the same reason
-      /// the pickers are.
-      message: "",
-      messageBusy: false,
-      /// `{baseline, working, timer}` after a message was accepted, until a
-      /// frame shows the turn it started has ended, or the wait runs out.
-      messageSent: null,
       /// A handover or release is in the air.
       actionBusy: false,
       /// What the factory answered a handover or release with.
@@ -219,10 +213,6 @@
     state.model = DEFAULT;
     state.effort = DEFAULT;
     state.error = null;
-    state.messageError = null;
-    state.message = "";
-    if (state.messageSent) clearTimeout(state.messageSent.timer);
-    state.messageSent = null;
     state.open = null;
     state.actionResult = null;
     state.note = "";
@@ -549,10 +539,15 @@
     });
   }
 
-  /// The Actions row for an item that has an agent: Message, Hand over… and
-  /// Release, with whichever step is open below them, and what the factory
-  /// answered the last one with. `state.item` is the card's own item object,
-  /// which is what the pickers are prefilled from and the confirm names.
+  /// The Actions row for an item that has an agent: Hand over… and Release,
+  /// with whichever step is open below them, and what the factory answered the
+  /// last one with. `state.item` is the card's own item object, which is what
+  /// the pickers are prefilled from and the confirm names.
+  ///
+  /// Nothing here types at an agent. An agent is spoken to on the item, where
+  /// the exchange is part of the item's record and belongs to everyone working
+  /// it; a text box on a card would make the overlay a second conversation
+  /// nobody else can read (#439).
   function actions(state) {
     const body = element("div", "ssf-writes");
     body.append(element("div", "ssf-writes-head", "Actions", "head"));
@@ -569,11 +564,7 @@
         element("p", "ssf-writes-stack", actionLine(state), "result:stack"),
       );
     }
-    body.append(messageRow(state));
-    if (state.messageSent) body.append(element("p", "ssf-writes-note", "sent", "sent"));
-    if (state.messageError) {
-      body.append(element("p", "ssf-writes-error", state.messageError, "error:message"));
-    }
+
     if (state.open === "handover") {
       body.append(handoverForm(state));
     } else if (state.open === "release") {
@@ -593,47 +584,16 @@
       });
       actions.append(hand, release);
       body.append(actions);
+      // Where a message to this agent goes, said once, now that the box that
+      // used to be here is gone: the row is the only place a person meets the
+      // question.
+      body.append(
+        element("p", "ssf-writes-note", "Comment on the item to talk to this agent."),
+      );
     }
     return body;
   }
 
-  /// The message box and Send. Neither this box nor the hand-over note is
-  /// capped here: the server's own bounds — 2 KiB of message, and a request the
-  /// endpoint reads at 4 KiB — are refusals a person can read and act on, where
-  /// a silent truncation of something pasted in would not be.
-  function messageRow(state) {
-    // Keyed: a box the person is typing in must be their node across frames,
-    // whatever appears beside it -- the result lines a hand-over adds above it
-    // are the case that put this key here.
-    const row = element("div", "ssf-writes-row", undefined, "row");
-    const box = element("textarea");
-    box.rows = 2;
-    box.placeholder = "Tell the agent something";
-    box.value = state.message;
-    // Kept as it is typed rather than read off the node: a redraw draws from
-    // the state, and a box is written into -- never emptied and retyped -- so
-    // what the person has written survives a frame that has to put a new node
-    // in place. A refusal goes as soon as the text it was about does, so a
-    // stale one is never left standing over an empty box.
-    box.addEventListener("input", () => {
-      state.message = box.value;
-      send.disabled = !canSend(state);
-      if (state.messageError) {
-        state.messageError = null;
-        redraw();
-      }
-    });
-    const send = element("button", "primary", state.messageBusy ? "Sending\u2026" : "Send");
-    send.type = "button";
-    send.disabled = !canSend(state);
-    send.addEventListener("click", () => sendMessage(state));
-    row.append(box, send);
-    return row;
-  }
-
-  function canSend(state) {
-    return Boolean(state.url) && !state.messageBusy && state.message.trim().length > 0;
-  }
 
   /// What `ssf handover` or `ssf release` answered, in the terms their own text
   /// output uses: the session, where it moves to or what goes, and that the
@@ -771,44 +731,6 @@
     redraw();
   }
 
-  /// Send the message: one write, no retry. A refusal is the server's own words
-  /// beside the box, which keeps what was typed.
-  function sendMessage(state) {
-    if (!canSend(state)) return;
-    const text = state.message;
-    state.messageError = null;
-    state.messageBusy = true;
-    redraw();
-    ask({
-      type: "ssf:message",
-      url: state.url,
-      repo: state.repo,
-      number: state.number,
-      text,
-    }).then((reply) => {
-      state.messageBusy = false;
-      if (!reply?.ok) {
-        state.messageError = reply?.error ?? "the factory did not answer";
-        redraw();
-        return;
-      }
-      // Sent: the box empties, and says so until a frame shows the turn the
-      // message started has ended -- the agent's own answer, or the state
-      // leaving the working one it went into to take the message. The card's
-      // message alone cannot decide that: it is the pane's title, which the
-      // harness rewrites with a working spinner the moment it takes the
-      // message, and which on some harnesses never carries the answer at all.
-      state.message = "";
-      const baseline = String(state.item?.last_assistant_message ?? "");
-      state.messageSent = { baseline, working: false, timer: null };
-      state.messageSent.timer = setTimeout(() => {
-        state.messageSent = null;
-        redraw();
-      }, SENT_MS);
-      redraw();
-    });
-  }
-
   /// Hand the item to another stack: one write, no retry, and the refusal keeps
   /// the pickers and the note.
   function sendHandover(state) {
@@ -871,7 +793,6 @@
     const state = forms.get(key);
     if (!state) return;
     if (state.pending) clearTimeout(state.pending.timer);
-    if (state.messageSent) clearTimeout(state.messageSent.timer);
     forms.delete(key);
   }
 
@@ -936,20 +857,6 @@
           one.origin?.id === state.itemId ||
           (one.additional ?? []).some((issue) => issue?.id === state.itemId),
       );
-      if (state.messageSent && card) {
-        // "sent" holds until the frame that shows the agent has dealt with the
-        // message: the state it went into to take it has ended, or the card's
-        // message changed while nothing was working (a harness whose title
-        // carries the answer rather than the prompt it was given).
-        const working = String(card.agent_state ?? "") === "working";
-        const sent = state.messageSent;
-        if (working) sent.working = true;
-        if ((sent.working && !working) || (String(card.last_assistant_message ?? "") !== sent.baseline && !working)) {
-          clearTimeout(sent.timer);
-          state.messageSent = null;
-          changed = true;
-        }
-      }
       // The card this frame carries is what the item is now: what a hand-over
       // is prefilled from and what the release confirm names.
       if (card && state.mode === "actions") state.item = card;

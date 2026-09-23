@@ -14,10 +14,10 @@
 // below rebuilds every stream. Nothing here depends on running continuously.
 //
 // This worker also carries every write -- `api/assign`, `api/handover`,
-// `api/release`, `api/message` -- and the listings the forms' pickers need. A
-// factory accepts a write only from an extension origin (docs/dashboard.md), and
-// a content script running on github.com has none, so these are sent from here;
-// the same rule is why the read streams live here too.
+// `api/release` -- and the listings the forms' pickers need. A factory accepts
+// a write only from an extension origin (docs/dashboard.md), and a content
+// script running on github.com has none, so these are sent from here; the same
+// rule is why the read streams live here too.
 import { endpoint, factoryUrl, factoryLabel, originPattern } from "./factory-url.js";
 
 const BACKOFF_MIN_MS = 1000;
@@ -286,16 +286,6 @@ async function release(message) {
   return writeTo(message, "release", { repo: message.repo, number: message.number });
 }
 
-/// `api/message`: the text reaches the item's agent the way the item's own
-/// activity does. Named apart from the `message` argument every handler takes.
-async function sendMessage(message) {
-  return writeTo(message, "message", {
-    repo: message.repo,
-    number: message.number,
-    text: message.text,
-  });
-}
-
 async function listing(message, path) {
   const entry = factories.get(message.url);
   if (!entry) return { ok: false, error: "that factory is no longer configured" };
@@ -304,11 +294,12 @@ async function listing(message, path) {
 
 /// What the content script may ask this worker to do to a factory. Nothing
 /// else is routed, and the content script holds no factory fetch of its own.
+/// Three writes, all of them an `ssf` command for one item: nothing here types
+/// at an agent, which is what the item's own comments are for (#439).
 const HANDLERS = {
   "ssf:assign": assign,
   "ssf:handover": handover,
   "ssf:release": release,
-  "ssf:message": sendMessage,
   "ssf:agents": (message) => listing(message, "agents"),
   "ssf:models": (message) =>
     listing(message, `models/${encodeURIComponent(message.harness)}`),

@@ -47,40 +47,84 @@ p {
 code {
   padding: 1px 4px;
   border-radius: 4px;
-  background: var(--bg-muted);
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
   font-size: 12px;
 }
 
+/* A saved factory: a name and an address on one line, the state and the two
+   controls that change it on the next, then what the overlay is getting from
+   it. Fields appear only while a row is being added or changed, so a row on
+   this page is never a form that looks half-finished. */
 .row {
   display: grid;
-  grid-template-columns: 1fr 2fr auto auto;
-  grid-template-areas:
-    "label url allow remove"
-    "state state state state"
-    "writes writes writes writes";
-  gap: 8px;
-  align-items: end;
-  padding: 12px;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  align-items: center;
+  padding: 12px 14px;
   margin-bottom: 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-muted);
 }
 
-.label-field {
-  grid-area: label;
+.row.editing {
+  grid-template-columns: 1fr;
+  gap: 8px;
+  border-color: var(--fg-muted);
 }
 
-.url-field {
-  grid-area: url;
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  min-width: 0;
 }
 
-.allow {
-  grid-area: allow;
+.name {
+  font-weight: 600;
 }
 
-.remove {
-  grid-area: remove;
+.where {
+  overflow-wrap: anywhere;
+  color: var(--fg-muted);
+}
+
+.controls {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.row.editing .controls {
+  grid-column: 1;
+  grid-row: auto;
+  justify-content: flex-start;
+}
+
+.state {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.state[data-state="allowed"]::before,
+.state[data-state="blocked"]::before,
+.state[data-state="waiting"]::before {
+  content: "\25cf";
+  margin-right: 4px;
+}
+
+.state[data-state="allowed"] {
+  color: var(--accent);
+}
+
+.state[data-state="blocked"] {
+  color: var(--danger);
 }
 
 .field {
@@ -122,6 +166,10 @@ button {
   cursor: pointer;
 }
 
+button:hover:not(:disabled) {
+  background: var(--bg-muted);
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: default;
@@ -134,36 +182,11 @@ button.primary {
   font-weight: 600;
 }
 
-.state {
-  grid-column: 1 / -1;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.state[data-state="allowed"]::before,
-.state[data-state="blocked"]::before,
-.state[data-state="missing"]::before {
-  content: "\25cf";
-  margin-right: 4px;
-}
-
-.state[data-state="allowed"] {
-  color: var(--accent);
-}
-
-.state[data-state="blocked"],
-.state[data-state="missing"] {
-  color: var(--danger);
-}
-
 .writes-field {
-  grid-area: writes;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 4px 8px;
-  padding-top: 4px;
-  border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--fg-muted);
 }
@@ -180,10 +203,33 @@ button.primary {
   flex: 1 1 18rem;
 }
 
+.row-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.row-error[hidden] {
+  display: none;
+}
+
+.row > .writes,
+.row > .health {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 .actions {
   display: flex;
   gap: 8px;
   margin: 16px 0 0;
+}
+
+.status {
+  min-height: 1.5em;
 }
 
 .note {
@@ -193,18 +239,7 @@ button.primary {
 .version {
   margin: -4px 0 12px;
   font-size: 12px;
-  color: var(--muted, #57606a);
-}
-
-.health {
-  grid-column: 1 / -1;
-  margin: 6px 0 0;
-  font-size: 12px;
-  color: var(--muted, #57606a);
-}
-
-.health:empty {
-  display: none;
+  color: var(--fg-muted);
 }
 
 .empty {
