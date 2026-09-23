@@ -9,7 +9,7 @@ use super::{Engine, github_state, mentions_bot};
 use crate::config::RepoConfig;
 use crate::ipc::{Refused, Request, Response};
 use crate::origin::Origin;
-use crate::state::{Events, Subscription};
+use crate::state::Events;
 use crate::status::session_id;
 
 impl Engine {
@@ -360,24 +360,7 @@ impl Engine {
         let e = self.entry(&repo, number);
         // Following again is how a session changes its level, so what it
         // asks for here is what it hears from now on.
-        let (added, changed) = match e
-            .subscribers
-            .iter_mut()
-            .find(|s| s.session.eq_ignore_ascii_case(&me))
-        {
-            Some(s) => {
-                let changed = s.events != events;
-                s.events = events;
-                (false, changed)
-            }
-            None => {
-                e.subscribers.push(Subscription {
-                    session: me.clone(),
-                    events,
-                });
-                (true, false)
-            }
-        };
+        let (added, changed) = e.subscribe(&me, events);
         info!(
             repo = repo.name,
             issue = number,
@@ -411,13 +394,8 @@ impl Engine {
         else {
             anyhow::bail!("{target} is not tracked");
         };
-        let removed = st
-            .subscribers
-            .iter()
-            .any(|s| s.session.eq_ignore_ascii_case(&me));
         let e = self.entry(&repo, number);
-        e.subscribers
-            .retain(|s| !s.session.eq_ignore_ascii_case(&me));
+        let removed = e.unsubscribe(&me);
         // An item nobody listens to any more is forgotten.
         let dropped = e.subscriber_only && e.subscribers.is_empty();
         if dropped {
@@ -476,7 +454,7 @@ mod tests {
         assert_eq!(resp.data["added"], true);
         assert_eq!(resp.data["changed"], false);
         assert_eq!(resp.data["events"], "state");
-        assert_eq!(e.entry(&r, 3).subscribers, vec![Subscription::new("o/r#1")]);
+        assert_eq!(e.entry(&r, 3).subscribers, vec!["o/r#1"]);
         // Again: no duplicate, and the level stands.
         let resp = e
             .handle_request(Request::Sub {
@@ -502,13 +480,8 @@ mod tests {
         assert_eq!(resp.data["added"], false);
         assert_eq!(resp.data["changed"], true);
         assert_eq!(resp.data["events"], "all");
-        assert_eq!(
-            e.entry(&r, 3).subscribers,
-            vec![Subscription {
-                session: "o/r#1".into(),
-                events: Events::All,
-            }]
-        );
+        assert_eq!(e.entry(&r, 3).subscribers, vec!["o/r#1"]);
+        assert_eq!(e.entry(&r, 3).events_for("o/r#1"), Events::All);
         // From the PR's identity it is still session 1, and its own items
         // are refused.
         let resp = e
@@ -570,10 +543,7 @@ mod tests {
         assert!(resp.ok, "{:?}", resp.error);
         assert_eq!(resp.data["removed"], true);
         assert_eq!(resp.data["untracked"], false);
-        assert_eq!(
-            e.entry(&r, 20).subscribers,
-            vec![Subscription::new("o/r#3")]
-        );
+        assert_eq!(e.entry(&r, 20).subscribers, vec!["o/r#3"]);
         let resp = e
             .handle_request(Request::Unsub {
                 from: "o/r#3".into(),

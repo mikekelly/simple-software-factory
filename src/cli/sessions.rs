@@ -272,18 +272,14 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
                     item.shares_workspace_of.unwrap_or(item.number),
                 ))
             };
-            if let Some(mine) = item
-                .subscribers
-                .iter()
-                .find(|s| s.session.eq_ignore_ascii_case(&me_id))
-            {
+            if item.follows(&me_id) {
                 following.push(json!({
                     "item": id,
                     "title": item.title,
                     "kind": item.kind,
                     "github_state": item.github_state,
                     "owner": owner,
-                    "events": mine.events.id(),
+                    "events": item.events_for(&me_id).id(),
                 }));
             }
             if owner
@@ -294,11 +290,7 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
                 followers.push(json!({
                     "item": id,
                     "title": item.title,
-                    "subscribers": item
-                        .subscribers
-                        .iter()
-                        .map(|s| s.session.as_str())
-                        .collect::<Vec<_>>(),
+                    "subscribers": item.subscribers,
                 }));
             }
         }

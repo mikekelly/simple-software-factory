@@ -86,6 +86,7 @@ impl Engine {
                     let e = self.entry(repo, number);
                     e.subscriber_only = false;
                     e.subscribers.clear();
+                    e.subscriber_events.clear();
                 } else {
                     self.state.repo_mut(&repo.name).issues.remove(&number);
                 }
@@ -163,18 +164,19 @@ impl Engine {
             Some(self.acting_on(repo, issue.number))
         };
         for sub in st.subscribers.clone() {
+            let level = st.events_for(&sub);
             if owner_session
                 .as_deref()
-                .is_some_and(|o| o.eq_ignore_ascii_case(&sub.session))
-                || skip.iter().any(|s| s.eq_ignore_ascii_case(&sub.session))
+                .is_some_and(|o| o.eq_ignore_ascii_case(&sub))
+                || skip.iter().any(|s| s.eq_ignore_ascii_case(&sub))
             {
                 continue;
             }
-            let Ok((srepo, snumber, sid)) = self.known_session(&sub.session) else {
+            let Ok((srepo, snumber, sid)) = self.known_session(&sub) else {
                 warn!(
                     repo = repo.name,
                     issue = issue.number,
-                    subscriber = sub.session,
+                    subscriber = sub,
                     "subscriber is not a session ssf knows; skipping"
                 );
                 continue;
@@ -200,7 +202,7 @@ impl Engine {
             // What this follower asked to hear: everything, or only what
             // changed the item itself. Every FYI costs it a turn in its own
             // session, so the default leaves out what people wrote there.
-            let mine: Vec<Rendered> = match sub.events {
+            let mine: Vec<Rendered> = match level {
                 Events::All => self.for_recipient(events, &sid, OwnPosts::Hidden),
                 Events::State => self
                     .for_recipient(events, &sid, OwnPosts::Hidden)

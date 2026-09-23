@@ -482,13 +482,7 @@ async fn github_rename_repairs_config_state_and_historical_session_names() {
     let item = &e.state.repos["o/new-name"].issues[&7];
     assert_eq!(item.origin.as_deref(), Some("o/new-name#3"));
     assert_eq!(item.delegated_by.as_deref(), Some("o/new-name#2"));
-    assert_eq!(
-        item.subscribers,
-        [
-            Subscription::new("o/new-name#4"),
-            Subscription::new("other/repo#9")
-        ]
-    );
+    assert_eq!(item.subscribers, ["o/new-name#4", "other/repo#9"]);
     assert!(e.state.repos["o/new-name"].issues_etag.is_none());
     assert!(e.refetch.contains("o/new-name"));
     assert_eq!(e.failures.get(&("o/new-name".into(), 7)), Some(&2));

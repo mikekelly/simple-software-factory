@@ -99,14 +99,15 @@ of its own on that branch, which reviews when asked.
 ## Subscriptions and cross-session comments
 
 Exactly one session acts on an item; any number can hear about it. Each item carries a
-list of subscriber sessions next to its owner, each with the level that follower asked
-for, and every delivery about it (new activity, closure, the bot being dropped from it,
-or the item getting a session of its own) is fanned out to them with FYI framing:
-`[ssf] FYI: new activity on <item>:`, `[ssf] FYI: <item> has been closed.`, and so on,
-each ending with one line saying it is for information only and how to stop them. A
-level decides only what counts as that new activity; the lifecycle notices always go.
-Subscriptions live in the state file, so they survive relaunches and a session being
-brought back; a session that retires is unsubscribed everywhere.
+list of subscriber sessions next to its owner, and, for any of them that asked for more
+than the default, the level it asked for. Every delivery about the item (new activity, its
+closure, the bot being dropped from it, or the item getting a session of its own) is fanned
+out to the subscribers with FYI framing: `[ssf] FYI: new activity on <item>:`, `[ssf] FYI:
+<item> has been closed.`, and so on, each ending with one line saying it is for information
+only and how to stop them. A level decides only what counts as that *new activity*; the
+lifecycle notices always go. Subscriptions live in the state file, so they survive
+relaunches and a session being brought back; a session that retires is unsubscribed
+everywhere.
 
 The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a session, or
 `--as owner/repo#N` from a shell (an item bound to another session counts as that

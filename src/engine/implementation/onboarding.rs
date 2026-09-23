@@ -128,13 +128,9 @@ impl Engine {
             // The delegating parent follows its child.
             let parent = self.acting_session(&tag.origin.to_string());
             let e = self.entry(repo, issue.number);
-            if !e
-                .subscribers
-                .iter()
-                .any(|s| s.session.eq_ignore_ascii_case(&parent))
-            {
-                e.subscribers.push(Subscription::new(parent));
-            }
+            // A delegating parent hears the child at the default level:
+            // what the child is, not every word said on it (#453).
+            e.subscribe(&parent, Events::default());
         } else if !self
             .adopting
             .as_ref()

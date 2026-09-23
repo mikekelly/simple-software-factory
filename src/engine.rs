@@ -26,7 +26,7 @@ use crate::release::{self, git};
 use crate::sessions;
 use crate::state::{
     AdoptionCandidate, Blocked, ConflictNotice, Events, HandoverNote, Ignored, IssueState,
-    Overrides, PendingHandover, State, StateLock, Subscription, now_iso, owner_in,
+    Overrides, PendingHandover, State, StateLock, now_iso, owner_in,
 };
 use crate::status::session_id;
 
