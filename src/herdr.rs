@@ -1616,4 +1616,6 @@ keeping it"
 }
 
 #[cfg(test)]
+mod delivery_tests;
+#[cfg(test)]
 mod tests;
