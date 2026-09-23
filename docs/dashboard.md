@@ -100,12 +100,45 @@ The same keys can be set with `ssf config set dashboard.enabled true`,
 the host, which forwards to read guest status. Changes to them require a
 restart. `--once` does not serve the UI.
 
+Setting it up, in order:
+
+1. Enable the listener and restart the server. Copy the capability URL it logs.
+2. Install the [Chrome extension](../chrome-extension/README.md) and add that
+   URL there. Do it once: the secret is kept, so the URL survives every later
+   restart.
+3. Decide the exposure. The default loopback bind serves the server machine
+   alone; a Tailscale bind serves the tailnet; anything else needs an
+   authenticating TLS reverse proxy in front, per the rules below.
+
 The server logs a capability URL such as `http://127.0.0.1:8787/<secret>/`.
 Open it yourself on the server machine or through your proxy; the server never
 opens a browser. Keep the whole URL private: it grants access to repository
-details and session summaries, and it changes on every server restart. The
-listener stays up until the server stops, even with no browser open. An enabled
-bind that cannot be bound is an explicit startup error.
+details and session summaries. The listener stays up until the server stops,
+even with no browser open. An enabled bind that cannot be bound is an explicit
+startup error.
+
+The secret is generated once, on the first start that serves the listener, and
+kept at `dashboard-token` in the factory's state directory
+(`~/.local/state/ssf/dashboard-token`, mode 0600; a catalog target has its own
+state directory). Every later start reads it, so a URL someone has already
+configured keeps working across restarts — including one saved in the Chrome
+extension. A file this build did not write, made by hand or restored from a
+backup, is tightened to 0600 when it is read.
+
+Deleting that file and restarting generates a new one and invalidates every
+saved copy of the old URL. `ssf uninstall --data` removes it with the default
+factory's state; a catalog target's own directory is removed by hand, since
+[`ssf uninstall` is not target-aware](uninstall.md#recovery-cases).
+
+The dashboard's own file never stops the factory: a secret that cannot be read
+or stored is a warning naming the path, not a startup error. A file that cannot
+be read is left as it is, and that run serves a fresh URL; one that cannot be
+stored means the URL will not survive a restart. Either way the log says so and
+the log line below carries the URL actually being served.
+
+The startup log line carries the whole URL on every start, so
+`journalctl --user -u ssf.service | grep 'Server web dashboard'` finds it (the
+unit is `ssf@NAME.service` for a named target).
 
 ### Bind rules
 
