@@ -376,6 +376,17 @@
     return false;
   }
 
+  /// Whether an item's own page -- or the side panel showing it -- says the
+  /// item is closed or merged, read from the state label GitHub draws in the
+  /// item's header. A page whose header this version cannot read keeps the
+  /// state as the factory reported it (#462).
+  function pageClosed() {
+    const mark = document.querySelector(
+      '[data-testid="header-state"], [class*="PageHeader"] [data-component="StateLabel"], .gh-header-show .State, .gh-header-sticky .State',
+    );
+    return mark ? finishedMark(mark) : false;
+  }
+
   /// Whether the page shows the item `key` as closed or merged, read from the
   /// state mark GitHub draws in the same row, card or search result as the
   /// link. ssf's own `github_state` cannot answer it: it is the item's state as
@@ -388,17 +399,6 @@
   /// does not know, or more than one mark -- leaves the state as the factory
   /// reported it, rather than reading a neighbouring item's mark, which would
   /// be a claim that a live item is done.
-  /// Whether an item's own page -- or the side panel showing it -- says the
-  /// item is closed or merged, read from the state label GitHub draws in the
-  /// item's header. A page whose header this version cannot read keeps the
-  /// state as the factory reported it (#462).
-  function pageClosed() {
-    const mark = document.querySelector(
-      '[data-testid="header-state"], [class*="PageHeader"] [data-component="StateLabel"], .gh-header-show .State, .gh-header-sticky .State',
-    );
-    return mark ? finishedMark(mark) : false;
-  }
-
   function closedInDom(anchor, key) {
     let node = anchor;
     while (node?.parentElement) {
