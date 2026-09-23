@@ -23,6 +23,8 @@ pub(super) enum SkillTopic {
     Audit,
     /// Every configuration key, and the client's server catalog.
     Config,
+    /// Harnesses: models and effort, launch commands, compaction, delivery, sign-in.
+    Harnesses,
     /// VM lifecycle, sizing, and host versus guest ownership.
     Vm,
     /// Harnesses and workspace drivers.
@@ -48,6 +50,7 @@ pub(super) fn print(topic: Option<SkillTopic>) -> Result<()> {
         Some(SkillTopic::Liaison) => include_str!("../../docs/liaison.md"),
         Some(SkillTopic::Audit) => include_str!("../../docs/audit.md"),
         Some(SkillTopic::Config) => include_str!("../../docs/configuration.md"),
+        Some(SkillTopic::Harnesses) => include_str!("../../docs/harnesses.md"),
         Some(SkillTopic::Vm) => include_str!("../../docs/vm.md"),
         Some(SkillTopic::Drivers) => include_str!("../../docs/drivers.md"),
         Some(SkillTopic::Sessions) => include_str!("../../docs/sessions.md"),

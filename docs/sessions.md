@@ -135,7 +135,7 @@ Handover or fresh onboarding archives the active binding without discarding old 
 release retains it for resuming the saved conversation.
 Remote resume retains server permissions and omits the permission-bypass flag.
 Standalone Codex keeps terminal fallback. Server provisioning remains the
-launcher/Herdr's responsibility; see [delivery configuration](configuration.md#codex-native-delivery).
+launcher/Herdr's responsibility; see [delivery configuration](harnesses.md#item-activity-delivery).
 Other harnesses and a newly created or resumed
 pane retain the terminal delivery behavior described in
 [Workspaces and terminals](drivers.md#item-activity-delivery).
@@ -489,7 +489,7 @@ ssf handover 12 --cancel                                                      # 
   model id the harness itself rejects is not caught here: it shows up as
   the harness failing to start, below. Left out, the new session runs
   on that harness's own defaults; see [Per-item
-  overrides](configuration.md#per-item-overrides) for how they combine
+  overrides](harnesses.md#per-item-overrides) for how they combine
   with the repository's settings.
 - **The summary.** Exactly one of `--summary "<text>"`, `--summary-file
   <path>` and `--no-summary` is required, so nobody hands an item over
@@ -568,7 +568,7 @@ repository's items are polled) the daemon:
    transcript is the one lying there for the next harness to adopt;
 4. starts the new session in the same worktree, with what the item's
    overrides make of the repository's launch settings (see [Per-item
-   overrides](configuration.md#per-item-overrides): a handover to another
+   overrides](harnesses.md#per-item-overrides): a handover to another
    harness runs that harness's own permission-free command, one to the
    same harness keeps the repository's `command`) and the [handed-over
    first prompt](prompts.md): the summary, if there is one, then the
@@ -866,6 +866,6 @@ mentioned item rather than to unassign one that has no assignee.
   from its branch on origin on the item's next event (reopening,
   re-assignment, a comment on a bound pull request), on the stack the item
   carries: its [per-item
-  overrides](configuration.md#per-item-overrides), or the repository's own
+  overrides](harnesses.md#per-item-overrides), or the repository's own
   settings where there are none. The conversation resumes where the harness
   keeps one (Claude Code, Codex).

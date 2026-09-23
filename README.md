@@ -158,7 +158,8 @@ repository they are one file per area under `docs/`, installed under
 | [Operate](docs/operate.md) | targets, inspecting before changing, the service, upgrading, stopping |
 | [Troubleshooting](docs/troubleshooting.md) | symptom, check and remedy |
 | [Platform specifics](docs/platform-specifics.md) | your distro, macOS, rented hosts, Tailscale, harness notes, upgrading from an older ssf |
-| [Configuration](docs/configuration.md) | every key in `config.toml`; models and effort; who may drive the factory; the server catalog |
+| [Configuration](docs/configuration.md) | every key in `config.toml`; who may drive the factory; the server catalog |
+| [Harnesses](docs/harnesses.md) | models and effort, launch commands and permissions, compaction, delivery channels, sign-in |
 | [Writing SSF.md](docs/ssf-md.md) | the operating guidance your repository gives its sessions, and what belongs in `AGENTS.md` instead |
 | [Guidance audit](docs/audit.md) | a bounded review of a project's `SSF.md` and `AGENTS.md` |
 | [Agent operating guidance](docs/agent-guidance.md) | rules for an agent installing, operating or upgrading a factory for a person |

@@ -1,28 +1,83 @@
 # Configuration
 
-Supported release packages are for Arch-family Linux (including Omarchy) and
-Debian-family Linux (including Ubuntu). macOS support is planned next;
-macOS-specific settings below document work in progress.
+Every key of a factory's `config.toml`, where it lives, how to change it, and who may drive the factory. For an agent tuning a factory that already runs; installing one is [install.md](install.md).
 
-Every key in `~/.config/ssf/config.toml`, the SSF agent guidance file, model and effort settings, the permission-free commands each agent is started with, and who may drive the factory. For whoever sets up or tunes a factory; agents need none of it.
+## Where configuration lives
 
-`~/.config/ssf/config.toml` is mostly written for you by `ssf repo add` and
-`ssf config set` (the dashboards only show the state of the factory);
-[`config.example.toml`](../config.example.toml) (installed as
-`/usr/share/ssf/config.example.toml`, and on macOS as
-`$(brew --prefix)/share/ssf/config.example.toml`) shows every key with a
-comment. The token is never in this file: a pasted one
-(`ssf auth login --token`) lives in `~/.config/ssf/token` (mode 0600).
-In host mode, browser login reads it from gh's keyring when needed.
-In VM mode, browser login and credential storage run inside the guest.
-`ssf config set` refuses to touch `github.token`; use
-`ssf auth login` for that. Changes are picked up on the next poll; no
-restart needed, except `[dashboard]` listener settings require a server restart.
+| File | Owner | What is in it |
+|------|-------|---------------|
+| `~/.config/ssf/config.toml` | one factory | everything in [Every key](#every-key) |
+| `~/.config/ssf/servers.toml` | this client | named routes to factories ([Server catalog](#server-catalog)) |
+| `~/.config/ssf/token` (mode 0600) | one factory | a pasted GitHub token, never in `config.toml` |
+
+`ssf config path` prints the config file. `ssf repo add`, `ssf repo set`
+and `ssf config set` write most of it for you; the dashboards only show
+the state of the factory and do not edit configuration.
+
+```sh
+ssf config path
+ssf config show                       # the effective configuration, token redacted
+ssf config get daemon.poll_interval_secs
+ssf config set daemon.poll_interval_secs 60
+```
+
+A value that starts with `[` or `{` is read as TOML, so one command can
+set a whole table:
+
+```sh
+ssf config set git '{ name = "Ann Person", email = "ann@example.com" }'
+```
+
+`ssf config set` refuses to touch `github.token`; use `ssf auth login`
+for that. A pasted token (`ssf auth login --token`) goes to
+`~/.config/ssf/token`. In host mode a browser login reads the token from
+gh's keyring when needed; in VM mode browser login and credential storage
+run inside the guest.
+
+Changes are picked up on the next poll, with no restart, except
+`[dashboard]` listener settings, which need the server restarted.
+
+In VM mode the guest owns the factory: repositories, `[github]`, `[git]`,
+`[daemon]` and driver settings live there, and repository commands,
+`ssf config get|set` and `ssf auth` run in the guest over SSH, so paths in
+their arguments are guest paths. The host keeps `vm.*` and `dashboard.*`.
+Factory commands fail while the guest is stopped or unreachable; start it
+with `ssf vm start` and retry. They never fall back to editing a host
+copy. Guest config and credentials live in its persistent home on the data
+disk, so a VM restart or a root rebuild preserves them and ordinary edits
+need no `ssf vm sync`.
+
+`ssf repo add <owner/repo> --harness <id>` takes `--driver`, `--path`,
+`--clone-url`, `--base-branch`, `--command`, `--model`, `--effort`,
+`--auto-compaction-tokens`, `--instructions`, `--prompt-file`,
+`--allowed-users`, `--accept-anyone-risk` and `--event-comments`.
+`ssf repo set` changes those, adds `--git-name`, `--git-email`,
+`--git-signing-key` and `--git-credential`, and `--clear <field>` unsets
+one (`git` for the whole `[repo.git]` table, `git.credential` for one
+key).
+
+### Environment overrides
+
+| Variable | Effect |
+|----------|--------|
+| `SSF_GITHUB_TOKEN` | the GitHub token to use |
+| `SSF_CONFIG_DIR`, `SSF_STATE_DIR` | where config and state live; a scratch factory uses its own (see [development.md](development.md)) |
+| `SSF_SERVER` | the catalog target or SSH destination to act on |
+| `HERDR_COMMAND` | the herdr CLI |
+| `SSF_VM_DIR` | the VM guest scripts |
+| `SSF_LOG`, `RUST_LOG` | log verbosity, what `--log` reads |
 
 ## Server catalog
 
-`config.toml` belongs to one factory. Optional client-side routing belongs in a
-separate `~/.config/ssf/servers.toml` file:
+`config.toml` belongs to one factory. Client-side routing to several
+factories is a separate `~/.config/ssf/servers.toml`, written by
+`ssf server add`:
+
+```sh
+ssf server add local --local
+ssf server add ssf-server --vm
+ssf server add cloud --ssh ssf@factory.example.com
+```
 
 ```toml
 [servers.local]
@@ -33,36 +88,6 @@ state_dir = "/home/you/.local/state/ssf-factories/local"
 [servers.cloud]
 transport = "ssh"
 destination = "ssf@factory.example.com"
-```
-
-Use `transport = "vm"` for an existing locally managed VM. A legacy wrapper's
-optional `runtime_name` defaults to `default` and must match `[vm].name`; its
-optional `backend` must likewise match. Once the existing VM is healthy, run
-`ssf server migrate-vm` (or add a public name argument) to copy those host-owned
-settings into that target, verify the copy, and remove the legacy `[vm]` table.
-The VM instance, disk, guest configuration, credentials and workspaces are not
-moved or rebuilt. The operation is idempotent; conflicting old and new settings
-are both retained and reported rather than resolved by recency.
-
-Several migrated/catalog-owned VM targets may coexist. Each target must have a
-different runtime name, an absolute non-overlapping `config.dir`, and distinct
-host ports. Firecracker also reserves the adjacent port used while provisioning
-(normally `ssh_port + 1`), so leave a gap between VM ports. Its writable build
-area, root image, PID files, sockets, seed, key and logs are isolated by the
-target directory; an explicitly configured Firecracker `rootfs` must also be an
-absolute path disjoint from every other target. Lima derives distinct instance
-and disk identities from the required unique runtime name. For example:
-
-```toml
-[servers.crucible]
-transport = "vm"
-runtime_name = "crucible"
-[servers.crucible.config]
-enabled = true
-name = "crucible"
-dir = "/home/you/.local/share/ssf/vms/crucible"
-backend = "firecracker"
-ssh_port = 2222
 
 [servers.ssf-server]
 transport = "vm"
@@ -72,108 +97,60 @@ enabled = true
 name = "factory"
 dir = "/home/you/.local/share/ssf/vms/ssf-server"
 backend = "firecracker"
-ssh_port = 2232
+ssh_port = 2222
 ```
 
-Select lifecycle commands explicitly once a second catalog entry exists, for
-example `ssf --server crucible vm status`. VM status and destructive refusal
-messages include the public server name. A legacy VM wrapper cannot coexist
-with another managed VM; migrate it first.
-
-A `local` entry with no paths wraps the existing host factory and
-therefore cannot coexist with the legacy VM target. A namespaced local entry
-must set both absolute paths. SSF passes them explicitly to the local endpoint,
-so several local factories can coexist with distinct configuration, tokens,
-state, locks, repositories and workspaces. Paths cannot contain `..`, duplicate
-or overlap another namespaced target's paths. They must also be outside the
-legacy `~/.config/ssf` and `~/.local/state/ssf` trees so a legacy uninstall
-cannot recursively remove another factory.
-
-VM lifecycle and background service commands are target-aware. On Linux,
-`ssf --server NAME ui service enable` enables `ssf@NAME.service`; on macOS it
-creates a private `dev.ssf.server.NAME` launchd agent. Each daemon resolves its
-catalog target before reading configuration or state, and each service has its
-own systemd journal or `~/Library/Logs/ssf/NAME.log`. The old `ssf.service` /
-Homebrew singleton remains only for unmigrated installations. SSF refuses to
-enable a target service while that singleton is enabled or active; stop it with
-`systemctl --user disable --now ssf.service` or `brew services stop ssf` first.
-This prevents two supervisors from owning the same factory during migration.
-
-`setup` is target-aware: a fresh `ssf setup` creates the conventional sole VM
-target `ssf-server`, while `ssf --server NAME setup` prepares a selected local
-or VM target. `uninstall` is not yet target-aware and refuses a migrated VM or
-namespaced local target rather than applying installation-wide removal.
-Package upgrade and removal do discover all package-owned target services:
-upgrade restarts active instances, while removal verifies, stops and disables
-each instance before removing the binaries and preserves factory data.
-
-Selection has no configurable default:
-
-- No catalog preserves existing behavior: an unqualified command uses the
-  local endpoint, while `--server HOST` and `SSF_SERVER=HOST` are raw SSH
-  destinations.
-- One catalog entry is selected automatically.
-- More than one entry makes an unqualified factory command refuse and list the
-  names. Use `--server NAME` or `SSF_SERVER=NAME`. The exception is
-  `ssf dashboard`, which connects to all entries when neither selector is set.
-- A command-line selector overrides the environment. Unknown catalog names are
-  errors and are never tried as SSH hosts.
-- A command the factory runs itself answers for that factory. The daemon names
-  its target in the environment of its service and of every session pane under
-  it, so `ssf status`, `ssf ui service status` and `ssf doctor` there report that
-  factory's own unit (`ssf@NAME.service`) and state without `--server`, though
-  the pane's config directory is the factory's own and holds no catalog to look
-  the name up in.
+A `vm` target's nested `config` table holds that VM's `[vm]` keys; read
+and change them with `ssf --server NAME config get|set vm.<key>`.
 
 `ssf server list [--json]` and `ssf server show NAME [--json]` inspect the
-catalog. They are client-wide and ignore `SSF_SERVER`; passing `--server` to
-them is an error. Add targets without editing TOML:
+catalog. They are client-wide and ignore `SSF_SERVER`; passing `--server`
+to them is an error. `ssf server remove NAME` refuses while that target's
+service is enabled or active, removes only the catalog entry, and reports
+the local paths or VM resources it retained. Destroying a VM is a separate
+selected operation.
 
-```sh
-ssf server add local --local
-ssf server add crucible --vm
-ssf server add cloud --ssh ssf@factory.example.com
-```
+**Selecting a target.** There is no configurable default:
 
-Local defaults are isolated under `~/.config/ssf-factories/NAME` and
-`~/.local/state/ssf-factories/NAME`; override both together with
-`--config-dir` and `--state-dir`. VM creation persists a Lima-safe runtime
-identity, a distinct directory and a currently free SSH/build port pair;
-`--runtime-name`, `--vm-dir` and `--ssh-port` override them. Creation validates
-the entire resulting catalog before writing it.
+- One entry is selected automatically.
+- More than one entry makes an unqualified factory command refuse and list
+  the names; use `--server NAME` or `SSF_SERVER=NAME`. The exception is
+  `ssf dashboard`, which connects to every entry when neither is set.
+- A command-line selector overrides the environment. An unknown catalog
+  name is an error and is never tried as an SSH host.
+- With no catalog at all, an unqualified command uses the local endpoint
+  and `--server HOST` or `SSF_SERVER=HOST` is a raw SSH destination.
+- A command the factory runs itself answers for that factory: the daemon
+  names its target in the environment of its service and of every session
+  pane under it, so `ssf status`, `ssf ui service status` and `ssf doctor`
+  there report that factory's own unit and state without `--server`.
 
-`ssf server migrate-vm [NAME]` adopts the enabled legacy VM; `NAME` defaults to
-`ssf-server`. `ssf server remove NAME` refuses while that target's service is
-enabled or active, removes only the catalog entry, and reports the local paths
-or VM resources it retained. Destroying a VM remains a separate selected
-operation.
+**Coexisting targets.** Each VM target needs a distinct runtime name, an
+absolute non-overlapping `config.dir` and distinct host ports; Firecracker
+also reserves the adjacent port used while provisioning (normally
+`ssh_port + 1`), so leave a gap between VM ports. An explicitly configured
+Firecracker `rootfs` must be an absolute path disjoint from every other
+target. Lima derives distinct instance and disk identities from the
+runtime name. A namespaced local target must set both absolute paths, and
+they cannot contain `..`, duplicate or overlap another target's paths.
+`ssf server add` picks safe defaults and validates the whole resulting
+catalog before writing it.
 
-Before migration, `vm.enabled = true` makes the host own `[vm]` lifecycle
-settings. After migration those settings are the VM target's nested `config`
-table in `servers.toml`; continue to read or change them with
-`ssf --server NAME config get|set vm.<key>`. The host also owns the
-`[dashboard]` web listener settings and the SSH credential used to administer
-the guest. Repositories,
-`[github]`, `[git]`, `[daemon]` and driver settings belong to the guest.
-Repository commands, factory `ssf config get|set`, and `ssf auth`
-commands run there over SSH; paths in their arguments refer to guest files.
-`ssf config get|set vm.<key>` and `dashboard.<key>` remain on the host. Factory commands fail
-if the guest is stopped or unreachable; start it with `ssf vm start` and
-retry. They never edit a host factory copy as a fallback.
-
-The guest config and credentials live in its persistent home on the data
-disk. VM restart or root rebuild preserves them. Ordinary edits need no
-`ssf vm sync`; see [migration and recovery](vm.md#upgrading-existing-vms)
-for the older copied-config layout. Select VM mode before that migration;
-using `ssf vm` management commands with `vm.enabled = false` preserves
-your independent host factory settings and credentials.
+**Services.** Lifecycle and background service commands are target-aware:
+`ssf --server NAME ui service enable` enables `ssf@NAME.service` on Linux
+and a private `dev.ssf.server.NAME` launchd agent on macOS, each with its
+own journal or `~/Library/Logs/ssf/NAME.log`. `ssf setup` with no selector
+creates the conventional sole VM target `ssf-server`;
+`ssf --server NAME setup` prepares a selected local or VM target. Package
+upgrade restarts active instances, and package removal verifies, stops and
+disables each one before removing the binaries, preserving factory data.
 
 ```toml
 [daemon]
 poll_interval_secs = 30
 
 [[repo]]
-name = "acme/widgets"
+name = "owner/repo"
 harness = "claude"
 model = "opus"
 effort = "high"
@@ -190,8 +167,8 @@ instructions = "Run `make test` before opening a PR."
 | `git.name`, `git.email` | the bot's login and email | Author and committer of the agents' commits, when a person rather than the bot (see [Committing as a person](identity-and-bylines.md#committing-as-a-person-while-gh-stays-the-bot)); both or neither. `gh` stays the bot |
 | `git.signing_key` | the bot's key for the bot, unsigned for a person | SSH key to sign commits and tags with (a path), or `false` for unsigned |
 | `git.credential` | `bot` | Who pushes over HTTPS: `bot` (the bot's token), `token:<login>` (the token gh holds for that account where the agents run), `file:<path>` (a token file), or a git credential helper string used as `credential.helper`. SSH remotes always use the bot's key |
-| `driver` | `herdr` | What runs the agents. Herdr is currently the only supported value (see [Workspaces and terminals](drivers.md)); the key may be left unset |
-| `auto_compaction_tokens` | `300000` | Context a session's harness may fill before it compacts its own history, in tokens, for every repository that does not set its own (`repo.auto_compaction_tokens`). Applied to the harnesses that take such a setting — `claude`, `codex` and `omp` — and ignored by the rest, so one instance value can sit above a mixed set of repositories. `0` leaves each harness's own default alone (see [Context compaction](#context-compaction)) |
+| `driver` | `herdr` | What runs the agents. Herdr is the only supported value (see [Workspaces and terminals](drivers.md)); the key may be left unset |
+| `auto_compaction_tokens` | `300000` | Context a session's harness may fill before it compacts its own history, in tokens, for every repository that does not set its own (`repo.auto_compaction_tokens`). Applied to the harnesses that take such a setting (`claude`, `codex` and `omp`) and ignored by the rest, so one instance value can sit above a mixed set of repositories. `0` leaves each harness's own default alone (see [Context compaction](harnesses.md#context-compaction)) |
 | `herdr.command` | `herdr` | The herdr CLI (a herdr session must be running) |
 | `herdr.projects_dir` | `~/ssf/projects` | Where ssf clones repositories for the herdr driver; worktrees go in `<name>.worktrees/` next to the clone |
 | `herdr.tui_idle_timeout_ms` | `90000` | How long a freshly started agent gets to show up in its pane |
@@ -199,16 +176,12 @@ instructions = "Run `make test` before opening a PR."
 | `dashboard.bind` | `127.0.0.1` | Loopback or Tailscale address (100.64.0.0/10, fd7a:115c:a1e0::/48) only; any other exposure requires an authenticated TLS reverse proxy |
 | `dashboard.port` | `8787` | Server web UI port; restart required |
 | `daemon.poll_interval_secs` | `10` | GitHub poll interval (unchanged listings cost nothing against the rate limit) |
-| `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it in live messages (normally noise; a session started again is always shown its own posts in the catch-up story — see [Identity and bylines](identity-and-bylines.md)) |
+| `daemon.include_own_events` | `false` | Deliver the bot's own commits and cross-references, and each session's posts back to it in live messages (normally noise; a session started again is always shown its own posts in the catch-up story; see [Identity and bylines](identity-and-bylines.md)) |
 | `daemon.ignored_events` | `["mentioned", "subscribed", "unsubscribed"]` | Timeline event types that are never delivered |
 | `daemon.max_body_chars` | `8000` | Longest comment body quoted in a prompt, in characters |
 | `daemon.first_prompt_max_events` | `50` | Most timeline events a session's first message carries, newest first; `0` is no limit. What is left out is never delivered later, and the message says so and where to read it (see [What the agent is told](prompts.md#the-messages-an-agent-receives)) |
 | `daemon.first_prompt_max_chars` | `32000` | Character budget for those events together, spent newest first so the newest is always included; `0` is no limit |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
-| `daemon.cleanup_on_close` | | No longer used: item workspaces are never removed on close (see [Workspaces after close](sessions.md#workspaces-after-close-release-and-purge)); still accepted so old files load |
-| `daemon.cleanup_grace_secs` | | No longer used: it timed the reviewer sessions out, which went with #115 (see [Second opinions](sessions.md#second-opinions-the-gauntlet)); still accepted so old files load, and `ssf doctor` says so while it stays |
-| `daemon.review_label` | | No longer used: the label started a reviewer session until #115; ssf reacts to no label now. Still accepted so old files load; `ssf doctor` says so while it stays |
-| `daemon.slash_commands`, `repo.slash_commands` | | No longer used: a `/ssf <request>` comment was run as one-shot task until #398. ssf reads no command out of a comment now, whatever its first line says, and the item's comments are where collaboration happens; changing an item's stack is `ssf handover` or `ssf assign` at a terminal (see [Directing an item](sessions.md#directing-an-item-comments-ssf-handover-ssf-assign)). Still accepted so old files load; `ssf doctor` says so while either stays |
 | `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
 | `daemon.startup_driver_wait_secs` | `120` | How long to wait for herdr at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
@@ -216,7 +189,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
 | `daemon.conflict_check_interval_secs` | `300` | Interval between base fetches and committed-branch conflict checks for active sessions; `0` disables. One fetch per repository, with merge simulations only for changed commit pairs (see [Branch conflicts](sessions.md#branch-conflicts)) |
 | `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf-server` then starts and watches the VM, and daemon-facing client commands run in the guest |
-| `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends)); unset, `ssf vm build` writes the platform's default here |
+| `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends-and-host-prerequisites)); unset, `ssf vm build` writes the platform's default here |
 | `vm.name`, `vm.dir` | `default`, `~/.local/share/ssf/vm` | The VM's name and where the image, kernel, binaries and each VM's files live (`<dir>/<name>/`); under lima the instance is `ssf-<name>` and its data disk `ssf-<name>` in lima's home, and `name` is then at most 7 characters, since lima labels the disk's filesystem `lima-<disk>` and an ext4 label holds 16 |
 | `vm.vcpus`, `vm.mem_mib` | chosen from the machine | The guest's size; unset, `ssf vm build` writes the host's CPUs minus one (at least 2) and half its RAM in MiB (at least 4096) here (see [Size](vm.md#size)) |
 | `vm.data_gib` | chosen from the machine | The persistent data disk (state, clones, worktrees) in GiB, sparse; unset, `ssf vm build` writes half the free space of the filesystem that will hold the disk (at least 20) here, and prints the path it measured: `vm.dir` under Firecracker, lima's own disk directory (`$LIMA_HOME/_disks`, by default `~/.lima/_disks`) under lima, since that is where lima keeps its disks; `ssf vm grow` enlarges it later |
@@ -224,18 +197,18 @@ instructions = "Run `make test` before opening a PR."
 | `vm.ssh_port` | `2222` | Where the guest's sshd is published on `127.0.0.1` |
 | `vm.files` | `[]` | Host files copied into the guest at every start (`src` or `src:dest`). Factory configuration, bot credentials, `.gitconfig` and data-disk destinations are protected and refused. Copies an existing harness login in (`~/.claude/.credentials.json`) as the same session as yours; `ssf vm login` makes the guest its own, see [Harness logins](vm.md#harness-logins) |
 | `vm.firecracker`, `vm.gvproxy`, `vm.kernel`, `vm.rootfs` | under `vm.dir` | Firecracker only: use binaries or images of your own instead of the downloaded ones |
-| `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with; lima 2.0.1 or newer, which `ssf vm build` checks and says why (see [Backends](vm.md#backends)) |
+| `vm.limactl` | `limactl` on `PATH` | lima only: the `limactl` binary to drive the instance with; `ssf vm build` checks the version it needs and says why (see [Backends](vm.md#backends-and-host-prerequisites)) |
 | `vm.image` | Arch's cloud image on x86_64, Ubuntu LTS on aarch64 | lima only: a cloud-init image (URL or path; Arch or Debian/Ubuntu) to boot instead of the default for the guest's architecture |
 | `vm.vm_type` | lima's default | lima only: `vz` or `qemu`, passed through to lima (`vz` is macOS only) |
-| `vm.guest_binary` | this client on a Linux host, else the release asset `ssf-<version>-linux-<arch>` fetched with `gh` | A Linux `ssf` client to seed into the guest; its matching `ssf-server` build must be beside it (`ssf-server`, or the corresponding versioned release-asset name) |
+| `vm.guest_binary` | this client on a Linux host, else the matching release asset fetched with `gh` | A Linux `ssf` client to seed into the guest; its matching `ssf-server` build must be beside it (`ssf-server`, or the corresponding versioned release-asset name) |
 | `vm.herdr` | the host's own `herdr` on a Linux host, else herdr's latest Linux release downloaded by the guest while provisioning | lima only: a Linux herdr binary for the guest; installed when the guest is provisioned, so a change needs `ssf vm reset` |
 | `repo.name` | | `owner/name` on GitHub (required) |
 | `repo.enrolled_at` | set by `ssf repo add` | Enrollment generation used to quarantine allocations already present on the first successful poll; retained by `ssf repo set` and replaced after remove/add |
 | `repo.github_id` | enrolled by ssf | GitHub's immutable repository database id; ssf uses it to discover renames and transfers |
 | `repo.aliases` | `[]` | Previous `owner/name` values retained by ssf so historical session origin tags still route correctly |
-| `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them) |
-| `repo.driver` | the top-level `driver` | Optional per-repository declaration; herdr is currently the only supported value |
-| `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default from [Permissions](#permissions), e.g. `claude --permission-mode acceptEdits` |
+| `repo.harness` | | Agent id (required): `claude`, `codex`, `omp`, `pi`, `opencode`, `gemini`, `copilot`, `grok`, `crush` (`ssf agents` lists them; see [Harnesses](harnesses.md)) |
+| `repo.driver` | the top-level `driver` | Optional per-repository declaration; herdr is the only supported value |
+| `repo.command` | the agent's permission-free command | Command that starts the agent; overrides the default (see [The launch command and permissions](harnesses.md#the-launch-command-and-permissions)), e.g. `claude --permission-mode acceptEdits` |
 | `repo.model` | required by repo add/set when supported | Model id accepted by the agent; `provider/model` for `pi`, `omp` and `opencode`, and `auto` or a model name for `copilot` (`ssf models <agent>` lists known values; other ids pass through) |
 | `repo.effort` | required by repo add/set when supported | Effort or thinking level (`ssf agents --json` lists what each agent accepts) |
 | `repo.auto_compaction_tokens` | `auto_compaction_tokens` | Context this repository's sessions may fill before the harness compacts its own history, overriding the instance value. `0` leaves the harness's own default alone; `claude` accepts `100000`-`1000000` only, and a count outside that is refused by `ssf repo add`, `ssf repo set`, `ssf config set` and every config load, rather than written and left to keep a session from starting. Dropped when `ssf repo set --harness` switches harness, like the model and effort, since a threshold chosen for one harness need not be one the new harness takes |
@@ -251,32 +224,13 @@ instructions = "Run `make test` before opening a PR."
 | `repo.first_prompt_max_events`, `repo.first_prompt_max_chars` | `daemon.first_prompt_max_events`, `daemon.first_prompt_max_chars` | How much of this repository's items' activity a session's first message carries, for repositories whose items differ from the instance's (a spec-heavy issue is not a bug thread); `0` is no limit. File-only, like `repo.conflict_check_interval_secs` |
 | `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |
 
-The CLI writes all of it: `ssf repo add <owner/name> --harness <id>` with
-`--driver`, `--path`, `--clone-url`, `--base-branch`, `--command`,
-`--model`, `--effort`, `--auto-compaction-tokens`, `--instructions`,
-`--prompt-file`, `--allowed-users`, `--accept-anyone-risk` and
-`--event-comments`;
-`ssf repo set` changes some
-of those, sets `--git-name`, `--git-email`, `--git-signing-key` and
-`--git-credential`, and `--clear <field>` unsets one (`git` for the whole
-`[repo.git]` table, `git.credential` for one key); `ssf config get|set
-<dotted.key> [value]` for everything else. A value that starts with `[`
-or `{` is read as TOML, so `ssf config set git '{ name = "Ann Person",
-email = "ann@example.com" }'` sets both halves of an identity at once.
-
-The daemon enrolls `repo.github_id` on its first successful pass. Every five
-minutes it resolves that immutable id through GitHub. If GitHub reports a new
-canonical `owner/name`, ssf repairs `repo.name`, retains the former name in
-`repo.aliases`, migrates its session state, and updates SSF-managed checkout
-remotes before polling the repository again. Rename or transfer repositories
-through GitHub normally; no SSF-side rename command is required.
-
-Environment overrides: `SSF_GITHUB_TOKEN` (the token), `SSF_CONFIG_DIR`
-and `SSF_STATE_DIR` (where config and state live; a scratch factory uses
-its own, and [Development](development.md) says what they do and do not
-move), `HERDR_COMMAND` (the herdr CLI),
-`SSF_VM_DIR` (the VM image scripts), `SSF_LOG` or `RUST_LOG` (log
-verbosity, what `--log` reads).
+The daemon enrolls `repo.github_id` on its first successful pass. Every
+five minutes it resolves that immutable id through GitHub. If GitHub
+reports a new canonical `owner/name`, ssf repairs `repo.name`, retains the
+former name in `repo.aliases`, migrates its session state, and updates
+SSF-managed checkout remotes before polling the repository again. Rename
+or transfer repositories through GitHub normally; no SSF-side rename
+command is required.
 
 ## The SSF agent guidance file
 
@@ -292,11 +246,7 @@ this context for deliberation, delegate execution) is safe there.
 [Writing SSF.md](ssf-md.md) (`ssf skill ssf-md`) is the guide;
 [`SSF.example.md`](../SSF.example.md) (installed as
 `/usr/share/ssf/SSF.example.md`, and on macOS as
-`$(brew --prefix)/share/ssf/SSF.example.md`) is the template. This
-repository's own [`SSF.md`](../SSF.md) is one example, its
-[`AGENTS.md`](../AGENTS.md) the policy that goes with it, and
-[`CLAUDE.md`](../CLAUDE.md) the one-line `@AGENTS.md` that keeps a single
-copy.
+`$(brew --prefix)/share/ssf/SSF.example.md`) is the template.
 
 When an agent is started for an item, ssf reads `SSF.md` from the item's
 own checkout (so a PR branch that changes it is seen with its own version)
@@ -306,310 +256,38 @@ harness guidance, `repo.instructions`, repository shared guidance, then
 repository harness guidance. The same text is included when an agent is
 started again from scratch; it is not repeated on later messages. No file,
 or an empty one, adds nothing, and `ssf doctor` reports a repository whose
-SSF guidance is missing (`FAIL no SSF.md in owner/name; start from
-/usr/share/ssf/SSF.example.md`; on a Mac the message names the Homebrew
-copy instead, under `$(brew --prefix)/share/ssf/`, since ssf looks beside
-its own binary first there), looking for the file through the GitHub
-contents API on `repo.base_branch` (else the default branch), so no clone
-is needed; an absolute or `~/` `prompt_file` is looked for on the machine
-instead. `repo.prompt_file` names another
-file: a path inside the worktree (`.github/ssf.md`), or an absolute or `~/`
-path for SSF guidance you would rather not commit.
+SSF guidance is missing, looking for the file through the GitHub contents
+API on `repo.base_branch` (else the default branch), so no clone is
+needed; an absolute or `~/` `prompt_file` is looked for on the machine
+instead. `repo.prompt_file` names another file: a path inside the worktree
+(`.github/ssf.md`), or an absolute or `~/` path for SSF guidance you would
+rather not commit.
 
-For additional instructions specific to a harness, add `SSF.<harness>.md` at
-the checkout root, for example `SSF.codex.md`, `SSF.claude.md`, or `SSF.pi.md`.
-Use the harness identifier from the configuration. ssf appends this file after
-the shared SSF guidance, under its own "Harness guidance" heading. It uses the
-harness the session is on: the one the driver reports for its pane when there is
-one (so a session the config changed under reads its own harness's file, not the
-configured one's), and the one about to start otherwise, including after a
-handover or restart. It includes no other harness's file. These optional files
-are independent of `repo.prompt_file`: changing the shared guidance path does
-not change their location. Missing, empty, or HTML-comment-only files add
-nothing; HTML comments are filtered just as in the shared guidance.
-`ssf doctor` checks the shared SSF guidance only.
-Harness guidance is also appended only to the issue-owning main session, not
-automatically to subagents that harness creates.
-
-The global files follow the same missing, empty, HTML-comment filtering,
-restart, and handover rules. They are optional and `ssf doctor` does not require
-or inspect them. A handover selects the new harness's global and repository
-harness files. Repository guidance comes later in the prompt so it can refine
-the broader machine context.
+For additional instructions specific to a harness, add `SSF.<harness>.md`
+at the checkout root, for example `SSF.codex.md` or `SSF.claude.md`, using
+the harness identifier from the configuration. ssf appends this file after
+the shared SSF guidance, under its own "Harness guidance" heading. It uses
+the harness the session is actually on: the one the driver reports for its
+pane when there is one, and the one about to start otherwise, including
+after a handover or restart. It includes no other harness's file. These
+optional files are independent of `repo.prompt_file`. Missing, empty, or
+HTML-comment-only files add nothing; HTML comments are filtered just as in
+the shared guidance. `ssf doctor` checks the shared SSF guidance only, and
+harness guidance too goes only to the issue-owning main session.
 
 Optional machine-wide context belongs in `~/.ssf/SSF.md`: the operator's
 preferences for every session on this factory, such as how the machine is
 networked or which local services are available. `~/.ssf/SSF.<harness>.md`
-adds machine-wide context only for the selected harness, such as
-`~/.ssf/SSF.codex.md`. In VM mode these paths are in the guest user's home;
-in host mode they are in the host user's home. `SSF.<harness>.md` at the
-repository root does the same for one repository. `repo.model` selects the
-session's model, not its subagents' models; subagent preferences belong in
-this guidance and depend on what the harness supports (see [Choosing the
-harness and the model](repositories.md#2-choose-harness-model-and-effort-with-the-person)).
+adds machine-wide context for one harness. In VM mode these paths are in
+the guest user's home; in host mode in the host user's home. The global
+files follow the same missing, empty, HTML-comment filtering, restart and
+handover rules; they are optional and `ssf doctor` does not inspect them.
+Repository guidance comes later in the prompt so it can refine the broader
+machine context.
 
-## Models and effort levels
-
-`repo.model` and `repo.effort` are the *session's* model: the agent ssf
-starts for an item, which plans and delegates. They are not the model of
-the subagents it spawns underneath itself, which is the harness's own
-business — on some harnesses a subagent inherits the session's model
-unless the session or an agent definition names another, so a session
-left on an expensive model is an expensive subagent too. What ssf can do
-about the tiers below the session is the model register the repository's
-`SSF.md` puts in the prompt: a model and effort per harness for
-deliberation and for execution (see [Writing SSF.md](ssf-md.md)). Which model to put where, and how to work it out
-from what the person can run and what a task costs, is [Choosing the
-harness and the model](repositories.md#2-choose-harness-model-and-effort-with-the-person) in
-the setup document; the rest of this section is the mechanics.
-
-`repo.model` and `repo.effort` use identifiers accepted by the selected
-agent. Pi, Oh My Pi and OpenCode take their own `provider/model` ids (Pi and
-Oh My Pi reach many providers, OpenRouter among them) and their own thinking
-or reasoning levels. SSF turns the setting into the agent's command-line flags
-when it starts the agent, including when it resumes a session. The table
-below is what ssf seeds; `ssf models` usually answers with the agent's own
-list, which is the one to choose from:
-
-| Agent | Model ids | Effort levels | What is appended to the command |
-|-------|-----------|---------------|---------------------------------|
-| `claude` | `fable`, `opus`, `sonnet`, `haiku`, or a full model name | `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
-| `codex` | `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.2-codex`, ... | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra` | `-m <id> -c model_reasoning_effort=<level>` |
-| `gemini` | `gemini-3-pro-preview`, `gemini-3-flash-preview`, `gemini-2.5-pro`, `gemini-2.5-flash`, ... | none | `-m <id>` |
-| `grok` | `grok-4.6`, `grok-4.5` | `low`, `medium`, `high`, `xhigh` | `-m <id> --reasoning-effort <level>` |
-| `pi` | `provider/model` as in `pi --list-models`, e.g. `openrouter/anthropic/claude-sonnet-4` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --thinking <level>` |
-| `omp` | `provider/model` as in `omp models`, e.g. `openai-codex/gpt-5.4` | as `pi`, plus `auto` | `--model <id> --thinking <level>` |
-| `opencode` | `provider/model` as in `opencode models` | none | `-m <id>` |
-| `copilot` | `auto` or a model name | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `--model <id> --effort <level>` |
-
-`ssf models <agent>` prints the ids to choose from and, on stderr, which list
-answered. The installed agent's own list wins where the machine that runs the
-sessions has one (in [VM](vm.md) mode that is the guest, which is where the
-sessions and the agent are):
-
-| Source | Which agents | Where it is read |
-|--------|--------------|------------------|
-| `catalogue` | `claude`, `codex` | Claude Code's `cache/model-catalog/*.json` under `$CLAUDE_CONFIG_DIR` (default `~/.claude`), the newest file that lists models and is Claude Code's own surface; codex's `models_cache.json` under `$CODEX_HOME` (default `~/.codex`), models codex hides left out |
-| `command` | `pi`, `omp`, `opencode` | the agent itself: `pi --list-models`, `omp models --json`, `opencode models` |
-| `table` | the rest, or when the machine has neither | ssf's built-in table, above |
-
-`--json` prints `harness`, `models` and `source` (its `kind` is `catalogue`,
-`command` or `table`, and `detail` is the file or command line that
-answered). The menu's *Change model* picker uses the same list. Crush has no
-model flag for its terminal interface, so ssf refuses a model for it. Model
-ids are passed through as given, so a model the list does not mention works as
-long as the agent knows it.
-
-Effort levels stay ssf's own, and the table above is the flag's own set: a
-catalogue answers a narrower question, the levels one *model* supports, for
-omp, codex and Claude Code alike (`omp models --json` reports them per model,
-and codex's cache and Claude Code's catalogue scope them per model too), so a
-level list read from there would refuse levels the flag takes. They are also
-what a config is checked against when it loads, and a level that only a
-catalogue carried would make the config unloadable the moment that catalogue
-changed, taking the factory with it. A wrong level is refused when the config
-loads. Model ids can take the agent's own answer precisely because they are
-not checked that way. Changing the agent of a repository requires a fresh
-selection of both supported settings, since the ids belong to the agent.
-Other `repo set` edits keep existing values, but reject a result
-with missing supported settings (including `--clear model/effort`). Legacy
-files still load and run with harness defaults; `ssf doctor` fails and gives
-a repair command when settings are missing. Values in `repo.command` do not
-count: store the operator's choices in the dedicated keys. SSF cannot verify
-human confirmation of values already written into a file. Setup agents must
-ask the operator before selecting values. Keep `--model`/`--effort`
-out of `repo.command` when you set them here, or the agent sees the flag
-twice.
-
-### Per-item overrides
-
-`ssf handover` (see [Handover](sessions.md#handover)) moves one item to
-another harness, model or effort level without touching `config.toml`, and
-`ssf assign` (see [Assigning a stack before there is a
-session](sessions.md#assigning-a-stack-before-there-is-a-session)) starts an
-item's *first* session on one. What they set is a per-item override, kept
-on the item in `state.json` next to the rest of its record, and it wins
-over the `[[repo]]` the item belongs to:
-
-- **The same harness the repository uses**: the repository's `command`
-  still starts the agent, and the override's model and effort replace the
-  repository's; either one left out keeps the repository's. As
-  everywhere else, the model and effort are appended to `command` as
-  flags rather than rewritten into it, so a `command` that hard-codes a
-  model or effort itself (`command = "claude --model opus"`) leaves the
-  agent with the flag twice and the handover's model changes nothing it
-  can rely on: keep the model and effort in their own keys on a
-  repository whose items are handed over.
-- **Another harness**: the item runs on that harness with the
-  permission-free command from [Permissions](#permissions) (the
-  repository's `command` belongs to its own harness and is not reused),
-  and with the override's model and effort, or that harness's own
-  defaults where the handover named none.
-
-The override applies to every later launch of the item: a delivery that
-has to start the agent again, a resumed conversation, a workspace
-re-created from the branch, the startup pass after a reboot. It is in the
-state file, so it survives daemon and machine restarts, and an item bound
-to another session's workspace follows that session's override. `ssf
-status` and `ssf peers` show the overridden harness, model and effort on
-the item's line (and `overrides` in `--json`), together with a handover
-that has not been carried out yet, worded by which command wrote them
-(`ssf peers`: `handed over to pi` after `ssf handover`, `harness pi` after
-`ssf assign`; `ssf status`: `handed over: harness=pi` against `assigned:
-harness=pi`). Which of the two it was is recorded on the item
-(`assigned_at` for an assignment, `handed_over_at` for a handover), not
-inferred, so a later command taking the overrides over changes the
-wording with them.
-Releasing the workspace or purging the item leaves the override alone: the
-stack belongs to the item, not to the workspace it was started in, so the
-workspace re-created on the item's next event comes back on it. Only a
-later command that writes overrides replaces it -- `ssf handover` for an
-item with a session, `ssf assign` for one without. `ssf assign` writes
-nothing at all when the stack it is given is the one the item would run
-anyway: an override nobody needs would pin the item out of `ssf repo
-set`.
-
-### What a session runs, against what launches next
-
-An override and the repository's config are both about the *next* launch:
-they say what a session would be started with. What a session that is
-already running is on is the driver's answer, not the config's -- the
-harness reported for its pane (`AgentInfo.agent_type`) governs what ssf
-reports, which harness's sign-in prompt it looks for on the screen, and
-which `SSF.<harness>.md` guidance the session is given. Change a
-repository's harness, model or effort under a live session and that
-session stays where it is: ssf does not restart a running agent under an
-operator, and `ssf repo set` prints a line saying so when the repository
-has running sessions. The change waits for that session's next launch,
-resume, relaunch or re-creation, and until then `ssf status` and `ssf
-peers` show both sides (`harness codex → omp next launch (model
-deepseek/deepseek-flash, effort high)`, and `next_launch` beside
-`harness` in `--json`; the dashboard cards show
-`codex → omp next launch`). The running session's own model and effort
-are left out while the two differ: only the harness is the driver's to
-report, and ssf does not have the stack that session was started with.
-`ssf handover <item> --harness <the configured one> ...` is how to move
-one onto it now (see [Handover](sessions.md#handover)).
-
-## Context compaction
-
-An unattended session that runs long enough fills its context window. Each
-harness that grows one summarises its own history when the context crosses a
-threshold, and ssf sets that threshold conservatively — `300000` tokens by
-default — because the alternative is not free: every turn re-sends the whole
-conversation, so an agent left to grow until the model's own limit pays for
-its entire history on each request, and that cost grows with the square of the
-turns. A smaller window is a deliberate trade of detail for cost: the summary
-keeps the gist, not the file paths and the reasoning on them. `0` in either key
-turns ssf's value off and leaves the harness's own default alone, for an
-operator who would rather decide that per model than per machine.
-
-| Agent | How ssf sets it | Notes |
-|-------|-----------------|-------|
-| `claude` | `--autocompact <tokens>` on the launch command, resumes included | Claude Code accepts `100000`-`1000000` and refuses to start outside it, so a count it cannot take is refused while the config loads, and again when `ssf config set` or `ssf repo set` would write one. It is a flag of its own rather than a key in the `--settings` JSON that carries `crossSessionInbound`, whose count ssf requires to stay at one |
-| `codex` | `-c model_auto_compact_token_limit=<tokens>`, the same route the effort level takes | codex type-checks the key and reports a bad value at startup |
-| `omp` | `PI_CONFIG_FILES` pointed at a one-key overlay under the state directory, written by `ssf launch` | omp has no flag and no environment variable for the value; `PI_CONFIG_FILES` is what a session reads at startup, where `omp --config <file>` is honoured by its model listing and not by a session. An overlay of your own in the environment is replaced for the session, and one listed later still wins |
-| everything else | nothing | `pi`, `opencode`, `gemini`, `grok`, `copilot` and `crush` have no such setting; a value configured above them is unused rather than an error, so one instance value can sit above a mixed set of repositories |
-
-A repository's own value belongs to its harness: `ssf repo set --harness`
-drops it, exactly as it drops the model and effort, and an item handed to
-another harness (`ssf handover`) falls back to the instance value or the
-default rather than carrying a count the new harness may refuse. A custom
-`repo.command` does not replace ssf's value: the flags and the overlay are
-appended to whatever command you configured, so a repository that runs the
-harness its own way still gets the threshold, and one that already sets
-`PI_CONFIG_FILES` for itself keeps its own overlays, layered after ssf's.
-
-Different projects need different answers, which is why the setting is per
-repository as well as per instance: a large-context model can afford more
-room than a 200K one, and a repository whose items carry long histories is
-where a small window costs the most.
-
-## Codex native delivery
-
-Native Codex item activity is experimental and opt-in, live-verified on 0.154.0.
-The normal default command remains standalone and uses terminal fallback.
-An operator-provided launcher may instead attach the normal Herdr-managed TUI
-to an item-specific app-server:
-
-```sh
-codex --remote unix:///absolute/item-specific/app.sock \
-  --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust
-```
-
-Set `repo.command` to that launcher, keeping model/effort in their dedicated
-SSF keys. The launcher receives `SSF_REPO`, `SSF_ISSUE` and
-`SSF_DELIVERY_MAILBOX`; derive a unique private endpoint for each item rather
-than hard-code one repository-wide socket for every worker. Provision the server
-with `codex app-server --listen unix:///absolute/item-specific/app.sock` before
-attaching, and retain ownership of its startup, restart and cleanup. SSF does
-not provision servers or expose public TCP listeners. The endpoint must control
-the same persistent conversation displayed by the TUI, with socket mode 0600
-and a same-user peer. SSF pins the sole ordinary loaded thread and refuses
-ambiguous conversation selection. Preserve the same endpoint and resume that
-thread after exit; a saved binding without a resumable session is held rather
-than replaced with a new conversation. Unverified permission/configuration
-overrides are rejected for native delivery.
-
-Remote resume must omit `--dangerously-bypass-approvals-and-sandbox`: Codex
-rejects permission overrides when reconnecting to a persisted remote task.
-Keep `--dangerously-bypass-hook-trust` and resume the exact saved thread;
-its existing server-side permissions are retained. SSF removes the permission
-flag for a direct `codex --remote ...` command; a custom launcher must handle
-this distinction when SSF appends `resume <id>`. Handover or fresh onboarding retires the active
-native binding, preserving old per-event receipt journals. Workspace release
-retains the binding because the saved conversation remains resumable.
-
-`ssf doctor` reports unavailable channels. Explicit native launch failures hold
-activity instead of reverting to paste; pending journals reconcile the exact
-durable user-message echo, never blindly resend. See
-[delivery details](drivers.md#item-activity-delivery).
-
-## Permissions
-
-Nobody sits at an ssf terminal, so an agent that stops to ask whether it may
-run a command waits forever. Unless `repo.command` says otherwise, ssf
-therefore starts every agent with the flags that let it run unattended:
-
-| Agent | Default command | What still shows up at start |
-|-------|-----------------|------------------------------|
-| `claude` | `claude --dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{"crossSessionInbound":"accept"}'` | the folder-trust question, and once per machine the "Bypass Permissions mode" acceptance (ssf answers both) |
-| `codex` | `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust` | the directory-trust question (ssf answers it) |
-| `gemini` | `gemini --yolo --skip-trust` | nothing (without `--skip-trust`, a trust dialog ssf answers) |
-| `grok` | `grok --always-approve` | nothing |
-| `pi` | `"$SSF_PI_LAUNCHER" pi --approve -e "$SSF_PI_BRIDGE"` (Pi has no tool approvals; the flag trusts the repository's `.pi/` files; the launcher isolates and resumes its session) | nothing (without `--approve`, a trust dialog ssf answers) |
-| `omp` | `PI_STREAM_IDLE_TIMEOUT_MS=900000 "$SSF_PI_LAUNCHER" omp --auto-approve -e "$SSF_PI_BRIDGE"` (the longer stream-idle window and delivery bridge are explained in [Workspaces and terminals](drivers.md)) | nothing |
-| `opencode` | `opencode --auto` | nothing |
-| `copilot` | `copilot --allow-all` | nothing (the flag trusts the folder too) |
-| `crush` | `crush --yolo` | an offer to create `AGENTS.md`, which the first prompt dismisses |
-
-`ssf agents --json` shows the default as `launch_command`. Claude Code's
-`AskUserQuestion` tool is switched off because it, too, waits for a person
-at the terminal; the agent is told to ask on the issue instead. Login and
-first-run onboarding are not covered: sign each agent in once, by hand, on
-the machine that runs the daemon.
-
-`ssf launch` sets `SSF_PI_BRIDGE` to the packaged extension. A custom `pi` or
-`omp` repository command replaces the default, so include
-`"$SSF_PI_LAUNCHER" pi|omp ... -e "$SSF_PI_BRIDGE"`; otherwise a live session
-has no complete, resumable item-activity channel and `ssf doctor` asks for it
-to be restarted after the command is fixed. The launcher is an exec wrapper,
-not a process that remains beside the harness.
-
-Set `repo.command` to run an agent differently, for instance with a
-permission mode of your own or a tool deny list in the agent's own syntax
-(`--disallowedTools` for Claude Code, `--deny` for Grok, `--deny-tool` for
-Copilot, `--exclude-tools` for Pi):
-
-```sh
-ssf repo set acme/widgets --command "claude --dangerously-skip-permissions --disallowedTools 'Bash(git push:*)'"
-ssf repo set acme/widgets --clear command      # back to the default
-```
-
-SSF-session limits (do not merge, do not close issues) belong in the [SSF agent
-guidance file](#the-ssf-agent-guidance-file), not in the command. ssf has no
-tool allow/deny list of its own; who may *drive* the agents is the next
-section.
+`repo.model` selects the session's model, not its subagents' models;
+subagent preferences belong in this guidance and depend on what the
+harness supports (see [Models and effort](harnesses.md#models-and-effort)).
 
 ## Who may drive the factory
 
@@ -617,61 +295,50 @@ Everything that reaches the bot on GitHub comes from whoever can write on
 the repository, and a comment is relayed straight into a running agent's
 terminal. `allowed_users` says whose word counts:
 
-```toml
-[daemon]
-allowed_users = ["alice", "bob"]            # for every repository below
-
-[[repo]]
-name = "acme/widgets"
-harness = "claude"
-allowed_users = ["alice"]                   # replaces the instance list here
-```
-
 ```sh
 ssf config set daemon.allowed_users '["alice", "bob"]'
-ssf repo set acme/widgets --allowed-users alice,bob    # for one repository, replacing the instance list
-ssf repo set acme/widgets --clear allowed_users
+ssf repo set owner/repo --allowed-users alice,bob    # for one repository, replacing the instance list
+ssf repo set owner/repo --clear allowed_users
 ```
 
 - **Unset** (a fresh install): the repository's collaborators with push
   access, which is GitHub's **Write** role or higher (Write, Maintain,
-  Admin) in **Settings → Collaborators and teams**. The daemon fetches them once per pass (an unchanged answer is a
-  free 304) and `ssf doctor` prints the list per repository. If they cannot
-  be fetched, an organisation repository where the token lacks `read:org`
-  say, and none were fetched before, the pass fails for that repository and
-  nothing is acted on until either the fetch works or a list is configured;
-  `ssf status` shows the error and `ssf doctor` says how to fix it.
+  Admin) in **Settings → Collaborators and teams**. The daemon fetches
+  them once per pass (an unchanged answer is a free 304) and `ssf doctor`
+  prints the list per repository. If they cannot be fetched and none were
+  fetched before, the pass fails for that repository and nothing is acted
+  on until the fetch works or a list is configured (see
+  [troubleshooting.md](troubleshooting.md#github-access)).
 - **A repository list replaces the instance list** rather than extending
   it, so one repository can be narrowed as well as widened; `[]` is nobody
   but the bot. Logins compare case-insensitively.
 - **The bot itself always counts**, tagged posts and untagged ones alike
   (whoever types as the bot holds its token).
-- **App accounts** such as `github-actions[bot]` or
-  `github-project-automation[bot]` are ordinary logins: listed explicitly
-  or not at all, and never part of the collaborator default.
+- **App accounts** such as `github-actions[bot]` are ordinary logins:
+  listed explicitly or not at all, and never part of the collaborator
+  default.
 
 What the list does: an item only gets a session when an allowed login
-asked for it, read from the item's timeline: who assigned the bot (latest
-assignment), who mentioned it (body, comment or review), who requested the
-review. One that nobody allowed asked for is
-logged once at info level with the login and trigger, and not read again
-until it changes; an allowed user assigning or mentioning the bot later
-brings it in. On a running session, events by anyone else are dropped
-before delivery, so a non-listed user's comment on an owned item reaches
-neither the owner nor its subscribers. Commits are the one
-event without a login and pass (pushing needs write access to the branch);
-unassigning or closing still retires a session, since stopping work is
-safe. One limit to know: the timeline says who posted a body or comment,
-not who edited it, and anyone with write access can edit anyone's text, so
-the list is a boundary against the internet, not a hard one among people
-who can already push. Prompts are unchanged: this is all daemon-side.
+asked for it, read from the item's timeline (who assigned the bot, who
+mentioned it, who requested the review). One that nobody allowed asked for
+is logged once at info level and not read again until it changes; an
+allowed user assigning or mentioning the bot later brings it in. On a
+running session, events by anyone else are dropped before delivery.
+Commits are the one event without a login and pass, since pushing needs
+write access to the branch; unassigning or closing still retires a
+session, since stopping work is safe. One limit to know: the timeline says
+who posted a body or comment, not who edited it, and anyone with write
+access can edit anyone's text, so the list is a boundary against the
+internet, not a hard one among people who can already push.
 
-
-`"*"` means anyone on GitHub. It is never accepted silently: `ssf config set
-daemon.allowed_users '["*"]'` and `ssf repo set <repo> --allowed-users '*'`
-refuse it unless you type `yes` (nothing shorter) to the risk at the terminal or pass
-`--accept-anyone-risk`, either of which writes `accepted_anyone_risk = true`
-next to the list (setting a plain list again removes it). A hand-edited
-file with `"*"` and no marker is refused at load with the fix spelled out,
-`ssf status` prints a warning while the wildcard is in effect, and the
-dashboards show one.
+`"*"` means anyone on GitHub. It is never accepted silently: `ssf config
+set daemon.allowed_users '["*"]'` and `ssf repo set <repo>
+--allowed-users '*'` refuse it unless you type `yes` (nothing shorter) to
+the risk at the terminal or pass `--accept-anyone-risk`, either of which
+writes `accepted_anyone_risk = true` next to the list (setting a plain
+list again removes it). A hand-edited file with `"*"` and no marker is
+refused at load with the fix spelled out, `ssf status` prints a warning
+while the wildcard is in effect, and the dashboards show one. Ask the
+person before setting it; it is their repository and their spend. Choosing
+the list during installation is step 7 of
+[install.md](install.md#7-who-may-drive-the-factory).

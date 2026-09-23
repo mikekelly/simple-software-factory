@@ -1,29 +1,25 @@
-# Simple Software Factory configuration (~/.config/ssf/config.toml); every key
-# is explained in docs/configuration.md.
-# Client-side named routes are separate, in ~/.config/ssf/servers.toml; create
-# them with `ssf server add`, not in this factory-owned file.
-# Most of this is written for you by `ssf repo add` or `ssf config set`
-# (the dashboards only show state); the token is read from gh's keyring, or from
-# ~/.config/ssf/token (0600) after `ssf auth login --token`, never from here.
-# In legacy VM mode this example spans two owners. New `ssf setup` installations
-# store [vm] through the `ssf-server` catalog target; [dashboard] remains on the host.
-# Factory settings and credentials belong in the guest persistent home.
-# Use the CLI after starting the VM: factory commands route into the guest;
-# `ssf config get|set vm.<key>` and `dashboard.<key>` stay on the host. Paths below are guest paths
-# in VM mode. Do not copy this whole example over an established host config.
+# Simple Software Factory configuration (~/.config/ssf/config.toml).
+# Every key is explained in docs/configuration.md (`ssf skill config`).
+# Most of it is written for you by `ssf repo add`, `ssf repo set` and
+# `ssf config set`; the dashboards only show state.
+# The GitHub token is never here: it comes from gh's keyring, or from
+# ~/.config/ssf/token (0600) after `ssf auth login --token`.
+# Named routes to factories are separate, in ~/.config/ssf/servers.toml;
+# create them with `ssf server add`, not in this factory-owned file.
+# In VM mode [vm] and [dashboard] belong to the host and everything else to
+# the guest, where the paths below are guest paths.
 
 [github]
 # api_url = "https://api.github.com"      # GitHub Enterprise: https://ghe.example.com/api/v3
-# Written by `ssf auth login --user <bot>` (the auth commands do not rewrite
-# the daemon's live state.json):
-# login = "acme-bot"
-# email = "12345+acme-bot@users.noreply.github.com"
-# ssh_key_path = "~/.config/ssf/keys/acme-bot_ed25519"   # enrolled for SSH pushes and commit signing
+# Written by `ssf auth login --user <bot>`:
+# login = "bot-login"
+# email = "12345+bot-login@users.noreply.github.com"
+# ssh_key_path = "~/.config/ssf/keys/bot-login_ed25519"  # enrolled for SSH pushes and commit signing
 # ssh_key_id = 0
 # signing_key_id = 0
-# Accept pending repository invitations sent by these GitHub users. Matching is
-# case-insensitive. This grants the bot access only: it does not add a [[repo]],
-# select a server, or enable its service.
+# Accept pending repository invitations sent by these GitHub users
+# (case-insensitive). Grants the bot access only: it adds no [[repo]],
+# selects no server and enables no service.
 # auto_accept_invitations_from = ["alice", "acme-admin"]
 
 # Who the agents' commits are by, when not the bot: gh, the API and the
@@ -40,11 +36,10 @@
 # driver = "herdr"
 
 # Context a session's harness may fill before it compacts its own history, in
-# tokens, for every repository that does not set its own (`repo.auto_compaction_tokens`).
-# A conservative threshold, because an unattended session that compacts only at
-# the model's own limit pays for its whole history on every turn. Applied to the
-# harnesses that take such a setting (claude, codex, omp); the others ignore it.
-# 0 leaves each harness's own default alone.
+# tokens, for every repository that does not set its own. Conservative, because
+# an unattended session that compacts only at the model's own limit pays for its
+# whole history on every turn. Used by claude, codex and omp; the others ignore
+# it. 0 leaves each harness's own default alone. See docs/harnesses.md.
 # auto_compaction_tokens = 300000
 
 [herdr]
@@ -53,26 +48,22 @@
 # projects_dir = "~/ssf/projects"              # ssf clones repos here; worktrees go in <name>.worktrees/ next to the clone
 # tui_idle_timeout_ms = 90000                  # how long a freshly started agent gets to show up in its pane
 
-
 # The whole factory (daemon, herdr, sessions) inside a VM instead of on this
 # machine: a Firecracker microVM on Linux, a lima instance on macOS; see
 # `ssf vm --help` and docs/vm.md. With `enabled = true`, `ssf-server` starts and
-# watches the VM, and `ssf status`, `peers`, `sub`, `release`, `purge`
-# and `doctor` run inside it. `ssf vm status --json` reports `running = null`
-# (with `probe_error`) when lima cannot answer, rather than claiming it stopped.
+# watches the VM, and the daemon-facing client commands run inside it.
+# Leave the sizes unset: `ssf vm build` measures the host and writes them.
 [vm]
 # enabled = false
 # name = "default"                             # disks live in <dir>/<name>/ (lima: instance ssf-<name>, disk ssf-<name>; at most 7 characters under lima)
 #                                              # must name a directory under `dir`: not empty, not absolute, no `..`; nested names like "a/b" are fine
 # dir = "~/.local/share/ssf/vm"                # image, kernel, firecracker, gvproxy, VMs (lima: the template, share and ssh key per VM)
 # backend = "firecracker"                      # firecracker | lima; unset = firecracker on Linux, lima on macOS; `ssf vm build` writes it
-# vcpus = 7                                    # unset = chosen from the machine by `ssf vm build`: its CPUs minus one, at least 2
-# mem_mib = 16384                              # unset = chosen from the machine: half its RAM, at least 4096
-# data_gib = 250                               # persistent data disk: state, clones, worktrees; sparse, so a cap, not a reservation.
-#                                              # unset = chosen from the machine: half the free space where the disk will live, at least 20;
-#                                              # that is `dir` under Firecracker and lima's own disk directory ($LIMA_HOME/_disks, by
-#                                              # default ~/.lima/_disks) under lima; `ssf vm build` prints the path it measured, and
-#                                              # `ssf vm grow` enlarges the disk later
+# vcpus =                                      # unset = the host's CPUs minus one, at least 2
+# mem_mib =                                    # unset = half the host's RAM, at least 4096
+# data_gib =                                   # persistent data disk (state, clones, worktrees); sparse, so a cap, not a reservation.
+#                                              # unset = half the free space where the disk will live, at least 20; `ssf vm build` prints
+#                                              # the path it measured, and `ssf vm grow` enlarges the disk later
 # root_gib = 8                                 # size of the root image `ssf vm build` makes (lima: the instance's root disk, at least 20)
 # ssh_port = 2222                              # the guest's sshd on 127.0.0.1
 # files = ["~/.claude/.credentials.json"]      # host files copied into the guest at every start; `src:dest` to place them
@@ -81,7 +72,7 @@
 # gvproxy = "..."
 # kernel = "..."
 # rootfs = "..."
-# limactl = "limactl"                          # lima: the limactl binary, when not the one on PATH; lima 2.0.1 or newer either way
+# limactl = "limactl"                          # lima: the limactl binary, when not the one on PATH
 # image = "https://.../image.qcow2"            # lima: a cloud-init image (URL or path) instead of the default for the guest's architecture
 # vm_type = "vz"                               # lima: vz | qemu; unset = lima's default
 # guest_binary = "~/dl/ssf-linux"              # Linux ssf client for the guest; matching ssf-server binary must be beside it
@@ -100,11 +91,6 @@
 # instructions = """
 # House rules appended to every initial prompt.
 # """
-# A person can release a retired session pinned by open follow-ups with
-# `ssf release --as owner/repo#N --force`; this also skips worktree safety checks.
-# cleanup_on_close = true                      # no longer used: item workspaces are never removed on close (the agent runs `ssf release`; `ssf purge` sweeps the rest)
-# review_label = "review"                      # no longer used: the label started a reviewer session until #115; ssf runs one session per item (the SSF.md gauntlet rule replaces it); `ssf doctor` says so while the line stays
-# cleanup_grace_secs = 900                     # no longer used (it timed those reviewer sessions out); still accepted so old files load
 # resume_on_start = true                       # after a reboot, start again the sessions whose terminals are gone (running ones are left alone)
 # startup_driver_wait_secs = 120               # wait this long for herdr at daemon start (every 10 s) before the first poll
 # Who may drive the factory: only these GitHub logins' assignments, mentions,
@@ -116,23 +102,21 @@
 # allowed_users = ["alice", "bob", "github-actions[bot]"]
 # accepted_anyone_risk = false
 # event_comments = true                        # post the daemon's events (session attached, resumed, blocked/unblocked, gave up, workspace released) on the item as fenced ssf blocks; false posts nothing
-# slash_commands = true                       # no longer used: a "/ssf <request>" comment was run as a one-shot task until #398; a comment is an ordinary comment now, and an item's stack changes with `ssf handover` or `ssf assign` at a terminal; still accepted so old files load
+# A person can release a retired session pinned by open follow-ups with
+# `ssf release --as owner/repo#N --force`; this also skips worktree safety checks.
 
 # One [[repo]] per watched repository.
 [[repo]]
 name = "owner/name"
 # github_id and aliases are maintained by ssf so GitHub renames and transfers reconnect automatically.
-harness = "claude"                             # agent id: see `ssf agents`
+harness = "claude"                             # agent id: see `ssf agents` and docs/harnesses.md
 # driver = "herdr"                             # default: the top-level `driver`
 # command = "claude --permission-mode acceptEdits"    # how the agent is started; default: its permission-free command (`ssf agents --json`), run via `ssf launch`
-#                                                     # OMP's default also sets PI_STREAM_IDLE_TIMEOUT_MS=900000; a custom command replaces that default
-# Experimental Codex native delivery requires an operator-owned per-item Unix
-# app-server and an explicitly attached TUI; do not share one conversation across
-# items. See docs/configuration.md#codex-native-delivery. Standalone uses fallback.
+#                                                     # a custom command replaces the whole default: see docs/harnesses.md for what it must keep
 # Choose model and effort with the operator before watching this repository.
-# Required by repo add/set when supported; doctor fails if missing in legacy config.
-model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush. `ssf models <agent>` lists what the installed agent itself offers, else ssf's table; choosing one: docs/repositories.md
-effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
+# Required by repo add/set when the harness supports them.
+model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush. `ssf models <agent>` lists what the installed agent offers; choosing one: docs/repositories.md
+effort = "high"                              # effort/thinking level; `ssf agents --json` lists what each harness accepts
 # auto_compaction_tokens = 300000              # context this repository's sessions may fill before the harness compacts its own history; overrides the top-level key (0: the harness's own default; claude requires 100000-1000000; claude/codex/omp only)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git
 # path = "~/code/name"                         # use an existing checkout instead of cloning
@@ -143,7 +127,6 @@ effort = "high"                              # effort/thinking level (claude: lo
 # prompt_file = "SSF.md"                       # SSF agent guidance appended to the main session's initial prompt (see SSF.example.md); relative to the worktree unless absolute
 # allowed_users = ["alice"]                    # who may drive this repository, replacing daemon.allowed_users ([] is nobody but the bot; ["*"] needs accepted_anyone_risk = true here)
 # event_comments = false                       # this repository's items get no ssf event posts (default: daemon.event_comments)
-# slash_commands = false                      # no longer used: see daemon.slash_commands above; still accepted so old files load
 # conflict_check_interval_secs = 0             # disable conflict notices for this repository (default: daemon.conflict_check_interval_secs)
 # first_prompt_max_events = 0                  # no limit: this repository's first messages carry the whole timeline again (default: daemon.first_prompt_max_events)
 # first_prompt_max_chars = 0                   # likewise for the character budget (default: daemon.first_prompt_max_chars)
@@ -154,12 +137,9 @@ effort = "high"                              # effort/thinking level (claude: lo
 # credential = "token:ann"                     # push as @ann with the token gh holds for her (needs an HTTPS clone_url)
 
 # Session gh shim: explicit bodies are stamped; large bodies use anonymous
-# file transport. Invalid UTF-8 and stdin read errors stop before posting.
-# Both wrappers (the gh shim and the git shim beside it) run the real
-# programs with the session's own gh token, ssh command and git
-# configuration, recovered from the pane when a harness tool starts with a
-# scrubbed environment.
-# See docs/identity-and-bylines.md; no configuration is needed.
+# file transport. Both wrappers (the gh shim and the git shim beside it) run
+# the real programs with the session's own gh token, ssh command and git
+# configuration. See docs/identity-and-bylines.md; no configuration is needed.
 
 # Optional server browser dashboard. Restart ssf-server after changes.
 # In VM mode this section belongs to the host, not the guest.
