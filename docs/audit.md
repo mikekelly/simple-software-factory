@@ -19,17 +19,9 @@ Ask these qualitative questions:
 - **Proportional validation:** Are checks and independent review matched to
   risk, with lightweight documentation checks and stronger checks for unsafe
   behavior? Are repeated builds/reviews justified by substantive changes?
-- **Network exposure:** When a project runs the web dashboard/API with a
-  non-loopback bind, is it unreachable from outside the private network in
-  practice: no Tailscale Funnel, no port forward or proxy in front of it,
-  tailnet ACLs limiting who reaches the port, and the capability URL held
-  only by the extension and tailnet browsers? The API can now start a
-  session (`POST /<capability>/api/assign`), so the URL is not only a
-  read credential: anyone who reaches the port and learns it can put an
-  agent to work on a watched repository. Writes are refused unless the
-  `Origin` is a Chrome extension's and are logged with it, which bounds
-  a browser-based cross-site request but not a client that has the URL.
-  This is a judgment call `ssf doctor` cannot make deterministically.
+- **Network exposure:** When the dashboard or API binds to a non-loopback
+  address, is it actually unreachable from outside the private network (see
+  [the dashboard's bind rules](dashboard.md#optional-server-web-dashboard))?
 - **Bounded review:** Is there a stopping rule, a distinction between confirmed
   defects and optional polish, and a path to simplify or ask a maintainer
   when substantive defects remain?
@@ -46,10 +38,3 @@ needed; leave optional ideas as non-blocking notes rather than creating work
 by default. Finish with the outcome and next-action owner: close out within
 explicit authority, or link the PR and tag/request the human who must act.
 An audit does not grant merge authority or waive unresolved defects.
-
-For this repository, [SSF.md](../SSF.md) defines the SSF session's ownership,
-communication, review and completion contract; [AGENTS.md](../AGENTS.md)
-defines repository-wide validation and implementation policy. [The
-template](../SSF.example.md) and [agent operating guidance](agent-guidance.md)
-carry that boundary to new projects. See also [review
-boundaries](sessions.md#second-opinions-the-gauntlet).

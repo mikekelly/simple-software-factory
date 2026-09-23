@@ -182,7 +182,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.first_prompt_max_events` | `50` | Most timeline events a session's first message carries, newest first; `0` is no limit. What is left out is never delivered later, and the message says so and where to read it (see [What the agent is told](prompts.md#the-messages-an-agent-receives)) |
 | `daemon.first_prompt_max_chars` | `32000` | Character budget for those events together, spent newest first so the newest is always included; `0` is no limit |
 | `daemon.instructions` | | Extra instructions appended to every initial prompt |
-| `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Restarts](internals.md#polling-and-delivery)) |
+| `daemon.resume_on_start` | `true` | Start interrupted sessions again when the daemon starts (see [Resume and restarts](internals.md#resume-and-restarts)) |
 | `daemon.startup_driver_wait_secs` | `120` | How long to wait for herdr at daemon start before the first poll |
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |

@@ -1,5 +1,9 @@
 # Release v0.2.0
 
+> **Historical record.** This is the plan for one past release, kept for
+> context. It shipped. Current packaging and release practice lives in
+> `packaging/` and [Operate a factory](../operate.md).
+
 ## Source and tag
 
 The release uses two commits to keep the PKGBUILD in the tag verifiable without

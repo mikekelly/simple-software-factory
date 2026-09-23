@@ -1,5 +1,9 @@
 # Docker Sandboxes feasibility for SSF
 
+> **Historical record.** This is a feasibility investigation into a Docker
+> sandbox backend, kept for context. It did not ship and is not planned. The
+> supported backends are documented in [The factory VM](../vm.md).
+
 Investigation for [#225](https://github.com/mikekelly/simple-software-factory/issues/225),
 2026-09-12. SSF source audited: `f388b1a455fbece3dfe430a37731f45652154b52`.
 Docker CLI examined: **v0.42.1**, commit
@@ -18,7 +22,7 @@ This is a design proposal, not an implemented backend. Docker documentation is
 evidence of an API, not evidence that SSF works on it. Executed Docker
 checks were CLI inspection, kit validation, a failed isolated create attempt, and
 a settings query that unexpectedly attempted (and failed) daemon startup.
-[Reproduction and pending runtime tests](../experiments/docker-sandboxes/README.md)
+[Reproduction and pending runtime tests](docker-sandboxes/README.md)
 record that distinction. No existing VM or factory state was used; no credentials were supplied or exported.
 
 ## Capability matrix

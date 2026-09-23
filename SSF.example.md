@@ -5,6 +5,11 @@ Copy this to SSF.md at the repository root. It reaches only the main session
 ssf starts for an item, never its subagents; repository-wide build, test and
 implementation policy belongs in AGENTS.md. Keep it short: it is read once
 per session. docs/ssf-md.md (`ssf skill ssf-md`) explains each choice.
+
+Fill in the Models table from `ssf models <harness>` (model ids) and
+`ssf agents --json` (effort levels), one row per harness this repository
+allows. Name the board and its columns in Communication, or drop that bullet
+if there is no board. Name the person to @mention in Review and delivery.
 -->
 
 ## Role
@@ -31,11 +36,12 @@ Two capability levels, one row per harness this repository allows. Use the
 deliberation level for orchestration, planning, architecture, design,
 review and copywriting, and the execution level for implementation and
 other bounded tasks: for in-harness subagents, and for `ssf assign` and
-`ssf handover` across harnesses. `ssf models <harness>` lists the ids.
+`ssf handover` across harnesses. `ssf models <harness>` lists the ids and
+`ssf agents --json` the effort levels.
 
 | Harness | Deliberation | Execution |
 | --- | --- | --- |
-| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
+| `<harness>` | `<model>`, effort `<level>` | `<model>`, effort `<level>` |
 
 ## Communication
 
@@ -43,7 +49,7 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
   comes), when blocked, and when delivering. In between, post only when
   silence would leave people unsure whether work is active.
 - Keep the board's Status accurate while work starts, blocks, awaits
-  review or completes; name the board and its columns here.
+  review or completes.
 
 ## Review and delivery
 

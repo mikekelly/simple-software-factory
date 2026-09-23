@@ -1,5 +1,10 @@
 # Omarchy marketplace installation
 
+> **Historical record.** This is a plan for marketplace installation, kept for
+> context. It did not ship and is not planned. Supported installation is
+> documented in [Install](../install.md) and
+> [Platform specifics](../platform-specifics.md).
+
 ## Intended outcome
 
 The repository is ready to submit to the Omarchy plugin marketplace. A user

@@ -1,871 +1,538 @@
-# Sessions: ownership, second opinions, subscriptions, release and purge
+# Sessions: ownership, subscriptions, handover, release and purge
 
-The rules that decide which session acts on an item, how a bot pull request gets a second pair of eyes, how sessions follow and message each other, and what happens to a workspace when its item closes. For whoever operates a factory or wants to know why an item went where it did; agents get the same rules from `ssf guide`.
+The item lifecycle: which session acts on an item, how sessions follow and message each
+other, how an item changes harness, and what happens to a workspace when the item
+closes. For an agent operating a factory, or a session that has read `ssf guide` and
+needs the whole rule. Offline route: `ssf skill sessions`.
 
 ## Ownership: one session per item
 
-### Adopting allocations when a repository is enrolled
+### Adopting items when a repository is enrolled
 
-Adding a watched repository establishes a factory enrollment. On its first
-successful poll, SSF lists allocations already involving the bot as adoption
-candidates and starts none of them. `ssf candidates [--repo owner/name]` shows
-that queue. After confirming that another factory is not working the item,
-`ssf adopt owner/name#N [...]` explicitly gives the selected items to this
-factory. Each adopted item starts a fresh harness conversation whose first
-message reconstructs the complete GitHub issue and timeline; private transcripts
-from a former server are neither required nor copied. Normal later allocations,
-daemon restarts, and reactivation of released sessions remain automatic.
+Adding a watched repository enrolls it. On the first successful poll, ssf lists the
+items already involving the bot as adoption candidates and starts none of them, so a
+second factory watching the same repository does not pick up work in flight.
 
-GitHub has one bot identity, so without help a human's @mention or review
-request on a pull request the bot opened would start a second agent next
-to the one that wrote it. ssf instead binds every item to at most one
-owning session, decided once when the item is first discovered (first
-binding wins):
+```sh
+ssf candidates --repo owner/repo
+ssf adopt owner/repo#N owner/repo#M
+```
 
-- **Opened by a session.** A PR whose body carries a session's origin tag
-  belongs to that session. The bot's own open items are polled (a fourth
-  listing, `creator=<bot>`), so a session hears about the PR it opened without
-  anyone assigning or mentioning the bot: it gets one
-  message saying the item is now tracked for it, then every later comment,
-  review, review request, assignment and the closure, all into the same
-  agent, with `SSF_ISSUE` unchanged. An issue opened without assigning the bot
-  remains unbound; its origin tag records attribution only. Assigning or
-  mentioning the bot later starts a fresh session for that issue. The agent's
-  own posts are filtered out of live messages as usual (a session started
-  again is shown them in the catch-up story; see
-  [What the agent is told](prompts.md)). On upgrade, ssf detaches issue bindings
-  written under the older authorship rule; already assigned or mentioned
-  issues get a fresh session on the next pass.
-- **A PR on a session's branch.** A same-repo pull request whose head branch
-  is the branch of a tracked workspace belongs to that workspace's session,
-  tag or no tag (this is what a PR opened by hand from an agent's branch, or
-  with `gh pr create --fill`, falls back to).
-- **Triggers go to the owner.** Assigning or mentioning the bot on an owned
-  item is delivered to the owner's agent as activity, never to a new
-  session. If the owner has been retired or its workspace removed, it is
-  brought back the way any lost session is (workspace re-created from its
-  branch, conversation resumed), rather than replaced. A retired owner's
-  workspace cannot be released or purged while items bound to it are still
-  open. A review asked on an owned pull request goes the same way: to the
-  owner, as activity (see below for how its work gets a second pair of
-  eyes).
-- **Hand-offs.** An item a session creates *and assigns the bot to* in the
-  same `gh ... create` command is a delegation: the tag carries
-  `mode=delegate`, the item gets a fresh session of its own, and the creating
-  session is subscribed to it (see below): it sees the child's activity as
-  FYI messages, and when the child is closed or merged it gets a single
-  message with the outcome and the child's final comment (the last comment
-  the bot left on it). The child is told it was handed off and to leave a
-  clear final comment. `ssf guide` explains this rule to agents, so an
-  agent that wants a separate worker uses `--assignee`. Opening an unassigned
-  issue instead creates a placeholder with no session.
-- **Nothing to bind to.** A bot-opened issue with no human trigger, or an item
-  with no usable tag or branch match, is left alone (logged once) rather than
-  given a session nobody asked for; assigning or mentioning the bot on it later
-  starts one as usual. It is looked at again when it changes on GitHub *or*
-  when it shows up on another listing (assigned, mentioned, review
-  requested), whichever comes first: an assignment made just before the
-  first pass saw the item can be older than the `updated_at` it was ignored
-  with, so listing membership is part of what "unchanged" means. What it
-  was ignored with is kept in `state.json` (under `ignored`, per
-  repository), so a daemon restart does not fetch every such item again the
-  next time a listing changes; the record goes when the item is gone from
-  GitHub — closed, or not there any more. Missing from a listing is not
-  that on its own: GitHub's filtered listings come back short now and
-  then, and every record dropped that way costs a re-onboarding when the
-  listing recovers. So a missing item is looked at rather than assumed
-  gone (at most every 15 minutes, and 20 to a pass), and a record whose
-  item is open but stays off every listing for six hours is given up
-  then, since that is no longer a listing that lagged. Both clocks are
-  kept in the record, so a daemon restart does not set them back. (A
-  state file from before this record existed still costs one walk on the
-  first pass that sees a change.) Items opened from a session on a
-  *different* repository are not bound across repositories.
+`ssf candidates` prints the queue (`--repo` narrows it, `--json` gives the rows as
+data). `ssf adopt` takes one or more explicit `owner/repo#N` references and gives those
+items to this factory. Ask the person first whether another factory is working them.
+Each adopted item starts a fresh harness conversation whose first message reconstructs
+the item and its timeline from GitHub; no transcript is copied from anywhere. Everything
+after that, new items, daemon restarts, reactivating released sessions, is automatic.
 
-`ssf status --json` shows the binding as `owner` / `shares_workspace_of`
-and hand-offs as `delegated_by`; `ssf peers` prints them as "owned by ..."
-and "handed off by ...".
+### What binds an item to a session
 
-The [session dashboard](dashboard.md), opened with `ssf dashboard`, groups these items into one
-card per owning session, including a retired origin that still owns active
-items. Subscriber-only items do not create cards. With herdr, the latest
-summary is the terminal's status title. For a live Claude Code or Codex session
-that herdr identifies, `last_activity_at` is the most recent write to its
-local transcript (including prompts and tool activity). SSF reads file metadata,
-not transcript contents. It uses `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set,
-otherwise the usual home directories. Other harnesses, missing transcripts,
-and unidentified conversations have no reported time, and every screen that
-would show one says which of the three it was — `the harness keeps no local
-transcript ssf can read`, `the session's conversation is not identified yet`,
-or `ssf has not found the session's transcript yet` — rather than “Unknown”,
-which read as a claim about the agent instead of about the record.
+GitHub gives the bot one identity, so without a rule a person's @mention or review
+request on a pull request the bot wrote would start a second agent beside the one that
+wrote it. ssf binds every item to at most one owning session, decided once when the item
+is first seen. First binding wins.
 
-The first prompt is not recorded as delivered merely because its bytes reached
-the terminal. With herdr, ssf waits for the harness to start handling it. If a
-long OMP paste has become a collapsed attachment in the composer but has not
-started, ssf submits that existing attachment; it does not paste a second copy.
-Herdr's state after that Enter is only observational: if it cannot see the
-harness start working, ssf accepts the successful key delivery rather than
-submitting the assignment again on every pass. If initial delivery reports an
-error but the newly launched harness is alive, ssf immediately uses that same
-recovery path; the open item remains active while recovery is pending rather
-than appearing retired. A later daemon pass that finds an unseeded live harness
-does the same. If that later screen shows neither the prompt nor a first-run
-dialog, ssf accepts the durable delivery attempt instead of risking an initial
-prompt that was already consumed being sent again as a steering message.
+| Case | Bound to |
+|---|---|
+| A pull request whose body carries a session's origin tag | that session |
+| A same-repo pull request whose head branch is a tracked workspace's branch | that workspace's session |
+| An item the bot is assigned to or mentioned on, with no owner yet | a new session of its own |
+| An assignment, mention or review request on an item that already has an owner | the owner, as activity |
+| An item a session creates *and assigns the bot to* in the same `gh` command | a fresh session; the creating session is subscribed to it |
+| Anything else (a bot-opened issue nobody triggered, no usable tag or branch) | nothing; it is left alone |
 
-After that first prompt, a live OMP or Pi session takes item activity through
-the harness's in-process extension rather than through its terminal. An idle
-session wakes for the event, a working one takes it at its next step boundary
-rather than at the end of the turn — OMP injects it there through `aside`, and
-Pi's `steer` lands there too, in both cases once the tool calls in flight have
-finished — and text a person has begun composing stays in the editor. Delivery
-to a live OMP/Pi session with no ready bridge is held and retried; run `ssf
-doctor`, then restart that session to load the bridge. Claude Code uses its authenticated peer inbox
-with the default `crossSessionInbound: accept` setting: idle wakes, busy receives
-priority `next`, and the draft stays untouched. Receipt is confirmed through its
-transcript; an ambiguous send is held without resending. An unavailable inbox
-before sending keeps the legacy terminal fallback, reported by `ssf doctor`.
-Codex sessions explicitly attached to a private item-specific Unix app-server
-can use experimental native delivery: idle wakes, busy admission leaves active
-work intact, and the composer is untouched. Endpoint/conversation bindings and
-exact user-message rollout receipts prevent retry duplication. A delayed or
-ambiguous receipt is held; an invalid explicit channel never silently pastes.
-Handover or fresh onboarding archives the active binding without discarding old receipts;
-release retains it for resuming the saved conversation.
-Remote resume retains server permissions and omits the permission-bypass flag.
-Standalone Codex keeps terminal fallback. Server provisioning remains the
-launcher/Herdr's responsibility; see [delivery configuration](harnesses.md#item-activity-delivery).
-Other harnesses and a newly created or resumed
-pane retain the terminal delivery behavior described in
-[Workspaces and terminals](drivers.md#item-activity-delivery).
+Some consequences worth knowing:
 
-## Second opinions: the gauntlet
+- **The bot's own items are polled.** A session hears about the pull request it opened
+  without anyone assigning or mentioning the bot: one message saying the item is now
+  tracked for it, then every later comment, review, review request, assignment and the
+  closure, into the same agent, with `SSF_ISSUE` unchanged. An issue opened without
+  assigning the bot stays unbound; its origin tag records attribution only.
+- **Triggers go to the owner.** An owner that has retired, or whose workspace was
+  removed, is brought back (workspace re-created from its branch, conversation resumed)
+  rather than replaced, and cannot be released or purged while items bound to it are
+  still open.
+- **Hand-offs.** An item created with `--assignee <bot-login>` by a session is a
+  delegation: its tag carries `mode=delegate`, it gets its own session, and the creating
+  session is subscribed to it. The parent sees the child's activity as FYI messages, and
+  gets one message with the outcome and the child's final comment when it closes. The
+  child is told it was handed off and to leave a clear final comment. An agent that
+  wants a separate worker therefore uses `--assignee`; an unassigned issue is a
+  placeholder with no session.
+- **Unbound items are revisited.** An item left alone is looked at again when it changes
+  on GitHub *or* when it appears on another listing, whichever comes first, because an
+  assignment can be older than the `updated_at` the item was ignored with. A listing
+  that comes back short is not taken as the item being gone.
+- **No cross-repository binding.** An item opened from a session on a different
+  repository is never bound to it.
 
-ssf runs one session per item and starts no second session on a pull
-request a session wrote. Until #115 a `review` label (or a review
-request) on such a PR started a *reviewer session*, a second workspace
-with its own agent; that went, together with `daemon.review_label`,
-`SSF_ROLE=reviewer`, the `role=reviewer` tag field, the `(reviewer)`
-byline and the `owner/repo#N:reviewer` session id. Old posts that carry
-the tag or the byline are read as the item's session's; old
-`review-<n>-...` worktrees belong to no item (`ssf purge` does not know
-them, remove them by hand); reviewer records in an old `state.json` are
-dropped on load with one log line; the old config keys still load and
-`ssf doctor` says they do nothing.
+`ssf status --json` shows the binding as `owner` / `shares_workspace_of` and hand-offs
+as `delegated_by` (see [`ssf status --json`](internals.md#ssf-status---json)); `ssf
+peers` prints them as "owned by ..." and "handed off by ...". The
+[dashboard](dashboard.md) groups items into one card per owning session, including a
+retired origin that still owns active items; subscriber-only items make no card.
 
-The session arranges its own review according to the repository's notes.
-[`SSF.example.md`](../SSF.example.md) uses self-review for documentation and
-test-only changes, and one independent review for behavior changes. High-risk
-changes deserve attention to data loss, startup, installation and workspace
-safety, rather than more rounds by default.
+Item activity reaches a live session through the harness's own channel where there is
+one, and through its terminal otherwise; see [per-harness
+delivery](internals.md#per-harness-delivery).
 
-Review a pinned diff against its intended outcome. Check the affected
-integration boundaries and reproduce suspected defects safely; reviewers
-should use an isolated checkout if their checks modify files. Confirm that
-tests exercise the failing behavior. Findings are evidence for the author
-to assess, not instructions to expand the change.
+## Second opinions
 
-Fix confirmed behavioral defects and acceptance-criteria violations. Wording,
-naming, comment corrections and optional coverage do not trigger another
-round. Use at most one focused follow-up to verify substantive fixes. If
-defects remain, hold delivery and simplify the change or ask the maintainer
-to choose a smaller scope; do not start an unbounded loop or merge known
-defects. Run relevant validation on the final change, not a package build
-for every round. State the tested commit and remaining limitations in the PR.
-
-The repository's SSF guidance decides who merges. Use `Refs #N` for ongoing
-management or tracking issues; `Closes #N` is appropriate only when the PR
-completes the entire issue. `ssf doctor` reports missing SSF agent guidance.
-
-A PR the bot did not write (a human's PR the bot is asked to review, or
-one assigned to it without a session of its own on the branch) is
-unchanged: a session of its own, on the PR's branch, which reviews when
-asked.
+ssf runs one session per item and starts no second session on a pull request a session
+wrote: a review requested on an owned pull request is delivered to its owner as
+activity. The session arranges its own review according to the repository's notes in its
+`SSF.md` (see [`SSF.example.md`](../SSF.example.md) for the template and what it says
+about review). A pull request the bot did *not* write, a person's pull request the bot
+is asked to review, or one assigned to it with no session on its branch, gets a session
+of its own on that branch, which reviews when asked.
 
 ## Subscriptions and cross-session comments
 
-Exactly one session acts on an item; any number can hear about it. Each
-item carries a list of subscriber sessions next to its owner, and every
-delivery about the item (new activity, closure, the bot being dropped from
-it, or the item getting a session of its own) is fanned out to them with
-FYI framing: `[ssf] FYI: new activity on issue #N "title" (url):`, `[ssf]
-FYI: issue #N ... has been closed`, and so on, ending with one line saying
-it is for information only and how to stop them. Subscriptions live in the
-state file, so they survive relaunches and a session being brought back; a
-session that retires (its item closed, or the bot dropped from it) is
+Exactly one session acts on an item; any number can hear about it. Each item carries a
+list of subscriber sessions next to its owner, and every delivery about it (new
+activity, closure, the bot being dropped from it, or the item getting a session of its
+own) is fanned out to them with FYI framing: `[ssf] FYI: new activity on <item>:`,
+`[ssf] FYI: <item> has been closed.`, and so on, each ending with one line saying it is
+for information only and how to stop them. Subscriptions live in the state file, so they
+survive relaunches and a session being brought back; a session that retires is
 unsubscribed everywhere.
 
-The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a
-session, or `--as owner/repo#N` from a human shell (an item bound to
-another session counts as that session):
+The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a session, or
+`--as owner/repo#N` from a shell (an item bound to another session counts as that
+session):
 
-- `ssf sub <n|owner/repo#n>` / `ssf unsub ...` follow or drop an item.
-  Subscribing to an item nothing tracks yet makes it tracked as
-  *subscriber-only*: polled every pass for activity, no workspace, no owner;
-  what happened before the subscription is not replayed. If the bot is later
-  assigned to it (or it is otherwise bound), it gets a session as usual and
-  the subscribers are told; when nobody follows it any more it is dropped.
-- `ssf subs` lists what this session follows and who follows its items
-  (`--json` for detail); `ssf peers` shows subscribers per session.
+```sh
+ssf sub owner/repo#N       # or a bare N inside a session
+ssf unsub N
+ssf subs --json
+```
+
+- `ssf sub` / `ssf unsub` follow or drop an item. Subscribing to an item nothing tracks
+  yet makes it tracked as *subscriber-only*: polled every pass for activity, no
+  workspace, no owner, and nothing before the subscription is replayed. If the bot is
+  later assigned to it, it gets a session as usual and the subscribers are told; when
+  nobody follows it any more it is dropped.
+- `ssf subs` lists what this session follows and who follows its items; `ssf peers`
+  shows subscribers per session.
 - Delegating parents are subscribed to their children automatically.
 
-`sub`, `unsub`, `handover`, `assign`, `release` and `purge` talk to
-the running daemon over a Unix socket in the state directory (`ssf.sock`),
-because the daemon owns the state and the delivery path; `ssf doctor`
-reports whether it answers. `subs`, `peers` and `status` read the state
-file and work without it.
+`sub`, `unsub`, `handover`, `assign`, `release` and `purge` talk to the running daemon
+over a Unix socket in the state directory (`ssf.sock`), because the daemon owns the
+state and the delivery path; `ssf doctor` reports whether it answers. `subs`, `peers`
+and `status` read the state file and work without it.
 
-**Cross-session comments.** Comments the bot posts carry the origin tag of
-the session that made them (see [Identity and bylines](identity-and-bylines.md)),
-and delivery is sorted out per recipient rather than by author: a bot
-comment whose tag names a different session is delivered like a human's,
-labelled "(from the agent on owner/repo#M)", while a comment tagged with
-the recipient's own session (or an item that session acts on) is the
-self-echo and stays filtered. An untagged bot comment is a person's and
-reaches every recipient, marked "(not from a session)". So session A talks
-to session B by commenting on B's issue with `gh`: B's agent receives it
-labelled as coming from A, and A does not receive its own comment back,
-even when A is subscribed to B's issue. This is the default channel between
-agents: `ssf guide` says so, and it is the only channel between sessions.
+**Cross-session comments.** Comments the bot posts carry the origin tag of the session
+that made them (see [Identity and bylines](identity-and-bylines.md)), and delivery is
+decided per recipient rather than by author. A bot comment whose tag names a different
+session is delivered like a person's, labelled "(from the agent on owner/repo#M)". A
+comment tagged with the recipient's own session is the self-echo and stays filtered. An
+untagged bot comment is a person's and reaches every recipient, marked "(not from a
+session)". So one session talks to another by commenting on its issue with `gh`: the
+other agent receives it labelled as coming from the first, and the first does not get
+its own comment back, even when it is subscribed. This is the only channel between
+sessions, and `ssf guide` says so.
 
 ## Directing an item: comments, `ssf handover`, `ssf assign`
 
-A comment is a comment. ssf reads no command out of one, whatever its first
-line says: a `/ssf <request>` comment — on an item attached to a session now,
-or left on an item months ago — is ordinary activity, delivered to the
-session like anything else a person wrote, and nothing about it is stored,
-run or replayed on an attach, resume, relaunch or handover.
+A comment is a comment. ssf reads no command out of one, whatever its first line says: a
+`/ssf <request>` comment, on an item attached to a session now or left months ago, is
+ordinary activity, delivered like anything else a person wrote. Nothing about it is
+stored, run or replayed on an attach, resume, relaunch or handover.
 
-Comments are also how people and sessions collaborate: the session acts on
-what it is told there. Changing the stack an item runs on, or giving an item
-that has no session its first one, is done at a terminal instead, by whoever
-operates the factory:
+Comments are how people and sessions collaborate: the session acts on what it is told
+there. Changing the stack an item runs on, or giving an item that has no session its
+first one, is a terminal command instead:
 
-- `ssf handover` moves a session's item to a new session on another harness,
-  model or effort ([Handover](#handover)).
-- `ssf assign` starts the first session of an item that has none, on the
-  stack you name ([Assigning a stack before there is a session](#assigning-a-stack-before-there-is-a-session)).
+- `ssf handover` moves a session's item to a new session on another harness, model or
+  effort ([Handover](#handover)).
+- `ssf assign` starts the first session of an item that has none, on the stack you name
+  ([Assigning a stack before there is a
+  session](#assigning-a-stack-before-there-is-a-session)).
 
-Both write the item's launch overrides, which every later launch, resume and
-re-creation uses. A session can ask for either one itself: it is a terminal
-command, and `ssf handover` from inside a session is the ordinary way an item
-changes stack.
+Both write the item's launch overrides, which every later launch, resume and re-creation
+uses. A session can run either one itself: `ssf handover` from inside a session is the
+ordinary way an item changes stack.
 
 ## What ssf says on the item
 
-Most of what the daemon does is only in its journal. The moments a
-person reading an issue needs to know about are posted on the item
-itself, as the bot, so the timeline tells the whole story: that a session
-was attached to it, brought back, held, given up on, or that its
-workspace was released. Each is one short comment: the byline `🤖 ssf`
-(the daemon, not a session, so no number) and one fenced `ssf` block of
-`key: value` lines, nothing else. On GitHub:
+Most of what the daemon does is only in its journal. The moments a person reading the
+issue needs are posted on the item itself, as the bot, so the timeline tells the whole
+story. Each is one short comment: the byline `🤖 ssf` and one fenced `ssf` block of `key:
+value` lines, nothing else.
 
-> **OverlayBot** commented
+> **bot-login** commented
 >
 > 🤖 ssf
 >
 > ```ssf
 > ssf attaching agent to issue:
-> harness: Claude Code
-> model: fable-5.1
-> effort: high
+> harness: <harness>
+> model: <model>
+> effort: <level>
 > driver: herdr
-> branch: bot/issue-117-the-daemon-posts-its-essential-events-on
+> branch: bot/issue-N-short-title
 > ```
 
 The events, and nothing else:
 
 | Event | When | Lines |
 |-------|------|-------|
-| `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept from before (a binding given up on, a lost state file; `ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` when the session was started by a handover (below); on a re-creation `re-created: workspace gone`, and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept`, and `conversation: resumed`, `fresh` or `kept` (the agent in it was still there) |
+| `attached` | a session is started for the item: on onboarding (`ssf attaching agent to issue:`), or again once its workspace had to be re-created or was kept (`ssf attaching agent to issue again:`) | `harness`; `model` and `effort` as configured, or `the harness's default` (`command:` when the repository sets one, and then `the command's`); `driver`; `branch`; `handed off from: owner/repo#M` for a delegated item; `handed over from: <harness>` after a handover; on a re-creation `re-created: workspace gone` and `conversation: resumed` or `fresh`; on a kept workspace `workspace: kept` and `conversation: resumed`, `fresh` or `kept` |
 | `attached` | a pull request bound to another item's session rather than given one of its own | `session: owner/repo#M`, `shares: workspace of #M` |
 | `resumed` | the harness was started again in its existing workspace: the startup pass after a daemon or machine restart, or a terminal found gone at delivery time | `harness`, `conversation: resumed` or `fresh`, `after: restart` or `after: lost terminal` |
-| `blocked` | deliveries are held because the harness is at its sign-in prompt (below), because OMP setup is incomplete, or because it could not be started at all (a [handover](#handover) to a harness that exits as it is launched); a harness that would not start and is not signed in where the daemon runs is recorded as the sign-in block it really is, since that is the thing to fix | `harness`; `reason: not signed in` with `fix:` the command that signs it in, `reason: setup incomplete` with Esc setup guidance, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
-| `unblocked` | the hold is lifted | `harness`, `held for`, `conversation: resumed` or `fresh` (the harness was started again), `kept` (a person signed in at the terminal) or `handed over` (the item went to another session) |
-| `gave-up` | five looks at the item in a row failed (a delivery, or fetching the item) and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error` (one line), `next: re-onboarding the item` |
-| `released` | the workspace was removed by `ssf release` or `ssf purge` (posted on the session's own item, not on the items bound to it) | `by: ssf release` or `by: ssf purge`, `forced: yes` when `--force` was passed, `branch` |
-| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one (`ssf handing over issue:` / `ssf not handing over issue:`) | `from`, `from model`, `from effort` (the session that is ending, its model and effort as they were, or `the harness's default`, or `the command's` with a configured command, which is then named on a `from command` line; when the harness ending is the one its pane runs and not the one its record names -- a config edit under a live session -- only `from` is written, followed by `from stack: unknown (the harness on the pane is not the record's)`, since ssf has no model, effort or command of that session's to report); `to`, `to model`, `to effort` (and `to command`: the same for the session starting); `summary: yes` or `no` (whether the new session is given one, which a handover carrying none of its own still does when an earlier one's summary is waiting unread); `by: owner/repo#N` for the session that asked, `a person at the terminal` for an operator. A refusal has the `to` lines, `by`, and `refused:` with the reason in one line, and no `from` lines |
+| `blocked` | deliveries are held because the harness is at its sign-in prompt, its first-run setup is incomplete, or it could not be started at all | `harness`; `reason: not signed in` with `fix:` the command that signs it in, `reason: setup incomplete`, or `reason: could not be started: <error>` with `fix: start <harness> by hand in the workspace, or fix the model or effort and hand over again` |
+| `unblocked` | the hold is lifted | `harness`, `held for`, and `conversation: resumed`, `fresh`, `kept` (a person signed in at the terminal) or `handed over` |
+| `gave-up` | five looks at the item in a row failed and its binding is dropped; the item is onboarded afresh on its next look | `failures`, `last error`, `next: re-onboarding the item` |
+| `released` | the workspace was removed by `ssf release` or `ssf purge`, posted on the session's own item | `by:`, `forced: yes` when `--force` was passed, `branch` |
+| `handed-over` | the daemon carried out a pending [handover](#handover), or refused one | `from`, `from model`, `from effort` (as they were, or `the harness's default`, or `the command's` with a configured command named on `from command`); `to`, `to model`, `to effort`, `to command`; `summary: yes` or `no`; `by: owner/repo#N` for a session, `a person at the terminal` for an operator. A refusal has the `to` lines, `by` and `refused:` with the reason, and no `from` lines |
 
-The `handed-over` post is what a reader sees when an item changes stack
-(see [Handover](#handover)):
+When the harness a pane is running is not the one the item's record names, a config edit
+under a live session, only `from` is written, followed by `from stack: unknown (the
+harness on the pane is not the record's)`: ssf has no model, effort or command of that
+session's to report.
 
-> **OverlayBot** commented
->
-> 🤖 ssf
->
-> ```ssf
-> ssf handing over issue:
-> from: Claude Code
-> from model: fable-5.1
-> from effort: high
-> to: Pi
-> to model: the harness's default
-> to effort: the harness's default
-> summary: yes
-> by: mikekelly/simple-software-factory#119
-> ```
+The first line carries the origin tag with an `event` field (`🤖 ssf <!-- ssf:
+origin=owner/repo#N event=attached -->`, see [Identity and
+bylines](identity-and-bylines.md#bylines-and-origin-tags-which-session-posted-what)),
+and the daemon reads it back: an event post is not a person typing as the bot, and it is
+not activity. It is delivered to no session, `ssf status` does not count it, and it is
+never taken for an agent's final comment when a hand-off closes. Every event is posted
+at the moment it happens, from records the daemon already keeps, so a daemon restart
+reposts nothing.
 
-The new session's `attached` post follows it, with its own launch lines
-and one `handed over from: Claude Code`.
-
-The first line carries the origin tag with an `event` field
-(`🤖 ssf <!-- ssf: origin=owner/repo#N event=attached -->`, see
-[Identity and bylines](identity-and-bylines.md#bylines-and-origin-tags-which-session-posted-what)),
-and the daemon reads it back: an event post is not a person typing as the
-bot (an untagged bot post is), and it is not activity. It is delivered to
-no session, not the item's own and not a subscriber's; `ssf status` does
-not count it among the untagged posts or any session's; and it is never
-taken for an agent's final comment when a hand-off closes. Every event is
-posted at the moment it happens, from the records the daemon already
-keeps (the session's start, the block's "told" flag, the removal), so a
-daemon restart reposts nothing.
-
-`daemon.event_comments = false` turns the posts off for every repository,
-`event_comments = false` on one `[[repo]]` (`ssf repo set <owner/name>
---event-comments false`) for that one; nothing else changes, the hold on
-a blocked session included. Every event is also in the journal, as
-before.
+`daemon.event_comments = false` turns the posts off for every repository; `ssf repo set
+owner/repo --event-comments false` for one. Nothing else changes, the hold on a blocked
+session included, and every event is still in the journal.
 
 ## Branch conflicts
 
-ssf checks whether an active session's committed branch would conflict
-with the repository's base on origin. A clean merge produces no message,
-even when the branch is far behind. A conflict produces a `[ssf]` message
-in the session, naming the base commit and the conflicting files.
+ssf checks whether an active session's committed branch would conflict with the
+repository's base on origin. A clean merge produces no message, even when the branch is
+far behind; a conflict produces a `[ssf]` message in the session, naming the base commit
+and the conflicting files. ssf never rebases for the session.
 
-Resolve conflicts before delivery, using a stable dependency head when work
-is stacked. Check and test the resulting integration; seek focused review
-when conflict resolution changes behavior. A notice alone does not require
-restarting review. ssf never rebases for the session.
+```sh
+ssf config set daemon.conflict_check_interval_secs 300   # the default; 0 turns checks off
+```
 
-The default interval is five minutes (`daemon.conflict_check_interval_secs
-= 300`). `ssf config set daemon.conflict_check_interval_secs 0` turns
-checks off; set it back to `300` to restore the default. Set
-`conflict_check_interval_secs` on a `[[repo]]` to override it for that
-repository. These terminal notices are independent of `event_comments`,
-which controls posts on GitHub.
+Set `conflict_check_interval_secs` on a `[[repo]]` to override it for one repository.
+These terminal notices are independent of `event_comments`, which controls posts on
+GitHub.
 
-Each interval fetches the base once per repository with eligible sessions.
-The base is `repo.base_branch`, or origin's default branch when unset.
-Local Git checks compare committed branch tips, including unpushed commits;
-uncommitted edits are outside this check. The merge simulation leaves the
-working tree and index alone. Only changed branch/base commit pairs need
-another simulation. A successfully delivered notice is remembered across
-daemon restarts, so an unchanged divergence is not announced every pass.
-Git or delivery failures remain retryable.
-
-Retired or released sessions receive nothing. Items sharing a session do
-not produce duplicate notices, and blocked sessions or sessions awaiting
-handover are skipped. Only sessions with a live agent are selected for
-checking. If an active agent exits during the check, normal event delivery
-may resume it to deliver the notice.
-
-OMP first-run setup with a logged-in provider is held as `setup incomplete`.
-Run `omp` interactively as the factory user on the host (inside the guest in
-VM mode) and finish or press Esc through setup. SSF resumes deliveries when
-the pane leaves setup, or checks again on its normal restart backoff after
-setup is completed in another terminal. See the
-[harness notes](platform-specifics.md).
+Each interval fetches the base once per repository with eligible sessions. The base is
+`repo.base_branch`, or origin's default branch when unset. Local git checks compare
+committed branch tips, including unpushed commits; uncommitted edits are outside the
+check, and the merge simulation leaves the working tree and index alone. A delivered
+notice is remembered across daemon restarts, so an unchanged divergence is not announced
+every pass. Retired and released sessions receive nothing, items sharing a session do
+not produce duplicate notices, and blocked sessions and sessions awaiting handover are
+skipped.
 
 ## A harness that is not signed in
 
-A harness login can go away under a running session: the token expires,
-or it is revoked (a logout elsewhere on a copied credential does that,
-see [Inside a microVM](vm.md#harness-logins)). Claude Code then answers every
-prompt with `Login expired · Please run /login` and waits; the other
-harnesses show their sign-in screens. Nothing inside the session can fix
-it, and to the driver the agent looks alive and idle, so without help ssf
-would keep pasting activity into a terminal that cannot act.
+A harness login can go away under a running session: the token expires, or it is revoked
+(a logout elsewhere on a copied credential does that, see [Inside a
+microVM](vm.md#harness-logins)). The harness then shows its sign-in screen and waits.
+Nothing inside the session can fix it, and to the driver the agent looks alive and idle,
+so without help ssf would keep pasting activity into a terminal that cannot act.
 
-So every pass, for each session whose agent is idle, ssf reads the bottom
-of its screen and, if it shows the harness's sign-in prompt (the phrases
-are the harnesses' own, as seen on their screens; `driver::login_dialog`
-has the list per harness), marks the session **blocked**. The harness
-those phrases are checked against is the one the driver reports for that
-pane, not the one the item's record would launch: a config edit under a
-live session ([`ssf repo set`](repositories.md)) leaves the
-pane on the harness it was started with, and judging its codex screen by
-OMP's phrases would miss the block and keep pasting into it. Two things
-keep an agent's own screen from tripping this: only the bottom of an idle
-agent's screen counts, and a line carrying ssf's `> ` quote marker, or
-inside echoed `[ssf]` text, is skipped. The item's own words — its
-description and every comment body — are relayed under that marker so a
-phrase someone wrote or quoted in them is not read as the harness's own
-prompt, wherever in the prompt the line lands. Every text ssf itself puts
-on a screen or that agents read (the comments below, the message after a
-restart, the `BLOCKED:` lines, the refusal messages the daemon prints) is
-worded without those phrases, and a test pins that. What remains is an
-agent quoting the exact phrase in its own answer, or a quoted comment line
-the terminal wrapped past the quote marker; that costs one `blocked` post
-and one restart after the retry wait, with its `unblocked` post, and
-nothing more: the restarted screen is clean.
+So every pass, for each session whose agent is idle, ssf reads the bottom of its screen
+and, if it shows that harness's sign-in prompt, marks the session **blocked**. The
+phrases are the harnesses' own, and they are checked against the harness the driver
+reports for that pane, not the one the item's record would launch, because a config edit
+under a live session leaves the pane on the harness it started with. Two things keep an
+agent's own screen from tripping this: only the bottom of an idle agent's screen counts,
+and a line carrying ssf's `> ` quote marker or inside echoed `[ssf]` text is skipped.
+The item's own words are relayed under that marker, so a phrase someone quoted in a
+comment is not read as the harness's prompt. What remains is an agent quoting the exact
+phrase itself, which costs one `blocked` post and one restart, and nothing more.
 
-- **Told once.** One `blocked` post lands on the session's item (see
-  [What ssf says on the item](#what-ssf-says-on-the-item): the harness,
-  `reason: not signed in`, and `fix:` with the command to run, `claude
-  auth login` on the host or `ssf vm login claude` with the factory in a
-  VM), the log gets a warning (with the
-  screen line), and the session shows as blocked in `ssf status` (a
-  `BLOCKED:` line naming the harness, since when and the command to run;
-  `--json` carries it as `blocked` on the session, with `harness_name`,
-  `detail`, `since` and `fix`, and `blocked_sessions` at the top), in
-  `ssf peers`, and in the dashboards (with the same line on the
-  session's row).
-- **Nothing is delivered.** Activity on the item, FYIs and the
-  closing message are held: the item's bookkeeping is left as it was
-  (`updated_at`, the seen events), so what happened meanwhile is
-  delivered in full once the session is back. A delivery to a blocked
-  session is refused with the reason. A harness that ssf starts again
-  (after a reboot, say) and that comes up on its login screen is caught
-  the same way.
-- **Checked every pass.** ssf asks the harness where it runs (the host,
-  or the guest with the factory in a VM), once per harness per pass:
-  `claude auth status --json` for Claude Code, `codex login status` for
-  Codex, the credential file from the [login table](vm.md#harness-logins)
-  (`~/.gemini/oauth_creds.json`, `~/.pi/agent/auth.json`, ...) or an API
-  key in the environment for the others. When the login is back (a new
-  credential file, or a signed-in answer), ssf quits the stuck harness,
-  starts it again with its conversation resumed, gives it one message
-  saying what happened, and fetches every listing in full so the held
-  activity follows. If the restart comes back to the prompt (a revoked
-  token the status command still reports as signed in, or a harness ssf
-  cannot check) the item is not told again and the next attempt waits
-  twice as long: ten minutes, twenty, forty, then every hour. A harness
-  whose terminal is gone (a reboot, a closed terminal) is judged by its
-  restart the same way: the block is lifted only once it has taken a
-  prompt. A person who runs `/login` in the terminal instead lifts the
-  block on the next pass with no restart. Either way the item gets the
-  `unblocked` post, saying how long the hold lasted and whether the
-  harness was started again.
+- **Told once.** One `blocked` post lands on the item (see [What ssf says on the
+  item](#what-ssf-says-on-the-item)) with the harness, `reason: not signed in` and
+  `fix:` the command to run. The log gets a warning, and the session shows as blocked in
+  `ssf status` (a `BLOCKED:` line naming the harness, since when and the command;
+  `--json` carries `blocked` on the session and `blocked_sessions` at the top), in `ssf
+  peers` and on the dashboards.
+- **Nothing is delivered.** Activity, FYIs and the closing message are held, and the
+  item's bookkeeping is left as it was, so everything that happened meanwhile is
+  delivered in full once the session is back. A delivery to a blocked session is refused
+  with the reason.
+- **Checked every pass.** ssf asks each harness in use where it runs (the host, or the
+  guest in VM mode): its own status command, its credential file from the [login
+  table](vm.md#harness-logins), or an API key in the environment. When the login is
+  back, ssf quits the stuck harness, starts it again with its conversation resumed,
+  gives it one message saying what happened, and fetches every listing in full so the
+  held activity follows. If the restart comes back to the prompt, the item is not told
+  again and the next attempt waits twice as long: ten minutes, twenty, forty, then
+  hourly. A person who signs in at the terminal lifts the block on the next pass with no
+  restart. Either way the item gets the `unblocked` post, saying how long the hold
+  lasted.
 
-`ssf doctor` prints one line per harness in use: `Claude Code signed in
-on the host (claude auth status: signed in)`, or `FAIL ... not signed in
-...` with the command to run, or `note ... cannot tell` for a harness ssf
-has no check for, such as Copilot's keyring. The harnesses in use are the
-ones the configured repositories name and any a [handover](#handover) or
-an [assignment](#assigning-a-stack-before-there-is-a-session) put on an
-item, and the line for one of those says which item put it there and how
-(`Pi signed in on the host (~/.pi/agent/auth.json present; used by
-acme/widgets#12 after a handover)`, or `... used by acme/widgets#13
-assigned`); such a harness is checked for being installed too, which
-nothing else here would look for, and an item an assignment has pinned
-counts before it has been onboarded (one that is closed or merged does
-not: no pass will ever start a session on it). With the factory
-in a VM the command is forwarded into the guest, so the check happens
-where the agents are.
+`ssf doctor` prints one line per harness in use: signed in, `FAIL ... not signed in ...`
+with the command to run, or `note ... cannot tell` for a harness ssf has no check for.
+The harnesses in use are the ones the configured repositories name plus any a handover
+or an assignment put on an item; the line for one of those says which item put it there
+and how, and such a harness is checked for being installed too. With the factory in a VM
+the check is forwarded into the guest, so it happens where the agents are.
 
 ## Handover
 
-An item can change stack without changing workspace. `ssf handover` asks
-the daemon to end the session working on the item and start a new one on
-another harness, model or effort level, in the same worktree, on the same
-branch, with a summary the outgoing session writes. A person asks for it
-on the issue ("hand this over to Codex on gpt-5.5 at medium") and the
-agent runs one command; an operator does the same from a shell. An item
-that has no session yet takes its first stack from `ssf assign` instead
-([below](#assigning-a-stack-before-there-is-a-session)).
+An item can change stack without changing workspace. `ssf handover` asks the daemon to
+end the session working on the item and start a new one on another harness, model or
+effort, in the same worktree, on the same branch, with a summary the outgoing session
+writes. A person asks for it on the issue and the agent runs one command; an operator
+does the same from a shell. An item with no session yet takes its first stack from [`ssf
+assign`](#assigning-a-stack-before-there-is-a-session) instead.
 
 ```sh
-ssf handover --harness codex --model gpt-5.5 --effort medium --summary "..."  # inside a session
-ssf handover acme/widgets#12 --harness pi --no-summary                        # from a shell
-ssf handover 12 --harness claude --model opus --summary-file /tmp/handover.md # with SSF_REPO set, or --as
-ssf handover 12 --cancel                                                      # call it off before the pass
+ssf handover --harness <harness> --model <model> --effort <level> --summary "..."
+ssf handover owner/repo#N --harness <harness> --no-summary
+ssf handover N --harness <harness> --summary-file /path/to/handover.md
+ssf handover N --cancel
 ```
 
-- **Which item.** Inside a session the command takes no item: it is the
-  session's own (`SSF_REPO`/`SSF_ISSUE`). From a shell the item comes
-  first, as `owner/name#N` or as a bare `N` with `SSF_REPO` set or `--as
-  owner/repo#N`, exactly like `ssf release`. An item bound
-  to another session's workspace counts as that session.
-- **Which harness.** `--harness` is required; the same harness with a
-  different model or effort is a valid handover. `--model` and `--effort`
-  are optional and are checked exactly the way `ssf repo set` checks
-  them: the effort level against the levels that harness offers, the
-  model id for its shape only, since new model ids appear before any
-  catalogue does (`ssf models <harness>` lists what the harness itself
-  offers, else ssf's table). A
-  model id the harness itself rejects is not caught here: it shows up as
-  the harness failing to start, below. Left out, the new session runs
-  on that harness's own defaults; see [Per-item
-  overrides](harnesses.md#per-item-overrides) for how they combine
-  with the repository's settings.
-- **The summary.** Exactly one of `--summary "<text>"`, `--summary-file
-  <path>` and `--no-summary` is required, so nobody hands an item over
-  without deciding. The summary is the first thing the new session reads,
-  before the item itself, and it is written for an agent that has never
-  seen the work: what the item is about, what is done, what is left,
-  where things are (branch, pull request, files, what is unverified). It
-  is at most 8,000 characters, and an over-long or empty one is refused
-  with the cap and the count. `--summary-file` is read where the command
-  runs, so with the factory in a [microVM](vm.md) the path is a path in
-  the guest, which is where the sessions are anyway.
+- **Which item.** Inside a session the command takes no item: it is the session's own.
+  From a shell the item comes first, as `owner/repo#N` or a bare `N` with `SSF_REPO` set
+  or `--as owner/repo#N`, exactly like `ssf release`. An item bound to another session's
+  workspace counts as that session.
+- **Which stack.** `--harness` is required; the same harness with a different model or
+  effort is a valid handover. `--model` and `--effort` are optional and are checked the
+  way `ssf repo set` checks them: the effort level against the levels that harness
+  offers, the model id for its shape only, since new ids appear before any catalogue
+  does (`ssf agents` lists the harnesses, `ssf models <harness>` the models). A model id
+  the harness itself rejects shows up later, as the harness failing to start. Left out,
+  the new session runs on that harness's defaults; see [Per-item
+  overrides](harnesses.md#per-item-overrides) for how they combine with the repository's
+  settings.
+- **The summary.** Exactly one of `--summary`, `--summary-file` and `--no-summary` is
+  required, so nobody hands an item over without deciding. The summary is the first
+  thing the new session reads, before the item itself, and it is written for an agent
+  that has never seen the work: what the item is about, what is done, what is left,
+  where things are (branch, pull request, files, what is unverified). It is at most
+  8,000 characters; an over-long or empty one is refused with the cap and the count.
+  `--summary-file` is read where the command runs, so with the factory in a
+  [microVM](vm.md) the path is a path in the guest.
 
-The command answers as soon as the daemon has recorded the handover
-(`--json` gives the same as data):
-
-```
-Handover of acme/widgets#12 ("Rework the parser") recorded: to Codex (model gpt-5.5, effort medium), with a summary of 1,234 chars.
-The daemon ends this session on its next pass (within 10s) and starts the new one in the same workspace. Stop working now: do not start anything else, and do not run this command again.
-```
-
-The second line is for the outgoing agent: the handover is pending, not
-done, and anything it starts now is thrown away with its pane.
+The command answers as soon as the daemon has recorded the handover (`--json` gives the
+same as data), and tells the outgoing agent that the handover is pending, not done: it
+should stop working now, because anything it starts is thrown away with its pane.
 
 **Refused straight away**, with the reason, and nothing recorded:
 
-- the item has no running session (nothing to hand over: give it its first
-  session with `ssf assign <item> --harness <id>` instead);
-- the harness id is not one ssf knows, the effort level is not one that
-  harness offers, or the model id is not shaped like one;
-- the harness is not installed where the daemon runs, or its login probe
-  says it is signed out (with the factory in a VM this is the guest's
-  login, see [A harness that is not signed in](#a-harness-that-is-not-signed-in));
+- the item has no running session (use `ssf assign` to give it its first);
+- the harness id is not one ssf knows, the effort level is not one that harness offers,
+  or the model id is not shaped like one;
+- the harness is not installed where the daemon runs, or its login probe says it is
+  signed out (in VM mode this is the guest's login, see [A harness that is not signed
+  in](#a-harness-that-is-not-signed-in));
 - a handover on the item is already pending, or a release is;
-- the item is already on that harness with that model and effort, judged
-  against the harness its pane is running (not the one its record would
-  launch): `ssf handover <item> --harness <the configured one>` is the
-  accepted way to bring a session left behind by a
-  [`ssf repo set`](repositories.md) onto the configured
-  stack, and an operator who asks for what is genuinely already running
-  is still refused;
-- the summary is longer than 8,000 characters;
-- the summary would read as a harness's own sign-in screen (it quotes
-  `Please run /login`, say). The summary is pasted into the new
-  session's terminal, where ssf reads the bottom of the screen for
-  exactly those phrases, so such a summary would hold the new session's
-  deliveries; the refusal names the line with the phrase left out and
-  asks for it to be reworded.
+- the item is already on that harness with that model and effort, judged against the
+  harness its pane is running rather than the one its record would launch: `ssf handover
+  <item> --harness <the configured one>` is the accepted way to bring a session left
+  behind by a config edit onto the configured stack;
+- the summary is longer than 8,000 characters, or would read as a harness's own sign-in
+  screen. The summary is pasted into the new session's terminal, where ssf reads the
+  bottom of the screen for exactly those phrases, so such a summary would hold the new
+  session's deliveries; the refusal names the line and asks for it to be reworded.
 
-A session that is itself **blocked** on its harness's sign-in prompt may
-hand over: that is one way out of the block, so the check is on the
-target harness, not on the one being left. The hold ends with the
-session it was held for: when the item was told of it, the pass posts
-`unblocked` with `conversation: handed over` before the handover itself.
+A session that is itself **blocked** on a sign-in prompt may hand over: that is one way
+out of the block, so the check is on the target harness, not the one being left.
 
-**On the next pass** (within `daemon.poll_interval_secs`, and before the
-repository's items are polled) the daemon:
+**On the next pass** (within `daemon.poll_interval_secs`, and before the repository's
+items are polled) the daemon:
 
-1. checks the item is still active and its workspace still known, and that
-   the driver can say what is running in it: the harness the session is on
-   is what the `handed-over` post and the new session's opening line name
-   as the one being taken over from, so a driver that cannot answer leaves
-   the handover on the next pass (`ssf handover` refuses outright in that
-   state, rather than comparing the request against the record);
-2. ends the outgoing agent's pane, leaving the worktree and its branch
-   exactly as they are;
-3. retires the outgoing session on the record (its conversation id, its
-   terminal and any block go; the worktree, branch, driver and
-   subscribers stay) and stores the target as the item's per-item
-   overrides, so every later launch, resume and re-creation uses the new
-   harness, model and effort. The retired conversation is remembered as
-   one never to resume: its transcript is the newest one in the
-   workspace when the new harness starts there, and without that the new
-   session would be given the outgoing agent's conversation. The last
-   conversation the outgoing harness wrote in that workspace is
-   remembered too, whether or not ssf ever recorded its id, since that
-   transcript is the one lying there for the next harness to adopt;
-4. starts the new session in the same worktree, with what the item's
-   overrides make of the repository's launch settings (see [Per-item
-   overrides](harnesses.md#per-item-overrides): a handover to another
-   harness runs that harness's own permission-free command, one to the
-   same harness keeps the repository's `command`) and the [handed-over
-   first prompt](prompts.md): the summary, if there is one, then the
-   item's story as ssf tells it to any new session. What that story
-   showed counts as seen, comments that arrived since the last poll
-   included, so the pass does not deliver them to the new session a
-   second time;
-5. posts `handed-over` and then the new session's `attached` on the item
-   (see [What ssf says on the item](#what-ssf-says-on-the-item)).
+1. checks the item is still active, its workspace still known, and that the driver can
+   say what is running in it;
+2. ends the outgoing agent's pane, leaving the worktree and its branch exactly as they
+   are;
+3. retires the outgoing session on the record (its conversation id, terminal and any
+   block go; the worktree, branch, driver and subscribers stay) and stores the target as
+   the item's per-item overrides, so every later launch, resume and re-creation uses the
+   new stack. The retired conversation, and the last one the outgoing harness wrote in
+   that workspace, are both remembered as never to resume: that transcript is the one
+   lying there for the next harness to adopt;
+4. starts the new session in the same worktree, with what the item's overrides make of
+   the repository's launch settings (another harness runs its own permission-free
+   command; the same harness keeps the repository's `command`), and gives it the
+   [handed-over first prompt](prompts.md): the summary, if there is one, then the item's
+   story, which then counts as seen;
+5. posts `handed-over` and then the new session's `attached` on the item.
 
-If the item has closed or the bot was dropped from it meanwhile, or the
-workspace is gone and cannot be brought back, or the item cannot be read
-for the new session (GitHub is down, so there would be no story to tell
-it), or the outgoing agent cannot be stopped, the handover is **refused
-at that point**: one
-`handed-over` post carrying `refused: <reason>`, and, if the old agent is
-still there, one `[ssf] Handover to <harness> refused: <reason>. Carry
-on.` message to it. The old session keeps the item.
+If the item has closed or the bot was dropped from it meanwhile, the workspace is gone
+and cannot be brought back, the item cannot be read, or the outgoing agent cannot be
+stopped, the handover is **refused at that point**: one `handed-over` post carrying
+`refused: <reason>`, and, if the old agent is still there, one `[ssf] Handover to
+<harness> refused: <reason>. Carry on.` message to it. The old session keeps the item.
 
-If the new harness comes up on its own sign-in screen (a login that
-expired between the check and the launch, a harness the guest does not
-have), the `handed-over` post is made (the handover did happen) and the
-item is **blocked** the usual way, with the `blocked` post and
-the recovery in [A harness that is not signed
-in](#a-harness-that-is-not-signed-in). The old session is not brought
-back: the item is on the new harness from here on, and signing that
-harness in is what starts it.
+If the new harness comes up on its own sign-in screen, the `handed-over` post is made
+(the handover did happen) and the item is **blocked** the usual way. The old session is
+not brought back: the item is on the new harness from here on, and signing that harness
+in is what starts it. If the new harness cannot be started **at all** (it exits the
+moment it is launched, because the model id is one it refuses, say), the item is blocked
+the same way with `reason: could not be started: <error>`, and there is no `attached`
+post, because no session attached. Recovery is the same restart on the same backoff -
+ten minutes, twenty, forty, then hourly, and the block lifts as soon as one of those
+takes the prompt.
 
-If the new harness cannot be started **at all** (it exits the moment it
-is launched, because the model id is one it refuses, say: ssf checks a
-model id for its shape, not against a list, so an id the harness itself
-rejects shows up here), the item is blocked in the same way, with
-`reason: could not be started: <error>` on the `blocked` post and `fix:
-start <harness> by hand in the workspace, or fix the model or effort and
-hand over again`. There is no `attached` post, because no session
-attached. The recovery is the same restart with the same backoff: ssf
-starts the harness in the workspace again, ten minutes later, then
-twenty, forty, then hourly, and the block lifts as soon as one of those
-takes the prompt (a person who starts the harness in the workspace by
-hand lifts it on the next pass). Handing the item over again, to a
-harness and model that work, is the other way out. A harness that would
-not start and is not signed in where the daemon runs is recorded as the
-login block it really is, since that is the thing to fix.
+Under both blocks the summary waits with the item: it is kept on the record until a
+session has actually read it, so the harness started again later is given the summary
+and then the story. A message that went into a sign-in screen was never read, so it does
+not count, and while a summary is waiting the block lifts on that first message landing
+rather than on the screen looking idle.
 
-Under both blocks the summary waits with the item: the outgoing agent is
-gone, so what it wrote is kept on the record until a session has actually
-read it, and the harness started again ten minutes later is given the
-summary and then the story, not the story alone. A message that went into
-a sign-in screen was never read, so it does not count: the summary is put
-back and goes with the next start. While it is still waiting, a live pane
-is never enough to lift the block on its own -- a harness that turns out
-to be running after all (the start gave up on a pane that came up but
-never settled), and one a person has just signed in at, are both given
-that first message where they stand, and the block lifts on the message
-landing rather than on the screen looking idle. That attempt follows the
-same curve as a restart -- the first at once, then twenty minutes, forty,
-then hourly -- so
-an item whose story cannot be read is not re-read on every pass; it is
-counted apart from the restarts, so a person who signs in at a pane a
-failed restart has just left behind is answered on the next pass rather
-than at the end of the restart's wait. If the message finds the pane
-gone and the harness started in its place comes up at a sign-in screen,
-that screen is what the block says from then on, but the hold is the same
-hold: it runs from when it began, the item is not told of it twice, and
-neither wait starts over.
+Handing the item over again is the way out of either block. The new session is told it
+took over from the session that did the work, since a harness that never came up wrote
+nothing. A summary still waiting is carried forward: with `--no-summary` the new session
+is given the one nobody has read, and the `handed-over` post says `summary: yes`. A
+second handover that writes a summary replaces it, so where both matter, write the new
+summary with what the old one said in it. `ssf status` and `ssf peers` show an unread
+summary on the item's line (`handover note waiting: from <harness>, summary 1234
+chars`).
 
-Handing the item over again is the way out of either block. The new
-session is still told it took over from the session that did the work:
-a harness that never came up wrote nothing, so its name is not the one
-carried forward, though the `handed-over` post says what the item was
-configured on. A summary still waiting is carried forward too: with
-`--no-summary` (or from an operator who was not there for the first
-handover) the new session is given the one nobody has read, and the
-`handed-over` post says `summary: yes`, because that is what the session
-gets. A second handover that does write a summary replaces it, as the
-newer account of where the item stands -- so where both matter, write
-the new summary with what the old one said in it. `ssf status` and `ssf
-peers` show a summary nobody has read yet on the item's line (`handover
-note waiting: from Claude Code, summary 1234 chars`; `handover_note`
-with `from` and `summary_chars` in `--json`).
+**Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the daemon has not
+carried out yet: nothing about the item changes, and the session that is there is told
+in one `[ssf] The handover to <harness> was cancelled: this session keeps the item.
+Carry on.` message, since it was told to stop working when the handover was recorded.
+The flags that describe a handover are refused with `--cancel`, as is a cancel with
+nothing pending. Nothing is posted on the item: the handover was never announced there.
 
-**Calling it off.** `ssf handover [ITEM] --cancel` drops a handover the
-daemon has not carried out yet: nothing about the item changes, and the
-session that is there is told in one `[ssf] The handover to <harness> was
-cancelled: this session keeps the item. Carry on.` message, since it was
-told to stop working when the handover was recorded. Name the item as
-usual (the number, `owner/repo#N`, or nothing inside the session; `--as`
-from a shell, `--json` for the machine-readable answer); the flags that
-describe a handover -- `--harness`, `--model`, `--effort` and the summary
-flags -- are refused with it, as is a cancel with nothing pending. This
-is the way back out while the pass cannot run -- the driver is down, or
-the collaborators cannot be fetched -- because until then everything else
-on the item is refused. Nothing is posted on the item: the handover was
-never announced there.
-
-While a handover is pending, `ssf release` on the item is refused with
-that as the reason, and the startup pass leaves the item alone rather
-than resuming the old harness only to stop it. The overrides last until a
-later command writes new ones: releasing the workspace or purging the
-item leaves them on the record, so a workspace re-created afterwards
-comes back on the same harness, model and effort. `ssf status` and `ssf
-peers` show both the overrides and a pending handover, and word them by
-which of the two writers put them there (`ssf peers`: `handed over to pi`
-after a handover, `harness pi` after an assignment; `ssf status`: `handed
-over: harness=pi` and `assigned: harness=pi`, below).
+While a handover is pending, `ssf release` on the item is refused with that as the
+reason, and the startup pass leaves the item alone rather than resuming the old harness
+only to stop it. The overrides last until a later command writes new ones: releasing or
+purging leaves them on the record, so a workspace re-created afterwards comes back on
+the same stack.
 
 ## Assigning a stack before there is a session
 
-An item's stack can also be chosen before it has a session at all, so its
-*first* session comes up on it instead of on the repository's:
-`ssf assign` assigns the bot on GitHub and writes the item's per-item
-overrides in the same request. The daemon answers the CLI between polls,
-so the two cannot be separated by a pass that onboards the item with the
-old stack.
+An item's stack can also be chosen before it has a session at all, so its *first*
+session comes up on it instead of on the repository's. `ssf assign` assigns the bot on
+GitHub and writes the item's per-item overrides in the same request; the daemon answers
+the CLI between polls, so the two cannot be separated by a pass that onboards the item
+with the old stack.
 
 ```sh
-ssf assign 12 --harness pi --model openrouter/anthropic/claude-sonnet-4 --effort high
-ssf assign acme/widgets#12 --harness codex --model gpt-5.5   # from a shell
-ssf assign 12 --harness pi --json                            # the same as data
+ssf assign N --harness <harness> --model <model> --effort <level>
+ssf assign owner/repo#N --harness <harness> --json
 ```
 
-- **Which item.** The item comes first, as `owner/name#N` or as a bare
-  `N` with `SSF_REPO` set or `--as owner/repo#N`, exactly like
-  `ssf handover` and `ssf release`.
-- **Which stack.** `--harness` is required and `--model` and `--effort`
-  are optional, checked exactly the way `ssf handover` checks them:
-  against the levels that harness offers and the shape of a model id,
-  and then, in the daemon, against what is installed and signed in where
-  the daemon runs. A stack equal to the one the item would run anyway is
-  assigned *without* writing overrides, so asking for the repository's
-  own stack leaves the item following `ssf repo set`.
-- **The assignment stays in `gh`'s hands.** ssf opens no issue: create it
-  with `gh issue create`, then assign it a stack. `gh issue create
-  --assignee <bot>` still works on its own, and is what a session uses to
-  hand work off (see above); `ssf assign` is for the cases where that
-  first session should not come up on the repository's stack — an
-  orchestrator or project-manager item, an architectural review, a deep
-  audit. There is no `--cancel`: the inverse is unassigning the bot
-  (`gh issue edit --remove-assignee <bot>`), and once there is a session
-  `ssf handover` is the tool.
-- **A closed item** is assigned and given its stack like any other, but no
-  pass onboards one (every listing ssf reads is `state=open`), so no
-  session starts until the item is open again; the command says so instead
-  of promising a session within the poll interval. `--json` carries the
-  same thing as `open`.
+- **Which item.** The item comes first, as `owner/repo#N` or a bare `N` with `SSF_REPO`
+  set or `--as owner/repo#N`, like `ssf handover` and `ssf release`.
+- **Which stack.** `--harness` is required; `--model` and `--effort` are optional and
+  checked exactly as `ssf handover` checks them, and then, in the daemon, against what
+  is installed and signed in where the daemon runs. A stack equal to the one the item
+  would run anyway is assigned *without* writing overrides, so asking for the
+  repository's own stack leaves the item following `ssf repo set`.
+- **The assignment stays in `gh`'s hands.** ssf opens no issue: create it with `gh issue
+  create`, then assign it a stack. `gh issue create --assignee <bot-login>` still works
+  on its own, and is what a session uses to hand work off. `ssf assign` is for when that
+  first session should not come up on the repository's stack: an orchestrator item, an
+  architectural review, a deep audit. There is no `--cancel`: the inverse is `gh issue
+  edit --remove-assignee <bot-login>`, and once there is a session, `ssf handover` is
+  the tool.
+- **A closed item** is assigned and given its stack like any other, but no pass onboards
+  one (every listing ssf reads is `state=open`), so no session starts until the item is
+  open again. The answer says so rather than promising a session, and `--json` carries
+  it as `open`.
 
-The item is picked up on the daemon's next pass, within
-`daemon.poll_interval_secs`, like any other assignment: the overrides are
-already on the record, so the `attached` post and the launch log both
-name the stack that was asked for. Onboarding does not clear the
-overrides, and the startup pass, a re-created workspace and a resumed
-conversation all use them.
+The item is picked up on the daemon's next pass, within `daemon.poll_interval_secs`: the
+overrides are already on the record, so the `attached` post and the launch log both name
+the stack that was asked for. Onboarding does not clear the overrides, and the startup
+pass, a re-created workspace and a resumed conversation all use them.
 
-**Refused straight away**, with the reason, and nothing assigned and
-nothing written:
+**Refused straight away**, with the reason, and nothing assigned or written:
 
-- the item has a session already (a workspace) — `ssf handover` moves
-  that one to another stack;
-- a handover or a release on the item is pending — each is carried out on
-  the next pass, and a handover can be called off with `ssf handover
-  --cancel`;
-- the item is bound to another item's session (its own overrides would be
-  inert, since the bound item runs its owner's stack) — the refusal names
-  the owner and the command that fits it (`ssf handover` when the owner
-  is running, `ssf assign` when it has no session either). A
-  `mode=delegate` item is not bound: it was handed off to be worked, and
-  it takes a stack of its own;
-- the repository is not watched, the harness is not one ssf knows, it is
-  not installed where the daemon runs, or its login probe says it is
-  signed out, or the effort level is not one it offers;
+- the item has a session already, `ssf handover` moves that one;
+- a handover or a release on the item is pending;
+- the item is bound to another item's session, so its own overrides would be inert; the
+  refusal names the owner and the command that fits it. A `mode=delegate` item is not
+  bound and takes a stack of its own;
+- the repository is not watched, the harness is not one ssf knows, it is not installed
+  where the daemon runs, its login probe says it is signed out, or the effort level is
+  not one it offers;
 - the model id is not shaped like one.
 
-A *retired* open item — the bot no longer assigned, so nothing is
-running — is not a session and stays assignable: the assignment brings it
-back, in the workspace it kept or in one re-created from its branch. A
-*closed* item is accepted too and gets its stack, but no pass onboards
-one: it waits until the item is open again, and the answer says so rather
-than promising a session. A conversation recorded for the harness the item
-last ran is dropped when the new stack runs a different harness, so the
-resume path never hands an old harness's conversation id to a new one.
+A *retired* open item, the bot no longer assigned, so nothing running, is not a session
+and stays assignable: the assignment brings it back, in the workspace it kept or one
+re-created from its branch. A conversation recorded for the harness the item last ran is
+dropped when the new stack runs a different harness, so the resume path never hands an
+old harness's conversation id to a new one.
 
-The answer names the stack and what will happen to it:
-
-```
-Assigned the bot to acme/widgets#12 ("Rework the parser"). Its session starts on Pi (model openrouter/anthropic/claude-sonnet-4, effort high) on the daemon's next pass (within 10s). The item keeps that stack for every later start, a workspace released and re-created included, and `ssf handover` is how it changes from here.
-```
-
-`--json` returns what `ssf handover --json` does (`session`, `title` and
-the `from`/`to` launch), plus `assigned` (whether this request put the bot
-on the item, `false` when it was already there), `overrides_written` and
-`open` (whether a pass will onboard the item now).
-
-`ssf status` and `ssf peers` say which command put the item on its stack
-(`harness pi` after an assignment, `handed over to pi` after a handover):
-`state.json` records the writer as `assigned_at` next to the `overrides` a
-handover stamps with `handed_over_at`.
+`ssf status` and `ssf peers` say which command put the item on its stack (`harness pi`
+after an assignment, `handed over to pi` after a handover; `ssf status` prints
+`assigned: harness=pi` and `handed over: harness=pi`).
 
 ## Workspaces after close: release and purge
 
-ssf never deletes a workspace that might hold unpushed work. Closing an
-issue is a signal anyone can send, an agent included, and the moment the
-agent looks idle is not the moment its last commit is safe. So when an item
-closes (or the bot is dropped from it) the agent gets one message and the
-worktree is left exactly as it is, whatever state it is in. The message
-tells the agent to commit what is worth keeping, push, leave a final
-comment, and then, only if everything is on origin, run `ssf release`.
+ssf never deletes a workspace that might hold unpushed work. Closing an issue is a
+signal anyone can send, an agent included, and the moment the agent looks idle is not
+the moment its last commit is safe. So when an item closes (or the bot is dropped from
+it) the agent gets one message and the worktree is left exactly as it is. That message
+tells it to commit what is worth keeping, push, leave a final comment, and then, only if
+everything is on origin, run `ssf release`.
 
-What counts as being dropped from an item follows the trigger it was taken
-on: an assignment can be removed, a review request withdrawn, but a mention
-cannot be taken back, so an item the bot was only ever mentioned on stays
-the bot's until it closes. `ssf release` refuses while the item is still
-the bot's and names the remedy that fits, so it asks you to close a
-mentioned item rather than to unassign one that has no assignee.
+What counts as being dropped from an item follows the trigger it was taken on: an
+assignment can be removed and a review request withdrawn, but a mention cannot be taken
+back, so an item the bot was only ever mentioned on stays the bot's until it closes.
+`ssf release` refuses while the item is still the bot's and names the remedy that fits.
 
-- **`ssf release`** (inside the session, or `ssf release 12` /
-  `--as owner/repo#12` from a shell) asks the daemon to remove the
-  session's workspace after checking, in the worktree, that the tree is
-  clean (no modified or untracked files; ignored build artefacts do not
-  count), that every commit at HEAD is reachable from a remote-tracking
-  ref, and that no stash entry was made on that branch. The same-named
-  remote branch need not still exist after its commits have been merged
-  elsewhere. If any check
-  fails it prints what would be lost and refuses; nothing is removed.
-  A person who has looked can pass `--force` (from a shell, not inside the
-  session). The daemon removes the workspace, and its terminal, on its next
-  pass, running the checks once more first unless forced. If that re-check
-  finds work (the tree changed after the agent asked, or a push did not land) the
-  release is dropped and the agent gets one `[ssf] Release ... refused`
-  message naming what would be lost, so it can fix that and ask again.
-  After three such refusals on the same item the daemon stops telling the
-  agent, refuses further `ssf release` from it, and marks the item
-  "release given up, workspace kept" (in `ssf status`, `ssf peers --all`
-  and `ssf purge --dry-run`) for a person to deal with; only the daemon's
-  own refusals count, not the ones `ssf release` prints straight away.
+```sh
+ssf release                       # inside the session
+ssf release N --as owner/repo#N   # from a shell
+ssf purge --dry-run
+ssf purge --older-than 7
+```
+
+- **`ssf release`** asks the daemon to remove the session's workspace after checking, in
+  the worktree, that the tree is clean (no modified or untracked files; ignored build
+  artefacts do not count), that every commit at HEAD is reachable from a remote-tracking
+  ref, and that no stash entry was made on that branch. The same-named remote branch
+  need not still exist once its commits have been merged elsewhere. If a check fails it
+  prints what would be lost and refuses; nothing is removed. A person who has looked can
+  pass `--force` (from a shell, not inside the session). The daemon removes the
+  workspace and its terminal on its next pass, running the checks once more first unless
+  forced. If that re-check finds work, the release is dropped and the agent gets one
+  `[ssf] Release of this workspace refused` message naming what would be lost. After
+  three such refusals on the same item the daemon stops telling the agent, refuses
+  further `ssf release` from it, and marks the item "release given up, workspace kept"
+  for a person to deal with.
+
   A release is also refused while the item is still the bot's, or while the
-  session still owns open items (a pull request bound to it, say), and one
-  already accepted is dropped if the item comes back to life before the
-  pass. A person can use `ssf release --as owner/repo#12 --force` to
-  release a retired session's workspace even when it owns open follow-ups.
-  This also skips the worktree checks, so unpushed work can be lost. The
-  follow-ups stay open and retain their ownership and provenance; later
-  activity can recreate the session's workspace, using its old branch if
-  available. An item that is itself still the bot's must stop being the
-  bot's first, even
-  with `--force`; a pending handover also blocks release.
-- **`ssf purge [--dry-run] [--older-than DAYS] [--force]`** is the sweep
-  for what agents left behind: every workspace whose item is closed and
-  whose session has no running agent, listed with its state (`clean and
-  pushed`, `dirty`, `unpushed commits`, `unknown` for a detached head or an
-  unreachable origin, `agent running`). The clean and pushed ones are
-  removed; the rest are reported and kept unless `--force`. Workspaces of
-  open items, of sessions that still own open items, and with a running
-  agent are never touched. `--older-than` limits it to items retired more
-  than that many days ago; `--json` gives the same rows as data.
-  A workspace the driver no longer has (closed by hand, say) whose git
-  checkout is still on disk is judged by that checkout, shown as
-  `(workspace gone, checkout still on disk)` (`"workspace": "gone"` in the
-  JSON), and removed with git when clean and pushed or forced; only when
-  the checkout is gone too is the row `already gone` and the record simply
-  forgotten.
-- **`ssf doctor` names the checkouts worth worrying about** before anyone
-  purges or deletes by hand. Per repository it walks `git worktree list`
-  of the checkout, looks at every worktree under `<checkout>.worktrees/`,
-  fetches origin once and counts what each holds beyond the base branch
-  (`repo.base_branch`, else origin's default branch) and beyond origin.
-  A worktree holding commits that are on no other branch and not on
-  origin, uncommitted changes, or a stash entry made on its branch, with
-  no agent in its workspace (or no workspace at all: a herdr tab closed by
-  hand leaves the checkout behind), gets a `WARN`
-  line naming it, what it holds (`6 commits ahead of master, not on
-  origin`), whether its workspace is open, and whether its item is active
-  on the record. Commenting on an active item starts its session again in
-  that checkout; a retired item gets nothing, so its branch is pushed by
-  hand (`git -C <checkout> push -u origin <branch>`).
-  `ssf purge --force` or removing the directory loses the uncommitted
-  changes and leaves the commits on a local branch nothing lists.
-  Worktrees with an agent on them, and ones whose work is on origin or
-  merged, are counted but not listed; a worktree whose directory was
-  removed by hand is still listed by git until `git worktree prune`, and
-  is named with what its branch still holds; one git cannot answer for
-  (a `.git` file pointing nowhere) is named as such and does not hide the
-  others. "On origin" means on any remote-tracking branch as of that
-  fetch, which does not prune: a branch deleted on GitHub after a squash
-  merge keeps counting as on origin until something prunes it, and with
-  `fetch.prune` set it stops counting as soon as it is pruned. Worktrees
-  elsewhere than `<checkout>.worktrees/` (a person's own) are not ssf's
-  to report.
-- **What the record says.** A released or purged item is marked
-  `released` (with `released_at`), and `ssf status`/`ssf peers --all` show
-  "retired, workspace kept", "retired, workspace released" or "retired,
-  release given up, workspace kept" for closed items, so a person can see
-  what is lying around. The old `daemon.cleanup_on_close` key is accepted
-  but does nothing.
-- **Coming back is unchanged.** A released or purged workspace is re-created
-  from its branch on origin on the item's next event (reopening,
-  re-assignment, a comment on a bound pull request), on the stack the item
-  carries: its [per-item
-  overrides](harnesses.md#per-item-overrides), or the repository's own
-  settings where there are none. The conversation resumes where the harness
-  keeps one (Claude Code, Codex).
+  session still owns open items, and one already accepted is dropped if the
+  item comes back to life before the pass. `ssf release --as owner/repo#N
+  --force` releases a retired session's workspace even when it owns open
+  follow-ups, and skips the worktree checks, so unpushed work can be lost; the
+  follow-ups stay open and keep their ownership, and later activity can
+  re-create the workspace from its old branch. An item that is itself still
+  the bot's must stop being the bot's first, even with `--force`, and a
+  pending handover also blocks release.
+- **`ssf purge`** is the sweep for what agents left behind: every workspace whose item
+  is closed and whose session has no running agent, listed with its state (`clean and
+  pushed`, `dirty`, `unpushed commits`, `unknown` for a detached head or an unreachable
+  origin, `agent running`). The clean and pushed ones are removed; the rest are reported
+  and kept unless `--force`. Workspaces of open items, of sessions that still own open
+  items, and with a running agent are never touched. `--older-than DAYS` limits it to
+  items retired longer ago than that; `--dry-run` lists and removes nothing; `--json`
+  gives the rows as data. A workspace the driver no longer has (closed by hand) whose
+  git checkout is still on disk is judged by that checkout, shown as `(workspace gone,
+  checkout still on disk)`, and removed with git when clean and pushed or forced; only
+  when the checkout is gone too is the row `already gone` and the record forgotten.
+- **`ssf doctor` names the checkouts worth worrying about** before anyone purges or
+  deletes by hand. Per repository it walks the clone's worktrees, fetches origin once
+  and counts what each holds beyond the base branch and beyond origin. A worktree
+  holding commits on no other branch and not on origin, uncommitted changes, or a stash
+  entry made on its branch, with no agent in its workspace, gets a `WARN` line naming
+  it, what it holds, whether its workspace is open, and whether its item is active.
+  Commenting on an active item starts its session again in that checkout; a retired item
+  gets nothing, so push its branch by hand (`git -C <checkout> push -u origin
+  <branch>`). "On origin" means on any remote-tracking branch as of that fetch, which
+  does not prune. Worktrees outside the clone's worktree directory are not ssf's to
+  report.
+- **What the record says.** A released or purged item is marked `released` (with
+  `released_at`), and `ssf status` / `ssf peers --all` show "retired, workspace kept",
+  "retired, workspace released" or "retired, release given up, workspace kept" for
+  closed items, so a person can see what is lying around.
+- **Coming back.** A released or purged workspace is re-created from its branch on
+  origin on the item's next event (reopening, re-assignment, a comment on a bound pull
+  request), on the stack the item carries: its [per-item
+  overrides](harnesses.md#per-item-overrides), or the repository's own settings where
+  there are none. The conversation resumes where the harness keeps one.

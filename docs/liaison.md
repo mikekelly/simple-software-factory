@@ -13,14 +13,15 @@ and that decides what it needs before it can do anything for them:
 
 | | On the factory host | On the user's machine |
 |---|---|---|
-| Example | Grok Bot, or Hermes/OpenClaw, running on the same VPS as `ssf-server` | A desktop assistant watching a factory that runs on a VPS |
-| Factory commands | `ssf` on this machine is the whole setup: no catalog entry, no SSH | `ssf` on the liaison machine drives the factory over SSH, so it needs the client, a key and `ssf-server` on the far side — see [Reach the factory over SSH](#reach-the-factory-over-ssh) |
-| herdr | The herdr server the daemon drives is on this machine, so `herdr` and `ssf dashboard` inspect it directly | The factory's herdr server is saved in the liaison machine's herdr — see [Inspect the factory's herdr server](#inspect-the-factorys-herdr-server) |
+| Example | A bot-account assistant running on the same rented host as `ssf-server` | A desktop assistant watching a factory on another machine |
+| Factory commands | `ssf` on this machine is the whole setup: no catalog entry, no SSH | `ssf` on the liaison machine drives the factory over SSH, so it needs the client, a key and `ssf-server` on the far side, see [Reach the factory over SSH](#reach-the-factory-over-ssh) |
+| herdr | The herdr server the daemon drives is on this machine, so `herdr` and `ssf dashboard` inspect it directly | The factory's herdr server is saved in the liaison machine's herdr, see [Inspect the factory's herdr server](#inspect-the-factorys-herdr-server) |
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
-Complete the factory first: [Install](install.md) (the rented-host path is
-in [Platform specifics](platform-specifics.md)). Then set up the side the liaison
-runs on (the "Setup" sections below), and configure its monitoring last.
+Complete the factory first: [Install](install.md), or
+[Rented hosts](platform-specifics.md#rented-hosts) when it runs on a machine
+the person rents. Then set up the side the liaison runs on (the "Setup"
+sections below), and configure its monitoring last.
 
 ## Keep factory and liaison access separate
 
@@ -32,20 +33,17 @@ subscriptions. Configure each connection for its own purpose:
 | `gh` plus `ssf auth` on the factory host | The dedicated factory bot account | Lets SSF discover assigned work and lets its agent sessions comment, commit, and open pull requests as the bot |
 | The assistant's GitHub integration | An account authorized by the user for the watched repositories | Lets the liaison inspect activity and, where supported, receive events |
 
-The user's account can give the liaison the same repository view as the user;
-a separate liaison account can provide narrower access. Choose the identity
-and permissions deliberately. Never hand the user's credentials to the factory
-bot or assume that a host `gh` sign-in enrolls a hosted assistant integration.
+The user's account gives the liaison the same repository view as the user; a
+separate liaison account can be narrower. Choose deliberately. Never hand the
+user's credentials to the factory bot, and do not assume a host `gh` sign-in
+enrolls a hosted assistant integration. Some platforms configure event
+delivery separately from the plugin the assistant uses to read GitHub during
+a run; check both.
 
-Some assistants configure event delivery separately from plugins used to read
-or change GitHub during a run. Check both connections if applicable.
-
-## Choose the liaison granularity
-
-There is no SSF-required mapping between assistants and repositories. Choose
-one conversation per repository, one liaison for several related repositories,
-or separate liaisons for distinct responsibilities within a repository.
-Use boundaries that keep history understandable and event volume manageable.
+There is no required mapping between assistants and repositories: one
+conversation per repository, one liaison for several related repositories, or
+separate liaisons per responsibility all work. Choose boundaries that keep
+history understandable and event volume manageable.
 
 ## Configure and test monitoring
 
@@ -59,18 +57,17 @@ instruction is:
 > my approval.
 
 Replace OWNER/REPO and set the liaison's action authority to match the user's
-instructions. Select useful events, enable the listener or schedule, and test
-with a safe matching GitHub event. Check run history to confirm delivery; a
-manual run alone does not prove that an event subscription works.
+instructions. Narrow the event selection to activity that is useful; broad
+listeners create noise. Test with a real matching GitHub event and check the
+run history: a manual run alone does not prove a subscription works.
 
-Check the platform's current supported events and permissions. Do not assume
-that issue comments, assignments, labels, edits, or Projects v2 board moves are
-all covered by a repository listener. Use manual or scheduled checks for
-important activity that is not supported. SSF's repository polling continues
-independently; a missed liaison event does not transfer the factory bot's
-identity or responsibilities to the liaison.
+Check the platform's supported events. Do not assume issue comments,
+assignments, labels, edits and Projects v2 board moves are all covered by a
+repository listener; use scheduled checks for important activity that is not.
+SSF's own repository polling continues independently, and a missed liaison
+event does not transfer the factory bot's responsibilities to the liaison.
 
-## Setup: a liaison on the factory host (Grok Bot, Hermes, OpenClaw)
+## Setup: a liaison on the factory host
 
 Nothing is added for the factory side: the `ssf` client on the host is the
 whole setup, with no catalog entry and no SSH, and `herdr` and `ssf
@@ -81,27 +78,24 @@ Unix user when it shares that account, so the same line applies as over
 SSH: read-only commands (`ssf status`, `ssf doctor`, `ssf peers`, `ssf
 dashboard`) are safe to run while watching; `ssf release`, `ssf purge`,
 `ssf uninstall`, `ssf repo` and `ssf config` are the user's decisions.
-Platform-specific enrolment is in its own section below.
+Enrolment on a bot-account assistant platform is in
+[Platform specifics](platform-specifics.md#liaison-on-a-bot-account-assistant).
 
 ## Setup: a liaison on the user's machine, factory elsewhere
 
-The factory host needs nothing new: it already runs `ssf-server` for its
-own agent sessions. The liaison machine is the one set up, in two parts:
-reaching the factory for `ssf` commands, and saving its herdr server so the
-agents' panes can be inspected. A remote liaison cannot work from GitHub
-alone; without these it cannot see the factory's sessions or ask it to do
-anything.
+The factory host needs nothing new: it already runs `ssf-server`. The liaison
+machine is set up in two parts: reaching the factory for `ssf` commands, and
+saving its herdr server so the agents' panes can be inspected. Without both, a
+remote liaison can see GitHub but not the factory.
 
 ### Reach the factory over SSH
 
-1. **A key for the factory account.** That account is the Unix user that runs
-   `herdr` and `ssf-server`, because an SSH target runs `ssf-server` at the
-   other end. Put the liaison's public key in its `~/.ssh/authorized_keys` (or
-   use the connection the assistant platform offers), and make sure no
-   passphrase prompt can appear: every factory command is a non-interactive
-   `ssh`, so a passphrase-protected key has to be loaded first (`ssh-add`).
-   Never copy the bot's token, the bot's SSH key or the user's credentials to
-   the liaison machine.
+1. **A key for the factory account**, the Unix user that runs `herdr` and
+   `ssf-server`. Put the liaison's public key in its `~/.ssh/authorized_keys`,
+   or use the connection the assistant platform offers. No passphrase prompt
+   may appear: every factory command is a non-interactive `ssh`, so load a
+   passphrase-protected key first (`ssh-add`). Never copy the bot's token or
+   SSH key, or the user's credentials, to the liaison machine.
 
 2. **`ssf-server` on that account's non-interactive SSH PATH**, then check the
    connection before configuring anything else:
@@ -110,11 +104,9 @@ anything.
    ssh user@factory.example 'command -v ssf-server'
    ```
 
-3. **The client on the liaison machine**, if it has none: the Linux package, or
-   the [client-only install](install.md).
-   Driving a remote factory needs neither a local daemon nor `ssf setup`. Where
-   no client build runs on that machine — macOS is not supported yet — run
-   `ssf` on the factory host over SSH instead.
+3. **The client on the liaison machine**, if it has none: see
+   [Client only, driving a factory elsewhere](install.md#34-client-only-driving-a-factory-elsewhere).
+   Driving a remote factory needs neither a local daemon nor `ssf setup`.
 
 4. **A name for the factory**, so the destination is written once:
 
@@ -130,11 +122,9 @@ anything.
    no catalog file at all: there, `ssf --server user@factory.example <command>`
    and `SSF_SERVER=user@factory.example` reach the same factory.
 
-Every remote command runs as the factory account, so it can change or remove
-that factory's workspaces: `ssf release`, `ssf purge`, `ssf uninstall`, `ssf
-repo` and `ssf config` are the user's decisions, not the liaison's. `ssf
-status`, `ssf doctor`, `ssf peers`, `ssf dashboard` and the other read-only
-commands are safe to run while watching.
+Every remote command runs as the factory account, so the same line applies as
+on the host: read-only commands are safe while watching, the rest are the
+user's decisions.
 
 ### Inspect the factory's herdr server
 
@@ -149,68 +139,31 @@ herdr machine add user@factory.example --label factory
 herdr machine list
 ```
 
-Run `machine add` in an interactive terminal. It checks the installed binary
-and the running server at the other end, and can ask to install or update the
-remote package, or to stop and replace a running server whose version it cannot
-work with. **Answer No to replacing the factory's running server unless the
-user asks for it**: on a factory host those panes are the live agent sessions.
-A version difference between the liaison's client and the factory's server is
-not a reason to stop it. ssf starts a session again after its terminal
-disappears, but the interruption is still the user's call. Once saved, the
-machine reconnects in the background. The saved label is for the sidebar:
-`herdr --remote` takes the SSH target, not the label, so attaching is
-`herdr --remote user@factory.example`, and that is also the command to run when
-herdr reports that a machine needs attention. A host alias in `~/.ssh/config`
-gives a shorter target that works in both commands.
+Run `machine add` in an interactive terminal. It checks the binary and the
+running server at the other end, and can offer to install or update the remote
+package, or to stop and replace a running server whose version it cannot work
+with. **Answer No to replacing the factory's running server unless the user
+asks for it**: those panes are live agent sessions, and a version difference
+alone is not a reason to stop them. Once saved, the machine reconnects in the
+background. The saved label is for the sidebar only: `herdr --remote` takes
+the SSH target, so attaching is `herdr --remote user@factory.example`, which
+is also the command to run when herdr reports a machine needs attention. A
+host alias in `~/.ssh/config` shortens both.
 
-Herdr commands act on the session their own pane inherited, and workspace,
-pane and agent ids are scoped to one server, so a command run locally does not
-reach the factory's panes: switch machines in the TUI to look at them, or run
+Workspace, pane and agent ids are scoped to one server, so a herdr command run
+locally does not reach the factory's panes: switch machines in the TUI, or run
 the command on the factory host over SSH. `ssf dashboard` watches the
-factory's items from anywhere, but its pane focus is scoped to the herdr server
-it runs on, so run the dashboard on the factory host when that focus is wanted.
+factory's items from anywhere, but its pane focus is scoped to the herdr
+server it runs on.
 
 A VM factory reached from its own host already works this way: `ssf vm
-ssh-config` prints the `~/.ssh/config` entry that `herdr --remote ssf-default`
+ssh-config` prints the `~/.ssh/config` entry that `herdr --remote ssf-server`
 uses.
 
-## Setup: Grok Bot on Cursor
+## Platform enrolment
 
-The following enrollment and routine controls are specific to Grok Bot on
-Cursor, and assume a liaison on the factory host. Use your assistant's
-equivalent controls on other platforms and verify the current UI and supported
-event choices before configuring monitoring.
-
-Open the Cursor [Integrations dashboard](https://cursor.com/dashboard/integrations)
-and connect GitHub to the Cursor account that owns the Grok Bot even if `gh api
-user` and `ssf auth status` already succeed on the host. Prefer the user's
-account for this second enrollment, with access to each repository the liaison
-will watch. That preserves the useful separation: the liaison sees what the
-human sees, while the factory remains the actor that delivers work as its bot
-account.
-
-The GitHub event connection used by a routine is also separate from a GitHub
-plugin the Bot may use to read or change GitHub during a run. If the liaison
-also needs that plugin, follow Cursor's
-[plugin connection guidance](https://cursor.com/help/grok-bot/connect-plugins)
-and treat each requested permission according to the access the liaison needs.
-
-### Create a GitHub-event routine
-
-Once the Cursor GitHub connection is active, ask the Grok Bot that will own the
-liaison routine to create it. For example:
-
-> Create an active routine for the supported GitHub events on `OWNER/REPO`
-> that need my attention. When it runs, inspect the current issue or pull
-> request, summarize what changed with links, explain whether SSF is already
-> handling it, and tell me the next decision needed. Do not comment, merge,
-> close, assign, or change project fields without my approval.
-
-Name the repository and narrow the supported event selection to the activity
-that is useful; broad listeners create noise and consume Grok Bot usage. Open
-the Bot's **View conversation details → Routines** to review its instruction
-and **When to run** trigger, turn it active, and inspect its run history. Test
-with a safe matching GitHub event after saving rather than assuming that a
-manual test proves the listener is subscribed. Cursor's
-[skills and routines guide](https://cursor.com/docs/grok-bot/work#skills-and-routines)
-describes creating, testing, and managing routines.
+Connecting the assistant's own GitHub access and creating its event routine
+are platform steps, not ssf steps. For a bot-account assistant see
+[Liaison on a bot-account assistant](platform-specifics.md#liaison-on-a-bot-account-assistant);
+on any other platform use its equivalent controls, and verify the current UI
+and supported event choices before configuring monitoring.
