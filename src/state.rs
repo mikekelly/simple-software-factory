@@ -957,21 +957,17 @@ fn rewrite_session(value: &mut Option<String>, old: &str, new: &str) -> bool {
     false
 }
 
-/// Rewrite the sessions a level map is keyed by; the value is untouched.
+/// Rewrite the sessions a level map is keyed by, keeping each level with the
+/// session it was given for; the values are untouched.
 fn rewrite_levels(levels: &mut BTreeMap<String, Events>, old: &str, new: &str) -> bool {
     let mut changed = false;
-    let moves: Vec<String> = levels
-        .keys()
-        .filter(|k| {
-            crate::origin::Origin::parse(k).is_some_and(|o| o.repo.eq_ignore_ascii_case(old))
-        })
-        .cloned()
-        .collect();
-    for key in moves {
-        if let Some(level) = levels.remove(&key) {
-            let mut rewritten = key;
-            changed |= rewrite_session_value(&mut rewritten, old, new);
+    for key in levels.keys().cloned().collect::<Vec<_>>() {
+        let mut rewritten = key.clone();
+        if rewrite_session_value(&mut rewritten, old, new)
+            && let Some(level) = levels.remove(&key)
+        {
             levels.insert(rewritten, level);
+            changed = true;
         }
     }
     changed

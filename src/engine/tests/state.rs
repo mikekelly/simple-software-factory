@@ -464,6 +464,8 @@ async fn github_rename_repairs_config_state_and_historical_session_names() {
     item.origin = Some("o/r#3".into());
     item.delegated_by = Some("o/r#2".into());
     item.subscribers = vec!["o/r#4".into(), "other/repo#9".into()];
+    item.subscriber_events
+        .insert("o/r#4".into(), crate::state::Events::All);
     e.state.repo_mut(&r.name).issues_etag = Some("old-etag".into());
     e.failures.insert(("o/r".into(), 7), 2);
 
@@ -483,6 +485,17 @@ async fn github_rename_repairs_config_state_and_historical_session_names() {
     assert_eq!(item.origin.as_deref(), Some("o/new-name#3"));
     assert_eq!(item.delegated_by.as_deref(), Some("o/new-name#2"));
     assert_eq!(item.subscribers, ["o/new-name#4", "other/repo#9"]);
+    // The level follows the session it names, and one under another
+    // repository is left alone.
+    assert_eq!(
+        item.subscriber_events
+            .get("o/new-name#4")
+            .copied()
+            .unwrap_or_default(),
+        crate::state::Events::All,
+        "{:?}",
+        item.subscriber_events
+    );
     assert!(e.state.repos["o/new-name"].issues_etag.is_none());
     assert!(e.refetch.contains("o/new-name"));
     assert_eq!(e.failures.get(&("o/new-name".into(), 7)), Some(&2));
