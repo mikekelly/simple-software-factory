@@ -1,6 +1,7 @@
 //! Installed coding agents, following Omarchy's agent catalogue
 //! (`omarchy-default-agent`): mise-managed packages plus anything on PATH.
 
+use crate::harness::{HARNESSES, harness};
 use serde::Serialize;
 use std::process::Command;
 
@@ -25,19 +26,6 @@ pub struct Agent {
     /// Effort levels the agent accepts, lowest first; empty when it has none.
     pub effort_levels: Vec<String>,
 }
-
-const KNOWN: &[(&str, &str, &str, &str)] = &[
-    // id, display name, mise package, command
-    ("claude", "Claude Code", "claude", "claude"),
-    ("codex", "Codex", "codex", "codex"),
-    ("omp", "Oh My Pi", "github:can1357/oh-my-pi", "omp"),
-    ("pi", "Pi", "pi", "pi"),
-    ("opencode", "OpenCode", "opencode", "opencode"),
-    ("gemini", "Gemini", "gemini", "gemini"),
-    ("copilot", "GitHub Copilot", "copilot", "copilot"),
-    ("grok", "Grok", "npm:@xai-official/grok", "grok"),
-    ("crush", "Crush", "crush", "crush"),
-];
 
 fn on_path(bin: &str) -> bool {
     std::env::var_os("PATH")
@@ -67,18 +55,18 @@ pub fn omarchy_default_agent() -> Option<String> {
 
 pub fn list() -> Vec<Agent> {
     let default = omarchy_default_agent();
-    KNOWN
+    HARNESSES
         .iter()
-        .map(|(id, name, pkg, cmd)| Agent {
-            id: id.to_string(),
-            name: name.to_string(),
-            command: cmd.to_string(),
-            launch_command: crate::models::default_command(id),
-            installed: on_path(cmd) || mise_has(pkg),
-            default: default.as_deref() == Some(*id),
-            takes_model: crate::models::supports_model(id),
-            models: crate::models::known_models(id),
-            effort_levels: crate::models::effort_levels(id)
+        .map(|h| Agent {
+            id: h.id.to_string(),
+            name: h.omarchy_name.to_string(),
+            command: h.command.to_string(),
+            launch_command: crate::models::default_command(h.id),
+            installed: on_path(h.command) || mise_has(h.mise_package),
+            default: default.as_deref() == Some(h.id),
+            takes_model: crate::models::supports_model(h.id),
+            models: crate::models::known_models(h.id),
+            effort_levels: crate::models::effort_levels(h.id)
                 .iter()
                 .map(|e| e.to_string())
                 .collect(),
@@ -90,12 +78,9 @@ pub fn list() -> Vec<Agent> {
 /// `ssf agents` and `ssf doctor` report. An id nothing knows is not
 /// installed.
 pub fn installed(id: &str) -> bool {
-    match KNOWN.iter().find(|(k, ..)| *k == id) {
-        Some((_, _, pkg, cmd)) => on_path(cmd) || mise_has(pkg),
-        None => false,
-    }
+    harness(id).is_some_and(|h| on_path(h.command) || mise_has(h.mise_package))
 }
 
 pub fn is_known(id: &str) -> bool {
-    KNOWN.iter().any(|(k, ..)| *k == id)
+    harness(id).is_some()
 }

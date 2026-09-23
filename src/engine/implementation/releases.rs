@@ -517,7 +517,7 @@ impl Engine {
                     _ => Some((n, harness)),
                 }
             })
-            .filter(|(_, h)| sessions::supports_resume(h))
+            .filter(|(_, h)| sessions::reads_transcript(h))
             .collect();
         let rs = self.state.repo_mut(&repo.name);
         for (number, harness) in harnesses {

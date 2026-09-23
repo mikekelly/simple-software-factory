@@ -562,7 +562,7 @@ removed the workspace"
         };
         for st in rs.scratch.values_mut() {
             let harness = repo.with_overrides(Some(&st.stack)).harness;
-            if st.agent_session_id.is_some() || !sessions::supports_resume(&harness) {
+            if st.agent_session_id.is_some() || !sessions::reads_transcript(&harness) {
                 continue;
             }
             let (Some(path), Some(launched)) =

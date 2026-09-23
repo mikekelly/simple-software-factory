@@ -1161,7 +1161,7 @@ fn issue(row: &Value, fallback: &str) -> Value {
 /// The reasons are the model's own, one per way the fact can be missing, so
 /// every client says the same sentence rather than inventing its own.
 fn activity_note(runtime: &Value) -> Option<&'static str> {
-    if !crate::sessions::reports_activity(text(runtime, "harness")) {
+    if !crate::sessions::reads_transcript(text(runtime, "harness")) {
         return Some("the harness keeps no local transcript ssf can read");
     }
     if text(runtime, "agent_session_id").is_empty() {

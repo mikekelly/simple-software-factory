@@ -10,7 +10,9 @@
 //! effort levels; unknown model ids still pass through to the harness. It
 //! also knows the one harness that takes its context-compaction threshold
 //! through a settings file rather than a flag (`omp`), which is why the
-//! overlay for it is written from here.
+//! overlay for it is written from here. The per-harness data (flags, seeded
+//! ids, effort levels, compaction route) is each harness's row in
+//! [`crate::harness::HARNESSES`]; this module holds the functions it names.
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -18,33 +20,34 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// How a harness takes a model and an effort level, and where its model ids
+/// come from: one field of its row in [`crate::harness::HARNESSES`].
 pub struct Catalogue {
-    pub harness: &'static str,
     /// Flag that selects the model.
-    model_flag: &'static str,
+    pub model_flag: &'static str,
     /// Model ids to offer in menus (the harness may know more).
     pub models: &'static [&'static str],
     /// Effort levels the harness accepts, lowest first; empty when it has no
     /// effort setting.
     pub effort_levels: &'static [&'static str],
     /// Arguments that select an effort level.
-    effort_args: fn(&str) -> Vec<String>,
+    pub effort_args: fn(&str) -> Vec<String>,
     /// Read the catalogue the harness wrote on this machine, when it writes
     /// one. Files only: config loading and `ssf agents` must not run an
     /// agent to answer.
-    catalogue: Option<fn() -> Result<Catalogued>>,
+    pub catalogue: Option<fn() -> Result<Catalogued>>,
     /// Ask the installed agent which models it has, when it can tell us: the
     /// command line that does it, and the parse of its output.
-    list_models: Option<Listing>,
+    pub list_models: Option<Listing>,
     /// Make the installed agent rewrite the catalogue above, for a harness
     /// with no way to be asked for its models at all. Run only when the
     /// catalogue on this machine is missing, or past the freshness the
     /// harness's own file stamps on it.
-    refresh: Option<fn()>,
+    pub refresh: Option<fn()>,
 }
 
 /// What a harness writes down about itself.
-struct Catalogued {
+pub struct Catalogued {
     /// The file that answered.
     path: PathBuf,
     models: Vec<String>,
@@ -57,7 +60,7 @@ struct Catalogued {
 
 /// A command line the installed agent answers with its model ids
 /// (`pi --list-models`), and the parse of its output.
-type Listing = (&'static str, fn() -> Result<Vec<String>>);
+pub type Listing = (&'static str, fn() -> Result<Vec<String>>);
 
 /// What a stub start does in the harness's place: write the catalogue the
 /// harness would have rewritten.
@@ -115,30 +118,30 @@ impl Drop for StartGuard {
     }
 }
 
-fn no_effort(_: &str) -> Vec<String> {
+pub(crate) fn no_effort(_: &str) -> Vec<String> {
     Vec::new()
 }
-fn claude_effort(level: &str) -> Vec<String> {
+pub(crate) fn claude_effort(level: &str) -> Vec<String> {
     vec!["--effort".into(), level.into()]
 }
-fn codex_effort(level: &str) -> Vec<String> {
+pub(crate) fn codex_effort(level: &str) -> Vec<String> {
     vec!["-c".into(), format!("model_reasoning_effort={level}")]
 }
-fn grok_effort(level: &str) -> Vec<String> {
+pub(crate) fn grok_effort(level: &str) -> Vec<String> {
     vec!["--reasoning-effort".into(), level.into()]
 }
-fn thinking(level: &str) -> Vec<String> {
+pub(crate) fn thinking(level: &str) -> Vec<String> {
     vec!["--thinking".into(), level.into()]
 }
 /// Claude Code's own one-launch window (100k-1M tokens), which its settings
 /// merge into nothing: it is a flag, not part of the one `--settings` JSON
 /// the unattended posture needs (`claude_delivery::unattended`).
-fn claude_compaction(tokens: u64) -> Vec<String> {
+pub(crate) fn claude_compaction(tokens: u64) -> Vec<String> {
     vec!["--autocompact".into(), tokens.to_string()]
 }
 /// Codex takes it as a configuration override, the same route the effort
 /// level goes (`codex_delivery::endpoint` accepts the pair ssf writes).
-fn codex_compaction(tokens: u64) -> Vec<String> {
+pub(crate) fn codex_compaction(tokens: u64) -> Vec<String> {
     vec![
         "-c".into(),
         format!("model_auto_compact_token_limit={tokens}"),
@@ -223,7 +226,7 @@ fn needs_refresh(own: Option<&Catalogued>, now: i64) -> bool {
 }
 
 /// `pi --list-models`: a table whose first two columns are provider and model.
-fn pi_models() -> Result<Vec<String>> {
+pub(crate) fn pi_models() -> Result<Vec<String>> {
     Ok(parse_pi_models(&run("pi", &["--list-models"])?))
 }
 fn parse_pi_models(table: &str) -> Vec<String> {
@@ -238,7 +241,7 @@ fn parse_pi_models(table: &str) -> Vec<String> {
 }
 
 /// `omp models --json`: `{"models":[{"selector":"provider/id", ...}]}`.
-fn omp_models() -> Result<Vec<String>> {
+pub(crate) fn omp_models() -> Result<Vec<String>> {
     let v: serde_json::Value =
         serde_json::from_str(&run("omp", &["models", "--json"])?).context("parsing omp models")?;
     Ok(v.get("models")
@@ -253,7 +256,7 @@ fn omp_models() -> Result<Vec<String>> {
 }
 
 /// `opencode models`: one `provider/model` per line.
-fn opencode_models() -> Result<Vec<String>> {
+pub(crate) fn opencode_models() -> Result<Vec<String>> {
     Ok(run("opencode", &["models"])?
         .lines()
         .map(str::trim)
@@ -307,7 +310,7 @@ fn array<'a>(value: &'a serde_json::Value, key: &str) -> &'a [serde_json::Value]
 
 /// Codex writes `models_cache.json`: the models it knows, and a `visibility`
 /// of `hide` for the ones its own picker leaves out.
-fn codex_catalogue() -> Result<Catalogued> {
+pub(crate) fn codex_catalogue() -> Result<Catalogued> {
     let path = harness_dir("CODEX_HOME", ".codex")
         .context("no home directory for codex's model cache")?
         .join("models_cache.json");
@@ -343,7 +346,7 @@ fn codex_catalogue() -> Result<Catalogued> {
 /// prompt before it reaches any model call, and has fetched the catalogue by
 /// then. A start that stops earlier -- no login, no network -- leaves the
 /// catalogue as it was, which `available` then reads as before.
-fn claude_refresh() {
+pub(crate) fn claude_refresh() {
     start_refresh("claude", &["--print"]);
 }
 
@@ -351,7 +354,7 @@ fn claude_refresh() {
 /// `cache/model-catalog/`, one file per account or configuration. The newest
 /// file that lists models answers: a file that is part-way through being
 /// rewritten, or one another surface wrote, has none and is skipped.
-fn claude_catalogue() -> Result<Catalogued> {
+pub(crate) fn claude_catalogue() -> Result<Catalogued> {
     let dir = harness_dir("CLAUDE_CONFIG_DIR", ".claude")
         .context("no home directory for claude's model catalog")?
         .join("cache/model-catalog");
@@ -416,107 +419,11 @@ fn claude_models(catalog: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
-
-const CATALOGUES: &[Catalogue] = &[
-    Catalogue {
-        harness: "claude",
-        model_flag: "--model",
-        models: &["fable", "opus", "sonnet", "haiku"],
-        effort_levels: &["low", "medium", "high", "xhigh", "max"],
-        effort_args: claude_effort,
-        catalogue: Some(claude_catalogue),
-        list_models: None,
-        refresh: Some(claude_refresh),
-    },
-    Catalogue {
-        harness: "codex",
-        model_flag: "-m",
-        models: &[
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-            "gpt-5.6-luna",
-            "gpt-5.5",
-            "gpt-5.2-codex",
-        ],
-        effort_levels: &["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
-        effort_args: codex_effort,
-        catalogue: Some(codex_catalogue),
-        list_models: None,
-        refresh: None,
-    },
-    Catalogue {
-        harness: "gemini",
-        model_flag: "-m",
-        models: &[
-            "gemini-3-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-        ],
-        effort_levels: &[],
-        effort_args: no_effort,
-        catalogue: None,
-        list_models: None,
-        refresh: None,
-    },
-    Catalogue {
-        harness: "grok",
-        model_flag: "-m",
-        models: &["grok-4.6", "grok-4.5"],
-        effort_levels: &["low", "medium", "high", "xhigh"],
-        effort_args: grok_effort,
-        catalogue: None,
-        list_models: None,
-        refresh: None,
-    },
-    // These agents use their own `provider/model` identifiers.
-    Catalogue {
-        harness: "pi",
-        model_flag: "--model",
-        models: &[],
-        effort_levels: THINKING_LEVELS,
-        effort_args: thinking,
-        catalogue: None,
-        list_models: Some(("pi --list-models", pi_models)),
-        refresh: None,
-    },
-    Catalogue {
-        harness: "omp",
-        model_flag: "--model",
-        models: &[],
-        effort_levels: &[
-            "off", "minimal", "low", "medium", "high", "xhigh", "max", "auto",
-        ],
-        effort_args: thinking,
-        catalogue: None,
-        list_models: Some(("omp models --json", omp_models)),
-        refresh: None,
-    },
-    Catalogue {
-        harness: "opencode",
-        model_flag: "-m",
-        models: &[],
-        effort_levels: &[],
-        effort_args: no_effort,
-        catalogue: None,
-        list_models: Some(("opencode models", opencode_models)),
-        refresh: None,
-    },
-    Catalogue {
-        harness: "copilot",
-        model_flag: "--model",
-        models: &["auto"],
-        effort_levels: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-        effort_args: claude_effort,
-        catalogue: None,
-        list_models: None,
-        refresh: None,
-    },
-];
+pub(crate) const THINKING_LEVELS: &[&str] =
+    &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 pub fn catalogue(harness: &str) -> Option<&'static Catalogue> {
-    CATALOGUES.iter().find(|c| c.harness == harness)
+    crate::harness::harness(harness)?.catalogue.as_ref()
 }
 
 pub fn supports_model(harness: &str) -> bool {
@@ -576,7 +483,7 @@ pub fn effort_levels(harness: &str) -> &'static [&'static str] {
 /// not grow until the model's own limit does, and a harness ssf knows no way
 /// for is left alone whatever the configuration asks: an instance-wide value
 /// has to be able to sit above a repository running something else (#404).
-enum Compaction {
+pub enum Compaction {
     /// Flags appended to the launch command, with the counts the harness
     /// accepts (`None`: any count it is given). Claude Code refuses to start
     /// outside its own range, so a count it cannot take is refused while the
@@ -592,31 +499,10 @@ enum Compaction {
     Overlay,
 }
 
-const AUTO_COMPACTION: &[(&str, Compaction)] = &[
-    (
-        "claude",
-        Compaction::Args {
-            args: claude_compaction,
-            tokens: Some(100_000..=1_000_000),
-        },
-    ),
-    (
-        "codex",
-        Compaction::Args {
-            args: codex_compaction,
-            tokens: None,
-        },
-    ),
-    ("omp", Compaction::Overlay),
-];
-
 /// How `harness` takes a context-compaction threshold, when it takes one at
 /// all.
 fn auto_compaction(harness: &str) -> Option<&'static Compaction> {
-    AUTO_COMPACTION
-        .iter()
-        .find(|(h, _)| *h == harness)
-        .map(|(_, c)| c)
+    crate::harness::harness(harness)?.auto_compaction.as_ref()
 }
 
 /// The counts `harness` takes, when it caps them: Claude Code refuses to start
@@ -703,31 +589,6 @@ pub fn write_omp_compaction_overlay(tokens: u64) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Flags that make a harness run without stopping for approval: every tool
-/// call is allowed and the first-run trust question, where a flag can answer
-/// it, is answered. ssf's terminals are unmanned, so nothing could answer a
-/// prompt; Claude Code's `AskUserQuestion` tool is dropped for the same
-/// reason. Login and first-run onboarding survive all of these and are
-/// machine setup.
-const UNATTENDED_FLAGS: &[(&str, &str)] = &[
-    (
-        "claude",
-        "--dangerously-skip-permissions --disallowedTools AskUserQuestion --settings '{\"crossSessionInbound\":\"accept\"}'",
-    ),
-    (
-        "codex",
-        "--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust",
-    ),
-    ("gemini", "--yolo --skip-trust"),
-    ("grok", "--always-approve"),
-    // Pi has no tool approvals; `--approve` trusts the project's `.pi/` files.
-    ("pi", "--approve"),
-    ("omp", "--auto-approve"),
-    ("opencode", "--auto"),
-    ("copilot", "--allow-all"),
-    ("crush", "--yolo"),
-];
-
 /// OMP's normal five-minute inter-event watchdog can end a healthy, long
 /// reasoning turn. It retries before any visible output, but deliberately
 /// stops after partial output because replay could duplicate work. Factory
@@ -737,10 +598,7 @@ const OMP_DEFAULT_COMMAND: &str = "PI_STREAM_IDLE_TIMEOUT_MS=900000 \"$SSF_PI_LA
 
 /// The flags that let `harness` run unattended, if ssf knows them.
 pub fn unattended_flags(harness: &str) -> Option<&'static str> {
-    UNATTENDED_FLAGS
-        .iter()
-        .find(|(h, _)| *h == harness)
-        .map(|(_, f)| *f)
+    crate::harness::harness(harness)?.unattended_flags
 }
 
 /// The command that starts `harness` when `repo.command` is not set: the
@@ -885,9 +743,10 @@ pub fn validate(harness: &str, model: Option<&str>, effort: Option<&str>) -> Res
         if !supports_model(harness) {
             bail!(
                 "{harness} does not take a model setting (supported: {})",
-                CATALOGUES
+                crate::harness::HARNESSES
                     .iter()
-                    .map(|c| c.harness)
+                    .filter(|h| h.catalogue.is_some())
+                    .map(|h| h.id)
                     .collect::<Vec<_>>()
                     .join(", ")
             );
@@ -901,10 +760,10 @@ pub fn validate(harness: &str, model: Option<&str>, effort: Option<&str>) -> Res
         if levels.is_empty() {
             bail!(
                 "{harness} does not take an effort level (supported: {})",
-                CATALOGUES
+                crate::harness::HARNESSES
                     .iter()
-                    .filter(|c| !c.effort_levels.is_empty())
-                    .map(|c| c.harness)
+                    .filter(|h| !effort_levels(h.id).is_empty())
+                    .map(|h| h.id)
                     .collect::<Vec<_>>()
                     .join(", ")
             );

@@ -62,21 +62,7 @@ pub fn credential_path(harness: &str) -> Option<PathBuf> {
 
 /// Environment variables that stand in for a login with that harness.
 fn api_key_vars(harness: &str) -> &'static [&'static str] {
-    match harness {
-        "claude" => &["ANTHROPIC_API_KEY"],
-        "codex" => &["OPENAI_API_KEY"],
-        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        "copilot" => &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
-        "grok" => &["XAI_API_KEY"],
-        "pi" | "omp" | "opencode" | "crush" => &[
-            "ANTHROPIC_API_KEY",
-            "OPENAI_API_KEY",
-            "OPENROUTER_API_KEY",
-            "GEMINI_API_KEY",
-            "XAI_API_KEY",
-        ],
-        _ => &[],
-    }
+    crate::harness::harness(harness).map_or(&[], |h| h.api_key_vars)
 }
 
 fn key_in_env(harness: &str) -> Option<&'static str> {
@@ -520,18 +506,9 @@ pub fn how_to_sign_in(harness: &str) -> String {
 
 /// The harness's display name for people.
 pub fn display_name(harness: &str) -> String {
-    match harness {
-        "claude" => "Claude Code".into(),
-        "codex" => "Codex".into(),
-        "gemini" => "Gemini CLI".into(),
-        "copilot" => "GitHub Copilot".into(),
-        "opencode" => "OpenCode".into(),
-        "pi" => "Pi".into(),
-        "omp" => "Oh My Pi".into(),
-        "grok" => "Grok".into(),
-        "crush" => "Crush".into(),
-        other => other.into(),
-    }
+    crate::harness::harness(harness)
+        .map_or(harness, |h| h.display_name)
+        .into()
 }
 
 #[cfg(test)]

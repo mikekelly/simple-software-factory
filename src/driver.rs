@@ -239,11 +239,6 @@ fn dialog_candidates(screen: &str, limit: usize) -> Vec<&str> {
         .collect()
 }
 
-/// The harnesses `login_dialog` knows the sign-in prompts of.
-pub const HARNESSES: &[&str] = &[
-    "claude", "codex", "gemini", "copilot", "grok", "pi", "omp", "opencode", "crush",
-];
-
 /// Would `text`, shown at the bottom of any harness's screen, pass for
 /// that harness's sign-in prompt? For text ssf is about to write down
 /// that came from elsewhere (an error message, say) and might be quoted
@@ -265,9 +260,7 @@ pub fn quotes_login_prompt(text: &str) -> bool {
 /// a handover summary is still a phrase that can end up at the bottom of
 /// a screen, and `[ssf]` in it proves nothing about who wrote it.
 pub fn login_prompt_line(text: &str) -> Option<String> {
-    let phrases = COMMON_LOGIN_PHRASES
-        .iter()
-        .chain(HARNESSES.iter().flat_map(|h| login_phrases(h).iter()));
+    let phrases = COMMON_LOGIN_PHRASES.iter().chain(every_login_phrase());
     text.lines().map(str::trim).find_map(|line| {
         let lower = line.to_lowercase();
         phrases.clone().find(|p| lower.contains(**p))?;
@@ -285,42 +278,14 @@ const COMMON_LOGIN_PHRASES: &[&str] = &["not logged in"];
 
 /// The phrases (lowercase) `harness` shows at its sign-in prompt.
 fn login_phrases(harness: &str) -> &'static [&'static str] {
-    match harness {
-        "claude" => &[
-            "login expired",
-            "run /login",
-            "select login method",
-            "oauth token expired",
-            "oauth token revoked",
-            "run claude auth login",
-            "invalid api key",
-        ],
-        "codex" => &[
-            "sign in with chatgpt",
-            "re-run codex login",
-            "run codex login",
-            "provide your own api key",
-        ],
-        "gemini" => &[
-            "how would you like to authenticate",
-            "no authentication method selected",
-            "sign in with google",
-        ],
-        "copilot" => &["run /login"],
-        "grok" => &[
-            "approve in your browser to finish signing in",
-            "waiting for approval",
-        ],
-        "pi" | "omp" => &[
-            "use /login to log into a provider",
-            "no models available",
-            "select provider to login",
-            "set up your providers",
-        ],
-        "opencode" => &["run /connect to add an ai provider"],
-        "crush" => &["let's choose a provider and model"],
-        _ => &[],
-    }
+    crate::harness::harness(harness).map_or(&[], |h| h.login_phrases)
+}
+
+/// Every harness's sign-in phrases.
+fn every_login_phrase() -> impl Iterator<Item = &'static &'static str> + Clone {
+    crate::harness::HARNESSES
+        .iter()
+        .flat_map(|h| h.login_phrases.iter())
 }
 
 /// `text` with every sign-in phrase of every harness (and the common
@@ -331,10 +296,7 @@ fn login_phrases(harness: &str) -> &'static [&'static str] {
 /// spelling.
 pub fn redact_login_phrases(text: &str) -> String {
     let mut out = text.to_string();
-    for phrase in COMMON_LOGIN_PHRASES
-        .iter()
-        .chain(HARNESSES.iter().flat_map(|h| login_phrases(h).iter()))
-    {
+    for phrase in COMMON_LOGIN_PHRASES.iter().chain(every_login_phrase()) {
         // The phrases are ASCII, so the ASCII-lowered copy keeps every
         // byte offset of the original.
         let lowered = out.to_ascii_lowercase();

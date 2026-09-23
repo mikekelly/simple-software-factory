@@ -13,12 +13,14 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"))
 }
 
-/// Whether ssf can date a conversation on `harness` at all: the harnesses that
-/// keep a local transcript it knows how to read. The rest report no activity
-/// time ever, which is a fact about the harness rather than about the agent, so
-/// a dashboard says which it is instead of leaving a gap (#439).
-pub fn reports_activity(harness: &str) -> bool {
-    matches!(harness, "claude" | "codex")
+/// Whether ssf has a reader for `harness`'s local transcript, which is what
+/// both dates a conversation (`last_activity`) and resumes one
+/// (`resume_command`, `capture`). The rest report no activity time ever, which
+/// is a fact about the harness rather than about the agent, so a dashboard says
+/// which it is instead of leaving a gap (#439); and they start afresh rather
+/// than resume.
+pub fn reads_transcript(harness: &str) -> bool {
+    crate::harness::harness(harness).is_some_and(|h| h.reads_transcript)
 }
 
 /// Last write to the live conversation's transcript. Herdr exposes a session
@@ -76,10 +78,6 @@ fn transcript_modified(root: &Path, harness: &str, cwd: &str, id: &str) -> Optio
         }
         _ => None,
     }
-}
-
-pub fn supports_resume(harness: &str) -> bool {
-    matches!(harness, "claude" | "codex")
 }
 
 /// Shell command that relaunches `harness` resuming `session_id`.

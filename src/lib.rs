@@ -18,6 +18,7 @@ mod engine;
 mod events;
 mod ghcli;
 mod github;
+mod harness;
 mod herdr;
 mod ipc;
 mod keys;
