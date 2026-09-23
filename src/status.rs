@@ -708,7 +708,7 @@ fn join(
         } else {
             session_id(&repo.name, owner)
         },
-        subscribers: item.subscribers.clone(),
+        subscribers: item.subscribers.iter().map(|s| s.session.clone()).collect(),
         subscriber_only: item.subscriber_only,
         shares_workspace_of: item.shares_workspace_of.map(|n| session_id(&repo.name, n)),
         delegated_by: item.delegated_by.clone(),

@@ -165,16 +165,16 @@ impl Engine {
         for sub in st.subscribers.clone() {
             if owner_session
                 .as_deref()
-                .is_some_and(|o| o.eq_ignore_ascii_case(&sub))
-                || skip.iter().any(|s| s.eq_ignore_ascii_case(&sub))
+                .is_some_and(|o| o.eq_ignore_ascii_case(&sub.session))
+                || skip.iter().any(|s| s.eq_ignore_ascii_case(&sub.session))
             {
                 continue;
             }
-            let Ok((srepo, snumber, sid)) = self.known_session(&sub) else {
+            let Ok((srepo, snumber, sid)) = self.known_session(&sub.session) else {
                 warn!(
                     repo = repo.name,
                     issue = issue.number,
-                    subscriber = sub,
+                    subscriber = sub.session,
                     "subscriber is not a session ssf knows; skipping"
                 );
                 continue;
@@ -197,7 +197,17 @@ impl Engine {
                 );
                 continue;
             }
-            let mine = self.for_recipient(events, &sid, OwnPosts::Hidden);
+            // What this follower asked to hear: everything, or only what
+            // changed the item itself. Every FYI costs it a turn in its own
+            // session, so the default leaves out what people wrote there.
+            let mine: Vec<Rendered> = match sub.events {
+                Events::All => self.for_recipient(events, &sid, OwnPosts::Hidden),
+                Events::State => self
+                    .for_recipient(events, &sid, OwnPosts::Hidden)
+                    .into_iter()
+                    .filter(|e| e.state_change)
+                    .collect(),
+            };
             if mine.is_empty() && what == Fyi::Activity {
                 continue;
             }

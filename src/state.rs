@@ -2,6 +2,7 @@
 //! and which timeline events have already been delivered.
 
 use anyhow::{Context, Result, bail};
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
@@ -141,6 +142,111 @@ pub struct Ignored {
     /// deserves rather than once per flap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Events {
+    /// The item's own state changing: closed, merged, reopened, assigned,
+    /// labeled, renamed, its review request moving. What a follower has to
+    /// know, and nothing it has to read.
+    #[default]
+    State,
+    /// Everything on the item, comments and reviews included. For a
+    /// follower that really wants to watch what is said on it.
+    All,
+}
+
+impl Events {
+    /// The value the CLI takes (`ssf sub --events <value>`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Events::State => "state",
+            Events::All => "all",
+        }
+    }
+}
+
+impl std::str::FromStr for Events {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "state" => Ok(Events::State),
+            "all" => Ok(Events::All),
+            other => bail!(
+                "unknown --events value {other:?}; use state (the item's own state changes) or \
+all (everything, comments included)"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Events {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
+/// One session's follow of an item: which session (`owner/repo#N`), and how
+/// much of the item's activity reaches it. A follow costs the follower a
+/// prompt per delivery, so the level defaults to the item's state changes
+/// and the rest is asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Subscription {
+    pub session: String,
+    pub events: Events,
+}
+
+impl Subscription {
+    /// A follow at the default level.
+    pub fn new(session: impl Into<String>) -> Self {
+        Self {
+            session: session.into(),
+            events: Events::State,
+        }
+    }
+}
+
+impl From<&str> for Subscription {
+    fn from(session: &str) -> Self {
+        Subscription::new(session)
+    }
+}
+
+/// A subscription as the state file carries it: a plain session string at
+/// the default level (how every subscription written before levels existed
+/// reads, and how a default-level one is still written), or a table when the
+/// session asked for more.
+impl<'de> Deserialize<'de> for Subscription {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Session(String),
+            Leveled {
+                session: String,
+                #[serde(default)]
+                events: Events,
+            },
+        }
+        Ok(match Repr::deserialize(d)? {
+            Repr::Session(session) => Subscription::new(session),
+            Repr::Leveled { session, events } => Subscription { session, events },
+        })
+    }
+}
+
+impl Serialize for Subscription {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        if self.events == Events::State {
+            return self.session.serialize(s);
+        }
+        let mut t = s.serialize_struct("Subscription", 2)?;
+        t.serialize_field("session", &self.session)?;
+        t.serialize_field("events", &self.events)?;
+        t.end()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -301,9 +407,9 @@ pub struct IssueState {
     pub untagged: BTreeMap<String, String>,
     /// Sessions (`owner/repo#N`, always an owning session) that hear about
     /// this item without acting on it: every delivery is fanned out to them
-    /// with FYI framing.
+    /// with FYI framing, at the level each one asked for.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subscribers: Vec<String>,
+    pub subscribers: Vec<Subscription>,
     /// Tracked only because sessions subscribed to it: polled for activity,
     /// but no workspace, no owner and no session of its own.
     #[serde(default)]
@@ -620,7 +726,7 @@ impl State {
                     changed |= rewrite_session_value(origin, old, new);
                 }
                 for subscriber in &mut item.subscribers {
-                    changed |= rewrite_session_value(subscriber, old, new);
+                    changed |= rewrite_session_value(&mut subscriber.session, old, new);
                 }
             }
         }
@@ -735,9 +841,9 @@ impl State {
         for rs in self.repos.values_mut() {
             for st in rs.issues.values_mut() {
                 st.subscribers.retain(|s| {
-                    let keep = crate::origin::Origin::parse(s).is_some();
+                    let keep = crate::origin::Origin::parse(&s.session).is_some();
                     if !keep {
-                        ghosts.push(s.clone());
+                        ghosts.push(s.session.clone());
                     }
                     keep
                 });
@@ -824,7 +930,8 @@ for ever after the item closed"
         for (repo, rs) in self.repos.iter_mut() {
             for st in rs.issues.values_mut() {
                 let before = st.subscribers.len();
-                st.subscribers.retain(|s| !s.eq_ignore_ascii_case(session));
+                st.subscribers
+                    .retain(|s| !s.session.eq_ignore_ascii_case(session));
                 if st.subscribers.len() != before {
                     dropped.push(format!("{repo}#{}", st.number));
                 }
@@ -870,13 +977,19 @@ mod tests {
         ] {
             let e = st.repo_mut(repo).issues.entry(n).or_default();
             e.number = n;
-            e.subscribers = subs.into_iter().map(String::from).collect();
+            e.subscribers = subs.into_iter().map(Subscription::new).collect();
         }
         let dropped = st.unsubscribe_everywhere("a/b#9");
         assert_eq!(dropped, vec!["a/b#1", "a/b#2"]);
-        assert_eq!(st.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+        assert_eq!(
+            st.repos["a/b"].issues[&1].subscribers,
+            vec![Subscription::new("x/y#2")]
+        );
         assert!(st.repos["a/b"].issues[&2].subscribers.is_empty());
-        assert_eq!(st.repos["x/y"].issues[&3].subscribers, vec!["x/y#2"]);
+        assert_eq!(
+            st.repos["x/y"].issues[&3].subscribers,
+            vec![Subscription::new("x/y#2")]
+        );
         assert!(st.unsubscribe_everywhere("nobody#1").is_empty());
         // Round-trips through JSON with the new fields.
         st.repos
@@ -888,7 +1001,10 @@ mod tests {
             .subscriber_only = true;
         let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
         assert!(back.repos["a/b"].issues[&1].subscriber_only);
-        assert_eq!(back.repos["a/b"].issues[&1].subscribers, vec!["x/y#2"]);
+        assert_eq!(
+            back.repos["a/b"].issues[&1].subscribers,
+            vec![Subscription::new("x/y#2")]
+        );
     }
 
     #[test]
@@ -903,6 +1019,52 @@ mod tests {
         assert!(err.to_string().contains("another ssf daemon is listening"));
         drop(first);
         StateLock::acquire_in(&sandbox.state_dir()).unwrap();
+    }
+
+    /// A subscription is a session and a level, and the file keeps both:
+    /// what a session hears survives a restart, and a state file written
+    /// before levels existed reads as the default rather than costing its
+    /// follower a re-subscribe (#453).
+    #[test]
+    fn a_subscription_carries_its_level_through_the_state_file() {
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.state_dir().join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"repos":{"o/r":{"issues":{
+                "1":{"number":1,"subscribers":["o/r#9"]},
+                "2":{"number":2,"subscribers":[{"session":"o/r#9","events":"all"}]},
+                "3":{"number":3,"subscribers":[{"session":"o/r#4"}]}
+            }}}}"#,
+        )
+        .unwrap();
+
+        let st = State::load_from(&path).unwrap();
+        let subs = |n: u64| st.repos["o/r"].issues[&n].subscribers.clone();
+        assert_eq!(subs(1), vec![Subscription::new("o/r#9")]);
+        assert_eq!(subs(3), vec![Subscription::new("o/r#4")], "level defaults");
+        assert_eq!(subs(2)[0].events, Events::All);
+
+        // Written back: a plain session string at the default level, a
+        // table only for the level a session asked for.
+        st.save_to(&path).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let issues = &written["repos"]["o/r"]["issues"];
+        assert_eq!(issues["1"]["subscribers"][0], serde_json::json!("o/r#9"));
+        assert_eq!(
+            issues["2"]["subscribers"][0],
+            serde_json::json!({"session": "o/r#9", "events": "all"})
+        );
+    }
+
+    #[test]
+    fn a_subscription_level_is_spelled_out_in_a_refusal() {
+        assert_eq!("state".parse::<Events>().unwrap(), Events::State);
+        assert_eq!(" ALL ".parse::<Events>().unwrap(), Events::All);
+        let err = "everything".parse::<Events>().unwrap_err().to_string();
+        assert!(err.contains("state") && err.contains("all"), "{err}");
     }
 
     /// The state file the daemon is restarted against was written before
@@ -1016,7 +1178,7 @@ mod tests {
         assert!(!rs.issues.contains_key(&7), "unfollowed issue is unbound");
         let followed = &rs.issues[&8];
         assert!(followed.subscriber_only && !followed.seeded && !followed.active);
-        assert_eq!(followed.subscribers, vec!["o/r#2"]);
+        assert_eq!(followed.subscribers, vec![Subscription::new("o/r#2")]);
         assert!(followed.worktree_id.is_none());
         assert_eq!(rs.issues[&9].shares_workspace_of, Some(1), "PR stays bound");
         for (number, updated_at) in [(7, "u7"), (8, "u8")] {
@@ -1106,7 +1268,7 @@ mod tests {
         assert!(st.repos["a/b"].legacy_reviewers.is_empty());
         assert_eq!(
             st.repos["a/b"].issues[&1].subscribers,
-            vec!["x/y#2"],
+            vec![Subscription::new("x/y#2")],
             "the reviewer's own subscriptions go with it"
         );
         assert!(
@@ -1115,7 +1277,10 @@ mod tests {
         );
         let four = &st.repos["a/b"].issues[&4];
         assert!(!four.subscriber_only && four.subscribers.is_empty() && four.seeded);
-        assert_eq!(st.repos["a/b"].issues[&5].subscribers, vec!["a/b#1"]);
+        assert_eq!(
+            st.repos["a/b"].issues[&5].subscribers,
+            vec![Subscription::new("a/b#1")]
+        );
         assert!(st.repos["a/b"].issues[&5].subscriber_only);
         st.save_to(&path).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();

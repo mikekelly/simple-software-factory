@@ -151,7 +151,13 @@ pub(super) fn item_ref(item: &str, me: Option<&origin::Origin>) -> Result<String
     }
 }
 
-pub(super) async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bool) -> Result<()> {
+pub(super) async fn sub(
+    item: &str,
+    as_: Option<&str>,
+    json: bool,
+    subscribe: bool,
+    events: Option<&str>,
+) -> Result<()> {
     let me = identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
@@ -161,6 +167,10 @@ pub(super) async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bo
         ipc::Request::Sub {
             from: me.clone(),
             target: target.clone(),
+            events: match events {
+                Some(level) => level.parse()?,
+                None => state::Events::default(),
+            },
         }
     } else {
         ipc::Request::Unsub {
@@ -181,12 +191,24 @@ pub(super) async fn sub(item: &str, as_: Option<&str>, json: bool, subscribe: bo
             None => "no session of its own; polled for you".into(),
         };
         let added = v.get("added").and_then(|a| a.as_bool()).unwrap_or(true);
+        let changed = v.get("changed").and_then(|c| c.as_bool()).unwrap_or(false);
+        let level: state::Events = match v.get("events").and_then(|e| e.as_str()) {
+            Some(id) => id.parse()?,
+            None => state::Events::default(),
+        };
         println!(
-            "{who} {} {target} \"{title}\" ({owner}); new activity on it will arrive as [ssf] FYI messages.",
-            if added {
-                "subscribed to"
-            } else {
-                "was already subscribed to"
+            "{who} {} {target} \"{title}\" ({owner}) at `{level}`: {}",
+            match (added, changed) {
+                (true, _) => "subscribed to",
+                (false, true) => "changed what it hears on",
+                (false, false) => "was already subscribed to",
+            },
+            match level {
+                state::Events::State => "its own state changes arrive as [ssf] FYI messages \
+(`--events all` adds comments, reviews and commits)"
+                    .to_string(),
+                state::Events::All =>
+                    "everything on it, comments included, arrives as [ssf] FYI messages".to_string(),
             }
         );
     } else {
@@ -250,10 +272,10 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
                     item.shares_workspace_of.unwrap_or(item.number),
                 ))
             };
-            if item
+            if let Some(mine) = item
                 .subscribers
                 .iter()
-                .any(|s| s.eq_ignore_ascii_case(&me_id))
+                .find(|s| s.session.eq_ignore_ascii_case(&me_id))
             {
                 following.push(json!({
                     "item": id,
@@ -261,6 +283,7 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
                     "kind": item.kind,
                     "github_state": item.github_state,
                     "owner": owner,
+                    "events": mine.events.id(),
                 }));
             }
             if owner
@@ -271,7 +294,11 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
                 followers.push(json!({
                     "item": id,
                     "title": item.title,
-                    "subscribers": item.subscribers,
+                    "subscribers": item
+                        .subscribers
+                        .iter()
+                        .map(|s| s.session.as_str())
+                        .collect::<Vec<_>>(),
                 }));
             }
         }
@@ -293,9 +320,10 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
     }
     for f in &following {
         println!(
-            "  {:<24} {:<7} {}  ({})",
+            "  {:<24} {:<7} {:<6} {}  ({})",
             f["item"].as_str().unwrap_or(""),
             f["github_state"].as_str().unwrap_or("?"),
+            f["events"].as_str().unwrap_or("state"),
             f["title"].as_str().unwrap_or(""),
             match f["owner"].as_str() {
                 Some(o) => format!("owned by {o}"),

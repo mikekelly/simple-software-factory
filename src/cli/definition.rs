@@ -137,13 +137,19 @@ pub(super) enum Command {
         json: bool,
     },
     /// Follow an item without working on it: its activity arrives in this
-    /// session as `[ssf] FYI` messages. Needs the running daemon.
+    /// session as `[ssf] FYI` messages. Needs the running daemon. Following
+    /// an item this session already follows changes what it hears.
     Sub {
         /// Item number on this session's repository, or owner/repo#N.
         item: String,
         /// Act as this session (owner/repo#N) instead of $SSF_REPO/$SSF_ISSUE.
         #[arg(long = "as", value_name = "SESSION")]
         r#as: Option<String>,
+        /// What to hear about the item: `state` (its own state changes:
+        /// closed, assigned, labeled -- the default) or `all` (comments,
+        /// reviews and commits too).
+        #[arg(long, value_name = "LEVEL")]
+        events: Option<String>,
         #[arg(long)]
         json: bool,
     },

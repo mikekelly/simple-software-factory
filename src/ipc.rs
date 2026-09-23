@@ -60,10 +60,13 @@ pub enum Request {
     Adopt {
         items: Vec<String>,
     },
-    /// `from` (a session, `owner/repo#N`) wants to hear about `target`.
+    /// `from` (a session, `owner/repo#N`) wants to hear about `target`, at
+    /// this level (following it again changes the level).
     Sub {
         from: String,
         target: String,
+        #[serde(default)]
+        events: crate::state::Events,
     },
     Unsub {
         from: String,

@@ -54,8 +54,9 @@ Some consequences worth knowing:
   still open.
 - **Hand-offs.** An item created with `--assignee <bot-login>` by a session is a
   delegation: its tag carries `mode=delegate`, it gets its own session, and the creating
-  session is subscribed to it. The parent sees the child's activity as FYI messages, and
-  gets one message with the outcome and the child's final comment when it closes. The
+  session is subscribed to it. The parent hears when the child moves (its closure
+  included) and gets one message with the outcome and the child's final comment when it
+  closes; what is said on the child reaches the child's own session, not the parent. The
   child is told it was handed off and to leave a clear final comment. An agent that
   wants a separate worker therefore uses `--assignee`; an unassigned issue is a
   placeholder with no session. A session opening the pull request it will merge itself
@@ -98,13 +99,14 @@ of its own on that branch, which reviews when asked.
 ## Subscriptions and cross-session comments
 
 Exactly one session acts on an item; any number can hear about it. Each item carries a
-list of subscriber sessions next to its owner, and every delivery about it (new
-activity, closure, the bot being dropped from it, or the item getting a session of its
-own) is fanned out to them with FYI framing: `[ssf] FYI: new activity on <item>:`,
-`[ssf] FYI: <item> has been closed.`, and so on, each ending with one line saying it is
-for information only and how to stop them. Subscriptions live in the state file, so they
-survive relaunches and a session being brought back; a session that retires is
-unsubscribed everywhere.
+list of subscriber sessions next to its owner, each with the level that follower asked
+for, and every delivery about it (new activity, closure, the bot being dropped from it,
+or the item getting a session of its own) is fanned out to them with FYI framing:
+`[ssf] FYI: new activity on <item>:`, `[ssf] FYI: <item> has been closed.`, and so on,
+each ending with one line saying it is for information only and how to stop them. A
+level decides only what counts as that new activity; the lifecycle notices always go.
+Subscriptions live in the state file, so they survive relaunches and a session being
+brought back; a session that retires is unsubscribed everywhere.
 
 The CLI takes the session identity from `SSF_REPO`/`SSF_ISSUE` inside a session, or
 `--as owner/repo#N` from a shell (an item bound to another session counts as that
@@ -112,18 +114,29 @@ session):
 
 ```sh
 ssf sub owner/repo#N       # or a bare N inside a session
+ssf sub N --events all     # ... and hear the comments, reviews and commits too
 ssf unsub N
 ssf subs --json
 ```
 
-- `ssf sub` / `ssf unsub` follow or drop an item. Subscribing to an item nothing tracks
-  yet makes it tracked as *subscriber-only*: polled every pass for activity, no
-  workspace, no owner, and nothing before the subscription is replayed. If the bot is
-  later assigned to it, it gets a session as usual and the subscribers are told; when
-  nobody follows it any more it is dropped.
+- `ssf sub` / `ssf unsub` follow or drop an item. Every FYI is a prompt in the
+  follower's own session, so a follow defaults to the item's own state changes:
+  closed, merged, reopened, assigned, labeled, renamed, a review request moving.
+  What is *said* on the item — comments, reviews, review-line comments, commits,
+  references — is not delivered unless the follow asks for it with `--events
+  all`; an event kind ssf does not classify is delivered either way. Following
+  an item this session already follows changes its level, and nothing that was
+  withheld before the change is replayed. `ssf subs` shows the level of each
+  follow. Subscribing to an item nothing tracks yet makes it tracked as
+  *subscriber-only*: polled every pass for activity, no workspace, no owner, and
+  nothing before the subscription is replayed. If the bot is later assigned to
+  it, it gets a session as usual and the subscribers are told; when nobody
+  follows it any more it is dropped.
 - `ssf subs` lists what this session follows and who follows its items; `ssf peers`
   shows subscribers per session.
-- Delegating parents are subscribed to their children automatically.
+- Delegating parents are subscribed to their children automatically, at the
+  default level: a parent hears when its child moves (including its closure, as
+  before) and not every comment between.
 
 `sub`, `unsub`, `handover`, `assign`, `release` and `purge` talk to the running daemon
 over a Unix socket in the state directory (`ssf.sock`), because the daemon owns the

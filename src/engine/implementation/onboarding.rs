@@ -131,9 +131,9 @@ impl Engine {
             if !e
                 .subscribers
                 .iter()
-                .any(|s| s.eq_ignore_ascii_case(&parent))
+                .any(|s| s.session.eq_ignore_ascii_case(&parent))
             {
-                e.subscribers.push(parent);
+                e.subscribers.push(Subscription::new(parent));
             }
         } else if !self
             .adopting

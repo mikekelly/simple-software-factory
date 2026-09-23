@@ -16,6 +16,10 @@ pub struct Rendered {
     pub origin: Option<String>,
     /// For an `assigned`/`unassigned` event, the assignee's login.
     pub assignee: Option<String>,
+    /// The event changed the item itself (closed, assigned, labeled,
+    /// renamed ...), rather than carrying what someone wrote on it or
+    /// echoing work done to it. What a follower at the default level hears.
+    pub state_change: bool,
 }
 
 impl Rendered {
@@ -337,5 +341,26 @@ pub fn render_event(ev: &Value, edited: bool, cfg: &DaemonConfig, bot: &str) -> 
         text,
         origin,
         assignee,
+        state_change: state_change(&kind),
     })
+}
+
+/// Whether an event of this kind changed the item itself, which is what a
+/// follower hears by default, rather than carrying someone's words or
+/// echoing work done on the item.
+///
+/// The list is closed on purpose: a kind ssf does not know -- GitHub adds
+/// them, and the daemon renders an unfamiliar one as its own line -- is
+/// delivered, so nothing new is silently withheld from a follower.
+pub fn state_change(kind: &str) -> bool {
+    !matches!(
+        kind,
+        "commented"
+            | "reviewed"
+            | "line-commented"
+            | "commit-commented"
+            | "committed"
+            | "referenced"
+            | "cross-referenced"
+    )
 }

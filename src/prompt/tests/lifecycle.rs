@@ -118,6 +118,7 @@ fn followup_says_a_bound_pull_request_is_yours_when_assigned() {
         text: "- [t] @bot project v2 item status changed".into(),
         origin: None,
         assignee: None,
+        state_change: true,
     };
     let f = followup_prompt(&filed, &[assigned.clone(), status.clone()], &ctx);
     assert_eq!(
@@ -169,6 +170,7 @@ nobody else is spawned for it.",
         text: "- [t] @alice added label \"review\"".into(),
         origin: None,
         assignee: None,
+        state_change: true,
     };
     let f = followup_prompt(&filed, &[labelled], &ctx);
     assert_eq!(
@@ -214,6 +216,7 @@ fn fyi_prompts() {
         text: "- [t] @alice commented (u):\n  > hi".into(),
         origin: None,
         assignee: None,
+        state_change: false,
     };
     let p = fyi_prompt(
         &issue,
@@ -292,6 +295,7 @@ fn owned_items_get_tracking_and_closing_notes() {
         text: "- [t] @alice requested a review from @bot".into(),
         origin: None,
         assignee: None,
+        state_change: true,
     };
     let p = tracked_prompt(&pr_issue, &[ev], &ctx);
     // A review asked on an owned pull request is the session's own to

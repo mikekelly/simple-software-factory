@@ -859,8 +859,13 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
         Command::Peers { json, repo, all } => peers(json, repo, all).await,
         Command::Candidates { json, repo } => candidates(repo, json).await,
         Command::Adopt { items, json } => adopt(items, json).await,
-        Command::Sub { item, r#as, json } => sub(&item, r#as.as_deref(), json, true).await,
-        Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false).await,
+        Command::Sub {
+            item,
+            r#as,
+            events,
+            json,
+        } => sub(&item, r#as.as_deref(), json, true, events.as_deref()).await,
+        Command::Unsub { item, r#as, json } => sub(&item, r#as.as_deref(), json, false, None).await,
         Command::Subs { r#as, json } => subs(r#as.as_deref(), json),
         Command::Release {
             item,
