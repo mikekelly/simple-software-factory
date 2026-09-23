@@ -65,7 +65,11 @@ Run `apt update` first, including on minimal images with stale lists. The
 - **VM image tools:** `sudo apt install fakeroot libarchive-tools e2fsprogs curl`.
 - **Containers:** installing the `systemd` package does not make it PID 1 or
   give you a working `systemctl --user`. On such a host use host mode with
-  standalone binaries instead.
+  standalone binaries instead. `ssf status`, `ssf doctor` and the dashboards
+  read the daemon on `ssf.sock` rather than the unit, so a `ssf-server`
+  started directly is reported as running rather than as an inactive service
+  (#463); `ssf ui service status` is the one command that still reports the
+  unit alone.
 
 ## Fedora family
 

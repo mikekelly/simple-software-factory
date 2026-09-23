@@ -60,8 +60,49 @@ activity and the latest message or summary, using the server's ownership
 model. Where there is no activity time the card says why (see
 `activity_note` below) rather than "unknown". On a connection
 error the last successful cards are kept with an explicit stale-state warning.
-VM, driver, inactive service and stale daemon states are shown as problems
-rather than as an empty healthy factory.
+An unreachable VM, an unavailable driver, a daemon that is not answering and
+an overdue poll are shown as problems rather than as an empty healthy factory.
+
+### What the warning banner means
+
+The banner is about the *factory*, not about whatever supervises it. It is
+drawn from whether a daemon answers on the factory's Unix socket
+(`daemon_reachable` in `ssf status --json`), so a factory is treated as active
+whenever the daemon is reachable — however it was started:
+
+| Daemon | Service unit | Banner |
+|---|---|---|
+| answering | active | none |
+| answering | stopped or disabled | none |
+| not answering | stopped or disabled | `SSF service is inactive; showing latest saved state` |
+| not answering | active | `SSF daemon is not answering; showing latest saved state` |
+| answering, last poll overdue | either | `SSF daemon state is stale; last successful poll is overdue` |
+
+`service_active` and `service_enabled` are still in the top level of
+`ssf status --json`, as the service manager's own view of its unit — the HTTP
+API's `api/status` serves the `dashboard` presentation alone, so they are not
+part of it — and `ssf ui service status` reports exactly that. They say
+nothing about a daemon started outside the unit, which is the supported shape
+for
+[containers, other supervisors and foreground `ssf-server`](#running-without-systemd).
+
+### Running without systemd
+
+`ssf-server` is the factory; the service unit is one way to keep it running.
+A host with no user systemd — a pod-style container, a machine where
+`systemctl --user` cannot manage units — runs the same factory by starting the
+daemon directly, and everything the dashboards read comes from that process:
+
+```sh
+/usr/bin/ssf-server            # foreground, or under the host's supervisor
+```
+
+`ssf setup` and `ssf ui service enable` need a service manager and are what
+such a host skips; see
+[host mode with standalone binaries](install.md#33-standalone-binaries-on-a-rented-host).
+`ssf status` and `ssf doctor` then report the daemon rather than the unit —
+`service: running (started outside ssf.service, which is stopped and disabled)`
+— and the dashboard draws no warning at all.
 
 ### Herdr navigation
 

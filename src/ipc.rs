@@ -49,6 +49,15 @@ pub fn socket_path() -> PathBuf {
     runtime.join(format!("ssf-{:016x}.sock", h.finish()))
 }
 
+/// Whether a daemon answers on this factory's socket. A connect is enough:
+/// only a live listener accepts one, and the socket a dead daemon left
+/// behind refuses it. This is the daemon's own liveness, the one fact about
+/// the factory that does not depend on whatever supervises it -- a systemd
+/// unit, another supervisor, or a person at a shell (#463).
+pub fn daemon_reachable() -> bool {
+    std::os::unix::net::UnixStream::connect(socket_path()).is_ok()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -252,8 +261,11 @@ pub async fn exchange(req: &Request) -> Result<Response> {
     serde_json::from_str(answer.trim()).context("parsing the daemon's answer")
 }
 
-/// Read one request line from a connection the daemon accepted.
-pub async fn read_request(stream: &mut UnixStream) -> Result<Request> {
+/// Read one request line from a connection the daemon accepted. `None` is a
+/// peer that connected and closed without sending anything, which is what a
+/// liveness probe is ([`daemon_reachable`]): there is no request to answer
+/// and nothing to report.
+pub async fn read_request(stream: &mut UnixStream) -> Result<Option<Request>> {
     let mut reader = BufReader::new(stream).take(MAX_LINE as u64);
     let mut line = String::new();
     let n = tokio::time::timeout(SERVER_IO_TIMEOUT, reader.read_line(&mut line))
@@ -261,9 +273,11 @@ pub async fn read_request(stream: &mut UnixStream) -> Result<Request> {
         .context("client sent nothing in time")?
         .context("reading request")?;
     if n == 0 {
-        bail!("empty request");
+        return Ok(None);
     }
-    serde_json::from_str(line.trim()).context("parsing request")
+    serde_json::from_str(line.trim())
+        .context("parsing request")
+        .map(Some)
 }
 
 pub async fn write_response(stream: &mut UnixStream, resp: &Response) -> Result<()> {
@@ -289,6 +303,43 @@ mod tests {
         // stable and short.
         let a = PathBuf::from("/run/user/1000").join(format!("ssf-{:016x}.sock", 1u64));
         assert!(a.as_os_str().len() <= MAX_SOCKET_PATH);
+    }
+
+    #[test]
+    fn a_listening_socket_is_reachable_and_a_stale_one_is_not() {
+        let _sandbox = crate::config::test_support::sandbox();
+        // Nothing is listening yet.
+        assert!(!daemon_reachable());
+        let path = socket_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        assert!(daemon_reachable());
+        // A daemon that stops leaves its socket file behind, and connecting
+        // to that is refused rather than answered.
+        drop(listener);
+        assert!(path.exists());
+        assert!(!daemon_reachable());
+    }
+
+    /// A peer that connects and closes without a request is how the
+    /// dashboards ask whether the daemon is there ([`daemon_reachable`]):
+    /// the daemon reads no request and answers nothing, so the probe
+    /// neither logs a refusal nor blocks the next real client.
+    #[tokio::test]
+    async fn a_connection_that_sends_nothing_is_not_a_request() {
+        let dir = std::env::temp_dir().join(format!("ssf-ipc-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe.sock");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        drop(std::os::unix::net::UnixStream::connect(&path).unwrap());
+        let (mut peer, _) = listener.accept().await.unwrap();
+        assert!(read_request(&mut peer).await.unwrap().is_none());
+        // A client that does send a request is read as one.
+        let mut client = tokio::net::UnixStream::connect(&path).await.unwrap();
+        client.write_all(b"{\"op\":\"ping\"}\n").await.unwrap();
+        let (mut peer, _) = listener.accept().await.unwrap();
+        assert_eq!(read_request(&mut peer).await.unwrap(), Some(Request::Ping));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

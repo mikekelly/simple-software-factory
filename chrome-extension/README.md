@@ -126,12 +126,12 @@ A snapshot the overlay cannot trust carries a **stale modifier** on top of the
 state: the icon loses its solid fill and becomes a dashed outline, and the time
 becomes `as of HH:MM` — when the snapshot was taken. That happens when the
 stream stops, when the factory cannot be reached at all (`Problem ·
-unreachable`), and also when a factory flags its own snapshot as unreliable — an
-inactive service, an unreachable VM, an unavailable driver, an overdue poll —
-which the TUI paints `UNAVAILABLE / STALE` and the server's web UI describes as
-"Status may be incomplete". A stale snapshot therefore never renders a solid
-**Working**. A factory that has never answered is named on the page rather than
-left out, since staying silent would read as "no agent".
+unreachable`), and also when a factory flags its own snapshot as unreliable — a
+daemon that is not answering, an unreachable VM, an unavailable driver, an
+overdue poll — which the TUI paints `UNAVAILABLE / STALE` and the server's web
+UI describes as "Status may be incomplete". A stale snapshot therefore never
+renders a solid **Working**. A factory that has never answered is named on the
+page rather than left out, since staying silent would read as "no agent".
 
 ## What it shows
 

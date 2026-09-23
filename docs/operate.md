@@ -168,6 +168,13 @@ ssf --server NAME ui service toggle
 `ssf ui service is-enabled` exits 0 when it is enabled, for scripts and menu
 conditions.
 
+These commands, and this table, are about the service manager's unit. The
+factory is the daemon: `ssf status`, `ssf doctor` and the dashboards read
+whether one answers on `ssf.sock`, so a daemon started outside the unit — in a
+container, under another supervisor, or in the foreground — is a running
+factory with no warning, and the unit's own state is reported as the detail
+beside it (#463). `ssf ui service status` keeps reporting the unit alone.
+
 | Platform | Unit | Logs |
 |---|---|---|
 | Linux | `ssf@NAME.service` (systemd user) | `journalctl --user -fu ssf@NAME.service` |

@@ -389,6 +389,38 @@ pub fn service_start() -> Result<()> {
     service_action("start")
 }
 
+/// How a report says whether the factory is running: the daemon answering
+/// on its socket is the factory, and the service unit is the detail beside
+/// it. A daemon the unit is not running -- one started in a container, by
+/// another supervisor, or by hand -- is a running factory rather than an
+/// inactive one, and the two states that disagree name the unit instead of
+/// being equated with it (#463). Where they agree, the wording is the
+/// unit's own, as it always was.
+pub fn service_state(daemon: bool, unit_active: bool, unit_enabled: bool) -> String {
+    match (daemon, unit_active) {
+        (true, true) => {
+            if unit_enabled {
+                "running".into()
+            } else {
+                "running (disabled)".into()
+            }
+        }
+        (false, false) => {
+            if unit_enabled {
+                "stopped".into()
+            } else {
+                "stopped (disabled)".into()
+            }
+        }
+        (true, false) => format!(
+            "running (started outside {}, which is stopped{})",
+            service_instance(),
+            if unit_enabled { "" } else { " and disabled" }
+        ),
+        (false, true) => format!("daemon not answering ({} running)", service_instance()),
+    }
+}
+
 pub fn service_stop() -> Result<()> {
     service_action("stop")
 }
