@@ -198,6 +198,19 @@ read for:
 
 ![A board whose cards carry ssf chips, the untracked ones reading No agent alongside a tracked one reading Working, with one chip's popover open showing the Assign agent form](docs/no-record-board.png)
 
+**Opening an item from a board opens a side panel over it, and the panel shows
+the item's card rather than a chip.** GitHub draws that panel as a detail view
+of the one item — the same sidebar container the item's page has — and names the
+item it is showing in the query string (`pane=issue`, and an `issue` parameter
+of the form `owner|repo|number`), which is where the overlay reads it: the card
+sits at the top of the panel's sidebar, above Assignees, exactly as it does on
+the item's own page, and the panel's own links get no chips. A chip belongs on a
+row in a list, and the panel's links are the item itself and the issues its
+prose names (#440). The parameter is the panel's own state, so closing the panel
+is what takes the card away, and only the item panel carries an `issue` — the
+project information panel names none, and neither does a draft item's, a draft
+having no issue URL (#440).
+
 Hovering a chip shows the stack the session is on, the absolute time where there
 is one and the reason where there is not, and the first line of the last message.
 Clicking it opens the same card as the issue page, as a popover, so you never
@@ -377,7 +390,13 @@ forward, and keep tailnet ACLs restrictive.
 - The capability URL changes when the server restarts; the options page must be
   updated to match, or the factory reads as unreachable.
 - A project board chip depends on the board rendering its cards as links to the
-  issue or pull request, as GitHub's board and list views do.
+  issue or pull request, as GitHub's board and list views do. The side panel's
+  card depends on the panel naming the item it shows in the query string
+  (`pane=issue` with an `issue` parameter of the form `owner|repo|number`),
+  which GitHub does for the item panel and for no other; a GitHub that renames
+  that parameter takes the panel's card away with it, and the panel's own links
+  stay unchipped either way, a chip belonging to a row in a list and not to a
+  detail view.
 - The closed-or-merged reading is a chip's, from the state mark GitHub draws in
   the item's own area — the nearest ancestor holding exactly one state mark,
   stopping at the first link to a different item, so a board column or a search
