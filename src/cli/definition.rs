@@ -79,7 +79,7 @@ pub(super) enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// List coding agents known to Omarchy and whether they are installed.
+    /// List the coding agents ssf can run and whether each is installed.
     Agents {
         #[arg(long)]
         json: bool,
@@ -279,7 +279,7 @@ pub(super) enum Command {
     },
     /// Check that GitHub, the drivers in use and the configured harnesses are usable.
     Doctor,
-    /// Omarchy desktop integration: Factory menu entries and background service.
+    /// The background service, and desktop integration where a desktop offers it (Factory menu entries on Omarchy).
     Ui {
         #[command(subcommand)]
         command: UiCommand,

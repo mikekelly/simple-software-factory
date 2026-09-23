@@ -364,12 +364,12 @@ Cutting a release:
 
 The first submission to omarchy-pkgs is a PR adding `pkgbuilds/ssf/` from
 `packaging/release/` (issue #123 has the prepared branch and the command).
-When it lands, `README.md` "Install" and `docs/setup.md` steps 2 and 11
-and the checklist's first item switch from "download the package from the latest release" to
-`sudo pacman -S ssf`, and this document's development-build note stays as
-it is. Until then the release carries the package file
+When it lands, the Arch install line in `README.md` and
+[Install](install.md) switches from "download the package from the latest
+release" to `sudo pacman -S ssf`, and this document's development-build
+note stays as it is. Until then the release carries the package file
 (`ssf-X.Y.Z-1-x86_64.pkg.tar.zst`, built by the workflow) and
-[Setup](setup.md) says "from the latest release"; the .deb and .rpm come
+[Install](install.md) says "from the latest release"; the .deb and .rpm come
 from the release either way.
 
 ## Layout
@@ -401,7 +401,7 @@ from the release either way.
 | `.github/workflows/release.yml` | the release workflow: on a `vX.Y.Z` tag, builds the .deb, .rpm, .pkg.tar.zst and bare binaries and attaches them to the GitHub release |
 | `.github/workflows/homebrew.yml` | the tap workflow: when the release is published, renders the Homebrew formula and pushes it to `mikekelly/homebrew-tap` |
 | `skills/working-with-ssf/` | the thin installable agent skill: affordance hooks, installation link and `ssf skill` entrypoint |
-| `docs/` | `setup.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/` |
+| `docs/` | `install.md` (the setup document) and the reference behind the README, installed under `/usr/share/doc/ssf/`; `docs/skills/root.md` is the `ssf skill` router |
 
 Large unit-test suites live beside their implementation under `src/<module>/tests.rs`
 or `src/<module>/tests/`, with shared fixtures in the test module. Start with the
@@ -421,4 +421,7 @@ source document when behavior changes; it is also the text printed by the
 binary. Keep `skills/working-with-ssf/SKILL.md` as a thin affordance/discovery
 pointer.
 Agent operating rules live in `docs/agent-guidance.md` (`ssf skill agent`).
-Add new topics to the CLI enum and the root overview in `docs/skills/root.md`.
+Add new topics to the CLI enum, the router in `docs/skills/root.md`, the
+topic list in `tests/server_catalog_client.rs` and the README index. Generic
+guidance first; anything distro-, vendor-, harness- or history-shaped goes
+in `docs/platform-specifics.md`, never inline.

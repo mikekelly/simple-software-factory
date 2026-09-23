@@ -131,7 +131,7 @@ harness = "claude"                             # agent id: see `ssf agents`
 # items. See docs/configuration.md#codex-native-delivery. Standalone uses fallback.
 # Choose model and effort with the operator before watching this repository.
 # Required by repo add/set when supported; doctor fails if missing in legacy config.
-model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush. `ssf models <agent>` lists what the installed agent itself offers, else ssf's table; choosing one: docs/setup.md
+model = "opus"                               # the session's own model, not its subagents'; provider/model for pi/omp/opencode, auto or a model name for copilot, none for crush. `ssf models <agent>` lists what the installed agent itself offers, else ssf's table; choosing one: docs/repositories.md
 effort = "high"                              # effort/thinking level (claude: low|medium|high|xhigh|max; codex: minimal..ultra; pi/omp: off..max)
 # auto_compaction_tokens = 300000              # context this repository's sessions may fill before the harness compacts its own history; overrides the top-level key (0: the harness's own default; claude requires 100000-1000000; claude/codex/omp only)
 # clone_url = "git@github.com:owner/name.git"  # default: https://github.com/owner/name.git

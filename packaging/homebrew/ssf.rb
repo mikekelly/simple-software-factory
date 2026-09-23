@@ -50,7 +50,7 @@ class Ssf < Formula
   def caveats
     <<~EOS
       Setup, step by step (also for your coding agent to follow):
-        #{HOMEBREW_PREFIX}/share/doc/ssf/docs/setup.md
+        #{HOMEBREW_PREFIX}/share/doc/ssf/docs/install.md
 
       On macOS the factory runs in a lima VM: build it once with
         ssf vm build

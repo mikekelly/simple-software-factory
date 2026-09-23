@@ -18,8 +18,8 @@ and that decides what it needs before it can do anything for them:
 | herdr | The herdr server the daemon drives is on this machine, so `herdr` and `ssf dashboard` inspect it directly | The factory's herdr server is saved in the liaison machine's herdr — see [Inspect the factory's herdr server](#inspect-the-factorys-herdr-server) |
 | GitHub | The liaison's own integration or account, never the factory bot's credentials | The same, on the liaison machine, alongside the SSH access it needs |
 
-Complete the factory first: [VPS / headless-host installation](headless-host.md),
-or [Setup](setup.md) for a packaged factory. Then set up the side the liaison
+Complete the factory first: [Install](install.md) (the rented-host path is
+in [Platform specifics](platform-specifics.md)). Then set up the side the liaison
 runs on (the "Setup" sections below), and configure its monitoring last.
 
 ## Keep factory and liaison access separate
@@ -111,7 +111,7 @@ anything.
    ```
 
 3. **The client on the liaison machine**, if it has none: the Linux package, or
-   the [standalone client](install-binaries.md#client-only-operate-an-existing-factory-over-ssh).
+   the [client-only install](install.md).
    Driving a remote factory needs neither a local daemon nor `ssf setup`. Where
    no client build runs on that machine — macOS is not supported yet — run
    `ssf` on the factory host over SSH instead.
@@ -125,7 +125,7 @@ anything.
    ```
 
    `ssf server add` writes the client-side catalog
-   (`~/.config/ssf/servers.toml`); `ssf skill client-cli` covers a client with
+   (`~/.config/ssf/servers.toml`); `ssf skill operate` covers a client with
    several targets. A raw destination selects a factory only on a client with
    no catalog file at all: there, `ssf --server user@factory.example <command>`
    and `SSF_SERVER=user@factory.example` reach the same factory.
