@@ -12,9 +12,9 @@
 // sends it as the write `api/pane/input` -- a write like assign, so the
 // factory's Writes switch applies to it -- one request at a time, in order.
 //
-// This page is the extension's own, opened by the worker in a tab of its own,
-// so the stream it reads carries the extension's origin and the permission the
-// options page granted for the factory.
+// This page is the extension's own, framed over the GitHub page by Open
+// (pane-overlay.js, #477), so the stream it reads carries the extension's origin
+// and the permission the options page granted for the factory.
 import { Terminal } from "./vendor/xterm/xterm.mjs";
 import { endpoint, factoryUrl } from "./factory-url.js";
 
@@ -54,6 +54,20 @@ const stateLine = document.getElementById("state");
 document.getElementById("session").textContent = session;
 document.title = `${session} · ssf`;
 
+// Esc closes the overlay this page is framed in, whose own keys the frame keeps
+// from it -- except in a pane that takes typing, where Esc is a key the agent
+// reads, and the overlay's close button is the way out.
+if (params.get("input") !== "1" && window.parent !== window) {
+  addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key !== "Escape") return;
+      window.parent.postMessage({ type: "ssf:pane-close" }, "https://github.com");
+    },
+    true,
+  );
+}
+
 function say(text, problem = false) {
   stateLine.textContent = text;
   stateLine.dataset.problem = String(problem);
@@ -85,6 +99,10 @@ async function start() {
     fontSize: 13,
   });
   term.open(document.getElementById("screen"));
+  // The terminal keeps no scrollback -- each frame is the whole visible screen
+  // -- so the wheel is the page's: it scrolls a pane taller than the window,
+  // where xterm would take it and scroll nothing.
+  term.attachCustomWheelEventHandler(() => false);
   term.focus();
 
   /// Draw one frame over the last: home, every line with the rest of it

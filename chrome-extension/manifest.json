@@ -14,8 +14,22 @@
   "content_scripts": [
     {
       "matches": ["https://github.com/*"],
-      "js": ["writes-form.js", "content.js"],
+      "js": ["pane-overlay.js", "writes-form.js", "content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "terminal.html",
+        "terminal.js",
+        "terminal.css",
+        "factory-url.js",
+        "vendor/xterm/xterm.mjs",
+        "vendor/xterm/xterm.css"
+      ],
+      "matches": ["https://github.com/*"],
+      "use_dynamic_url": true
     }
   ],
   "action": {

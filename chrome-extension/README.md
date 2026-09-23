@@ -364,11 +364,11 @@ an item can be acted on without leaving the board:
   ![Release accepted, with the item and the daemon's next pass](docs/action-release-accepted.png)
 
 **Writes** switches on the options page, on by default, govern all of it.
-Turning one off hides the assign form and the Actions row for that factory and
-refuses every write in the service worker. It is the extension's own side of the
-rule the factory enforces: the server accepts a write only from an extension
-origin, so nothing else that can reach a capability URL can act on a session
-through it.
+Turning one off hides the assign form, the Actions row and Open for that
+factory and refuses every write in the service worker. It is the extension's
+own side of the rule the factory enforces: the server accepts a write only from
+an extension origin, so nothing else that can reach a capability URL can act on
+a session through it.
 
 ## Scratch sessions and the terminal
 
@@ -379,20 +379,26 @@ model and effort pickers and whose session it is: **Shared**, or **Mine**
 (the login GitHub's page names in `<meta name="user-login">`). That login only
 labels the session; it is not access control.
 
-Each scratch card has **Open**, **Kill** and, once killed, **Resume**. Kill
+Each scratch session has **Open**, **Kill** and, once killed, **Resume**. Kill
 removes the workspace. When the factory's checks find nothing to lose it goes
 at once; when they find uncommitted or unpushed work the card shows what they
 found and says that all work in the workspace will be lost, and only **Kill
 anyway** (a second request, forced) removes it.
 
-**Open**, on a scratch card or in an item's Actions row, opens the session's
-agent pane in a new tab: a terminal (xterm.js, vendored under
-`vendor/xterm/` since an MV3 extension loads no remote script) mirroring the
-pane from `api/pane/<session>`. Where the snapshot says the session's pane
-takes typing (`pane_input`: always for a scratch session, for an item's only
-where the factory's `item_pane_input` is on), what you type goes through the
-service worker to `api/pane/input`; typing is a write, so a factory whose
-Writes switch is off shows the pane read-only. Otherwise the terminal is
+**Open**, the terminal icon at the top of an item's card (on a factory whose
+Writes switch is on) and at the end of a scratch session's first line, shows
+the session's agent pane over the GitHub page: a terminal (xterm.js, vendored
+under `vendor/xterm/` since an MV3 extension loads no remote script) mirroring
+the pane from `api/pane/<session>`. The close button, a click outside the
+panel, or Esc closes it; in a pane that takes typing, Esc typed into the
+terminal is the agent's, so there it closes only from outside the terminal.
+While it is open the page underneath does not scroll: the wheel scrolls the
+terminal, which shows the pane's visible screen, not its history.
+Where the snapshot says the session's pane takes typing (`pane_input`: always
+for a scratch session, for an item's only where the factory's
+`item_pane_input` is on), what you type goes through the service worker to
+`api/pane/input`; typing is a write, so a factory whose Writes switch is off
+shows the pane read-only. Otherwise the terminal is
 view-only: speak to an item's agent by commenting on the item.
 When the factory says the pane cannot be read, or the stream fails three times
 in a row, the terminal stops and offers **Reconnect**. The pane is read about
@@ -428,7 +434,10 @@ forward, and keep tailnet ACLs restrictive.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
   scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`.
-  The terminal tab reads `api/pane/<session>` itself. A factory accepts a write only from an extension
+  The terminal reads `api/pane/<session>` itself: it is the extension's own
+  page (`terminal.html`), framed over github.com and listed in
+  `web_accessible_resources` for github.com alone, so the stream still carries
+  the extension's origin. A factory accepts a write only from an extension
   origin, and a page on github.com has none, so the content script never fetches
   a factory itself and no page the factory serves can act on a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are

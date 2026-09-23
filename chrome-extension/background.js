@@ -322,21 +322,6 @@ async function paneInput(message) {
   return writeTo(message, "pane/input", { session: message.session, text: message.text });
 }
 
-/// Open the pane mirror for a session in a tab of its own. The page is the
-/// extension's, so it reads the factory with the extension's origin and
-/// permission, as this worker does.
-async function openPane(message) {
-  const entry = factories.get(message.url);
-  if (!entry) return { ok: false, error: "that factory is no longer configured" };
-  const query = new URLSearchParams({
-    factory: entry.url,
-    session: String(message.session ?? ""),
-    input: message.input === true ? "1" : "0",
-  });
-  await chrome.tabs.create({ url: `${chrome.runtime.getURL("terminal.html")}?${query}` });
-  return { ok: true };
-}
-
 async function listing(message, path) {
   const entry = factories.get(message.url);
   if (!entry) return { ok: false, error: "that factory is no longer configured" };
@@ -357,7 +342,6 @@ const HANDLERS = {
   "ssf:scratch-release": scratchRelease,
   "ssf:scratch-resume": scratchResume,
   "ssf:pane-input": paneInput,
-  "ssf:open-pane": openPane,
   "ssf:agents": (message) => listing(message, "agents"),
   "ssf:models": (message) =>
     listing(message, `models/${encodeURIComponent(message.harness)}`),

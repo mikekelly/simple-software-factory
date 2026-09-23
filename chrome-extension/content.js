@@ -21,11 +21,12 @@
 //
 // The one thing it does to a factory is what an item's card offers: the Assign
 // agent form for an item with no agent, and the Actions row -- hand over and
-// release, and Open, which shows the agent's own terminal in a tab of its own --
-// for one that has. Nothing on a card types at an agent: a person speaks to an
-// item's agent by commenting on the item, where the exchange stays. Every write is the
-// service worker's, never this script's, and none of them is retried. Nothing factory-written is ever
-// parsed as HTML: every node is built with textContent.
+// release -- for one that has, with Open at the top of its card, which shows the
+// agent's own terminal over the page (pane-overlay.js). Nothing on a card types
+// at an agent: a person speaks to an item's agent by commenting on the item,
+// where the exchange stays. Every write is the service worker's, never this
+// script's, and none of them is retried. Nothing factory-written is ever parsed
+// as HTML: every node is built with textContent.
 (() => {
   if (window.__ssfOverlayInstalled) return;
   window.__ssfOverlayInstalled = true;
@@ -158,9 +159,11 @@
 `;
 
   const sheet = new CSSStyleSheet();
-  // The form's own rules live with it, so the two halves of the overlay cannot
-  // drift apart.
-  sheet.replaceSync(STYLE + (globalThis.ssfWrites?.STYLE ?? ""));
+  // The form's own rules live with it, and Open's with it, so the parts of the
+  // overlay cannot drift apart.
+  sheet.replaceSync(
+    STYLE + (globalThis.ssfWrites?.STYLE ?? "") + (globalThis.ssfPane?.STYLE ?? ""),
+  );
 
   /// The last merged snapshot from the service worker, or null before the
   /// worker has answered. Nothing is rendered from a null snapshot.
@@ -1038,7 +1041,16 @@
       via.append("worked on by the agent on ", itemLink(match.item.origin?.id));
       node.append(named(via, "worked"));
     }
-    node.append(named(stateLine(factory, match, closed), "state"));
+    const lead = stateLine(factory, match, closed);
+    // Open, at the end of the lead line, on the card of an agent that is this
+    // item's own and of a factory that takes writes: the cards that carry the
+    // Actions row.
+    if (match.kind === "agent" && factory.writes !== false) {
+      const session = match.item.owner ?? match.item.origin?.id;
+      const open = globalThis.ssfPane?.button(factory.url, session, match.item.pane_input === true);
+      if (open) lead.append(open);
+    }
+    node.append(named(lead, "state"));
     const stack = stackLine(match.item);
     if (stack) node.append(named(element("div", "ssf-stack", stack), "stack"));
     const message = messageBlock(name, factory, match);
