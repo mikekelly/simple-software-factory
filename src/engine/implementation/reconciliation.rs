@@ -500,6 +500,7 @@ impl Engine {
             }
         }
 
+        self.forget_abandoned(repo, &present);
         self.prune_ignored(repo, owner, name, &present).await;
 
         // Only trust the ETags when every item was handled; otherwise the next
@@ -582,6 +583,54 @@ impl Engine {
             .is_none_or(|at| !at.stands(fresh, triggers))
     }
 
+    /// Forget the records of items that answer to nothing and are on no
+    /// listing (#409).
+    ///
+    /// Such a record is written before the daemon knows who acts on an
+    /// item, so one that never got a session onto it -- an item ignored at
+    /// creation, an onboarding that failed before binding, a bind whose
+    /// delivery never landed -- is left behind when the item closes or
+    /// merges and drops off every listing. Nothing visits it after that:
+    /// only a session (`retire_issue`), a subscriber
+    /// (`watch_subscribed`) or a workspace (a release) would, and it has
+    /// none of those, so it would go on reading `open` in `ssf status`,
+    /// `ssf peers` and the dashboard for ever.
+    ///
+    /// One that still has its ignore record is left to [`Self::prune_ignored`],
+    /// whose clock only forgets it once GitHub says the item is closed or
+    /// gone: that clock is what keeps a listing that came back short from
+    /// putting the item through onboarding again (issue #138). A record
+    /// without one gives up nothing by going early -- the item is looked at
+    /// whenever it next appears on a changed listing either way.
+    pub(in crate::engine) fn forget_abandoned(
+        &mut self,
+        repo: &RepoConfig,
+        present: &BTreeSet<u64>,
+    ) {
+        let abandoned: Vec<u64> = {
+            let Some(rs) = self.state.repos.get(&repo.name) else {
+                return;
+            };
+            rs.issues
+                .values()
+                .filter(|st| {
+                    st.answers_to_nothing()
+                        && !present.contains(&st.number)
+                        && !rs.ignored.contains_key(&st.number)
+                })
+                .map(|st| st.number)
+                .collect()
+        };
+        for number in abandoned {
+            info!(
+                repo = repo.name,
+                issue = number,
+                "on no listing and answering to nothing; forgetting its record"
+            );
+            self.state.repo_mut(&repo.name).forget(number);
+        }
+    }
+
     /// Forget the ignore records that have nothing left to guard.
     ///
     /// A record only does anything while its item is on a listing, so an
@@ -605,6 +654,13 @@ impl Engine {
     /// [`ABSENT_LOOKS_PER_PASS`] to a pass, so neither a listing that
     /// flaps nor one that drops a hundred items at once spends a pass or
     /// the rate limit, and every record's turn comes round.
+    ///
+    /// The item record goes with the ignore record when it answers to
+    /// nothing ([`RepoState::forget`]): the item is on no listing by then,
+    /// so `ssf status`, `ssf peers` and the dashboard would otherwise
+    /// advertise a closed or merged item as open for ever (#409). A record
+    /// with a session, a subscriber or a workspace stays, as does one
+    /// whose item is still being ignored.
     pub(in crate::engine) async fn prune_ignored(
         &mut self,
         repo: &RepoConfig,
@@ -663,7 +719,7 @@ impl Engine {
                 hours = ABSENT_GIVE_UP.as_secs() / 3600,
                 "on no listing for hours; giving up its ignore record"
             );
-            self.state.repo_mut(&repo.name).ignored.remove(number);
+            self.state.repo_mut(&repo.name).forget(*number);
             false
         });
 
@@ -706,7 +762,7 @@ impl Engine {
             };
             let rs = self.state.repo_mut(&repo.name);
             if gone {
-                rs.ignored.remove(&number);
+                rs.forget(number);
             } else if let Some(at) = rs.ignored.get_mut(&number) {
                 at.asked_at = Some(now_iso());
             }

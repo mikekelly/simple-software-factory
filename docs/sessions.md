@@ -62,7 +62,12 @@ Some consequences worth knowing:
 - **Unbound items are revisited.** An item left alone is looked at again when it changes
   on GitHub *or* when it appears on another listing, whichever comes first, because an
   assignment can be older than the `updated_at` the item was ignored with. A listing
-  that comes back short is not taken as the item being gone.
+  that comes back short is not taken as the item being gone. Once the item leaves the
+  listings, ssf forgets a record that answers to nothing — no session, no subscriber, no
+  workspace, no prompt ever sent or attempted — instead of keeping it on `open` for
+  ever: a closed or merged item stops showing in `ssf status`, `ssf peers --all` and the
+  dashboard. A record with a session stays, as it does today, for the retirement and the
+  workspace's release.
 - **No cross-repository binding.** An item opened from a session on a different
   repository is never bound to it.
 

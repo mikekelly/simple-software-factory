@@ -65,6 +65,70 @@ async fn a_held_delivery_is_not_a_delivery_and_earns_another_look() {
     assert!(e.failures.is_empty(), "{:?}", e.failures);
 }
 
+/// A delivery that never landed leaves no bind behind. A pull request the
+/// bot opened from a session's branch is bound to that session without
+/// anyone assigning it, and the bind is written before the delivery: a
+/// held mailbox would otherwise leave the item looking, in `ssf status`
+/// and in the state file, like a second record of a session that never
+/// took it, holding that session's workspace -- and, with nothing that
+/// answers to it, reading open for ever once the item closes (#409).
+#[tokio::test]
+async fn a_bind_whose_delivery_never_landed_leaves_nothing_behind() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let (mut e, d) = blocked_setup(&stub, READY_SCREEN);
+    let r = omp_repo();
+    e.cfg.repos = vec![r.clone()];
+    d.with(|s| s.deliver_held = true);
+    let pr = json!({
+        "number": 9, "title": "a follow-up's pull request", "body": "<!-- ssf: origin=o/r#5 -->",
+        "html_url": "https://gh/9", "state": "open", "user": {"login": "bot"},
+        "created_at": "x", "updated_at": "u9", "pull_request": {}
+    });
+    *stub.created.lock().unwrap() = vec![pr.clone()];
+    stub.set_issue(9, pr);
+    stub.set_pull(
+        9,
+        json!({
+            "head": {"ref": "bot/issue-5", "repo": {"full_name": "o/r"}},
+            "base": {"ref": "main"},
+            "requested_reviewers": []
+        }),
+    );
+
+    e.tick_repo(&r).await.unwrap();
+
+    let st = e.entry(&r, 9).clone();
+    assert!(d.log().is_empty(), "nothing may reach a held session");
+    assert!(st.shares_workspace_of.is_none(), "{st:?}");
+    assert!(
+        st.worktree_id.is_none() && st.worktree_path.is_none(),
+        "{st:?}"
+    );
+    assert!(!st.seeded && !st.active, "{st:?}");
+    assert!(
+        e.refetch.contains(&r.name),
+        "the held bind is armed so the next pass tries again"
+    );
+    assert!(
+        e.failures.is_empty(),
+        "a held delivery is not a failure: {:?}",
+        e.failures
+    );
+
+    // Once the hold clears, the same bind lands and the item is the
+    // session's.
+    d.with(|s| s.deliver_held = false);
+    e.tick_repo(&r).await.unwrap();
+    let log = d.log();
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(log[0].starts_with("deliver:w5:"), "{log:?}");
+    let st = e.entry(&r, 9).clone();
+    assert_eq!(st.shares_workspace_of, Some(5));
+    assert_eq!(st.worktree_id.as_deref(), Some("w5"));
+    assert!(st.seeded && st.active, "{st:?}");
+}
+
 /// A session whose mailbox has no live bridge behind it -- the marker was
 /// lost and the poller that repairs it is not running, or the session came up
 /// without the bridge at all -- is not a failing item.  Nothing was published
