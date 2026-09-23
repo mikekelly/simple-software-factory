@@ -29,6 +29,17 @@ const MAX_FAILURES = 3;
 /// The next piece of `text` to send: at most CHUNK characters, never ending
 /// inside an escape sequence, which the pane would read as two keys.
 function nextChunk(text) {
+  // Enter goes on its own: a harness reads a `\r` that arrives in the same
+  // write as text before it as part of a paste, and does not submit. A
+  // bracketed paste is kept whole, since its newlines are meant as text.
+  if (!text.startsWith("\x1b[200~")) {
+    const enter = text.indexOf("\r");
+    if (enter === 0) return "\r";
+    if (enter > 0) text = text.slice(0, enter);
+  } else {
+    const end = text.indexOf("\x1b[201~");
+    if (end >= 0) text = text.slice(0, end + 6);
+  }
   if (text.length <= CHUNK) return text;
   const esc = text.lastIndexOf("\x1b", CHUNK - 1);
   // An escape sequence a terminal sends is short; one that began within
