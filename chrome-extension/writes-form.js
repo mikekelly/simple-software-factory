@@ -26,10 +26,13 @@
 // is not one of them, so turning it off hides the form for that factory here as
 // well as refusing the write in the service worker.
 //
-// Every piece of state lives here rather than in the nodes, because content.js
-// rebuilds what it draws on every GitHub mutation and every snapshot frame. A
-// picker half-way through being chosen, a half-written message or an open
-// confirm step would otherwise be thrown away twice a second.
+// Every piece of state lives here rather than in the nodes. content.js keeps
+// the nodes it has drawn -- a form is not replaced under a picker's open popup
+// or a caret -- but it draws a fresh tree on every GitHub mutation and every
+// snapshot frame, and puts a new node in place wherever a frame's own shape
+// differs, so a redraw must never be the thing that loses what the person was
+// in the middle of: the picker they were choosing from, the message they were
+// writing, the confirm step they had open.
 //
 // Nothing here talks to a factory. The service worker carries every write and
 // the two listings, so the request's Origin is the extension's; this module
@@ -156,9 +159,10 @@
 
   /// The state for one item, one mode and -- for the Actions row, which is drawn
   /// once per factory that has an agent on the item -- one factory, most recent
-  /// last. content.js draws one item at a time and rebuilds its nodes on every
-  /// GitHub mutation, so this map is the only thing that outlives a page; a
-  /// session keeps the items it has visited and forgets the rest.
+  /// last. content.js keeps the nodes it has drawn, but a host is taken off the
+  /// page when the item leaves the snapshot and drawn again when it returns, so
+  /// this map, and not the nodes, is what outlives a page; a session keeps the
+  /// items it has visited and forgets the rest.
   ///
   /// The factory is part of the key because the state is: two rows on one item
   /// write through two factories, and a state they shared would have one row
@@ -585,10 +589,11 @@
     box.rows = 2;
     box.placeholder = "Tell the agent something";
     box.value = state.message;
-    // Kept as it is typed rather than read off the node on every render:
-    // content.js rebuilds these nodes twice a second, and a box holding the
-    // caret would be thrown away with it. A refusal goes as soon as the text it
-    // was about does, so a stale one is never left standing over an empty box.
+    // Kept as it is typed rather than read off the node: a redraw draws from
+    // the state, and a box is written into -- never emptied and retyped -- so
+    // what the person has written survives a frame that has to put a new node
+    // in place. A refusal goes as soon as the text it was about does, so a
+    // stale one is never left standing over an empty box.
     box.addEventListener("input", () => {
       state.message = box.value;
       send.disabled = !canSend(state);

@@ -1802,7 +1802,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         assert!(
             fetch(address, "/secret/dashboard.js")
                 .await
-                .contains("emptyNode.hidden = true")
+                .contains("document.querySelector(\"#cards\")")
         );
         let status = fetch(address, "/secret/api/status").await;
         assert!(status.starts_with("HTTP/1.1 200"));

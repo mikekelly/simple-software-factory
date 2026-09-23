@@ -145,6 +145,12 @@
   /// name -> {more, details}, so a stream that repaints every couple of seconds
   /// cannot collapse what the reader has just opened.
   const opened = new Map();
+  /// name -> whether the last layout pass found the message overflowing its
+  /// two-line clamp. A frame draws the `more` toggle from this, so a frame that
+  /// restates the message does not hide the toggle and have the next pass show
+  /// it again -- the toggle a frame draws and the toggle the page has stay one
+  /// and the same node, saying the same thing.
+  const overflowed = new Map();
   /// The open popover, or null: `{name, key, anchor, entry}`.
   let popover = null;
 
@@ -387,6 +393,105 @@
     const shadow = host.attachShadow({ mode: "open" });
     shadow.adoptedStyleSheets = [sheet];
     return { host, shadow };
+  }
+
+  /// Mark a node as one identity, so the next frame can put what it draws where
+  /// this node is instead of drawing it again: a card is its factory's, and the
+  /// node a person is using -- a picker, a message box -- is its item's,
+  /// whatever else moved around it.
+  function named(node, key) {
+    node.dataset.ssfNode = key;
+    return node;
+  }
+
+  function keyOf(node) {
+    return node.nodeType === 1 ? (node.dataset.ssfNode ?? null) : null;
+  }
+
+  /// Whether a mounted node can hold what a frame asks for: a text node holds
+  /// text, anything else holds a node of its own tag. What it says is `patch`'s
+  /// to write; this only decides whether the node can be kept at all.
+  function holds(mounted, want) {
+    if (mounted.nodeType !== want.nodeType) return false;
+    return want.nodeType === Node.TEXT_NODE || mounted.tagName === want.tagName;
+  }
+
+  /// Draw `wanted` into `parent`, keeping the nodes already there.
+  ///
+  /// Every frame is drawn from scratch and nothing here is a framework: a node
+  /// that must survive a redraw carries `data-ssf-node`, its key, and is
+  /// matched to the mounted node with the same key; the rest pair up in order,
+  /// stepping over the keyed ones. A matched node is written to only where it
+  /// differs from what the frame asks for, so a frame that restates the page
+  /// leaves the tree -- an open picker's own popup, a caret, a scrolled box --
+  /// exactly as it is.
+  function reconcile(parent, wanted) {
+    const mounted = [...parent.childNodes];
+    const keyed = new Map();
+    for (const node of mounted) {
+      const key = keyOf(node);
+      if (key && !keyed.has(key)) keyed.set(key, node);
+    }
+    const kept = new Set();
+    const order = [];
+    let cursor = 0;
+    for (const want of wanted) {
+      const key = keyOf(want);
+      let old = null;
+      if (key) {
+        const found = keyed.get(key);
+        if (found && !kept.has(found) && holds(found, want)) old = found;
+      } else {
+        while (cursor < mounted.length && (keyOf(mounted[cursor]) || kept.has(mounted[cursor]))) {
+          cursor += 1;
+        }
+        if (cursor < mounted.length && holds(mounted[cursor], want)) old = mounted[cursor];
+        cursor += 1;
+      }
+      if (old) {
+        kept.add(old);
+        patch(old, want);
+        order.push(old);
+      } else {
+        order.push(want);
+      }
+    }
+    // Drop what no frame asked for before putting anything in place: a stale
+    // node left among the wanted ones would push every node after it along, and
+    // a node that moves is a node that loses the focus inside it and closes the
+    // picker it holds -- so nothing is moved that does not have to be.
+    for (const node of mounted) {
+      if (!kept.has(node)) node.remove();
+    }
+    let index = 0;
+    for (const node of order) {
+      const at = parent.childNodes[index];
+      if (at !== node) parent.insertBefore(node, at ?? null);
+      index += 1;
+    }
+  }
+
+  /// Write what differs from `want` into `mounted`, leaving the node itself --
+  /// and anything the person is doing to it -- where it is.
+  function patch(mounted, want) {
+    if (mounted === want) return;
+    if (want.nodeType === Node.TEXT_NODE) {
+      if (mounted.data !== want.data) mounted.data = want.data;
+      return;
+    }
+    const attributes = new Map();
+    for (const { name, value } of want.attributes) attributes.set(name, value);
+    for (const { name } of [...mounted.attributes]) {
+      if (!attributes.has(name)) mounted.removeAttribute(name);
+    }
+    for (const [name, value] of attributes) {
+      if (mounted.getAttribute(name) !== value) mounted.setAttribute(name, value);
+    }
+    reconcile(mounted, [...want.childNodes]);
+    // A box or a picker holds its value as a property rather than an attribute,
+    // and the state map already holds what the person typed or picked: equal
+    // means nothing is written, and the caret stays where they left it.
+    if ("value" in mounted && mounted.value !== want.value) mounted.value = want.value;
   }
 
   function ago(time) {
@@ -695,11 +800,14 @@
     const key = `${name}|${factory.url}`;
     const flags = opened.get(key) ?? {};
     const wrap = element("div", "ssf-said");
+    // Where `measure` finds this block's own answer again: whether the message
+    // overflows the clamp is a fact about the layout, not about the frame.
+    wrap.ssfKey = key;
     const body = element("div", "ssf-message", message);
     body.dataset.clamped = String(!flags.more);
     const more = element("button", "ssf-more", flags.more ? "less" : "more");
     more.type = "button";
-    more.hidden = !flags.more;
+    more.hidden = !flags.more && overflowed.get(key) !== true;
     more.setAttribute("aria-expanded", String(Boolean(flags.more)));
     more.addEventListener("click", (event) => {
       event.preventDefault();
@@ -755,13 +863,13 @@
     if (match.kind === "additional") {
       const via = element("div", "ssf-via");
       via.append("worked on by the agent on ", itemLink(match.item.origin?.id));
-      node.append(via);
+      node.append(named(via, "worked"));
     }
-    node.append(stateLine(factory, match, closed));
+    node.append(named(stateLine(factory, match, closed), "state"));
     const stack = [match.item.harness, match.item.model].filter(Boolean).join(" · ");
-    if (stack) node.append(element("div", "ssf-stack", stack));
+    if (stack) node.append(named(element("div", "ssf-stack", stack), "stack"));
     const message = messageBlock(name, factory, match);
-    if (message) node.append(message);
+    if (message) node.append(named(message, "said"));
     const also = (match.item.additional ?? []).filter((issue) => issue?.id);
     if (match.kind === "agent" && also.length) {
       const line = element("div", "ssf-also");
@@ -770,14 +878,14 @@
         if (index) line.append(" ");
         line.append(itemLink(issue.id));
       });
-      node.append(line);
+      node.append(named(line, "also"));
     }
     // A factory that never answered has nothing to report about this item, and
     // neither has one with no record of it: there is no tool call, branch,
     // workspace or session to read "not reported" beside, and four rows of it
     // would be noise around the one thing the card offers.
     if (match.kind !== "unreadable" && match.kind !== "assignable") {
-      node.append(detailsBlock(name, factory, match));
+      node.append(named(detailsBlock(name, factory, match), "details"));
     }
     return node;
   }
@@ -785,9 +893,10 @@
   /// An item's writes for `itemKey`, on the card of the factory they belong to:
   /// the Assign agent form where it may be started, the note that says what
   /// frees an item ssf already holds a workspace for, and an Actions row on the
-  /// card of each factory that has an agent on the item. This is a fresh node
-  /// per call, from the module's own state, so the card and an open popover each
-  /// get their own and neither moves the other's out of the tree.
+  /// card of each factory that has an agent on the item. The nodes are drawn
+  /// fresh per call -- the card and an open popover each get their own -- and
+  /// marked with one key, `writes`, so the frame after this one writes into the
+  /// form already on screen rather than drawing a second one.
   ///
   /// `itemKey` is the item the card is *about*: for a pull request page that is
   /// the issue its body closes, not the pull request, so the write acts on the
@@ -800,7 +909,7 @@
     // whether or not another factory's card carries the note.
     for (const match of matches.filter(held)) {
       cards[matches.indexOf(match)]?.append(
-        element("p", "ssf-hold", "Has a workspace; release it first."),
+        named(element("p", "ssf-hold", "Has a workspace; release it first."), "hold"),
       );
     }
     const [repo, number] = itemKey.split("#");
@@ -815,7 +924,7 @@
         number: where,
         item: match.item,
       });
-      if (row) cards[matches.indexOf(match)]?.append(row);
+      if (row) cards[matches.indexOf(match)]?.append(named(row, "writes"));
     }
     // The Assign agent form goes where a session can still be started: a card
     // with no agent, with nothing in the way. A card that carries a row is one
@@ -836,7 +945,7 @@
     });
     if (!form) return section;
     const card = cards[matches.indexOf(assignableMatches[0])] ?? section;
-    card.append(form);
+    card.append(named(form, "writes"));
     return section;
   }
 
@@ -858,24 +967,33 @@
     const label = (snapshot?.factories?.length ?? 0) > 1;
     let first = true;
     for (const match of matches) {
-      const node = card(name, match.factory, match, closed);
-      if (first && forLabel) node.prepend(element("div", "ssf-via", `for ${forLabel}`));
+      // A card is its factory's: an item that gains an agent keeps the node it
+      // had, and the form in it is patched into the row that replaces it.
+      const node = named(card(name, match.factory, match, closed), `card:${match.factory.url}`);
+      if (first && forLabel) {
+        node.prepend(named(element("div", "ssf-via", `for ${forLabel}`), "for"));
+      }
       if (label || match.kind === "assignable") {
-        node.prepend(element("div", "ssf-via", match.factory.label));
+        node.prepend(named(element("div", "ssf-via", match.factory.label), "via"));
       }
       first = false;
       section.append(node);
     }
     for (const factory of unreadable) {
-      const node = card(name, factory, {
-        factory,
-        item: { agent_state: "" },
-        kind: "unreadable",
-      });
+      const node = named(
+        card(name, factory, {
+          factory,
+          item: { agent_state: "" },
+          kind: "unreadable",
+        }),
+        `card:${factory.url}`,
+      );
       // Always named: which factory could not be read is the whole point of the
       // card, and it is the only card when that factory is the only one.
-      node.prepend(element("div", "ssf-via", factory.label));
-      if (first && forLabel) node.prepend(element("div", "ssf-via", `for ${forLabel}`));
+      node.prepend(named(element("div", "ssf-via", factory.label), "via"));
+      if (first && forLabel) {
+        node.prepend(named(element("div", "ssf-via", `for ${forLabel}`), "for"));
+      }
       first = false;
       section.append(node);
     }
@@ -912,11 +1030,14 @@
     return node;
   }
 
-  /// Write one entry's content and put it where it belongs. Returns false when
-  /// its place is not on the page yet; the next mutation re-renders.
+  /// Draw one entry's content and put the host where it belongs. Returns false
+  /// when its place is not on the page yet; the next mutation re-renders.
   ///
-  /// The placement is a no-op when nothing moved, so the script's own writes do
-  /// not feed the observer that drives it.
+  /// The frame is drawn from scratch and reconciled into what is already there,
+  /// so a frame that says what the page already says writes nothing at all --
+  /// which is where an open picker and a caret survive it -- and the placement
+  /// below is a no-op when nothing moved: neither feeds the observer that
+  /// drives this.
   function update(entry, want) {
     const closed = want.closed === true;
     // What a click on this chip reads when it opens its popover: the same
@@ -930,15 +1051,17 @@
             closed,
           })
         : chip(want.name, want.matches, closed);
-    entry.shadow.replaceChildren(body);
-    // The item's writes are drawn after the cards, into the card they belong
-    // to: the Assign agent form, or the Actions row.
-    if (want.anchor === null) withWrites(entry.shadow, want.matches, want.key);
+    // The item's writes are drawn into the card they belong to, in the same
+    // tree and before it is put in the page: the Assign agent form, or the
+    // Actions row. Drawing them into this frame's own tree is what lets the
+    // reconcile below keep the nodes of a form already on screen.
+    if (want.anchor === null) withWrites(body, want.matches, want.key);
+    reconcile(entry.shadow, [body]);
     let placed = false;
     if (want.anchor === null) {
       const slot = sidebar();
       if (!slot) return false;
-      entry.host.dataset.ssfSlot = slot.slot;
+      if (entry.host.dataset.ssfSlot !== slot.slot) entry.host.dataset.ssfSlot = slot.slot;
       // Above Assignees; at the top when the page has no Assignees section.
       if (entry.host.parentElement !== slot.parent) slot.parent.prepend(entry.host);
       if (slot.before && slot.before.previousElementSibling !== entry.host) {
@@ -959,15 +1082,20 @@
     return placed;
   }
 
-  /// Show a `more` toggle only where the trimmed message really is clipped.
+  /// Show a `more` toggle only where the trimmed message really is clipped, and
+  /// keep what layout said against the block's own key: a frame after this one
+  /// draws the toggle the way it is, so the button is not hidden on every frame
+  /// and shown again here.
   function measure(entry) {
     for (const wrap of entry.shadow.querySelectorAll(".ssf-said")) {
       const message = wrap.querySelector(".ssf-message");
       const more = wrap.querySelector(".ssf-more");
       if (!more || !message) continue;
-      more.hidden =
+      const over =
         message.dataset.clamped === "true" &&
-        message.scrollHeight <= message.clientHeight + 1;
+        message.scrollHeight > message.clientHeight + 1;
+      if (wrap.ssfKey) overflowed.set(wrap.ssfKey, over);
+      if (more.hidden !== !over) more.hidden = !over;
     }
   }
 
@@ -1068,14 +1196,14 @@
       closed,
     });
     // A message too tall for the popover scrolls inside it, and the stream
-    // repaints every couple of seconds: without this, the reader's place at the
-    // end of a long message -- where the `less` toggle is -- would jump back to
-    // the top under them.
+    // repaints every couple of seconds: the popover node is kept where it is,
+    // so its scroll is too, and this is only for the frame that had to draw a
+    // different one.
     const previous = popover.entry.shadow.querySelector(".ssf-popover");
     const scrolled = previous ? previous.scrollTop : 0;
-    popover.entry.shadow.replaceChildren(body);
-    withWrites(popover.entry.shadow, matches, popover.key, closed);
-    body.scrollTop = scrolled;
+    withWrites(body, matches, popover.key);
+    reconcile(popover.entry.shadow, [body]);
+    if (body.scrollTop !== scrolled) body.scrollTop = scrolled;
     measure(popover.entry);
     placePopover();
   }
@@ -1087,14 +1215,17 @@
     const { host } = popover.entry;
     const anchor = popover.anchor.getBoundingClientRect();
     const box = host.getBoundingClientRect();
-    const left = Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8));
+    const left = `${Math.max(8, Math.min(anchor.left, innerWidth - box.width - 8))}px`;
     const below = anchor.bottom + 6;
     const preferred = below + box.height + 8 > innerHeight
       ? anchor.top - box.height - 6
       : below;
-    const top = Math.max(8, Math.min(preferred, innerHeight - box.height - 8));
-    host.style.left = `${left}px`;
-    host.style.top = `${top}px`;
+    const top = `${Math.max(8, Math.min(preferred, innerHeight - box.height - 8))}px`;
+    // The popover keeps its node across frames, so its place usually has not
+    // moved either: writing it identically would be a page mutation on every
+    // frame, and a page mutation is what drives the render this is inside of.
+    if (host.style.left !== left) host.style.left = left;
+    if (host.style.top !== top) host.style.top = top;
   }
 
   function closePopover() {
@@ -1289,8 +1420,10 @@
       closePopover();
       for (const entry of injected.values()) entry.host.remove();
       injected.clear();
-      // What the reader had opened belongs to the page they left.
+      // What the reader had opened belongs to the page they left, and so does
+      // what the last layout pass found.
       opened.clear();
+      overflowed.clear();
     }
     scheduleRender();
   }

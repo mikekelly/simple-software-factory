@@ -332,11 +332,14 @@ forward, and keep tailnet ACLs restrictive.
   scripts, one factory's failure never affecting another's.
 - The **content script** on `https://github.com/*` renders from that snapshot,
   re-rendering on GitHub's client-side navigation and DOM updates without
-  duplicating what it has already drawn. What the reader has opened — the full
-  last message, the Details section, an open popover — survives those
-  re-renders rather than collapsing under a stream that repaints every couple of
-  seconds. Every node is built with `textContent` and lives in a shadow root, so
-  no factory text is ever parsed as HTML and no GitHub style leaks in.
+  duplicating what it has already drawn. A frame is drawn from scratch and
+  reconciled into what is already on the page: nodes that did not change are
+  left where they are, so the stream repainting every couple of seconds does not
+  replace what the reader is holding — a picker keeps its open list and a box
+  keeps its caret, and what the reader has opened (the full last message, the
+  Details section, an open popover) stays open rather than collapsing. Every
+  node is built with `textContent` and lives in a shadow root, so no factory
+  text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`,
   `api/message`, `api/agents` and `api/models/<harness>`. A factory accepts a
