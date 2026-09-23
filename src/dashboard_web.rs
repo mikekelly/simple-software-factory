@@ -28,6 +28,26 @@ const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
 /// doing may still land.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 const KEEPALIVE: Duration = Duration::from_secs(25);
+/// How often a pane mirror reads its pane while someone is watching it: four
+/// times a second, measured on #414 at a few percent of a core per pane.
+const MIRROR_INTERVAL_MS: &str = "250";
+/// Longest session id a pane route takes: `owner/repo#N` or `owner/repo~id`,
+/// with room for GitHub's longest names.
+const MAX_SESSION: usize = 256;
+/// Panes read at once: each is a process reading herdr four times a second.
+const MAX_MIRRORS: usize = 16;
+
+/// The pane mirrors being watched, by session: one reader per pane however
+/// many viewers it has, started by the first and stopped with the last. The
+/// value is the SSE frame to send next, or `None` before the first read.
+type Mirrors = std::sync::Arc<
+    std::sync::Mutex<
+        std::collections::HashMap<
+            String,
+            std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
+        >,
+    >,
+>;
 
 /// The latest status snapshot, or the error that prevented loading one.
 type Latest = tokio::sync::watch::Receiver<Option<std::result::Result<Value, String>>>;
@@ -228,17 +248,30 @@ async fn serve(
     let host: std::sync::Arc<str> = listener.local_addr()?.to_string().into();
     let token: std::sync::Arc<str> = token.into();
     let client: std::sync::Arc<PathBuf> = client.into();
+    let mirrors = Mirrors::default();
     loop {
         let (stream, _) = listener.accept().await?;
-        let (host, token, latest, client) =
-            (host.clone(), token.clone(), latest.clone(), client.clone());
+        let (host, token, latest, client, mirrors) = (
+            host.clone(),
+            token.clone(),
+            latest.clone(),
+            client.clone(),
+            mirrors.clone(),
+        );
         // Each connection gets its own task so a long-lived event stream
         // does not stop the listener from answering anyone else.
-        tokio::spawn(async move { handle(stream, &host, &token, latest, &client).await });
+        tokio::spawn(async move { handle(stream, &host, &token, latest, &client, &mirrors).await });
     }
 }
 
-async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Latest, client: &Path) {
+async fn handle(
+    mut stream: TcpStream,
+    host: &str,
+    token: &str,
+    mut latest: Latest,
+    client: &Path,
+    mirrors: &Mirrors,
+) {
     let request = timeout(REQUEST_TIMEOUT, read_request(&mut stream)).await;
     let routed = match &request {
         Ok(Ok(request)) => classify(request, host, token),
@@ -249,6 +282,16 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
             // Ends quietly when the client goes away or the daemon stops.
             events(&mut stream, &mut latest, KEEPALIVE, REQUEST_TIMEOUT).await;
             return;
+        }
+        Ok(Routed::Read(relative)) if relative.starts_with("api/pane/") => {
+            match pane_session(&relative["api/pane/".len()..]) {
+                Ok(session) => {
+                    let mut frames = mirror(mirrors, &session, client);
+                    pane_events(&mut stream, &mut frames, KEEPALIVE, REQUEST_TIMEOUT).await;
+                    return;
+                }
+                Err(answer) => answer,
+            }
         }
         Ok(Routed::Read(relative)) => read(relative, &mut latest, client).await,
         Ok(Routed::Write(accepted)) => write(&mut stream, accepted, client).await,
@@ -290,6 +333,10 @@ async fn write(
         Route::Assign => assign(&body, &write, client).await,
         Route::Handover => handover(&body, &write, client).await,
         Route::Release => release(&body, &write, client).await,
+        Route::Scratch => scratch(&body, &write, client).await,
+        Route::ScratchRelease => scratch_release(&body, &write, client).await,
+        Route::ScratchResume => scratch_resume(&body, &write, client).await,
+        Route::PaneInput => pane_input(&body, &write, client).await,
     }
 }
 
@@ -482,6 +529,485 @@ async fn release(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'stati
     )
 }
 
+/// `POST api/scratch`: `ssf scratch create`'s own request, answered with its
+/// `--json` result. Shared without `for`; that GitHub user's with it.
+async fn scratch(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
+    let request: ScratchRequest = match parse(body, "scratch") {
+        Ok(request) => request,
+        Err(answer) => return answer,
+    };
+    if let Some(login) = &request.r#for
+        && !is_login(login)
+    {
+        return bad("for must be a GitHub login");
+    }
+    tracing::info!(
+        origin = write.origin,
+        repo = request.repo,
+        harness = request.harness,
+        model = request.model.as_deref().unwrap_or(""),
+        effort = request.effort.as_deref().unwrap_or(""),
+        owner_login = request.r#for.as_deref().unwrap_or(""),
+        "web API scratch create"
+    );
+    carry(
+        client,
+        crate::ipc::Request::ScratchCreate {
+            repo: request.repo,
+            harness: request.harness,
+            model: request.model,
+            effort: request.effort,
+            owner_login: request.r#for,
+        },
+        "the scratch request",
+    )
+    .await
+}
+
+/// `POST api/scratch/release`: kill a scratch session -- `ssf release` for it,
+/// with the same checks. Unlike an item's release this one can be forced,
+/// because a scratch session's workspace is all there is of it and the person
+/// who made it is the one who says it can go: a refusal answers `409` with the
+/// daemon's whole answer (the `check` included), so the overlay can show what
+/// would be lost and ask again, and only a second, explicit request carries
+/// `force`.
+async fn scratch_release(
+    body: &[u8],
+    write: &Write<'_>,
+    client: &Path,
+) -> (u16, &'static str, String) {
+    let request: ScratchReleaseRequest = match parse(body, "scratch release") {
+        Ok(request) => request,
+        Err(answer) => return answer,
+    };
+    if crate::origin::Scratch::parse(&request.session).is_none() {
+        return bad("session must be a scratch session, owner/repo~id");
+    }
+    tracing::info!(
+        origin = write.origin,
+        session = request.session,
+        force = request.force,
+        "web API scratch release"
+    );
+    let (status, kind, body) = carry(
+        client,
+        crate::ipc::Request::Release {
+            session: request.session,
+            force: request.force,
+        },
+        "the release request",
+    )
+    .await;
+    if status != 200 {
+        return (status, kind, body);
+    }
+    let mut answer: Value = match serde_json::from_str(&body) {
+        Ok(answer) => answer,
+        Err(error) => {
+            return failure(
+                None,
+                format!("the release answer could not be read: {error}"),
+            );
+        }
+    };
+    if answer.get("released").and_then(Value::as_bool) == Some(true) {
+        return (status, kind, body);
+    }
+    let session = answer.get("session").and_then(Value::as_str).unwrap_or("?");
+    let path = answer.get("path").and_then(Value::as_str).unwrap_or("");
+    let problems: Vec<&str> = answer
+        .pointer("/check/problems")
+        .and_then(Value::as_array)
+        .map(|problems| problems.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let message = crate::cli::release_refused_text(session, path, &problems);
+    answer["error"] = message.into();
+    (409, "application/json", answer.to_string())
+}
+
+/// `POST api/scratch/resume`: `ssf scratch resume` for a killed scratch
+/// session.
+async fn scratch_resume(
+    body: &[u8],
+    write: &Write<'_>,
+    client: &Path,
+) -> (u16, &'static str, String) {
+    let request: SessionRequest = match parse(body, "scratch resume") {
+        Ok(request) => request,
+        Err(answer) => return answer,
+    };
+    if crate::origin::Scratch::parse(&request.session).is_none() {
+        return bad("session must be a scratch session, owner/repo~id");
+    }
+    tracing::info!(
+        origin = write.origin,
+        session = request.session,
+        "web API scratch resume"
+    );
+    carry(
+        client,
+        crate::ipc::Request::ScratchResume {
+            session: request.session,
+        },
+        "the resume request",
+    )
+    .await
+}
+
+/// `POST api/pane/input`: type into a session's agent pane, from the pane
+/// mirror's terminal. `text` is what the terminal sent (Enter, Backspace and
+/// the arrows as the bytes a terminal sends for them); `keys` are named keys
+/// herdr presses (`enter`, `ctrl+c`).
+async fn pane_input(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
+    let request: PaneInputRequest = match parse(body, "pane input") {
+        Ok(request) => request,
+        Err(answer) => return answer,
+    };
+    if !is_session(&request.session) {
+        return bad("session must be owner/repo#N or owner/repo~id");
+    }
+    // Whether an item's pane takes typing is the factory's setting
+    // (`item_pane_input`, off by default: #439), decided where the config
+    // is -- in the guest, for a factory in a VM -- by `ssf __pane send`.
+    if request
+        .text
+        .as_deref()
+        .is_some_and(|text| text.contains('\0'))
+    {
+        return bad("text cannot carry a NUL byte");
+    }
+    if !request.keys.iter().all(|key| is_key(key)) {
+        return bad("keys are key names such as enter, esc or ctrl+c");
+    }
+    let text = request.text.filter(|text| !text.is_empty());
+    if text.is_none() && request.keys.is_empty() {
+        return bad("nothing to type: give text or keys");
+    }
+    // What was typed is not logged: it is the person's, and may be a secret
+    // they were asked for.
+    tracing::debug!(
+        origin = write.origin,
+        session = request.session,
+        chars = text.as_deref().map(|t| t.chars().count()).unwrap_or(0),
+        keys = request.keys.len(),
+        "web API pane input"
+    );
+    let mut args = vec!["__pane".to_string(), "send".into(), request.session];
+    if let Some(text) = text {
+        // One argument, `=`-joined, so text that starts with a dash is text.
+        args.push(format!("--text={text}"));
+    }
+    for key in request.keys {
+        args.push(format!("--key={key}"));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match ask(client, &args, WRITE_TIMEOUT).await {
+        Ok(output) if output.status.success() => {
+            (200, "application/json", json!({"sent": true}).to_string())
+        }
+        Ok(output) if output.status.code() == Some(crate::pane::INPUT_REFUSED) => {
+            bad(client_error(&output, "the input"))
+        }
+        Ok(output) => failure(
+            Some(crate::ipc::RefusalKind::Conflict),
+            client_error(&output, "the input"),
+        ),
+        Err(error) => failure_of(&error),
+    }
+}
+
+/// A GitHub login: letters, digits and single hyphens, as GitHub allows.
+fn is_login(login: &str) -> bool {
+    !login.is_empty()
+        && login.len() <= 39
+        && login
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// A key name herdr presses: `enter`, `esc`, `ctrl+c`, `f5`.
+fn is_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.len() <= 32
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+}
+
+/// A session id a route takes: an item's (`owner/repo#N`) or a scratch
+/// session's (`owner/repo~id`).
+fn is_session(session: &str) -> bool {
+    session.len() <= MAX_SESSION
+        && (crate::origin::Origin::parse(session).is_some()
+            || crate::origin::Scratch::parse(session).is_some())
+}
+
+/// The session a pane stream names, percent-decoded (`#` cannot be in a URL
+/// path as itself), or the `400` for one that is not a session.
+fn pane_session(encoded: &str) -> std::result::Result<String, (u16, &'static str, String)> {
+    // Named as ssf names it, so two spellings of one session share a reader.
+    percent_decode(encoded)
+        .filter(|session| session.len() <= MAX_SESSION)
+        .and_then(|session| {
+            crate::origin::Scratch::parse(&session)
+                .map(|s| s.to_string())
+                .or_else(|| crate::origin::Origin::parse(&session).map(|o| o.to_string()))
+        })
+        .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))
+}
+
+/// `%XX`-decoding of a path segment, or `None` for one that is not valid
+/// UTF-8 or carries a broken escape.
+fn percent_decode(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = std::str::from_utf8(bytes.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// A viewer of `session`'s pane: the running mirror's frames, or a mirror
+/// started for this viewer. The map is only touched under its lock, and a
+/// mirror leaves it under the same lock, so a viewer never joins a mirror
+/// that is on its way out.
+fn mirror(
+    mirrors: &Mirrors,
+    session: &str,
+    client: &Path,
+) -> tokio::sync::watch::Receiver<Option<String>> {
+    let mut map = mirrors
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(sender) = map.get(session) {
+        return sender.subscribe();
+    }
+    if map.len() >= MAX_MIRRORS {
+        // The sender goes at once, so the viewer gets this frame and the end.
+        let (_, frames) = tokio::sync::watch::channel(Some(error_frame(&format!(
+            "{MAX_MIRRORS} panes are already being watched; close one and try again"
+        ))));
+        return frames;
+    }
+    let (sender, frames) = tokio::sync::watch::channel(None);
+    let sender = std::sync::Arc::new(sender);
+    map.insert(session.to_string(), sender.clone());
+    let command = match mirror_command(client, session) {
+        Ok(command) => Some(command),
+        Err(error) => {
+            sender.send_replace(Some(error_frame(&format!("{error:#}"))));
+            None
+        }
+    };
+    tokio::spawn(run_mirror(
+        mirrors.clone(),
+        session.to_string(),
+        sender,
+        command,
+    ));
+    frames
+}
+
+/// `ssf __pane watch <session>`, through the status stream's own transport.
+fn mirror_command(client: &Path, session: &str) -> Result<tokio::process::Command> {
+    Ok(crate::dashboard_transport::local_client_command(
+        client,
+        &[
+            "__pane",
+            "watch",
+            session,
+            "--interval-ms",
+            MIRROR_INTERVAL_MS,
+        ],
+        crate::server_catalog::service_local_context(),
+        crate::server_catalog::selected_vm_context()?.as_ref(),
+        crate::server_catalog::selected_target_identity()?.as_ref(),
+    ))
+}
+
+/// One pane's reader: runs the watch while anyone is looking, passing on each
+/// frame it prints (it prints one only when the screen changed), and stops it
+/// -- the child goes with the command -- once the last viewer has gone.
+async fn run_mirror(
+    mirrors: Mirrors,
+    session: String,
+    sender: std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
+    command: Option<tokio::process::Command>,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let leave = |mirrors: &Mirrors| {
+        let mut map = mirrors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if map
+            .get(&session)
+            .is_some_and(|held| std::sync::Arc::ptr_eq(held, &sender))
+        {
+            map.remove(&session);
+        }
+    };
+    let Some(mut command) = command else {
+        leave(&mirrors);
+        return;
+    };
+    // A group of its own, so that stopping it stops everything it started:
+    // with the factory in a VM the client is a wrapper around ssh, and the
+    // watch runs in the guest behind it.
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .process_group(0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            sender.send_replace(Some(error_frame(&format!(
+                "could not start the pane reader: {error}"
+            ))));
+            leave(&mirrors);
+            return;
+        }
+    };
+    let group = child.id();
+    // Read as it comes, so a chatty reader cannot fill the pipe and stall;
+    // the start of it is what says why a reader stopped.
+    let mut stderr = child.stderr.take().expect("piped");
+    let mut stderr = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while let Ok(read @ 1..) = stderr.read(&mut buffer).await {
+            let room = 4096usize.saturating_sub(kept.len());
+            kept.extend_from_slice(&buffer[..read.min(room)]);
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    });
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().expect("piped")).lines();
+    loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                // The watch's heartbeat.
+                Ok(Some(line)) if line.is_empty() => {}
+                Ok(Some(line)) => {
+                    let frame = pane_frame(&line);
+                    sender.send_if_modified(|last| {
+                        if last.as_deref() == Some(frame.as_str()) {
+                            return false;
+                        }
+                        *last = Some(frame);
+                        true
+                    });
+                }
+                _ => {
+                    // A watch that ended on an error said it as its last
+                    // frame; one that did not says why here, if anywhere.
+                    let detail = timeout(REQUEST_TIMEOUT, &mut stderr).await;
+                    let detail = detail.ok().and_then(|d| d.ok()).unwrap_or_default();
+                    let detail = detail.trim();
+                    if !detail.is_empty() {
+                        sender.send_replace(Some(error_frame(detail)));
+                    } else if !sender.borrow().as_deref().is_some_and(|f| f.starts_with("event: error")) {
+                        sender.send_replace(Some(error_frame("the pane reader stopped")));
+                    }
+                    break;
+                }
+            },
+            _ = sender.closed() => {
+                // Nobody is watching. A viewer that arrived since holds the
+                // lock to join, so the count is read under it too.
+                let map = mirrors.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                if sender.receiver_count() == 0 {
+                    drop(map);
+                    break;
+                }
+            }
+        }
+    }
+    leave(&mirrors);
+    if let Some(group) = group.and_then(|pid| i32::try_from(pid).ok()) {
+        // SAFETY: a signal to the group this reader was started in.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
+/// A watch line as the frame a viewer gets: `event: screen` with the
+/// `{"screen": …}` object, or `event: error` with the `{"error": …}` one.
+fn pane_frame(line: &str) -> String {
+    match serde_json::from_str::<Value>(line) {
+        Ok(value) if value.get("screen").is_some() => format!("event: screen\ndata: {value}\n\n"),
+        Ok(value) if value.get("error").is_some() => format!("event: error\ndata: {value}\n\n"),
+        _ => error_frame("the pane reader said something that is not a frame"),
+    }
+}
+
+/// Server-sent events for a pane mirror: the latest frame, then each new one,
+/// with a keepalive comment while the screen stands still. Ends when the
+/// viewer goes -- noticed at once, since a viewer is what keeps the pane
+/// being read -- or the mirror stops.
+async fn pane_events(
+    stream: &mut TcpStream,
+    frames: &mut tokio::sync::watch::Receiver<Option<String>>,
+    keepalive: Duration,
+    write_timeout: Duration,
+) {
+    let (mut reader, mut writer) = stream.split();
+    // A viewer sends nothing after its request, so a read that returns is
+    // the viewer going away.
+    let gone = async {
+        let mut byte = [0u8; 1];
+        loop {
+            match reader.read(&mut byte).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
+    };
+    let send = async {
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n{SECURITY_HEADERS}\r\n"
+        );
+        if !write_frame(&mut writer, headers.as_bytes(), write_timeout).await {
+            return;
+        }
+        let mut pending = true;
+        loop {
+            // Only the first frame and then each change is sent: the channel
+            // keeps its value, so a keepalive must not resend the last one.
+            if pending {
+                pending = false;
+                let frame = frames.borrow_and_update().clone();
+                if let Some(frame) = frame
+                    && !write_frame(&mut writer, frame.as_bytes(), write_timeout).await
+                {
+                    return;
+                }
+            }
+            match timeout(keepalive, frames.changed()).await {
+                Ok(Ok(())) => pending = true,
+                // The mirror stopped; its last frame has been sent.
+                Ok(Err(_)) => return,
+                Err(_) => {
+                    if !write_frame(&mut writer, b": keepalive\n\n", write_timeout).await {
+                        return;
+                    }
+                }
+            }
+        }
+    };
+    tokio::select! {
+        () = gone => {}
+        () = send => {}
+    }
+}
+
 /// One write's body as its own request, or the `400` that names what about it
 /// could not be read. An unknown field is refused rather than ignored, so a
 /// misspelled one cannot silently ask for something nobody meant.
@@ -656,7 +1182,11 @@ async fn next_tick(latest: &mut Latest, keepalive: Duration) -> Tick {
 /// Writes one chunk of an event stream, bounded the way the ordinary response
 /// is: a client that stops reading must not pin this task, so the stream ends
 /// instead of blocking on a socket nobody drains. Reports whether to go on.
-async fn write_frame(stream: &mut TcpStream, frame: &[u8], write_timeout: Duration) -> bool {
+async fn write_frame(
+    stream: &mut (impl AsyncWriteExt + Unpin),
+    frame: &[u8],
+    write_timeout: Duration,
+) -> bool {
     matches!(
         timeout(write_timeout, stream.write_all(frame)).await,
         Ok(Ok(()))
@@ -755,15 +1285,22 @@ struct Write<'a> {
 /// the daemon. Nothing else is a write: a route that is not one of these is
 /// `405`, however it is posted.
 ///
-/// There is no route that types at an agent. The three here are the `ssf`
-/// commands that act on an item without being a comment on it -- assign, hand
-/// over and release -- and a client that wants to say something to an agent
-/// says it on the item, where the exchange is part of the item's record (#439).
+/// The item writes are the `ssf` commands that act on an item without being a
+/// comment on it -- assign, hand over and release -- and a client that wants
+/// to say something to an item's agent says it on the item, where the
+/// exchange is part of the item's record (#439). The scratch writes are `ssf
+/// scratch` and the kill of one. The one route that types at an agent is the
+/// pane mirror's input (#414): a terminal on the agent's own pane, the same
+/// thing a person attached to the factory's herdr has, not a message box.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Route {
     Assign,
     Handover,
     Release,
+    Scratch,
+    ScratchRelease,
+    ScratchResume,
+    PaneInput,
 }
 
 /// The body of an assign write: `ssf assign`'s own arguments, with the item
@@ -818,6 +1355,52 @@ struct ReleaseRequest {
     repo: String,
     /// Issue or pull request number.
     number: u64,
+}
+
+/// The body of a scratch create: `ssf scratch create`'s own arguments, with
+/// `for` as `--for`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScratchRequest {
+    /// Watched repository, `owner/name`.
+    repo: String,
+    /// Harness the session runs (`ssf agents` lists the ids).
+    harness: String,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    effort: Option<String>,
+    /// GitHub login of the person the session is for; shared when absent.
+    #[serde(default)]
+    r#for: Option<String>,
+}
+
+/// The body of a scratch kill: the session, and `force` for the second,
+/// explicit request after the checks found work.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScratchReleaseRequest {
+    session: String,
+    #[serde(default)]
+    force: bool,
+}
+
+/// A body that names one session.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionRequest {
+    session: String,
+}
+
+/// The body of a pane input: what to type into the session's agent pane.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PaneInputRequest {
+    session: String,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    keys: Vec<String>,
 }
 
 /// Check one request and say what it is. A read answers on the rules it
@@ -892,6 +1475,10 @@ fn classify<'a>(request: &'a str, host: &str, token: &str) -> std::result::Resul
         "api/assign" => Route::Assign,
         "api/handover" => Route::Handover,
         "api/release" => Route::Release,
+        "api/scratch" => Route::Scratch,
+        "api/scratch/release" => Route::ScratchRelease,
+        "api/scratch/resume" => Route::ScratchResume,
+        "api/pane/input" => Route::PaneInput,
         // A write is only for the write routes, however the request is
         // shaped; every other path under the capability is a read.
         _ => return Err(405),
@@ -1152,6 +1739,10 @@ mod tests {
             ("/secret/api/assign", Route::Assign),
             ("/secret/api/handover", Route::Handover),
             ("/secret/api/release", Route::Release),
+            ("/secret/api/scratch", Route::Scratch),
+            ("/secret/api/scratch/release", Route::ScratchRelease),
+            ("/secret/api/scratch/resume", Route::ScratchResume),
+            ("/secret/api/pane/input", Route::PaneInput),
         ] {
             assert!(
                 matches!(
@@ -1667,10 +2258,353 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         task.abort();
     }
 
-    /// The endpoint has no route that types at an agent: `api/message` was
-    /// removed with the overlay's message box (#439), and a POST to it is a
-    /// path under the capability that is not a write route -- the same `405`
-    /// any other path gets.
+    /// The scratch writes are `ssf scratch create`, `ssf release` and `ssf
+    /// scratch resume`'s own requests. A scratch session has no item number:
+    /// it is named by its session id, and the item routes are not touched.
+    #[tokio::test]
+    async fn the_scratch_writes_run_the_requests_their_commands_send() {
+        let created = json!({"session":"o/r~ab12","poll_interval_secs":10});
+        for (name, path, body, expected) in [
+            (
+                "create",
+                "/secret/api/scratch",
+                json!({"repo":"o/r","harness":"claude","model":"opus","for":"alice"}),
+                crate::ipc::Request::ScratchCreate {
+                    repo: "o/r".into(),
+                    harness: "claude".into(),
+                    model: Some("opus".into()),
+                    effort: None,
+                    owner_login: Some("alice".into()),
+                },
+            ),
+            (
+                "shared",
+                "/secret/api/scratch",
+                json!({"repo":"o/r","harness":"codex"}),
+                crate::ipc::Request::ScratchCreate {
+                    repo: "o/r".into(),
+                    harness: "codex".into(),
+                    model: None,
+                    effort: None,
+                    owner_login: None,
+                },
+            ),
+            (
+                "resume",
+                "/secret/api/scratch/resume",
+                json!({"session":"o/r~ab12"}),
+                crate::ipc::Request::ScratchResume {
+                    session: "o/r~ab12".into(),
+                },
+            ),
+        ] {
+            let client = Client::new(name, &json!({"ok":true,"data":created}).to_string(), 0);
+            let (address, task) = served(&client).await;
+            let response = post_json(address, path, &body.to_string()).await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{name}: {response}");
+            let args = client.args();
+            assert_eq!(&args[..2], ["__client", "__request"], "{name}: {args:?}");
+            assert_eq!(
+                serde_json::from_str::<crate::ipc::Request>(&args[2]).unwrap(),
+                expected,
+                "{name}"
+            );
+            task.abort();
+        }
+    }
+
+    /// Killing a scratch session is two opt-ins when its workspace holds work:
+    /// the first request is never forced and answers `409` with the checks,
+    /// so the overlay can say what would be lost; only a second request that
+    /// says `force` removes it anyway. A clean workspace goes on the first.
+    #[tokio::test]
+    async fn killing_a_scratch_session_with_work_in_it_takes_a_second_request() {
+        let refused = json!({"released":false,"session":"o/r~ab12","path":"/w/s",
+            "check":{"state":"dirty","safe":false,"problems":["1 file is not committed"]}});
+        let client = Client::new("kill", &json!({"ok":true,"data":refused}).to_string(), 0);
+        let (address, task) = served(&client).await;
+        let response = post_json(
+            address,
+            "/secret/api/scratch/release",
+            &json!({"session":"o/r~ab12"}).to_string(),
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 409"), "{response}");
+        let answer: Value =
+            serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(answer["check"]["problems"][0], "1 file is not committed");
+        assert!(
+            answer["error"]
+                .as_str()
+                .unwrap()
+                .contains("1 file is not committed")
+        );
+        assert_eq!(
+            serde_json::from_str::<crate::ipc::Request>(&client.args()[2]).unwrap(),
+            crate::ipc::Request::Release {
+                session: "o/r~ab12".into(),
+                force: false,
+            }
+        );
+        task.abort();
+
+        let released = json!({"released":true,"session":"o/r~ab12","pending":true});
+        let client = Client::new("force", &json!({"ok":true,"data":released}).to_string(), 0);
+        let (address, task) = served(&client).await;
+        let response = post_json(
+            address,
+            "/secret/api/scratch/release",
+            &json!({"session":"o/r~ab12","force":true}).to_string(),
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(
+            serde_json::from_str::<crate::ipc::Request>(&client.args()[2]).unwrap(),
+            crate::ipc::Request::Release {
+                session: "o/r~ab12".into(),
+                force: true,
+            }
+        );
+        task.abort();
+    }
+
+    /// What a scratch or pane write cannot read is refused without asking the
+    /// factory: a force on an item (an item's release is never forced from a
+    /// browser), a login that is not one, a key that is not a key name.
+    #[tokio::test]
+    async fn refuses_scratch_and_pane_bodies_a_route_cannot_read() {
+        let client = Client::new("scratch-unread", "", 0);
+        std::fs::remove_file(client.program()).unwrap();
+        let (address, task) = served(&client).await;
+        for (path, body, needle) in [
+            (
+                "/secret/api/scratch/release",
+                json!({"session":"o/r#7","force":true}),
+                "must be a scratch session",
+            ),
+            (
+                "/secret/api/scratch/resume",
+                json!({"session":"o/r#7"}),
+                "must be a scratch session",
+            ),
+            (
+                "/secret/api/scratch",
+                json!({"repo":"o/r","harness":"claude","for":"not a login"}),
+                "for must be a GitHub login",
+            ),
+            (
+                "/secret/api/scratch",
+                json!({"repo":"o/r","harness":"claude","number":0}),
+                "unknown field",
+            ),
+            (
+                "/secret/api/pane/input",
+                json!({"session":"o/r~ab12","keys":["enter; rm -rf /"]}),
+                "key names",
+            ),
+            (
+                "/secret/api/pane/input",
+                json!({"session":"o/r~ab12"}),
+                "nothing to type",
+            ),
+            (
+                "/secret/api/pane/input",
+                json!({"session":"nonsense","text":"x"}),
+                "session must be",
+            ),
+        ] {
+            let response = post_json(address, path, &body.to_string()).await;
+            assert!(
+                response.starts_with("HTTP/1.1 400"),
+                "{path} {body}: {response}"
+            );
+            assert!(response.contains(needle), "{path} {body}: {response}");
+        }
+        // Input is a write: a page's own origin, or none, is refused before
+        // anything is read.
+        let body = json!({"session":"o/r~ab12","text":"y"}).to_string();
+        for extra in [
+            "Content-Type: application/json\r\n".to_string(),
+            format!("Origin: http://{address}\r\nContent-Type: application/json\r\n"),
+            "Origin: https://github.com\r\nContent-Type: application/json\r\n".to_string(),
+        ] {
+            let response = write(address, "/secret/api/pane/input", &extra, &body).await;
+            assert!(response.starts_with("HTTP/1.1 403"), "{extra}: {response}");
+        }
+        assert!(client.args().is_empty(), "a refused write ran the client");
+        // A pane stream names a session; anything else is refused unread.
+        let response = fetch(address, "/secret/api/pane/nonsense").await;
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        task.abort();
+    }
+
+    /// Typing into a scratch session's pane is `ssf __pane send`, with the text as one
+    /// `--text=` argument so text that starts with a dash is still text.
+    #[tokio::test]
+    async fn pane_input_types_through_the_factorys_client() {
+        let client = Client::new("input", "", 0);
+        let (address, task) = served(&client).await;
+        let body = json!({"session":"o/r~t414","text":"-y\u{1b}[A","keys":["ctrl+c"]}).to_string();
+        let response = post_json(address, "/secret/api/pane/input", &body).await;
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert_eq!(
+            client.args(),
+            [
+                "__client",
+                "__pane",
+                "send",
+                "o/r~t414",
+                "--text=-y\u{1b}[A",
+                "--key=ctrl+c"
+            ]
+        );
+        task.abort();
+    }
+
+    /// An item's pane the factory keeps view-only (`item_pane_input` off,
+    /// decided by `ssf __pane send` where the config is) is the request's
+    /// fault, `400`, in the factory's words -- not a failure to type.
+    #[tokio::test]
+    async fn a_view_only_pane_refuses_typing_as_the_factory_words_it() {
+        let client = Client::new("viewonly", "", 0);
+        std::fs::write(
+            client.program(),
+            "#!/bin/sh\necho \"o/r#7's pane is view-only: speak to an item's agent by commenting on the item\" >&2\nexit 2\n",
+        )
+        .unwrap();
+        let (address, task) = served(&client).await;
+        let body = json!({"session":"o/r#7","text":"y"}).to_string();
+        let response = post_json(address, "/secret/api/pane/input", &body).await;
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(response.contains("commenting on the item"), "{response}");
+        task.abort();
+    }
+
+    /// Reads one pane stream until it has `frames` screen frames, or fails
+    /// the test.
+    async fn screens(address: std::net::SocketAddr, path: &str, frames: usize) -> Vec<String> {
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(request(path, &address.to_string(), "").as_bytes())
+            .await
+            .unwrap();
+        let mut seen = String::new();
+        timeout(Duration::from_secs(10), async {
+            let mut buffer = [0u8; 4096];
+            while seen.matches("event: screen").count() < frames {
+                let read = stream.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "the stream ended: {seen}");
+                seen.push_str(&String::from_utf8_lossy(&buffer[..read]));
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {frames} frames: {seen}"));
+        seen.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Two viewers of one pane share one reader, and a screen that did not
+    /// change is not sent again. When the last viewer goes the reader stops,
+    /// and the next viewer starts a new one.
+    #[tokio::test]
+    async fn one_reader_per_pane_however_many_watch_it() {
+        let client = Client::new("mirror", "", 0);
+        let log = client.root.join("runs");
+        // A reader that prints the same screen twice, then another, and then
+        // waits the way a reader of an idle pane does.
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{log}'\n\
+             echo '{{\"screen\":\"one\"}}'\necho '{{\"screen\":\"one\"}}'\nsleep 0.3\n\
+             echo '{{\"screen\":\"two\"}}'\nexec sleep 30\n",
+            log = log.display()
+        );
+        std::fs::write(client.program(), script).unwrap();
+        let (address, task) = served(&client).await;
+        let path = "/secret/api/pane/o%2Fr~ab12";
+        let (first, second) = tokio::join!(screens(address, path, 2), screens(address, path, 2));
+        for frames in [&first, &second] {
+            assert_eq!(
+                frames.last().map(String::as_str),
+                Some("{\"screen\":\"two\"}"),
+                "{frames:?}"
+            );
+            assert!(
+                !frames.windows(2).any(|pair| pair[0] == pair[1]),
+                "a frame was sent twice: {frames:?}"
+            );
+        }
+        let runs = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(runs.lines().count(), 1, "{runs}");
+        assert_eq!(
+            runs.trim(),
+            "__client __pane watch o/r~ab12 --interval-ms 250"
+        );
+        // Both viewers have gone; the reader goes with them, and a new
+        // viewer starts it again.
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let _ = screens(address, path, 1).await;
+                if std::fs::read_to_string(&log).unwrap().lines().count() == 2 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the reader outlived its last viewer");
+        task.abort();
+    }
+
+    /// Stopping a reader stops everything it started: with the factory in a
+    /// VM the client is a wrapper whose ssh child would otherwise outlive it,
+    /// still reading the pane in the guest.
+    #[tokio::test]
+    async fn a_reader_that_stops_takes_its_children_with_it() {
+        let client = Client::new("group", "", 0);
+        let pid = client.root.join("child");
+        let script = format!(
+            "#!/bin/sh
+sleep 30 &
+echo $! > '{pid}'
+             echo '{{\"screen\":\"one\"}}'
+wait
+",
+            pid = pid.display()
+        );
+        std::fs::write(client.program(), script).unwrap();
+        let (address, task) = served(&client).await;
+        let _ = screens(address, "/secret/api/pane/o%2Fr%7Eab12", 1).await;
+        let child: i32 = std::fs::read_to_string(&pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            // SAFETY: signal 0 only asks whether the process is there.
+            while unsafe { libc::kill(child, 0) } == 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the reader's child outlived its last viewer");
+        task.abort();
+    }
+
+    /// Two spellings of one session are one pane, read once.
+    #[test]
+    fn a_pane_is_named_as_ssf_names_it() {
+        assert_eq!(pane_session("o%2Fr%7Eab12").unwrap(), "o/r~ab12");
+        assert_eq!(pane_session("o%2Fr%237").unwrap(), "o/r#7");
+        assert!(pane_session("nonsense").is_err());
+    }
+
+    /// The endpoint has no message route: `api/message` was removed with the
+    /// overlay's message box (#439), and a POST to it is a path under the
+    /// capability that is not a write route -- the same `405` any other path
+    /// gets. The only input is the pane mirror's terminal (#414), which the
+    /// factory's `item_pane_input` keeps off item sessions by default.
     #[tokio::test]
     async fn there_is_no_route_that_types_at_an_agent() {
         let client = Client::new("gone", "", 0);

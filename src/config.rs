@@ -802,6 +802,13 @@ pub struct DaemonConfig {
     /// and nothing else changes.
     #[serde(default = "default_true")]
     pub event_comments: bool,
+    /// Whether a person may type into an item session's agent pane from the
+    /// web pane mirror (`api/pane/input`), for every repository that does
+    /// not decide for itself. Off, the default: an item's pane is shown
+    /// only, and its agent is spoken to by commenting on the item (#439).
+    /// A scratch session, which has no item, always takes typing.
+    #[serde(default)]
+    pub item_pane_input: bool,
     /// No longer used: a comment whose first line is `/ssf <request>` was
     /// run as a one-shot task on the repository's harness, and the daemon
     /// re-read the item's comments on every attach and resume, so a past
@@ -868,6 +875,7 @@ impl Default for DaemonConfig {
             resume_on_start: true,
             startup_driver_wait_secs: default_startup_driver_wait(),
             event_comments: true,
+            item_pane_input: false,
             slash_commands: None,
             allowed_users: None,
             accepted_anyone_risk: false,
@@ -998,6 +1006,11 @@ pub struct RepoConfig {
     /// not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_comments: Option<bool>,
+    /// Whether this repository's item panes take typing (see
+    /// `DaemonConfig::item_pane_input`); `daemon.item_pane_input` when not
+    /// set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_pane_input: Option<bool>,
     /// No longer used: see `DaemonConfig::slash_commands`. Accepted so old
     /// config files still load; never written back.
     #[serde(default, skip_serializing)]
@@ -1390,6 +1403,12 @@ impl Config {
         repo.event_comments.unwrap_or(self.daemon.event_comments)
     }
 
+    /// Whether a person may type into this repository's item sessions'
+    /// panes: the repository's own say, else the instance's (off).
+    pub fn item_pane_input(&self, repo: &RepoConfig) -> bool {
+        repo.item_pane_input.unwrap_or(self.daemon.item_pane_input)
+    }
+
     /// Settings still in the file that ssf no longer reads, each with what
     /// to say about it, for `ssf doctor`: the daemon's own, and each
     /// repository's.
@@ -1531,13 +1550,17 @@ impl Config {
         write_atomic(path, body.as_bytes(), 0o600)
     }
 
-    /// Resolve the bot token: env var, then config, then a pasted token file,
-    /// then the GitHub CLI's keyring for the signed-in bot account.
+    /// Resolve the bot token: env var, then the file a session's launch
+    /// names (`SSF_GITHUB_TOKEN_FILE`), then config, then a pasted token
+    /// file, then the GitHub CLI's keyring for the signed-in bot account.
     pub fn github_token(&self) -> Result<String> {
         if let Ok(t) = std::env::var("SSF_GITHUB_TOKEN") {
             if !t.trim().is_empty() {
                 return Ok(t.trim().to_string());
             }
+        }
+        if let Some(t) = launch_token() {
+            return Ok(t);
         }
         if let Some(t) = &self.github.token {
             if !t.trim().is_empty() {
@@ -1563,6 +1586,8 @@ impl Config {
     pub fn token_source(&self) -> &'static str {
         if std::env::var("SSF_GITHUB_TOKEN").is_ok_and(|t| !t.trim().is_empty()) {
             "SSF_GITHUB_TOKEN"
+        } else if launch_token().is_some() {
+            "SSF_GITHUB_TOKEN_FILE"
         } else if self
             .github
             .token
@@ -1676,6 +1701,21 @@ pub fn save_token(token: &str) -> Result<PathBuf> {
     }
     write_atomic(&path, format!("{}\n", token.trim()).as_bytes(), 0o600)?;
     Ok(path)
+}
+
+/// The bot token a session's launch handed it in a file
+/// (`SSF_GITHUB_TOKEN_FILE`), rather than on the pane's command line.
+fn launch_token() -> Option<String> {
+    token_in(Path::new(&std::env::var_os("SSF_GITHUB_TOKEN_FILE")?))
+}
+
+/// The token in `path`, or `None` when the file is gone, unreadable or
+/// empty: a launch token a later daemon removed is no token, and the next
+/// source is asked.
+pub(crate) fn token_in(path: &Path) -> Option<String> {
+    let token = std::fs::read_to_string(path).ok()?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
 }
 
 pub fn write_atomic(path: &Path, data: &[u8], mode: u32) -> Result<()> {

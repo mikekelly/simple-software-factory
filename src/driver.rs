@@ -711,6 +711,40 @@ impl Driver {
         }
     }
 
+    /// The visible screen of a terminal with its colours (ANSI), for the web
+    /// pane mirror.
+    pub async fn screen_ansi(&self, handle: &str) -> Result<String> {
+        match self {
+            Driver::Herdr(d) => d.screen_ansi(handle).await,
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.screen(handle).join("\r\n")),
+        }
+    }
+
+    /// Type into a terminal as a person at it would: raw `text`, then named
+    /// `keys` (the web pane mirror's input).
+    pub async fn type_input(
+        &self,
+        handle: &str,
+        text: Option<&str>,
+        keys: &[String],
+    ) -> Result<()> {
+        match self {
+            Driver::Herdr(d) => d.type_input(handle, text, keys).await,
+            #[cfg(test)]
+            Driver::Stub(d) => {
+                d.with(|s| {
+                    s.log.push(format!(
+                        "input:{handle}:{}:{}",
+                        text.unwrap_or(""),
+                        keys.join(" ")
+                    ))
+                });
+                Ok(())
+            }
+        }
+    }
+
     /// Quit the agent in a terminal (a harness stuck on a login prompt,
     /// say) so the next delivery starts it again. The workspace stays.
     pub async fn stop_agent(&self, worktree_id: &str, handle: &str) -> Result<()> {

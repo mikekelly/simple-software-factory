@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>ssf terminal</title>
+    <link rel="stylesheet" href="vendor/xterm/xterm.css" />
+    <link rel="stylesheet" href="terminal.css" />
+  </head>
+  <body>
+    <header>
+      <strong id="session"></strong>
+      <span id="state">connecting…</span>
+      <button id="reconnect" type="button" hidden>Reconnect</button>
+    </header>
+    <main id="screen"></main>
+    <script type="module" src="terminal.js"></script>
+  </body>
+</html>

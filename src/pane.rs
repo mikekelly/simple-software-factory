@@ -1,0 +1,359 @@
+//! The web pane mirror's factory side (#414): `ssf __pane watch` prints a
+//! session's agent pane -- its visible screen with colours -- as JSON lines,
+//! one each time it changes, and `ssf __pane send` types into it.
+//!
+//! These run where the sessions run, as every factory command does: the web
+//! endpoint starts them through the same client transport as its status
+//! stream, which forwards into the guest when the factory is in a VM. They
+//! read the state file and ask the driver directly rather than going through
+//! the daemon, which answers its requests one at a time between passes: a
+//! mirror behind a pass that is talking to GitHub would freeze for as long.
+
+use anyhow::{Context, Result, bail};
+use serde_json::json;
+use std::io::Write;
+use std::time::Duration;
+
+use crate::config::Config;
+use crate::driver::Driver;
+use crate::origin::{Origin, Scratch};
+use crate::state::State;
+
+/// How often a watch looks for the pane again, in reads: a harness that was
+/// started again runs in a new pane, and finding the pane costs a listing of
+/// every agent, which is not worth doing on every read.
+const RELOCATE_EVERY: u32 = 20;
+
+/// How long a watch goes without writing before it writes an empty line.
+/// A watch forwarded into a VM runs behind ssh with no terminal, so the
+/// only way it learns its viewer has gone is a write that fails: an idle
+/// screen would otherwise keep it reading herdr forever.
+const HEARTBEAT: Duration = Duration::from_secs(5);
+
+/// Where a session's agent is: its driver, and the terminal it runs in.
+pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result<(Driver, String)> {
+    let (repo_name, worktree, handle) = if let Some(s) = Scratch::parse(session) {
+        let repo = cfg
+            .repos
+            .iter()
+            .find(|r| r.matches_name(&s.repo))
+            .with_context(|| format!("{} is not a watched repository", s.repo))?;
+        let st = state
+            .repos
+            .get(&repo.name)
+            .and_then(|rs| rs.scratch.get(&s.id))
+            .with_context(|| format!("{session} is not a session ssf knows"))?;
+        (
+            repo.name.clone(),
+            st.worktree_id.clone(),
+            st.terminal_handle.clone(),
+        )
+    } else if let Some(o) = Origin::parse(session) {
+        let repo = cfg
+            .repos
+            .iter()
+            .find(|r| r.matches_name(&o.repo))
+            .with_context(|| format!("{} is not a watched repository", o.repo))?;
+        let issues = &state
+            .repos
+            .get(&repo.name)
+            .with_context(|| format!("{session} is not a session ssf knows"))?
+            .issues;
+        // An item bound to another session's workspace is worked in that
+        // session's pane.
+        let owner = crate::state::owner_in(issues, o.number);
+        let st = issues
+            .get(&owner)
+            .with_context(|| format!("{session} is not a session ssf knows"))?;
+        (
+            repo.name.clone(),
+            st.worktree_id.clone(),
+            st.terminal_handle.clone(),
+        )
+    } else {
+        bail!("{session}: expected owner/repo#N or owner/repo~id");
+    };
+    let worktree = worktree.with_context(|| format!("{session} has no workspace"))?;
+    let repo = cfg
+        .repos
+        .iter()
+        .find(|r| r.name == repo_name)
+        .context("the repository went away")?;
+    let driver = Driver::new(cfg.driver_for(repo), cfg);
+    let pane = driver
+        .live_handle(&worktree, handle.as_deref())
+        .await?
+        .with_context(|| format!("no agent is running in {session}'s workspace"))?;
+    Ok((driver, pane))
+}
+
+/// The lines a watch prints, each only when it differs from the last one:
+/// an idle agent's screen is read four times a second and sent once.
+#[derive(Default)]
+pub(crate) struct Changes {
+    last: Option<String>,
+}
+
+impl Changes {
+    /// `line` when it is not the last one this said, else `None`.
+    pub(crate) fn fresh(&mut self, line: String) -> Option<String> {
+        if self.last.as_deref() == Some(line.as_str()) {
+            return None;
+        }
+        self.last = Some(line.clone());
+        Some(line)
+    }
+}
+
+/// `ssf __pane watch`: the session's screen as `{"screen": …}` lines, or
+/// `{"error": …}` while it cannot be read, until whoever reads stdout goes.
+///
+/// A session whose pane cannot be found is said once and ends the watch,
+/// rather than reloading the config and state four times a second for as
+/// long as someone looks at a pane that is not there.
+pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
+    let cfg = Config::load()?;
+    let mut changes = Changes::default();
+    let mut target: Option<(Driver, String)> = None;
+    let mut reads = 0u32;
+    let mut out = std::io::stdout();
+    let mut written = std::time::Instant::now();
+    loop {
+        if target.is_none() || reads.is_multiple_of(RELOCATE_EVERY) {
+            // The state file is the daemon's; it is read afresh, since a
+            // relaunch records the new pane there.
+            let located = match State::load() {
+                Ok(state) => locate(&cfg, &state, session).await,
+                Err(error) => Err(error),
+            };
+            match located {
+                Ok(found) => target = Some(found),
+                Err(error) => {
+                    emit(
+                        &mut out,
+                        &mut changes,
+                        json!({"error": format!("{error:#}")}),
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
+        reads = reads.wrapping_add(1);
+        if let Some((driver, pane)) = &target {
+            let said = match driver.screen_ansi(pane).await {
+                Ok(screen) => emit(
+                    &mut out,
+                    &mut changes,
+                    json!({"screen": redact_tokens(&screen)}),
+                )?,
+                Err(error) => {
+                    // Found again on the next read, or the watch ends.
+                    target = None;
+                    emit(
+                        &mut out,
+                        &mut changes,
+                        json!({"error": format!("{error:#}")}),
+                    )?
+                }
+            };
+            if said {
+                written = std::time::Instant::now();
+            }
+        }
+        if written.elapsed() >= HEARTBEAT {
+            writeln!(out).context("the reader went away")?;
+            out.flush().context("the reader went away")?;
+            written = std::time::Instant::now();
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+/// `screen` with every GitHub token in it (`ghp_`, `gho_`, `ghs_`, `ghu_`,
+/// `github_pat_` followed by its characters) replaced by `<redacted>`. The
+/// pane is shown in a browser; a token a harness or a command printed is
+/// not something to put there. The launch never prints the bot's (see
+/// `launch_env`); this is for what else may.
+pub(crate) fn redact_tokens(screen: &str) -> String {
+    let body = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut out = String::with_capacity(screen.len());
+    let mut rest = screen;
+    loop {
+        let found = ["ghp_", "gho_", "ghs_", "ghu_", "github_pat_"]
+            .iter()
+            .filter_map(|prefix| rest.find(prefix).map(|at| (at, prefix.len())))
+            .min();
+        let Some((at, prefix)) = found else { break };
+        let tail = &rest[at + prefix..];
+        let len = tail.find(|c: char| !body(c)).unwrap_or(tail.len());
+        // A token has a real body; `ghp_x` in prose is left alone. What
+        // comes before is not looked at: a colour escape (`\x1b[1m`) runs
+        // straight into the token.
+        if len >= 16 {
+            out.push_str(&rest[..at]);
+            out.push_str("<redacted>");
+        } else {
+            out.push_str(&rest[..at + prefix + len]);
+        }
+        rest = &tail[len..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One line, if it says something new, and whether it did. A reader that
+/// has gone is the end of the watch.
+fn emit(out: &mut impl Write, changes: &mut Changes, value: serde_json::Value) -> Result<bool> {
+    let Some(line) = changes.fresh(value.to_string()) else {
+        return Ok(false);
+    };
+    writeln!(out, "{line}").context("the reader went away")?;
+    out.flush().context("the reader went away")?;
+    Ok(true)
+}
+
+/// Exit status of `ssf __pane send` for a pane the factory does not let a
+/// person type into, so the web endpoint can tell it from a failure.
+pub(crate) const INPUT_REFUSED: i32 = 2;
+
+/// What `item_pane_input` says of `session`, or why it may not be typed
+/// into: a scratch session always may; an item's session as its
+/// repository's setting says (#439 keeps it off unless someone turns it on).
+pub(crate) fn input_refusal(cfg: &Config, session: &str) -> Option<String> {
+    if Scratch::parse(session).is_some() {
+        return None;
+    }
+    let origin = Origin::parse(session)?;
+    let repo = cfg.repos.iter().find(|r| r.matches_name(&origin.repo))?;
+    (!cfg.item_pane_input(repo)).then(|| {
+        format!(
+            "{session}'s pane is view-only: speak to an item's agent by commenting on the item \
+             (item_pane_input is off for {})",
+            repo.name
+        )
+    })
+}
+
+/// `ssf __pane send`: type into the session's agent pane. `Ok(Some(why))`
+/// is a pane the configuration keeps view-only; nothing is typed.
+pub(crate) async fn send(
+    session: &str,
+    text: Option<&str>,
+    keys: &[String],
+) -> Result<Option<String>> {
+    let cfg = Config::load()?;
+    if let Some(why) = input_refusal(&cfg, session) {
+        return Ok(Some(why));
+    }
+    let state = State::load()?;
+    let (driver, pane) = locate(&cfg, &state, session).await?;
+    driver.type_input(&pane, text, keys).await?;
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_is_said_once_until_it_changes() {
+        let mut changes = Changes::default();
+        assert_eq!(changes.fresh("a".into()).as_deref(), Some("a"));
+        assert_eq!(changes.fresh("a".into()), None);
+        assert_eq!(changes.fresh("b".into()).as_deref(), Some("b"));
+        assert_eq!(changes.fresh("a".into()).as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn emit_writes_only_what_changed() {
+        let mut changes = Changes::default();
+        let mut out = Vec::new();
+        for screen in ["one", "one", "two", "two", "two"] {
+            emit(&mut out, &mut changes, json!({ "screen": screen })).unwrap();
+        }
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text, "{\"screen\":\"one\"}\n{\"screen\":\"two\"}\n");
+    }
+
+    #[test]
+    fn tokens_are_not_shown() {
+        let screen = "$ SSF_GITHUB_TOKEN='gho_AbCdEf0123456789xyz' ssf launch\r\n\
+                      \x1b[1mghp_0123456789abcdefABCD\x1b[0m github_pat_11ABCDEFG0123456789_abcdefghij";
+        let shown = redact_tokens(screen);
+        assert!(!shown.contains("gho_AbC"), "{shown}");
+        assert!(!shown.contains("ghp_0123"), "{shown}");
+        assert!(!shown.contains("github_pat_11"), "{shown}");
+        assert_eq!(shown.matches("<redacted>").count(), 3, "{shown}");
+        // Prose and short look-alikes stay.
+        assert_eq!(
+            redact_tokens("the ghp_ prefix, ghs_x"),
+            "the ghp_ prefix, ghs_x"
+        );
+    }
+
+    #[test]
+    fn item_panes_take_typing_only_where_the_setting_allows() {
+        let load = |text: &str| -> Config { toml::from_str(text).unwrap() };
+        let repos = "[[repo]]\nname = \"o/on\"\nharness = \"claude\"\nitem_pane_input = true\n\
+                     [[repo]]\nname = \"o/off\"\nharness = \"claude\"\nitem_pane_input = false\n\
+                     [[repo]]\nname = \"o/r\"\nharness = \"claude\"\n";
+        // Off by default; a scratch session always takes typing.
+        let cfg = load(repos);
+        assert!(input_refusal(&cfg, "o/r#7").unwrap().contains("view-only"));
+        assert_eq!(input_refusal(&cfg, "o/r~ab12"), None);
+        // A repository's own say wins either way.
+        assert_eq!(input_refusal(&cfg, "o/on#7"), None);
+        assert!(input_refusal(&cfg, "o/off#7").is_some());
+        // On for the factory: every repository that does not say otherwise.
+        let cfg = load(&format!("[daemon]\nitem_pane_input = true\n{repos}"));
+        assert_eq!(input_refusal(&cfg, "o/r#7"), None);
+        assert_eq!(input_refusal(&cfg, "o/on#7"), None);
+        assert!(input_refusal(&cfg, "o/off#7").is_some());
+    }
+
+    #[tokio::test]
+    async fn locating_names_what_has_no_pane() {
+        let _sandbox = crate::config::test_support::sandbox();
+        let cfg: Config =
+            toml::from_str("[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n").unwrap();
+        let mut state = State::default();
+        let rs = state.repo_mut("o/r");
+        rs.issues.insert(
+            7,
+            crate::state::IssueState {
+                number: 7,
+                shares_workspace_of: Some(3),
+                ..Default::default()
+            },
+        );
+        rs.issues.insert(
+            3,
+            crate::state::IssueState {
+                number: 3,
+                ..Default::default()
+            },
+        );
+        // Without a workspace there is nothing to mirror, whichever item
+        // is named.
+        let error = locate(&cfg, &state, "o/r#7").await.err().unwrap();
+        assert!(
+            format!("{error:#}").contains("has no workspace"),
+            "{error:#}"
+        );
+        let error = locate(&cfg, &state, "o/r~zzzz").await.err().unwrap();
+        assert!(
+            format!("{error:#}").contains("not a session ssf knows"),
+            "{error:#}"
+        );
+        let error = locate(&cfg, &state, "x/y#1").await.err().unwrap();
+        assert!(
+            format!("{error:#}").contains("not a watched repository"),
+            "{error:#}"
+        );
+        let error = locate(&cfg, &state, "nonsense").await.err().unwrap();
+        assert!(
+            format!("{error:#}").contains("expected owner/repo"),
+            "{error:#}"
+        );
+    }
+}

@@ -61,6 +61,7 @@ key).
 | Variable | Effect |
 |----------|--------|
 | `SSF_GITHUB_TOKEN` | the GitHub token to use |
+| `SSF_GITHUB_TOKEN_FILE` | a file holding the GitHub token. Precedence: `SSF_GITHUB_TOKEN`, then this file, then `[github].token`, then the token file `ssf auth login` writes, then the gh keyring; a missing or empty file is skipped. A daemon started with `SSF_GITHUB_TOKEN` hands its sessions the token this way (`launch-token`, mode 0600, in the state directory), so it never appears on a pane's command line; a daemon started without it removes that file at start. If the file cannot be written the daemon warns and the session falls back to `[github].token` or the keyring |
 | `SSF_CONFIG_DIR`, `SSF_STATE_DIR` | where config and state live; a scratch factory uses its own (see [development.md](development.md)) |
 | `SSF_SERVER` | the catalog target or SSH destination to act on |
 | `HERDR_COMMAND` | the herdr CLI |
@@ -187,6 +188,7 @@ instructions = "Run `make test` before opening a PR."
 | `daemon.allowed_users` | the collaborators with push access | GitHub logins whose assignments, mentions, review requests, labels and comments the agents act on (see [Who may drive the factory](#who-may-drive-the-factory)); `["*"]` is anyone and needs `daemon.accepted_anyone_risk = true` |
 | `daemon.accepted_anyone_risk` | `false` | Written next to a `["*"]` list by `ssf config set ... --accept-anyone-risk`; a wildcard without it is refused at load |
 | `daemon.event_comments` | `true` | Post the daemon's essential events on the item as fenced `ssf` blocks: a session attached, resumed, blocked and unblocked, given up on, handed over, its workspace released (see [What ssf says on the item](sessions.md#what-ssf-says-on-the-item)); `false` posts nothing and changes nothing else |
+| `daemon.item_pane_input` | `false` | Let a person type into an item session's agent pane from the web pane mirror (`api/pane/input`, the extension's terminal). Off, an item's pane is view-only and its agent is spoken to by commenting on the item; scratch sessions always take typing (see [the dashboard guide](dashboard.md#write-endpoints)) |
 | `daemon.conflict_check_interval_secs` | `300` | Interval between base fetches and committed-branch conflict checks for active sessions; `0` disables. One fetch per repository, with merge simulations only for changed commit pairs (see [Branch conflicts](sessions.md#branch-conflicts)) |
 | `vm.enabled` | `false` | Run the whole factory inside a VM (see [Inside a VM](vm.md)); `ssf-server` then starts and watches the VM, and daemon-facing client commands run in the guest |
 | `vm.backend` | Firecracker on Linux, lima on macOS | `firecracker` or `lima`: what runs the guest (see [Backends](vm.md#backends-and-host-prerequisites)); unset, `ssf vm build` writes the platform's default here |
@@ -220,6 +222,7 @@ instructions = "Run `make test` before opening a PR."
 | `repo.allowed_users` | `daemon.allowed_users` | Who may drive this repository, replacing the instance list; `[]` is nobody but the bot, `["*"]` needs `accepted_anyone_risk = true` on the repo |
 | `repo.accepted_anyone_risk` | `false` | As `daemon.accepted_anyone_risk`, for a `["*"]` on this repository |
 | `repo.event_comments` | `daemon.event_comments` | Whether the daemon posts its events on this repository's items (`ssf repo set <owner/name> --event-comments false`) |
+| `repo.item_pane_input` | `daemon.item_pane_input` | Whether this repository's item panes take typing from the web pane mirror |
 | `repo.conflict_check_interval_secs` | `daemon.conflict_check_interval_secs` | Conflict-check interval for this repository; `0` disables |
 | `repo.first_prompt_max_events`, `repo.first_prompt_max_chars` | `daemon.first_prompt_max_events`, `daemon.first_prompt_max_chars` | How much of this repository's items' activity a session's first message carries, for repositories whose items differ from the instance's (a spec-heavy issue is not a bug thread); `0` is no limit. File-only, like `repo.conflict_check_interval_secs` |
 | `repo.git.name`, `repo.git.email`, `repo.git.signing_key`, `repo.git.credential` | the `[git]` table | The same four keys for this repository, each overriding its `[git]` counterpart (a `[repo.git]` table under the `[[repo]]`) |

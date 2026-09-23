@@ -57,6 +57,7 @@ pub(super) fn repo_at(config_file: &Path, command: RepoCommand) -> Result<()> {
                 allowed_users: None,
                 accepted_anyone_risk: false,
                 event_comments,
+                item_pane_input: None,
                 slash_commands: None,
                 git: config::GitConfig::default(),
             };

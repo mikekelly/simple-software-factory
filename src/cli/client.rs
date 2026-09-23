@@ -806,6 +806,29 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             // whether the daemon agreed reads the exit status.
             std::process::exit(i32::from(!answer.ok));
         }
+        Command::Pane { command } => match command {
+            PaneCommand::Watch {
+                session,
+                interval_ms,
+            } => {
+                crate::pane::watch(
+                    &session,
+                    std::time::Duration::from_millis(interval_ms.max(50)),
+                )
+                .await
+            }
+            PaneCommand::Send {
+                session,
+                text,
+                keys,
+            } => {
+                if let Some(why) = crate::pane::send(&session, text.as_deref(), &keys).await? {
+                    eprintln!("{why}");
+                    std::process::exit(crate::pane::INPUT_REFUSED);
+                }
+                Ok(())
+            }
+        },
         Command::Server { .. } => bail!("run `ssf server` on the client computer"),
         Command::Setup => setup::run(),
         Command::Auth { command } => auth(command).await,

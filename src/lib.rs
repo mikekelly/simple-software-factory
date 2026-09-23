@@ -24,6 +24,7 @@ mod keys;
 mod login;
 mod models;
 mod origin;
+mod pane;
 mod platform;
 mod prompt;
 mod release;

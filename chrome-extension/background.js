@@ -14,7 +14,8 @@
 // below rebuilds every stream. Nothing here depends on running continuously.
 //
 // This worker also carries every write -- `api/assign`, `api/handover`,
-// `api/release` -- and the listings the forms' pickers need. A factory accepts
+// `api/release`, the scratch writes and the pane mirror's input -- and the
+// listings the forms' pickers need. A factory accepts
 // a write only from an extension origin (docs/dashboard.md), and a content
 // script running on github.com has none, so these are sent from here; the same
 // rule is why the read streams live here too.
@@ -82,6 +83,9 @@ function payload() {
       /// is for. A factory that has not answered yet cannot say, and publishes
       /// none, so nothing is offered on its behalf.
       repositories: entry.snapshot?.repositories ?? [],
+      /// Every scratch session, the killed ones included, which have no card:
+      /// a repository page lists them with Open, Kill and Resume (#414).
+      scratch: entry.snapshot?.scratch ?? [],
     })),
   };
 }
@@ -206,7 +210,9 @@ async function post(entry, path, body) {
     // Not JSON; the raw text is the best description available.
   }
   if (!response.ok) {
-    return { ok: false, error: errorBody(parsed, text, response.status) };
+    // The whole answer rides along: a scratch kill the checks refused carries
+    // them, and that is what the second confirmation is drawn from.
+    return { ok: false, error: errorBody(parsed, text, response.status), body: parsed };
   }
   return { ok: true, result: parsed ?? text };
 }
@@ -286,6 +292,51 @@ async function release(message) {
   return writeTo(message, "release", { repo: message.repo, number: message.number });
 }
 
+/// `api/scratch`: `ssf scratch create` on the repository, shared or -- with
+/// `for` -- the signed-in GitHub user's.
+async function scratch(message) {
+  const body = { repo: message.repo, harness: message.harness };
+  if (message.model) body.model = message.model;
+  if (message.effort) body.effort = message.effort;
+  if (message.for) body.for = message.for;
+  return writeTo(message, "scratch", body);
+}
+
+/// `api/scratch/release`: kill a scratch session. Unforced unless the person
+/// has seen what the checks found and confirmed that it will be lost.
+async function scratchRelease(message) {
+  return writeTo(message, "scratch/release", {
+    session: message.session,
+    force: message.force === true,
+  });
+}
+
+/// `api/scratch/resume`: bring a killed scratch session back.
+async function scratchResume(message) {
+  return writeTo(message, "scratch/resume", { session: message.session });
+}
+
+/// `api/pane/input`: what the pane mirror's terminal typed. A write like any
+/// other, so the factory's Writes switch applies to it too.
+async function paneInput(message) {
+  return writeTo(message, "pane/input", { session: message.session, text: message.text });
+}
+
+/// Open the pane mirror for a session in a tab of its own. The page is the
+/// extension's, so it reads the factory with the extension's origin and
+/// permission, as this worker does.
+async function openPane(message) {
+  const entry = factories.get(message.url);
+  if (!entry) return { ok: false, error: "that factory is no longer configured" };
+  const query = new URLSearchParams({
+    factory: entry.url,
+    session: String(message.session ?? ""),
+    input: message.input === true ? "1" : "0",
+  });
+  await chrome.tabs.create({ url: `${chrome.runtime.getURL("terminal.html")}?${query}` });
+  return { ok: true };
+}
+
 async function listing(message, path) {
   const entry = factories.get(message.url);
   if (!entry) return { ok: false, error: "that factory is no longer configured" };
@@ -294,12 +345,19 @@ async function listing(message, path) {
 
 /// What the content script may ask this worker to do to a factory. Nothing
 /// else is routed, and the content script holds no factory fetch of its own.
-/// Three writes, all of them an `ssf` command for one item: nothing here types
-/// at an agent, which is what the item's own comments are for (#439).
+/// The item writes are each an `ssf` command for one item, and a message to an
+/// item's agent is a comment on the item (#439); the scratch writes are `ssf
+/// scratch` and a kill. The one input is the pane mirror's terminal, sent from
+/// its own page (#414).
 const HANDLERS = {
   "ssf:assign": assign,
   "ssf:handover": handover,
   "ssf:release": release,
+  "ssf:scratch": scratch,
+  "ssf:scratch-release": scratchRelease,
+  "ssf:scratch-resume": scratchResume,
+  "ssf:pane-input": paneInput,
+  "ssf:open-pane": openPane,
   "ssf:agents": (message) => listing(message, "agents"),
   "ssf:models": (message) =>
     listing(message, `models/${encodeURIComponent(message.harness)}`),
