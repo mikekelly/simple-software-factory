@@ -5,8 +5,8 @@
 // one question -- is an agent on this, and does it need me? -- in one glance,
 // and keeps the detail one click away:
 //
-//   * an issue or pull request page gets a card in the right sidebar, above
-//     Assignees;
+//   * an issue or pull request page, and the item a project board's side panel
+//     is showing, get a card at the top of the right sidebar, above Assignees;
 //   * issue and pull request lists, search results and project boards get one
 //     chip per tracked item, and a click on a chip opens the same card in a
 //     popover;
@@ -1257,9 +1257,10 @@
     }
   }
 
-  /// Where the sidebar card goes: GitHub's issue sidebar, above Assignees, and
-  /// the older discussion sidebar a pull request page still uses. Two different
-  /// containers, so both are tried.
+  /// Where the sidebar card goes: GitHub's issue sidebar, above Assignees --
+  /// the container an item's own page and a project view's side panel both
+  /// draw -- and the older discussion sidebar a pull request page still uses.
+  /// Two different containers, so both are tried.
   function sidebar() {
     const modern = document.querySelector('[class*="IssueSidebar-module__sidebarContent"]');
     if (modern) {
@@ -1284,13 +1285,43 @@
     return null;
   }
 
-  /// The title links on a list, board or search page, one per issue.
+  /// The item a project view's side panel is showing, in the shape a detail
+  /// page's own path parses to, or null when no panel is open. The panel is a
+  /// detail view of one item drawn inside the board -- its own link to the
+  /// item, and the same sidebar container the item's page has -- so the item
+  /// belongs at the top of that sidebar exactly as it does on its own page
+  /// (#440).
+  function sidePanel() {
+    // GitHub names the panel for assistive technology and gives its container
+    // its own class; either one finds it, so a reworded name is not a lost
+    // card.
+    const panel = document.querySelector(
+      '[role="dialog"][aria-label^="Side panel"], [class*="SidePanel-module__sidePanel"]',
+    );
+    if (!panel) return null;
+    const linked = [...panel.querySelectorAll("a[href]")].find((anchor) =>
+      LINK_PATH.test(anchor.pathname),
+    );
+    if (!linked) return null;
+    const match = LINK_PATH.exec(linked.pathname);
+    return {
+      owner: match[1],
+      repo: match[2],
+      number: match[3],
+      pull: linked.pathname.includes("/pull/"),
+    };
+  }
+
+  /// The title links on a list, board or search page, one per issue. A side
+  /// panel is not one of those lists: it is a detail view of a single item,
+  /// whose links are the item's own and the prose around it, so nothing inside
+  /// it is a row to chip (#440).
   function listAnchors() {
     const anchors = new Map();
     for (const anchor of document.querySelectorAll("a[href]")) {
       const match = LINK_PATH.exec(anchor.pathname);
       if (!match || !anchor.textContent.trim()) continue;
-      if (anchor.closest("nav, [role='navigation']")) continue;
+      if (anchor.closest("nav, [role='navigation'], [role='dialog']")) continue;
       const key = `${match[1]}/${match[2]}#${match[3]}`;
       if (!anchors.has(key)) anchors.set(key, anchor);
     }
@@ -1405,16 +1436,19 @@
     try {
       const wanted = new Map();
       const page = DETAIL_PATH.exec(location.pathname);
-      if (page) {
-        const key = `${page[1]}/${page[2]}#${page[4]}`;
-        const target =
-          page[3] === "pull"
-            ? pullTarget({ owner: page[1], repo: page[2], number: page[4] })
-            : { key, label: null };
+      // The one item this page is a detail view of: the page's own item, or --
+      // on a project board -- the item an open side panel is showing (#440).
+      const detail = page
+        ? { owner: page[1], repo: page[2], number: page[4], pull: page[3] === "pull" }
+        : sidePanel();
+      if (detail) {
+        const key = `${detail.owner}/${detail.repo}#${detail.number}`;
+        const target = detail.pull ? pullTarget(detail) : { key, label: null };
         if (target) {
-          // The item's own page is where an item the factory has no record of
-          // is picked up: it is one row, the reader is looking straight at it,
-          // and the Assign form is the whole of what is offered here (#435).
+          // An item's own page -- and a side panel, which is the same page
+          // inside a board -- is where an item the factory has no record of is
+          // picked up: it is one row, the reader is looking straight at it, and
+          // the Assign form is the whole of what is offered here (#435).
           const matches = matchesFor(target.key, { unrecorded: true });
           const unreadable = unreadableFactories();
           if (matches.length || unreadable.length) {
@@ -1430,7 +1464,8 @@
             });
           }
         }
-      } else if (chipPage(location.pathname)) {
+      }
+      if (!page && chipPage(location.pathname)) {
         // A board card stands for one item, and picking an item up is what a
         // board is for, so an item the factory watches but has no record of
         // carries a chip there too. A list or a search result gets a chip only

@@ -198,6 +198,15 @@ read for:
 
 ![A board whose cards carry ssf chips, the untracked ones reading No agent alongside a tracked one reading Working, with one chip's popover open showing the Assign agent form](docs/no-record-board.png)
 
+**Opening an item from a board opens a side panel over it, and the panel shows
+the item's card rather than a chip.** GitHub draws that panel as a detail view
+of the one item — its own header, its own link to the item, the same sidebar the
+item's page has — and the overlay reads it the same way: the card sits at the
+top of the panel's sidebar, above Assignees, exactly as it does on the item's
+own page, and the panel's own links get no chips. A chip belongs on a row in a
+list, and the panel's links are the item itself and the issues its prose names
+(#440).
+
 Hovering a chip shows the stack the session is on, the absolute time where there
 is one and the reason where there is not, and the first line of the last message.
 Clicking it opens the same card as the issue page, as a popover, so you never
@@ -377,7 +386,10 @@ forward, and keep tailnet ACLs restrictive.
 - The capability URL changes when the server restarts; the options page must be
   updated to match, or the factory reads as unreachable.
 - A project board chip depends on the board rendering its cards as links to the
-  issue or pull request, as GitHub's board and list views do.
+  issue or pull request, as GitHub's board and list views do. The side panel's
+  card depends on the panel naming itself the way GitHub does — a dialog
+  labelled `Side panel:` — and carrying its own link to the item, which is how
+  the overlay knows which item the panel is showing.
 - The closed-or-merged reading is a chip's, from the state mark GitHub draws in
   the item's own area — the nearest ancestor holding exactly one state mark,
   stopping at the first link to a different item, so a board column or a search
