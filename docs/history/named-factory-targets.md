@@ -1,5 +1,11 @@
 # Named factory targets and multiple managed VMs
 
+> **Historical record.** This is the plan for named factory targets, kept for
+> context. It shipped: the client's server catalog and the `local`, `vm` and
+> `ssh` transports are the behaviour today. Current documentation is
+> [Operate a factory](../operate.md) and
+> [Configuration](../configuration.md).
+
 Design specification for [#261](https://github.com/mikekelly/simple-software-factory/issues/261),
 2026-09-13.
 

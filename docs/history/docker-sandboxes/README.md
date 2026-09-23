@@ -1,6 +1,10 @@
 # Disposable Docker Sandboxes probe (#225)
 
-Companion to the [feasibility report](../../plans/docker-sandboxes.md).
+> **Historical record.** These are the fixtures and observations from a Docker
+> sandbox experiment, kept for context. It did not ship and is not planned. The
+> supported backends are documented in [The factory VM](../../vm.md).
+
+Companion to the [feasibility report](../docker-sandboxes.md).
 These are research fixtures, not SSF installation scripts. Read
 [development isolation guidance](../../development.md) before substituting a real
 SSF daemon. The heartbeat deliberately has no repositories, credentials, driver
@@ -17,7 +21,7 @@ connections or GitHub polling.
 | SHA256 | `fe46facba420d1cb8b1dad57d5b182d6df9dadd46c324c2ca3ef574fb7eada6f` (observed download hash, not independently verified publisher attestation) |
 | CLI version | `sbx version: v0.42.1 cc6e400a4a3ce3ce5e0b2b77b8ee352aac854c64` |
 | CLI help | `create shell`, `exec`, `login`, `setup`, `secret set` help executed successfully |
-| Kit validation | `sbx kit validate ./docs/experiments/docker-sandboxes/heartbeat` exited 0: VALID |
+| Kit validation | `sbx kit validate ./docs/history/docker-sandboxes/heartbeat` exited 0: VALID |
 | Headless create | Dedicated temporary OS user `ssf-sbx-225`, stdin `/dev/null`, 30s timeout; exit 1, `ERROR: Not authenticated to Docker`, `Sign in with: sbx login` |
 | Extra settings probe | `sbx settings list --no-trunc` unexpectedly tried to start sandboxd under the session user; exited with missing `io.containerd.transfer.v1` plugin. No `sbx`/`sandboxd` process remained. Archive had not been installed; this is not evidence of an Arch-specific defect. |
 | Runtime/authentication | **Not demonstrated**: create never reached VM boot; Docker account unavailable to the isolated user and nested KVM absent |
@@ -46,7 +50,7 @@ tar -xzf "$probe_dir/release.tar.gz" -C "$probe_dir"
 "$probe_dir/docker-sbx/sbx" create shell --help
 "$probe_dir/docker-sbx/sbx" exec --help
 "$probe_dir/docker-sbx/sbx" login --help
-"$probe_dir/docker-sbx/sbx" kit validate ./docs/experiments/docker-sandboxes/heartbeat
+"$probe_dir/docker-sbx/sbx" kit validate ./docs/history/docker-sandboxes/heartbeat
 uname -srmo
 cat /etc/os-release
 systemd-detect-virt

@@ -11,9 +11,10 @@
   substantial implementation before that.
 - Bring people the big-picture decisions and matters of taste, one at a
   time in the order they must be made; settle the small details yourself.
-- Keep this session's context for deliberation with collaborators,
-  planning and integration; give subagents bounded execution tasks, on
-  cost-efficient models where the task allows.
+- Orchestrate: keep this session's context for deliberation with
+  collaborators, planning, integration and judging what comes back; give
+  subagents bounded execution tasks, on cost-efficient models where the
+  task allows.
 - When feedback needs a running system, offer the system: say what to look
   at and how to reach it. For a factory in the VM, `ssf vm tailscale`
   enrols it so collaborators can reach a local service (see [Optional
@@ -21,10 +22,12 @@
 
 ## Models
 
-Two capability levels, one row per harness. Deliberation is orchestration,
-planning, architecture, design, review and copywriting; execution is
-implementation and other bounded tasks. Use the register for in-harness
-subagents and for `ssf assign` and `ssf handover` across harnesses.
+Two capability levels, one row per harness this repository allows. Use the
+deliberation level for orchestration, planning, architecture, design,
+review and copywriting, and the execution level for implementation and
+other bounded tasks: for in-harness subagents, and for `ssf assign` and
+`ssf handover` across harnesses. `ssf models <harness>` lists the ids and
+`ssf agents --json` the effort levels.
 
 | Harness | Deliberation | Execution |
 | --- | --- | --- |

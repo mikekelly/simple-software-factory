@@ -1,5 +1,11 @@
 # Waking an idle agent with an event: harness delivery channels
 
+> **Historical record.** This is the investigation behind per-harness delivery
+> channels, kept for context. It shipped for the harnesses named below.
+> Current behaviour is documented in
+> [Internals](../internals.md#per-harness-delivery) and
+> [Drivers](../drivers.md#item-activity-delivery).
+
 Investigation for [#334](https://github.com/mikekelly/simple-software-factory/issues/334),
 2026-09-15; sources re-audited 2026-09-17 at
 `c217acdb101b0010b576001ddd043c3f5c5fa18f`, where the Orca driver removed in #301 is gone.

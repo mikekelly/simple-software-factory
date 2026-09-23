@@ -30,12 +30,8 @@ second still belongs here, because it only makes sense for a session that
 is an unattended colleague on an item: when to post, who decides, what
 "delivered" means.
 
-Per-harness session behaviour goes in `SSF.<harness>.md` beside it
-(`SSF.codex.md`, `SSF.claude.md`), which ssf adds only when that harness
-starts the session. The operator's machine-wide preferences go in
-`~/.ssf/SSF.md` on the factory (which models to spend, hours when nobody
-answers), not in the repository, so the repository behaves the same on
-another factory.
+The other files ssf layers around this one, and which session gets each, are
+listed in [What the agent is told](prompts.md#how-to-work-on-this).
 
 ## The questions the owner answers
 
@@ -52,6 +48,8 @@ about how their sessions work.
    mislead).
 4. **Review.** Self-review, one independent review, or a human, and for
    which classes of change; how many rounds before simplifying instead.
+   [SSF.example.md](../SSF.example.md) carries a review policy that works
+   for most repositories; adapt it rather than writing one from scratch.
 5. **Merging and closing.** Who merges, and whether the session closes its
    own issue.
 6. **Boards.** The board and what each column means, if there is one.
@@ -85,9 +83,9 @@ about how their sessions work.
   preferences, not mechanics.
 - Write rules, not narration. One outcome per bullet.
 
-## Two examples
+## An example
 
-A solo maintainer:
+A solo maintainer, with no board:
 
 ```markdown
 # SSF agent guidance
@@ -101,27 +99,12 @@ A solo maintainer:
 - Open the PR with `Closes #N` and @mention me to merge; I merge.
 - Keep this session for planning and talking to me; delegate execution to
   subagents.
-- Models: `claude` is `fable` low for deliberation and `opus` medium for
-  execution.
-```
-
-A team with a board:
-
-```markdown
-# SSF agent guidance
-
-- Plan on the issue until @lead has agreed the acceptance criteria as a
-  task list; then implement.
-- On the `Product` board, `In Progress` while working, `Review` when the PR
-  is up, `Done` only after merge.
-- Behaviour changes get one independent review of the pinned diff and a
-  human approval from a code owner; fix confirmed defects, do not loop.
-- Delegate independent tasks as issues assigned to the bot; keep this
-  session for integration and communication.
-- Delivered means merged, the deploy checked, and `ssf release` run.
 
 | Harness | Deliberation | Execution |
 | --- | --- | --- |
-| `claude` | `fable`, effort `low` | `opus`, effort `medium` |
-| `codex` | `gpt-5.6-sol`, effort `low` | `gpt-5.6-sol`, effort `high` |
+| `<harness>` | `<model>`, effort `<level>` | `<model>`, effort `<level>` |
 ```
+
+Fill the table from `ssf models <harness>` and `ssf agents --json`.
+[SSF.example.md](../SSF.example.md) is the fuller starting point, with
+sections instead of one list.
