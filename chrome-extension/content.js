@@ -676,8 +676,8 @@
   /// gone stale keeps the states from its last snapshot but says when that was;
   /// one that never answered is a problem, not an agent.
   ///
-  /// `stale` is the overlay's own modifier -- an inactive service, an
-  /// unreachable VM, an unavailable driver or an overdue poll also make the
+  /// `stale` is the overlay's own modifier -- a daemon that is not answering,
+  /// an unreachable VM, an unavailable driver or an overdue poll also make the
   /// snapshot untrustworthy, which is what `warning` carries.
   ///
   /// `closed` is the page's own fact about the item: see `closedInDom`.

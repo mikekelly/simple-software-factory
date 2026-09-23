@@ -499,11 +499,10 @@ fn handed_over(
 /// file, but its live socket still tells a one-shot run to leave its state
 /// alone.
 fn refuse_live_daemon() -> Result<()> {
-    let path = crate::ipc::socket_path();
-    if std::os::unix::net::UnixStream::connect(&path).is_ok() {
+    if crate::ipc::daemon_reachable() {
         anyhow::bail!(
             "another ssf daemon is listening on {}; stop it first",
-            path.display()
+            crate::ipc::socket_path().display()
         );
     }
     Ok(())

@@ -75,6 +75,7 @@ pub(super) fn probe_word(probe: &Result<bool, String>) -> &'static str {
 pub(super) fn vm_status_for_guest(vm: &str, server: Option<&str>) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "vm": vm, "service_active": false, "service_enabled": factory_ui::service_enabled(),
+        "daemon_reachable": false,
         "factory_location": "guest", "factory_reachable": false,
         "host_vm": { "state": vm },
         "sessions": [], "repos": [],

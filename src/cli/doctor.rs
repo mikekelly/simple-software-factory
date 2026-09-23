@@ -819,16 +819,21 @@ pub(super) async fn doctor() -> Result<()> {
             )
         },
     );
+    // Is the factory running? The daemon answering on its socket is the
+    // answer, and the unit is one way to have one: a daemon started by
+    // another supervisor or by hand is the documented bare-binary host
+    // mode rather than a fault (#463). The unit's own state is the detail
+    // beside it.
+    let answering = ipc::daemon_reachable();
     check(
-        factory_ui::service_active(),
+        answering,
         format!(
-            "{} running{}",
-            platform::service_instance(),
-            if factory_ui::service_enabled() {
-                ""
-            } else {
-                " (disabled by `ssf ui service disable`)"
-            }
+            "factory {}",
+            platform::service_state(
+                answering,
+                factory_ui::service_active(),
+                factory_ui::service_enabled(),
+            )
         ),
     );
     // The tooling the VM backend needs, on the host that would run it.

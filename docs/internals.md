@@ -7,11 +7,20 @@ How the daemon polls, delivers, resumes and restarts, what `ssf status --json` c
 `ssf status --json` joins what ssf knows about every tracked item with what
 herdr reports about the workspace working on it, so nothing else has to talk
 to the driver. The top level carries `server`, `bot_login`,
-`token_configured`, `service_enabled`, `service_active`, `last_poll_at`,
-`last_error`, `poll_interval_secs`, `config_path`, `anyone_allowed` (the
+`token_configured`, `service_enabled`, `service_active`, `daemon_reachable`,
+`last_poll_at`, `last_error`, `poll_interval_secs`, `config_path`,
+`anyone_allowed` (the
 wildcard allow-list is in effect somewhere; the dashboards warn while it is),
 `blocked_sessions` (the ids of sessions whose harness is not signed in),
 `driver`, `sessions`, `repos` and the derived `dashboard` presentation.
+
+`daemon_reachable` is whether something answers on the factory's Unix socket
+(`ssf.sock`), and is the field that says whether the factory is running;
+`service_active` and `service_enabled` are the service manager's own view of
+the unit it may or may not run the daemon under. They differ wherever a
+daemon was started without that unit — a container, another supervisor, a
+foreground `ssf-server` — and the dashboards warn on the daemon rather than
+on the unit (#463).
 
 `repos[]` carries `name`, `harness`, `model`, `effort`, `path`,
 `allowed_users` (who may drive that repository), `anyone_allowed` and

@@ -490,6 +490,12 @@ impl Snapshot {
             "token_configured": self.cfg.github_token().is_ok(),
             "service_enabled": crate::ui::service_enabled(),
             "service_active": crate::ui::service_active(),
+            // Whether a daemon answers on this factory's socket: the
+            // factory's own liveness, where the two fields above are the
+            // service manager's view of it. A daemon started by hand, by
+            // another supervisor, or in a container is running without
+            // either of them (#463).
+            "daemon_reachable": crate::ipc::daemon_reachable(),
             "last_poll_at": self.state.last_poll_at,
             "last_error": self.state.last_error,
             "poll_interval_secs": self.cfg.daemon.poll_interval_secs,
@@ -883,17 +889,12 @@ pub fn render_status(snap: &Snapshot) -> String {
         snap.bot_login().unwrap_or("(not signed in)")
     ));
     out.push_str(&format!(
-        "service: {}{}\n",
-        if crate::ui::service_active() {
-            "running"
-        } else {
-            "stopped"
-        },
-        if crate::ui::service_enabled() {
-            ""
-        } else {
-            " (disabled)"
-        }
+        "service: {}\n",
+        crate::platform::service_state(
+            crate::ipc::daemon_reachable(),
+            crate::ui::service_active(),
+            crate::ui::service_enabled()
+        )
     ));
     if let Some(t) = &st.last_poll_at {
         out.push_str(&format!("polled:  {t}\n"));
@@ -1236,8 +1237,20 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             }
             .to_owned(),
         )
-    } else if payload["service_active"] == false {
-        Some("SSF service is inactive; showing latest saved state".to_owned())
+    } else if !daemon_live(payload) {
+        // The daemon is not there, so the snapshot on screen is the last
+        // one it saved. What the service manager says stays detail: the
+        // unit is one way to run the daemon, and a factory started
+        // outside it -- a container, a supervisor, a person at a shell --
+        // is running rather than inactive (#463).
+        Some(
+            if payload["service_active"] == false {
+                "SSF service is inactive; showing latest saved state"
+            } else {
+                "SSF daemon is not answering; showing latest saved state"
+            }
+            .to_owned(),
+        )
     } else if let Some(last_poll) = payload["last_poll_at"].as_str() {
         match chrono::DateTime::parse_from_rfc3339(last_poll) {
             Ok(at)
@@ -1254,6 +1267,15 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     Ok(
         json!({"cards":cards,"monitored_items":unattached,"repositories":watched_repositories(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
+}
+
+/// Whether the snapshot's factory has a daemon that answers. A payload from
+/// a server too old to publish `daemon_reachable` says nothing about it, and
+/// the unit's own state is all that server could judge by.
+fn daemon_live(payload: &Value) -> bool {
+    payload["daemon_reachable"]
+        .as_bool()
+        .unwrap_or_else(|| payload["service_active"] != false)
 }
 
 #[cfg(test)]
@@ -1391,9 +1413,41 @@ mod dashboard_tests {
         .unwrap();
         assert_eq!(snapshot["cards"][0]["agent_session_id"], "conversation-id");
         assert!(snapshot["warning"].as_str().unwrap().contains("stale"));
-        let stopped =
-            dashboard_presentation(&json!({"sessions":[],"service_active":false})).unwrap();
-        assert!(stopped["warning"].as_str().unwrap().contains("inactive"));
+    }
+
+    /// The banner is about the factory, not about the service manager: a
+    /// daemon answering on its socket is a running factory whether a systemd
+    /// unit started it, another supervisor did, or a person did, and only a
+    /// daemon that has stopped makes the snapshot a saved one (#463).
+    #[test]
+    fn a_reachable_daemon_is_not_an_inactive_service() {
+        let warning = |payload: Value| dashboard_presentation(&payload).unwrap()["warning"].clone();
+        // Started outside the unit -- a container, a supervisor, a
+        // foreground `ssf-server` -- and answering: nothing to warn about.
+        assert!(
+            warning(json!({"sessions":[],"service_active":false,"daemon_reachable":true}))
+                .is_null()
+        );
+        assert!(
+            warning(json!({"sessions":[],"service_active":true,"daemon_reachable":true})).is_null()
+        );
+        // Stopped, with the unit that would run it inactive: the saved state.
+        assert_eq!(
+            warning(json!({"sessions":[],"service_active":false,"daemon_reachable":false})),
+            "SSF service is inactive; showing latest saved state"
+        );
+        // The unit is up and the daemon is not: the daemon is the problem.
+        assert_eq!(
+            warning(json!({"sessions":[],"service_active":true,"daemon_reachable":false})),
+            "SSF daemon is not answering; showing latest saved state"
+        );
+        // A server too old to publish the field: the unit's own state is
+        // all it had to judge by, so its answer is kept.
+        assert_eq!(
+            warning(json!({"sessions":[],"service_active":false})),
+            "SSF service is inactive; showing latest saved state"
+        );
+        assert!(warning(json!({"sessions":[],"service_active":true})).is_null());
     }
 
     #[test]

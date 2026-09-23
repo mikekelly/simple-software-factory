@@ -218,6 +218,31 @@ Remedy: find what holds it (`systemctl --user list-units 'ssf@*'` on Linux),
 stop the one that should not be there, then enable the one that should. Do not
 run `ssf-server --once` against a state directory a running service owns.
 
+### Banner says the service is inactive but the daemon is running
+
+Read which fact the banner is about. `SSF service is inactive; showing latest
+saved state` means nothing answered on the factory's socket
+(`ssf status --json` → `daemon_reachable`), so the page is showing the last
+state the daemon saved. Check the daemon first:
+
+```sh
+ssf status --json | jq '{daemon_reachable, service_active, service_enabled}'
+```
+
+- `daemon_reachable: true` — the factory is running and there is no problem;
+  the banner would not be drawn. A page still showing one was loaded before
+  the daemon came back, or is reading another target.
+- `daemon_reachable: false` and the unit stopped — start the daemon (`ssf
+  --server NAME ui service enable`, or `ssf-server` where no service manager
+  is available).
+- `daemon_reachable: false`, `service_active: true` — the unit is up and its
+  process is not answering; read its log (see [operate.md](operate.md#the-background-service))
+  and restart it.
+
+`service_active`/`service_enabled` alone never mean the factory is down: a
+daemon in a container, under another supervisor, or started by hand is a
+running factory. See [dashboard.md](dashboard.md#running-without-systemd).
+
 ### Herdr not running or wrong version
 
 `ssf doctor` reports the driver's CLI and whether it is reachable. A missing

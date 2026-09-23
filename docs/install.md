@@ -145,6 +145,11 @@ herdr server        # terminal one
 ssf-server          # terminal two
 ```
 
+With no service unit, `ssf status` and `ssf doctor` report the daemon itself
+(`ssf.sock`) and name the unit's absence as detail, and the dashboards draw no
+warning while it answers: a factory run this way — a container, another
+supervisor, a foreground `ssf-server` — is running, not inactive (#463).
+
 ### 3.4 Client only, driving a factory elsewhere
 
 Install the client the same way (package, Homebrew, or the `ssf` binary alone) and reach the remote factory over SSH. SSF opens no TCP listener; SSH starts the server-side endpoint on the far machine, which needs `ssf-server` on its noninteractive SSH PATH.

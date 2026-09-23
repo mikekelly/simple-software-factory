@@ -251,6 +251,9 @@ fn a_dashboard_gets_an_answer_for_a_guest_that_did_not_give_one() {
         let v = vm_status_for_guest(state, Some("crucible"));
         assert_eq!(v["vm"], state);
         assert_eq!(v["service_active"], false);
+        // A guest nothing answered in has no daemon to answer, whatever
+        // the host's own service state is (#463).
+        assert_eq!(v["daemon_reachable"], false);
         assert_eq!(v["factory_reachable"], false);
         assert_eq!(v["factory_location"], "guest");
         assert_eq!(v["host_vm"]["state"], state);

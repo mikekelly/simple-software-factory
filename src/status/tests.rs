@@ -600,3 +600,41 @@ fn ago_buckets() {
     assert_eq!(ago(None), "");
     assert_eq!(ago(Some("garbage")), "");
 }
+
+/// A report says whether the *factory* is running from the daemon, and names
+/// the service unit's own state as the detail it is: a daemon started
+/// outside the unit is not an inactive factory (#463).
+#[test]
+fn the_service_line_follows_the_daemon_and_names_the_unit() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let unit = crate::platform::service_instance();
+    // Where the daemon and the unit agree, the line reads as it always did.
+    assert_eq!(crate::platform::service_state(true, true, true), "running");
+    assert_eq!(
+        crate::platform::service_state(true, true, false),
+        "running (disabled)"
+    );
+    assert_eq!(
+        crate::platform::service_state(false, false, true),
+        "stopped"
+    );
+    assert_eq!(
+        crate::platform::service_state(false, false, false),
+        "stopped (disabled)"
+    );
+    // A daemon the unit is not running is a running factory, and the unit
+    // is named rather than equated with it.
+    assert_eq!(
+        crate::platform::service_state(true, false, true),
+        format!("running (started outside {unit}, which is stopped)")
+    );
+    assert_eq!(
+        crate::platform::service_state(true, false, false),
+        format!("running (started outside {unit}, which is stopped and disabled)")
+    );
+    // And the unit being up does not stand in for a daemon that is not.
+    assert_eq!(
+        crate::platform::service_state(false, true, true),
+        format!("daemon not answering ({unit} running)")
+    );
+}

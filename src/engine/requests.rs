@@ -16,7 +16,7 @@ impl Engine {
     /// Answer one CLI connection.
     pub(super) async fn serve(&mut self, mut stream: tokio::net::UnixStream) {
         let resp = match crate::ipc::read_request(&mut stream).await {
-            Ok(req) => {
+            Ok(Some(req)) => {
                 debug!(?req, "request from the CLI");
                 let resp = self.handle_request(req).await;
                 if let Err(e) = self.state.save() {
@@ -24,6 +24,10 @@ impl Engine {
                 }
                 resp
             }
+            // A peer that connected and closed without a request: a
+            // liveness probe (a dashboard's `daemon_reachable`), which
+            // has asked for nothing and is owed nothing.
+            Ok(None) => return,
             Err(e) => Response::err(format!("bad request: {e:#}")),
         };
         if let Err(e) = crate::ipc::write_response(&mut stream, &resp).await {
