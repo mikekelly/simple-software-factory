@@ -66,9 +66,9 @@ command -v gh herdr
 
 | What the probes say | Path |
 |---|---|
-| Linux, `/dev/kvm` readable and writable, `systemctl --user` answers, resources allow a VM | **Local VM** (the default). Section 3.1, then 7. |
-| macOS | **Homebrew + lima**. Section 3.2, then 7. |
-| Linux, no KVM or no systemd user session, but enough CPU/RAM, and the person accepts that agents see this user's files | **Host mode on this machine**. Section 3.1 or 3.3, then 7. |
+| Linux, `/dev/kvm` readable and writable, `systemctl --user` answers, resources allow a VM | **Local VM** (the default). Section 3.1, then 4 and 5. |
+| macOS, resources allow a VM | **Homebrew + lima VM**. Section 3.2, then 4 and 5. |
+| Linux without KVM or a systemd user session, or a Mac too small for a VM, with enough CPU/RAM for the sessions, and the person accepts that agents see this user's files | **Host mode on this machine**. Section 3.1, 3.2 or 3.3, then 5 (host mode). |
 | Too few resources here, or the person does not want agents on this machine | **A rented host** runs the factory; this machine only drives it. Section 3.3 on the host, 3.4 here. |
 | A factory already runs somewhere else | **Client only**. Section 3.4. |
 
@@ -80,7 +80,9 @@ command -v gh herdr
 - Memory: half the RAM, at least 4096 MiB.
 - Data disk: half the free space where the disk lands, at least 20 GiB, sparse so it reserves nothing up front.
 
-Rule of thumb for judging "reasonable": each parallel agent session wants about one vCPU and 2 GiB of RAM. A 4-core, 8 GB machine gives a guest of 3 vCPUs and 4 GiB, which is one or two sessions at a time and leaves the person's own machine usable. Below that, propose host mode or a rented host rather than a VM. Allow roughly 30 GB of disk headroom for images and data, plus room for the repositories and their builds.
+Rule of thumb for judging "reasonable": each parallel agent session wants about one vCPU and 2 GiB of RAM, and the person's own desktop needs to keep about 4 GB. A 4-core, 8 GB machine gives a guest of 3 vCPUs and 4 GiB, which is one or two sessions at a time and leaves the machine usable. An 8-core, 8 GB machine gets the same 4 GiB but 7 vCPUs by the rule, which is more CPU than that memory can use: pass `--vcpus 2` or `--vcpus 3` to `ssf vm build` on a small machine rather than accept the rule. With 8 GB or less in total, present all three options and recommend host mode or a rented host over a VM; below 8 GB, the VM is not reasonable. Allow roughly 30 GB of disk headroom for images and data, plus room for the repositories and their builds.
+
+Say to the person, in one line each, what the options cost them: the VM keeps agents away from their files but takes half the machine; host mode takes only what the sessions use but the agents run as their user with permission prompts bypassed; a rented host costs money and puts the factory on a machine they administer over SSH.
 
 ### The rented-host option
 
@@ -102,7 +104,7 @@ Download the matching asset from [GitHub Releases](https://github.com/mikekelly/
 
 One package holds both the `ssf` client and the `ssf-server` daemon. Packages are x86_64.
 
-Prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr. The VM installs its own herdr in the guest. Distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md).
+Prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md).
 
 ```sh
 ssf --version
@@ -116,7 +118,7 @@ brew install mikekelly/tap/ssf
 ssf --version
 ```
 
-The formula brings `gh` and `lima`. On macOS the factory runs in a lima VM; `ssf setup` (section 4) enables a launchd agent per target, so `brew services` is not used. Install `herdr` with Homebrew as well only if the factory will run on the host rather than in the VM.
+The formula brings `gh` and `lima`. `ssf setup` (section 4) enables a launchd agent per target, so `brew services` is not used. The VM path needs nothing more; for host mode on the Mac, `brew install herdr` as well. Details in [platform-specifics.md](platform-specifics.md#macos).
 
 ### 3.3 Standalone binaries on a rented host
 
@@ -179,13 +181,46 @@ ssf doctor
 
 At this point failures for the bot, driver, harness and repositories are expected. Only unreadable configuration or a missing `gh` needs fixing now.
 
-## 5. The bot account
+## 5. Where the agents run
+
+### The VM
+
+```sh
+ssf vm build
+ssf vm status
+```
+
+`ssf vm build` picks the backend (Firecracker on Linux, lima on macOS and on Linux with qemu), sizes the guest by the rule in section 2, writes those sizes to the selected target, and provisions git, gh, herdr and the harness CLIs. Read the printed sizes and the harness installation results: a harness that failed to install cannot be signed in. `--vcpus`, `--mem-mib` and `--data-gib` override the rule; an already-set size is kept.
+
+The build prints one line for the host it measured and one per size it chose, in the shape
+
+```
+this machine: 8 CPUs, 32768 MiB RAM, 155 GiB free on /home (measured at /home/you/.local/share/ssf/vm, [vm] dir)
+```
+
+followed by the provisioning log and the harnesses installed. Expect `ssf vm status` afterwards to report a running VM and working SSH. From here, `ssf doctor`, `ssf auth`, `ssf repo` and `ssf status` operate inside the guest even when typed on the host. `ssf vm logs` shows the guest daemon's journal.
+
+Re-running `ssf vm build` after a failure is safe; it keeps an existing image unless `--force` is given, and it keeps the data disk either way. Sessions run as the guest's `ssf` user with passwordless sudo; the VM is the isolation boundary. More in [vm.md](vm.md) (`ssf skill vm`).
+
+### Host mode
+
+Agents run as this Unix user and can reach this user's files and credentials, and the default launch commands bypass the harness's permission prompts because the terminals are unattended. Say this plainly to the person before choosing it.
+
+herdr provides the workspaces and terminals. Start `herdr server` for headless operation, or leave an interactive `herdr` running. ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
+
+```sh
+ssf doctor
+```
+
+Expect doctor to say the driver (herdr, the only one) is reachable and ready. Details in [drivers.md](drivers.md).
+
+## 6. The bot account
 
 The factory acts on GitHub as an account of its own. Every agent post carries a byline naming the session and what it runs, and a post from the bot *without* a byline is read as typed by a person, so sharing the person's own account confuses who said what. The bot is a default, not a security boundary: agents run as a Unix user and the account only bounds what `gh` does by default.
 
 **Ask first, then let them create it.** In a private browser window they sign up at `https://github.com/signup` with a separate address (plus-addressing works), verify it, and turn on two-factor authentication. For an organisation, the same thing owned by the organisation as a machine user. Nothing else is needed: no repositories, no keys.
 
-Sign it in where the factory runs:
+Sign it in where the factory runs. On a VM target the command runs in the guest, so the VM from section 5 must be up:
 
 ```sh
 ssf auth login --web
@@ -226,7 +261,7 @@ The login match is case-insensitive. This accepts the GitHub invitation only; it
 
 `ssf auth login` is safe to re-run: a failed or half-finished login can simply be run again.
 
-## 6. Who may drive the factory
+## 7. Who may drive the factory
 
 Whatever reaches the bot on GitHub is relayed into a running agent's terminal, so this is a real trust boundary. By default the agents act only on assignments, mentions, review requests, labels and comments from collaborators with push access, which GitHub calls Write or higher. The daemon fetches that list each pass and `ssf doctor` prints it per repository. The person's own account must be on it to assign issues to the bot. Nothing needs setting for the default.
 
@@ -238,33 +273,6 @@ ssf repo set OWNER/NAME --allowed-users alice,bob
 ```
 
 `"*"` means anyone on GitHub. It is refused unless someone types `yes` at the terminal or passes `--accept-anyone-risk`. **An agent must never pass that flag on the person's behalf.** If the collaborator list cannot be fetched, nothing is acted on for that repository until a list is configured, and `ssf doctor` says so.
-
-## 7. Where the agents run
-
-### The VM
-
-```sh
-ssf vm build
-ssf vm status
-```
-
-`ssf vm build` picks the backend (Firecracker on Linux, lima on macOS and on Linux with qemu), sizes the guest by the rule in section 2, writes those sizes to the selected target, and provisions git, gh, herdr and the harness CLIs. Read the printed sizes and the harness installation results: a harness that failed to install cannot be signed in. `--vcpus`, `--mem-mib` and `--data-gib` override the rule; an already-set size is kept.
-
-Expect `ssf vm status` to report a running VM and working SSH. From here, `ssf doctor`, `ssf auth`, `ssf repo` and `ssf status` operate inside the guest even when typed on the host. `ssf vm logs` shows the guest daemon's journal.
-
-Re-running `ssf vm build` after a failure is safe; it keeps an existing image unless `--force` is given, and it keeps the data disk either way. Sessions run as the guest's `ssf` user with passwordless sudo; the VM is the isolation boundary. More in [vm.md](vm.md) (`ssf skill vm`).
-
-### Host mode
-
-Agents run as this Unix user and can reach this user's files and credentials, and the default launch commands bypass the harness's permission prompts because the terminals are unattended. Say this plainly to the person before choosing it.
-
-herdr provides the workspaces and terminals. Start `herdr server` for headless operation, or leave an interactive `herdr` running. ssf clones under `herdr.projects_dir` (`~/ssf/projects`) and makes a worktree per item beside the clone.
-
-```sh
-ssf doctor
-```
-
-Expect doctor to say the driver (herdr, the only one) is reachable and ready. Details in [drivers.md](drivers.md).
 
 ## 8. Sign in the harness
 
@@ -289,10 +297,9 @@ Get the person's explicit choice of harness, model and effort first. Examples an
 ```sh
 ssf agents
 ssf models HARNESS
-ssf vm run -- models HARNESS      # VM: ask the guest directly
 ```
 
-`ssf models` names what answered: the harness's own catalogue, its listing command, or ssf's built-in table. `ssf agents --json` adds the supported effort levels and launch commands. Then:
+On a VM target both run inside the guest, where the sessions run. `ssf models` names what answered: the harness's own catalogue, its listing command, or ssf's built-in table. `ssf agents --json` adds the supported effort levels and launch commands. Then:
 
 ```sh
 ssf repo add OWNER/NAME --harness HARNESS --model MODEL --effort EFFORT
@@ -314,7 +321,7 @@ ssf status
 
 Healthy looks like: the token belongs to the bot; the driver is reachable and ready; the harness is installed and signed in where sessions run; each repository shows its GitHub identity, its allowed users, the commit identity, and its SSF agent guidance. `ssf status` names the configured account, then the repositories and their tracked items with no last error.
 
-Two failures are normal before the first issue: a missing checkout, and the `gh` and `ssf` command links, which are created when the first agent starts. Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
+Two lines are expected to fail before the first issue and need no action: the repository's checkout (cloned when the first session starts) and the `gh`, `git` and `ssf` command links (written when the first agent starts). Anything else, work through [troubleshooting.md](troubleshooting.md) (`ssf skill troubleshoot`).
 
 ## 11. Upgrading, stopping, uninstalling
 
@@ -330,10 +337,10 @@ Upgrade by installing the next release's package the same way it was installed; 
 - [ ] Consent recorded for accounts, `sudo`, spending, and the model choice.
 - [ ] `ssf --version` and `ssf-server` both present, from the same release.
 - [ ] `ssf setup` complete and the service enabled (package and Homebrew paths).
+- [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
 - [ ] Bot account created; `ssf auth status` names it.
 - [ ] Bot has Write on the repository, verified with `push: true`, and board access if there is a board.
 - [ ] Allowed users are deliberate; `*` only with the person's consent.
-- [ ] `ssf vm status` reports a running VM, or herdr is reachable in host mode.
 - [ ] Harness signed in where the sessions run.
 - [ ] `SSF.md` on the default branch; repository added with a chosen harness, model and effort.
 - [ ] `ssf doctor` clean apart from the pre-first-issue exceptions.

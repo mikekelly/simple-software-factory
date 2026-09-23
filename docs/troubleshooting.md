@@ -9,10 +9,12 @@ first two.
 
 ```sh
 ssf server list                     # which factories this client knows, and their transports
-ssf --server ssf-server doctor      # the target's own health report
+ssf --server NAME doctor            # NAME from the listing; omit --server with no catalog
 ssf status                          # tracked items, their sessions, and each repository's last error
 ssf vm status                       # only when the factory runs in a VM: running, size, disk use
 ```
+
+**It worked before and stopped:** run the four commands above, then read [Nothing happens on assignment](#nothing-happens-on-assignment). The usual causes are a service that did not come back after a reboot or upgrade (`ssf ui service status`), a harness sign-in that lapsed (a `BLOCKED:` session in `ssf status`, remedy in [Sessions and delivery](#sessions-and-delivery)), a bot token that was revoked or lost a scope (the first `ssf doctor` lines), or GitHub rate limiting, which the journal reports and which clears on its own.
 
 A good `ssf doctor` ends with `all good`. Every failing line starts `FAIL` and
 carries its own remedy; `note` lines are informational and do not fail the run.
@@ -54,11 +56,11 @@ One row per check `ssf doctor` makes, in the order it makes them.
 | `<repo>: allowed users ...` | who may drive is known | the collaborator list could not be read (token scope or access), or set `--allowed-users` explicitly |
 | `<repo>: harness \`X\` installed` | the repository's harness exists on the daemon's machine | install it there, or `ssf repo set --harness` to one that is |
 | `<repo>: SSF agent guidance ... missing` | `SSF.md` is on the base branch | see [no SSF.md](#repository-and-items) |
-| `<repo>: checkout at ...` | the configured checkout exists | fix `--path`, or `ssf repo set --clear path` and let the first session clone it |
+| `<repo>: checkout at ...` | the configured checkout exists | expected before the first session, which clones it; otherwise fix `--path`, or `ssf repo set --clear path` and let the next session clone it |
 | `<repo>: ... worktrees ... not on origin` | no work is stranded | see [stranded worktrees](#stranded-worktrees) |
-| `gh and git and ssf links ... do not all point at this ssf` | the shim directory is intact | `ssf launch` relinks them when an agent next starts; if it persists, another ssf wrote them |
+| `gh and git and ssf links ... do not all point at this ssf` | the shim directory is intact | expected before the first agent has started: the links are written then. Afterwards, `ssf launch` relinks them when an agent next starts; if it persists, another ssf wrote them |
 | `post(s) by the bot arrived without an origin tag` | every bot post came from a session | a person posted as the bot, or the `gh` shim was bypassed; nothing to fix if intentional |
-| `ssf@NAME.service` not running | the daemon service is up | `systemctl --user start ssf@NAME.service` (macOS: `ssf --server NAME ui service enable`); see [service will not enable](#service-will-not-enable) |
+| the service is not running | the daemon service is up | `ssf --server NAME ui service enable`; see [service will not enable](#service-will-not-enable) |
 
 ### Client and server version skew
 
@@ -170,7 +172,7 @@ hand), `ssf vm grow`, start it again. Growing keeps what is on the disk and
 requires the VM to be stopped. Free space first if growing is not possible:
 `ssf purge` removes the workspaces of closed items whose agent is gone.
 
-Memory: raise `vm.mem_mib` in `config.toml` on the host and `ssf vm restart`.
+Memory: `ssf config set vm.mem_mib N` (acts on the host side of a VM target) and `ssf vm restart`.
 Budget about one vCPU and 2 GiB per parallel session.
 
 ### Lima disk unproven and the format flag

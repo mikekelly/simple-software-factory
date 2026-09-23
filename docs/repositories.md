@@ -18,7 +18,7 @@ server catalog the commands act on this machine's own factory, and `--server`
 takes an SSH destination instead. Use the same target for every step.
 
 ```sh
-ssf --server ssf-server doctor
+ssf --server NAME doctor     # NAME from the listing; omit --server with no catalog
 ```
 
 A good result ends with `all good`. Anything else is fixed before going on:
@@ -240,7 +240,7 @@ the workspaces of closed items whose agent is gone.
 ## 7. Verification and common failures
 
 ```sh
-ssf --server ssf-server doctor
+ssf --server NAME doctor     # NAME from the listing; omit --server with no catalog
 ssf repo list
 ssf status
 ```

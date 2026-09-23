@@ -89,8 +89,9 @@ brew install mikekelly/tap/ssf
 
 The formula installs both the `ssf` client and the `ssf-server` daemon, and
 pulls in `gh` and `lima`. It is macOS only and is not for Linuxbrew. There
-is no Omarchy menu and no herdr on the host: on a Mac the factory runs in a
-lima VM and herdr lives in the guest.
+is no Omarchy menu. In the default shape the factory runs in a lima VM and
+herdr lives in the guest; for host mode on the Mac, `brew install herdr`
+and run it as the user the sessions run as.
 
 The background service is a launchd agent per target, `dev.ssf.server.NAME`,
 managed with `ssf --server NAME ui service enable|disable|status`. Its log
