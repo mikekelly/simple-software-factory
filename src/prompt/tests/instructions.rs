@@ -294,6 +294,7 @@ fn the_prompt_states_the_rules_before_the_item() {
         text: "- [t] @alice commented (https://gh/7#c1):\n  > go".into(),
         origin: None,
         assignee: None,
+        state_change: false,
     };
     let p = initial_prompt(&issue, &[ev], &ctx);
     let at = |needle: &str| {
@@ -445,6 +446,7 @@ fn initial_prompt_is_the_bare_minimum() {
         text: "- [2026-09-04T20:45:16Z] @OverlayBot assigned @OverlayBot".into(),
         origin: None,
         assignee: None,
+        state_change: true,
     };
     let p = initial_prompt(&issue, &[ev], &ctx);
     assert!(
@@ -615,6 +617,7 @@ fn guide_holds_the_moved_reference() {
     assert!(g.contains("A comment is a comment: ssf reads no command out of one"));
     assert!(!g.contains("task-started"));
     assert!(g.contains("`ssf sub <n>`"));
+    assert!(g.contains("`ssf sub <n> --events all`, which adds comments, reviews and commits"));
     assert!(g.contains("`ssf unsub <n>` stops them; `ssf subs` lists"));
     assert!(g.contains("from the agent on owner/repo#M"));
     assert!(g.contains("`--assignee bot` in the same `gh ... create` command"));

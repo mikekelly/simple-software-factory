@@ -125,15 +125,16 @@ impl Engine {
                 "handed off by a session; starting its own"
             );
             self.entry(repo, issue.number).delegated_by = Some(tag.origin.to_string());
-            // The delegating parent follows its child.
+            // The delegating parent follows its child, at the default level:
+            // what the child is, not every word said on it (#453). This
+            // branch runs again whenever the child is re-onboarded (its
+            // binding given up after a run of failures, say), and a parent
+            // that asked for the comments with `ssf sub --events all` keeps
+            // them: only a first follow is written here.
             let parent = self.acting_session(&tag.origin.to_string());
             let e = self.entry(repo, issue.number);
-            if !e
-                .subscribers
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(&parent))
-            {
-                e.subscribers.push(parent);
+            if !e.follows(&parent) {
+                e.subscribe(&parent, Events::default());
             }
         } else if !self
             .adopting

@@ -143,6 +143,50 @@ pub struct Ignored {
     pub asked_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Events {
+    /// The item's own state changing: closed, merged, reopened, assigned,
+    /// labeled, renamed, its review request moving. What a follower has to
+    /// know, and nothing it has to read.
+    #[default]
+    State,
+    /// Everything on the item, comments and reviews included. For a
+    /// follower that really wants to watch what is said on it.
+    All,
+}
+
+impl Events {
+    /// The value the CLI takes (`ssf sub --events <value>`).
+    pub fn id(self) -> &'static str {
+        match self {
+            Events::State => "state",
+            Events::All => "all",
+        }
+    }
+}
+
+impl std::str::FromStr for Events {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "state" => Ok(Events::State),
+            "all" => Ok(Events::All),
+            other => bail!(
+                "unknown --events value {other:?}; use state (the item's own state changes) or \
+all (everything, comments included)"
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for Events {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.id())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IssueState {
     pub number: u64,
@@ -304,6 +348,14 @@ pub struct IssueState {
     /// with FYI framing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscribers: Vec<String>,
+    /// What each of them hears, for the ones that asked for more than the
+    /// default (`ssf sub --events`); a session not named here hears the
+    /// item's own state changes. Kept beside the list rather than in it so
+    /// an older ssf, which ignores keys it does not know, still reads the
+    /// file (#453). [`IssueState::subscribe`] and
+    /// [`IssueState::unsubscribe`] are the only way in.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub subscriber_events: BTreeMap<String, Events>,
     /// Tracked only because sessions subscribed to it: polled for activity,
     /// but no workspace, no owner and no session of its own.
     #[serde(default)]
@@ -405,6 +457,52 @@ impl IssueState {
             || self.last_prompt_at.is_some()
             || self.prompts_sent > 0
             || self.agent_session_id.is_some()
+    }
+
+    /// Whether `session` follows this item.
+    pub fn follows(&self, session: &str) -> bool {
+        self.subscribers
+            .iter()
+            .any(|s| s.eq_ignore_ascii_case(session))
+    }
+
+    /// What `session` hears about this item: the level it asked for, or the
+    /// default when it never asked for one.
+    pub fn events_for(&self, session: &str) -> Events {
+        self.subscriber_events
+            .iter()
+            .find(|(s, _)| s.eq_ignore_ascii_case(session))
+            .map(|(_, e)| *e)
+            .unwrap_or_default()
+    }
+
+    /// Record that `session` follows this item hearing `events`, adding it
+    /// to the list when it was not there. Returns whether it was added, and
+    /// whether following it again moved its level. Nothing follows at the
+    /// default level, so that case writes no key.
+    pub fn subscribe(&mut self, session: &str, events: Events) -> (bool, bool) {
+        let added = !self.follows(session);
+        let changed = !added && self.events_for(session) != events;
+        if added {
+            self.subscribers.push(session.to_string());
+        }
+        self.subscriber_events
+            .retain(|s, _| !s.eq_ignore_ascii_case(session));
+        if events != Events::default() {
+            self.subscriber_events.insert(session.to_string(), events);
+        }
+        (added, changed)
+    }
+
+    /// Drop `session` from this item, with whatever level it held; true when
+    /// it followed it.
+    pub fn unsubscribe(&mut self, session: &str) -> bool {
+        let followed = self.follows(session);
+        self.subscribers
+            .retain(|s| !s.eq_ignore_ascii_case(session));
+        self.subscriber_events
+            .retain(|s, _| !s.eq_ignore_ascii_case(session));
+        followed
     }
 }
 
@@ -622,6 +720,7 @@ impl State {
                 for subscriber in &mut item.subscribers {
                     changed |= rewrite_session_value(subscriber, old, new);
                 }
+                changed |= rewrite_levels(&mut item.subscriber_events, old, new);
             }
         }
         Ok(changed)
@@ -642,7 +741,22 @@ impl State {
         st.drop_legacy_reviewers();
         st.drop_legacy_issue_bindings();
         st.drop_records_answering_to_nothing();
+        st.prune_subscriber_events();
         Ok(st)
+    }
+
+    /// A level names a subscriber. Anything else in `subscriber_events` is a
+    /// leftover -- a session that stopped following on an ssf that did not
+    /// keep the two together, or a hand-edited file -- and would otherwise
+    /// wait to be applied to a session that follows the item again later.
+    fn prune_subscriber_events(&mut self) {
+        for rs in self.repos.values_mut() {
+            for st in rs.issues.values_mut() {
+                let subs = st.subscribers.clone();
+                st.subscriber_events
+                    .retain(|s, _| subs.iter().any(|k| k.eq_ignore_ascii_case(s)));
+            }
+        }
     }
 
     /// Before #305, an issue carrying a session origin tag shared the
@@ -704,6 +818,7 @@ impl State {
                             origins: st.origins,
                             untagged: st.untagged,
                             subscribers: st.subscribers,
+                            subscriber_events: st.subscriber_events,
                             subscriber_only: true,
                             ..Default::default()
                         },
@@ -734,13 +849,16 @@ impl State {
         }
         for rs in self.repos.values_mut() {
             for st in rs.issues.values_mut() {
-                st.subscribers.retain(|s| {
-                    let keep = crate::origin::Origin::parse(s).is_some();
-                    if !keep {
-                        ghosts.push(s.clone());
-                    }
-                    keep
-                });
+                let gone: Vec<String> = st
+                    .subscribers
+                    .iter()
+                    .filter(|s| crate::origin::Origin::parse(s).is_none())
+                    .cloned()
+                    .collect();
+                for s in gone {
+                    ghosts.push(s.clone());
+                    st.unsubscribe(&s);
+                }
             }
             // An item tracked only for a subscriber that is gone is not
             // tracked at all (what `unsubscribe` does when the last one
@@ -823,9 +941,7 @@ for ever after the item closed"
         let mut dropped = Vec::new();
         for (repo, rs) in self.repos.iter_mut() {
             for st in rs.issues.values_mut() {
-                let before = st.subscribers.len();
-                st.subscribers.retain(|s| !s.eq_ignore_ascii_case(session));
-                if st.subscribers.len() != before {
+                if st.unsubscribe(session) {
                     dropped.push(format!("{repo}#{}", st.number));
                 }
             }
@@ -839,6 +955,22 @@ fn rewrite_session(value: &mut Option<String>, old: &str, new: &str) -> bool {
         return rewrite_session_value(value, old, new);
     }
     false
+}
+
+/// Rewrite the sessions a level map is keyed by, keeping each level with the
+/// session it was given for; the values are untouched.
+fn rewrite_levels(levels: &mut BTreeMap<String, Events>, old: &str, new: &str) -> bool {
+    let mut changed = false;
+    for key in levels.keys().cloned().collect::<Vec<_>>() {
+        let mut rewritten = key.clone();
+        if rewrite_session_value(&mut rewritten, old, new)
+            && let Some(level) = levels.remove(&key)
+        {
+            levels.insert(rewritten, level);
+            changed = true;
+        }
+    }
+    changed
 }
 
 fn rewrite_session_value(value: &mut String, old: &str, new: &str) -> bool {
@@ -903,6 +1035,87 @@ mod tests {
         assert!(err.to_string().contains("another ssf daemon is listening"));
         drop(first);
         StateLock::acquire_in(&sandbox.state_dir()).unwrap();
+    }
+
+    /// A follow's level lives beside the subscriber list, not in it, and
+    /// both survive a restart. A level a session did not ask for writes no
+    /// key at all, and one that names no follower is dropped on load (#453).
+    #[test]
+    fn a_subscription_carries_its_level_beside_the_session() {
+        let path = crate::config::test_support::sandbox()
+            .state_dir()
+            .join("state.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"repos":{"o/r":{"issues":{
+                "1":{"number":1,"subscribers":["o/r#9"]},
+                "2":{"number":2,"subscribers":["o/r#9"],"subscriber_events":{"o/r#9":"all"}},
+                "3":{"number":3,"subscribers":["o/r#4"],
+                     "subscriber_events":{"o/r#4":"all","o/r#8":"all"}}
+            }}}}"#,
+        )
+        .unwrap();
+
+        let st = State::load_from(&path).unwrap();
+        let item = |n: u64| st.repos["o/r"].issues[&n].clone();
+        assert_eq!(
+            item(1).events_for("o/r#9"),
+            Events::State,
+            "no key, default"
+        );
+        assert_eq!(item(2).events_for("o/r#9"), Events::All);
+        assert_eq!(item(3).events_for("o/r#4"), Events::All);
+        assert!(
+            !item(3).subscriber_events.contains_key("o/r#8"),
+            "a level naming no follower went"
+        );
+
+        // Written back: the list is what it always was, and only a level a
+        // session asked for is written at all.
+        st.save_to(&path).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let issues = &written["repos"]["o/r"]["issues"];
+        assert_eq!(issues["1"]["subscribers"][0], serde_json::json!("o/r#9"));
+        assert!(issues["1"].get("subscriber_events").is_none());
+        assert_eq!(
+            issues["2"]["subscriber_events"],
+            serde_json::json!({"o/r#9": "all"})
+        );
+        // A state file an older ssf reads: its own `subscribers` list, and
+        // keys it does not know rather than entries it cannot parse.
+        let list: Vec<String> = serde_json::from_value(issues["2"]["subscribers"].clone()).unwrap();
+        assert_eq!(list, vec!["o/r#9"]);
+    }
+
+    /// Following an item again is how a session asks for more, and asking
+    /// for what it already has changes nothing: one entry either way, and
+    /// the answer says which happened.
+    #[test]
+    fn following_again_moves_the_level_of_the_one_subscription() {
+        let mut st = IssueState::default();
+        assert_eq!(st.subscribe("o/r#9", Events::State), (true, false));
+        assert_eq!(st.subscribers, vec!["o/r#9"]);
+        assert!(st.subscriber_events.is_empty(), "the default is no key");
+        assert_eq!(st.subscribe("o/r#9", Events::State), (false, false));
+        assert_eq!(st.subscribers.len(), 1);
+        assert_eq!(st.subscribe("O/R#9", Events::All), (false, true));
+        assert_eq!(st.subscribers, vec!["o/r#9"], "one entry, not two");
+        assert_eq!(st.events_for("o/r#9"), Events::All);
+        assert_eq!(st.subscribe("o/r#9", Events::All), (false, false));
+        assert_eq!(st.subscribe("o/r#9", Events::State), (false, true));
+        assert!(st.subscriber_events.is_empty(), "back at the default");
+        assert!(st.unsubscribe("o/r#9"));
+        assert!(st.subscribers.is_empty() && !st.unsubscribe("o/r#9"));
+    }
+
+    #[test]
+    fn a_subscription_level_is_spelled_out_in_a_refusal() {
+        assert_eq!("state".parse::<Events>().unwrap(), Events::State);
+        assert_eq!(" ALL ".parse::<Events>().unwrap(), Events::All);
+        let err = "everything".parse::<Events>().unwrap_err().to_string();
+        assert!(err.contains("state") && err.contains("all"), "{err}");
     }
 
     /// The state file the daemon is restarted against was written before

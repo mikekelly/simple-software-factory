@@ -60,10 +60,13 @@ pub enum Request {
     Adopt {
         items: Vec<String>,
     },
-    /// `from` (a session, `owner/repo#N`) wants to hear about `target`.
+    /// `from` (a session, `owner/repo#N`) wants to hear about `target`, at
+    /// this level (following it again changes the level).
     Sub {
         from: String,
         target: String,
+        #[serde(default)]
+        events: crate::state::Events,
     },
     Unsub {
         from: String,
@@ -331,6 +334,26 @@ mod tests {
         let j = serde_json::to_string(&a).unwrap();
         assert!(j.contains("\"op\":\"adopt\""));
         assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), a);
+        // A follow says what it wants to hear; a request from a client that
+        // predates the field still means the default level (#453).
+        let sub = Request::Sub {
+            from: "o/r#1".into(),
+            target: "o/r#3".into(),
+            events: crate::state::Events::All,
+        };
+        let j = serde_json::to_string(&sub).unwrap();
+        assert!(j.contains("\"op\":\"sub\"") && j.contains("\"events\":\"all\""));
+        assert_eq!(serde_json::from_str::<Request>(&j).unwrap(), sub);
+        let older: Request =
+            serde_json::from_str(r#"{"op":"sub","from":"o/r#1","target":"o/r#3"}"#).unwrap();
+        assert_eq!(
+            older,
+            Request::Sub {
+                from: "o/r#1".into(),
+                target: "o/r#3".into(),
+                events: crate::state::Events::State,
+            }
+        );
         let e = serde_json::to_string(&Response::err("nope")).unwrap();
         let back: Response = serde_json::from_str(&e).unwrap();
         assert!(!back.ok);

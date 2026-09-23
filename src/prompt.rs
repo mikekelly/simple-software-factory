@@ -13,6 +13,8 @@ mod guide;
 mod timeline;
 pub use guide::{VM_GUEST_LINE, guide};
 #[cfg(test)]
+pub use timeline::state_change;
+#[cfg(test)]
 use timeline::today_utc;
 pub use timeline::{Rendered, actor_of, event_key, render_event};
 use timeline::{fmt_when, quote, quote_lines};

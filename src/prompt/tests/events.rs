@@ -30,6 +30,46 @@ fn renders_comment_with_quote_and_ignores_noise() {
     assert!(render_event(&noise, false, &cfg(), "bot").is_none());
 }
 
+/// Which events a follower hears by default: what the item itself is, not
+/// what people write on it. The list of what counts as writing is closed on
+/// purpose -- a kind ssf does not know is delivered (#453).
+#[test]
+fn a_comment_is_not_a_state_change_and_a_closure_is() {
+    assert!(state_change("closed") && state_change("assigned") && state_change("labeled"));
+    assert!(state_change("merged") && state_change("renamed") && state_change("reopened"));
+    assert!(
+        state_change("project_v2_item_status_changed"),
+        "an event kind ssf does not classify is delivered"
+    );
+    for kind in [
+        "commented",
+        "reviewed",
+        "line-commented",
+        "commit-commented",
+        "committed",
+        "referenced",
+        "cross-referenced",
+    ] {
+        assert!(!state_change(kind), "{kind} is not the item's own state");
+    }
+    // And the flag reaches the rendered event: what the two paths above
+    // decide is what a follower is filtered on.
+    let d = cfg();
+    let comment = json!({"event":"commented","id":1,"user":{"login":"alice"},
+            "created_at":"t","updated_at":"t","body":"hi","html_url":"https://x/1"});
+    assert!(
+        !render_event(&comment, false, &d, "bot")
+            .unwrap()
+            .state_change
+    );
+    let closed = json!({"event":"closed","id":2,"actor":{"login":"alice"},"created_at":"t"});
+    assert!(
+        render_event(&closed, false, &d, "bot")
+            .unwrap()
+            .state_change
+    );
+}
+
 #[test]
 fn timestamps_are_short_and_drop_todays_date() {
     assert_eq!(
@@ -109,6 +149,7 @@ fn comment_events(n: usize) -> Vec<Rendered> {
             ),
             origin: None,
             assignee: None,
+            state_change: false,
         })
         .collect()
 }
@@ -204,6 +245,7 @@ fn a_first_prompts_character_budget_keeps_the_newest_event() {
         ),
         origin: None,
         assignee: None,
+        state_change: false,
     });
     let repo = RepoConfig {
         name: "o/r".into(),

@@ -124,7 +124,10 @@ One line each:
 - `ssf token` prints the bot's GitHub token, for
   `GH_TOKEN="$(ssf token)" gh ...`.
 - `ssf sub 12` / `ssf unsub 12` / `ssf subs` follow an item without working
-  on it, stop following, list what is followed.
+  on it, stop following, list what is followed. A follow hears the item's own
+  state changes by default and not what is said on it; `ssf sub 12 --events
+  all` adds comments, reviews and commits, and `ssf subs` shows the level.
+  See [Subscriptions](sessions.md#subscriptions-and-cross-session-comments).
 - `ssf assign 12 --harness ID` assigns the bot and starts the item's first
   session on that stack; it refuses an item that already has one.
 - `ssf handover 12 --harness ID` moves an item to a new session on another

@@ -31,6 +31,7 @@ The `sessions` array has one entry per tracked item.
 | `pr` | pull request detail, when the item is one |
 | `owner` | which session acts on the item: its own, or the session a PR is bound to by its origin tag or branch |
 | `subscribers` | sessions that hear about the item without acting on it |
+| `subscriber_events` | what each of them hears, for the ones that asked for more than the default (`state`/`all`, `ssf sub --events`); a session not named hears the item's own state changes |
 | `subscriber_only` | the item is tracked only for subscribers: no owner, no workspace |
 | `shares_workspace_of` | the session whose workspace this item is worked in |
 | `delegated_by` | the session that handed the item off (`mode=delegate`) |

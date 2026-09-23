@@ -9,6 +9,7 @@ use super::{Engine, github_state, mentions_bot};
 use crate::config::RepoConfig;
 use crate::ipc::{Refused, Request, Response};
 use crate::origin::Origin;
+use crate::state::Events;
 use crate::status::session_id;
 
 impl Engine {
@@ -43,7 +44,11 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),
             },
-            Request::Sub { from, target } => match self.subscribe(&from, &target).await {
+            Request::Sub {
+                from,
+                target,
+                events,
+            } => match self.subscribe(&from, &target, events).await {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),
             },
@@ -284,7 +289,7 @@ impl Engine {
         Ok((repo, number, id))
     }
 
-    async fn subscribe(&mut self, from: &str, target: &str) -> Result<Value> {
+    async fn subscribe(&mut self, from: &str, target: &str, events: Events) -> Result<Value> {
         let (_, _, me) = self.known_session(from)?;
         let (repo, number) = self.locate(target)?;
         let (owner, name) = repo.split()?;
@@ -353,16 +358,14 @@ impl Engine {
             )
         };
         let e = self.entry(&repo, number);
-        let added = if e.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me)) {
-            false
-        } else {
-            e.subscribers.push(me.clone());
-            true
-        };
+        // Following again is how a session changes its level, so what it
+        // asks for here is what it hears from now on.
+        let (added, changed) = e.subscribe(&me, events);
         info!(
             repo = repo.name,
             issue = number,
             subscriber = me,
+            level = events.id(),
             added,
             "subscribed"
         );
@@ -374,6 +377,8 @@ impl Engine {
             "owner": owner_session,
             "subscriber": me,
             "added": added,
+            "changed": changed,
+            "events": events.id(),
         }))
     }
 
@@ -389,9 +394,8 @@ impl Engine {
         else {
             anyhow::bail!("{target} is not tracked");
         };
-        let removed = st.subscribers.iter().any(|s| s.eq_ignore_ascii_case(&me));
         let e = self.entry(&repo, number);
-        e.subscribers.retain(|s| !s.eq_ignore_ascii_case(&me));
+        let removed = e.unsubscribe(&me);
         // An item nobody listens to any more is forgotten.
         let dropped = e.subscriber_only && e.subscribers.is_empty();
         if dropped {
@@ -436,34 +440,55 @@ mod tests {
         seeded(&mut e, 7, None, true);
         e.entry(&r, 7).shares_workspace_of = Some(1);
 
-        // Session 1 follows item 3.
+        // Session 1 follows item 3, hearing its state changes.
         let resp = e
             .handle_request(Request::Sub {
                 from: "o/r#1".into(),
                 target: "o/r#3".into(),
+                events: Events::State,
             })
             .await;
         assert!(resp.ok, "{:?}", resp.error);
         assert_eq!(resp.data["owner"], "o/r#3");
         assert_eq!(resp.data["title"], "Three");
         assert_eq!(resp.data["added"], true);
+        assert_eq!(resp.data["changed"], false);
+        assert_eq!(resp.data["events"], "state");
         assert_eq!(e.entry(&r, 3).subscribers, vec!["o/r#1"]);
-        // Again: no duplicate.
+        // Again: no duplicate, and the level stands.
         let resp = e
             .handle_request(Request::Sub {
                 from: "o/r#1".into(),
                 target: "o/r#3".into(),
+                events: Events::State,
             })
             .await;
         assert!(resp.ok);
         assert_eq!(resp.data["added"], false);
+        assert_eq!(resp.data["changed"], false);
         assert_eq!(e.entry(&r, 3).subscribers.len(), 1);
+        // Following it again is how a session asks for more: the level
+        // moves without a second subscription.
+        let resp = e
+            .handle_request(Request::Sub {
+                from: "o/r#1".into(),
+                target: "o/r#3".into(),
+                events: Events::All,
+            })
+            .await;
+        assert!(resp.ok);
+        assert_eq!(resp.data["added"], false);
+        assert_eq!(resp.data["changed"], true);
+        assert_eq!(resp.data["events"], "all");
+        assert_eq!(e.entry(&r, 3).subscribers, vec!["o/r#1"]);
+        assert_eq!(e.entry(&r, 3).events_for("o/r#1"), Events::All);
         // From the PR's identity it is still session 1, and its own items
         // are refused.
         let resp = e
             .handle_request(Request::Sub {
                 from: "o/r#7".into(),
                 target: "o/r#1".into(),
+                events: Events::State,
             })
             .await;
         assert!(!resp.ok);
@@ -472,6 +497,7 @@ mod tests {
             .handle_request(Request::Sub {
                 from: "o/r#7".into(),
                 target: "o/r#7".into(),
+                events: Events::State,
             })
             .await;
         assert!(!resp.ok);
@@ -480,6 +506,7 @@ mod tests {
             .handle_request(Request::Sub {
                 from: "o/r#99".into(),
                 target: "o/r#3".into(),
+                events: Events::State,
             })
             .await;
         assert!(!resp.ok);
@@ -488,6 +515,7 @@ mod tests {
             .handle_request(Request::Sub {
                 from: "o/r#1".into(),
                 target: "x/y#3".into(),
+                events: Events::State,
             })
             .await;
         assert!(!resp.ok);

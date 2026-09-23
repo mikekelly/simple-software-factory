@@ -383,6 +383,7 @@ impl Engine {
                 st.handover_note = None;
                 st.blocked = None;
                 st.subscribers.clear();
+                st.subscriber_events.clear();
                 st.subscriber_only = false;
             }
             for (number, (issue, _, triggers)) in &items {
