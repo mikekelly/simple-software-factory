@@ -70,6 +70,26 @@ same list. Pi, Oh My Pi and OpenCode take `provider/model` ids; Copilot
 takes `auto` or a model name; Crush has no model flag for its terminal
 interface, so ssf refuses a model for it.
 
+**When a catalogue is out of date.** Claude Code has no command that lists
+its models, so a catalogue it has not written yet — a machine that has never
+started it — or one its own `staleAt` stamp calls expired would otherwise
+leave `ssf models claude` answering with ssf's table, naming no model
+released since. `ssf models` therefore starts Claude Code once to make it
+fetch and write the catalogue again, and reads what it wrote:
+
+- The command is `claude --print`, which starts it non-interactively and
+  stops for lack of a prompt without ever reaching a model; `DISABLE_AUTOUPDATER=1`
+  keeps a listing from updating the CLI. About a second and a half, plus the
+  fetch, and it needs the login and network a session would have.
+- Only `ssf models` does this, and only when the file is missing or past its
+  stamp. `ssf agents`, configuration loading, the TUI and every status read
+  take the file as they find it and never start an agent.
+- A start that cannot fetch (no login, no network) leaves the catalogue as it
+  was, and ssf falls back exactly as before: the older file if there is one,
+  else ssf's table. `source` still says which answered.
+- Codex needs none of this: its own CLI refreshes its cache, and ssf only
+  reads it.
+
 **Effort levels** are ssf's own set per harness, and `effort_levels` in
 `ssf agents --json` is the list each one accepts. They are deliberately
 not read from a catalogue: a catalogue scopes levels to one *model*, so a
