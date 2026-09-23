@@ -9,3 +9,5 @@ header { display: flex; gap: 12px; align-items: baseline; padding: 6px 12px;
 #state { color: #8b949e; }
 #state[data-problem="true"] { color: #f85149; }
 main { flex: 1 1 auto; overflow: auto; padding: 8px; }
+#reconnect { font: inherit; color: inherit; background: #21262d;
+  border: 1px solid #30363d; border-radius: 6px; padding: 2px 10px; cursor: pointer; }

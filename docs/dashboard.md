@@ -255,10 +255,12 @@ for an item, `owner%2Fname~id` for a scratch session). It sends an
 `event: screen` frame whose `data` is `{"screen": "..."}`, the pane's visible
 screen with its ANSI colours as `herdr pane read --source visible --format ansi`
 prints it, and another only when the screen changes; `event: error` with
-`{"error": ...}` says the pane cannot be read (no workspace, no agent running).
+`{"error": ...}` says the pane cannot be read (no workspace, no agent running)
+and ends the stream, so a client does not ask again on its own.
 The screen is read about four times a second, and only while someone watches:
 every viewer of one pane shares a single reader, which stops when the last
-viewer disconnects. The reader asks herdr directly rather than the daemon, so
+viewer disconnects. At most 16 panes are read at once; a viewer of a
+seventeenth gets an error frame. The reader asks herdr directly rather than the daemon, so
 the mirror does not freeze while a pass is busy. On an Intel i3-9100 a reader
 cost about 1.5% of one core whether the screen was idle or changing, shared by
 all its viewers; a screen changing four times a second sent about 26 KB/s per
@@ -352,12 +354,12 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
   so a client can show what would be lost and ask again with `"force": true`.
 - **scratch/resume** starts a released scratch session again in a new
   workspace.
-- **pane/input** types into any session's agent pane: `text` is sent as typed
-  (control characters included), then each of `keys` (herdr key names such as
-  `Enter` or `C-c`). The text is not logged. A person still speaks to an item's
-  agent best by commenting on the item, where everyone working it can read the
-  exchange; the pane is for answering a prompt the agent is stuck on and for
-  scratch sessions, which have no item.
+- **pane/input** types into a scratch session's agent pane: `text` is sent as
+  typed (control characters included), then each of `keys` (herdr key names
+  such as `Enter` or `C-c`). The text is not logged. An item session's pane is
+  view-only and the route refuses it (`400`): a person speaks to an item's
+  agent by commenting on the item, where everyone working it can read the
+  exchange (#439).
 
 Each answers with the same JSON its command prints under `--json`:
 

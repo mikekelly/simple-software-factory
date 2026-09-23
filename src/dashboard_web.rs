@@ -34,6 +34,8 @@ const MIRROR_INTERVAL_MS: &str = "250";
 /// Longest session id a pane route takes: `owner/repo#N` or `owner/repo~id`,
 /// with room for GitHub's longest names.
 const MAX_SESSION: usize = 256;
+/// Panes read at once: each is a process reading herdr four times a second.
+const MAX_MIRRORS: usize = 16;
 
 /// The pane mirrors being watched, by session: one reader per pane however
 /// many viewers it has, started by the first and stopped with the last. The
@@ -661,8 +663,14 @@ async fn pane_input(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'st
         Ok(request) => request,
         Err(answer) => return answer,
     };
-    if !is_session(&request.session) {
-        return bad("session must be owner/repo#N or owner/repo~id");
+    // An item's agent is spoken to by commenting on the item, where everyone
+    // working it reads the exchange (#439): its pane is shown, not typed at.
+    if request.session.len() > MAX_SESSION
+        || crate::origin::Scratch::parse(&request.session).is_none()
+    {
+        return bad(
+            "only a scratch session (owner/repo~id) takes typing; speak to an item's agent by commenting on the item",
+        );
     }
     if request
         .text
@@ -717,14 +725,6 @@ fn is_login(login: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// A session id a pane route takes: an item's (`owner/repo#N`) or a scratch
-/// session's (`owner/repo~id`).
-fn is_session(session: &str) -> bool {
-    session.len() <= MAX_SESSION
-        && (crate::origin::Origin::parse(session).is_some()
-            || crate::origin::Scratch::parse(session).is_some())
-}
-
 /// A key name herdr presses: `enter`, `esc`, `ctrl+c`, `f5`.
 fn is_key(key: &str) -> bool {
     !key.is_empty()
@@ -737,10 +737,15 @@ fn is_key(key: &str) -> bool {
 /// The session a pane stream names, percent-decoded (`#` cannot be in a URL
 /// path as itself), or the `400` for one that is not a session.
 fn pane_session(encoded: &str) -> std::result::Result<String, (u16, &'static str, String)> {
-    let session = percent_decode(encoded)
-        .filter(|session| is_session(session))
-        .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))?;
-    Ok(session)
+    // Named as ssf names it, so two spellings of one session share a reader.
+    percent_decode(encoded)
+        .filter(|session| session.len() <= MAX_SESSION)
+        .and_then(|session| {
+            crate::origin::Scratch::parse(&session)
+                .map(|s| s.to_string())
+                .or_else(|| crate::origin::Origin::parse(&session).map(|o| o.to_string()))
+        })
+        .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))
 }
 
 /// `%XX`-decoding of a path segment, or `None` for one that is not valid
@@ -776,6 +781,13 @@ fn mirror(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(sender) = map.get(session) {
         return sender.subscribe();
+    }
+    if map.len() >= MAX_MIRRORS {
+        // The sender goes at once, so the viewer gets this frame and the end.
+        let (_, frames) = tokio::sync::watch::channel(Some(error_frame(&format!(
+            "{MAX_MIRRORS} panes are already being watched; close one and try again"
+        ))));
+        return frames;
     }
     let (sender, frames) = tokio::sync::watch::channel(None);
     let sender = std::sync::Arc::new(sender);
@@ -838,9 +850,13 @@ async fn run_mirror(
         leave(&mirrors);
         return;
     };
+    // A group of its own, so that stopping it stops everything it started:
+    // with the factory in a VM the client is a wrapper around ssh, and the
+    // watch runs in the guest behind it.
     command
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+        .stderr(std::process::Stdio::piped())
+        .process_group(0);
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -851,10 +867,25 @@ async fn run_mirror(
             return;
         }
     };
+    let group = child.id();
+    // Read as it comes, so a chatty reader cannot fill the pipe and stall;
+    // the start of it is what says why a reader stopped.
+    let mut stderr = child.stderr.take().expect("piped");
+    let mut stderr = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while let Ok(read @ 1..) = stderr.read(&mut buffer).await {
+            let room = 4096usize.saturating_sub(kept.len());
+            kept.extend_from_slice(&buffer[..read.min(room)]);
+        }
+        String::from_utf8_lossy(&kept).into_owned()
+    });
     let mut lines = tokio::io::BufReader::new(child.stdout.take().expect("piped")).lines();
     loop {
         tokio::select! {
             line = lines.next_line() => match line {
+                // The watch's heartbeat.
+                Ok(Some(line)) if line.is_empty() => {}
                 Ok(Some(line)) => {
                     let frame = pane_frame(&line);
                     sender.send_if_modified(|last| {
@@ -866,16 +897,16 @@ async fn run_mirror(
                     });
                 }
                 _ => {
-                    let mut detail = String::new();
-                    if let Some(mut stderr) = child.stderr.take() {
-                        let _ = timeout(REQUEST_TIMEOUT, stderr.read_to_string(&mut detail)).await;
-                    }
+                    // A watch that ended on an error said it as its last
+                    // frame; one that did not says why here, if anywhere.
+                    let detail = timeout(REQUEST_TIMEOUT, &mut stderr).await;
+                    let detail = detail.ok().and_then(|d| d.ok()).unwrap_or_default();
                     let detail = detail.trim();
-                    sender.send_replace(Some(error_frame(if detail.is_empty() {
-                        "the pane reader stopped"
-                    } else {
-                        detail
-                    })));
+                    if !detail.is_empty() {
+                        sender.send_replace(Some(error_frame(detail)));
+                    } else if !sender.borrow().as_deref().is_some_and(|f| f.starts_with("event: error")) {
+                        sender.send_replace(Some(error_frame("the pane reader stopped")));
+                    }
                     break;
                 }
             },
@@ -891,7 +922,12 @@ async fn run_mirror(
         }
     }
     leave(&mirrors);
+    if let Some(group) = group.and_then(|pid| i32::try_from(pid).ok()) {
+        // SAFETY: a signal to the group this reader was started in.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
     let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 /// A watch line as the frame a viewer gets: `event: screen` with the
@@ -2366,7 +2402,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             (
                 "/secret/api/pane/input",
                 json!({"session":"nonsense","text":"x"}),
-                "session must be",
+                "only a scratch session",
             ),
         ] {
             let response = post_json(address, path, &body.to_string()).await;
@@ -2394,13 +2430,19 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         task.abort();
     }
 
-    /// Typing into a pane is `ssf __pane send`, with the text as one
+    /// Typing into a scratch session's pane is `ssf __pane send`, with the text as one
     /// `--text=` argument so text that starts with a dash is still text.
     #[tokio::test]
     async fn pane_input_types_through_the_factorys_client() {
         let client = Client::new("input", "", 0);
         let (address, task) = served(&client).await;
-        let body = json!({"session":"o/r#7","text":"-y\u{1b}[A","keys":["ctrl+c"]}).to_string();
+        // An item's pane is only shown (#439): nothing is run for it.
+        let body = json!({"session":"o/r#7","text":"y"}).to_string();
+        let response = post_json(address, "/secret/api/pane/input", &body).await;
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(response.contains("commenting on the item"), "{response}");
+        assert!(client.args().is_empty());
+        let body = json!({"session":"o/r~t414","text":"-y\u{1b}[A","keys":["ctrl+c"]}).to_string();
         let response = post_json(address, "/secret/api/pane/input", &body).await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
         assert_eq!(
@@ -2409,7 +2451,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 "__client",
                 "__pane",
                 "send",
-                "o/r#7",
+                "o/r~t414",
                 "--text=-y\u{1b}[A",
                 "--key=ctrl+c"
             ]
@@ -2494,10 +2536,53 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         task.abort();
     }
 
+    /// Stopping a reader stops everything it started: with the factory in a
+    /// VM the client is a wrapper whose ssh child would otherwise outlive it,
+    /// still reading the pane in the guest.
+    #[tokio::test]
+    async fn a_reader_that_stops_takes_its_children_with_it() {
+        let client = Client::new("group", "", 0);
+        let pid = client.root.join("child");
+        let script = format!(
+            "#!/bin/sh
+sleep 30 &
+echo $! > '{pid}'
+             echo '{{\"screen\":\"one\"}}'
+wait
+",
+            pid = pid.display()
+        );
+        std::fs::write(client.program(), script).unwrap();
+        let (address, task) = served(&client).await;
+        let _ = screens(address, "/secret/api/pane/o%2Fr%7Eab12", 1).await;
+        let child: i32 = std::fs::read_to_string(&pid)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        timeout(Duration::from_secs(5), async {
+            // SAFETY: signal 0 only asks whether the process is there.
+            while unsafe { libc::kill(child, 0) } == 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the reader's child outlived its last viewer");
+        task.abort();
+    }
+
+    /// Two spellings of one session are one pane, read once.
+    #[test]
+    fn a_pane_is_named_as_ssf_names_it() {
+        assert_eq!(pane_session("o%2Fr%7Eab12").unwrap(), "o/r~ab12");
+        assert_eq!(pane_session("o%2Fr%237").unwrap(), "o/r#7");
+        assert!(pane_session("nonsense").is_err());
+    }
+
     /// The endpoint has no message route: `api/message` was removed with the
     /// overlay's message box (#439), and a POST to it is a path under the
     /// capability that is not a write route -- the same `405` any other path
-    /// gets. The only input is the pane mirror's terminal (#414).
+    /// gets. The only input is a scratch session's terminal (#414).
     #[tokio::test]
     async fn there_is_no_route_that_types_at_an_agent() {
         let client = Client::new("gone", "", 0);

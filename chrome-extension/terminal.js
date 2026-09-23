@@ -1,5 +1,7 @@
 // The pane mirror (#414): one session's agent pane, drawn with xterm.js and
-// typed into from the keyboard.
+// typed into from the keyboard. Only a scratch session (`owner/repo~id`) takes
+// typing: an item's agent is spoken to by commenting on the item (#439), so
+// its pane is shown and nothing typed is sent.
 //
 // The factory reads the pane's visible screen a few times a second while
 // someone watches it and sends a frame only when it changed
@@ -17,6 +19,20 @@ import { endpoint, factoryUrl } from "./factory-url.js";
 /// The body bound of a write is 4096 bytes and a control character is six
 /// once it is JSON, so typed text goes in pieces well under it.
 const CHUNK = 500;
+
+/// Failures in a row, with no frame between them, before the page stops
+/// asking: a reader that cannot start is not asked again every few seconds.
+const MAX_FAILURES = 3;
+
+/// The next piece of `text` to send: at most CHUNK characters, never ending
+/// inside an escape sequence, which the pane would read as two keys.
+function nextChunk(text) {
+  if (text.length <= CHUNK) return text;
+  const esc = text.lastIndexOf("\x1b", CHUNK - 1);
+  // An escape sequence a terminal sends is short; one that began within
+  // the last 32 characters may run past the cut, so the cut goes before it.
+  return esc > 0 && CHUNK - esc < 32 ? text.slice(0, esc) : text.slice(0, CHUNK);
+}
 
 const params = new URLSearchParams(location.search);
 const url = factoryUrl(params.get("factory"));
@@ -71,29 +87,60 @@ async function start() {
     );
   }
 
-  const source = new EventSource(endpoint(url, `pane/${encodeURIComponent(session)}`));
-  source.addEventListener("screen", (event) => {
-    try {
-      draw(JSON.parse(event.data).screen ?? "");
-      say("live");
-    } catch (error) {
-      say(`the factory sent a frame that could not be read (${error})`, true);
-    }
-  });
-  source.addEventListener("error", (event) => {
-    if (typeof event.data === "string" && event.data) {
-      let detail = event.data;
+  const typing = /^[^/]+\/[^/~#]+~[^/~#]+$/.test(session);
+  const reconnect = document.getElementById("reconnect");
+  let source = null;
+  let failures = 0;
+
+  /// Stop reading: the factory is not asked again until the person says so.
+  function stop(text) {
+    source?.close();
+    source = null;
+    say(text, true);
+    reconnect.hidden = false;
+  }
+
+  function connect() {
+    reconnect.hidden = true;
+    failures = 0;
+    say("connecting…");
+    source = new EventSource(endpoint(url, `pane/${encodeURIComponent(session)}`));
+    source.addEventListener("screen", (event) => {
+      failures = 0;
       try {
-        detail = JSON.parse(event.data).error ?? detail;
-      } catch {
-        // Not JSON; the raw text is the best description available.
+        draw(JSON.parse(event.data).screen ?? "");
+        say(typing ? "live" : "live · view only: comment on the item to speak to its agent");
+      } catch (error) {
+        say(`the factory sent a frame that could not be read (${error})`, true);
       }
-      say(detail, true);
-      return;
-    }
-    // EventSource tries again by itself.
-    say("the stream stopped; reconnecting…", true);
-  });
+    });
+    source.addEventListener("error", (event) => {
+      if (typeof event.data === "string" && event.data) {
+        let detail = event.data;
+        try {
+          detail = JSON.parse(event.data).error ?? detail;
+        } catch {
+          // Not JSON; the raw text is the best description available.
+        }
+        // The factory's reader has stopped; reconnecting would start it
+        // again only to hear the same.
+        stop(detail);
+        return;
+      }
+      if (!source) return;
+      failures += 1;
+      if (failures >= MAX_FAILURES) {
+        stop("the stream stopped");
+        return;
+      }
+      // EventSource tries again by itself.
+      say("the stream stopped; reconnecting…", true);
+    });
+  }
+  reconnect.addEventListener("click", connect);
+  connect();
+
+  if (!typing) return;
 
   // What is typed, in order: one request in the air at a time, and whatever
   // was typed meanwhile goes in the next.
@@ -103,8 +150,8 @@ async function start() {
     if (sending || !queued) return;
     sending = true;
     while (queued) {
-      const text = queued.slice(0, CHUNK);
-      queued = queued.slice(CHUNK);
+      const text = nextChunk(queued);
+      queued = queued.slice(text.length);
       let reply;
       try {
         reply = await chrome.runtime.sendMessage({ type: "ssf:pane-input", url, session, text });

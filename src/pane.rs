@@ -24,6 +24,12 @@ use crate::state::State;
 /// every agent, which is not worth doing on every read.
 const RELOCATE_EVERY: u32 = 20;
 
+/// How long a watch goes without writing before it writes an empty line.
+/// A watch forwarded into a VM runs behind ssh with no terminal, so the
+/// only way it learns its viewer has gone is a write that fails: an idle
+/// screen would otherwise keep it reading herdr forever.
+const HEARTBEAT: Duration = Duration::from_secs(5);
+
 /// Where a session's agent is: its driver, and the terminal it runs in.
 pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result<(Driver, String)> {
     let (repo_name, worktree, handle) = if let Some(s) = Scratch::parse(session) {
@@ -101,12 +107,17 @@ impl Changes {
 
 /// `ssf __pane watch`: the session's screen as `{"screen": …}` lines, or
 /// `{"error": …}` while it cannot be read, until whoever reads stdout goes.
+///
+/// A session whose pane cannot be found is said once and ends the watch,
+/// rather than reloading the config and state four times a second for as
+/// long as someone looks at a pane that is not there.
 pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
     let cfg = Config::load()?;
     let mut changes = Changes::default();
     let mut target: Option<(Driver, String)> = None;
     let mut reads = 0u32;
     let mut out = std::io::stdout();
+    let mut written = std::time::Instant::now();
     loop {
         if target.is_none() || reads.is_multiple_of(RELOCATE_EVERY) {
             // The state file is the daemon's; it is read afresh, since a
@@ -118,41 +129,51 @@ pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
             match located {
                 Ok(found) => target = Some(found),
                 Err(error) => {
-                    target = None;
                     emit(
                         &mut out,
                         &mut changes,
                         json!({"error": format!("{error:#}")}),
                     )?;
+                    return Ok(());
                 }
             }
         }
         reads = reads.wrapping_add(1);
         if let Some((driver, pane)) = &target {
-            match driver.screen_ansi(pane).await {
+            let said = match driver.screen_ansi(pane).await {
                 Ok(screen) => emit(&mut out, &mut changes, json!({"screen": screen}))?,
                 Err(error) => {
+                    // Found again on the next read, or the watch ends.
                     target = None;
                     emit(
                         &mut out,
                         &mut changes,
                         json!({"error": format!("{error:#}")}),
-                    )?;
+                    )?
                 }
+            };
+            if said {
+                written = std::time::Instant::now();
             }
+        }
+        if written.elapsed() >= HEARTBEAT {
+            writeln!(out).context("the reader went away")?;
+            out.flush().context("the reader went away")?;
+            written = std::time::Instant::now();
         }
         tokio::time::sleep(interval).await;
     }
 }
 
-/// One line, if it says something new. A reader that has gone is the end of
-/// the watch.
-fn emit(out: &mut impl Write, changes: &mut Changes, value: serde_json::Value) -> Result<()> {
-    if let Some(line) = changes.fresh(value.to_string()) {
-        writeln!(out, "{line}").context("the reader went away")?;
-        out.flush().context("the reader went away")?;
-    }
-    Ok(())
+/// One line, if it says something new, and whether it did. A reader that
+/// has gone is the end of the watch.
+fn emit(out: &mut impl Write, changes: &mut Changes, value: serde_json::Value) -> Result<bool> {
+    let Some(line) = changes.fresh(value.to_string()) else {
+        return Ok(false);
+    };
+    writeln!(out, "{line}").context("the reader went away")?;
+    out.flush().context("the reader went away")?;
+    Ok(true)
 }
 
 /// `ssf __pane send`: type into the session's agent pane.

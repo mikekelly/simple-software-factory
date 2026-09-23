@@ -388,10 +388,13 @@ anyway** (a second request, forced) removes it.
 **Open**, on a scratch card or in an item's Actions row, opens the session's
 agent pane in a new tab: a terminal (xterm.js, vendored under
 `vendor/xterm/` since an MV3 extension loads no remote script) mirroring the
-pane from `api/pane/<session>` and sending what you type through the service
-worker to `api/pane/input`. Typing is a write, so a factory whose Writes switch
-is off shows the pane read-only. The pane is read about four times a second
-only while a terminal is open on it.
+pane from `api/pane/<session>`. In a scratch session's terminal what you type
+goes through the service worker to `api/pane/input`; typing is a write, so a
+factory whose Writes switch is off shows the pane read-only. An item session's
+terminal is always view-only: speak to its agent by commenting on the item.
+When the factory says the pane cannot be read, or the stream fails three times
+in a row, the terminal stops and offers **Reconnect**. The pane is read about
+four times a second only while a terminal is open on it.
 
 ## Reaching a factory on a tailnet
 
