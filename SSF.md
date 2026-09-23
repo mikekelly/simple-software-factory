@@ -63,7 +63,10 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
   subagent here.
 - The owning session merges once validation and review are satisfied.
   Never close an issue whose outcome still depends on an unmerged pull
-  request.
+  request. Merge with `gh pr merge --merge`, never `--squash` or
+  `--rebase`: only a merge commit leaves this workspace's own commits
+  reachable in the base branch, which is what `ssf release` asks before it
+  gives the workspace back.
 - Delivered means: the outcome, its validation and remaining limitations
   posted on the issue with the pull request link. When the next action is
   outside your authority, @mention @mikekelly and name the action; "ready

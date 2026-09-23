@@ -51,7 +51,11 @@ about how their sessions work.
    [SSF.example.md](../SSF.example.md) carries a review policy that works
    for most repositories; adapt it rather than writing one from scratch.
 5. **Merging and closing.** Who merges, and whether the session closes its
-   own issue.
+   own issue. Where the session merges, say how: a merge commit
+   (`gh pr merge --merge`), not `--squash` or `--rebase`, because only a
+   merge commit leaves the session's own commits reachable from a
+   remote-tracking ref, which is the check `ssf release` makes before it
+   gives the workspace back ([sessions.md](sessions.md#workspaces-after-close-release-and-purge)).
 6. **Boards.** The board and what each column means, if there is one.
 7. **Orchestration.** Recommended in every `SSF.md`: what the main session
    keeps for itself (deliberation with collaborators, planning, integration,
