@@ -126,42 +126,97 @@ fn capability_path() -> PathBuf {
     crate::config::state_dir().join("dashboard-token")
 }
 
-/// A whole capability path: `classify` compares the segment byte for byte,
-/// so anything that could not be one is not one.
-fn is_capability(token: &str) -> bool {
-    token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+/// 32 random bytes, as the hex a capability path is made of.
+const CAPABILITY_BYTES: usize = 32;
+
+/// The whole secret a stored file holds, its newline aside: `classify`
+/// compares the path segment byte for byte, so nothing else could be
+/// served as a capability.
+fn stored_capability(stored: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(stored).ok()?.trim();
+    (text.len() == CAPABILITY_BYTES * 2 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .then_some(text)
 }
 
-/// The capability secret, generated once and then reused. A stored value
-/// that is not a whole secret is replaced, and the log says so: a
-/// capability path nothing was configured with is worse than a new one.
+fn mint_capability() -> Result<String> {
+    let mut bytes = [0u8; CAPABILITY_BYTES];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// Whether the file is already readable by its owner alone.
+fn is_private(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o777 == 0o600)
+}
+
+/// Make the file readable by its owner alone.
+fn make_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::Permissions::from_mode(0o600);
+    if let Err(error) = std::fs::set_permissions(path, mode) {
+        tracing::warn!("could not set the mode on {}: {error}", path.display());
+    }
+}
+
+/// The capability secret: generated once, then read back from the state
+/// directory on every later start.
+///
+/// Stored content that is not a whole secret is replaced -- it addresses
+/// nothing, since only a whole one is served. A file that cannot be read
+/// is left alone, and this run serves a fresh secret instead: one that may
+/// hold the factory's secret must not be overwritten over a read error,
+/// and the dashboard's own file must not stop the factory. A secret that
+/// cannot be stored is the same, said in the log rather than thrown.
 fn capability() -> Result<String> {
     let path = capability_path();
-    match std::fs::read_to_string(&path) {
-        Ok(stored) if is_capability(stored.trim()) => return Ok(stored.trim().to_string()),
-        Ok(stored) => tracing::warn!(
-            "{} does not hold a capability ({} characters, expected 64 hex); writing a new one",
-            path.display(),
-            stored.trim().len()
-        ),
-        // Absent is the ordinary first start; anything else the write
-        // below will fail on, with the path in the error.
+    match std::fs::read(&path) {
+        Ok(stored) => match stored_capability(&stored) {
+            Some(token) => {
+                // A file this build did not write -- restored from a
+                // backup, or made by hand -- still keeps the URL private.
+                if !is_private(&path) {
+                    make_private(&path);
+                }
+                return Ok(token.to_string());
+            }
+            None => tracing::warn!(
+                "{} holds {} bytes that are not a capability; writing a new one",
+                path.display(),
+                stored.len()
+            ),
+        },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => tracing::warn!("could not read {}: {error}", path.display()),
+        Err(error) => {
+            tracing::warn!(
+                "could not read {} ({error}); serving a new capability for this run and leaving the file as it is",
+                path.display()
+            );
+            return mint_capability();
+        }
     }
-    let mut bytes = [0u8; 32];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let token = mint_capability()?;
+    match store_capability(&path, &token) {
+        Ok(()) => tracing::info!(
+            "Server web dashboard capability stored in {} (kept across restarts; delete it to rotate)",
+            path.display()
+        ),
+        Err(error) => tracing::warn!(
+            "could not store the capability in {} ({error:#}); this URL will not survive a restart",
+            path.display()
+        ),
+    }
+    Ok(token)
+}
+
+/// Write the secret where the next start reads it, readable by its owner
+/// alone.
+fn store_capability(path: &Path, token: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    crate::config::write_atomic(&path, format!("{token}\n").as_bytes(), 0o600)?;
-    tracing::info!(
-        "Server web dashboard capability stored in {} (kept across restarts; delete it to rotate)",
-        path.display()
-    );
-    Ok(token)
+    crate::config::write_atomic(path, format!("{token}\n").as_bytes(), 0o600)
 }
 
 async fn serve(
@@ -1020,7 +1075,8 @@ mod tests {
 
     /// The secret is minted once and then kept: a restart serves the URL the
     /// extension was configured with, which is the whole point of storing it.
-    /// Content that is not a whole secret is replaced, never served as a path.
+    /// Content that is not a whole secret is replaced, never served as a path;
+    /// a file that cannot be read at all is left alone.
     #[test]
     fn the_capability_is_generated_once_and_kept() {
         let _sandbox = crate::config::test_support::sandbox();
@@ -1028,10 +1084,10 @@ mod tests {
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
         let path = capability_path();
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        let mode = || std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let chmod =
+            |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(mode(), 0o600);
         assert_eq!(capability().unwrap(), first, "a restart reuses the secret");
         // A truncated or hand-edited file addresses nothing, so it is
         // replaced with a whole secret rather than served as a path.
@@ -1040,6 +1096,26 @@ mod tests {
         assert_eq!(replaced.len(), 64);
         assert_ne!(replaced, first);
         assert_eq!(capability().unwrap(), replaced);
+        // A secret this build did not write — restored from a backup, or made
+        // by hand — is still kept private.
+        let hand = "a".repeat(64);
+        std::fs::write(&path, format!("{hand}\n")).unwrap();
+        chmod(0o644);
+        assert_eq!(capability().unwrap(), hand);
+        assert_eq!(mode(), 0o600);
+        // One that cannot be read may still be the factory's secret, so it is
+        // left as it is, and this run serves a fresh secret rather than taking
+        // the factory down over the dashboard's own file.
+        chmod(0o000);
+        let unreadable = capability().unwrap();
+        assert_eq!(unreadable.len(), 64);
+        assert_ne!(unreadable, hand);
+        chmod(0o600);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            hand,
+            "an unreadable file is not overwritten"
+        );
     }
 
     /// The write rules, one rejection at a time: only an extension's own

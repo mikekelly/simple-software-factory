@@ -31,9 +31,11 @@ in the [dashboard guide](../docs/dashboard.md).
 
    It looks like `http://127.0.0.1:8787/<secret>/`. The secret is generated
    once and kept in the factory's state directory, so this URL stays the same
-   across restarts: save it once below and it keeps working. It changes only if
-   someone rotates the secret by deleting that file, or if the `[dashboard]`
-   bind or port changes.
+   across restarts: save it once below and it keeps working. It changes when
+   someone rotates the secret by deleting that file, when the `[dashboard]`
+   bind or port changes, and once for a factory first running a version with
+   this behaviour — that upgrade mints the first stored secret, so a URL saved
+   before it must be re-entered.
 
 3. Load the extension: open `chrome://extensions`, turn on **Developer mode**,
    choose **Load unpacked**, and select this `chrome-extension/` directory.

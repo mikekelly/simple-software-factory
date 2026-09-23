@@ -121,10 +121,22 @@ The secret is generated once, on the first start that serves the listener, and
 kept at `dashboard-token` in the factory's state directory
 (`~/.local/state/ssf/dashboard-token`, mode 0600; a catalog target has its own
 state directory). Every later start reads it, so a URL someone has already
-configured keeps working across restarts. Deleting that file and restarting
-generates a new one and invalidates every saved copy of the old URL; `ssf
-uninstall --data` removes it with the rest of the state. The startup log line
-carries the whole URL on every start, so
+configured keeps working across restarts — including one saved in the Chrome
+extension. A file this build did not write, made by hand or restored from a
+backup, is tightened to 0600 when it is read.
+
+Deleting that file and restarting generates a new one and invalidates every
+saved copy of the old URL. `ssf uninstall --data` removes it with the default
+factory's state; a catalog target's own directory is removed by hand, since
+[`ssf uninstall` is not target-aware](uninstall.md#recovery-cases).
+
+The dashboard's own file never stops the factory: a secret that cannot be read
+or stored is a warning naming the path, not a startup error. A file that cannot
+be read is left as it is, and that run serves a fresh URL; one that cannot be
+stored means the URL will not survive a restart. Either way the log says so and
+the log line below carries the URL actually being served.
+
+The startup log line carries the whole URL on every start, so
 `journalctl --user -u ssf.service | grep 'Server web dashboard'` finds it (the
 unit is `ssf@NAME.service` for a named target).
 
