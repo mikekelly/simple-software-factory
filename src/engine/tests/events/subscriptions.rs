@@ -228,3 +228,66 @@ async fn a_subscriber_only_item_delivers_at_the_followers_level() {
     assert!(fyi.contains("added label \"urgent\""), "{fyi}");
     assert!(!fyi.contains("anyone there?"), "{fyi}");
 }
+
+/// The parent's follow of a child it delegated is written once. The child is
+/// re-onboarded whenever its binding is given up (a run of delivery failures
+/// does that), and the parent's level must survive it: a parent that asked
+/// for the comments with `ssf sub --events all` is not silently put back on
+/// state changes (#453).
+#[tokio::test]
+async fn a_re_onboarded_child_leaves_the_parents_level_alone() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    seeded(&mut e, 1, Some("bot/issue-1"), true);
+    {
+        let st = e.entry(&r, 1);
+        st.worktree_id = Some("w1".into());
+        st.terminal_handle = Some("t1".into());
+    }
+    d.seed("w1", "t1", READY_SCREEN);
+    let opened = json!({
+        "number": 7, "title": "child",
+        "body": "🤖#1 says: <!-- ssf: origin=o/r#1 mode=delegate -->\n\nover to you",
+        "html_url": "https://gh/7", "state": "open", "user": {"login": "bot"},
+        "assignees": [{"login": "bot"}], "created_at": "x", "updated_at": "u1"
+    });
+    stub.set_assigned(vec![opened.clone()]);
+    stub.set_timeline(7, vec![assigned_by(1, "bot")]);
+    e.tick_repo(&r).await.unwrap();
+    assert_eq!(e.entry(&r, 7).subscribers, vec!["o/r#1"]);
+
+    // The parent asks for everything on its child.
+    let resp = e
+        .handle_request(Request::Sub {
+            from: "o/r#1".into(),
+            target: "o/r#7".into(),
+            events: Events::All,
+        })
+        .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(e.entry(&r, 7).events_for("o/r#1"), Events::All);
+
+    // The child's binding is given up: `note_failure` clears the seed after
+    // a run of failures, and the next pass onboards it again.
+    e.entry(&r, 7).seeded = false;
+    e.entry(&r, 7).active = false;
+    stub.set_assigned(vec![opened]);
+    e.tick_repo(&r).await.unwrap();
+
+    assert!(
+        e.entry(&r, 7).seeded,
+        "the pass onboarded it again: {:?}",
+        e.entry(&r, 7)
+    );
+    assert_eq!(e.entry(&r, 7).subscribers, vec!["o/r#1"], "one follow");
+    assert_eq!(
+        e.entry(&r, 7).events_for("o/r#1"),
+        Events::All,
+        "the parent's level survived the re-onboard"
+    );
+}

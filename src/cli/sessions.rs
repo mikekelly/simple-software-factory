@@ -186,30 +186,26 @@ pub(super) async fn sub(
     let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("");
     let who = v.get("subscriber").and_then(|t| t.as_str()).unwrap_or("");
     if subscribe {
-        let owner = match v.get("owner").and_then(|o| o.as_str()) {
-            Some(o) => format!("owned by {o}"),
-            None => "no session of its own; polled for you".into(),
-        };
         let added = v.get("added").and_then(|a| a.as_bool()).unwrap_or(true);
         let changed = v.get("changed").and_then(|c| c.as_bool()).unwrap_or(false);
-        let level: state::Events = match v.get("events").and_then(|e| e.as_str()) {
-            Some(id) => id.parse()?,
-            None => state::Events::default(),
+        // A daemon that predates the levels answers neither field, and
+        // ignores the one this client sent: `subscribed_text` says so
+        // rather than reading the reply as a level it is not honouring.
+        let level: Option<state::Events> = match v.get("events").and_then(|e| e.as_str()) {
+            Some(id) => Some(id.parse()?),
+            None => None,
         };
         println!(
-            "{who} {} {target} \"{title}\" ({owner}) at `{level}`: {}",
-            match (added, changed) {
-                (true, _) => "subscribed to",
-                (false, true) => "changed what it hears on",
-                (false, false) => "was already subscribed to",
-            },
-            match level {
-                state::Events::State => "its own state changes arrive as [ssf] FYI messages \
-(`--events all` adds comments, reviews and commits)"
-                    .to_string(),
-                state::Events::All =>
-                    "everything on it, comments included, arrives as [ssf] FYI messages".to_string(),
-            }
+            "{}",
+            subscribed_text(
+                who,
+                &target,
+                title,
+                v.get("owner").and_then(|o| o.as_str()),
+                added,
+                changed,
+                level,
+            )
         );
     } else {
         let removed = v.get("removed").and_then(|a| a.as_bool()).unwrap_or(true);
@@ -231,6 +227,46 @@ pub(super) async fn sub(
         );
     }
     Ok(())
+}
+
+/// What `ssf sub` prints once the daemon has recorded the follow. `level` is
+/// what the daemon says it will deliver, and `None` for a daemon from before
+/// the levels: such a daemon answers neither `events` nor `changed` and
+/// ignores the level this client sent, so what it delivers is everything on
+/// the item, and the wording says that rather than naming a level it is not
+/// honouring.
+pub fn subscribed_text(
+    who: &str,
+    target: &str,
+    title: &str,
+    owner: Option<&str>,
+    added: bool,
+    changed: bool,
+    level: Option<state::Events>,
+) -> String {
+    let owner = match owner {
+        Some(o) => format!("owned by {o}"),
+        None => "no session of its own; polled for you".into(),
+    };
+    let verb = match (added, changed) {
+        (true, _) => "subscribed to",
+        (false, true) => "changed what it hears on",
+        (false, false) => "was already subscribed to",
+    };
+    match level {
+        Some(state::Events::State) => format!(
+            "{who} {verb} {target} \"{title}\" ({owner}) at `state`: its own state changes \
+arrive as [ssf] FYI messages (`--events all` adds comments, reviews and commits)"
+        ),
+        Some(state::Events::All) => format!(
+            "{who} {verb} {target} \"{title}\" ({owner}) at `all`: everything on it, comments \
+included, arrives as [ssf] FYI messages"
+        ),
+        None => format!(
+            "{who} {verb} {target} \"{title}\" ({owner}): this daemon predates `--events`; \
+everything on it arrives as [ssf] FYI messages"
+        ),
+    }
 }
 
 pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {

@@ -377,6 +377,49 @@ fn assign_takes_an_item_a_harness_and_optional_model_and_effort() {
 }
 
 #[test]
+fn the_subscribe_message_says_what_the_daemon_will_deliver() {
+    use crate::state::Events;
+    let state = subscribed_text(
+        "o/r#9",
+        "o/r#5",
+        "Theirs",
+        None,
+        true,
+        false,
+        Some(Events::State),
+    );
+    assert_eq!(
+        state,
+        "o/r#9 subscribed to o/r#5 \"Theirs\" (no session of its own; polled for you) at \
+`state`: its own state changes arrive as [ssf] FYI messages (`--events all` adds comments, \
+reviews and commits)"
+    );
+    let all = subscribed_text(
+        "o/r#9",
+        "o/r#5",
+        "Theirs",
+        Some("o/r#5"),
+        false,
+        true,
+        Some(Events::All),
+    );
+    assert_eq!(
+        all,
+        "o/r#9 changed what it hears on o/r#5 \"Theirs\" (owned by o/r#5) at `all`: everything \
+on it, comments included, arrives as [ssf] FYI messages"
+    );
+    // A daemon from before the levels answers no level, and it delivers
+    // everything: the message must not name the default level as if that
+    // were what such a daemon was doing (the request itself is honoured as
+    // that daemon understands it).
+    let old = subscribed_text("o/r#9", "o/r#5", "Theirs", None, true, false, None);
+    assert!(!old.contains("`state`"), "{old}");
+    assert!(!old.contains("`all`"), "{old}");
+    assert!(old.contains("predates"), "{old}");
+    assert!(old.contains("everything on it"), "{old}");
+}
+
+#[test]
 fn the_handover_message_names_the_new_stack_and_ends_the_session() {
     assert_eq!(
         handover_recorded_text(
