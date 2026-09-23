@@ -1342,8 +1342,20 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
     } else {
         None
     };
+    // Every scratch session, the killed ones included: a killed one has no
+    // card, and a client offers its Resume from here (#414).
+    let scratch: Vec<Value> = rows
+        .iter()
+        .filter(|row| text(row, "kind") == "scratch")
+        .map(|row| {
+            json!({"id":row["id"],"repo":row["repo"],"owner_login":row["owner_login"],
+                "active":row["active"] == true,"agent_live":row["agent_live"] == true,
+                "released_at":row["released_at"],"harness":row["harness"],"model":row["model"],
+                "effort":row["effort"],"branch":row["branch"]})
+        })
+        .collect();
     Ok(
-        json!({"cards":cards,"monitored_items":unattached,"repositories":watched_repositories(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
+        json!({"cards":cards,"monitored_items":unattached,"scratch":scratch,"repositories":watched_repositories(payload),"warning":warning,"refreshed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs_f64()}),
     )
 }
 
@@ -1390,6 +1402,28 @@ mod dashboard_tests {
     /// than in each client: ssf dates a session from a local transcript, and
     /// the ways that can be missing are different facts. Printing "unknown"
     /// for all of them read as a claim about the agent (#439).
+    /// Every scratch session is listed, a killed one too: it has no card, and
+    /// its Resume is offered from this list.
+    #[test]
+    fn lists_every_scratch_session_the_killed_ones_too() {
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"o/r~live","repo":"o/r","kind":"scratch","owner":"o/r~live","active":true,
+                "agent_live":true,"agent_state":"idle","harness":"claude"},
+            {"id":"o/r~gone","repo":"o/r","kind":"scratch","owner":"o/r~gone","active":false,
+                "released_at":"2026-09-20T10:00:00Z","owner_login":"alice","harness":"codex"},
+            {"id":"o/r#1","owner":"o/r#1","active":true,"agent_live":true,"agent_state":"idle"}
+        ]}))
+        .unwrap();
+        let scratch = snapshot["scratch"].as_array().unwrap();
+        assert_eq!(scratch.len(), 2);
+        assert_eq!(scratch[0]["id"], "o/r~live");
+        assert_eq!(scratch[0]["agent_live"], true);
+        assert_eq!(scratch[1]["id"], "o/r~gone");
+        assert_eq!(scratch[1]["active"], false);
+        assert_eq!(scratch[1]["owner_login"], "alice");
+        assert_eq!(scratch[1]["harness"], "codex");
+    }
+
     #[test]
     fn cards_without_an_activity_time_say_why() {
         let snapshot = dashboard_presentation(&json!({"sessions":[

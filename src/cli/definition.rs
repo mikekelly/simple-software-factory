@@ -52,6 +52,14 @@ pub(super) enum Command {
         /// The request, as the daemon's protocol has it.
         request: String,
     },
+    /// A session's agent pane, for the web endpoint's pane mirror (#414):
+    /// not for people. Runs where the sessions run, forwarded into a VM like
+    /// every factory command.
+    #[command(name = "__pane", hide = true)]
+    Pane {
+        #[command(subcommand)]
+        command: PaneCommand,
+    },
     /// List and inspect the client computer's configured SSF servers.
     Server {
         #[command(subcommand)]
@@ -577,6 +585,28 @@ pub(super) enum AuthCommand {
         /// Keep the SSH key registered on the bot account and on disk.
         #[arg(long)]
         keep_keys: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum PaneCommand {
+    /// Print the pane's visible screen (ANSI) as `{"screen": …}` JSON lines,
+    /// one each time it changes, until stdout closes.
+    Watch {
+        /// The session, as owner/repo#N or owner/repo~id.
+        session: String,
+        /// How often the screen is read, in milliseconds.
+        #[arg(long, default_value_t = 250)]
+        interval_ms: u64,
+    },
+    /// Type into the pane: raw text first, then named keys.
+    Send {
+        /// The session, as owner/repo#N or owner/repo~id.
+        session: String,
+        #[arg(long, allow_hyphen_values = true)]
+        text: Option<String>,
+        #[arg(long = "key", value_name = "KEY")]
+        keys: Vec<String>,
     },
 }
 

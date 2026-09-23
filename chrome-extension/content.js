@@ -10,6 +10,8 @@
 //   * issue and pull request lists, search results and project boards get one
 //     chip per tracked item, and a click on a chip opens the same card in a
 //     popover;
+//   * a repository's home page gets its scratch sessions (#414) at the top of
+//     the right sidebar, with New scratch, for each factory that watches it;
 //   * every other page gets nothing.
 //
 // The five user-facing states are fixed in colour and icon so they read the
@@ -19,8 +21,9 @@
 //
 // The one thing it does to a factory is what an item's card offers: the Assign
 // agent form for an item with no agent, and the Actions row -- hand over and
-// release -- for one that has. Nothing here types at an agent: a person speaks
-// to one by commenting on the item, where the exchange stays. Every write is the
+// release, and Open, which shows the agent's own terminal in a tab of its own --
+// for one that has. Nothing on a card types at an agent: a person speaks to an
+// item's agent by commenting on the item, where the exchange stays. Every write is the
 // service worker's, never this script's, and none of them is retried. Nothing factory-written is ever
 // parsed as HTML: every node is built with textContent.
 (() => {
@@ -29,6 +32,8 @@
 
   /// An issue or pull request page, including its subpages (`/pull/5/files`).
   const DETAIL_PATH = /^\/([^/]+)\/([^/]+)\/(issues|pull)\/(\d+)(?:\/|$)/;
+  /// A repository's home page: where its scratch sessions are listed.
+  const REPO_PATH = /^\/([^/]+)\/([^/]+)\/?$/;
   /// A link to exactly one issue or pull request, as lists and boards make them.
   const LINK_PATH = /^\/([^/]+)\/([^/]+)\/(?:issues|pull)\/(\d+)\/?$/;
   /// The two shapes a project board has. A board carries a card for an item
@@ -1209,6 +1214,7 @@
   /// below is a no-op when nothing moved: neither feeds the observer that
   /// drives this.
   function update(entry, want) {
+    if (want.scratch) return updateScratch(entry, want);
     const closed = want.closed === true;
     // What a click on this chip reads when it opens its popover: the same
     // reading the chip was drawn from, so a board card's popover knows the item
@@ -1250,6 +1256,60 @@
     }
     if (placed) measure(entry);
     return placed;
+  }
+
+  /// A repository page's scratch sessions: one card per factory that watches
+  /// the repository, holding its sessions and New scratch. `mine` is the
+  /// GitHub user signed in on this page, from GitHub's own `user-login` meta
+  /// tag: it says whose session to make, and is not an access control.
+  function updateScratch(entry, want) {
+    const section = element("div", "ssf-section");
+    section.append(element("h3", "ssf-title", "SSF scratch"));
+    const login = document.querySelector('meta[name="user-login"]')?.content?.trim() || null;
+    const label = (snapshot?.factories?.length ?? 0) > 1;
+    for (const factory of want.factories) {
+      const sessions = (factory.scratch ?? [])
+        .filter((one) => sameRepo(one?.repo, want.repo))
+        .map((one) => ({ ...one, stateLabel: scratchState(factory, one) }));
+      const node = named(element("div", "ssf-card"), `card:${factory.url}`);
+      if (label) node.append(named(element("div", "ssf-via", factory.label), "via"));
+      const panel = globalThis.ssfWrites?.renderScratch({
+        factories: [factory],
+        repo: want.repo,
+        login,
+        sessions,
+      });
+      if (panel) {
+        node.append(named(panel, "writes"));
+      } else {
+        const count = `${sessions.length} scratch session${sessions.length === 1 ? "" : "s"}`;
+        node.append(
+          named(element("p", "ssf-hold", `${count}; writes are off for this factory.`), "off"),
+        );
+      }
+      section.append(node);
+    }
+    reconcile(entry.shadow, [section]);
+    const slot = document.querySelector(".Layout-sidebar");
+    if (!slot) return false;
+    if (entry.host.dataset.ssfSlot !== "sidebar") entry.host.dataset.ssfSlot = "sidebar";
+    if (entry.host.parentElement !== slot || slot.firstElementChild !== entry.host) {
+      slot.prepend(entry.host);
+    }
+    return true;
+  }
+
+  function sameRepo(a, b) {
+    return String(a ?? "").toLowerCase() === String(b ?? "").toLowerCase();
+  }
+
+  /// The word a scratch session's row carries: its card's state while an agent
+  /// runs, No agent while it has a workspace and nothing in it, Killed once
+  /// its workspace is gone.
+  function scratchState(factory, one) {
+    const card = factory.cards.find((each) => each.origin?.id === one.id);
+    if (card) return (PRESENTATION[String(card.agent_state ?? "").trim()] ?? PROBLEM).label;
+    return one.active ? NO_AGENT.label : "Killed";
   }
 
   /// Show a `more` toggle only where the trimmed message really is clipped, and
@@ -1489,6 +1549,16 @@
               closed: pageClosed(),
             });
           }
+        }
+      }
+      const repoPage = REPO_PATH.exec(location.pathname);
+      if (repoPage) {
+        const repo = `${repoPage[1]}/${repoPage[2]}`;
+        const watching = (snapshot?.factories ?? []).filter((factory) =>
+          (factory.repositories ?? []).some((one) => sameRepo(one, repo)),
+        );
+        if (watching.length) {
+          wanted.set(`scratch:${repo}`, { scratch: true, repo, factories: watching, anchor: null });
         }
       }
       if (!page && chipPage(location.pathname)) {

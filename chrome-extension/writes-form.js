@@ -8,6 +8,7 @@
 //   ssfWrites.onChange(scheduleRender);
 //   const node = ssfWrites.render({ factories, repo, number });          // No agent
 //   const node = ssfWrites.renderActions({ factories, repo, number, item }); // an agent
+//   const node = ssfWrites.renderScratch({ factories, repo, login, sessions }); // a repository
 //   ssfWrites.applySnapshot(payload);
 //
 // `render` is the Assign agent form, for an item with no agent; one form per
@@ -20,9 +21,16 @@
 // rows, each writing through its own factory, with its own state. `item` is the
 // card's item object, which is what the pickers are prefilled from.
 //
-// Nothing here types at an agent: a person speaks to one on the item, where the
-// exchange is in the item's record. This module starts, moves and frees
-// sessions -- the three things that are not a comment (#439).
+// `renderScratch` is a repository page's scratch sessions (#414): each with
+// Open, Kill or Resume, and New scratch, the assign pickers plus whose it is.
+// A kill the factory's checks refuse is asked again, once, naming what will be
+// lost; a clean workspace goes on the first click.
+//
+// Nothing here types at an agent: a person speaks to an item's agent on the
+// item, where the exchange is in the item's record. This module starts, moves
+// and frees sessions -- the things that are not a comment (#439). Open is the
+// one way to an agent's own terminal: it opens the pane mirror in a tab of its
+// own (terminal.html), for any session.
 //
 // `factories` are the configured factories whose snapshot shows this item --
 // the same ones the card is drawn from. A factory whose Writes switch is off
@@ -157,6 +165,19 @@
       actionResult: null,
       /// The note a handover carries.
       note: "",
+      /// A scratch create: whose the new session is, `shared` or `mine`.
+      whose: "shared",
+      /// The signed-in GitHub user, from the page, for `mine`.
+      login: null,
+      /// The repository's scratch sessions from the latest frame.
+      sessions: [],
+      /// A kill the checks refused: `{session, message}` until it is confirmed
+      /// or cancelled.
+      kill: null,
+      /// The scratch session a kill or resume is in the air for.
+      rowBusy: null,
+      /// What the factory said about the last scratch write.
+      rowNote: null,
     };
   }
 
@@ -582,7 +603,8 @@
         state.error = null;
         redraw();
       });
-      actions.append(hand, release);
+      const open = openButton(state, state.item?.owner ?? state.itemId);
+      actions.append(hand, release, open);
       body.append(actions);
       // Where a message to this agent goes, said once, now that the box that
       // used to be here is gone: the row is the only place a person meets the
@@ -786,6 +808,229 @@
     });
   }
 
+  /// Open: the session's pane mirror in a tab of its own.
+  function openButton(state, session) {
+    const open = element("button", undefined, "Open", "open");
+    open.type = "button";
+    open.title = "Show this agent's terminal";
+    open.addEventListener("click", () => {
+      ask({ type: "ssf:open-pane", url: state.url, session }).then((reply) => {
+        if (reply?.ok) return;
+        state.error = reply?.error ?? "the extension could not open the terminal";
+        redraw();
+      });
+    });
+    return open;
+  }
+
+  /// A repository's scratch sessions on one factory: a row each, the kill
+  /// confirmation when one is open, and New scratch or its form.
+  function scratchPanel(state) {
+    const body = element("div", "ssf-writes");
+    body.append(element("div", "ssf-writes-head", "Scratch sessions", "head"));
+    if (!state.sessions.length) {
+      body.append(element("p", "ssf-writes-note", "No scratch sessions on this repository.", "none"));
+    }
+    for (const one of state.sessions) body.append(scratchRow(state, one));
+    if (state.rowNote) body.append(element("p", "ssf-writes-note", state.rowNote, "result"));
+    if (state.open === "new") {
+      body.append(scratchForm(state));
+      return body;
+    }
+    if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
+    const actions = element("div", "ssf-writes-actions", undefined, "actions");
+    const create = element("button", "primary", "New scratch");
+    create.type = "button";
+    create.addEventListener("click", () => {
+      state.open = "new";
+      state.error = null;
+      state.rowNote = null;
+      loadAgents(state);
+      redraw();
+    });
+    actions.append(create);
+    body.append(actions);
+    return body;
+  }
+
+  /// One scratch session: its id, whose it is, its stack and state, and what
+  /// can be done to it -- Open and Kill while it has a workspace, Resume once
+  /// it is killed.
+  function scratchRow(state, one) {
+    const row = element("div", "ssf-writes", undefined, `row:${one.id}`);
+    const id = String(one.id ?? "");
+    const short = id.slice(id.lastIndexOf("~"));
+    const whose = one.owner_login ? `@${one.owner_login}` : "shared";
+    const stack = [one.harness, one.model, one.effort].filter(Boolean).join(" \u00b7 ");
+    row.append(
+      element("p", "ssf-writes-stack", `${short} \u00b7 ${whose}`, "id"),
+      element("p", "ssf-writes-note", [stack, one.stateLabel].filter(Boolean).join(" \u00b7 "), "state"),
+    );
+    const busy = state.rowBusy === id;
+    if (state.kill?.session === id) {
+      row.append(
+        element("p", "ssf-writes-error", state.kill.message, "check"),
+        element(
+          "p",
+          "ssf-writes-error",
+          "All work in this workspace will be lost. The conversation is kept, so Resume can bring the session back on a fresh workspace.",
+          "lost",
+        ),
+      );
+      const actions = element("div", "ssf-writes-actions", undefined, "actions");
+      const force = element("button", "danger", busy ? "Killing\u2026" : "Kill anyway");
+      force.type = "button";
+      force.disabled = busy;
+      force.addEventListener("click", () => sendKill(state, id, true));
+      const cancel = element("button", undefined, "Cancel");
+      cancel.type = "button";
+      cancel.addEventListener("click", () => {
+        state.kill = null;
+        redraw();
+      });
+      actions.append(force, cancel);
+      row.append(actions);
+      return row;
+    }
+    const actions = element("div", "ssf-writes-actions", undefined, "actions");
+    if (one.active) {
+      actions.append(openButton(state, id));
+      const kill = element("button", "danger", busy ? "Killing\u2026" : "Kill");
+      kill.type = "button";
+      kill.disabled = busy;
+      kill.addEventListener("click", () => sendKill(state, id, false));
+      actions.append(kill);
+    } else {
+      const resume = element("button", undefined, busy ? "Resuming\u2026" : "Resume");
+      resume.type = "button";
+      resume.disabled = busy;
+      resume.addEventListener("click", () => sendResume(state, id));
+      actions.append(resume);
+    }
+    row.append(actions);
+    return row;
+  }
+
+  /// New scratch: the assign pickers, and whose the session is -- shared by the
+  /// repository, or the signed-in GitHub user's.
+  function scratchForm(state) {
+    const body = element("div", "ssf-writes", undefined, "new");
+    body.append(element("div", "ssf-writes-head", "New scratch", "head"));
+    if (state.agentsError) return agentsRefused(state, "New scratch");
+    const { harnesses, models, efforts, ready } = stack(state);
+    const owners = [{ value: "shared", text: "Shared" }];
+    if (state.login) owners.push({ value: "mine", text: `Mine (@${state.login})` });
+    if (state.whose === "mine" && !state.login) state.whose = "shared";
+    body.append(
+      select("Harness", harnesses, state.harness, (value) => {
+        state.harness = value;
+        state.model = DEFAULT;
+        state.models = null;
+        state.modelsFor = null;
+        state.modelsError = null;
+        loadModels(state, value);
+        redraw();
+      }),
+      select("Model", models, state.model, (value) => {
+        state.model = value;
+      }),
+      select("Effort", efforts, state.effort, (value) => {
+        state.effort = value;
+      }),
+      select("Whose", owners, state.whose, (value) => {
+        state.whose = value;
+      }),
+    );
+    if (state.modelsError) {
+      body.append(element("p", "ssf-writes-error", state.modelsError, "error:models"));
+    }
+    if (state.error) body.append(element("p", "ssf-writes-error", state.error, "error"));
+    const actions = element("div", "ssf-writes-actions", undefined, "actions");
+    const go = element("button", "primary", state.busy ? "Starting\u2026" : "Start");
+    go.type = "button";
+    go.disabled = !ready || state.modelsPending || state.busy;
+    go.addEventListener("click", () => sendScratch(state));
+    const cancel = element("button", undefined, "Cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => closeStep(state));
+    actions.append(go, cancel);
+    body.append(actions);
+    body.append(
+      element(
+        "p",
+        "ssf-writes-note",
+        "Starts an agent on this repository in a workspace of its own, working on no item, until it is killed.",
+        "hint",
+      ),
+    );
+    return body;
+  }
+
+  function sendScratch(state) {
+    if (state.busy) return;
+    state.error = null;
+    state.busy = true;
+    redraw();
+    ask({
+      type: "ssf:scratch",
+      url: state.url,
+      repo: state.repo,
+      harness: state.harness,
+      model: state.model,
+      effort: state.effort,
+      for: state.whose === "mine" ? state.login : undefined,
+    }).then((reply) => {
+      state.busy = false;
+      if (!reply?.ok) {
+        state.error = reply?.error ?? "the factory did not answer";
+        redraw();
+        return;
+      }
+      state.open = null;
+      const session = reply.result?.session ?? "the session";
+      state.rowNote = `Started ${session}; it shows here once the factory reports it.`;
+      redraw();
+    });
+  }
+
+  /// Kill a scratch session. The first request is never forced: a clean
+  /// workspace goes, and one the checks refuse opens the confirmation, whose
+  /// Kill anyway is the only request that sends `force`.
+  function sendKill(state, session, force) {
+    if (state.rowBusy) return;
+    state.rowBusy = session;
+    state.rowNote = null;
+    state.error = null;
+    redraw();
+    ask({ type: "ssf:scratch-release", url: state.url, session, force }).then((reply) => {
+      state.rowBusy = null;
+      if (reply?.ok) {
+        state.kill = null;
+        state.rowNote = `Killed ${session}; the workspace is removed on the daemon's next pass.`;
+      } else if (!force && reply?.body?.check) {
+        state.kill = { session, message: reply.error };
+      } else {
+        state.kill = null;
+        state.rowNote = reply?.error ?? "the factory did not answer";
+      }
+      redraw();
+    });
+  }
+
+  function sendResume(state, session) {
+    if (state.rowBusy) return;
+    state.rowBusy = session;
+    state.rowNote = null;
+    redraw();
+    ask({ type: "ssf:scratch-resume", url: state.url, session }).then((reply) => {
+      state.rowBusy = null;
+      state.rowNote = reply?.ok
+        ? `Resuming ${session} on the daemon's next pass.`
+        : (reply?.error ?? "the factory did not answer");
+      redraw();
+    });
+  }
+
   /// Stop remembering an item: its waits, if any are in flight, are the
   /// module's only promise that anything still cares, and the timers go with
   /// it.
@@ -840,6 +1085,23 @@
     return actions(state);
   }
 
+  /// A repository's scratch sessions on one factory, or `null` when that
+  /// factory does not accept writes. `sessions` are the factory's scratch
+  /// rows for the repository, each with the `stateLabel` the page drew for it;
+  /// `login` is the signed-in GitHub user, which is what `mine` means.
+  function renderScratch({ factories, repo, login, sessions }) {
+    const choices = contenders(factories);
+    if (!choices.length) return null;
+    const state = remember(`${repo}#0`, "scratch", choices[0].url);
+    chooseFactory(state, choices, choices[0].url);
+    state.login = login || null;
+    state.sessions = sessions ?? [];
+    if (state.harness && !state.models && !state.modelsPending && !state.modelsError) {
+      loadModels(state, state.harness);
+    }
+    return scratchPanel(state);
+  }
+
   /// Every snapshot, so a waiting form can see the item gain its agent, and so
   /// a sent message can see the item's last message change. That frame, not the
   /// HTTP response, is what ends "Assigning…": the response only says the
@@ -878,6 +1140,7 @@
     STYLE,
     render,
     renderActions,
+    renderScratch,
     applySnapshot,
     onChange(callback) {
       redraw = callback;

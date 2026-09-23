@@ -370,6 +370,29 @@ rule the factory enforces: the server accepts a write only from an extension
 origin, so nothing else that can reach a capability URL can act on a session
 through it.
 
+## Scratch sessions and the terminal
+
+On a repository's front page (`github.com/owner/name`) of a repository a factory
+watches, a **Scratch sessions** section lists that factory's scratch sessions
+(`ssf scratch`) for the repository, and **New scratch** offers the harness,
+model and effort pickers and whose session it is: **Shared**, or **Mine**
+(the login GitHub's page names in `<meta name="user-login">`). That login only
+labels the session; it is not access control.
+
+Each scratch card has **Open**, **Kill** and, once killed, **Resume**. Kill
+removes the workspace. When the factory's checks find nothing to lose it goes
+at once; when they find uncommitted or unpushed work the card shows what they
+found and says that all work in the workspace will be lost, and only **Kill
+anyway** (a second request, forced) removes it.
+
+**Open**, on a scratch card or in an item's Actions row, opens the session's
+agent pane in a new tab: a terminal (xterm.js, vendored under
+`vendor/xterm/` since an MV3 extension loads no remote script) mirroring the
+pane from `api/pane/<session>` and sending what you type through the service
+worker to `api/pane/input`. Typing is a write, so a factory whose Writes switch
+is off shows the pane read-only. The pane is read about four times a second
+only while a terminal is open on it.
+
 ## Reaching a factory on a tailnet
 
 A tailnet factory needs `dashboard.bind` set to a Tailscale address; see
@@ -398,8 +421,9 @@ forward, and keep tailnet ACLs restrictive.
   node is built with `textContent` and lives in a shadow root, so no factory
   text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
-  forms' pickers need: `api/assign`, `api/handover`, `api/release`, `api/agents`
-  and `api/models/<harness>`. A factory accepts a write only from an extension
+  forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
+  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`.
+  The terminal tab reads `api/pane/<session>` itself. A factory accepts a write only from an extension
   origin, and a page on github.com has none, so the content script never fetches
   a factory itself and no page the factory serves can act on a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are
