@@ -81,7 +81,7 @@ started with, one file per threshold (`omp-compaction-<tokens>.yml`), because
 OMP takes that setting only through its own configuration: `ssf launch` writes
 the file and names it in `PI_CONFIG_FILES`, which a session reads at startup and
 `omp --config <file>` is not (see
-[Context compaction](configuration.md#context-compaction)). A write that fails
+[Context compaction](harnesses.md#context-compaction)). A write that fails
 leaves the session on OMP's own threshold and says so on stderr rather than
 keeping the session from starting. The other two harnesses that have the setting
 take it on the command line, so nothing is written for them.
@@ -138,7 +138,7 @@ never resent or pasted. Inspect the journal and target rollout before resolving
 it; do not delete intent to force a retry. Ordinary standalone Codex sessions
 retain terminal fallback. Explicit remote launches with an unavailable or invalid
 channel are held, and `ssf doctor` reports the limitation. First prompts still
-use Herdr's confirmed path. See [configuration](configuration.md#codex-native-delivery).
+use Herdr's confirmed path. See [harnesses](harnesses.md#item-activity-delivery).
 
 OpenCode, Gemini CLI, Copilot CLI, Grok CLI and Crush do not
 yet have a proven channel wired into SSF's attached interactive session. Their

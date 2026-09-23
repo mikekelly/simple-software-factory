@@ -197,7 +197,7 @@ dashboard](dashboard.md) for configuration and proxy expectations.
   permissions mode, and Gemini and Pi ask about trust when started without
   their flags; ssf answers all of them so unattended launches do not stall.
   Approval prompts never appear because of the [default
-  commands](configuration.md#permissions).
+  commands](harnesses.md#the-launch-command-and-permissions).
 - **First-prompt confirmation.** Herdr waits for a fresh harness to start
   working before ssf records its session as seeded. A long OMP paste first
   opens OMP's attachment choice; Herdr's Enter accepts that choice but can

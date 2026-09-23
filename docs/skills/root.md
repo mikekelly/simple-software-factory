@@ -13,7 +13,7 @@ locally, in a VM, or over SSH.
 | --- | --- |
 | ssf installed and their first repository watched | `ssf skill setup`. It opens with a resource check that decides between a local VM, host mode and a rented host, then runs to the first issue. Before `ssf` is installed, the same document is `docs/install.md` in the repository. |
 | a repository added to a factory that already runs | `ssf skill repo`: access for the bot, choosing harness, model and effort with the person, `ssf repo add`, a minimal `SSF.md`, `ssf candidates` and `ssf adopt`, the first issue. |
-| to know what is running, change a setting, upgrade, stop | `ssf skill operate`: targets, `doctor` and `status` before any change, the service, versions. `ssf skill config` for every key. |
+| to know what is running, change a setting, upgrade, stop | `ssf skill operate`: targets, `doctor` and `status` before any change, the service, versions. `ssf skill config` for every key; `ssf skill harnesses` for models, effort and what a session runs. |
 | something is not working | `ssf skill troubleshoot`: triage sequence, then symptom, check and remedy. |
 | an `SSF.md` written or reviewed for a project | `ssf skill ssf-md`, then `SSF.example.md` in the repository; `ssf skill audit` for a bounded review of existing guidance. |
 | an always-on assistant that drives the factory for them | `ssf skill liaison`. |
@@ -59,7 +59,8 @@ Read `ssf skill agent` once; the short form:
 | `ssf-md` | `docs/ssf-md.md` | writing a repository's `SSF.md` |
 | `liaison` | `docs/liaison.md` | an assistant that acts for a person |
 | `audit` | `docs/audit.md` | a bounded review of a project's guidance |
-| `config` | `docs/configuration.md` | every key, models and effort, who may drive |
+| `config` | `docs/configuration.md` | every key, the server catalog, who may drive |
+| `harnesses` | `docs/harnesses.md` | models and effort, launch commands, compaction, delivery, sign-in |
 | `vm` | `docs/vm.md` | VM lifecycle, sizing, host versus guest |
 | `drivers` | `docs/drivers.md` | herdr workspaces and how activity reaches a harness |
 | `sessions` | `docs/sessions.md` | ownership, following, handover, release and purge |

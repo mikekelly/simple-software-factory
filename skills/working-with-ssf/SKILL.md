@@ -31,7 +31,7 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
 | --- | --- |
 | ssf installed, first repository watched | `ssf skill setup` |
 | a repository added to a running factory | `ssf skill repo` |
-| to inspect, change, upgrade or stop a factory | `ssf skill operate`, `ssf skill config` |
+| to inspect, change, upgrade or stop a factory | `ssf skill operate`, `ssf skill config`, `ssf skill harnesses` |
 | a factory repaired | `ssf skill troubleshoot` |
 | an `SSF.md` written or reviewed | `ssf skill ssf-md`, `ssf skill audit` |
 | an assistant that drives the factory for them | `ssf skill liaison` |
