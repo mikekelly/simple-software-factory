@@ -1,6 +1,7 @@
 //! The web pane mirror's factory side (#414): `ssf __pane watch` prints a
-//! session's agent pane -- its visible screen with colours -- as JSON lines,
-//! one each time it changes, and `ssf __pane send` types into it.
+//! session's agent pane -- its visible screen with colours, and the history
+//! above it -- as JSON lines, one each time it changes, and `ssf __pane send`
+//! types into it.
 //!
 //! These run where the sessions run, as every factory command does: the web
 //! endpoint starts them through the same client transport as its status
@@ -23,6 +24,16 @@ use crate::state::State;
 /// started again runs in a new pane, and finding the pane costs a listing of
 /// every agent, which is not worth doing on every read.
 const RELOCATE_EVERY: u32 = 20;
+
+/// How often a watch reads the history above the screen, in reads: a long
+/// history is a large read and a large frame, and the screen already shows
+/// what is new, so every two seconds is enough for scrolling back.
+const HISTORY_EVERY: u32 = 8;
+
+/// How many rows of a pane a watch reads for its history, the screen's own
+/// included: herdr's recent lines, bounded so a long-running agent's frame
+/// stays a few hundred kilobytes at most.
+const HISTORY_LINES: u32 = 1000;
 
 /// How long a watch goes without writing before it writes an empty line.
 /// A watch forwarded into a VM runs behind ssh with no terminal, so the
@@ -105,8 +116,9 @@ impl Changes {
     }
 }
 
-/// `ssf __pane watch`: the session's screen as `{"screen": …}` lines, or
-/// `{"error": …}` while it cannot be read, until whoever reads stdout goes.
+/// `ssf __pane watch`: the session's screen as `{"screen": …}` lines, the
+/// history above it as `{"history": …}` lines (each only when it changed),
+/// or `{"error": …}` while it cannot be read, until whoever reads stdout goes.
 ///
 /// A session whose pane cannot be found is said once and ends the watch,
 /// rather than reloading the config and state four times a second for as
@@ -114,6 +126,7 @@ impl Changes {
 pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
     let cfg = Config::load()?;
     let mut changes = Changes::default();
+    let mut history = Changes::default();
     let mut target: Option<(Driver, String)> = None;
     let mut reads = 0u32;
     let mut out = std::io::stdout();
@@ -141,11 +154,20 @@ pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
         reads = reads.wrapping_add(1);
         if let Some((driver, pane)) = &target {
             let said = match driver.screen_ansi(pane).await {
-                Ok(screen) => emit(
-                    &mut out,
-                    &mut changes,
-                    json!({"screen": redact_tokens(&screen)}),
-                )?,
+                Ok(screen) => {
+                    // History first, so a viewer has it before the screen
+                    // it sits above. One that cannot be read is left for
+                    // the next time: the screen is what matters.
+                    let mut said = false;
+                    if reads % HISTORY_EVERY == 1
+                        && let Ok(recent) = driver.recent_ansi(pane, HISTORY_LINES).await
+                    {
+                        let above = redact_tokens(&history_above(&recent, &screen));
+                        said = emit(&mut out, &mut history, json!({ "history": above }))?;
+                    }
+                    let shown = json!({"screen": redact_tokens(&screen)});
+                    emit(&mut out, &mut changes, shown)? || said
+                }
                 Err(error) => {
                     // Found again on the next read, or the watch ends.
                     target = None;
@@ -199,6 +221,14 @@ pub(crate) fn redact_tokens(screen: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The lines of `recent` above `screen`: herdr's recent lines end with the
+/// visible screen, so the history is whatever comes before that many lines.
+fn history_above(recent: &str, screen: &str) -> String {
+    let lines: Vec<&str> = recent.split("\r\n").collect();
+    let above = lines.len().saturating_sub(screen.split("\r\n").count());
+    lines[..above].join("\r\n")
 }
 
 /// One line, if it says something new, and whether it did. A reader that
@@ -273,6 +303,24 @@ mod tests {
         }
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text, "{\"screen\":\"one\"}\n{\"screen\":\"two\"}\n");
+    }
+
+    /// herdr's recent lines end with the visible screen (checked against
+    /// real panes: both drop trailing blank rows alike), so the history is
+    /// what comes before the screen's own number of lines.
+    #[test]
+    fn history_is_what_scrolled_off_above_the_screen() {
+        let recent = "old 1\r\nold 2\r\nshown 1\r\nshown 2";
+        assert_eq!(
+            history_above(recent, "shown 1\r\nshown 2"),
+            "old 1\r\nold 2"
+        );
+        assert_eq!(
+            history_above("shown 1\r\nshown 2", "shown 1\r\nshown 2"),
+            ""
+        );
+        // A screen longer than what was read leaves no history, not a panic.
+        assert_eq!(history_above("x", "a\r\nb"), "");
     }
 
     #[test]

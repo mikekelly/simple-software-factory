@@ -404,8 +404,9 @@ async function readPane(message, signal, tell) {
           else if (field.startsWith("data:")) data.push(field.slice(5).replace(/^ /, ""));
         }
         if (!data.length) continue;
-        if (event === "screen") {
-          tell({ type: "screen", data: data.join("\n") });
+        // The screen, or the history above it (docs/dashboard.md).
+        if (event === "screen" || event === "history") {
+          tell({ type: event, data: data.join("\n") });
         } else if (event === "error") {
           // The factory's reader has stopped, and says why.
           return { type: "refused", error: errorText(data.join("\n")) };

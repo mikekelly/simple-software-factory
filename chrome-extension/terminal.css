@@ -8,8 +8,11 @@ header { display: flex; gap: 12px; align-items: baseline; padding: 6px 12px;
   border-bottom: 1px solid #30363d; }
 #state { color: #8b949e; }
 #state[data-problem="true"] { color: #f85149; }
-/* The wheel over the terminal is the terminal's: run off its end, it does not
-   carry on into the GitHub page the terminal is framed over. */
-main { flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; padding: 8px; }
+/* The whole pane is fitted into the window (terminal.js), so nothing here
+   scrolls but the terminal's own scrollback, and the wheel over it, run off
+   its end, does not carry on into the GitHub page the terminal is framed
+   over. */
+html, body { overflow: hidden; overscroll-behavior: none; }
+main { flex: 1 1 auto; min-height: 0; overflow: hidden; overscroll-behavior: none; padding: 8px; }
 #reconnect { font: inherit; color: inherit; background: #21262d;
   border: 1px solid #30363d; border-radius: 6px; padding: 2px 10px; cursor: pointer; }

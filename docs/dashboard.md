@@ -256,7 +256,13 @@ for an item, `owner%2Fname~id` for a scratch session). It sends an
 screen with its ANSI colours as `herdr pane read --source visible --format ansi`
 prints it, with anything that looks like a GitHub token (`ghp_`, `gho_`,
 `ghs_`, `ghu_`, `github_pat_`) replaced by `<redacted>`, and another only when
-the screen changes; `event: error` with
+the screen changes. An `event: history` frame whose `data` is
+`{"history": "..."}` carries the rows above the screen, the pane's history,
+redacted the same way: `herdr pane read --source recent --lines 1000 --format
+ansi` with the screen's own rows taken off its end, so at most 1000 rows with
+the screen. It comes before the first screen, is read every two seconds and
+is sent again only when it changes; a client shows it above the screen, as
+scrollback. `event: error` with
 `{"error": ...}` says the pane cannot be read (no workspace, no agent running)
 and ends the stream, so a client does not ask again on its own.
 The screen is read about four times a second, and only while someone watches:
@@ -266,7 +272,9 @@ seventeenth gets an error frame. The reader asks herdr directly rather than the 
 the mirror does not freeze while a pass is busy. On an Intel i3-9100 a reader
 cost about 1.5% of one core whether the screen was idle or changing, shared by
 all its viewers; a screen changing four times a second sent about 26 KB/s per
-viewer.
+viewer. The history is the larger part: a colourful 1000-row history frame
+measured about 480 KB, so a pane whose history changes all the time can send
+up to about 240 KB/s per viewer, and an idle one sends it once.
 
 ### Snapshot fields a client can rely on
 

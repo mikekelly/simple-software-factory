@@ -8,7 +8,11 @@
 // The factory reads the pane's visible screen a few times a second while
 // someone watches it and sends a frame only when it changed
 // (`api/pane/<session>`, docs/dashboard.md); each frame is the whole screen,
-// drawn over the last one. What is typed goes to the service worker, which
+// drawn over the last one. Every few seconds it also sends the history above
+// the screen, which is kept as the terminal's scrollback: the wheel scrolls
+// back through it, never typing into the pane. The whole pane is fitted into
+// the window, its font made smaller where it has to be, so none of it is cut
+// off. What is typed goes to the service worker, which
 // sends it as the write `api/pane/input` -- a write like assign, so the
 // factory's Writes switch applies to it -- one request at a time, in order.
 //
@@ -35,6 +39,18 @@ const RETRY_MS = 3000;
 /// The port carries the stream, and a port that is used is what keeps the
 /// service worker holding it awake: the frames it sends do not.
 const PING_MS = 20000;
+
+/// The terminal's scrollback, in rows: the factory sends at most 1000 rows
+/// of history, the screen's own among them.
+const SCROLLBACK = 1000;
+
+/// The font size the pane is drawn at when it fits, and the smallest it is
+/// made to fit: below that a pane is cut off rather than made unreadable.
+const MAX_FONT = 13;
+const MIN_FONT = 5;
+
+/// Room kept at the right for the terminal's scrollbar, in pixels.
+const SCROLLBAR = 14;
 
 /// The next piece of `text` to send: at most CHUNK characters, never ending
 /// inside an escape sequence, which the pane would read as two keys.
@@ -103,30 +119,81 @@ async function start() {
   const term = new Terminal({
     cols: 100,
     rows: 30,
-    scrollback: 0,
+    scrollback: SCROLLBACK,
     cursorBlink: false,
     fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-    fontSize: 13,
+    fontSize: MAX_FONT,
   });
-  term.open(document.getElementById("screen"));
-  // The terminal keeps no scrollback -- each frame is the whole visible screen
-  // -- so the wheel is the page's: it scrolls a pane taller than the window,
-  // where xterm would take it and scroll nothing.
-  term.attachCustomWheelEventHandler(() => false);
+  const box = document.getElementById("screen");
+  term.open(box);
   term.focus();
 
-  /// Draw one frame over the last: home, every line with the rest of it
-  /// cleared, and everything below the last line cleared. The terminal takes
-  /// the pane's own size, growing to its widest line.
-  function draw(screen) {
-    const lines = screen.replace(/\r?\n$/, "").split(/\r?\n/);
-    const cols = Math.max(term.cols, ...lines.map(visibleWidth));
-    const rows = Math.max(1, lines.length);
-    if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
+  /// The largest font size, up to MAX_FONT, at which the whole pane --
+  /// every one of its columns and rows -- fits in the window. A cell does not
+  /// grow exactly with its font, so the first guess is stepped down until
+  /// it fits.
+  function fit() {
+    const drawn = term.element?.querySelector(".xterm-screen");
+    if (!drawn?.offsetWidth || !drawn.offsetHeight) return;
+    const style = getComputedStyle(box);
+    const width =
+      box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - SCROLLBAR;
+    const height = box.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+    if (width <= 0 || height <= 0) return;
+    const now = term.options.fontSize;
+    const scale = Math.min(width / drawn.offsetWidth, height / drawn.offsetHeight);
+    let size = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.floor(now * scale * 2) / 2));
+    if (size !== now) term.options.fontSize = size;
+    while (size > MIN_FONT && (drawn.offsetWidth > width || drawn.offsetHeight > height)) {
+      size -= 0.5;
+      term.options.fontSize = size;
+    }
+  }
+  new ResizeObserver(fit).observe(box);
+
+  // What the pane shows, as lines: the history above the screen, and the
+  // screen. A history that has not been drawn waits while the person is
+  // scrolled back through the last one, so what they read does not move
+  // under them, and is drawn once they are back at the bottom.
+  let history = [];
+  let screen = [];
+  let stale = false;
+  const lines = (text) => (text ? text.replace(/\r?\n$/, "").split(/\r?\n/) : []);
+  const atBottom = () => term.buffer.active.viewportY >= term.buffer.active.baseY;
+
+  /// Draw the history and the screen afresh: a reset, then every line, the
+  /// history's scrolling off the top into the scrollback.
+  function redraw() {
+    stale = false;
     term.write(
-      "\x1b[?25l\x1b[H" + lines.map((line) => `${line}\x1b[0m\x1b[K`).join("\r\n") + "\x1b[0m\x1b[J",
+      "\x1bc\x1b[?25l" + [...history, ...screen].map((line) => `${line}\x1b[0m`).join("\r\n"),
     );
   }
+
+  /// Draw one screen over the last: home, every line with the rest of it
+  /// cleared, and everything below the last line cleared. The scrollback is
+  /// left as it is, and so is the view of someone scrolled back through it.
+  /// The terminal takes the pane's own size, growing to its widest line.
+  function draw() {
+    const cols = Math.max(term.cols, ...screen.map(visibleWidth));
+    const rows = Math.max(1, screen.length);
+    if (cols !== term.cols || rows !== term.rows) {
+      term.resize(cols, rows);
+      fit();
+      // A resize moves rows between the screen and the scrollback.
+      stale = true;
+    }
+    if (stale && atBottom()) {
+      redraw();
+      return;
+    }
+    term.write(
+      "\x1b[?25l\x1b[H" + screen.map((line) => `${line}\x1b[0m\x1b[K`).join("\r\n") + "\x1b[0m\x1b[J",
+    );
+  }
+  term.onScroll(() => {
+    if (stale && atBottom()) redraw();
+  });
 
   const typing = params.get("input") === "1";
   // An item's agent has somewhere else to be spoken to; a scratch session's
@@ -166,11 +233,21 @@ async function start() {
   }
 
   function heard(message) {
-    if (message?.type === "screen") {
+    if (message?.type === "screen" || message?.type === "history") {
       failures = 0;
       try {
-        draw(JSON.parse(message.data).screen ?? "");
-        say(typing ? "live" : viewOnly);
+        const frame = JSON.parse(message.data);
+        if (message.type === "history") {
+          history = lines(frame.history ?? "");
+          stale = true;
+          // It comes before its screen; one that changed on its own is
+          // drawn with the screen already shown.
+          if (screen.length && atBottom()) redraw();
+        } else {
+          screen = lines(frame.screen ?? "");
+          draw();
+          say(typing ? "live" : viewOnly);
+        }
       } catch (error) {
         say(`the factory sent a frame that could not be read (${error})`, true);
       }

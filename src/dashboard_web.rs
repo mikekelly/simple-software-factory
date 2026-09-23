@@ -38,16 +38,22 @@ const MAX_SESSION: usize = 256;
 const MAX_MIRRORS: usize = 16;
 
 /// The pane mirrors being watched, by session: one reader per pane however
-/// many viewers it has, started by the first and stopped with the last. The
-/// value is the SSE frame to send next, or `None` before the first read.
+/// many viewers it has, started by the first and stopped with the last.
 type Mirrors = std::sync::Arc<
     std::sync::Mutex<
-        std::collections::HashMap<
-            String,
-            std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
-        >,
+        std::collections::HashMap<String, std::sync::Arc<tokio::sync::watch::Sender<Mirror>>>,
     >,
 >;
+
+/// What a pane mirror has to send: the latest frame (a screen or an error),
+/// or `None` before the first read, and the latest history frame. History is
+/// kept apart because the channel holds only the latest value, and a viewer
+/// who joins late still needs the history read before it came.
+#[derive(Clone, Default)]
+struct Mirror {
+    history: Option<std::sync::Arc<str>>,
+    frame: Option<String>,
+}
 
 /// The latest status snapshot, or the error that prevented loading one.
 type Latest = tokio::sync::watch::Receiver<Option<std::result::Result<Value, String>>>;
@@ -779,11 +785,7 @@ fn percent_decode(text: &str) -> Option<String> {
 /// started for this viewer. The map is only touched under its lock, and a
 /// mirror leaves it under the same lock, so a viewer never joins a mirror
 /// that is on its way out.
-fn mirror(
-    mirrors: &Mirrors,
-    session: &str,
-    client: &Path,
-) -> tokio::sync::watch::Receiver<Option<String>> {
+fn mirror(mirrors: &Mirrors, session: &str, client: &Path) -> tokio::sync::watch::Receiver<Mirror> {
     let mut map = mirrors
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -792,18 +794,21 @@ fn mirror(
     }
     if map.len() >= MAX_MIRRORS {
         // The sender goes at once, so the viewer gets this frame and the end.
-        let (_, frames) = tokio::sync::watch::channel(Some(error_frame(&format!(
-            "{MAX_MIRRORS} panes are already being watched; close one and try again"
-        ))));
+        let (_, frames) = tokio::sync::watch::channel(Mirror {
+            history: None,
+            frame: Some(error_frame(&format!(
+                "{MAX_MIRRORS} panes are already being watched; close one and try again"
+            ))),
+        });
         return frames;
     }
-    let (sender, frames) = tokio::sync::watch::channel(None);
+    let (sender, frames) = tokio::sync::watch::channel(Mirror::default());
     let sender = std::sync::Arc::new(sender);
     map.insert(session.to_string(), sender.clone());
     let command = match mirror_command(client, session) {
         Ok(command) => Some(command),
         Err(error) => {
-            sender.send_replace(Some(error_frame(&format!("{error:#}"))));
+            sender.send_modify(|m| m.frame = Some(error_frame(&format!("{error:#}"))));
             None
         }
     };
@@ -839,7 +844,7 @@ fn mirror_command(client: &Path, session: &str) -> Result<tokio::process::Comman
 async fn run_mirror(
     mirrors: Mirrors,
     session: String,
-    sender: std::sync::Arc<tokio::sync::watch::Sender<Option<String>>>,
+    sender: std::sync::Arc<tokio::sync::watch::Sender<Mirror>>,
     command: Option<tokio::process::Command>,
 ) {
     use tokio::io::AsyncBufReadExt;
@@ -868,9 +873,11 @@ async fn run_mirror(
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            sender.send_replace(Some(error_frame(&format!(
-                "could not start the pane reader: {error}"
-            ))));
+            sender.send_modify(|m| {
+                m.frame = Some(error_frame(&format!(
+                    "could not start the pane reader: {error}"
+                )));
+            });
             leave(&mirrors);
             return;
         }
@@ -897,10 +904,17 @@ async fn run_mirror(
                 Ok(Some(line)) => {
                     let frame = pane_frame(&line);
                     sender.send_if_modified(|last| {
-                        if last.as_deref() == Some(frame.as_str()) {
-                            return false;
+                        if frame.starts_with("event: history") {
+                            if last.history.as_deref() == Some(frame.as_str()) {
+                                return false;
+                            }
+                            last.history = Some(frame.into());
+                        } else {
+                            if last.frame.as_deref() == Some(frame.as_str()) {
+                                return false;
+                            }
+                            last.frame = Some(frame);
                         }
-                        *last = Some(frame);
                         true
                     });
                 }
@@ -911,9 +925,9 @@ async fn run_mirror(
                     let detail = detail.ok().and_then(|d| d.ok()).unwrap_or_default();
                     let detail = detail.trim();
                     if !detail.is_empty() {
-                        sender.send_replace(Some(error_frame(detail)));
-                    } else if !sender.borrow().as_deref().is_some_and(|f| f.starts_with("event: error")) {
-                        sender.send_replace(Some(error_frame("the pane reader stopped")));
+                        sender.send_modify(|m| m.frame = Some(error_frame(detail)));
+                    } else if !sender.borrow().frame.as_deref().is_some_and(|f| f.starts_with("event: error")) {
+                        sender.send_modify(|m| m.frame = Some(error_frame("the pane reader stopped")));
                     }
                     break;
                 }
@@ -939,22 +953,27 @@ async fn run_mirror(
 }
 
 /// A watch line as the frame a viewer gets: `event: screen` with the
-/// `{"screen": …}` object, or `event: error` with the `{"error": …}` one.
+/// `{"screen": …}` object, `event: history` with the `{"history": …}` one, or
+/// `event: error` with the `{"error": …}` one.
 fn pane_frame(line: &str) -> String {
     match serde_json::from_str::<Value>(line) {
         Ok(value) if value.get("screen").is_some() => format!("event: screen\ndata: {value}\n\n"),
+        Ok(value) if value.get("history").is_some() => {
+            format!("event: history\ndata: {value}\n\n")
+        }
         Ok(value) if value.get("error").is_some() => format!("event: error\ndata: {value}\n\n"),
         _ => error_frame("the pane reader said something that is not a frame"),
     }
 }
 
-/// Server-sent events for a pane mirror: the latest frame, then each new one,
-/// with a keepalive comment while the screen stands still. Ends when the
+/// Server-sent events for a pane mirror: the latest history and frame, then
+/// each new one, with a keepalive comment while the screen stands still.
+/// History goes before the screen it sits above. Ends when the
 /// viewer goes -- noticed at once, since a viewer is what keeps the pane
 /// being read -- or the mirror stops.
 async fn pane_events(
     stream: &mut TcpStream,
-    frames: &mut tokio::sync::watch::Receiver<Option<String>>,
+    frames: &mut tokio::sync::watch::Receiver<Mirror>,
     keepalive: Duration,
     write_timeout: Duration,
 ) {
@@ -977,21 +996,26 @@ async fn pane_events(
         if !write_frame(&mut writer, headers.as_bytes(), write_timeout).await {
             return;
         }
-        let mut pending = true;
+        let mut sent = Mirror::default();
         loop {
-            // Only the first frame and then each change is sent: the channel
-            // keeps its value, so a keepalive must not resend the last one.
-            if pending {
-                pending = false;
-                let frame = frames.borrow_and_update().clone();
-                if let Some(frame) = frame
+            // Only what changed is sent: the channel keeps its value, and a
+            // screen change must not resend the history, nor a keepalive the
+            // last frame.
+            let latest = frames.borrow_and_update().clone();
+            for (now, before) in [
+                (latest.history.as_deref(), sent.history.as_deref()),
+                (latest.frame.as_deref(), sent.frame.as_deref()),
+            ] {
+                if let Some(frame) = now
+                    && now != before
                     && !write_frame(&mut writer, frame.as_bytes(), write_timeout).await
                 {
                     return;
                 }
             }
+            sent = latest;
             match timeout(keepalive, frames.changed()).await {
-                Ok(Ok(())) => pending = true,
+                Ok(Ok(())) => {}
                 // The mirror stopped; its last frame has been sent.
                 Ok(Err(_)) => return,
                 Err(_) => {
@@ -2554,6 +2578,42 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         })
         .await
         .expect("the reader outlived its last viewer");
+        task.abort();
+    }
+
+    /// The history above the screen is its own frame, sent before the screen
+    /// and again only when it changes; a viewer who joins a running reader
+    /// gets the history it already read, not just the latest screen.
+    #[tokio::test]
+    async fn a_viewer_gets_the_history_above_the_screen() {
+        let client = Client::new("history", "", 0);
+        let script = "#!/bin/sh\n\
+             echo '{\"history\":\"old\"}'\necho '{\"screen\":\"one\"}'\nsleep 0.3\n\
+             echo '{\"screen\":\"two\"}'\nsleep 1\necho '{\"screen\":\"three\"}'\nexec sleep 30\n";
+        std::fs::write(client.program(), script).unwrap();
+        let (address, task) = served(&client).await;
+        let path = "/secret/api/pane/o%2Fr~ab12";
+        // The early viewer stays until "three", so the late one joins the
+        // same reader rather than starting another.
+        let (early, late) = tokio::join!(screens(address, path, 3), async {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            screens(address, path, 1).await
+        });
+        assert_eq!(
+            early,
+            [
+                "{\"history\":\"old\"}",
+                "{\"screen\":\"one\"}",
+                "{\"screen\":\"two\"}",
+                "{\"screen\":\"three\"}"
+            ],
+            "{early:?}"
+        );
+        assert_eq!(
+            late,
+            ["{\"history\":\"old\"}", "{\"screen\":\"two\"}"],
+            "{late:?}"
+        );
         task.abort();
     }
 
