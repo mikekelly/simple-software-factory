@@ -95,7 +95,10 @@ activity comes to you as FYI messages, and when it closes you get one message wi
 comment (the last comment the bot left on it). Assigning @{bot} to an existing item gives it a \
 fresh session too. A session that was handed an item this way is told so, \
 and its final comment on the item is all the delegating session gets, so it should sum up the \
-outcome.\n\n\
+outcome. Leave `--assignee` off the pull request you will merge yourself, though: that second \
+session works in the same checkout, on the same branch, and redoes the verification and review \
+you have already done. Your second pair of eyes is a reviewer subagent (see \"Second opinions\" \
+below).\n\n\
 An item supervised from here can also be started on a stack chosen for the work: open the \
 issue, then `ssf assign <n|owner/repo#n> --harness <id> [--model <id>] [--effort <level>]`. The \
 assignment lands on GitHub and the item's launch settings are written in the same request, so \

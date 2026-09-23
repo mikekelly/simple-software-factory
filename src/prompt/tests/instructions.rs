@@ -618,6 +618,11 @@ fn guide_holds_the_moved_reference() {
     assert!(g.contains("`ssf unsub <n>` stops them; `ssf subs` lists"));
     assert!(g.contains("from the agent on owner/repo#M"));
     assert!(g.contains("`--assignee bot` in the same `gh ... create` command"));
+    // #456: the hand-off paragraph warns against assigning the pull
+    // request the session will merge itself; a second pair of eyes is a
+    // reviewer subagent.
+    assert!(g.contains("Leave `--assignee` off the pull request you will merge yourself"));
+    assert!(g.contains("Your second pair of eyes is a reviewer subagent"));
     assert!(g.contains("You are subscribed to it automatically"));
     assert!(g.contains("`ssf assign <n|owner/repo#n> --harness <id> [--model <id>] [--effort"));
     assert!(g.contains("an orchestrator or project-manager item, an architectural review"));

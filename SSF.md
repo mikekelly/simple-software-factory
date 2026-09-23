@@ -56,6 +56,11 @@ other bounded tasks: for in-harness subagents, and for `ssf assign` and
   defect.
 - Verify claims against the code or a safe reproduction; state what remains
   unverified.
+- Open your pull request without `--assignee`. It belongs to this session
+  by its branch; `--assignee` hands it to a second session on the same
+  branch and the same checkout, which redoes the verification and review
+  this session has already done. A second pair of eyes is a reviewer
+  subagent here.
 - The owning session merges once validation and review are satisfied.
   Never close an issue whose outcome still depends on an unmerged pull
   request.

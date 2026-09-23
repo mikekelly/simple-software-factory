@@ -58,7 +58,11 @@ Some consequences worth knowing:
   gets one message with the outcome and the child's final comment when it closes. The
   child is told it was handed off and to leave a clear final comment. An agent that
   wants a separate worker therefore uses `--assignee`; an unassigned issue is a
-  placeholder with no session.
+  placeholder with no session. A session opening the pull request it will merge itself
+  must leave `--assignee` off: the assignment starts a second session, on the same
+  branch and in the same checkout, which redoes the verification and the review the
+  first has already done. Its second pair of eyes is a reviewer subagent (see [Second
+  opinions](#second-opinions)).
 - **Unbound items are revisited.** An item left alone is looked at again when it changes
   on GitHub *or* when it appears on another listing, whichever comes first, because an
   assignment can be older than the `updated_at` the item was ignored with. A listing
