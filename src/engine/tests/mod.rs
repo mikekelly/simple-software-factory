@@ -964,4 +964,5 @@ mod listings;
 #[path = "login.rs"]
 mod login_tests;
 mod releases;
+mod scratch;
 mod state;

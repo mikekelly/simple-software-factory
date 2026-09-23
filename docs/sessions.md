@@ -571,3 +571,30 @@ ssf purge --older-than 7
   request), on the stack the item carries: its [per-item
   overrides](harnesses.md#per-item-overrides), or the repository's own settings where
   there are none. The conversation resumes where the harness keeps one.
+
+## Scratch sessions
+
+A scratch session is an agent session on a repository that works on no
+item: exploration, a question about the code, a change that has no issue
+yet. `ssf scratch create owner/repo --harness ID [--model M] [--effort E]
+[--for LOGIN]` starts one and prints its id, `owner/repo~<id>` (four
+generated characters; nobody names it). Without `--for` it is shared; with
+it, it is that person's, and `ssf status --json` reports the login as
+`owner_login` (null when shared) on a row of `kind` `scratch`. A repository
+can have any number of them.
+
+Each has its own worktree on branch `scratch/<id>`, cut from the default
+branch. Inside it `SSF_SESSION` names the session and `SSF_ISSUE` is unset;
+`ssf sub`, `ssf unsub`, `ssf subs` and `ssf release` act for it, and the
+items it follows deliver to it as they would to an item's session. What it
+posts on GitHub carries no session tag, and there is no item for ssf to
+report a signed-out harness on. `ssf handover` does not apply: start another
+scratch session on the other stack instead.
+
+A scratch session lives until it is killed. Closing, merging and `ssf purge`
+never touch it, and a daemon restart resumes it. `ssf release --as
+owner/repo~<id>` kills it with the same checks as any release (refused, with
+the reasons, while work is not on origin; `--force` is for a person at a
+shell). The record, its branch and the harness conversation are kept, and
+`ssf scratch resume owner/repo~<id>` recreates the worktree, on that branch
+when it still exists, and resumes the conversation.

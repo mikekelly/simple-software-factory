@@ -21,6 +21,8 @@ Simple Software Factory (ssf) runs one agent session per GitHub issue or pull re
 involves the bot account @{bot}. Each session has a workspace (a git worktree of the \
 repository) and a terminal, and receives the item's activity as messages prefixed `[ssf]`. \
 `SSF_REPO` and `SSF_ISSUE` name the session's item; `SSF_BOT` is the bot's login.{machine} \
+A scratch session (`ssf scratch create`) works on no item: `SSF_SESSION` names it \
+(`owner/repo~id`), `SSF_ISSUE` is unset, and `ssf sub`, `ssf release` and the rest act for it. \
 This guide is the reference behind the initial prompt, and `ssf skill sessions` the lifecycle \
 reference behind this guide.\n\n\
 ## Posts\n\n\

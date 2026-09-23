@@ -494,12 +494,27 @@ impl Driver {
         harness: &str,
         sequence: u64,
     ) -> Option<(PathBuf, u64)> {
+        self.channel_at(
+            || crate::delivery_channel::mailbox(repo, number),
+            harness,
+            sequence,
+        )
+    }
+
+    /// [`Driver::delivery_channel`] for the mailbox `mailbox` names (a
+    /// scratch session's, say), resolved only when there is a channel.
+    pub fn channel_at(
+        &self,
+        mailbox: impl FnOnce() -> PathBuf,
+        harness: &str,
+        sequence: u64,
+    ) -> Option<(PathBuf, u64)> {
         match self {
             Driver::Herdr(_)
                 if crate::delivery_channel::supports(harness)
                     || matches!(harness, "claude" | "codex") =>
             {
-                Some((crate::delivery_channel::mailbox(repo, number), sequence))
+                Some((mailbox(), sequence))
             }
             // The OMP/Pi channel is a mailbox on disk, which the stub can name
             // without talking to anything, so a test of the daemon's side of it
@@ -507,7 +522,7 @@ impl Driver {
             // and Codex channels are their own protocols and stay unavailable.
             #[cfg(test)]
             Driver::Stub(_) if crate::delivery_channel::supports(harness) => {
-                Some((crate::delivery_channel::mailbox(repo, number), sequence))
+                Some((mailbox(), sequence))
             }
             _ => None,
         }
@@ -1131,10 +1146,21 @@ pub fn checkout_of_worktree(path: &str) -> Option<PathBuf> {
     name.strip_suffix(".worktrees").map(|n| base.join(n))
 }
 
-/// Branch a workspace named `name` works on.
+/// Branch a workspace named `name` works on: `bot/<name>` for an item's,
+/// `scratch/<id>` for a scratch session's (named `scratch-<id>`).
 pub fn branch_for(name: &str) -> String {
-    format!("bot/{name}")
+    match name.strip_prefix(SCRATCH_PREFIX) {
+        Some(id) => format!("scratch/{id}"),
+        None => format!("bot/{name}"),
+    }
 }
+
+/// What a scratch session's workspace name starts with.
+pub const SCRATCH_PREFIX: &str = "scratch-";
+
+/// The item number a scratch session's workspace is created with: GitHub
+/// numbers items from 1, so this names none.
+pub const NO_ITEM: u64 = 0;
 
 /// The item number a workspace name (`issue-12-...`, `pr-12`) was made
 /// for. A `review-12-...` worktree (the reviewer sessions of before #115)

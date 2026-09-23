@@ -259,6 +259,14 @@ pub(super) enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Scratch sessions: agent sessions on a repository that work on no
+    /// issue or pull request, each in a worktree of its own on
+    /// `scratch/<id>`. One lives until a person ends it with `ssf release
+    /// --as owner/repo~id` (the same checks as an item's release).
+    Scratch {
+        #[command(subcommand)]
+        command: ScratchCommand,
+    },
     /// Remove the workspaces of closed items whose agent is gone: each is
     /// listed with its state, the clean-and-pushed ones are removed, the
     /// rest are left in place. Workspaces of open items, of sessions that
@@ -328,17 +336,21 @@ pub(super) enum Command {
     },
     /// Run a command (normally an agent) with the bot's GitHub credentials in
     /// its environment: GH_TOKEN, GITHUB_TOKEN, a git credential helper, and
-    /// SSF_REPO / SSF_ISSUE / SSF_ISSUE_URL for the issue being worked.
+    /// SSF_REPO / SSF_ISSUE / SSF_ISSUE_URL for the issue being worked, or
+    /// SSF_REPO / SSF_SESSION for a scratch session (`--session`).
     /// The harness, model and effort it is started with, when the daemon is
     /// the one starting it, go to the session as SSF_HARNESS / SSF_MODEL /
     /// SSF_EFFORT and name it in the byline of everything its `gh` posts.
     Launch {
         #[arg(long)]
         repo: Option<String>,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "session")]
         issue: Option<u64>,
         #[arg(long)]
         issue_url: Option<String>,
+        /// Scratch session this is (owner/repo~id); it works on no item.
+        #[arg(long)]
+        session: Option<String>,
         /// Harness id this session runs (`ssf agents` lists the ids).
         #[arg(long)]
         harness: Option<String>,
@@ -565,6 +577,42 @@ pub(super) enum AuthCommand {
         /// Keep the SSH key registered on the bot account and on disk.
         #[arg(long)]
         keep_keys: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub(super) enum ScratchCommand {
+    /// Start a scratch session on a watched repository and print its id
+    /// (owner/repo~id). Shared by everyone on the repository unless --for
+    /// names whose it is.
+    Create {
+        /// Repository as owner/name.
+        repo: String,
+        /// Harness the session runs (`ssf agents` lists the ids).
+        #[arg(long, value_name = "ID")]
+        harness: String,
+        /// Model for the session (`ssf models <harness>` lists them); the
+        /// harness's own default when not given.
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        /// Effort level for the session; the harness's own default when
+        /// not given.
+        #[arg(long, value_name = "LEVEL")]
+        effort: Option<String>,
+        /// GitHub login of the person the session is for.
+        #[arg(long = "for", value_name = "LOGIN")]
+        r#for: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Bring a released scratch session back: its workspace is re-created
+    /// (on its old branch when that still exists) and its harness resumes
+    /// the conversation it had.
+    Resume {
+        /// The session, as owner/repo~id.
+        session: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 

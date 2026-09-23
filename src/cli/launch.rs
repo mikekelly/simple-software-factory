@@ -4,6 +4,7 @@ pub(super) fn launch(
     repo: Option<String>,
     issue: Option<u64>,
     issue_url: Option<String>,
+    session: Option<String>,
     stack: Option<origin::Stack>,
     auto_compaction_tokens: Option<u64>,
     command: Vec<String>,
@@ -55,6 +56,25 @@ pub(super) fn launch(
         configured_bot_login(None, state_bot.as_deref(), cfg.github.login.as_deref())
     {
         cmd.env("SSF_BOT", login);
+    }
+    // A session is either an item's or a scratch session's, never both: an
+    // identity inherited from the shell that started this one is dropped.
+    for name in [
+        "SSF_ISSUE",
+        "SSF_ISSUE_URL",
+        "SSF_SESSION",
+        "SSF_DELIVERY_MAILBOX",
+    ] {
+        cmd.env_remove(name);
+    }
+    if let Some(s) = session {
+        if let Some(scratch) = origin::Scratch::parse(&s) {
+            cmd.env(
+                "SSF_DELIVERY_MAILBOX",
+                crate::delivery_channel::scratch_mailbox(&scratch.repo, &scratch.id),
+            );
+        }
+        cmd.env("SSF_SESSION", s);
     }
     if let Some(r) = repo {
         if let Some(n) = issue {

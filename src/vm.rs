@@ -80,7 +80,7 @@ const WAIT_BACKSTOP_MARGIN: Duration = Duration::from_secs(30);
 /// factory is there (`run` only as `run --once`; plain `run` supervises the
 /// VM from the host). `__request` is the web endpoint's own use of the
 /// daemon protocol.
-pub const FORWARDED: [&str; 18] = [
+pub const FORWARDED: [&str; 19] = [
     "status",
     "peers",
     "sub",
@@ -89,6 +89,7 @@ pub const FORWARDED: [&str; 18] = [
     "release",
     "handover",
     "assign",
+    "scratch",
     "purge",
     "doctor",
     "run",

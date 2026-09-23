@@ -133,9 +133,31 @@ pub(super) fn identity(as_: Option<&str>) -> Result<Option<origin::Origin>> {
     }
 }
 
-/// An item or session argument: `owner/repo#N`, or a bare number on `me`'s
-/// repository.
+/// This session as a command names it, for the commands a scratch session
+/// runs too: `--as` (an item's session, `owner/repo#N`, or a scratch session,
+/// `owner/repo~id`), else the environment `ssf launch` set up (`SSF_SESSION`
+/// for a scratch session). With it, what a bare item number is read
+/// against: the session's repository.
+pub(super) fn session_identity(as_: Option<&str>) -> Result<Option<(String, origin::Origin)>> {
+    let scratch = match as_ {
+        Some(a) => origin::Scratch::parse(a),
+        None => origin::Scratch::from_env(),
+    };
+    if let Some(s) = scratch {
+        // The number is never read: only the repository is.
+        let base = origin::Origin::new(&s.repo, 0)
+            .with_context(|| format!("{s}: not a repository ssf can read"))?;
+        return Ok(Some((s.to_string(), base)));
+    }
+    Ok(identity(as_)?.map(|o| (o.to_string(), o)))
+}
+
+/// An item or session argument: `owner/repo#N`, a scratch session
+/// (`owner/repo~id`), or a bare number on `me`'s repository.
 pub(super) fn item_ref(item: &str, me: Option<&origin::Origin>) -> Result<String> {
+    if let Some(s) = origin::Scratch::parse(item) {
+        return Ok(s.to_string());
+    }
     let item = item.trim().trim_start_matches('#');
     if let Ok(n) = item.parse::<u64>() {
         return match me {
@@ -158,11 +180,10 @@ pub(super) async fn sub(
     subscribe: bool,
     events: Option<&str>,
 ) -> Result<()> {
-    let me = identity(as_)?.context(
+    let (me, base) = session_identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
-    let target = item_ref(item, Some(&me))?;
-    let me = me.to_string();
+    let target = item_ref(item, Some(&base))?;
     let req = if subscribe {
         ipc::Request::Sub {
             from: me.clone(),
@@ -272,13 +293,16 @@ everything on it arrives as [ssf] FYI messages"
 pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
     let cfg = Config::load()?;
     let st = state::State::load()?;
-    let me = identity(as_)?.context(
+    let (me_str, me) = session_identity(as_)?.context(
         "not inside an agent session (SSF_REPO/SSF_ISSUE unset); pass --as owner/repo#N",
     )?;
-    // The subscriber is always the owning session.
+    // The subscriber is always the owning session; a scratch session is
+    // its own.
+    let scratch = origin::Scratch::parse(&me_str).is_some();
     let me_id = st
         .repos
         .get(&me.repo)
+        .filter(|_| !scratch)
         .map(|rs| {
             let mut cur = me.number;
             let mut hops = 0;
@@ -291,7 +315,7 @@ pub(super) fn subs(as_: Option<&str>, json: bool) -> Result<()> {
             }
             status::session_id(&me.repo, cur)
         })
-        .unwrap_or_else(|| me.to_string());
+        .unwrap_or(me_str);
     let mut following = Vec::new();
     let mut followers = Vec::new();
     for repo in &cfg.repos {
@@ -401,17 +425,20 @@ pub(super) async fn release(
     force: bool,
     json: bool,
 ) -> Result<()> {
-    let me = identity(as_)?;
+    let me = session_identity(as_)?;
     let session = match item {
-        Some(i) => item_ref(i, me.as_ref())?,
+        Some(i) => item_ref(i, me.as_ref().map(|(_, base)| base))?,
         None => me
             .as_ref()
-            .map(|o| o.to_string())
+            .map(|(id, _)| id.clone())
             .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
     };
     // Inside a session `--force` is not the agent's to use: the checks are
     // the whole point. A person passes --as, or runs it from a plain shell.
-    if force && as_.is_none() && origin::Origin::from_env().is_some() {
+    if force
+        && as_.is_none()
+        && (origin::Origin::from_env().is_some() || origin::Scratch::from_env().is_some())
+    {
         bail!(
             "--force is for a person who has looked at the workspace: run `ssf release --as {session} --force` from a shell"
         );
@@ -581,12 +608,12 @@ pub(super) async fn handover(
     as_: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let me = identity(as_)?;
+    let me = session_identity(as_)?;
     let session = match item {
-        Some(i) => item_ref(i, me.as_ref())?,
+        Some(i) => item_ref(i, me.as_ref().map(|(_, base)| base))?,
         None => me
             .as_ref()
-            .map(|o| o.to_string())
+            .map(|(id, _)| id.clone())
             .context("not inside an agent session (SSF_REPO/SSF_ISSUE unset); name the item, or pass --as owner/repo#N")?,
     };
     if cancel {
@@ -611,7 +638,7 @@ pub(super) async fn handover(
         model: model.map(str::to_string),
         effort: effort.map(str::to_string),
         summary,
-        by: me.map(|o| o.to_string()),
+        by: me.map(|(id, _)| id),
     })
     .await?;
     if json {
@@ -894,4 +921,65 @@ pub(crate) async fn purge(
         );
     }
     Ok(())
+}
+
+/// `ssf scratch create|resume`, answered by the daemon.
+pub(super) async fn scratch(command: super::ScratchCommand) -> Result<()> {
+    match command {
+        super::ScratchCommand::Create {
+            repo,
+            harness,
+            model,
+            effort,
+            r#for,
+            json,
+        } => {
+            let harness = harness.trim();
+            if !agents::is_known(harness) {
+                bail!("{harness} is not a harness ssf knows; `ssf agents` lists the ids");
+            }
+            models::validate(harness, model.as_deref(), effort.as_deref())?;
+            let v = ipc::call(&ipc::Request::ScratchCreate {
+                repo,
+                harness: harness.to_string(),
+                model,
+                effort,
+                owner_login: r#for,
+            })
+            .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                // The id alone on stdout, so a script can take it.
+                println!("{}", v["session"].as_str().unwrap_or("?"));
+            }
+            Ok(())
+        }
+        super::ScratchCommand::Resume { session, json } => {
+            let session = origin::Scratch::parse(&session)
+                .with_context(|| format!("{session}: expected owner/repo~id"))?
+                .to_string();
+            let v = ipc::call(&ipc::Request::ScratchResume { session }).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+                return Ok(());
+            }
+            let session = v["session"].as_str().unwrap_or("?");
+            let what = if v["recreated"] == true {
+                "workspace re-created"
+            } else {
+                "started again in its workspace"
+            };
+            let conversation = if v["resumed"] == true {
+                "its conversation resumed"
+            } else {
+                "a fresh conversation (the old one could not be resumed)"
+            };
+            println!(
+                "{session}: {what} ({}), {conversation}.",
+                v["path"].as_str().unwrap_or("")
+            );
+            Ok(())
+        }
+    }
 }

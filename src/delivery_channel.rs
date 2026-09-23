@@ -94,6 +94,16 @@ pub(crate) fn unavailable(mailbox: &Path) -> anyhow::Error {
 }
 
 pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
+    repo_dir(repo).join(number.to_string())
+}
+
+/// A scratch session's mailbox (`owner/repo~id`), beside its repository's
+/// items': `~` cannot start an item number, so the two never meet.
+pub(crate) fn scratch_mailbox(repo: &str, id: &str) -> PathBuf {
+    repo_dir(repo).join(format!("~{id}"))
+}
+
+fn repo_dir(repo: &str) -> PathBuf {
     let mut path = crate::config::state_dir().join("delivery");
     for component in repo.split('/') {
         path.push(match component {
@@ -103,7 +113,7 @@ pub(crate) fn mailbox(repo: &str, number: u64) -> PathBuf {
             other => other,
         });
     }
-    path.join(number.to_string())
+    path
 }
 
 // ---- the bridge and the launcher this build ships -------------------------

@@ -108,6 +108,7 @@ ssf repo add owner/repo ... | ssf config set ...   # configure; picked up on the
 ssf assign 12 --harness codex | ssf handover 12 --harness claude  # start an item; pass one on
 ssf sub 12 | ssf unsub 12 | ssf subs      # follow an item's activity from this session
 ssf release | ssf purge                   # give a workspace back; sweep those of closed items
+ssf scratch create owner/repo --harness claude | ssf scratch resume owner/repo~k3f9  # a session on no item
 ssf doctor                                # what is missing, and which checkouts still hold work
 ```
 
@@ -133,6 +134,19 @@ One line each:
 - `ssf handover 12 --harness ID` moves an item to a new session on another
   harness, model or effort in the same workspace.
 - `ssf release` gives a workspace back once everything is on origin.
+- `ssf scratch create owner/repo --harness ID [--model M] [--effort E]
+  [--for LOGIN]` starts a scratch session: an agent session on the
+  repository that works on no item, in a worktree of its own on branch
+  `scratch/<id>` cut from the default branch. It prints the session's id,
+  `owner/repo~<id>`. Without `--for` it is shared; with it, that person's.
+  It lives until killed, is never purged, and resumes after a daemon
+  restart. Inside it `SSF_SESSION` names it and `SSF_ISSUE` is unset, so
+  `ssf sub`, `ssf subs` and `ssf release` act for it, and a followed item's
+  activity is delivered to it. `ssf status` lists it with kind `scratch`.
+- `ssf release --as owner/repo~<id>` kills a scratch session with the same
+  checks as any release; the record, branch and conversation stay, and
+  `ssf scratch resume owner/repo~<id>` recreates the worktree on that
+  branch and resumes the conversation.
 - `ssf purge` removes the workspaces of closed items whose agent is gone;
   `--dry-run` lists only.
 

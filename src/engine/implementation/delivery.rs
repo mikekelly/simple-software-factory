@@ -172,7 +172,18 @@ impl Engine {
             {
                 continue;
             }
-            let Ok((srepo, snumber, sid)) = self.known_session(&sub) else {
+            // A scratch session hears about what it follows while it has a
+            // workspace; one that was killed is not brought back for an FYI.
+            let scratch = crate::origin::Scratch::parse(&sub);
+            let known = match &scratch {
+                Some(_) => self
+                    .scratch(&sub)
+                    .map(|(r, s, st)| (r, 0, s.to_string(), st.worktree_id.is_some())),
+                None => self
+                    .known_session(&sub)
+                    .map(|(r, n, sid)| (r, n, sid, false)),
+            };
+            let Ok((srepo, snumber, sid, scratch_live)) = known else {
                 warn!(
                     repo = repo.name,
                     issue = issue.number,
@@ -181,16 +192,22 @@ impl Engine {
                 );
                 continue;
             };
-            let sst = self.entry(&srepo, snumber).clone();
-            let alive = match sst.worktree_id.as_deref() {
-                Some(id) => self
-                    .driver(&srepo)
-                    .worktree_exists(id)
-                    .await
-                    .unwrap_or(false),
-                None => false,
+            let retired = match &scratch {
+                Some(_) => !scratch_live,
+                None => {
+                    let sst = self.entry(&srepo, snumber).clone();
+                    let alive = match sst.worktree_id.as_deref() {
+                        Some(id) => self
+                            .driver(&srepo)
+                            .worktree_exists(id)
+                            .await
+                            .unwrap_or(false),
+                        None => false,
+                    };
+                    !sst.active && !alive
+                }
             };
-            if !sst.active && !alive {
+            if retired {
                 debug!(
                     repo = repo.name,
                     issue = issue.number,
@@ -216,8 +233,22 @@ impl Engine {
             let ctx = self.ctx(repo, &st);
             let text =
                 prompt::fyi_prompt(issue, &mine, &ctx, owner_session.as_deref(), merged, what);
-            match self.deliver_to(&srepo, snumber, &text, None).await {
-                Ok(_) => {
+            let told = match &scratch {
+                Some(s) => self
+                    .deliver_scratch(&srepo, &s.id, &text, None)
+                    .await
+                    .map(|_| ()),
+                None => self
+                    .deliver_to(&srepo, snumber, &text, None)
+                    .await
+                    .map(|_| {
+                        let e = self.entry(&srepo, snumber);
+                        e.last_prompt_at = Some(now_iso());
+                        e.prompts_sent += 1;
+                    }),
+            };
+            match told {
+                Ok(()) => {
                     info!(
                         repo = repo.name,
                         issue = issue.number,
@@ -225,9 +256,6 @@ impl Engine {
                         events = mine.len(),
                         "told a subscriber"
                     );
-                    let e = self.entry(&srepo, snumber);
-                    e.last_prompt_at = Some(now_iso());
-                    e.prompts_sent += 1;
                 }
                 Err(e) if is_held(&e) => debug!(
                     repo = repo.name,

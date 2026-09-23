@@ -923,6 +923,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             force,
             json,
         } => purge(dry_run, older_than, force, json).await,
+        Command::Scratch { command } => scratch(command).await,
         Command::Skill { topic } => super::skill::print(topic),
         Command::Guide => {
             let state_bot = state::State::load().ok().and_then(|state| state.bot_login);
@@ -957,6 +958,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             repo,
             issue,
             issue_url,
+            session,
             harness,
             model,
             effort,
@@ -966,6 +968,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
             repo,
             issue,
             issue_url,
+            session,
             origin::Stack::from_parts(harness.as_deref(), model.as_deref(), effort.as_deref()),
             auto_compaction_tokens,
             command,

@@ -12,6 +12,12 @@ impl Engine {
         summary: Option<&str>,
         by: Option<&str>,
     ) -> Result<Value> {
+        if crate::origin::Scratch::parse(session).is_some() {
+            anyhow::bail!(Refused::conflict(format!(
+                "{session} is a scratch session, which cannot be handed over; release it and \
+create another on the stack you want (`ssf scratch create`)"
+            )));
+        }
         let (repo, number, id) = self.known_session(session)?;
         let st = self.entry(&repo, number).clone();
         if !st.active || st.worktree_id.is_none() {
@@ -590,6 +596,9 @@ which harness is running in its workspaces"
     /// who has looked, including the check for open items bound to the
     /// session.
     pub(in crate::engine) async fn release(&mut self, session: &str, force: bool) -> Result<Value> {
+        if crate::origin::Scratch::parse(session).is_some() {
+            return self.release_scratch(session, force).await;
+        }
         let (repo, number, id) = self.known_session(session)?;
         let st = self.entry(&repo, number).clone();
         if st.active {

@@ -136,6 +136,51 @@ impl Origin {
     }
 }
 
+/// A scratch session: `owner/repo~id`, an agent session on a repository
+/// that works on no item. The id is generated (lowercase letters and
+/// digits); nobody names one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Scratch {
+    pub repo: String,
+    pub id: String,
+}
+
+impl fmt::Display for Scratch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}~{}", self.repo, self.id)
+    }
+}
+
+impl Scratch {
+    pub fn new(repo: &str, id: &str) -> Option<Self> {
+        let repo = repo.trim();
+        crate::config::split_repo_name(repo).ok()?;
+        let id = id.trim();
+        if id.is_empty()
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        {
+            return None;
+        }
+        Some(Self {
+            repo: repo.to_string(),
+            id: id.to_string(),
+        })
+    }
+
+    /// `owner/repo~id`.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (repo, id) = s.trim().rsplit_once('~')?;
+        Self::new(repo, id)
+    }
+
+    /// The scratch session this process runs in, from `SSF_SESSION`.
+    pub fn from_env() -> Option<Self> {
+        Self::parse(&std::env::var("SSF_SESSION").ok()?)
+    }
+}
+
 /// What a session was launched with, as its byline names it: the harness
 /// (its id, what `--harness` takes) and the configured model and effort,
 /// which are `None` where the harness's own default applies. `ssf launch`
@@ -598,6 +643,27 @@ mod tests {
 
     fn line() -> String {
         o().first_line(Some("acme/widgets"), false, None)
+    }
+
+    #[test]
+    fn scratch_ids_parse_and_print() {
+        let s = Scratch::parse(" acme/widgets~k3f9 ").unwrap();
+        assert_eq!(s.repo, "acme/widgets");
+        assert_eq!(s.id, "k3f9");
+        assert_eq!(s.to_string(), "acme/widgets~k3f9");
+        for bad in [
+            "acme/widgets#12",
+            "acme/widgets~",
+            "acme/widgets~K3F9",
+            "acme/widgets~k3-9",
+            "widgets~k3f9",
+            "~k3f9",
+        ] {
+            assert!(Scratch::parse(bad).is_none(), "{bad}");
+        }
+        // An item reference is never read as a scratch session, nor the
+        // other way round.
+        assert!(Origin::parse("acme/widgets~k3f9").is_none());
     }
 
     #[test]

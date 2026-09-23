@@ -116,6 +116,21 @@ pub enum Request {
         older_than_days: Option<u64>,
         force: bool,
     },
+    /// Start a scratch session on `repo` (`owner/name`): an agent session
+    /// that works on no item, in a worktree of its own, on this stack.
+    /// Shared without `owner_login`; that GitHub user's with it.
+    ScratchCreate {
+        repo: String,
+        harness: String,
+        model: Option<String>,
+        effort: Option<String>,
+        owner_login: Option<String>,
+    },
+    /// Bring a killed scratch session (`owner/repo~id`) back: its workspace
+    /// re-created and its harness conversation resumed.
+    ScratchResume {
+        session: String,
+    },
     Ping,
 }
 
