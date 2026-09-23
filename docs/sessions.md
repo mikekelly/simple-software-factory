@@ -511,9 +511,18 @@ ssf purge --older-than 7
 - **`ssf release`** asks the daemon to remove the session's workspace after checking, in
   the worktree, that the tree is clean (no modified or untracked files; ignored build
   artefacts do not count), that every commit at HEAD is reachable from a remote-tracking
-  ref, and that no stash entry was made on that branch. The same-named remote branch
-  need not still exist once its commits have been merged elsewhere. If a check fails it
-  prints what would be lost and refuses; nothing is removed. A person who has looked can
+  ref, and that no stash entry was made on that branch. Reachability is by ancestry
+  through a remote-tracking ref: a merge commit puts the workspace's commits in the base
+  branch's history, where `--squash` replaces them with one new commit and `--rebase`
+  with rewritten ones — neither reachable from anything. A session merging its own pull
+  request therefore uses `gh pr merge --merge`, not `--squash` or `--rebase`. After a
+  squash or rebase merge the workspace passes only while the branch's own
+  remote-tracking ref survives, so a prune of it (`git fetch --prune`, `git remote prune`)
+  or a `git push --delete` of the branch leaves the check refusing a workspace whose
+  content is already in the base. Where that has happened, take one of three ways out:
+  keep the branch on origin, re-push it, or point the workspace at the base once the
+  merge is confirmed (`git reset --hard origin/<base>`). If a check fails it prints what
+  would be lost and refuses; nothing is removed. A person who has looked can
   pass `--force` (from a shell, not inside the session). The daemon removes the
   workspace and its terminal on its next pass, running the checks once more first unless
   forced. If that re-check finds work, the release is dropped and the agent gets one

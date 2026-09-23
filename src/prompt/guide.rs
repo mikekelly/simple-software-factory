@@ -142,7 +142,11 @@ exactly as it is: nothing on disk is ever removed on that signal. Commit what is
 keeping, push, leave a final comment, and then, only if everything is on origin, run \
 `ssf release`: the daemon checks that the tree is clean, every commit at HEAD is reachable \
 from a remote-tracking ref and no stash was made on the branch, and removes the workspace (with this terminal) \
-on its next pass. If anything would be lost it says what and refuses; leave the workspace \
+on its next pass. That reachability is by ancestry, so a pull request merged with a merge \
+commit (`gh pr merge --merge`) leaves this workspace's commits in the base branch, where \
+`--squash` and `--rebase` replace them with commits of their own, and such a workspace \
+then passes only while the branch's own remote-tracking ref survives a prune. If anything \
+would be lost it says what and refuses; leave the workspace \
 then, a kept workspace costs nothing, and a person cleans up with `ssf purge`. If the daemon's \
 own re-check on that pass finds work instead, you get one `[ssf] Release ... refused` message \
 naming it; after three such refusals ssf stops asking and keeps the workspace for a person. A \
