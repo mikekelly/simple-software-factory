@@ -368,3 +368,27 @@ fn omp_full_height_setup_keeps_header_context() {
     let echoed = format!("[ssf] activity\n> {}", screen.replace('\n', "\n> "));
     assert_eq!(blocking_dialog("omp", &echoed), None);
 }
+
+/// Which harnesses a driver hands a delivery journal (mailbox and sequence):
+/// herdr every one with a native channel, the stub only the on-disk mailbox
+/// it can name without talking to anything. An unknown harness has none.
+#[test]
+fn a_journal_goes_to_the_harnesses_with_a_native_channel() {
+    let with_journal = |driver: &Driver| -> Vec<&str> {
+        crate::harness::HARNESSES
+            .iter()
+            .map(|h| h.id)
+            .chain(["nope"])
+            .filter(|id| {
+                driver
+                    .channel_at(|| PathBuf::from("/mailbox"), id, 7)
+                    .inspect(|journal| assert_eq!(journal, &(PathBuf::from("/mailbox"), 7)))
+                    .is_some()
+            })
+            .collect()
+    };
+    let herdr = Driver::Herdr(Herdr::new(crate::config::HerdrConfig::default()));
+    assert_eq!(with_journal(&herdr), ["claude", "codex", "omp", "pi"]);
+    let stub = Driver::Stub(StubDriver::new(DriverKind::Herdr));
+    assert_eq!(with_journal(&stub), ["omp", "pi"]);
+}
