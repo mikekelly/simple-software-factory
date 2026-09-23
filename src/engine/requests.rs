@@ -107,10 +107,6 @@ impl Engine {
                 Ok(v) => Response::ok(v),
                 Err(e) => Response::refused(&e),
             },
-            Request::Message { item, text } => match self.message(&item, &text).await {
-                Ok(v) => Response::ok(v),
-                Err(e) => Response::refused(&e),
-            },
         }
     }
 

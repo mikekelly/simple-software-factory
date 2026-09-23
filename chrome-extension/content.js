@@ -18,9 +18,10 @@
 // a state of its own, so a stale snapshot can never be mistaken for a live one.
 //
 // The one thing it does to a factory is what an item's card offers: the Assign
-// agent form for an item with no agent, and the Actions row -- message, hand
-// over, release -- for one that has. Every write is the service worker's, never
-// this script's, and none of them is retried. Nothing factory-written is ever
+// agent form for an item with no agent, and the Actions row -- hand over and
+// release -- for one that has. Nothing here types at an agent: a person speaks
+// to one by commenting on the item, where the exchange stays. Every write is the
+// service worker's, never this script's, and none of them is retried. Nothing factory-written is ever
 // parsed as HTML: every node is built with textContent.
 (() => {
   if (window.__ssfOverlayInstalled) return;
@@ -55,6 +56,10 @@
   const SVG_NS = "http://www.w3.org/2000/svg";
 
   const STYLE = `
+/* One surface language for the sidebar card and the popover: the same frame,
+   the same radii, the same 1px rules GitHub draws its own boxes with. Nothing
+   is animated and nothing carries a state colour except the icon and the state
+   word, so a state cannot leak into the text beside it. */
 :host { display: block; }
 :host([data-ssf-slot="sidebar"]) { margin-bottom: 16px; }
 :host([data-ssf-slot="sidebar-legacy"]) {
@@ -65,6 +70,8 @@
 .ssf-section, .ssf-popover { font-family: -apple-system, BlinkMacSystemFont,
   "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; font-size: 12px;
   line-height: 1.5; text-align: left; color: var(--fgColor-default, #1f2328); }
+/* The header names the thing the way GitHub names a sidebar section, so the
+   card reads as part of the page rather than as something laid over it. */
 .ssf-title { margin: 0 0 8px; font-size: 12px; font-weight: 600;
   color: var(--fgColor-muted, #59636e); }
 .ssf-popover { box-sizing: border-box; width: min(${POPOVER_WIDTH}px, calc(100vw - 16px));
@@ -77,16 +84,25 @@
   border: 1px solid var(--borderColor-default, #d1d9e0);
   background: var(--bgColor-default, #ffffff);
   box-shadow: 0 8px 24px rgba(31, 35, 40, 0.2); }
-.ssf-card { padding: 8px 10px; border-radius: 6px;
+.ssf-card { padding: 10px 12px; border-radius: 6px;
   border: 1px solid var(--borderColor-default, #d1d9e0);
   background: var(--bgColor-muted, #f6f8fa); }
 .ssf-card + .ssf-card { margin-top: 8px; }
-.ssf-via { margin-bottom: 2px; color: var(--fgColor-muted, #59636e); }
-.ssf-state { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+/* The lead line of a card: the state, at a size it can be read at, with the
+   time beside it in the muted colour GitHub uses for a fact about a thing. */
+.ssf-state { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .ssf-word { font-weight: 600; }
 .ssf-when { font-weight: 400; color: var(--fgColor-muted, #59636e); }
 .ssf-when[data-stale="true"] { font-weight: 600; color: #9a6700; }
-.ssf-stack { color: var(--fgColor-muted, #59636e); }
+.ssf-sep { opacity: 0.5; }
+/* Which item a card is about, and whose agent it is: the small print above
+   the state, never competing with it. */
+.ssf-via { margin-bottom: 3px; color: var(--fgColor-muted, #59636e); }
+/* The stack -- harness, model, effort -- in the monospace GitHub uses for
+   something a person might copy, since that is what it is. */
+.ssf-stack { margin-top: 3px; color: var(--fgColor-muted, #59636e);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+  "Liberation Mono", monospace; font-size: 11px; overflow-wrap: anywhere; }
 .ssf-said { margin-top: 6px; }
 .ssf-message { overflow-wrap: anywhere; white-space: pre-wrap; }
 .ssf-message[data-clamped="true"] { display: -webkit-box; -webkit-box-orient: vertical;
@@ -95,25 +111,34 @@
   font: inherit; font-weight: 600; color: var(--fgColor-accent, #0969da);
   cursor: pointer; }
 .ssf-also { margin-top: 6px; color: var(--fgColor-muted, #59636e); }
+.ssf-also a { color: var(--fgColor-accent, #0969da); text-decoration: none; }
+.ssf-also a:hover { text-decoration: underline; }
 /* Where the Assign agent form would be drawn, for an item the write would be
    refused for: the same rule above the text as the form itself carries. */
 .ssf-hold { margin: 6px 0 0; padding-top: 6px;
   border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
-.ssf-also a { color: var(--fgColor-accent, #0969da); text-decoration: none; }
-.ssf-also a:hover { text-decoration: underline; }
-.ssf-details { margin-top: 6px; }
+/* Details: a term/definition list with its own label column, so a long
+   workspace path wraps under its own value instead of pushing every term out
+   of line. The disclosure marker is GitHub's own triangle. */
+.ssf-details { margin-top: 8px; padding-top: 6px;
+  border-top: 1px solid var(--borderColor-muted, #d1d9e0); }
 .ssf-details summary { font-weight: 600; color: var(--fgColor-muted, #59636e);
   cursor: pointer; }
-.ssf-details dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px;
-  margin: 4px 0 0; }
+.ssf-details summary:hover { color: var(--fgColor-default, #1f2328); }
+.ssf-details dl { display: grid; grid-template-columns: minmax(4.5em, auto) 1fr;
+  gap: 3px 10px; margin: 6px 0 0; }
 .ssf-details dt { color: var(--fgColor-muted, #59636e); }
 .ssf-details dd { margin: 0; overflow-wrap: anywhere; }
+/* The chip: a compact pill that sits on GitHub's own row baseline. Its height
+   is the line box it lands in, so a list of titles does not grow a pixel per
+   tracked item. */
 .ssf-chip { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px;
-  padding: 0 6px; border: 1px solid var(--borderColor-default, #d1d9e0);
+  padding: 0 7px; border: 1px solid var(--borderColor-default, #d1d9e0);
   border-radius: 999px; font-family: inherit; font-size: 11px; line-height: 18px;
   font-weight: 500; color: var(--fgColor-muted, #59636e); vertical-align: middle;
   white-space: nowrap; cursor: pointer; }
-.ssf-chip:hover { background: var(--bgColor-muted, #f6f8fa); }
+.ssf-chip:hover { background: var(--bgColor-muted, #f6f8fa);
+  border-color: var(--borderColor-muted, #d1d9e0); }
 .ssf-chip:focus-visible { outline: 2px solid var(--fgColor-accent, #0969da);
   outline-offset: 1px; }
 .ssf-icon { flex: none; }
@@ -125,7 +150,6 @@
 [data-ssf-tone="done"] { color: #57606a; }
 [data-ssf-tone="problem"] { color: #cf222e; }
 [data-ssf-tone="no-agent"] { color: #8c959f; }
-.ssf-sep { opacity: 0.5; }
 `;
 
   const sheet = new CSSStyleSheet();
@@ -397,8 +421,8 @@
 
   /// Mark a node as one identity, so the next frame can put what it draws where
   /// this node is instead of drawing it again: a card is its factory's, and the
-  /// node a person is using -- a picker, a message box -- is its item's,
-  /// whatever else moved around it.
+  /// node a person is using -- a picker, the note they are writing in -- is its
+  /// item's, whatever else moved around it.
   function named(node, key) {
     node.dataset.ssfNode = key;
     return node;
@@ -617,6 +641,37 @@
     return svg;
   }
 
+  /// The stack a session is on, as one line: harness, model and effort. The
+  /// effort belongs with the other two -- it is what the session's tokens cost,
+  /// and the hand-over pickers are prefilled from the same three fields -- and
+  /// it was the one setting no screen showed (#439).
+  ///
+  /// A session whose next launch would start another harness says both, which
+  /// is the reading the server's own dashboard uses: the pane's stack, then
+  /// what the next launch would use, since a config edit does not touch a
+  /// session that is already running.
+  function stackLine(item) {
+    const running = [item?.harness, item?.model, item?.effort].filter(Boolean).join(" · ");
+    const next = item?.next_launch;
+    if (!next?.harness) return running;
+    const to = [next.harness, next.model, next.effort].filter(Boolean).join(" · ");
+    return `${running} → ${to} next launch`;
+  }
+
+  /// Why there is no activity time for `match`, where there is none. The
+  /// factory's own reason travels on the card (`activity_note`), because ssf
+  /// dates a session from the local transcript its harness keeps and every way
+  /// that can be missing is a different fact: an OMP session never has one,
+  /// since OMP keeps no transcript ssf can read (#439). The overlay's own two
+  /// readings -- an item ssf monitors, one it has no record of -- have no
+  /// session to date at all, and say that instead of "no activity recorded",
+  /// which read as a claim about the agent.
+  function activityNote(match) {
+    if (match.kind === "monitored") return "no agent, so nothing is running to date";
+    if (match.kind === "assignable") return "no record, so no session has run on this item";
+    return match.item?.activity_note ?? null;
+  }
+
   /// What one item's state is, as this factory reports it. A factory that has
   /// gone stale keeps the states from its last snapshot but says when that was;
   /// one that never answered is a problem, not an agent.
@@ -626,6 +681,11 @@
   /// snapshot untrustworthy, which is what `warning` carries.
   ///
   /// `closed` is the page's own fact about the item: see `closedInDom`.
+  ///
+  /// `time` is null where there is nothing truthful to put beside the state: a
+  /// live factory that reports no activity time for the session, which is every
+  /// OMP session, says so in the tooltip and in Details rather than filling the
+  /// line with "no activity recorded".
   function stateFact(factory, match, closed = false) {
     const assignable = match.kind === "assignable";
     const raw = assignable
@@ -671,14 +731,20 @@
     }
     let time;
     if (factory.state === "error") time = "unreachable";
-    else if (live) time = ago(match.item.last_activity_at) ?? "no activity recorded";
+    else if (live) time = ago(match.item.last_activity_at);
     else time = `as of ${clock(factory.lastFrameAt)}`;
+    // Nothing to put beside the state? Then say why, in the places a reason
+    // belongs -- the tooltip and Details -- rather than printing "no activity
+    // recorded", which is not a time and reads as the agent having gone quiet.
+    const activity = live && !time ? activityNote(match) : null;
+    if (activity) detail.push(activity);
     return {
       label: finished ? "Done" : shown.label,
       kind: finished ? "done" : shown.kind,
       raw,
       stale: !live,
       time,
+      activity,
       detail,
     };
   }
@@ -688,10 +754,11 @@
   function tooltip(factory, match, closed = false) {
     const state = stateFact(factory, match, closed);
     const lines = [`ssf state: ${state.raw}`];
-    const stack = [match.item.harness, match.item.model].filter(Boolean).join(" · ");
+    const stack = stackLine(match.item);
     const when =
       absolute(match.item.last_activity_at) ??
-      (factory.lastFrameAt ? `as of ${absolute(factory.lastFrameAt)}` : "no activity recorded");
+      state.activity ??
+      (factory.lastFrameAt ? `as of ${absolute(factory.lastFrameAt)}` : null);
     lines.push([factory.label, stack, when].filter(Boolean).join(" · "));
     const message = messageFor(match);
     if (message) lines.push(firstLine(message));
@@ -775,6 +842,9 @@
 
   /// The state line every screen shares: the icon, the state word, and either
   /// the relative last activity or, for a stale snapshot, when it was taken.
+  /// With neither -- a live factory that reports no activity time, which is
+  /// every OMP session -- the line is the state alone, and the reason is in the
+  /// tooltip and in Details (#439).
   function stateLine(factory, match, closed = false) {
     const state = stateFact(factory, match, closed);
     const line = element("div", "ssf-state");
@@ -785,7 +855,9 @@
     line.append(icon(state.kind, state.stale));
     const word = element("span", "ssf-word", state.label);
     word.dataset.ssfTone = state.kind;
-    line.append(word, element("span", "ssf-sep", "·"));
+    line.append(word);
+    if (!state.time) return line;
+    line.append(element("span", "ssf-sep", "·"));
     const when = element("span", "ssf-when", state.time);
     if (state.stale) when.dataset.stale = "true";
     line.append(when);
@@ -828,13 +900,86 @@
     return wrap;
   }
 
-  /// The always-visible detail: what the agent is doing, where it is running and
-  /// which session it is. The fields are the status model's own -- the current
-  /// tool call, the workspace branch, the factory's label and the agent session
-  /// id. A field the server does not send reads "not reported" rather than being
-  /// invented; the factory row falls back to this extension's configured label,
-  /// or to the factory's URL host when the options page has no label for it.
-  function detailsBlock(name, factory, match) {
+  /// The rows Details carries for one card, each a fact the card is holding:
+  /// what ssf says the state is, which item this is, the stack the session runs
+  /// (harness, model and effort), the stack the next launch would use when it
+  /// differs, what the agent is doing, the workspace it is doing it in, the
+  /// session's own id, the factory and the item's activity.
+  ///
+  /// A row with nothing to say is left out rather than filled with "not
+  /// reported": four rows of "not reported" around the one fact the card has is
+  /// what made this read as missing information (#439). What the state row says
+  /// is the reading the rest of the card is drawn from, so the raw word the
+  /// tooltip leads with is here too, in the same terms.
+  function detailFacts(factory, match, closed = false) {
+    const state = stateFact(factory, match, closed);
+    const item = match.item ?? {};
+    const facts = [["State", detailState(state, match)]];
+    // Which item this card is about. An additional item's card is about the
+    // agent's own item -- it leads with "worked on by the agent on #N" -- so it
+    // is the one card that does not name an item of its own.
+    if (match.kind !== "additional") {
+      facts.push(["Item", item.origin?.id ?? item.id ?? null]);
+    }
+    if (match.kind === "agent" || match.kind === "additional") {
+      const stack = stackLine(item);
+      if (stack) facts.push(["Stack", stack]);
+      if (item.next_launch?.harness) {
+        facts.push([
+          "Next launch",
+          [item.next_launch.harness, item.next_launch.model, item.next_launch.effort]
+            .filter(Boolean)
+            .join(" · "),
+        ]);
+      }
+      if (item.tool) facts.push(["Doing", item.tool]);
+    }
+    if (item.branch) facts.push(["Branch", item.branch]);
+    if (item.worktree_path) facts.push(["Workspace", item.worktree_path]);
+    if (match.kind === "monitored" && item.has_workspace) {
+      facts.push([
+        "Workspace",
+        item.branch ? `${item.branch}, held by no session` : "held by no session",
+      ]);
+    }
+    if (match.kind === "agent" || match.kind === "additional") {
+      if (item.agent_session_id) facts.push(["Session", item.agent_session_id]);
+    }
+    facts.push(["Factory", item.factory ?? factory.label]);
+    if (state.activity || item.last_activity_at) {
+      const when = absolute(item.last_activity_at) ?? state.activity;
+      const relative = ago(item.last_activity_at);
+      facts.push(["Active", relative ? `${when} · ${relative}` : when]);
+    }
+    if (item.handover?.harness) {
+      facts.push([
+        "Hand over",
+        [item.handover.harness, item.handover.model, item.handover.effort]
+          .filter(Boolean)
+          .join(" · ") +
+          (item.handover.by ? `, asked by ${item.handover.by}` : "") +
+          ", on the daemon's next pass",
+      ]);
+    }
+    return facts;
+  }
+
+  /// The State row: the word on screen, and what ssf actually said behind it.
+  /// The one reading here that is the overlay's own -- an item ssf monitors --
+  /// says so rather than putting a word ssf never said behind a raw state. A
+  /// card for an item the factory has no record of is the other, and it carries
+  /// no Details at all: every row would be empty, and the form under the card is
+  /// the only thing there is to say about it.
+  function detailState(state, match) {
+    if (match.kind === "monitored") {
+      return `${state.label} — ssf monitors this item with no agent on it`;
+    }
+    if (state.label === state.raw) return state.raw;
+    return `${state.label} — ssf reports ${state.raw}`;
+  }
+
+  /// Details: every fact the card holds, folded away until it is asked for.
+  function detailsBlock(name, factory, match, closed = false) {
     const key = `${name}|${factory.url}`;
     const flags = opened.get(key) ?? {};
     const details = element("details", "ssf-details");
@@ -844,16 +989,11 @@
     });
     details.append(element("summary", undefined, "Details"));
     const list = element("dl");
-    const facts = [
-      ["Tool", match.kind === "monitored" ? null : match.item.tool],
-      ["Factory", match.item.factory ?? factory.label],
-      ["Branch", match.item.branch],
-      ["Session", match.kind === "monitored" ? null : match.item.agent_session_id],
-    ];
-    for (const [term, value] of facts) {
+    for (const [term, value] of detailFacts(factory, match, closed)) {
+      if (!value) continue;
       list.append(
         element("dt", undefined, term),
-        element("dd", undefined, value ? String(value) : "not reported"),
+        element("dd", undefined, String(value)),
       );
     }
     details.append(list);
@@ -871,7 +1011,7 @@
       node.append(named(via, "worked"));
     }
     node.append(named(stateLine(factory, match, closed), "state"));
-    const stack = [match.item.harness, match.item.model].filter(Boolean).join(" · ");
+    const stack = stackLine(match.item);
     if (stack) node.append(named(element("div", "ssf-stack", stack), "stack"));
     const message = messageBlock(name, factory, match);
     if (message) node.append(named(message, "said"));
@@ -887,10 +1027,10 @@
     }
     // A factory that never answered has nothing to report about this item, and
     // neither has one with no record of it: there is no tool call, branch,
-    // workspace or session to read "not reported" beside, and four rows of it
-    // would be noise around the one thing the card offers.
+    // workspace or session to list, and Details would be the one row naming the
+    // factory again.
     if (match.kind !== "unreadable" && match.kind !== "assignable") {
-      node.append(named(detailsBlock(name, factory, match), "details"));
+      node.append(named(detailsBlock(name, factory, match, closed), "details"));
     }
     return node;
   }
@@ -934,8 +1074,8 @@
     // The Assign agent form goes where a session can still be started: a card
     // with no agent, with nothing in the way. A card that carries a row is one
     // the factory already has a session for -- `ssf assign` refuses it, and the
-    // row's own Message and Release are what work there -- so it is left to its
-    // row. One card offers one write: the card a row is on is never also offered
+    // row's own Hand over… and Release are what work there -- so it is left to
+    // its row. One card offers one write: the card a row is on is never also offered
     // a form, which is what makes the two branches a decision rather than a
     // coincidence of the states ssf reports today. The card the form belongs on
     // may be another factory's, one with nothing on the item at all.
@@ -1021,14 +1161,23 @@
     const node = element("div", "ssf-chip");
     node.setAttribute("role", "button");
     node.setAttribute("tabindex", "0");
-    node.setAttribute("aria-label", `ssf: ${state.label}, ${state.time}`);
+    node.setAttribute(
+      "aria-label",
+      ["ssf:", state.label, state.time ?? state.activity].filter(Boolean).join(" "),
+    );
     node.append(icon(state.kind, state.stale));
     const word = element("span", "ssf-word", state.label);
     word.dataset.ssfTone = state.kind;
-    node.append(word, element("span", "ssf-sep", "·"));
-    const when = element("span", "ssf-when", state.time);
-    if (state.stale) when.dataset.stale = "true";
-    node.append(when);
+    node.append(word);
+    // With no time to put beside the state the chip is the state alone, and the
+    // reason -- which is a sentence, not a chip's worth of text -- is in the
+    // tooltip and the popover's Details (#439).
+    if (state.time) {
+      node.append(element("span", "ssf-sep", "·"));
+      const when = element("span", "ssf-when", state.time);
+      if (state.stale) when.dataset.stale = "true";
+      node.append(when);
+    }
     node.title = matches
       .map((match) => tooltip(match.factory, match, closed))
       .join("\n\n");

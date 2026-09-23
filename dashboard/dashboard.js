@@ -38,10 +38,15 @@ function issueLink(anchor, issue, title) {
   if (issue.url && anchor.getAttribute("href") !== issue.url) anchor.href = issue.url;
 }
 
-function activityLabel(value) {
-  if (!value) return "Unknown — the driver did not report a time";
+// When this session was last active, or why nobody can say. The reason is the
+// server's own (`activity_note`), so this page, the TUI and the overlay all say
+// the same thing instead of "unknown", which reads as a claim about the agent
+// rather than about the transcript ssf could not read (#439).
+function activityLabel(card) {
+  const value = card.last_activity_at;
+  if (!value) return card.activity_note || "not reported";
   const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return "Unknown — the driver reported an invalid time";
+  if (Number.isNaN(date.valueOf())) return "an unreadable time was reported";
   const elapsed = Math.max(0, Date.now() - date.valueOf());
   const minutes = Math.floor(elapsed / 60000);
   let relative = "just now";
@@ -51,13 +56,19 @@ function activityLabel(value) {
   return `${relative} · ${date.toLocaleString()}`;
 }
 
-// The card's stack line: what the pane is running, or what is running and
-// what the next launch would start (`codex → omp next launch`, when a config
-// edit left a live session on the older harness).
+function stackOf(card) {
+  return [card.harness, card.model, card.effort].filter(Boolean).join(" · ");
+}
+
+// The card's stack line: what the pane is running -- harness, model and effort,
+// since effort is what the session's tokens cost -- and what the next launch
+// would start (`codex → omp · opus · low next launch`, when a config edit left
+// a live session on the older harness).
 function stackLabel(card) {
+  const running = stackOf(card);
   const next = card.next_launch && card.next_launch.harness;
-  if (next) return `${card.harness} → ${next} next launch`;
-  return [card.harness, card.model].filter(Boolean).join(" · ");
+  if (!next) return running;
+  return `${running} → ${stackOf(card.next_launch)} next launch`;
 }
 
 // Put `nodes` in `parent` in this order, dropping what no longer belongs before
@@ -116,7 +127,9 @@ function cardNode(card) {
   fill(article.querySelector(".harness"), stackLabel(card));
   fill(article.querySelector(".issue-title"), card.origin.title);
   issueLink(article.querySelector(".issue-link"), card.origin);
-  fill(article.querySelector(".activity"), activityLabel(card.last_activity_at));
+  // The card, not just its time: with no time to show, the model's own reason
+  // for that is what belongs in the row (#439).
+  fill(article.querySelector(".activity"), activityLabel(card));
   fill(article.querySelector(".message"), card.last_assistant_message || "No message reported.");
   const section = article.querySelector(".additional");
   const list = section.querySelector("ul");

@@ -19,17 +19,6 @@ const MAX_HEADERS: usize = 8192;
 /// Longest body the endpoint reads: a write carries a handful of fields, and
 /// it is bounded before any of it is read.
 const MAX_BODY: usize = 4096;
-/// Longest message `POST api/message` carries to an agent: a note a person
-/// typed into the overlay, not a document. Checked here rather than by the
-/// daemon, since the command a person would use for anything longer is a
-/// comment on the item.
-///
-/// Bytes, not characters, because that is what the request is measured in: a
-/// cap in characters would be a promise the 4 KiB body bound could break for
-/// text that is not ASCII, and a person refused for the size of a body rather
-/// than for a message over the cap. 2 KiB of message leaves the rest of the
-/// request ample room.
-const MAX_MESSAGE_BYTES: usize = 2048;
 /// How long a listing may wait on the factory: the client walks `PATH` and
 /// may run a harness's own listing command.
 const LISTING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -175,8 +164,8 @@ async fn handle(mut stream: TcpStream, host: &str, token: &str, mut latest: Late
 
 /// What a request refused before anything was read is told. Most of these are
 /// about the shape of the request, which the client that made it already knows;
-/// the body bound is the one a person can reach through the overlay's own
-/// message box, so it is the one worth naming.
+/// the body bound is the one whose number a client can act on, so it is the one
+/// worth naming.
 fn rejected(status: u16) -> (u16, &'static str, String) {
     let message = match status {
         413 => format!("the request body is longer than the {MAX_BODY} bytes this endpoint reads"),
@@ -206,7 +195,6 @@ async fn write(
         Route::Assign => assign(&body, &write, client).await,
         Route::Handover => handover(&body, &write, client).await,
         Route::Release => release(&body, &write, client).await,
-        Route::Message => message(&body, &write, client).await,
     }
 }
 
@@ -397,40 +385,6 @@ async fn release(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'stati
         Some(crate::ipc::RefusalKind::Conflict),
         crate::cli::release_refused_text(session, path, &problems),
     )
-}
-
-/// `POST api/message`: `text` reaches the agent that acts on the item the way
-/// the item's own activity does, through the daemon's delivery path — which
-/// brings a gone workspace and agent back first, and holds a prompt for a
-/// session that is at its sign-in prompt instead of losing it.
-async fn message(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'static str, String) {
-    let request: MessageRequest = match parse(body, "message") {
-        Ok(request) => request,
-        Err(answer) => return answer,
-    };
-    if request.number == 0 {
-        return bad("number must be the item's number, 1 or more");
-    }
-    if request.text.trim().is_empty() {
-        return bad("the message is empty: write something to send");
-    }
-    let bytes = request.text.len();
-    if bytes > MAX_MESSAGE_BYTES {
-        return bad(format!(
-            "the message is {bytes} bytes; the most a message carries is {MAX_MESSAGE_BYTES}"
-        ));
-    }
-    let item = format!("{}#{}", request.repo, request.number);
-    tracing::info!(origin = write.origin, item, bytes, "web API message");
-    carry(
-        client,
-        crate::ipc::Request::Message {
-            item,
-            text: request.text,
-        },
-        "the message request",
-    )
-    .await
 }
 
 /// One write's body as its own request, or the `400` that names what about it
@@ -705,12 +659,16 @@ struct Write<'a> {
 /// The writes the endpoint accepts, each standing for one `ssf` request on
 /// the daemon. Nothing else is a write: a route that is not one of these is
 /// `405`, however it is posted.
+///
+/// There is no route that types at an agent. The three here are the `ssf`
+/// commands that act on an item without being a comment on it -- assign, hand
+/// over and release -- and a client that wants to say something to an agent
+/// says it on the item, where the exchange is part of the item's record (#439).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Route {
     Assign,
     Handover,
     Release,
-    Message,
 }
 
 /// The body of an assign write: `ssf assign`'s own arguments, with the item
@@ -765,18 +723,6 @@ struct ReleaseRequest {
     repo: String,
     /// Issue or pull request number.
     number: u64,
-}
-
-/// The body of a message write: what the item's agent is told.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MessageRequest {
-    /// Watched repository, `owner/name`.
-    repo: String,
-    /// Issue or pull request number.
-    number: u64,
-    /// The message, delivered the way the item's own activity is.
-    text: String,
 }
 
 /// Check one request and say what it is. A read answers on the rules it
@@ -851,7 +797,6 @@ fn classify<'a>(request: &'a str, host: &str, token: &str) -> std::result::Resul
         "api/assign" => Route::Assign,
         "api/handover" => Route::Handover,
         "api/release" => Route::Release,
-        "api/message" => Route::Message,
         // A write is only for the write routes, however the request is
         // shaped; every other path under the capability is a read.
         _ => return Err(405),
@@ -1069,7 +1014,6 @@ mod tests {
             ("/secret/api/assign", Route::Assign),
             ("/secret/api/handover", Route::Handover),
             ("/secret/api/release", Route::Release),
-            ("/secret/api/message", Route::Message),
         ] {
             assert!(
                 matches!(
@@ -1409,7 +1353,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         task.abort();
     }
 
-    /// Each of the four writes is the request its own `ssf` command sends the
+    /// Each write is the request its own `ssf` command sends the
     /// daemon — the same code path, reached the way every command reaches a
     /// factory in a VM — answered with the daemon's own result.
     #[tokio::test]
@@ -1420,13 +1364,10 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             "summary_chars":8,"poll_interval_secs":10});
         let release_result = json!({"session":"o/r#7","title":"Fix it","released":true,
             "pending":true,"poll_interval_secs":10});
-        let message_result = json!({"session":"o/r#7","title":"Fix it","delivered":true});
         let handover_body = json!({"repo":"o/r","number":7,"harness":"omp",
             "model":"deepseek/deepseek-flash","effort":"high","note":"carry on"})
         .to_string();
         let release_body = json!({"repo":"o/r","number":7}).to_string();
-        let message_body =
-            json!({"repo":"o/r","number":7,"text":"the test is red again"}).to_string();
         for (name, path, body, result, expected) in [
             (
                 "assign",
@@ -1465,16 +1406,6 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 crate::ipc::Request::Release {
                     session: "o/r#7".into(),
                     force: false,
-                },
-            ),
-            (
-                "message",
-                "/secret/api/message",
-                message_body,
-                message_result,
-                crate::ipc::Request::Message {
-                    item: "o/r#7".into(),
-                    text: "the test is red again".into(),
                 },
             ),
         ] {
@@ -1528,8 +1459,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
     }
 
     /// A body a route cannot read is refused for it, with the factory never
-    /// asked: the item's number, the message's own bounds, and a field the
-    /// route does not take.
+    /// asked: the item's number, and a field the route does not take.
     #[tokio::test]
     async fn refuses_write_bodies_a_route_cannot_read() {
         let client = Client::new("unread", "", 0);
@@ -1538,22 +1468,8 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let bad_json = "{ not json".to_string();
         let zero_stack = json!({"repo":"o/r","number":0,"harness":"claude"}).to_string();
         let zero_item = json!({"repo":"o/r","number":0}).to_string();
-        let zero_message = json!({"repo":"o/r","number":0,"text":"hi"}).to_string();
-        let no_number = json!({"repo":"o/r","harness":"claude"}).to_string();
         let extra_field =
             json!({"repo":"o/r","number":7,"harness":"claude","branch":"x"}).to_string();
-        let empty_text = json!({"repo":"o/r","number":7,"text":"   "}).to_string();
-        let long_text = json!({"repo":"o/r","number":7,
-            "text":"x".repeat(MAX_MESSAGE_BYTES + 1)})
-        .to_string();
-        // The cap counts bytes, so text that is not ASCII is refused for the
-        // cap rather than slipping through it: 700 characters (2,100 bytes) is
-        // under any character count, and over this cap only because of the
-        // bytes it takes to write.
-        let long_multibyte = json!({"repo":"o/r","number":7,
-            "text":"漢".repeat(700)})
-        .to_string();
-        assert!(long_multibyte.len() < MAX_BODY);
         for (path, body, needle) in [
             (
                 "/secret/api/assign",
@@ -1571,11 +1487,6 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 "bad release request",
             ),
             (
-                "/secret/api/message",
-                bad_json.as_str(),
-                "bad message request",
-            ),
-            (
                 "/secret/api/assign",
                 zero_stack.as_str(),
                 "number must be the item's number",
@@ -1591,34 +1502,9 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 "number must be the item's number",
             ),
             (
-                "/secret/api/message",
-                zero_message.as_str(),
-                "number must be the item's number",
-            ),
-            (
-                "/secret/api/message",
-                no_number.as_str(),
-                "bad message request",
-            ),
-            (
                 "/secret/api/handover",
                 extra_field.as_str(),
                 "unknown field",
-            ),
-            (
-                "/secret/api/message",
-                empty_text.as_str(),
-                "the message is empty",
-            ),
-            (
-                "/secret/api/message",
-                long_text.as_str(),
-                "the most a message carries is 2048",
-            ),
-            (
-                "/secret/api/message",
-                long_multibyte.as_str(),
-                "the message is 2100 bytes; the most a message carries is 2048",
             ),
         ] {
             let response = post_json(address, path, body).await;
@@ -1635,11 +1521,26 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             "/secret/api/assign",
             "/secret/api/handover",
             "/secret/api/release",
-            "/secret/api/message",
         ] {
             let response = fetch(address, path).await;
             assert!(response.starts_with("HTTP/1.1 404"), "{path}: {response}");
         }
+        assert!(client.args().is_empty(), "a refused write ran the client");
+        task.abort();
+    }
+
+    /// The endpoint has no route that types at an agent: `api/message` was
+    /// removed with the overlay's message box (#439), and a POST to it is a
+    /// path under the capability that is not a write route -- the same `405`
+    /// any other path gets.
+    #[tokio::test]
+    async fn there_is_no_route_that_types_at_an_agent() {
+        let client = Client::new("gone", "", 0);
+        std::fs::remove_file(client.program()).unwrap();
+        let (address, task) = served(&client).await;
+        let body = json!({"repo":"o/r","number":7,"text":"hello"}).to_string();
+        let response = post_json(address, "/secret/api/message", &body).await;
+        assert!(response.starts_with("HTTP/1.1 405"), "{response}");
         assert!(client.args().is_empty(), "a refused write ran the client");
         task.abort();
     }
@@ -1734,8 +1635,8 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         assert!(response.starts_with("HTTP/1.1 413"), "{response}");
-        // The one rejection a person can reach from the overlay's message box
-        // names the bound rather than saying only that the request was refused.
+        // The 413 names the bound rather than saying only that the request was
+        // refused.
         assert!(
             response.contains(&format!(
                 "longer than the {MAX_BODY} bytes this endpoint reads"

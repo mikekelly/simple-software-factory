@@ -392,20 +392,51 @@ fn safe_link(value: &Value, x: u16, y: u16, max_width: u16) -> Option<TerminalLi
     })
 }
 
-/// The stack line of a card: the harness the pane is running and its model,
-/// or `codex → omp next launch` when the config would start another harness
-/// (a config edit does not touch a session that is already running, so the
-/// change waits for the next launch).
+/// The stack line of a card: the harness the pane is running, its model and its
+/// effort — the three things a session is launched with, and the three the
+/// hand-over pickers move — or `codex → omp next launch` when the config would
+/// start another harness (a config edit does not touch a session that is already
+/// running, so the change waits for the next launch).
+///
+/// The next launch names only its harness: this line has to fit a card about
+/// 50 columns wide, and the stack the next launch would use is worth a line of
+/// its own where there is room for one — the overlay's card and the server's own
+/// page both show it whole. The session's own model and effort are the ones this
+/// line must not get wrong (#349), which is why they are what it spells out.
 fn stack_label(card: &Value) -> String {
-    let harness = text(card, "harness");
-    if let Some(next) = card["next_launch"]["harness"].as_str() {
-        return format!("{harness} → {next} next launch");
+    let running = stack_of(card, &["harness", "model", "effort"]);
+    match card["next_launch"]["harness"].as_str() {
+        Some(next) => format!("{running} → {next} next launch"),
+        None => running,
     }
-    [harness, text(card, "model")]
-        .into_iter()
+}
+
+/// The harness, model and effort the fields name, joined for a person. Effort
+/// belongs here with the other two: it is what the session's tokens cost, and a
+/// stack line that left it out said what a session runs but not how hard
+/// (#439).
+fn stack_of(card: &Value, keys: &[&str]) -> String {
+    keys.iter()
+        .map(|key| text(card, key))
         .filter(|part| *part != "—" && !part.is_empty())
         .collect::<Vec<_>>()
         .join(" · ")
+}
+
+/// When this session was last active, or why nobody can say: the model's own
+/// reason, so the TUI and the overlay agree rather than one printing a bare
+/// timestamp and the other "unknown". A card carries the note exactly when it
+/// carries no time, so the two cannot contradict each other (#439).
+fn activity_label(card: &Value) -> String {
+    let at = text(card, "last_activity_at");
+    if at != "—" {
+        return at.to_owned();
+    }
+    let note = text(card, "activity_note");
+    if note != "—" {
+        return note.to_owned();
+    }
+    at.to_owned()
 }
 
 fn render_card(
@@ -466,7 +497,7 @@ fn render_card(
         ]),
         Line::from(vec![
             Span::styled("Last active  ", Style::default().fg(Color::DarkGray)),
-            Span::raw(clean(text(card, "last_activity_at"))),
+            Span::raw(clean(&activity_label(card))),
         ]),
     ];
     if !compact {
@@ -900,6 +931,59 @@ mod tests {
             !screen.contains("deepseek"),
             "not the model of what runs: {screen}"
         );
+    }
+
+    /// The stack line names the effort the session runs at, which is what its
+    /// tokens cost and what a hand-over moves, and no screen used to show it
+    /// (#439).
+    #[test]
+    fn a_card_names_the_effort_the_session_runs_at() {
+        let mut view = View::new(vec![None]);
+        view.update(
+            0,
+            payload(
+                "factory",
+                vec![json!({
+                    "owner":"r#1",
+                    "origin":{"id":"r#1","title":"Left behind","url":"https://example.test/issue"},
+                    "agent_state":"working",
+                    "additional":[],
+                    "harness":"omp",
+                    "model":"deepseek/deepseek-flash",
+                    "effort":"high"
+                })],
+                vec![],
+            ),
+        )
+        .unwrap();
+        let screen = rendered(&mut view, 100, 20);
+        assert!(
+            screen.contains("omp · deepseek/deepseek-flash · high"),
+            "{screen}"
+        );
+    }
+
+    /// A live session with no activity time says why, in the model's own words,
+    /// rather than leaving the row empty or printing a time nobody measured
+    /// (#439). Asserted on the label itself: the card is about 50 columns wide
+    /// and clips any sentence, so what the row is *given* is what this pins.
+    #[test]
+    fn a_card_says_why_it_has_no_activity_time() {
+        let card = json!({
+            "last_activity_at": null,
+            "activity_note": "the harness keeps no local transcript ssf can read"
+        });
+        assert_eq!(
+            activity_label(&card),
+            "the harness keeps no local transcript ssf can read"
+        );
+        // A card with a time shows the time, and the note is not on it at all:
+        // the model sets it only where the time is missing.
+        let dated = json!({"last_activity_at": "2026-09-12T20:00:00Z", "activity_note": null});
+        assert_eq!(activity_label(&dated), "2026-09-12T20:00:00Z");
+        // Neither is a card ssf says nothing about: the row keeps its dash
+        // rather than gaining a sentence nobody said.
+        assert_eq!(activity_label(&json!({})), "—");
     }
 
     #[test]

@@ -94,8 +94,11 @@ that herdr identifies, `last_activity_at` is the most recent write to its
 local transcript (including prompts and tool activity). SSF reads file metadata,
 not transcript contents. It uses `CLAUDE_CONFIG_DIR` or `CODEX_HOME` when set,
 otherwise the usual home directories. Other harnesses, missing transcripts,
-and unidentified conversations have no reported time; the dashboard shows
-“Unknown”.
+and unidentified conversations have no reported time, and every screen that
+would show one says which of the three it was — `the harness keeps no local
+transcript ssf can read`, `the session's conversation is not identified yet`,
+or `ssf has not found the session's transcript yet` — rather than “Unknown”,
+which read as a claim about the agent instead of about the record.
 
 The first prompt is not recorded as delivered merely because its bytes reached
 the terminal. With herdr, ssf waits for the harness to start handling it. If a

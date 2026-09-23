@@ -10,22 +10,21 @@
       <h1>ssf factories</h1>
       <p id="version" class="version" role="status" aria-live="polite"></p>
       <p>
-        Each factory is the capability URL <code>ssf-server</code> logs, such as
+        A factory is the capability URL <code>ssf-server</code> logs, such as
         <code>http://127.0.0.1:8787/&lt;secret&gt;/</code>. Keep it private: it
         grants access to repository details and session summaries. The badge on
-        github.com reads these factories.
+        github.com reads the factories saved here.
       </p>
       <div id="rows"></div>
       <p class="actions">
-        <button id="add" type="button">Add factory</button>
-        <button id="save" type="button" class="primary">Save</button>
+        <button id="add" type="button">Add a factory</button>
       </p>
-      <p id="status" role="status" aria-live="polite"></p>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
       <p class="note">
-        Chrome asks permission for each factory's address the first time; that
-        permission is what lets the extension read the factory without allowing
-        it anywhere else. Use <strong>Allow</strong> beside a factory to ask
-        again after a refusal.
+        Saving asks Chrome for permission for that factory's address: that
+        permission is what lets the extension read the factory and nothing else.
+        Chrome's own prompt appears on the first save; a refused one leaves the
+        factory saved and offers <strong>Allow</strong> on its row.
       </p>
     </main>
     <script type="module" src="options.js"></script>
