@@ -211,19 +211,29 @@ pub(super) async fn doctor() -> Result<()> {
             );
         }
     }
-    match ipc::call(&ipc::Request::Ping).await {
-        Ok(v) => check(
-            true,
-            format!(
-                "daemon answering on {} as @{}",
-                ipc::socket_path().display(),
-                v.get("login").and_then(|l| l.as_str()).unwrap_or("?")
-            ),
-        ),
-        Err(e) => {
-            println!("note the daemon is not answering (`ssf sub|unsub` need it): {e:#}")
+    // Is the factory running? The daemon answering is the answer, and the
+    // unit is one way to have one: a daemon started by another supervisor or
+    // by hand is the documented bare-binary host mode rather than a fault
+    // (#463). This ping is the one reading: a second, weaker probe of the
+    // same socket could pass while this one failed, and the report would
+    // contradict itself.
+    let answering = match ipc::call(&ipc::Request::Ping).await {
+        Ok(v) => {
+            check(
+                true,
+                format!(
+                    "daemon answering on {} as @{}",
+                    ipc::socket_path().display(),
+                    v.get("login").and_then(|l| l.as_str()).unwrap_or("?")
+                ),
+            );
+            true
         }
-    }
+        Err(e) => {
+            println!("note the daemon is not answering (`ssf sub|unsub` need it): {e:#}");
+            false
+        }
+    };
     check(
         !cfg.repos.is_empty(),
         format!(
@@ -819,12 +829,6 @@ pub(super) async fn doctor() -> Result<()> {
             )
         },
     );
-    // Is the factory running? The daemon answering on its socket is the
-    // answer, and the unit is one way to have one: a daemon started by
-    // another supervisor or by hand is the documented bare-binary host
-    // mode rather than a fault (#463). The unit's own state is the detail
-    // beside it.
-    let answering = ipc::daemon_reachable();
     check(
         answering,
         format!(

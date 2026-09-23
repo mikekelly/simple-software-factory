@@ -60,7 +60,7 @@ One row per check `ssf doctor` makes, in the order it makes them.
 | `<repo>: ... worktrees ... not on origin` | no work is stranded | see [stranded worktrees](#stranded-worktrees) |
 | `gh and git and ssf links ... do not all point at this ssf` | the shim directory is intact | expected before the first agent has started: the links are written then. Afterwards, `ssf launch` relinks them when an agent next starts; if it persists, another ssf wrote them |
 | `post(s) by the bot arrived without an origin tag` | every bot post came from a session | a person posted as the bot, or the `gh` shim was bypassed; nothing to fix if intentional |
-| the service is not running | the daemon service is up | `ssf --server NAME ui service enable`; see [service will not enable](#service-will-not-enable) |
+| `factory stopped` | the factory is running | `ssf --server NAME ui service enable`, or start the daemon directly where no service manager is available; see [banner says the service is inactive](#banner-says-the-service-is-inactive-but-the-daemon-is-running) |
 
 ### Client and server version skew
 

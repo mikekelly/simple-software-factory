@@ -78,10 +78,12 @@ whenever the daemon is reachable — however it was started:
 | not answering | active | `SSF daemon is not answering; showing latest saved state` |
 | answering, last poll overdue | either | `SSF daemon state is stale; last successful poll is overdue` |
 
-`service_active` and `service_enabled` remain in the model as the service
-manager's own view of its unit, and `ssf ui service status` reports exactly
-that. They say nothing about a daemon started outside the unit, which is the
-supported shape for
+`service_active` and `service_enabled` are still in the top level of
+`ssf status --json`, as the service manager's own view of its unit — the HTTP
+API's `api/status` serves the `dashboard` presentation alone, so they are not
+part of it — and `ssf ui service status` reports exactly that. They say
+nothing about a daemon started outside the unit, which is the supported shape
+for
 [containers, other supervisors and foreground `ssf-server`](#running-without-systemd).
 
 ### Running without systemd
