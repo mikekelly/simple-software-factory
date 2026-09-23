@@ -137,7 +137,10 @@ ssf subs --json
   shows subscribers per session.
 - Delegating parents are subscribed to their children automatically, at the
   default level: a parent hears when its child moves (including its closure, as
-  before) and not every comment between.
+  before) and not every comment between. A parent that asks for more on its
+  child with `ssf sub <n> --events all` keeps that level: the hand-off
+  subscription is written once, so re-onboarding the child (after a run of
+  delivery failures gave its binding up, say) does not put the parent back.
 
 `sub`, `unsub`, `handover`, `assign`, `release` and `purge` talk to the running daemon
 over a Unix socket in the state directory (`ssf.sock`), because the daemon owns the

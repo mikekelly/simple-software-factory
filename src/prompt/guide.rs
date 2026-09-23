@@ -93,8 +93,10 @@ merging completes the entire issue: GitHub closes that issue on merge. The repos
 own notes say how it wants pull requests.\n\n\
 To hand a piece of work to a separate agent instead, create the issue (or pull request) with \
 `--assignee {bot}` in the same `gh ... create` command: the tag then carries `mode=delegate` \
-and the item gets a session of its own. You are subscribed to it automatically, so its \
-activity comes to you as FYI messages, and when it closes you get one message with its final \
+and the item gets a session of its own. You are subscribed to it automatically at the default \
+level, so its own state changes come to you as FYI messages (`ssf sub <n> --events all` on it \
+adds its comments, reviews and commits, and your level survives the child being re-started), \
+and when it closes you get one message with its final \
 comment (the last comment the bot left on it). Assigning @{bot} to an existing item gives it a \
 fresh session too. A session that was handed an item this way is told so, \
 and its final comment on the item is all the delegating session gets, so it should sum up the \
