@@ -802,6 +802,13 @@ pub struct DaemonConfig {
     /// and nothing else changes.
     #[serde(default = "default_true")]
     pub event_comments: bool,
+    /// Whether a person may type into an item session's agent pane from the
+    /// web pane mirror (`api/pane/input`), for every repository that does
+    /// not decide for itself. Off, the default: an item's pane is shown
+    /// only, and its agent is spoken to by commenting on the item (#439).
+    /// A scratch session, which has no item, always takes typing.
+    #[serde(default)]
+    pub item_pane_input: bool,
     /// No longer used: a comment whose first line is `/ssf <request>` was
     /// run as a one-shot task on the repository's harness, and the daemon
     /// re-read the item's comments on every attach and resume, so a past
@@ -868,6 +875,7 @@ impl Default for DaemonConfig {
             resume_on_start: true,
             startup_driver_wait_secs: default_startup_driver_wait(),
             event_comments: true,
+            item_pane_input: false,
             slash_commands: None,
             allowed_users: None,
             accepted_anyone_risk: false,
@@ -998,6 +1006,11 @@ pub struct RepoConfig {
     /// not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_comments: Option<bool>,
+    /// Whether this repository's item panes take typing (see
+    /// `DaemonConfig::item_pane_input`); `daemon.item_pane_input` when not
+    /// set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_pane_input: Option<bool>,
     /// No longer used: see `DaemonConfig::slash_commands`. Accepted so old
     /// config files still load; never written back.
     #[serde(default, skip_serializing)]
@@ -1388,6 +1401,12 @@ impl Config {
     /// repository's own say, else the instance's.
     pub fn event_comments(&self, repo: &RepoConfig) -> bool {
         repo.event_comments.unwrap_or(self.daemon.event_comments)
+    }
+
+    /// Whether a person may type into this repository's item sessions'
+    /// panes: the repository's own say, else the instance's (off).
+    pub fn item_pane_input(&self, repo: &RepoConfig) -> bool {
+        repo.item_pane_input.unwrap_or(self.daemon.item_pane_input)
     }
 
     /// Settings still in the file that ssf no longer reads, each with what

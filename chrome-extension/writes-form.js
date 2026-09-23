@@ -603,7 +603,7 @@
         state.error = null;
         redraw();
       });
-      const open = openButton(state, state.item?.owner ?? state.itemId);
+      const open = openButton(state, state.item?.owner ?? state.itemId, state.item?.pane_input === true);
       actions.append(hand, release, open);
       body.append(actions);
       // Where a message to this agent goes, said once, now that the box that
@@ -808,13 +808,14 @@
     });
   }
 
-  /// Open: the session's pane mirror in a tab of its own.
-  function openButton(state, session) {
+  /// Open: the session's pane mirror in a tab of its own. `input` is the
+  /// snapshot's `pane_input`: whether the factory lets a person type there.
+  function openButton(state, session, input) {
     const open = element("button", undefined, "Open", "open");
     open.type = "button";
     open.title = "Show this agent's terminal";
     open.addEventListener("click", () => {
-      ask({ type: "ssf:open-pane", url: state.url, session }).then((reply) => {
+      ask({ type: "ssf:open-pane", url: state.url, session, input }).then((reply) => {
         if (reply?.ok) return;
         state.error = reply?.error ?? "the extension could not open the terminal";
         redraw();
@@ -894,7 +895,7 @@
     }
     const actions = element("div", "ssf-writes-actions", undefined, "actions");
     if (one.active) {
-      actions.append(openButton(state, id));
+      actions.append(openButton(state, id, one.pane_input === true));
       const kill = element("button", "danger", busy ? "Killing\u2026" : "Kill");
       kill.type = "button";
       kill.disabled = busy;

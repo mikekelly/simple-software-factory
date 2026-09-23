@@ -1,7 +1,9 @@
 // The pane mirror (#414): one session's agent pane, drawn with xterm.js and
-// typed into from the keyboard. Only a scratch session (`owner/repo~id`) takes
-// typing: an item's agent is spoken to by commenting on the item (#439), so
-// its pane is shown and nothing typed is sent.
+// typed into from the keyboard where the factory allows it: the snapshot's
+// `pane_input` for the session, passed in the page address. A scratch session
+// always takes typing; an item's only where the factory's `item_pane_input`
+// is on (#439: its agent is otherwise spoken to by commenting on the item).
+// The factory enforces the same rule on every request.
 //
 // The factory reads the pane's visible screen a few times a second while
 // someone watches it and sends a frame only when it changed
@@ -87,7 +89,7 @@ async function start() {
     );
   }
 
-  const typing = /^[^/]+\/[^/~#]+~[^/~#]+$/.test(session);
+  const typing = params.get("input") === "1";
   const reconnect = document.getElementById("reconnect");
   let source = null;
   let failures = 0;

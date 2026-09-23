@@ -278,6 +278,7 @@ Besides the fields the TUI and the server's page render, each card carries:
 | `effort` | the level the card's stack is on, beside `harness` and `model`; empty while `next_launch` is set, since the running session was launched with a stack ssf does not have on record |
 | `worktree_path` | the workspace the session runs in; `null` when the item has none |
 | `handover` | the hand-over waiting on the daemon for the item (`harness`, `model`, `effort`, `summary_chars`, `by`, `requested_at`), or `null` |
+| `pane_input` | whether `api/pane/input` accepts typing for this session: always for a scratch session, for an item's as `item_pane_input` says for its repository |
 | `activity_note` | why `last_activity_at` is null: the harness keeps no local transcript ssf can read (`omp`), the session's conversation is not identified yet, or ssf has not found its transcript yet. Clients show that sentence where the time would be |
 
 A client holding several factories can label a card without asking which stream
@@ -298,8 +299,8 @@ that does not publish it sends an empty list.
 `dashboard.scratch` lists the factory's scratch sessions (`ssf scratch`),
 released ones included so a client can offer to resume them: each has `id`
 (`owner/name~id`), `repo`, `owner_login` (`null` for a shared session),
-`active`, `agent_live`, `released_at`, `harness`, `model`, `effort` and
-`branch`.
+`active`, `agent_live`, `released_at`, `harness`, `model`, `effort`,
+`branch` and `pane_input`.
 
 The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so an extension's service worker can read
@@ -354,12 +355,16 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
   so a client can show what would be lost and ask again with `"force": true`.
 - **scratch/resume** starts a released scratch session again in a new
   workspace.
-- **pane/input** types into a scratch session's agent pane: `text` is sent as
-  typed (control characters included), then each of `keys` (herdr key names
-  such as `Enter` or `C-c`). The text is not logged. An item session's pane is
-  view-only and the route refuses it (`400`): a person speaks to an item's
-  agent by commenting on the item, where everyone working it can read the
-  exchange (#439).
+- **pane/input** types into a session's agent pane: `text` is sent as typed
+  (control characters included), then each of `keys` (herdr key names such as
+  `Enter` or `C-c`). The text is not logged. A scratch session always takes
+  typing. An item session's pane takes it only where `item_pane_input` is on
+  for its repository (`daemon.item_pane_input`, overridden by
+  `repo.item_pane_input`; off by default), and is otherwise refused with
+  `400`: a person speaks to an item's agent by commenting on the item, where
+  everyone working it can read the exchange (#439). Each card and scratch
+  entry in the snapshot carries `pane_input`, whether its pane takes typing,
+  so a client need not know the rule.
 
 Each answers with the same JSON its command prints under `--json`:
 

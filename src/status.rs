@@ -40,6 +40,10 @@ pub struct Session {
     /// Whose scratch session this is (a GitHub login); null for a shared
     /// one and for an item's session.
     pub owner_login: Option<String>,
+    /// Whether the web pane mirror may type into this session's pane: always
+    /// for a scratch session, for an item's as `item_pane_input` says for
+    /// its repository.
+    pub pane_input: bool,
     pub title: String,
     pub url: String,
     /// `open`, `closed`, `merged`, or `unknown` for items bound before this was recorded.
@@ -578,7 +582,7 @@ pub fn sessions_with(
             // clears it (an assignment leaves the handover's own stamp
             // alone, because that one bounds the capture window).
             let assigned = source.assigned_at.is_some();
-            out.push(join(
+            let mut row = join(
                 repo,
                 item,
                 owner,
@@ -586,7 +590,9 @@ pub fn sessions_with(
                 assigned,
                 ws,
                 workspaces.is_some(),
-            ));
+            );
+            row.pane_input = cfg.item_pane_input(repo);
+            out.push(row);
         }
         for st in rs.scratch.values() {
             let ws = workspaces.and_then(|list| {
@@ -637,6 +643,7 @@ fn join_scratch(
     s.id = id.clone();
     s.owner = id;
     s.owner_login = st.owner_login.clone();
+    s.pane_input = true;
     // The stack is the session's own, chosen when it was made, and not an
     // override of the repository's.
     s.overrides = None;
@@ -755,6 +762,7 @@ fn join(
             }
         }),
         owner_login: None,
+        pane_input: false,
         title: item.title.clone(),
         url: item.html_url.clone(),
         // Items bound before the state was recorded: an active item is open
@@ -1293,7 +1301,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
         } else {
             None
         };
-        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id"),"owner_login":primary["owner_login"]}));
+        cards.push(json!({"owner":owner,"origin":issue(primary,owner),"additional":owned.iter().filter(|row|text(row,"id") != owner).map(|row|issue(row,owner)).collect::<Vec<_>>(),"agent_state":runtime["agent_state"].as_str().unwrap_or("unknown"),"last_activity_at":runtime["last_activity_at"],"activity_note":activity_note,"last_assistant_message":message,"harness":metadata("harness"),"model":metadata("model"),"effort":metadata("effort"),"tool":optional("tool"),"branch":optional("branch"),"worktree_path":optional("worktree_path"),"factory":factory,"next_launch":next_launch,"handover":handover,"agent_session_id":metadata("agent_session_id"),"owner_login":primary["owner_login"],"pane_input":primary["pane_input"] == true}));
     }
     let warning = if payload["factory_reachable"] == false {
         let state = text(&payload["host_vm"], "state");
@@ -1351,7 +1359,7 @@ pub(crate) fn dashboard_presentation(payload: &Value) -> anyhow::Result<Value> {
             json!({"id":row["id"],"repo":row["repo"],"owner_login":row["owner_login"],
                 "active":row["active"] == true,"agent_live":row["agent_live"] == true,
                 "released_at":row["released_at"],"harness":row["harness"],"model":row["model"],
-                "effort":row["effort"],"branch":row["branch"]})
+                "effort":row["effort"],"branch":row["branch"],"pane_input":row["pane_input"] == true})
         })
         .collect();
     Ok(
@@ -1422,6 +1430,49 @@ mod dashboard_tests {
         assert_eq!(scratch[1]["active"], false);
         assert_eq!(scratch[1]["owner_login"], "alice");
         assert_eq!(scratch[1]["harness"], "codex");
+    }
+
+    /// Each session says whether its pane takes typing, so a client need not
+    /// know the rule: a scratch session always, an item's as its
+    /// repository's `item_pane_input` says, off by default.
+    #[test]
+    fn each_session_says_whether_its_pane_takes_typing() {
+        let cfg: Config = toml::from_str(
+            "[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n\
+             [[repo]]\nname = \"o/on\"\nharness = \"claude\"\nitem_pane_input = true\n",
+        )
+        .unwrap();
+        let mut state = State::default();
+        for name in ["o/r", "o/on"] {
+            let rs = state.repo_mut(name);
+            rs.issues.insert(
+                1,
+                IssueState {
+                    number: 1,
+                    ..Default::default()
+                },
+            );
+        }
+        state.repo_mut("o/r").scratch.insert(
+            "ab12".into(),
+            crate::state::ScratchState {
+                id: "ab12".into(),
+                ..Default::default()
+            },
+        );
+        let rows = sessions(&cfg, &state, None);
+        let typing = |id: &str| rows.iter().find(|s| s.id == id).unwrap().pane_input;
+        assert!(!typing("o/r#1"));
+        assert!(typing("o/on#1"));
+        assert!(typing("o/r~ab12"));
+        let snapshot = dashboard_presentation(&json!({"sessions":[
+            {"id":"o/r#1","owner":"o/r#1","active":true,"agent_live":true,"pane_input":true},
+            {"id":"o/r~ab12","repo":"o/r","kind":"scratch","owner":"o/r~ab12","active":true,
+                "pane_input":true}
+        ]}))
+        .unwrap();
+        assert_eq!(snapshot["cards"][0]["pane_input"], true);
+        assert_eq!(snapshot["scratch"][0]["pane_input"], true);
     }
 
     #[test]

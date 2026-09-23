@@ -328,7 +328,11 @@ async function paneInput(message) {
 async function openPane(message) {
   const entry = factories.get(message.url);
   if (!entry) return { ok: false, error: "that factory is no longer configured" };
-  const query = new URLSearchParams({ factory: entry.url, session: String(message.session ?? "") });
+  const query = new URLSearchParams({
+    factory: entry.url,
+    session: String(message.session ?? ""),
+    input: message.input === true ? "1" : "0",
+  });
   await chrome.tabs.create({ url: `${chrome.runtime.getURL("terminal.html")}?${query}` });
   return { ok: true };
 }

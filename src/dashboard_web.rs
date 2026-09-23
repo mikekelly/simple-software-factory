@@ -663,15 +663,12 @@ async fn pane_input(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'st
         Ok(request) => request,
         Err(answer) => return answer,
     };
-    // An item's agent is spoken to by commenting on the item, where everyone
-    // working it reads the exchange (#439): its pane is shown, not typed at.
-    if request.session.len() > MAX_SESSION
-        || crate::origin::Scratch::parse(&request.session).is_none()
-    {
-        return bad(
-            "only a scratch session (owner/repo~id) takes typing; speak to an item's agent by commenting on the item",
-        );
+    if !is_session(&request.session) {
+        return bad("session must be owner/repo#N or owner/repo~id");
     }
+    // Whether an item's pane takes typing is the factory's setting
+    // (`item_pane_input`, off by default: #439), decided where the config
+    // is -- in the guest, for a factory in a VM -- by `ssf __pane send`.
     if request
         .text
         .as_deref()
@@ -708,6 +705,9 @@ async fn pane_input(body: &[u8], write: &Write<'_>, client: &Path) -> (u16, &'st
         Ok(output) if output.status.success() => {
             (200, "application/json", json!({"sent": true}).to_string())
         }
+        Ok(output) if output.status.code() == Some(crate::pane::INPUT_REFUSED) => {
+            bad(client_error(&output, "the input"))
+        }
         Ok(output) => failure(
             Some(crate::ipc::RefusalKind::Conflict),
             client_error(&output, "the input"),
@@ -732,6 +732,14 @@ fn is_key(key: &str) -> bool {
         && key
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'_'))
+}
+
+/// A session id a route takes: an item's (`owner/repo#N`) or a scratch
+/// session's (`owner/repo~id`).
+fn is_session(session: &str) -> bool {
+    session.len() <= MAX_SESSION
+        && (crate::origin::Origin::parse(session).is_some()
+            || crate::origin::Scratch::parse(session).is_some())
 }
 
 /// The session a pane stream names, percent-decoded (`#` cannot be in a URL
@@ -2402,7 +2410,7 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             (
                 "/secret/api/pane/input",
                 json!({"session":"nonsense","text":"x"}),
-                "only a scratch session",
+                "session must be",
             ),
         ] {
             let response = post_json(address, path, &body.to_string()).await;
@@ -2436,12 +2444,6 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
     async fn pane_input_types_through_the_factorys_client() {
         let client = Client::new("input", "", 0);
         let (address, task) = served(&client).await;
-        // An item's pane is only shown (#439): nothing is run for it.
-        let body = json!({"session":"o/r#7","text":"y"}).to_string();
-        let response = post_json(address, "/secret/api/pane/input", &body).await;
-        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
-        assert!(response.contains("commenting on the item"), "{response}");
-        assert!(client.args().is_empty());
         let body = json!({"session":"o/r~t414","text":"-y\u{1b}[A","keys":["ctrl+c"]}).to_string();
         let response = post_json(address, "/secret/api/pane/input", &body).await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
@@ -2456,6 +2458,25 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
                 "--key=ctrl+c"
             ]
         );
+        task.abort();
+    }
+
+    /// An item's pane the factory keeps view-only (`item_pane_input` off,
+    /// decided by `ssf __pane send` where the config is) is the request's
+    /// fault, `400`, in the factory's words -- not a failure to type.
+    #[tokio::test]
+    async fn a_view_only_pane_refuses_typing_as_the_factory_words_it() {
+        let client = Client::new("viewonly", "", 0);
+        std::fs::write(
+            client.program(),
+            "#!/bin/sh\necho \"o/r#7's pane is view-only: speak to an item's agent by commenting on the item\" >&2\nexit 2\n",
+        )
+        .unwrap();
+        let (address, task) = served(&client).await;
+        let body = json!({"session":"o/r#7","text":"y"}).to_string();
+        let response = post_json(address, "/secret/api/pane/input", &body).await;
+        assert!(response.starts_with("HTTP/1.1 400"), "{response}");
+        assert!(response.contains("commenting on the item"), "{response}");
         task.abort();
     }
 
@@ -2582,7 +2603,8 @@ wait
     /// The endpoint has no message route: `api/message` was removed with the
     /// overlay's message box (#439), and a POST to it is a path under the
     /// capability that is not a write route -- the same `405` any other path
-    /// gets. The only input is a scratch session's terminal (#414).
+    /// gets. The only input is the pane mirror's terminal (#414), which the
+    /// factory's `item_pane_input` keeps off item sessions by default.
     #[tokio::test]
     async fn there_is_no_route_that_types_at_an_agent() {
         let client = Client::new("gone", "", 0);

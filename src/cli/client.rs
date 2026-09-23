@@ -821,7 +821,13 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 session,
                 text,
                 keys,
-            } => crate::pane::send(&session, text.as_deref(), &keys).await,
+            } => {
+                if let Some(why) = crate::pane::send(&session, text.as_deref(), &keys).await? {
+                    eprintln!("{why}");
+                    std::process::exit(crate::pane::INPUT_REFUSED);
+                }
+                Ok(())
+            }
         },
         Command::Server { .. } => bail!("run `ssf server` on the client computer"),
         Command::Setup => setup::run(),

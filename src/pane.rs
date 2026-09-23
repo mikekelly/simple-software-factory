@@ -176,12 +176,43 @@ fn emit(out: &mut impl Write, changes: &mut Changes, value: serde_json::Value) -
     Ok(true)
 }
 
-/// `ssf __pane send`: type into the session's agent pane.
-pub(crate) async fn send(session: &str, text: Option<&str>, keys: &[String]) -> Result<()> {
+/// Exit status of `ssf __pane send` for a pane the factory does not let a
+/// person type into, so the web endpoint can tell it from a failure.
+pub(crate) const INPUT_REFUSED: i32 = 2;
+
+/// What `item_pane_input` says of `session`, or why it may not be typed
+/// into: a scratch session always may; an item's session as its
+/// repository's setting says (#439 keeps it off unless someone turns it on).
+pub(crate) fn input_refusal(cfg: &Config, session: &str) -> Option<String> {
+    if Scratch::parse(session).is_some() {
+        return None;
+    }
+    let origin = Origin::parse(session)?;
+    let repo = cfg.repos.iter().find(|r| r.matches_name(&origin.repo))?;
+    (!cfg.item_pane_input(repo)).then(|| {
+        format!(
+            "{session}'s pane is view-only: speak to an item's agent by commenting on the item \
+             (item_pane_input is off for {})",
+            repo.name
+        )
+    })
+}
+
+/// `ssf __pane send`: type into the session's agent pane. `Ok(Some(why))`
+/// is a pane the configuration keeps view-only; nothing is typed.
+pub(crate) async fn send(
+    session: &str,
+    text: Option<&str>,
+    keys: &[String],
+) -> Result<Option<String>> {
     let cfg = Config::load()?;
+    if let Some(why) = input_refusal(&cfg, session) {
+        return Ok(Some(why));
+    }
     let state = State::load()?;
     let (driver, pane) = locate(&cfg, &state, session).await?;
-    driver.type_input(&pane, text, keys).await
+    driver.type_input(&pane, text, keys).await?;
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -206,6 +237,26 @@ mod tests {
         }
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text, "{\"screen\":\"one\"}\n{\"screen\":\"two\"}\n");
+    }
+
+    #[test]
+    fn item_panes_take_typing_only_where_the_setting_allows() {
+        let load = |text: &str| -> Config { toml::from_str(text).unwrap() };
+        let repos = "[[repo]]\nname = \"o/on\"\nharness = \"claude\"\nitem_pane_input = true\n\
+                     [[repo]]\nname = \"o/off\"\nharness = \"claude\"\nitem_pane_input = false\n\
+                     [[repo]]\nname = \"o/r\"\nharness = \"claude\"\n";
+        // Off by default; a scratch session always takes typing.
+        let cfg = load(repos);
+        assert!(input_refusal(&cfg, "o/r#7").unwrap().contains("view-only"));
+        assert_eq!(input_refusal(&cfg, "o/r~ab12"), None);
+        // A repository's own say wins either way.
+        assert_eq!(input_refusal(&cfg, "o/on#7"), None);
+        assert!(input_refusal(&cfg, "o/off#7").is_some());
+        // On for the factory: every repository that does not say otherwise.
+        let cfg = load(&format!("[daemon]\nitem_pane_input = true\n{repos}"));
+        assert_eq!(input_refusal(&cfg, "o/r#7"), None);
+        assert_eq!(input_refusal(&cfg, "o/on#7"), None);
+        assert!(input_refusal(&cfg, "o/off#7").is_some());
     }
 
     #[tokio::test]
