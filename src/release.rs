@@ -7,22 +7,41 @@
 //! on its branch. Anything
 //! git cannot answer (a detached head, an unreachable origin, a missing
 //! directory) counts as unknown, which is unsafe.
+//!
+//! It also holds the way ssf runs git itself: [`git`], and [`unattended`],
+//! which every git ssf spawns goes through so a credential prompt can never
+//! wait on a person who is not there (#495).
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+/// Set up a git command nobody is watching: credentials come from the
+/// configured helper, or the command fails. Git prompts on `/dev/tty`
+/// wherever it has one, so without this the command waits on a terminal that
+/// belongs to whoever started it — the daemon's own terminal, or, for the
+/// tests, the terminal `makepkg` ran in, where the builder's arrow keys were
+/// read as a username (#495). `ssf` runs git unattended: there is never
+/// someone to answer. Configuration that answers without asking — a
+/// credential helper, a stored key — still works; only the prompt is
+/// refused (`GCM_INTERACTIVE=never` is for Git Credential Manager, which
+/// prompts through a UI of its own rather than the terminal).
+pub fn unattended(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+}
+
 /// Run git in `path` and return its trimmed stdout.
 pub async fn git(path: &str, args: &[&str]) -> Result<String> {
-    let out = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(path)
-        .args(args)
-        // Never wait on a terminal for credentials (`ssf doctor` has one):
-        // a fetch that needs them fails and is reported instead.
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .await
-        .context("running git")?;
+    let out = unattended(
+        tokio::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args),
+    )
+    .output()
+    .await
+    .context("running git")?;
     if !out.status.success() {
         anyhow::bail!(
             "git {} failed: {}",
@@ -458,6 +477,51 @@ pub(crate) mod testkit {
 mod tests {
     use super::testkit::*;
     use super::*;
+
+    /// The two variables are for git and for the credential helpers git
+    /// runs: Git Credential Manager asks through a UI of its own rather
+    /// than the terminal, so `GCM_INTERACTIVE` has to reach it, and a
+    /// helper is the only thing that can say whether it did. (The terminal
+    /// half is covered where it bites: `driver::tests`, which clones from
+    /// an origin that wants credentials, #495.)
+    #[tokio::test]
+    async fn the_credential_helpers_git_runs_are_told_not_to_ask() {
+        use std::os::unix::fs::PermissionsExt;
+        use tokio::io::AsyncWriteExt;
+
+        let dir = std::env::temp_dir().join(format!("ssf-helper-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let helper = dir.join("helper.sh");
+        std::fs::write(
+            &helper,
+            "#!/bin/sh\nprintf '%s\\n' \"$GIT_TERMINAL_PROMPT $GCM_INTERACTIVE\" >&2\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let mut child = unattended(tokio::process::Command::new("git").args([
+            "-c",
+            &format!("credential.helper={}", helper.display()),
+            "credential",
+            "fill",
+        ]))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"protocol=https\nhost=example.invalid\n\n")
+            .await
+            .unwrap();
+        let out = child.wait_with_output().await.unwrap();
+        let seen = String::from_utf8_lossy(&out.stderr);
+        assert!(seen.contains("0 never"), "{seen}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A worktree of the scratch checkout under `work.worktrees/<name>`,
     /// on branch `bot/<name>` from `main`.
