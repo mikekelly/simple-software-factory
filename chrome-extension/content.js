@@ -1498,12 +1498,26 @@
     return section;
   }
 
-  /// Where the scratch button goes: the context region of GitHub's global
-  /// header, whose breadcrumbs name the repository or the project, so the
-  /// button sits right after that name. `AppHeader-context-full` is the wide
-  /// header's; the compact one is what a narrow window shows instead. Only a
-  /// visible one is used.
+  /// Where the scratch button goes: right after the repository's or the
+  /// project's name in GitHub's global header. The name is found as the
+  /// header link to this page's repository or project, since the header's
+  /// class names are generated and change; its breadcrumb item (or the link's
+  /// parent) takes the button. The `AppHeader-context` regions of the older
+  /// header are the fallback. Only a visible place is used.
   function topBar() {
+    const home = namePath(location.pathname);
+    if (home) {
+      for (const link of document.querySelectorAll("header a[href]")) {
+        let path;
+        try {
+          path = new URL(link.href, location.href).pathname.replace(/\/+$/, "");
+        } catch {
+          continue;
+        }
+        if (path.toLowerCase() !== home || !link.getClientRects().length) continue;
+        return link.closest("li") ?? link.parentElement;
+      }
+    }
     for (const selector of [
       "header.AppHeader .AppHeader-context-full",
       "header.AppHeader .AppHeader-context-compact",
@@ -1515,6 +1529,15 @@
       }
     }
     return null;
+  }
+
+  /// The path the header's name link points to: a project's own page, or the
+  /// repository's home, lowercased.
+  function namePath(pathname) {
+    const project = /^\/(?:(?:users|orgs)\/[^/]+|[^/]+\/[^/]+)\/projects\/\d+/.exec(pathname);
+    if (project) return project[0].toLowerCase();
+    const repo = /^\/[^/]+\/[^/]+/.exec(pathname);
+    return repo ? repo[0].toLowerCase() : null;
   }
 
   function sameRepo(a, b) {
