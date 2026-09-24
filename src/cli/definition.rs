@@ -301,6 +301,16 @@ pub(super) enum Command {
         #[command(subcommand)]
         topic: Option<super::skill::SkillTopic>,
     },
+    /// Write this build's Chrome extension as a zip to unzip and load
+    /// unpacked (no server connection).
+    ChromeExtension {
+        /// Where to write it.
+        #[arg(long, value_name = "PATH", default_value = "ssf-chrome-extension.zip")]
+        output: std::path::PathBuf,
+        /// Replace a file already at that path.
+        #[arg(long)]
+        force: bool,
+    },
     /// Check that GitHub, the drivers in use and the configured harnesses are usable.
     Doctor,
     /// The background service, and desktop integration where a desktop offers it (Factory menu entries on Omarchy).

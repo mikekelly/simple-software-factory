@@ -312,6 +312,24 @@ async fn handle(
                 Err(answer) => answer,
             }
         }
+        Ok(Routed::Read("chrome-extension.zip")) => {
+            let disposition = format!(
+                "Content-Disposition: attachment; filename=\"{}\"\r\n",
+                crate::chrome_extension::FILE_NAME
+            );
+            let _ = timeout(
+                REQUEST_TIMEOUT,
+                respond_bytes(
+                    &mut stream,
+                    200,
+                    "application/zip",
+                    &disposition,
+                    crate::chrome_extension::ZIP,
+                ),
+            )
+            .await;
+            return;
+        }
         Ok(Routed::Read(relative)) => read(relative, &mut latest, client).await,
         Ok(Routed::Write(accepted)) => write(&mut stream, accepted, client).await,
         Err(status) => rejected(status),
@@ -1615,6 +1633,18 @@ fn under_capability<'a>(token: &str, target: &'a str) -> std::result::Result<&'a
 const SECURITY_HEADERS: &str = "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n";
 
 async fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: &str) -> Result<()> {
+    respond_bytes(stream, status, kind, "", body.as_bytes()).await
+}
+
+/// `respond` for a body that need not be text, with any headers the answer
+/// adds (each ending `\r\n`).
+async fn respond_bytes(
+    stream: &mut TcpStream,
+    status: u16,
+    kind: &str,
+    extra: &str,
+    body: &[u8],
+) -> Result<()> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -1627,11 +1657,11 @@ async fn respond(stream: &mut TcpStream, status: u16, kind: &str, body: &str) ->
         _ => "Bad Gateway",
     };
     let headers = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n{SECURITY_HEADERS}\r\n",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n{extra}{SECURITY_HEADERS}\r\n",
         body.len()
     );
     stream.write_all(headers.as_bytes()).await?;
-    stream.write_all(body.as_bytes()).await?;
+    stream.write_all(body).await?;
     stream.shutdown().await?;
     Ok(())
 }
@@ -2092,6 +2122,58 @@ Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
             address,
             tokio::spawn(serve(listener, "secret".into(), rx, client.program())),
         )
+    }
+
+    /// The extension this build carries is a read route like the others:
+    /// served whole under the capability, as a download, and refused
+    /// without it.
+    #[tokio::test]
+    async fn serves_the_embedded_chrome_extension_zip() {
+        assert_eq!(
+            read_route(classify(
+                &request(
+                    "/secret/chrome-extension.zip",
+                    "127.0.0.1:123",
+                    EXTENSION_ORIGIN
+                ),
+                "127.0.0.1:123",
+                "secret"
+            )),
+            Ok("chrome-extension.zip")
+        );
+        assert_eq!(
+            read_route(classify(
+                &request("/wrong/chrome-extension.zip", "127.0.0.1:123", ""),
+                "127.0.0.1:123",
+                "secret"
+            )),
+            Err(404)
+        );
+        let client = Client::new("zip", "", 0);
+        let (address, task) = served(&client).await;
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(request("/secret/chrome-extension.zip", &address.to_string(), "").as_bytes())
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let split = response.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let head = String::from_utf8_lossy(&response[..split]);
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert!(head.contains("Content-Type: application/zip\r\n"), "{head}");
+        assert!(
+            head.contains(
+                "Content-Disposition: attachment; filename=\"ssf-chrome-extension.zip\"\r\n"
+            ),
+            "{head}"
+        );
+        assert_eq!(&response[split + 4..], crate::chrome_extension::ZIP);
+        assert!(
+            client.args().is_empty(),
+            "the zip is served without asking the factory"
+        );
+        task.abort();
     }
 
     /// The pickers the extension's assign form is built from: what `ssf
