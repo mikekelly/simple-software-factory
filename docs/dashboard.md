@@ -313,7 +313,7 @@ The protocol:
 Unlike the mirror, the terminal shows no redaction: it is the session's own
 terminal, as `tmux attach` in a shell on the factory shows it. The server's
 own browser page has no terminal view; the route is for clients such as the
-Chrome extension.
+Chrome extension, whose floating terminal window uses it for scratch sessions.
 
 ### Snapshot fields a client can rely on
 

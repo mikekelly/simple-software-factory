@@ -106,3 +106,7 @@ pre { margin: 0; font-family: "Nerd Font Symbols", "Symbols Nerd Font", "JetBrai
   .cell-glyph[data-cell="round-right"] { background: var(--ink); border-radius: 0 100% 100% 0 / 0 50% 50% 0; }
   .cell-glyph[data-cell="round-left"] { background: var(--ink); border-radius: 100% 0 0 100% / 50% 0 0 50%; }
 }
+
+/* A scratch session's live terminal (xterm.js, #491), sized to the window. */
+#xterm { flex: 1 1 auto; min-height: 0; padding: 4px 0 0 6px; overflow: hidden; }
+#xterm[hidden], main[hidden] { display: none; }

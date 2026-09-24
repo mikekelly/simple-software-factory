@@ -40,3 +40,11 @@ export function endpoint(url, path) {
 export function factoryLabel(url) {
   return new URL(url).host;
 }
+
+/// The WebSocket address of a scratch session's terminal (`api/term/<session>`,
+/// docs/dashboard.md): `ws://` for an `http://` factory, `wss://` for `https://`.
+export function termUrl(url, session) {
+  const address = new URL(endpoint(url, `term/${encodeURIComponent(String(session))}`));
+  address.protocol = address.protocol === "https:" ? "wss:" : "ws:";
+  return address.href;
+}

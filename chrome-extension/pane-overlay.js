@@ -1,30 +1,31 @@
-// Open, and the terminal it shows over the page (#477).
+// Open, and the terminal windows it floats over the page (#477, #491).
 //
-// Loaded as a content script before writes-form.js and content.js, in the same
-// isolated world. Both draw Open with `ssfPane.button(...)` -- the terminal icon
-// at the top of an agent's card and of a scratch session's row -- and adopt
-// `STYLE` into their shadow sheet for it:
+// Loaded as a content script after pane-geometry.js and before writes-form.js
+// and content.js, in the same isolated world. Both draw Open with
+// `ssfPane.button(...)` -- the terminal icon at the top of an agent's card and
+// of a scratch session's row -- and adopt `STYLE` into their shadow sheet for it:
 //
 //   const open = ssfPane.button(factoryUrl, session, input);
 //
-// A click lays the pane mirror (terminal.html) over the GitHub page in a frame,
-// rather than in a tab of its own, so the item the person was reading is where
-// they left it once they close it: the close button, a click outside the
-// panel, or Esc. Esc typed into the pane -- while its Type is on -- is the
-// agent's, since an agent reads it as a key; then it closes only from outside
-// the terminal.
+// A click opens the session's terminal (terminal.html) in a window of its own
+// floating over the GitHub page: not modal, so the page underneath still
+// scrolls and takes clicks. The window is dragged by its title bar, resized
+// from its bottom-right corner, kept inside the viewport and closed with its
+// ×, or Esc while the title bar has focus (Esc in the terminal is the
+// terminal's). Each session has at most one window: Open on a session that
+// already has one brings it to the front. The last place a window was moved
+// or sized to is remembered (chrome.storage.local) for the next.
 //
 // The frame is the extension's own page, listed in the manifest's
-// web_accessible_resources for github.com only, so the stream it reads still
-// carries the extension's origin and the permission the options page granted,
-// exactly as it did in a tab; it refuses a factory the options page does not
-// hold. While it is open the page underneath does not scroll: the wheel over
-// the terminal is the terminal's.
-//
-// The panel is 90% of the window's width and 85% of its height: the terminal
-// wraps its text to whatever width it has, so it needs no size of its own.
+// web_accessible_resources for github.com only, so what it reads still carries
+// the extension's origin and the permission the options page granted; it
+// refuses a factory the options page does not hold.
 (() => {
   const SVG_NS = "http://www.w3.org/2000/svg";
+  const geometry = globalThis.ssfPaneGeometry;
+  /// Where the last window moved or sized to is kept.
+  const RECT_KEY = "paneWindowRect";
+
 
   /// The button, in the card's own shadow sheet: an icon that takes no more
   /// room than the line it sits at the end of. The selectors match the forms'
@@ -49,30 +50,63 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
   outline-offset: 1px; }
 `;
 
-  /// The overlay's own sheet: a dark panel like the terminal inside it, over a
-  /// dimmed page, above GitHub's own overlays and the chip popover.
+  /// A window's own sheet: a dark panel like the terminal inside it, above
+  /// GitHub's own overlays and the chip popover. The host is the panel.
   const OVERLAY_STYLE = `
-:host { position: fixed; inset: 0; z-index: 2147483600; }
-.ssf-pane-backdrop { position: fixed; inset: 0; display: flex; align-items: center;
-  justify-content: center; background: rgba(1, 4, 9, 0.6); }
-.ssf-pane-panel { display: flex; flex-direction: column; width: 90vw; height: 85vh;
-  overflow: hidden; border: 1px solid #30363d; border-radius: 8px; background: #0d1117;
-  box-shadow: 0 8px 24px rgba(1, 4, 9, 0.5); }
-.ssf-pane-head { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px;
-  border-bottom: 1px solid #30363d; color: #e6edf3; font: 600 12px -apple-system,
+:host { position: fixed; z-index: 2147483600; display: flex; flex-direction: column;
+  box-sizing: border-box; overflow: hidden; border: 1px solid #30363d; border-radius: 8px;
+  background: #0d1117; box-shadow: 0 8px 24px rgba(1, 4, 9, 0.5); }
+.ssf-pane-head { flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 4px 6px 4px 12px; border-bottom: 1px solid #30363d; color: #e6edf3;
+  cursor: move; user-select: none; touch-action: none; font: 600 12px -apple-system,
   BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+.ssf-pane-head:focus-visible { outline: 2px solid #1f6feb; outline-offset: -2px; }
 .ssf-pane-head span { flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .ssf-pane-close { flex: none; width: 24px; height: 24px; padding: 0; border: 0;
   border-radius: 6px; background: none; color: #8b949e; font: 18px/24px sans-serif;
   cursor: pointer; }
 .ssf-pane-close:hover { background: #21262d; color: #e6edf3; }
-.ssf-pane-frame { flex: 1 1 auto; width: 100%; border: 0; background: #0d1117; }
+.ssf-pane-frame { flex: 1 1 auto; width: 100%; min-height: 0; border: 0; background: #0d1117; }
+.ssf-pane-grip { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px;
+  cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, #484f58 50%, #484f58 60%,
+    transparent 60%, transparent 75%, #484f58 75%, #484f58 85%, transparent 85%); }
+/* While dragging, the frame does not take the pointer from the drag. */
+:host([data-moving]) .ssf-pane-frame { pointer-events: none; }
 `;
 
   let sheet = null;
-  /// The open overlay, or null: one at a time.
-  let shown = null;
+  /// The open windows, by factory and session.
+  const windows = new Map();
+  /// The stacking order: each window brought to the front takes the next.
+  let top = 2147483000;
+  /// The remembered rect, read once.
+  let saved = null;
+  const loaded = storageGet();
+
+  function storageGet() {
+    try {
+      return chrome.storage.local
+        .get(RECT_KEY)
+        .then((stored) => {
+          saved = stored?.[RECT_KEY] ?? null;
+        })
+        .catch(() => {});
+    } catch {
+      // No storage (an extension reloaded under the page): nothing remembered.
+      return Promise.resolve();
+    }
+  }
+
+  function remember(rect) {
+    saved = rect;
+    try {
+      chrome.storage.local.set({ [RECT_KEY]: rect }).catch(() => {});
+    } catch {
+      // As above: the rect is kept for this page only.
+    }
+  }
 
   function element(tag, className, text) {
     const node = document.createElement(tag);
@@ -81,7 +115,6 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
     return node;
   }
 
-  /// A terminal: a window with a prompt in it.
   function terminalIcon() {
     const svg = document.createElementNS(SVG_NS, "svg");
     svg.setAttribute("viewBox", "0 0 16 16");
@@ -123,8 +156,74 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
     return open;
   }
 
-  function show(factoryUrl, session, input, opener) {
-    close();
+
+  /// The stacking range the windows use: the top of it is GitHub's own
+  /// overlays' and the chip popover's ceiling and beyond.
+  const Z_BASE = 2147483000;
+  const Z_TOP = 2147483600;
+
+  /// Bring `win` to the front. Near the end of the range the windows are
+  /// numbered again from its start, in the order they stood.
+  function raise(win) {
+    if (win.z === top) return;
+    if (top >= Z_TOP) {
+      top = Z_BASE;
+      const order = [...windows.values()].sort((a, b) => a.z - b.z);
+      for (const other of order) {
+        if (other === win) continue;
+        other.z = ++top;
+        other.host.style.zIndex = String(other.z);
+      }
+    }
+    win.z = ++top;
+    win.host.style.zIndex = String(win.z);
+  }
+
+  function place(win, rect) {
+    win.rect = geometry.clampRect(rect, innerWidth, innerHeight);
+    const { style } = win.host;
+    style.left = `${win.rect.x}px`;
+    style.top = `${win.rect.y}px`;
+    style.width = `${win.rect.width}px`;
+    style.height = `${win.rect.height}px`;
+  }
+
+  /// A pointer drag on `handle` that changes the window's rect by `change`,
+  /// given how far the pointer moved; the rect is remembered once it ends.
+  function dragging(win, handle, change) {
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || event.target.closest?.(".ssf-pane-close")) return;
+      event.preventDefault();
+      raise(win);
+      const start = { ...win.rect };
+      const { clientX, clientY } = event;
+      handle.setPointerCapture(event.pointerId);
+      win.host.dataset.moving = "";
+      const move = (moved) =>
+        place(win, change(start, moved.clientX - clientX, moved.clientY - clientY));
+      const end = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", end);
+        handle.removeEventListener("pointercancel", end);
+        delete win.host.dataset.moving;
+        remember(win.rect);
+      };
+      handle.addEventListener("pointermove", move);
+      handle.addEventListener("pointerup", end);
+      handle.addEventListener("pointercancel", end);
+    });
+  }
+
+  async function show(factoryUrl, session, input, opener) {
+    const key = `${factoryUrl}\n${session}`;
+    const open = windows.get(key);
+    if (open) {
+      raise(open);
+      open.frame.focus();
+      return;
+    }
+    await loaded;
+    if (windows.has(key)) return show(factoryUrl, session, input, opener);
     const query = new URLSearchParams({ factory: factoryUrl, session, input: input ? "1" : "0" });
     const host = element("div");
     host.dataset.ssfPane = session;
@@ -134,70 +233,65 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
       sheet.replaceSync(OVERLAY_STYLE);
     }
     shadow.adoptedStyleSheets = [sheet];
+    host.setAttribute("role", "dialog");
+    host.setAttribute("aria-label", `Terminal: ${session}`);
 
-    const backdrop = element("div", "ssf-pane-backdrop");
-    const panel = element("div", "ssf-pane-panel");
-    panel.setAttribute("role", "dialog");
-    panel.setAttribute("aria-modal", "true");
-    panel.setAttribute("aria-label", `Terminal: ${session}`);
     const head = element("div", "ssf-pane-head");
+    head.tabIndex = 0;
     const shut = element("button", "ssf-pane-close", "×");
     shut.type = "button";
     shut.title = "Close terminal";
     shut.setAttribute("aria-label", "Close terminal");
-    shut.onclick = close;
-    // The session is named on the terminal's own first line, just below.
-    head.append(element("span", undefined, "Terminal"), shut);
+    head.append(element("span", undefined, session), shut);
     const frame = element("iframe", "ssf-pane-frame");
     frame.title = `Terminal: ${session}`;
     frame.src = `${chrome.runtime.getURL("terminal.html")}?${query}`;
-    panel.append(head, frame);
-    backdrop.append(panel);
-    backdrop.addEventListener("click", (event) => {
-      if (event.target === backdrop) close();
-    });
-    shadow.append(backdrop);
+    const grip = element("div", "ssf-pane-grip");
+    grip.setAttribute("aria-hidden", "true");
+    shadow.append(head, frame, grip);
 
-    // Esc from the page, and from the terminal, which cannot reach this
-    // document's keys and says so from inside its frame.
-    const onKey = (event) => {
+    const win = { host, frame, opener, z: 0, rect: null };
+    shut.onclick = () => close(key);
+    // Esc closes the window from its title bar; in the terminal it is a key.
+    head.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       event.stopPropagation();
-      close();
-    };
-    const onMessage = (event) => {
-      if (event.source !== frame.contentWindow) return;
-      if (event.data?.type === "ssf:pane-close") close();
-    };
-    addEventListener("keydown", onKey, true);
-    addEventListener("message", onMessage);
-    // The page underneath stays where it is: a wheel that runs off the end of
-    // the terminal would otherwise scroll it.
-    const root = document.documentElement;
-    const overflow = root.style.overflow;
-    root.style.overflow = "hidden";
+      close(key);
+    });
+    // A click anywhere in it -- the frame too, which the page hears only as
+    // focus moving into it -- brings it to the front.
+    host.addEventListener("pointerdown", () => raise(win), true);
+    host.addEventListener("focusin", () => raise(win));
+    dragging(win, head, (start, dx, dy) => ({ ...start, x: start.x + dx, y: start.y + dy }));
+    dragging(win, grip, (start, dx, dy) => ({
+      ...start,
+      width: start.width + dx,
+      height: start.height + dy,
+    }));
 
+    place(win, geometry.placeRect(saved, windows.size, innerWidth, innerHeight));
+    windows.set(key, win);
+    raise(win);
     document.body.append(host);
     frame.focus();
-    shown = {
-      host,
-      opener,
-      undo() {
-        removeEventListener("keydown", onKey, true);
-        removeEventListener("message", onMessage);
-        root.style.overflow = overflow;
-      },
-    };
   }
 
-  function close() {
-    if (!shown) return;
-    const { host, opener, undo } = shown;
-    shown = null;
-    undo();
-    host.remove();
-    if (opener?.isConnected) opener.focus();
+  function close(key) {
+    const win = windows.get(key);
+    if (!win) return;
+    windows.delete(key);
+    win.host.remove();
+    if (win.opener?.isConnected) win.opener.focus({ preventScroll: true });
   }
 
-  globalThis.ssfPane = { STYLE, button, close };
+  function closeAll() {
+    for (const key of [...windows.keys()]) close(key);
+  }
+
+  // A smaller viewport keeps every window on screen.
+  addEventListener("resize", () => {
+    for (const win of windows.values()) place(win, win.rect);
+  });
+
+  globalThis.ssfPane = { STYLE, button, close: closeAll };
 })();

@@ -19,7 +19,8 @@
 // accepts a write only from an extension origin (docs/dashboard.md), and a
 // content script running on github.com has none, so these are sent from here;
 // the same rule is why the read streams live here too.
-import { endpoint, factoryUrl, factoryLabel, originPattern } from "./factory-url.js";
+import { endpoint, factoryUrl, factoryLabel, originPattern, termUrl } from "./factory-url.js";
+import { fromBase64, toBase64 } from "./term-wire.js";
 
 const BACKOFF_MIN_MS = 1000;
 const BACKOFF_MAX_MS = 60000;
@@ -422,6 +423,57 @@ async function readPane(message, signal, tell) {
   }
 }
 
+/// A scratch session's terminal, `api/term/<session>` (a WebSocket), opened
+/// here for the page on its port (`ssf-term`, #491), for the same reason the
+/// pane stream is read here: the page is framed under github.com. The socket
+/// carries the extension's origin, which the factory requires.
+///
+/// The page sends `open` to connect, `input` (base64 bytes) and `resize`
+/// (the factory's own JSON text); this worker sends `open` once connected,
+/// `data` (base64 bytes) and, once, `closed` with why. Closing the port closes
+/// the socket.
+function termStream(port) {
+  let socket = null;
+  const tell = (message) => {
+    try {
+      port.postMessage(message);
+    } catch {
+      socket?.close();
+    }
+  };
+  port.onDisconnect.addListener(() => socket?.close());
+  port.onMessage.addListener(async (message) => {
+    if (message?.type === "open") {
+      socket?.close();
+      socket = null;
+      const url = factoryUrl(message.url);
+      const stored = (await chrome.storage.local.get("factories")).factories ?? [];
+      if (!url || !stored.some((item) => factoryUrl(item?.url) === url)) {
+        tell({ type: "closed", error: "this terminal names no configured factory" });
+        return;
+      }
+      const mine = new WebSocket(termUrl(url, String(message.session ?? "")));
+      socket = mine;
+      mine.binaryType = "arraybuffer";
+      mine.onopen = () => socket === mine && tell({ type: "open" });
+      mine.onmessage = (event) => {
+        if (socket === mine && event.data instanceof ArrayBuffer) {
+          tell({ type: "data", data: toBase64(new Uint8Array(event.data)) });
+        }
+      };
+      mine.onclose = (event) => {
+        if (socket !== mine) return;
+        socket = null;
+        tell({ type: "closed", code: event.code, reason: event.reason });
+      };
+    } else if (message?.type === "input" && socket?.readyState === WebSocket.OPEN) {
+      socket.send(fromBase64(message.data));
+    } else if (message?.type === "resize" && socket?.readyState === WebSocket.OPEN) {
+      socket.send(String(message.data));
+    }
+  });
+}
+
 async function listing(message, path) {
   const entry = factories.get(message.url);
   if (!entry) return { ok: false, error: "that factory is no longer configured" };
@@ -490,6 +542,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === "ssf-pane") {
     paneStream(port);
+    return;
+  }
+  if (port.name === "ssf-term") {
+    termStream(port);
     return;
   }
   if (port.name !== "ssf-overlay") return;
