@@ -9,6 +9,8 @@ were made, not how ssf behaves now; the current documentation is in `docs/`.
   observations from that experiment. Did not ship, not planned.
 - [harness-delivery-channels.md](harness-delivery-channels.md): how to wake an
   idle agent with an event. Shipped per harness.
+- [jev-decisioning.md](jev-decisioning.md): optional Jev model to triage which
+  events wake an agent. Did not ship, not planned.
 - [named-factory-targets.md](named-factory-targets.md): the client's catalog of
   named factory targets. Shipped.
 - [omarchy-marketplace.md](omarchy-marketplace.md): marketplace installation.
