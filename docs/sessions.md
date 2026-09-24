@@ -595,11 +595,11 @@ signed-out harness on either. While a release is pending it is told nothing. `ss
 scratch session on the other stack instead.
 
 A scratch session runs in a detached tmux session of its own, not in a herdr
-pane: `ssf-<owner>_<repo>-<id>` on the default tmux server of the user the
-factory runs as (anything but letters, digits and `-` in the name becomes
-`_`), with the worktree as its directory and `window-size latest`, so it takes
+pane: `ssf-<owner>_s<repo>_t<id>` on the default tmux server of the user the
+factory runs as (`/` is written `_s`, `~` `_t`, `.` `_d` and `_` `__`, so
+`o/site.io~ab12` is `ssf-o_ssite_dio_tab12`; `tmux ls` lists them), with the worktree as its directory and `window-size latest`, so it takes
 the size of whichever client attached last. `tmux attach -t
-ssf-<owner>_<repo>-<id>` reaches it from a shell on that machine (in the
+<name>` reaches it from a shell on that machine (in the
 guest, for a factory in a VM), and the web endpoint's `api/term` from a
 browser ([dashboard.md](dashboard.md#terminal)). The harness is the tmux
 session's only command, so the session is live exactly while the harness
@@ -607,9 +607,9 @@ runs; tmux reports no agent state, so `ssf status` shows a live one as
 `running`, with its last activity read from the harness's transcript where
 the harness keeps one. What it follows is pasted into it (`tmux load-buffer`
 and `paste-buffer`, then Enter), for every harness: the native Claude Code and
-Codex channels reach a harness through herdr and are not used for it. Under
-systemd, a tmux server the daemon starts is put in a scope of its own
-(`systemd-run --user --scope`) where there is a user manager to ask, so a
+Codex channels reach a harness through herdr and are not used for it. A tmux
+server the daemon starts is put in a systemd scope of its own
+(`systemd-run --user --scope`) where `systemd-run` is installed and works, so a
 restart of the service does not end every scratch session with it. A scratch
 session made before tmux was used is left running in its herdr pane and told
 there; the next time it is started (a resume, or a restart) it starts in tmux.

@@ -599,9 +599,17 @@ pub fn sessions_with(
             // A scratch session in tmux (#491) does not wait on the driver.
             let tmux = in_tmux(st);
             let list = if tmux { Some(list) } else { workspaces };
+            // A tmux session's own row wins over a herdr row a legacy
+            // session's workspace still has under the same id.
+            let name = crate::tmux::session_name(&repo.name, &st.id);
             let ws = list.and_then(|list| {
                 let id = st.worktree_id.as_deref()?;
-                list.iter().find(|w| w.worktree_id == id)
+                let same = |w: &&WorkspaceInfo| w.worktree_id == id;
+                if tmux {
+                    list.iter().filter(same).find(|w| w.display_name == name)
+                } else {
+                    list.iter().find(same)
+                }
             });
             out.push(join_scratch(repo, st, ws, list.is_some()));
         }
@@ -1740,5 +1748,46 @@ mod dashboard_tests {
         // empty rather than absent, so a client reads one shape.
         let older = dashboard_presentation(&json!({"sessions":[]})).unwrap();
         assert_eq!(older["repositories"], json!([]));
+    }
+}
+
+#[cfg(test)]
+mod tmux_row_tests {
+    use super::*;
+
+    /// A legacy scratch session moved to tmux keeps its herdr workspace id;
+    /// the tmux row, not the herdr one, is its state.
+    #[test]
+    fn a_scratch_session_in_tmux_takes_the_tmux_row() {
+        let cfg: Config =
+            toml::from_str("[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n").unwrap();
+        let mut state = State::default();
+        state.repo_mut("o/r").scratch.insert(
+            "ab12".into(),
+            ScratchState {
+                id: "ab12".into(),
+                worktree_id: Some("w7@/p".into()),
+                terminal_handle: Some(crate::tmux::handle(&crate::tmux::session_name(
+                    "o/r", "ab12",
+                ))),
+                ..Default::default()
+            },
+        );
+        let herdr = WorkspaceInfo {
+            worktree_id: "w7@/p".into(),
+            ..Default::default()
+        };
+        let tmux = WorkspaceInfo {
+            worktree_id: "w7@/p".into(),
+            display_name: crate::tmux::session_name("o/r", "ab12"),
+            agents: vec![crate::driver::AgentInfo {
+                state: "running".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let rows = sessions_with(&cfg, &state, &[herdr, tmux], &[]);
+        let row = rows.iter().find(|s| s.id == "o/r~ab12").unwrap();
+        assert_eq!(row.agent_state, "running");
     }
 }

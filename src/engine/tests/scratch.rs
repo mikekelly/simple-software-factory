@@ -326,7 +326,10 @@ async fn a_scratch_session_in_tmux_is_killed_before_its_workspace_goes() {
         .get_mut("k3f9")
         .unwrap()
         .worktree_path = Some(clean.work.clone());
-    t.with(|s| s.live.insert(name.clone()));
+    t.with(|s| {
+        s.live.insert(name.clone());
+        s.kill_error = Some("server not answering".into());
+    });
     let accepted = e
         .handle_request(Request::Release {
             session: "o/r~k3f9".into(),
@@ -335,6 +338,13 @@ async fn a_scratch_session_in_tmux_is_killed_before_its_workspace_goes() {
         .await;
     assert!(accepted.ok, "{:?}", accepted.error);
     assert_eq!(accepted.data["pending"], true);
+    // A kill that fails keeps the workspace, and the release pending.
+    e.run_scratch_cleanups(&r).await;
+    assert!(
+        d.log().is_empty(),
+        "nothing removed while the harness may run"
+    );
+    assert!(scratch_state(&e, &r).release_pending);
     e.run_scratch_cleanups(&r).await;
     assert_eq!(t.log(), vec![format!("kill:{name}")]);
     assert_eq!(

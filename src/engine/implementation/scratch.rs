@@ -644,7 +644,10 @@ removed the workspace"
                 .kill_session(&crate::tmux::session_name(&repo.name, &st.id))
                 .await
             {
+                // The workspace stays while its harness may still run in
+                // it; the release stays pending and the next pass retries.
                 warn!(session, "ending the scratch tmux session failed: {e:#}");
+                continue;
             }
             match self.driver(repo).remove_worktree(&wid).await {
                 Ok(()) => {

@@ -1,5 +1,5 @@
 //! Scratch sessions' terminals (#491): each runs in a detached tmux session
-//! of its own, `ssf-<owner>_<repo>-<id>`, rather than in a herdr pane. An
+//! of its own (see [`session_name`]), rather than in a herdr pane. An
 //! item's session stays in herdr.
 //!
 //! tmux knows nothing about agents, so there is no agent state here: a
@@ -22,23 +22,23 @@ use tracing::{debug, info, warn};
 pub const HANDLE_PREFIX: &str = "tmux:";
 
 /// The tmux session a scratch session (`repo` `owner/name`, `id`) runs in.
-/// tmux takes neither `.` nor `:` in a name, so anything but letters,
-/// digits, `-` and `_` becomes `_`; the owner and the repository are kept
-/// apart by the first `_` (GitHub logins have none), so two repositories'
-/// sessions with one id do not collide.
+/// tmux takes neither `.` nor `:` in a name, so `owner/repo~id` is escaped:
+/// `_` is `__`, `.` `_d`, `/` `_s`, `~` `_t`, anything else outside
+/// letters, digits and `-` `_x<hex>_`. No two sessions share a name.
 pub fn session_name(repo: &str, id: &str) -> String {
-    let safe = |s: &str| -> String {
-        s.chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect()
-    };
-    format!("ssf-{}-{}", safe(repo), safe(id))
+    // A prefix-free escape, so distinct sessions never share a name.
+    let mut out = String::from("ssf-");
+    for c in format!("{repo}~{id}").chars() {
+        match c {
+            c if c.is_ascii_alphanumeric() || c == '-' => out.push(c),
+            '_' => out.push_str("__"),
+            '.' => out.push_str("_d"),
+            '/' => out.push_str("_s"),
+            '~' => out.push_str("_t"),
+            c => out.push_str(&format!("_x{:x}_", c as u32)),
+        }
+    }
+    out
 }
 
 /// `tmux:<name>`: the terminal handle recorded for a scratch session.
@@ -247,9 +247,10 @@ impl Tmux {
     ///
     /// Under systemd, a server started here would be in the service's
     /// cgroup and killed with it on every restart of the daemon, taking
-    /// every scratch session with it; a server this starts is therefore
-    /// started in a scope of its own (`systemd-run --user --scope`) where
-    /// that is possible, and plainly where it is not.
+    /// every scratch session with it; when no server is running, it is
+    /// therefore started in a scope of its own (`systemd-run --user
+    /// --scope`) where systemd-run is there and works, and plainly
+    /// otherwise.
     pub async fn new_session(&self, name: &str, cwd: &str, command: &str) -> Result<()> {
         #[cfg(test)]
         if let Some(stub) = &self.stub {
@@ -270,7 +271,7 @@ impl Tmux {
         let args = new_session_args(name, cwd, command, &env);
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let mut started = false;
-        if std::env::var_os("INVOCATION_ID").is_some() && !self.server_running().await {
+        if !self.server_running().await && crate::platform::which("systemd-run").is_some() {
             let mut full: Vec<String> = ["--user", "--scope", "--quiet", "--collect", "--", "tmux"]
                 .into_iter()
                 .map(str::to_string)
@@ -321,11 +322,14 @@ impl Tmux {
     pub async fn kill_session(&self, name: &str) -> Result<()> {
         #[cfg(test)]
         if let Some(stub) = &self.stub {
-            stub.with(|s| {
+            return stub.with(|s| {
+                if let Some(why) = s.kill_error.take() {
+                    bail!("{why}");
+                }
                 s.live.remove(name);
                 s.log.push(format!("kill:{name}"));
+                Ok(())
             });
-            return Ok(());
         }
         if !self.has_session(name).await? {
             return Ok(());
@@ -552,6 +556,8 @@ pub struct StubTmuxState {
     /// The next settle finds the session gone (a resume that exited).
     pub resume_exits: bool,
     pub start_error: Option<String>,
+    /// When set, the next kill fails with this message.
+    pub kill_error: Option<String>,
 }
 
 #[cfg(test)]
@@ -571,9 +577,10 @@ mod tests {
 
     #[test]
     fn session_names_are_safe_for_tmux_and_keep_repositories_apart() {
-        assert_eq!(session_name("o/r", "k3f9"), "ssf-o_r-k3f9");
+        assert_eq!(session_name("o/r", "k3f9"), "ssf-o_sr_tk3f9");
         let name = session_name("my-org/site.io", "ab12");
-        assert_eq!(name, "ssf-my-org_site_io-ab12");
+        assert_eq!(name, "ssf-my-org_ssite_dio_tab12");
+        assert_ne!(session_name("o/a.b", "x"), session_name("o/a_b", "x"));
         assert!(!name.contains('.') && !name.contains(':'));
         assert_ne!(session_name("a/b", "x1"), session_name("a/c", "x1"));
         assert_eq!(name_of(&handle(&name)), Some(name.as_str()));

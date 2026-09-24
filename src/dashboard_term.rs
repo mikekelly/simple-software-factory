@@ -145,7 +145,12 @@ fn open_pty(cols: u16, rows: u16) -> Result<(OwnedFd, OwnedFd)> {
     unsafe {
         let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
         libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+        // Neither end may leak into another child spawned meanwhile: a
+        // stray copy of the slave would keep the master from ever seeing
+        // the attach end. The child gets the slave through `Stdio` (dup2,
+        // which clears the flag on its copy).
         libc::fcntl(master.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+        libc::fcntl(slave.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
     }
     Ok((master, slave))
 }
