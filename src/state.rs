@@ -735,13 +735,34 @@ impl StateLock {
             let e = std::io::Error::last_os_error();
             if e.kind() == std::io::ErrorKind::WouldBlock {
                 bail!(
-                    "another ssf daemon is listening on {}; stop it first",
-                    crate::ipc::socket_path().display()
+                    "another ssf process holds the state lock {}; stop it first",
+                    path.display()
                 );
             }
             return Err(e).with_context(|| format!("locking {}", path.display()));
         }
         Ok(Self { _file: file })
+    }
+}
+
+/// A test process forks children from other threads; until such a child
+/// `exec`s it shares every open descriptor, the lock file's included, so a
+/// released lock can stay held for that moment (#476).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub(crate) fn reacquire(dir: &Path) -> StateLock {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match StateLock::acquire_in(dir) {
+                Ok(lock) => return lock,
+                Err(_) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(e) => panic!("{e:#}"),
+            }
+        }
     }
 }
 
@@ -1103,9 +1124,9 @@ mod tests {
         let err = StateLock::acquire_in(&sandbox.state_dir().join("."))
             .err()
             .expect("the second engine must not get the state lock");
-        assert!(err.to_string().contains("another ssf daemon is listening"));
+        assert!(err.to_string().contains("holds the state lock"));
         drop(first);
-        StateLock::acquire_in(&sandbox.state_dir()).unwrap();
+        test_support::reacquire(&sandbox.state_dir());
     }
 
     /// Scratch sessions round-trip in a map of their own; a state file from
