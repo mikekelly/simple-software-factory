@@ -186,8 +186,6 @@ impl Engine {
         let mailbox = crate::delivery_channel::scratch_mailbox(&repo.name, &id);
         crate::codex_delivery::retire_binding(&mailbox)
             .context("retiring native binding before a fresh conversation")?;
-        let st = self.scratch_entry(&repo, &id).clone();
-        let text = prompt::scratch_prompt(&Self::scratch_place(&repo, &session, &st));
         let tokens = self.cfg.auto_compaction_tokens_for(&eff);
         let cmd = self.scratch_launch_command(
             &repo,
@@ -197,15 +195,16 @@ impl Engine {
             tokens,
         );
         let title = format!("{} · ~{id}", eff.harness);
+        // No first prompt: the harness waits at its composer for the person
+        // at the terminal (#487), where a preamble alone had the agent
+        // invent a task to answer.
         let handle = self
             .driver(&repo)
-            .start(&wt.id, &cmd, &title, &eff.harness, &text)
+            .start(&wt.id, &cmd, &title, &eff.harness, "")
             .await?;
         let _ = self.driver(&repo).set_status(&wt.id, "in-progress").await;
         let e = self.scratch_entry(&repo, &id);
         e.terminal_handle = Some(handle);
-        e.last_prompt_at = Some(now_iso());
-        e.prompts_sent += 1;
         info!(session, harness = eff.harness, "started scratch session");
         Ok(serde_json::json!({
             "session": session,

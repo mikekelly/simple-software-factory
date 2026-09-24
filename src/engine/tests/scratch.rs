@@ -187,3 +187,20 @@ fn a_scratch_session_does_not_get_its_own_posts_back() {
         2
     );
 }
+
+#[tokio::test]
+async fn a_new_scratch_session_is_sent_no_first_prompt() {
+    let _sandbox = crate::config::test_support::sandbox();
+    let stub = GitHubStub::start().await;
+    let mut e = engine_at(&stub.base);
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    e.create_scratch(&r.name, "claude", None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(d.prompts(), vec![String::new()]);
+    let st = e.state.repos[&r.name].scratch.values().next().unwrap();
+    assert_eq!(st.prompts_sent, 0);
+}

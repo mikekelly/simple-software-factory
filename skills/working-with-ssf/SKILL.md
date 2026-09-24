@@ -26,8 +26,8 @@ locally, in a VM, or over SSH. Linux and macOS are supported.
    document at the installed version.
 3. Inside a session that ssf itself started on an issue, or a scratch
    session (`SSF_SESSION` set, started with `ssf scratch create` or the
-   Chrome extension's New scratch), read `ssf guide` instead; the first
-   prompt already carries what that session needs.
+   Chrome extension's New scratch), read `ssf guide` instead; an item's
+   first prompt already carries what that session needs.
 
 | The person wants | Topic |
 | --- | --- |
