@@ -19,6 +19,12 @@
 // exactly as it did in a tab; it refuses a factory the options page does not
 // hold. While it is open the page underneath does not scroll: the wheel over
 // the terminal is the terminal's.
+//
+// The panel is as large as the terminal, and no larger than 90% of the window's
+// width and 85% of its height. The frame is another origin, so the two say so
+// in messages: this tells the frame the most room it has (`ssf:pane-room`), the
+// frame fits the pane into it and answers with the size it drew
+// (`ssf:pane-size`), and the panel takes that size.
 (() => {
   const SVG_NS = "http://www.w3.org/2000/svg";
 
@@ -153,10 +159,31 @@ button.ssf-pane-open:hover:not(:disabled) {
       close();
     };
     const onMessage = (event) => {
-      if (event.source === frame.contentWindow && event.data?.type === "ssf:pane-close") close();
+      if (event.source !== frame.contentWindow) return;
+      if (event.data?.type === "ssf:pane-close") close();
+      if (event.data?.type === "ssf:pane-size") {
+        const { width, height } = event.data;
+        if (![width, height].every((n) => Number.isFinite(n) && n > 0 && n < 100000)) return;
+        panel.style.width = `min(90vw, ${Math.ceil(width)}px)`;
+        panel.style.height = `min(85vh, ${Math.ceil(height + head.offsetHeight)}px)`;
+      }
     };
+    // The panel's size at its largest, less its own head: the frame's room.
+    // Its page runs at the extension's own origin, not at the dynamic one
+    // its address carries (use_dynamic_url).
+    const room = () =>
+      frame.contentWindow?.postMessage(
+        {
+          type: "ssf:pane-room",
+          width: innerWidth * 0.9,
+          height: innerHeight * 0.85 - head.offsetHeight,
+        },
+        `chrome-extension://${chrome.runtime.id}`,
+      );
+    frame.addEventListener("load", room);
     addEventListener("keydown", onKey, true);
     addEventListener("message", onMessage);
+    addEventListener("resize", room);
     // The page underneath stays where it is: a wheel that runs off the end of
     // the terminal would otherwise scroll it.
     const root = document.documentElement;
@@ -171,6 +198,7 @@ button.ssf-pane-open:hover:not(:disabled) {
       undo() {
         removeEventListener("keydown", onKey, true);
         removeEventListener("message", onMessage);
+        removeEventListener("resize", room);
         root.style.overflow = overflow;
       },
     };

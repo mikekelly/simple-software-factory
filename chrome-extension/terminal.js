@@ -12,7 +12,9 @@
 // the screen, which is kept as the terminal's scrollback: the wheel scrolls
 // back through it, never typing into the pane. The whole pane is fitted into
 // the window, its font made smaller where it has to be, so none of it is cut
-// off. What is typed goes to the service worker, which
+// off; framed by Open, the window is the room the overlay says it has, and the
+// overlay is told the size drawn so its panel can fit around it
+// (pane-overlay.js). What is typed goes to the service worker, which
 // sends it as the write `api/pane/input` -- a write like assign, so the
 // factory's Writes switch applies to it -- one request at a time, in order.
 //
@@ -94,6 +96,19 @@ if (params.get("input") !== "1" && window.parent !== window) {
   );
 }
 
+/// The room the overlay has for this frame at most, once it has said, and
+/// what to do when it says again.
+let room = null;
+let refit = () => {};
+addEventListener("message", (event) => {
+  if (event.source !== window.parent || event.origin !== "https://github.com") return;
+  if (event.data?.type !== "ssf:pane-room") return;
+  const { width, height } = event.data;
+  if (![width, height].every((n) => Number.isFinite(n) && n > 0)) return;
+  room = { width, height };
+  refit();
+});
+
 function say(text, problem = false) {
   stateLine.textContent = text;
   stateLine.dataset.problem = String(problem);
@@ -129,16 +144,20 @@ async function start() {
   term.focus();
 
   /// The largest font size, up to MAX_FONT, at which the whole pane --
-  /// every one of its columns and rows -- fits in the window. A cell does not
-  /// grow exactly with its font, so the first guess is stepped down until
-  /// it fits.
+  /// every one of its columns and rows -- fits in the window, or in the room
+  /// the overlay has said it has (the frame itself is then made as small as
+  /// what is drawn). A cell does not grow exactly with its font, so the first
+  /// guess is stepped down until it fits.
+  const header = document.querySelector("header");
+  let told = "";
   function fit() {
     const drawn = term.element?.querySelector(".xterm-screen");
     if (!drawn?.offsetWidth || !drawn.offsetHeight) return;
     const style = getComputedStyle(box);
-    const width =
-      box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - SCROLLBAR;
-    const height = box.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+    const across = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + SCROLLBAR;
+    const down = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const width = (room ? room.width : box.clientWidth) - across;
+    const height = (room ? room.height - header.offsetHeight : box.clientHeight) - down;
     if (width <= 0 || height <= 0) return;
     const now = term.options.fontSize;
     const scale = Math.min(width / drawn.offsetWidth, height / drawn.offsetHeight);
@@ -148,7 +167,17 @@ async function start() {
       size -= 0.5;
       term.options.fontSize = size;
     }
+    const wanted = {
+      type: "ssf:pane-size",
+      width: drawn.offsetWidth + across,
+      height: header.offsetHeight + drawn.offsetHeight + down,
+    };
+    if (room && JSON.stringify(wanted) !== told) {
+      told = JSON.stringify(wanted);
+      window.parent.postMessage(wanted, "https://github.com");
+    }
   }
+  refit = fit;
   new ResizeObserver(fit).observe(box);
 
   // What the pane shows, as lines: the history above the screen, and the

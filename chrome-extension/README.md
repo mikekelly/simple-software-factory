@@ -394,7 +394,8 @@ panel, or Esc closes it; in a pane that takes typing, Esc typed into the
 terminal is the agent's, so there it closes only from outside the terminal.
 The whole pane fits in the panel, in a smaller font where it has to be (down
 to 5px, below which a pane in a very small window is cut off at the bottom
-right). While it is open the page underneath does not scroll: the wheel
+right), and the panel is as large as the terminal, up to 90% of the window's
+width and 85% of its height. While it is open the page underneath does not scroll: the wheel
 scrolls back through the pane's history (up to 1000 rows, as the factory
 sends it) and never types into the pane. Scrolled back, the view stays where
 it is as the agent works; back at the bottom, it follows the live screen.
