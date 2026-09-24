@@ -817,6 +817,13 @@ pub struct DaemonConfig {
     /// so old config files still load; never written back.
     #[serde(default, skip_serializing)]
     pub slash_commands: Option<bool>,
+    /// How long a released (killed) scratch session is kept before the
+    /// factory forgets it, in hours: its record leaves `ssf status` and the
+    /// extension's list, and `ssf scratch resume` no longer knows it. Its
+    /// branch and the harness's own transcript are left where they are.
+    /// `0` keeps released scratch sessions for ever.
+    #[serde(default = "default_scratch_release_grace_hours")]
+    pub scratch_release_grace_hours: u64,
     /// GitHub logins whose assignments, mentions, review requests, labels
     /// and posts ssf acts on, for every repository that has no list of its
     /// own (case-insensitive; the bot itself is always accepted). Unset:
@@ -877,6 +884,7 @@ impl Default for DaemonConfig {
             event_comments: true,
             item_pane_input: false,
             slash_commands: None,
+            scratch_release_grace_hours: default_scratch_release_grace_hours(),
             allowed_users: None,
             accepted_anyone_risk: false,
         }
@@ -885,6 +893,11 @@ impl Default for DaemonConfig {
 
 fn default_poll_interval() -> u64 {
     10
+}
+/// A day: long enough that a scratch session killed by mistake can still be
+/// resumed, short enough that the list and the state do not grow for ever.
+fn default_scratch_release_grace_hours() -> u64 {
+    24
 }
 fn default_conflict_check_interval() -> u64 {
     300

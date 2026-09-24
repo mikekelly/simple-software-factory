@@ -268,6 +268,20 @@ fn startup_wait_uses_the_driver_name() {
     assert_eq!(Config::default().daemon.startup_driver_wait_secs, 120);
 }
 
+/// The policy default is a day, and `0` -- the opt-out -- is not it.
+#[test]
+fn a_released_scratch_session_is_kept_for_a_day_unless_the_grace_says_otherwise() {
+    for config in ["", "[daemon]\n"] {
+        let cfg: Config = toml::from_str(config).unwrap();
+        assert_eq!(cfg.daemon.scratch_release_grace_hours, 24);
+    }
+    assert_eq!(Config::default().daemon.scratch_release_grace_hours, 24);
+    let never: Config = toml::from_str("[daemon]\nscratch_release_grace_hours = 0\n").unwrap();
+    assert_eq!(never.daemon.scratch_release_grace_hours, 0);
+    let hours: Config = toml::from_str("[daemon]\nscratch_release_grace_hours = 6\n").unwrap();
+    assert_eq!(hours.daemon.scratch_release_grace_hours, 6);
+}
+
 fn parse(toml_src: &str) -> Result<Config> {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!("ssf-config-test-{}", std::process::id()));

@@ -428,3 +428,93 @@ async fn a_legacy_scratch_session_live_in_herdr_is_left_there() {
         Some(crate::tmux::handle(&name))
     );
 }
+
+/// A released scratch session is kept for the configured grace -- a kill
+/// made by mistake can still be undone with a resume -- and dropped after
+/// it: out of `ssf status`, out of what it followed, and no longer
+/// resumable (#501). `0` keeps them for ever.
+#[tokio::test]
+async fn a_released_scratch_session_is_dropped_after_its_grace() {
+    use crate::state::IssueState;
+
+    let mut e = engine();
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    e.cfg.daemon.scratch_release_grace_hours = 2;
+    seed_scratch(&mut e, &r, "/nonexistent/scratch");
+    e.state.repo_mut(&r.name).issues.insert(
+        5,
+        IssueState {
+            number: 5,
+            title: "Five".into(),
+            subscriber_only: true,
+            subscribers: vec!["o/r~k3f9".into()],
+            ..Default::default()
+        },
+    );
+    let ago = |hours: i64| {
+        (chrono::Utc::now() - chrono::Duration::hours(hours))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    };
+    let release = |e: &mut Engine, hours: i64| {
+        let st = e
+            .state
+            .repos
+            .get_mut(&r.name)
+            .unwrap()
+            .scratch
+            .get_mut("k3f9")
+            .unwrap();
+        st.worktree_id = None;
+        st.worktree_path = None;
+        st.terminal_handle = None;
+        st.released_at = Some(ago(hours));
+    };
+    let known = |e: &Engine| e.state.repos[&r.name].scratch.contains_key("k3f9");
+
+    // A session that was never released is left alone, whenever its record
+    // says it was, if it was hand-edited to say so.
+    e.state
+        .repos
+        .get_mut(&r.name)
+        .unwrap()
+        .scratch
+        .get_mut("k3f9")
+        .unwrap()
+        .released_at = Some(ago(3));
+    e.drop_released_scratch(&r);
+    assert!(scratch_state(&e, &r).worktree_id.is_some());
+
+    // An hour after its release: there, and still followed.
+    release(&mut e, 1);
+    e.drop_released_scratch(&r);
+    assert!(known(&e));
+    assert_eq!(
+        e.state.repos[&r.name].issues[&5].subscribers,
+        vec!["o/r~k3f9"]
+    );
+
+    // Past the grace: the record and its subscriptions go.
+    release(&mut e, 3);
+    e.drop_released_scratch(&r);
+    assert!(!known(&e));
+    assert!(e.state.repos[&r.name].issues[&5].subscribers.is_empty());
+
+    // And nothing knows it any more: a resume says why, not just "unknown".
+    let gone = e
+        .handle_request(Request::ScratchResume {
+            session: "o/r~k3f9".into(),
+        })
+        .await;
+    assert!(!gone.ok);
+    assert_eq!(gone.kind, Some(crate::ipc::RefusalKind::Conflict));
+    let said = gone.error.unwrap_or_default();
+    assert!(said.contains("2 hours"), "{said}");
+
+    // With the grace turned off, nothing is ever dropped.
+    e.cfg.daemon.scratch_release_grace_hours = 0;
+    seed_scratch(&mut e, &r, "/nonexistent/scratch");
+    release(&mut e, 100);
+    e.drop_released_scratch(&r);
+    assert!(known(&e));
+}
