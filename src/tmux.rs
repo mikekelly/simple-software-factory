@@ -102,6 +102,27 @@ fn session_target(name: &str) -> String {
     format!("={name}")
 }
 
+/// The arguments of [`Tmux::attach_command`]: one tmux command sequence, so
+/// a session that is gone fails the first and nothing is attached.
+pub fn attach_args(name: &str) -> Vec<String> {
+    let pane = pane_target(name);
+    let session = session_target(name);
+    [
+        "set-option",
+        "-t",
+        &pane,
+        "detach-on-destroy",
+        "on",
+        ";",
+        "attach-session",
+        "-t",
+        &session,
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 /// The active pane of a session, matched exactly.
 fn pane_target(name: &str) -> String {
     format!("={name}:")
@@ -302,16 +323,18 @@ impl Tmux {
         if !started {
             self.run(&args, None).await?;
         }
-        let target = session_target(name);
-        if let Err(e) = self
-            .run(
-                &["set-option", "-t", &target, "window-size", "latest"],
-                None,
-            )
-            .await
-        {
-            // Only a session whose command has already exited gets here.
-            debug!(session = name, "setting window-size: {e:#}");
+        // `set-option -t` takes a pane: a bare `=name` is no target at all.
+        let target = pane_target(name);
+        // A terminal attached to the session is detached when it ends, rather
+        // than moved to another session (tmux's default).
+        for (option, value) in [("window-size", "latest"), ("detach-on-destroy", "on")] {
+            if let Err(e) = self
+                .run(&["set-option", "-t", &target, option, value], None)
+                .await
+            {
+                // Only a session whose command has already exited gets here.
+                debug!(session = name, "setting {option}: {e:#}");
+            }
         }
         info!(session = name, cwd, "started tmux session");
         Ok(())
@@ -484,15 +507,18 @@ impl Tmux {
         self.has_session(name).await
     }
 
-    /// `tmux attach-session` to `name`, for a terminal (`ssf __pane
-    /// attach`, behind the dashboard's `api/term`).
+    /// `tmux attach-session` to exactly `name`, for a terminal (`ssf __pane
+    /// attach`, behind the dashboard's `api/term`). `detach-on-destroy` is
+    /// set first (for a session started before ssf set it itself), so when
+    /// the session ends the terminal ends with it instead of being moved to
+    /// another session on the server.
     pub fn attach_command(&self, name: &str) -> std::process::Command {
         let mut command = std::process::Command::new("tmux");
         if let Some(socket) = &self.socket {
             command.args(["-L", socket]);
         }
         command
-            .args(["attach-session", "-t", &session_target(name)])
+            .args(attach_args(name))
             .env_remove("TMUX")
             .env_remove("TMUX_PANE");
         command
@@ -616,6 +642,24 @@ mod tests {
     }
 
     #[test]
+    fn attaching_names_the_session_exactly_and_detaches_when_it_ends() {
+        assert_eq!(
+            attach_args("ssf-o_sr_tab12"),
+            [
+                "set-option",
+                "-t",
+                "=ssf-o_sr_tab12:",
+                "detach-on-destroy",
+                "on",
+                ";",
+                "attach-session",
+                "-t",
+                "=ssf-o_sr_tab12",
+            ]
+        );
+    }
+
+    #[test]
     fn keys_map_to_tmux_names() {
         for (ours, theirs) in [
             ("enter", "Enter"),
@@ -642,6 +686,84 @@ mod tests {
         );
     }
 
+    /// Ctrl+C in a scratch terminal ends the harness and so its session: the
+    /// attached terminal must end too, not move to another ssf session on
+    /// the same server (#491). Real tmux on a socket of the test's own,
+    /// attached in a PTY by util-linux `script`; skipped without either.
+    #[tokio::test]
+    async fn an_attached_terminal_ends_with_its_session() {
+        let have = |cmd: &str, arg: &str| {
+            std::process::Command::new(cmd)
+                .arg(arg)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        if !cfg!(target_os = "linux") || !have("tmux", "-V") || !have("script", "--version") {
+            eprintln!("tmux or util-linux script is not installed; skipping");
+            return;
+        }
+        let socket = format!("ssf-test-attach-{}", std::process::id());
+        let tmux = Tmux::with_socket(&socket);
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        let name = session_name("o/r", "a1");
+        // A second session whose name the first is a prefix of.
+        let other = format!("{name}x");
+        tmux.new_session(&other, &dir, "cat").await.unwrap();
+        // As a person's tmux.conf may set it, which is how #491 met it.
+        tmux.run(&["set-option", "-g", "detach-on-destroy", "off"], None)
+            .await
+            .unwrap();
+        tmux.new_session(&name, &dir, "cat").await.unwrap();
+        let attach = tmux.attach_command(&name);
+        let line = std::iter::once(attach.get_program())
+            .chain(attach.get_args())
+            .map(|a| format!("'{}'", a.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut client = tokio::process::Command::new("script")
+            .args(["-qec", &line, "/dev/null"])
+            .env_remove("TMUX")
+            .env("TERM", "xterm-256color")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        // Held open: `wait` would close it, and `script` ends at its EOF.
+        let _keys = client.stdin.take();
+        // Wait for the client to attach, then end its session.
+        let mut attached = false;
+        for _ in 0..50 {
+            let clients = tmux
+                .run(&["list-clients", "-F", "#{session_name}"], None)
+                .await
+                .unwrap_or_default();
+            if clients.lines().any(|l| l == name) {
+                attached = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(attached, "the terminal never attached to {name}");
+        // Settled in, as a person's terminal is by the time they type.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        tmux.kill_session(&name).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), client.wait()).await;
+        let clients = tmux
+            .run(&["list-clients", "-F", "#{session_name}"], None)
+            .await
+            .unwrap_or_default();
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &socket, "kill-server"])
+            .output();
+        assert!(
+            ended.is_ok(),
+            "the terminal outlived its session: {clients:?}"
+        );
+        assert!(!clients.lines().any(|l| l == other), "moved to {other}");
+    }
+
     /// Against a real tmux on a socket of the test's own, never the
     /// person's server; skipped where tmux is not installed.
     #[tokio::test]
@@ -664,6 +786,35 @@ mod tests {
             .await
             .unwrap();
         assert!(tmux.has_session(&name).await.unwrap());
+        // An attached terminal leaves with the session, never for another.
+        let option = tmux
+            .run(
+                &[
+                    "show-options",
+                    "-v",
+                    "-t",
+                    &pane_target(&name),
+                    "detach-on-destroy",
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(option.trim(), "on");
+        let size = tmux
+            .run(
+                &[
+                    "show-options",
+                    "-wv",
+                    "-t",
+                    &pane_target(&name),
+                    "window-size",
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(size.trim(), "latest");
         tmux.paste(&name, "hello from ssf").await.unwrap();
         tmux.type_input(&name, Some("typed"), &["enter".into()])
             .await
