@@ -79,7 +79,7 @@
 :host([data-ssf-list]) { display: inline-flex; vertical-align: middle; }
 :host([data-ssf-popover]) { position: fixed; z-index: 2147483000; }
 :host([data-ssf-slot="topbar"]) { display: inline-flex; align-items: center;
-  flex: none; margin-left: 8px; }
+  flex: none; align-self: center; margin-left: 8px; }
 /* The top bar's button: GitHub's own small button shape. */
 .ssf-topbar { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
   "Noto Sans", Helvetica, Arial, sans-serif; font-size: 12px; font-weight: 600;
@@ -1445,7 +1445,11 @@
     const slot = topBar();
     if (!slot) return false;
     if (entry.host.dataset.ssfSlot !== "topbar") entry.host.dataset.ssfSlot = "topbar";
-    if (entry.host.parentElement !== slot || slot.lastElementChild !== entry.host) {
+    if (slot.after) {
+      if (slot.after.nextElementSibling !== entry.host) {
+        slot.after.insertAdjacentElement("afterend", entry.host);
+      }
+    } else if (entry.host.parentElement !== slot || slot.lastElementChild !== entry.host) {
       slot.append(entry.host);
     }
     return true;
@@ -1501,8 +1505,8 @@
   /// Where the scratch button goes: right after the repository's or the
   /// project's name in GitHub's global header. The name is found as the
   /// header link to this page's repository or project, since the header's
-  /// class names are generated and change; its breadcrumb item (or the link's
-  /// parent) takes the button. The `AppHeader-context` regions of the older
+  /// class names are generated and change; the button goes after its crumb (the
+  /// link's <li> or parent). The `AppHeader-context` regions of the older
   /// header are the fallback. Only a visible place is used.
   function topBar() {
     const home = namePath(location.pathname);
@@ -1515,7 +1519,9 @@
           continue;
         }
         if (path.toLowerCase() !== home || !link.getClientRects().length) continue;
-        return link.closest("li") ?? link.parentElement;
+        // After the name's whole crumb (its box holds the name and its menu
+        // arrow), not inside it.
+        return { after: link.closest("li") ?? link.parentElement };
       }
     }
     for (const selector of [
