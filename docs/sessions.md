@@ -597,9 +597,11 @@ scratch session on the other stack instead.
 A scratch session runs in a detached tmux session of its own, not in a herdr
 pane: `ssf-<owner>_s<repo>_t<id>` on the default tmux server of the user the
 factory runs as (`/` is written `_s`, `~` `_t`, `.` `_d` and `_` `__`, so
-`o/site.io~ab12` is `ssf-o_ssite_dio_tab12`; `tmux ls` lists them), with the worktree as its directory and `window-size latest`, so it takes
-the size of whichever client attached last. `tmux attach -t
-<name>` reaches it from a shell on that machine (in the
+`o/site.io~ab12` is `ssf-o_ssite_dio_tab12`; `tmux ls` lists them), with the worktree as its directory, `window-size latest`, so it takes
+the size of whichever client attached last, and `detach-on-destroy on`, so a
+terminal attached to it ends when it does rather than moving to another
+session on the server (whatever a `tmux.conf` sets). `tmux attach -t
+=<name>` reaches it from a shell on that machine (in the
 guest, for a factory in a VM), and the web endpoint's `api/term` from a
 browser ([dashboard.md](dashboard.md#terminal)). The harness is the tmux
 session's only command, so the session is live exactly while the harness
@@ -617,7 +619,12 @@ tmux is required: `ssf doctor` checks it.
 
 A scratch session lives until it is killed. Closing, merging and `ssf purge`
 never touch it, and a daemon restart resumes it (a new tmux session running the
-harness's resume command) when its tmux session is gone. `ssf release --as
+harness's resume command) when its tmux session is gone. A session whose
+harness exits while the daemon runs -- Ctrl+C in its terminal, or the harness
+quitting -- is **off**: its worktree is there and its tmux session is not.
+Nothing starts it again by itself until the next daemon restart or the next
+message it is sent; `ssf scratch resume owner/repo~<id>` starts it at once, on
+the same worktree, resuming the conversation. `ssf release --as
 owner/repo~<id>` kills it (`tmux kill-session`, then the worktree goes) with the same checks as any release (refused, with
 the reasons, while work is not on origin; `--force` is for a person at a
 shell). The record, its branch and the harness conversation are kept, and

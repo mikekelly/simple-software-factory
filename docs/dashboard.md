@@ -348,8 +348,12 @@ that does not publish it sends an empty list.
 `dashboard.scratch` lists the factory's scratch sessions (`ssf scratch`),
 released ones included so a client can offer to resume them: each has `id`
 (`owner/name~id`), `repo`, `owner_login` (`null` for a shared session),
-`active`, `agent_live`, `released_at`, `harness`, `model`, `effort`,
-`branch` and `pane_input`.
+`active`, `agent_live`, `state`, `released_at`, `harness`, `model`,
+`effort`, `branch` and `pane_input`. `state` is `live` (its tmux session
+runs), `off` (its workspace is there and its tmux session is not: the harness
+exited or the factory restarted), `releasing` (killed; the workspace goes on
+the daemon's next pass) or `released` (no workspace); `ssf status --json`
+carries it as `scratch_state`.
 
 The read endpoints accept an `Origin` of `http://<bind>:<port>` or any
 `chrome-extension://...` origin, so an extension's service worker can read
@@ -402,8 +406,8 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
   an item's release it can be forced: an unforced request that the workspace
   checks refuse is `409` carrying the daemon's whole answer, `check` included,
   so a client can show what would be lost and ask again with `"force": true`.
-- **scratch/resume** starts a released scratch session again in a new
-  workspace.
+- **scratch/resume** starts a scratch session that is `off` again in its
+  workspace, or a released one in a new workspace; one that is live is `409`.
 - **pane/input** types into a session's agent pane: `text` is sent as typed
   (control characters included), then `keys`, in order, as herdr's `pane
   send-keys` presses them (for a scratch session in tmux, `tmux send-keys`, with

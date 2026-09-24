@@ -326,7 +326,7 @@ impl Tmux {
         // `set-option -t` takes a pane: a bare `=name` is no target at all.
         let target = pane_target(name);
         // A terminal attached to the session is detached when it ends, rather
-        // than moved to another session (tmux's default).
+        // than moved to another session (as a tmux.conf setting it off would).
         for (option, value) in [("window-size", "latest"), ("detach-on-destroy", "on")] {
             if let Err(e) = self
                 .run(&["set-option", "-t", &target, option, value], None)
