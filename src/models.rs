@@ -255,6 +255,81 @@ pub(crate) fn omp_models() -> Result<Vec<String>> {
         .unwrap_or_default())
 }
 
+/// The context window `omp models --json` lists for `provider`'s `model`.
+///
+/// Asking omp takes seconds, which a post must not wait on, so the listing is
+/// cached in `$XDG_CACHE_HOME/ssf/omp-models.json` (`~/.cache` by default)
+/// and answered from there, stale or not. A listing older than a day, or one
+/// without this model and more than a few minutes old, is refreshed in the
+/// background for the next post; until then this post goes without.
+pub(crate) fn omp_context_window(provider: &str, model: &str) -> Option<u64> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")))?
+        .join("ssf/omp-models.json");
+    let (window, refresh) = omp_cached_window(&cache, provider, model);
+    if refresh {
+        refresh_omp_models(&cache);
+    }
+    window
+}
+
+/// The window the cached listing at `path` gives, and whether to refresh it.
+fn omp_cached_window(path: &Path, provider: &str, model: &str) -> (Option<u64>, bool) {
+    const DAY: u64 = 24 * 60 * 60;
+    const RETRY: u64 = 5 * 60;
+    let age = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|t| t.elapsed().map_or(0, |d| d.as_secs()));
+    let window = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|listing| omp_window_in(&listing, provider, model));
+    let refresh = match age {
+        None => true,
+        Some(age) => age >= DAY || (window.is_none() && age >= RETRY),
+    };
+    (window, refresh)
+}
+
+/// Rewrite the cached omp listing at `cache` in a detached process that
+/// outlives this one; a failed listing leaves the old file in place.
+fn refresh_omp_models(cache: &Path) {
+    #[cfg(test)]
+    {
+        let _ = cache;
+        STARTED.with(|started| started.borrow_mut().asked.push("omp".into()));
+    }
+    #[cfg(not(test))]
+    {
+        use std::os::unix::process::CommandExt;
+        let Some(dir) = cache.parent() else { return };
+        if std::fs::create_dir_all(dir).is_err() {
+            return;
+        }
+        let _ = Command::new("sh")
+            .arg("-c")
+            .arg(r#"t="$1.$$.tmp"; omp models --json > "$t" && mv -f "$t" "$1" || rm -f "$t""#)
+            .arg("sh")
+            .arg(cache)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn();
+    }
+}
+fn omp_window_in(listing: &str, provider: &str, model: &str) -> Option<u64> {
+    let v: serde_json::Value = serde_json::from_str(listing).ok()?;
+    v.get("models")?
+        .as_array()?
+        .iter()
+        .find(|m| m["provider"].as_str() == Some(provider) && m["id"].as_str() == Some(model))?
+        .get("contextWindow")?
+        .as_u64()
+        .filter(|w| *w > 0)
+}
+
 /// `opencode models`: one `provider/model` per line.
 pub(crate) fn opencode_models() -> Result<Vec<String>> {
     Ok(run("opencode", &["models"])?
@@ -348,6 +423,36 @@ pub(crate) fn codex_catalogue() -> Result<Catalogued> {
 /// catalogue as it was, which `available` then reads as before.
 pub(crate) fn claude_refresh() {
     start_refresh("claude", &["--print"]);
+}
+
+/// The context window of Claude model `id` in tokens, where ssf knows it:
+/// the catalogue Claude Code caches does not say. A `[1m]` suffix asks for
+/// the 1M window; the Claude 5 family has it by default, Haiku 4.5 200k.
+pub(crate) fn claude_context_window(id: &str) -> Option<u64> {
+    let id = id.strip_prefix("anthropic/").unwrap_or(id);
+    if id.ends_with("[1m]") {
+        return Some(1_000_000);
+    }
+    let five = ["claude-opus-5", "claude-sonnet-5", "claude-fable-5"];
+    if five.iter().any(|f| id.starts_with(f)) {
+        Some(1_000_000)
+    } else if id.starts_with("claude-haiku-4-5") {
+        Some(200_000)
+    } else {
+        None
+    }
+}
+
+/// A token count as a byline spells it: `1M`, `200k`, or rounded to
+/// thousands (`258k` for Codex's 258400), the bare count below that.
+pub(crate) fn token_size(tokens: u64) -> String {
+    if tokens >= 1_000_000 && tokens.is_multiple_of(1_000_000) {
+        format!("{}M", tokens / 1_000_000)
+    } else if tokens >= 1_000 {
+        format!("{}k", (tokens + 500) / 1_000)
+    } else {
+        tokens.to_string()
+    }
 }
 
 /// Claude Code caches the model catalogue it fetched under
@@ -907,6 +1012,55 @@ mod tests {
         assert!(validate("pi", None, Some("auto")).is_err());
         assert!(validate("omp", None, Some("auto")).is_ok());
         assert!(validate("opencode", None, Some("high")).is_err());
+    }
+
+    #[test]
+    fn omp_context_window_is_the_listed_models() {
+        let listing = r#"{"models":[{"provider":"deepseek","id":"deepseek-flash","contextWindow":1000000},{"provider":"other","id":"deepseek-flash","contextWindow":64000},{"provider":"x","id":"none"}]}"#;
+        assert_eq!(
+            omp_window_in(listing, "deepseek", "deepseek-flash"),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            omp_window_in(listing, "other", "deepseek-flash"),
+            Some(64_000)
+        );
+        assert_eq!(omp_window_in(listing, "x", "none"), None);
+        assert_eq!(omp_window_in(listing, "deepseek", "missing"), None);
+
+        // Cached: a fresh listing answers without a refresh; a model it does
+        // not list goes without, and waits a few minutes before asking again.
+        let sandbox = crate::config::test_support::sandbox();
+        let path = sandbox.root().join("omp-models.json");
+        assert_eq!(
+            omp_cached_window(&path, "deepseek", "deepseek-flash"),
+            (None, true)
+        );
+        std::fs::write(&path, listing).unwrap();
+        assert_eq!(
+            omp_cached_window(&path, "deepseek", "deepseek-flash"),
+            (Some(1_000_000), false)
+        );
+        assert_eq!(
+            omp_cached_window(&path, "deepseek", "missing"),
+            (None, false)
+        );
+        // A day-old listing still answers, and is refreshed.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        assert_eq!(
+            omp_cached_window(&path, "deepseek", "deepseek-flash"),
+            (Some(1_000_000), true)
+        );
+        assert_eq!(
+            omp_cached_window(&path, "deepseek", "missing"),
+            (None, true)
+        );
     }
 
     #[test]

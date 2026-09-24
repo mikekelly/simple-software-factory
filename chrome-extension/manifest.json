@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Simple Software Factory overlay",
-  "version": "0.2.1",
+  "version": "0.3.1",
   "description": "Live ssf agent state on github.com issue and pull request pages.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
@@ -14,8 +14,22 @@
   "content_scripts": [
     {
       "matches": ["https://github.com/*"],
-      "js": ["writes-form.js", "content.js"],
+      "js": ["pane-overlay.js", "writes-form.js", "content.js"],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "terminal.html",
+        "terminal.js",
+        "terminal.css",
+        "factory-url.js",
+        "pane-render.js",
+        "pane-keys.js"
+      ],
+      "matches": ["https://github.com/*"],
+      "use_dynamic_url": true
     }
   ],
   "action": {

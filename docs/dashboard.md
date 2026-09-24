@@ -256,7 +256,13 @@ for an item, `owner%2Fname~id` for a scratch session). It sends an
 screen with its ANSI colours as `herdr pane read --source visible --format ansi`
 prints it, with anything that looks like a GitHub token (`ghp_`, `gho_`,
 `ghs_`, `ghu_`, `github_pat_`) replaced by `<redacted>`, and another only when
-the screen changes; `event: error` with
+the screen changes. An `event: history` frame whose `data` is
+`{"history": "..."}` carries the rows above the screen, the pane's history,
+redacted the same way: `herdr pane read --source recent --lines 1000 --format
+ansi` with the screen's own rows taken off its end, so at most 1000 rows with
+the screen. It comes before the first screen, is read every two seconds and
+is sent again only when it changes; a client shows it above the screen, as
+scrollback. `event: error` with
 `{"error": ...}` says the pane cannot be read (no workspace, no agent running)
 and ends the stream, so a client does not ask again on its own.
 The screen is read about four times a second, and only while someone watches:
@@ -266,7 +272,9 @@ seventeenth gets an error frame. The reader asks herdr directly rather than the 
 the mirror does not freeze while a pass is busy. On an Intel i3-9100 a reader
 cost about 1.5% of one core whether the screen was idle or changing, shared by
 all its viewers; a screen changing four times a second sent about 26 KB/s per
-viewer.
+viewer. The history is the larger part: a colourful 1000-row history frame
+measured about 480 KB, so a pane whose history changes all the time can send
+up to about 240 KB/s per viewer, and an idle one sends it once.
 
 ### Snapshot fields a client can rely on
 
@@ -358,15 +366,18 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
 - **scratch/resume** starts a released scratch session again in a new
   workspace.
 - **pane/input** types into a session's agent pane: `text` is sent as typed
-  (control characters included), then each of `keys` (herdr key names such as
-  `Enter` or `C-c`). The text is not logged. A scratch session always takes
-  typing. An item session's pane takes it only where `item_pane_input` is on
-  for its repository (`daemon.item_pane_input`, overridden by
-  `repo.item_pane_input`; off by default), and is otherwise refused with
-  `400`: a person speaks to an item's agent by commenting on the item, where
-  everyone working it can read the exchange (#439). Each card and scratch
-  entry in the snapshot carries `pane_input`, whether its pane takes typing,
-  so a client need not know the rule.
+  (control characters included), then `keys`, in order, as herdr's `pane
+  send-keys` presses them: key names such as `Enter`, `Space`, `Backspace` or
+  `ctrl+c`, or a single literal character (`a`, `.`, `é`), which is how the
+  extension's terminal types a keystroke at a time. A space or control
+  character is not a key; it goes by name. The text is not logged. A scratch
+  session always takes typing. An item session's pane takes it only where
+  `item_pane_input` is on for its repository (`daemon.item_pane_input`,
+  overridden by `repo.item_pane_input`; off by default), and is otherwise
+  refused with `400`: a person speaks to an item's agent by commenting on the
+  item, where everyone working it can read the exchange (#439). Each card and
+  scratch entry in the snapshot carries `pane_input`, whether its pane takes
+  typing, so a client need not know the rule.
 
 Each answers with the same JSON its command prints under `--json`:
 

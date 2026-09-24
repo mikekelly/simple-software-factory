@@ -1,6 +1,7 @@
 // An item's writes, drawn by the sidebar card and by the list/board popover.
 //
-// Loaded as a content script before content.js, in the same isolated world.
+// Loaded as a content script after pane-overlay.js and before content.js, in
+// the same isolated world.
 // content.js asks this module for the node to draw for an item, hands it every
 // snapshot, adopts `STYLE` into its shadow sheet, and calls `onChange` with its
 // own scheduler:
@@ -25,15 +26,17 @@
 // card's item object, which is what the pickers are prefilled from.
 //
 // `renderScratch` is a repository page's scratch sessions (#414): each with
-// Open, Kill or Resume, and New scratch, the assign pickers plus whose it is.
+// Open (pane-overlay.js), Kill or Resume, and New scratch, the assign pickers
+// plus whose it is.
 // A kill the factory's checks refuse is asked again, once, naming what will be
 // lost; a clean workspace goes on the first click.
 //
 // Nothing here types at an agent: a person speaks to an item's agent on the
 // item, where the exchange is in the item's record. This module starts, moves
-// and frees sessions -- the things that are not a comment (#439). Open is the
-// one way to an agent's own terminal: it opens the pane mirror in a tab of its
-// own (terminal.html), for any session.
+// and frees sessions -- the things that are not a comment (#439). Open, the
+// one way to an agent's own terminal, is pane-overlay.js's: an item's is at the
+// top of its card, which content.js draws, and a scratch session's at the top
+// of its row here.
 //
 // `factories` are the configured factories whose snapshot shows this item --
 // the same ones the card is drawn from. A factory whose Writes switch is off
@@ -97,6 +100,8 @@
 .ssf-writes-error { margin: 0; color: var(--fgColor-danger, #cf222e);
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .ssf-writes-stack { margin: 0; color: var(--fgColor-default, #1f2328); font-weight: 600; }
+/* A scratch row's first line, with Open at its end. */
+.ssf-writes-title { display: flex; align-items: center; gap: 6px; }
 .ssf-writes a { color: var(--fgColor-accent, #0969da); }
 `;
 
@@ -607,8 +612,7 @@
         state.error = null;
         redraw();
       };
-      const open = openButton(state, state.item?.owner ?? state.itemId, state.item?.pane_input === true);
-      actions.append(hand, release, open);
+      actions.append(hand, release);
       body.append(actions);
       // Where a message to this agent goes, said once, now that the box that
       // used to be here is gone: the row is the only place a person meets the
@@ -812,22 +816,6 @@
     });
   }
 
-  /// Open: the session's pane mirror in a tab of its own. `input` is the
-  /// snapshot's `pane_input`: whether the factory lets a person type there.
-  function openButton(state, session, input) {
-    const open = element("button", undefined, "Open", "open");
-    open.type = "button";
-    open.title = "Show this agent's terminal";
-    open.onclick = () => {
-      ask({ type: "ssf:open-pane", url: state.url, session, input }).then((reply) => {
-        if (reply?.ok) return;
-        state.error = reply?.error ?? "the extension could not open the terminal";
-        redraw();
-      });
-    };
-    return open;
-  }
-
   /// A repository's scratch sessions on one factory: a row each, the kill
   /// confirmation when one is open, and New scratch or its form.
   function scratchPanel(state) {
@@ -859,16 +847,20 @@
   }
 
   /// One scratch session: its id, whose it is, its stack and state, and what
-  /// can be done to it -- Open and Kill while it has a workspace, Resume once
-  /// it is killed.
+  /// can be done to it -- Open (at the end of its first line) and Kill while it
+  /// has a workspace, Resume once it is killed.
   function scratchRow(state, one) {
     const row = element("div", "ssf-writes", undefined, `row:${one.id}`);
     const id = String(one.id ?? "");
     const short = id.slice(id.lastIndexOf("~"));
     const whose = one.owner_login ? `@${one.owner_login}` : "shared";
     const stack = [one.harness, one.model, one.effort].filter(Boolean).join(" \u00b7 ");
+    const title = element("p", "ssf-writes-stack ssf-writes-title", undefined, "id");
+    title.append(`${short} \u00b7 ${whose}`);
+    const open = one.active && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
+    if (open) title.append(open);
     row.append(
-      element("p", "ssf-writes-stack", `${short} \u00b7 ${whose}`, "id"),
+      title,
       element("p", "ssf-writes-note", [stack, one.stateLabel].filter(Boolean).join(" \u00b7 "), "state"),
     );
     const busy = state.rowBusy === id;
@@ -899,7 +891,6 @@
     }
     const actions = element("div", "ssf-writes-actions", undefined, "actions");
     if (one.active) {
-      actions.append(openButton(state, id, one.pane_input === true));
       const kill = element("button", "danger", busy ? "Killing\u2026" : "Kill");
       kill.type = "button";
       kill.disabled = busy;

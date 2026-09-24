@@ -680,6 +680,17 @@ impl Driver {
         }
     }
 
+    /// The last `lines` rows of a terminal with their colours, ending with
+    /// the visible screen: the web pane mirror's history.
+    pub async fn recent_ansi(&self, handle: &str, lines: u32) -> Result<String> {
+        match self {
+            Driver::Herdr(d) => d.recent_ansi(handle, lines).await,
+            // A stub terminal keeps no history beyond its screen.
+            #[cfg(test)]
+            Driver::Stub(d) => Ok(d.screen(handle).join("\r\n")),
+        }
+    }
+
     /// Type into a terminal as a person at it would: raw `text`, then named
     /// `keys` (the web pane mirror's input).
     pub async fn type_input(
