@@ -591,7 +591,8 @@ pub(super) enum AuthCommand {
 #[derive(Subcommand)]
 pub(super) enum PaneCommand {
     /// Print the pane's visible screen (ANSI) as `{"screen": …}` JSON lines,
-    /// one each time it changes, until stdout closes.
+    /// and the history above it as `{"history": …}` ones, each when it
+    /// changes, until stdout closes.
     Watch {
         /// The session, as owner/repo#N or owner/repo~id.
         session: String,

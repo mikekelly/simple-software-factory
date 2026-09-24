@@ -59,7 +59,9 @@ in the [dashboard guide](../docs/dashboard.md).
 
 There is no build step, no npm dependency and no bundler: the extension is the
 plain JavaScript, HTML and CSS in this directory. It is not part of the Arch
-package; nothing here affects `makepkg`.
+package; nothing here affects `makepkg`. The terminal's renderer and key mapping
+have unit tests that need only Node (18 or later), no packages:
+`node --test chrome-extension/test/*.test.mjs`.
 
 ### Updating a loaded copy
 
@@ -364,11 +366,11 @@ an item can be acted on without leaving the board:
   ![Release accepted, with the item and the daemon's next pass](docs/action-release-accepted.png)
 
 **Writes** switches on the options page, on by default, govern all of it.
-Turning one off hides the assign form and the Actions row for that factory and
-refuses every write in the service worker. It is the extension's own side of the
-rule the factory enforces: the server accepts a write only from an extension
-origin, so nothing else that can reach a capability URL can act on a session
-through it.
+Turning one off hides the assign form, the Actions row and Open for that
+factory and refuses every write in the service worker. It is the extension's
+own side of the rule the factory enforces: the server accepts a write only from
+an extension origin, so nothing else that can reach a capability URL can act on
+a session through it.
 
 ## Scratch sessions and the terminal
 
@@ -379,21 +381,56 @@ model and effort pickers and whose session it is: **Shared**, or **Mine**
 (the login GitHub's page names in `<meta name="user-login">`). That login only
 labels the session; it is not access control.
 
-Each scratch card has **Open**, **Kill** and, once killed, **Resume**. Kill
+Each scratch session has **Open**, **Kill** and, once killed, **Resume**. Kill
 removes the workspace. When the factory's checks find nothing to lose it goes
 at once; when they find uncommitted or unpushed work the card shows what they
 found and says that all work in the workspace will be lost, and only **Kill
 anyway** (a second request, forced) removes it.
 
-**Open**, on a scratch card or in an item's Actions row, opens the session's
-agent pane in a new tab: a terminal (xterm.js, vendored under
-`vendor/xterm/` since an MV3 extension loads no remote script) mirroring the
-pane from `api/pane/<session>`. Where the snapshot says the session's pane
-takes typing (`pane_input`: always for a scratch session, for an item's only
-where the factory's `item_pane_input` is on), what you type goes through the
-service worker to `api/pane/input`; typing is a write, so a factory whose
-Writes switch is off shows the pane read-only. Otherwise the terminal is
-view-only: speak to an item's agent by commenting on the item.
+**Open**, the terminal icon at the top of an item's card (on a factory whose
+Writes switch is on) and at the end of a scratch session's first line, shows
+the session's agent pane over the GitHub page, mirrored from
+`api/pane/<session>`. The close button, a click outside the panel, or Esc
+closes it; while **Type** is on (below), Esc is a key the agent reads, so then
+it closes only from outside the terminal.
+
+The pane is drawn as styled text rather than by a terminal emulator — the
+approach, and much of the code, of [collie](https://github.com/AltanS/collie)
+(`pane-render.js`, `pane-keys.js`; see [Credits](#credits)). The factory sends
+the pane's screen as herdr renders it, with only colour sequences in it, so
+there is nothing to emulate: the text is drawn at a fixed 13px in a monospace
+stack, rows 1.25em apart, and wraps at the panel's width, which is 90% of the
+window's width and 85% of its height. The pane itself is never resized. A row
+that is a box's border or a rule is clipped at the right rather than wrapped,
+and a table — markdown, `+---+`, or box-drawn with crosses — keeps its columns
+and pans sideways in its own box (a trackpad, or Shift and the wheel). Block
+elements and Powerline caps are painted to their cell, so bars and prompt pills
+join up.
+
+The pane's history (up to 1000 rows, as the factory sends it) sits above its
+screen in the same scroller, and the wheel scrolls back through it without
+typing into the pane; while it is open the page underneath does not scroll.
+The view follows the live screen while it is at the bottom; scrolled back, it
+stays where it is as the agent works, and a history that changed meanwhile is
+drawn once you are back at the bottom. Text you have selected in the terminal
+is not redrawn under you until you let go of the selection.
+
+Where the snapshot says the session's pane takes typing (`pane_input`: always
+for a scratch session, for an item's only where the factory's
+`item_pane_input` is on), the terminal has a **Type** button. Typing goes to the
+pane only while it is on: each character is a keystroke (herdr's `pane
+send-keys`, with any space, Tab and Enter by name), as are Esc, Tab, Shift+Tab,
+the arrows, Backspace, Enter and Ctrl with a letter; an input method's text is
+sent once it is committed; and a paste goes as one bracketed paste in one write,
+its control characters dropped. A paste longer than one write takes (the
+factory reads 4096 bytes of a request, so about 4,000 plain characters) is not
+sent at all. Typing turns itself off when the tab is hidden, the stream stops,
+the factory refuses a keystroke or a paste is too long, or after half an hour
+with nothing done in the terminal, and says so on its status line. What is typed goes through the
+service worker to `api/pane/input`; typing is a write, so a factory whose Writes
+switch is off shows the pane read-only. Otherwise the terminal is view-only:
+speak to an item's agent by commenting on the item.
+
 When the factory says the pane cannot be read, or the stream fails three times
 in a row, the terminal stops and offers **Reconnect**. The pane is read about
 four times a second only while a terminal is open on it.
@@ -427,8 +464,13 @@ forward, and keep tailnet ACLs restrictive.
   text is ever parsed as HTML and no GitHub style leaks in.
 - The **service worker** also carries every write and the two listings the
   forms' pickers need: `api/assign`, `api/handover`, `api/release`, the
-  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`.
-  The terminal tab reads `api/pane/<session>` itself. A factory accepts a write only from an extension
+  scratch routes, `api/pane/input`, `api/agents` and `api/models/<harness>`,
+  and it reads the terminal's `api/pane/<session>` stream and passes it on a
+  port. The terminal is the extension's own page (`terminal.html`), framed over
+  github.com and listed in `web_accessible_resources` for github.com alone; it
+  talks to no factory itself, since Chrome's local-network rules can hold a
+  request from a frame under a public page to a factory on a private or
+  tailnet address. A factory accepts a write only from an extension
   origin, and a page on github.com has none, so the content script never fetches
   a factory itself and no page the factory serves can act on a session.
 - `host_permissions` is `https://github.com/*`. Factory addresses are
@@ -473,3 +515,15 @@ forward, and keep tailnet ACLs restrictive.
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A comment on the item still reaches the session that
   works it.
+- The terminal draws the pane's rows at the panel's width, not the pane's, so a
+  line longer than the panel wraps and the pane's own column layout is kept
+  only where it matters: in a clipped border row and a table's own box. A table
+  the pane had already wrapped at its own width cannot be put back together, and
+  a box's vertical strokes show small gaps between rows, which are 1.25em apart.
+
+## Credits
+
+The terminal's renderer and key mapping (`pane-render.js`, `pane-keys.js`, and
+the painted-glyph rules in `terminal.css`) are ported from
+[collie](https://github.com/AltanS/collie) by Altan Sarisin, under the MIT
+license; each file carries the notice.

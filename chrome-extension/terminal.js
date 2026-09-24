@@ -1,72 +1,175 @@
-// The pane mirror (#414): one session's agent pane, drawn with xterm.js and
-// typed into from the keyboard where the factory allows it: the snapshot's
-// `pane_input` for the session, passed in the page address. A scratch session
-// always takes typing; an item's only where the factory's `item_pane_input`
-// is on (#439: its agent is otherwise spoken to by commenting on the item).
-// The factory enforces the same rule on every request.
+// The pane mirror (#414): one session's agent pane, drawn as styled text
+// (pane-render.js, after collie) rather than by a terminal emulator, and typed
+// into where the factory allows it: the snapshot's `pane_input` for the
+// session, passed in the page address. A scratch session always takes typing;
+// an item's only where the factory's `item_pane_input` is on (#439: its agent
+// is otherwise spoken to by commenting on the item). The factory enforces the
+// same rule on every request.
 //
 // The factory reads the pane's visible screen a few times a second while
 // someone watches it and sends a frame only when it changed
 // (`api/pane/<session>`, docs/dashboard.md); each frame is the whole screen,
-// drawn over the last one. What is typed goes to the service worker, which
-// sends it as the write `api/pane/input` -- a write like assign, so the
-// factory's Writes switch applies to it -- one request at a time, in order.
+// drawn over the last one. Every few seconds it also sends the history above
+// the screen, drawn above it in the same scroller: the wheel scrolls back
+// through it. The text is drawn at a fixed size and wraps at the panel's
+// width, so the pane is never shrunk to fit and never resized.
 //
-// This page is the extension's own, opened by the worker in a tab of its own,
-// so the stream it reads carries the extension's origin and the permission the
-// options page granted for the factory.
-import { Terminal } from "./vendor/xterm/xterm.mjs";
-import { endpoint, factoryUrl } from "./factory-url.js";
+// Typing is a mode the person turns on (Type) and that turns itself off when
+// the picture stops being one they are watching: the tab hidden, the stream
+// stopped, a write refused, or half an hour with nothing done here. What is
+// typed goes a keystroke at a time as herdr key names (pane-keys.js), and a
+// paste as text, to the service worker, which sends it as the write
+// `api/pane/input` -- a write like assign, so the factory's Writes switch
+// applies to it -- one request at a time, in order.
+//
+// This page is the extension's own, framed over the GitHub page by Open
+// (pane-overlay.js, #477), and it talks to no factory itself: a frame under
+// github.com is where Chrome's local-network rules can hold a request to a
+// factory on a private or tailnet address. The service worker reads the stream
+// with the extension's permission and passes it on a port (`ssf-pane`), as it
+// sends what is typed.
+import { factoryUrl } from "./factory-url.js";
+import { render } from "./pane-render.js";
+import { fitsWrite, keyForInputType, keyForKeyDown, pasteBody, textToKeys } from "./pane-keys.js";
 
-/// The body bound of a write is 4096 bytes and a control character is six
-/// once it is JSON, so typed text goes in pieces well under it.
-const CHUNK = 500;
+/// The body bound of a write is 4096 bytes: typed keys go in batches of at
+/// most this many keys. A paste is one write, or none (pasteBody).
+const MAX_KEYS = 200;
 
 /// Failures in a row, with no frame between them, before the page stops
 /// asking: a reader that cannot start is not asked again every few seconds.
 const MAX_FAILURES = 3;
 
-/// The next piece of `text` to send: at most CHUNK characters, never ending
-/// inside an escape sequence, which the pane would read as two keys.
-function nextChunk(text) {
-  // Enter goes on its own: a harness reads a `\r` that arrives in the same
-  // write as text before it as part of a paste, and does not submit. A
-  // bracketed paste is kept whole, since its newlines are meant as text.
-  if (!text.startsWith("\x1b[200~")) {
-    const enter = text.indexOf("\r");
-    if (enter === 0) return "\r";
-    if (enter > 0) text = text.slice(0, enter);
-  } else {
-    const end = text.indexOf("\x1b[201~");
-    if (end >= 0) text = text.slice(0, end + 6);
-  }
-  if (text.length <= CHUNK) return text;
-  const esc = text.lastIndexOf("\x1b", CHUNK - 1);
-  // An escape sequence a terminal sends is short; one that began within
-  // the last 32 characters may run past the cut, so the cut goes before it.
-  return esc > 0 && CHUNK - esc < 32 ? text.slice(0, esc) : text.slice(0, CHUNK);
-}
+/// How long a stream that failed waits before it is asked for again.
+const RETRY_MS = 3000;
+
+/// The port carries the stream, and a port that is used is what keeps the
+/// service worker holding it awake: the frames it sends do not.
+const PING_MS = 20000;
+
+/// How long typing stays on with nothing done in the terminal: collie's idle
+/// pause.
+const IDLE_MS = 30 * 60 * 1000;
+
+/// How close to the bottom, in pixels, still counts as at the bottom.
+const BOTTOM_SLACK = 4;
 
 const params = new URLSearchParams(location.search);
 const url = factoryUrl(params.get("factory"));
 const session = String(params.get("session") ?? "");
+const takesInput = params.get("input") === "1";
 const stateLine = document.getElementById("state");
+const typeButton = document.getElementById("type");
+const field = document.getElementById("keys");
+const scroller = document.getElementById("scroller");
+const historyBox = document.getElementById("history");
+const screenBox = document.getElementById("screen");
 document.getElementById("session").textContent = session;
 document.title = `${session} · ssf`;
+
+/// Whether what is typed goes to the pane: Type is on.
+let typing = false;
+
+// Esc closes the overlay this page is framed in, whose own keys the frame keeps
+// from it -- except while Type is on, where Esc is a key the agent reads, and
+// the overlay's close button is the way out.
+if (window.parent !== window) {
+  addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key !== "Escape" || typing) return;
+      window.parent.postMessage({ type: "ssf:pane-close" }, "https://github.com");
+    },
+    true,
+  );
+}
 
 function say(text, problem = false) {
   stateLine.textContent = text;
   stateLine.dataset.problem = String(problem);
 }
 
-/// The width a line takes on screen, its escape sequences aside.
-function visibleWidth(line) {
-  const bare = line
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[@-_]/g, "");
-  return [...bare].length;
+// The view follows the live screen while it is at the bottom, and stays where
+// the person put it once they scroll up.
+let pinned = true;
+/// Where following last put the view: the scroll event that says so is not
+/// the person scrolling, even if the layout moved the bottom meanwhile.
+let followed = -1;
+const atBottom = () =>
+  scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_SLACK;
+function follow() {
+  if (!pinned) return;
+  scroller.scrollTop = scroller.scrollHeight;
+  followed = scroller.scrollTop;
 }
+
+/// Whether the person has text selected in `box`: redrawing it would lose
+/// the selection, so it waits until they are done.
+function selecting(box) {
+  const selection = getSelection();
+  return (
+    selection !== null &&
+    !selection.isCollapsed &&
+    selection.rangeCount > 0 &&
+    selection.getRangeAt(0).intersectsNode(box)
+  );
+}
+
+/// Draw `text` into `box`, each table's box keeping how far it was panned.
+function paint(box, text) {
+  const panned = new Map();
+  for (const run of box.querySelectorAll(".table-run")) {
+    if (run.scrollLeft) panned.set(run.dataset.run, run.scrollLeft);
+  }
+  box.replaceChildren(render(document, text));
+  for (const run of box.querySelectorAll(".table-run")) {
+    const left = panned.get(run.dataset.run);
+    if (left) run.scrollLeft = left;
+  }
+}
+
+// What is waiting to be drawn: a history while the person is scrolled back
+// through the last one, so what they read does not move under them; and
+// either one while they have text selected in it.
+let pendingHistory = null;
+let pendingScreen = null;
+
+function drawHistory(text) {
+  if (!pinned || selecting(historyBox)) {
+    pendingHistory = text;
+    return;
+  }
+  pendingHistory = null;
+  paint(historyBox, text);
+  follow();
+}
+
+function drawScreen(text) {
+  if (selecting(screenBox)) {
+    pendingScreen = text;
+    return;
+  }
+  pendingScreen = null;
+  paint(screenBox, text);
+  follow();
+}
+
+function drawPending() {
+  if (pendingHistory !== null) drawHistory(pendingHistory);
+  if (pendingScreen !== null) drawScreen(pendingScreen);
+}
+
+scroller.addEventListener("scroll", () => {
+  if (scroller.scrollTop === followed) return;
+  followed = -1;
+  pinned = atBottom();
+  if (pinned) drawPending();
+});
+document.addEventListener("selectionchange", () => {
+  if (getSelection()?.isCollapsed) drawPending();
+});
+// A narrower or wider panel wraps the text anew.
+new ResizeObserver(follow).observe(scroller);
 
 async function start() {
   const stored = (await chrome.storage.local.get("factories")).factories ?? [];
@@ -76,117 +179,238 @@ async function start() {
     say("this terminal names no configured factory or no session", true);
     return;
   }
-  const term = new Terminal({
-    cols: 100,
-    rows: 30,
-    scrollback: 0,
-    cursorBlink: false,
-    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-    fontSize: 13,
-  });
-  term.open(document.getElementById("screen"));
-  term.focus();
 
-  /// Draw one frame over the last: home, every line with the rest of it
-  /// cleared, and everything below the last line cleared. The terminal takes
-  /// the pane's own size, growing to its widest line.
-  function draw(screen) {
-    const lines = screen.replace(/\r?\n$/, "").split(/\r?\n/);
-    const cols = Math.max(term.cols, ...lines.map(visibleWidth));
-    const rows = Math.max(1, lines.length);
-    if (cols !== term.cols || rows !== term.rows) term.resize(cols, rows);
-    term.write(
-      "\x1b[?25l\x1b[H" + lines.map((line) => `${line}\x1b[0m\x1b[K`).join("\r\n") + "\x1b[0m\x1b[J",
-    );
-  }
-
-  const typing = params.get("input") === "1";
   // An item's agent has somewhere else to be spoken to; a scratch session's
   // pane is view-only only where this factory takes no writes.
   const viewOnly = session.includes("~")
     ? "live · view only"
     : "live · view only: comment on the item to speak to its agent";
   const reconnect = document.getElementById("reconnect");
-  let source = null;
+  let port = null;
+  let retry = null;
   let failures = 0;
+  let live = false;
+  /// Why typing last turned itself off, said until it is turned on again.
+  let notice = "";
+
+  function showLive() {
+    live = true;
+    typeButton.hidden = !takesInput;
+    if (!takesInput) say(viewOnly);
+    else if (typing) say("live · typing into the pane");
+    else if (notice) say(`live · typing turned off: ${notice}`, true);
+    else say("live");
+  }
+
+  function notLive() {
+    live = false;
+    stopTyping();
+    typeButton.hidden = true;
+  }
+
+  function hangUp() {
+    clearTimeout(retry);
+    const held = port;
+    port = null;
+    held?.disconnect();
+  }
 
   /// Stop reading: the factory is not asked again until the person says so.
   function stop(text) {
-    source?.close();
-    source = null;
+    hangUp();
+    notLive();
     say(text, true);
     reconnect.hidden = false;
   }
 
-  function connect() {
-    reconnect.hidden = true;
-    failures = 0;
-    say("connecting…");
-    source = new EventSource(endpoint(url, `pane/${encodeURIComponent(session)}`));
-    source.addEventListener("screen", (event) => {
+  /// A read that failed or ended, asked for again a few times before the page
+  /// gives up and offers Reconnect.
+  function dropped(error) {
+    notLive();
+    failures += 1;
+    if (failures >= MAX_FAILURES) {
+      stop(error ? `the stream stopped (${error})` : "the stream stopped");
+      return;
+    }
+    say("the stream stopped; reconnecting…", true);
+    retry = setTimeout(watch, RETRY_MS);
+  }
+
+  function heard(message) {
+    if (message?.type === "screen" || message?.type === "history") {
       failures = 0;
       try {
-        draw(JSON.parse(event.data).screen ?? "");
-        say(typing ? "live" : viewOnly);
+        const frame = JSON.parse(message.data);
+        if (message.type === "history") {
+          drawHistory(String(frame.history ?? ""));
+        } else {
+          drawScreen(String(frame.screen ?? ""));
+          showLive();
+        }
       } catch (error) {
         say(`the factory sent a frame that could not be read (${error})`, true);
       }
-    });
-    source.addEventListener("error", (event) => {
-      if (typeof event.data === "string" && event.data) {
-        let detail = event.data;
-        try {
-          detail = JSON.parse(event.data).error ?? detail;
-        } catch {
-          // Not JSON; the raw text is the best description available.
-        }
-        // The factory's reader has stopped; reconnecting would start it
-        // again only to hear the same.
-        stop(detail);
-        return;
-      }
-      if (!source) return;
-      failures += 1;
-      if (failures >= MAX_FAILURES) {
-        stop("the stream stopped");
-        return;
-      }
-      // EventSource tries again by itself.
-      say("the stream stopped; reconnecting…", true);
-    });
+    } else if (message?.type === "refused") {
+      // The factory said no, or its reader has stopped; asking again would
+      // only hear the same.
+      stop(String(message.error ?? "the factory refused the stream"));
+    } else if (message?.type === "dropped") {
+      dropped(message.error);
+    }
+  }
+
+  /// Ask the service worker for the stream, on a port of its own: a worker
+  /// that is stopped anyway takes the port with it, which is a dropped read.
+  function watch() {
+    if (!port) {
+      const opened = chrome.runtime.connect({ name: "ssf-pane" });
+      port = opened;
+      opened.onMessage.addListener(heard);
+      opened.onDisconnect.addListener(() => {
+        if (port !== opened) return;
+        port = null;
+        dropped("the extension's service worker stopped");
+      });
+    }
+    port.postMessage({ type: "watch", url, session });
+  }
+
+  function connect() {
+    hangUp();
+    reconnect.hidden = true;
+    failures = 0;
+    say("connecting…");
+    watch();
   }
   reconnect.addEventListener("click", connect);
   connect();
+  setInterval(() => {
+    try {
+      port?.postMessage({ type: "ping" });
+    } catch {
+      // The port is gone; its disconnect has already been heard.
+    }
+  }, PING_MS);
 
-  if (!typing) return;
-
-  // What is typed, in order: one request in the air at a time, and whatever
-  // was typed meanwhile goes in the next.
-  let queued = "";
+  // Typing. What is typed, in order: one request in the air at a time, and
+  // whatever was typed meanwhile goes in the next.
+  let queue = [];
   let sending = false;
+  let composing = false;
+  let lastActivity = Date.now();
+
+  function startTyping() {
+    if (!takesInput || !live) return;
+    typing = true;
+    notice = "";
+    lastActivity = Date.now();
+    typeButton.setAttribute("aria-pressed", "true");
+    field.value = "";
+    field.focus({ preventScroll: true });
+    showLive();
+  }
+
+  /// Turn typing off; `why`, when it was not the person who did, is said.
+  function stopTyping(why) {
+    if (!typing) return;
+    typing = false;
+    composing = false;
+    queue = [];
+    field.value = "";
+    field.blur();
+    typeButton.setAttribute("aria-pressed", "false");
+    notice = why ?? "";
+    if (live) showLive();
+  }
+
   async function flush() {
-    if (sending || !queued) return;
+    if (sending) return;
     sending = true;
-    while (queued) {
-      const text = nextChunk(queued);
-      queued = queued.slice(text.length);
+    while (queue.length) {
+      const input = queue.shift();
       let reply;
       try {
-        reply = await chrome.runtime.sendMessage({ type: "ssf:pane-input", url, session, text });
+        reply = await chrome.runtime.sendMessage({ type: "ssf:pane-input", url, session, ...input });
       } catch (error) {
         reply = { ok: false, error: `the extension's service worker did not answer (${error})` };
       }
       if (!reply?.ok) {
-        say(`not typed: ${reply?.error ?? "the factory did not answer"}`, true);
-        queued = "";
+        // Typing on into a pane that is not taking it would be typing blind.
+        stopTyping(`not typed (${reply?.error ?? "the factory did not answer"})`);
       }
     }
     sending = false;
   }
-  term.onData((data) => {
-    queued += data;
+
+  function sendKeys(keys) {
+    if (!typing || keys.length === 0) return;
+    lastActivity = Date.now();
+    for (const key of keys) {
+      const last = queue.at(-1);
+      if (last?.keys && last.keys.length < MAX_KEYS) last.keys.push(key);
+      else queue.push({ keys: [key] });
+    }
+    flush();
+  }
+
+  typeButton.addEventListener("click", () => (typing ? stopTyping() : startTyping()));
+  field.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    const key = keyForKeyDown(event);
+    if (key === undefined) return;
+    event.preventDefault();
+    sendKeys([key]);
+  });
+  field.addEventListener("beforeinput", (event) => {
+    const key = keyForInputType(event.inputType);
+    if (key === null) return;
+    // Backspace inside an IME edits the candidate, not the pane.
+    if (event.isComposing && key === "Backspace") return;
+    event.preventDefault();
+    sendKeys([key]);
+  });
+  field.addEventListener("input", (event) => {
+    if (event.isComposing || composing) return;
+    const text = field.value;
+    field.value = "";
+    sendKeys(textToKeys(text));
+  });
+  // An IME's composition is sent once, when it is committed.
+  field.addEventListener("compositionstart", () => {
+    composing = true;
+  });
+  field.addEventListener("compositionend", (event) => {
+    composing = false;
+    const text = field.value || event.data || "";
+    field.value = "";
+    sendKeys(textToKeys(text));
+  });
+  field.addEventListener("paste", (event) => {
+    event.preventDefault();
+    if (!typing) return;
+    lastActivity = Date.now();
+    const body = pasteBody(session, event.clipboardData?.getData("text/plain") ?? "");
+    if (!body) return;
+    // A paste too long for one write is not sent in part: said, and typing
+    // turned off, so the person sees it did not go.
+    if (!fitsWrite(body)) return stopTyping("the paste is longer than the factory takes in one write");
+    queue.push({ text: body.text });
     flush();
   });
+  // A click in the terminal gives typing its field back, unless it was to
+  // select text.
+  scroller.addEventListener("mouseup", () => {
+    if (typing && getSelection()?.isCollapsed) field.focus({ preventScroll: true });
+  });
+  for (const name of ["pointerdown", "wheel", "keydown"]) {
+    addEventListener(name, () => (lastActivity = Date.now()), { capture: true, passive: true });
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") stopTyping("the tab was hidden");
+  });
+  setInterval(() => {
+    if (typing && Date.now() - lastActivity >= IDLE_MS) stopTyping("nothing was typed for a while");
+  }, 30000);
 }
 
 start().catch((error) => say(String(error), true));

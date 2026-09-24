@@ -242,6 +242,31 @@ busy turn completes). Claude 2.1.268 passed these gates on
 2026-09-15. The protocol is unofficial, based on
 [cc-peer's protocol documentation](https://github.com/mikekelly/cc-peer/blob/main/docs/PROTOCOL.md).
 
+## Chrome extension checks
+
+The extension has no build step. Its terminal's renderer and key mapping are
+unit-tested with Node alone: `node --test chrome-extension/test/*.test.mjs`
+(not run by CI, which runs the Cargo suite only).
+
+To see what bytes a herdr key name types — what the terminal's keystrokes
+become in a pane — use a named herdr session of your own, never the main one,
+with a pane that logs its raw input:
+
+```sh
+mkdir -p /tmp/scratch
+herdr --session scratch server &               # an isolated server and socket
+herdr --session scratch workspace create --cwd /tmp/scratch --no-focus
+herdr --session scratch pane run w1:p1 \
+  "python3 -c 'import os,sys,tty; tty.setraw(0); [print(repr(os.read(0,64)),file=sys.stderr) for _ in iter(int,1)]' 2>/tmp/scratch/keys.log"
+herdr --session scratch pane send-keys w1:p1 . é Space Enter ctrl+c
+cat /tmp/scratch/keys.log                    # b'.\xc3\xa9 \r\x03'
+herdr session stop scratch && herdr session delete scratch
+```
+
+herdr 0.9 takes any single non-space character as a literal key, and refuses a
+literal space (`invalid_key`): that is the rule `api/pane/input` applies to
+`keys`.
+
 ## A dev build as the service
 
 `packaging/dev-install.sh` builds `target/release/ssf` and `ssf-server`, writes the

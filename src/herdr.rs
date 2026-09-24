@@ -811,6 +811,17 @@ impl Herdr {
         .await
     }
 
+    /// The last `lines` rows of a pane with their colours, ending with the
+    /// visible screen (`pane read --source recent --format ansi`): the web
+    /// pane mirror's history.
+    pub async fn recent_ansi(&self, pane_id: &str, lines: u32) -> Result<String> {
+        let lines = lines.to_string();
+        self.run_raw(&[
+            "pane", "read", pane_id, "--source", "recent", "--lines", &lines, "--format", "ansi",
+        ])
+        .await
+    }
+
     /// Type into a pane as a person at it would: `text` is written as it is
     /// (control characters and escape sequences included, which is what a
     /// terminal sends for Enter, Backspace or an arrow key), then `keys` are
