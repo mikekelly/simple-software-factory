@@ -7,7 +7,8 @@ description: Work with Simple Software Factory (ssf) on a person's behalf: insta
 
 ssf turns GitHub issues and pull requests assigned to a bot account into
 coding-agent sessions, one per item, each in its own git worktree and
-terminal under herdr. People collaborate with the agents in the item's
+terminal under herdr (scratch sessions, which work on no item, run in tmux
+instead). People collaborate with the agents in the item's
 comments; the `ssf` client configures and inspects the factory daemon
 locally, in a VM, or over SSH. Linux and macOS are supported.
 

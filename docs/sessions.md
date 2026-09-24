@@ -594,9 +594,31 @@ its own origin tag, so it names no item; there is no item for ssf to report a
 signed-out harness on either. While a release is pending it is told nothing. `ssf handover` does not apply: start another
 scratch session on the other stack instead.
 
+A scratch session runs in a detached tmux session of its own, not in a herdr
+pane: `ssf-<owner>_<repo>-<id>` on the default tmux server of the user the
+factory runs as (anything but letters, digits and `-` in the name becomes
+`_`), with the worktree as its directory and `window-size latest`, so it takes
+the size of whichever client attached last. `tmux attach -t
+ssf-<owner>_<repo>-<id>` reaches it from a shell on that machine (in the
+guest, for a factory in a VM), and the web endpoint's `api/term` from a
+browser ([dashboard.md](dashboard.md#terminal)). The harness is the tmux
+session's only command, so the session is live exactly while the harness
+runs; tmux reports no agent state, so `ssf status` shows a live one as
+`running`, with its last activity read from the harness's transcript where
+the harness keeps one. What it follows is pasted into it (`tmux load-buffer`
+and `paste-buffer`, then Enter), for every harness: the native Claude Code and
+Codex channels reach a harness through herdr and are not used for it. Under
+systemd, a tmux server the daemon starts is put in a scope of its own
+(`systemd-run --user --scope`) where there is a user manager to ask, so a
+restart of the service does not end every scratch session with it. A scratch
+session made before tmux was used is left running in its herdr pane and told
+there; the next time it is started (a resume, or a restart) it starts in tmux.
+tmux is required: `ssf doctor` checks it.
+
 A scratch session lives until it is killed. Closing, merging and `ssf purge`
-never touch it, and a daemon restart resumes it. `ssf release --as
-owner/repo~<id>` kills it with the same checks as any release (refused, with
+never touch it, and a daemon restart resumes it (a new tmux session running the
+harness's resume command) when its tmux session is gone. `ssf release --as
+owner/repo~<id>` kills it (`tmux kill-session`, then the worktree goes) with the same checks as any release (refused, with
 the reasons, while work is not on origin; `--force` is for a person at a
 shell). The record, its branch and the harness conversation are kept, and
 `ssf scratch resume owner/repo~<id>` recreates the worktree, on that branch

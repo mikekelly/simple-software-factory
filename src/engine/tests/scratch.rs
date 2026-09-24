@@ -197,10 +197,183 @@ async fn a_new_scratch_session_is_sent_no_first_prompt() {
     e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
     let r = repo();
     e.cfg.repos = vec![r.clone()];
+    let t = crate::tmux::StubTmux::default();
+    e.tmux = crate::tmux::Tmux::stub(t.clone());
     e.create_scratch(&r.name, "claude", None, None, None)
         .await
         .unwrap();
-    assert_eq!(d.prompts(), vec![String::new()]);
-    let st = e.state.repos[&r.name].scratch.values().next().unwrap();
+    let st = e.state.repos[&r.name]
+        .scratch
+        .values()
+        .next()
+        .unwrap()
+        .clone();
     assert_eq!(st.prompts_sent, 0);
+    // It runs in a tmux session of its own (#491), in a plain worktree:
+    // nothing is started through the driver, and nothing is pasted.
+    let name = crate::tmux::session_name(&r.name, &st.id);
+    assert_eq!(t.log(), vec![format!("new:{name}")]);
+    assert!(d.prompts().is_empty());
+    assert_eq!(
+        st.terminal_handle.as_deref(),
+        Some(crate::tmux::handle(&name).as_str())
+    );
+    assert!(crate::driver::is_local_worktree(
+        st.worktree_id.as_deref().unwrap()
+    ));
+    assert!(t.with(|s| s.launches[0].contains("--session")));
+}
+
+/// A scratch session in tmux (#491): `k3f9` with a plain worktree.
+fn seed_tmux_scratch(e: &mut Engine, r: &RepoConfig, d: &crate::driver::StubDriver) -> String {
+    seed_scratch(e, r, "/stub.worktrees/scratch-k3f9");
+    let wid = format!(
+        "{}/stub.worktrees/scratch-k3f9",
+        crate::driver::LOCAL_WORKTREE
+    );
+    let name = crate::tmux::session_name(&r.name, "k3f9");
+    let st = e
+        .state
+        .repos
+        .get_mut(&r.name)
+        .unwrap()
+        .scratch
+        .get_mut("k3f9")
+        .unwrap();
+    st.worktree_id = Some(wid.clone());
+    st.terminal_handle = Some(crate::tmux::handle(&name));
+    st.stack.harness = "claude".into();
+    d.with(|s| {
+        s.worktrees.insert(wid);
+    });
+    name
+}
+
+#[tokio::test]
+async fn a_scratch_session_in_tmux_is_pasted_to_and_started_again_when_gone() {
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let t = crate::tmux::StubTmux::default();
+    e.tmux = crate::tmux::Tmux::stub(t.clone());
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    let name = seed_tmux_scratch(&mut e, &r, &d);
+
+    // Live: the text is pasted, nothing is started.
+    t.with(|s| s.live.insert(name.clone()));
+    let got = e.deliver_scratch(&r, "k3f9", "hello", None).await.unwrap();
+    assert!(!got.relaunched);
+    assert_eq!(t.log(), vec![format!("paste:{name}:hello")]);
+
+    // Gone: the conversation is resumed in a new session and told.
+    t.with(|s| s.live.clear());
+    let got = e
+        .deliver_scratch(&r, "k3f9", "hello", Some("the whole story"))
+        .await
+        .unwrap();
+    assert!(got.relaunched && got.resumed);
+    assert_eq!(
+        t.log(),
+        vec![format!("new:{name}"), format!("paste:{name}:hello")]
+    );
+    assert!(t.with(|s| s.launches.last().unwrap().contains("conv-1")));
+
+    // A resume that exits: a fresh harness, which gets the whole story.
+    t.with(|s| {
+        s.live.clear();
+        s.resume_exits = true;
+    });
+    let got = e
+        .deliver_scratch(&r, "k3f9", "hello", Some("the whole story"))
+        .await
+        .unwrap();
+    assert!(got.relaunched && !got.resumed);
+    assert_eq!(
+        t.log(),
+        vec![
+            format!("new:{name}"),
+            format!("kill:{name}"),
+            format!("new:{name}"),
+            format!("paste:{name}:the whole story"),
+        ]
+    );
+    assert!(
+        d.log().is_empty(),
+        "the driver is not asked to start anything"
+    );
+    assert!(scratch_state(&e, &r).agent_session_id.is_none());
+}
+
+#[tokio::test]
+async fn a_scratch_session_in_tmux_is_killed_before_its_workspace_goes() {
+    use crate::release::testkit::scratch;
+
+    let clean = scratch("scratch-tmux-release").await;
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let t = crate::tmux::StubTmux::default();
+    e.tmux = crate::tmux::Tmux::stub(t.clone());
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    let name = seed_tmux_scratch(&mut e, &r, &d);
+    e.state
+        .repos
+        .get_mut(&r.name)
+        .unwrap()
+        .scratch
+        .get_mut("k3f9")
+        .unwrap()
+        .worktree_path = Some(clean.work.clone());
+    t.with(|s| s.live.insert(name.clone()));
+    let accepted = e
+        .handle_request(Request::Release {
+            session: "o/r~k3f9".into(),
+            force: false,
+        })
+        .await;
+    assert!(accepted.ok, "{:?}", accepted.error);
+    assert_eq!(accepted.data["pending"], true);
+    e.run_scratch_cleanups(&r).await;
+    assert_eq!(t.log(), vec![format!("kill:{name}")]);
+    assert_eq!(
+        d.log(),
+        vec![format!(
+            "remove:{}/stub.worktrees/scratch-k3f9",
+            crate::driver::LOCAL_WORKTREE
+        )]
+    );
+    assert!(scratch_state(&e, &r).worktree_id.is_none());
+}
+
+/// One started in a herdr pane before #491 is told there while it runs.
+#[tokio::test]
+async fn a_legacy_scratch_session_live_in_herdr_is_left_there() {
+    let mut e = engine();
+    let d = crate::driver::StubDriver::new(DriverKind::Herdr);
+    e.drivers = Drivers::from_list(vec![Driver::Stub(d.clone())]);
+    let t = crate::tmux::StubTmux::default();
+    e.tmux = crate::tmux::Tmux::stub(t.clone());
+    let r = repo();
+    e.cfg.repos = vec![r.clone()];
+    seed_scratch(&mut e, &r, "/nonexistent/scratch");
+    d.seed("w9", "t9", READY_SCREEN);
+    let got = e.deliver_scratch(&r, "k3f9", "hello", None).await.unwrap();
+    assert!(!got.relaunched);
+    assert_eq!(d.log(), vec!["deliver:w9:hello"]);
+    assert!(t.log().is_empty());
+
+    // Once its agent has stopped, it starts in tmux.
+    d.with(|s| {
+        s.live.clear();
+    });
+    let got = e.deliver_scratch(&r, "k3f9", "again", None).await.unwrap();
+    assert!(got.relaunched);
+    let name = crate::tmux::session_name(&r.name, "k3f9");
+    assert_eq!(t.log()[0], format!("new:{name}"));
+    assert_eq!(
+        scratch_state(&e, &r).terminal_handle,
+        Some(crate::tmux::handle(&name))
+    );
 }

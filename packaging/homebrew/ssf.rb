@@ -60,8 +60,9 @@ class Ssf < Formula
 
       To run the factory on this machine instead of in a VM (driver = "herdr"
       with [vm] enabled = false), or to attach to a session with `herdr
-      --remote`, install herdr on the host:
-        brew install herdr
+      --remote`, install herdr on the host, and tmux, which scratch sessions
+      run in:
+        brew install herdr tmux
     EOS
   end
 

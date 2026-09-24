@@ -549,6 +549,30 @@ impl Driver {
         }
     }
 
+    /// A plain git worktree for a scratch session (#491), with no driver
+    /// workspace around it: its terminal is a tmux session, not the
+    /// driver's. Its id is [`LOCAL_WORKTREE`] and the path.
+    pub async fn create_local_worktree(
+        &self,
+        repo_id: &str,
+        name: &str,
+        base_branch: Option<&str>,
+    ) -> Result<Worktree> {
+        match self {
+            Driver::Herdr(_) => {
+                let (path, branch) =
+                    add_local_worktree(repo_root(repo_id), name, base_branch).await?;
+                Ok(Worktree {
+                    id: format!("{LOCAL_WORKTREE}{path}"),
+                    path,
+                    branch: Some(branch),
+                })
+            }
+            #[cfg(test)]
+            Driver::Stub(d) => d.create_local_worktree(name),
+        }
+    }
+
     /// Filesystem path of the repository's main checkout.
     pub async fn repo_path(&self, repo_id: &str) -> Result<String> {
         match self {
@@ -594,6 +618,10 @@ impl Driver {
     /// Whether the workspace still exists.
     pub async fn worktree_exists(&self, worktree_id: &str) -> Result<bool> {
         match self {
+            Driver::Herdr(_) if is_local_worktree(worktree_id) => {
+                let path = &worktree_id[LOCAL_WORKTREE.len()..];
+                Ok(Path::new(path).join(".git").exists())
+            }
             Driver::Herdr(d) => d.worktree_exists(worktree_id).await,
             #[cfg(test)]
             Driver::Stub(d) => Ok(d.worktree_exists(worktree_id)),
@@ -612,6 +640,13 @@ impl Driver {
     /// Stop the workspace's agent and remove the workspace.
     pub async fn remove_worktree(&self, worktree_id: &str) -> Result<()> {
         match self {
+            Driver::Herdr(_) if is_local_worktree(worktree_id) => {
+                let path = &worktree_id[LOCAL_WORKTREE.len()..];
+                if Path::new(path).exists() {
+                    remove_stray_worktree(path).await?;
+                }
+                Ok(())
+            }
             Driver::Herdr(d) => d.remove_worktree(worktree_id).await,
             #[cfg(test)]
             Driver::Stub(d) => {
@@ -954,6 +989,17 @@ impl StubDriver {
         })
     }
 
+    fn create_local_worktree(&self, name: &str) -> Result<Worktree> {
+        let mut wt = self.create_worktree(name)?;
+        let id = format!("{LOCAL_WORKTREE}{}", wt.path);
+        self.with(|s| {
+            s.worktrees.remove(&wt.id);
+            s.worktrees.insert(id.clone());
+        });
+        wt.id = id;
+        Ok(wt)
+    }
+
     fn new_handle(s: &mut StubState, worktree_id: &str) -> String {
         s.handles += 1;
         let h = format!("t{}", s.handles);
@@ -1160,6 +1206,15 @@ pub fn branch_for(name: &str) -> String {
         Some(id) => format!("scratch/{id}"),
         None => format!("bot/{name}"),
     }
+}
+
+/// What the id of a workspace that is a plain git worktree (a scratch
+/// session's, #491) starts with: `git:<path>`. Any other id is the driver's.
+pub const LOCAL_WORKTREE: &str = "git:";
+
+/// Whether a workspace id is a plain git worktree rather than the driver's.
+pub fn is_local_worktree(id: &str) -> bool {
+    id.starts_with(LOCAL_WORKTREE)
 }
 
 /// What a scratch session's workspace name starts with.

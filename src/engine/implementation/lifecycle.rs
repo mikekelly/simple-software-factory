@@ -314,6 +314,7 @@ impl Engine {
             cfg,
             gh,
             drivers,
+            tmux: crate::tmux::Tmux::new(),
             down: Vec::new(),
             login: me.login,
             state,

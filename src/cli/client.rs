@@ -817,6 +817,7 @@ pub(super) async fn command_main(args: impl IntoIterator<Item = std::ffi::OsStri
                 )
                 .await
             }
+            PaneCommand::Attach { session } => crate::pane::attach(&session).await,
             PaneCommand::Send {
                 session,
                 text,

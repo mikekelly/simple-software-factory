@@ -18,6 +18,7 @@ pub(super) fn engine() -> Engine {
                 ..Default::default()
             },
         ))]),
+        tmux: crate::tmux::Tmux::stub(Default::default()),
         down: Vec::new(),
         login: "bot".into(),
         state: State::default(),

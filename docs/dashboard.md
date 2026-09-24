@@ -212,8 +212,8 @@ handling above.
 
 ## HTTP API
 
-Everything below is served under the capability path. Four read endpoints and
-three write endpoints make up the API; the capability root also serves the
+Everything below is served under the capability path. The read endpoints and
+the write endpoints below make up the API; the capability root also serves the
 server's own browser page and its CSS and JavaScript.
 
 ### Read endpoints
@@ -225,6 +225,7 @@ server's own browser page and its CSS and JavaScript.
 | `GET /<capability>/api/agents` | what `ssf agents --json` prints |
 | `GET /<capability>/api/models/<harness>` | what `ssf models <harness> --json` prints |
 | `GET /<capability>/api/pane/<session>` | a server-sent events mirror of a session's agent pane (below) |
+| `GET /<capability>/api/term/<session>` | a WebSocket terminal attached to a scratch session's tmux session ([Terminal](#terminal)) |
 
 `api/events` sends the current snapshot immediately as an `event: status` frame
 whose `data` is the JSON `api/status` returns, then another `status` frame for
@@ -275,6 +276,44 @@ all its viewers; a screen changing four times a second sent about 26 KB/s per
 viewer. The history is the larger part: a colourful 1000-row history frame
 measured about 480 KB, so a pane whose history changes all the time can send
 up to about 240 KB/s per viewer, and an idle one sends it once.
+
+A scratch session runs in tmux rather than in a herdr pane
+([sessions.md](sessions.md#scratch-sessions)), so its mirror reads tmux
+instead: the screen is `tmux capture-pane -p -e` and the history `tmux
+capture-pane -p -e -S -1000`, the same frames with the same redaction. A
+scratch session still in the herdr pane it was started in before that is read
+from herdr until it is next started.
+
+### Terminal
+
+`GET /<capability>/api/term/<session>` is a WebSocket (version 13) upgrade
+that attaches a live terminal to a scratch session's tmux session: the server
+runs `ssf __pane attach <session>` (`tmux attach-session`) in a PTY, through
+the same client transport as the pane mirror, so a factory in a VM is attached
+to in the guest. It takes a scratch session only (`owner%2Fname~id`); an item's
+session, or anything that is not a session, is `400`, as is a request that is
+not a WebSocket upgrade. Since a terminal types at an agent, it is held to a
+write's origin rule on top of the capability: the `Origin` must be a
+`chrome-extension://...` origin, or it is `403`. At most 16 terminals are open
+at once; a seventeenth is `503`.
+
+The protocol:
+
+- **binary frames**, both ways, are terminal bytes: what the terminal printed,
+  and what the person typed (as a terminal sends it: `\r` for Enter, escape
+  sequences for the arrows).
+- **text frames** from the client are JSON control messages. There is one:
+  `{"type": "resize", "cols": 120, "rows": 40}` resizes the PTY (1 to 1000
+  each); since the tmux session has `window-size latest`, the agent's window
+  follows the last client to attach or resize. Anything else is ignored.
+- The socket closes when the attach ends -- the tmux session ended, or could
+  not be attached to, in which case what tmux or ssf said is the last output --
+  or when the client closes it.
+
+Unlike the mirror, the terminal shows no redaction: it is the session's own
+terminal, as `tmux attach` in a shell on the factory shows it. The server's
+own browser page has no terminal view; the route is for clients such as the
+Chrome extension.
 
 ### Snapshot fields a client can rely on
 
@@ -367,7 +406,8 @@ POST /<capability>/api/pane/input      {"session": "owner/name~id", "text": "yes
   workspace.
 - **pane/input** types into a session's agent pane: `text` is sent as typed
   (control characters included), then `keys`, in order, as herdr's `pane
-  send-keys` presses them: key names such as `Enter`, `Space`, `Backspace` or
+  send-keys` presses them (for a scratch session in tmux, `tmux send-keys`, with
+  the same names mapped to tmux's): key names such as `Enter`, `Space`, `Backspace` or
   `ctrl+c`, or a single literal character (`a`, `.`, `é`), which is how the
   extension's terminal types a keystroke at a time. A space or control
   character is not a key; it goes by name. The text is not logged. A scratch

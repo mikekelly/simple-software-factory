@@ -441,6 +441,7 @@ impl Snapshot {
                 }
             }
         }
+        workspaces.extend(tmux_workspaces(&cfg, &state).await);
         Ok(Self {
             cfg,
             state,
@@ -595,14 +596,76 @@ pub fn sessions_with(
             out.push(row);
         }
         for st in rs.scratch.values() {
-            let ws = workspaces.and_then(|list| {
+            // A scratch session in tmux (#491) does not wait on the driver.
+            let tmux = in_tmux(st);
+            let list = if tmux { Some(list) } else { workspaces };
+            let ws = list.and_then(|list| {
                 let id = st.worktree_id.as_deref()?;
                 list.iter().find(|w| w.worktree_id == id)
             });
-            out.push(join_scratch(repo, st, ws, workspaces.is_some()));
+            out.push(join_scratch(repo, st, ws, list.is_some()));
         }
     }
     out
+}
+
+/// Whether a scratch session runs in tmux (#491) rather than in the herdr
+/// pane one started before that is left in.
+fn in_tmux(st: &ScratchState) -> bool {
+    st.terminal_handle
+        .as_deref()
+        .and_then(crate::tmux::name_of)
+        .is_some()
+        || st
+            .worktree_id
+            .as_deref()
+            .is_some_and(crate::driver::is_local_worktree)
+}
+
+/// The workspace rows of scratch sessions in tmux (#491): tmux says only
+/// whether the session is there, so a live one's agent state is `running`,
+/// and its last activity is read from the harness's transcript.
+async fn tmux_workspaces(cfg: &Config, state: &State) -> Vec<WorkspaceInfo> {
+    let tmux = crate::tmux::Tmux::new();
+    let mut rows = Vec::new();
+    for repo in &cfg.repos {
+        let Some(rs) = state.repos.get(&repo.name) else {
+            continue;
+        };
+        for st in rs.scratch.values().filter(|st| in_tmux(st)) {
+            let (Some(id), Some(path)) = (st.worktree_id.clone(), st.worktree_path.clone()) else {
+                continue;
+            };
+            let name = crate::tmux::session_name(&repo.name, &st.id);
+            let live = matches!(
+                tokio::time::timeout(DRIVER_TIMEOUT, tmux.has_session(&name)).await,
+                Ok(Ok(true))
+            );
+            let harness = repo.with_overrides(Some(&st.stack)).harness;
+            let last_activity_at = st
+                .agent_session_id
+                .as_deref()
+                .and_then(|c| crate::sessions::last_activity(&harness, &path, c));
+            rows.push(WorkspaceInfo {
+                worktree_id: id,
+                repo_id: st.repo_id.clone().unwrap_or_default(),
+                path,
+                display_name: name,
+                live_terminals: u64::from(live),
+                last_activity_at,
+                agents: live
+                    .then(|| crate::driver::AgentInfo {
+                        state: "running".into(),
+                        agent_type: Some(harness.clone()),
+                        ..Default::default()
+                    })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            });
+        }
+    }
+    rows
 }
 
 /// A scratch session as a status row: the fields an item's session has, with

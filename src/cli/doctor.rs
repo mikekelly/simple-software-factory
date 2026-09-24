@@ -115,6 +115,21 @@ pub(super) async fn doctor() -> Result<()> {
             }
         }
     }
+    // Scratch sessions run in tmux (#491), wherever the factory's sessions
+    // run (the guest, for a factory in a VM: doctor is forwarded there).
+    match which("tmux") {
+        Some(tmux) => check(
+            true,
+            format!("tmux at {} (scratch sessions run in it)", tmux.display()),
+        ),
+        None => check(
+            false,
+            format!(
+                "tmux not installed; scratch sessions cannot start; install it: {}",
+                platform::tmux_install_hint()
+            ),
+        ),
+    }
     let retired = cfg.retired_keys();
     for (key, why) in retired {
         println!("note {key} in config.toml no longer does anything: {why}; remove the line");
