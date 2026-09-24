@@ -1915,7 +1915,19 @@
   }
 
   function connect() {
-    port = chrome.runtime.connect({ name: "ssf-overlay" });
+    // A reloaded or updated extension leaves this script running in tabs it
+    // was injected into, cut off from the new one: it stops here rather than
+    // retrying forever with "Extension context invalidated".
+    if (!chrome.runtime?.id) {
+      clearInterval(pingTimer);
+      return;
+    }
+    try {
+      port = chrome.runtime.connect({ name: "ssf-overlay" });
+    } catch {
+      clearInterval(pingTimer);
+      return;
+    }
     port.onMessage.addListener((message) => {
       if (message?.type === "snapshot") apply(message.payload);
     });
