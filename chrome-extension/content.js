@@ -143,6 +143,9 @@
 .ssf-where { color: var(--fgColor-muted, #59636e); }
 .ssf-where strong { font-weight: 600; color: var(--fgColor-default, #1f2328); }
 .ssf-card + .ssf-card { margin-top: 8px; }
+/* The popover scrolls its own box, which would clip the ••• menu opening
+   below the row; there it opens upward, over the card's facts. */
+.ssf-popover .ssf-writes-menu-list { top: auto; bottom: calc(100% + 4px); }
 /* The lead line of a card: the state, at a size it can be read at, with the
    time beside it in the muted colour GitHub uses for a fact about a thing. */
 .ssf-state { display: flex; align-items: center; gap: 6px; min-width: 0; }

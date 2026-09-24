@@ -114,7 +114,7 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
   function button(factoryUrl, session, input, label) {
     const open = element("button", label ? "ssf-pane-open ssf-pane-show" : "ssf-pane-open");
     open.type = "button";
-    open.title = "Open terminal";
+    open.title = label ? "Open this agent's terminal" : "Open terminal";
     open.setAttribute("aria-label", label ?? "Open terminal");
     open.append(terminalIcon());
     if (label) open.append(label);
