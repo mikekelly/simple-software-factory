@@ -67,6 +67,13 @@ only in the next session's byline, exactly as it does in the daemon's own
 `attached` post. A launch that names no harness, `ssf launch` by hand, or a
 session ssf cannot say the stack of, keeps the bare `🤖#N says:`.
 
+Where its harness can tell, the byline also says how full the session's
+context was when it posted: `🤖#16 claude/opus/high (12% of 1M) says:`. The
+`gh` shim reads it from the session's own transcript at the moment of the
+post, and leaves it out when it cannot (no transcript, or a model whose window
+ssf does not know). Claude Code sessions have it so far, from the latest turn in
+`~/.claude/projects/*/<CLAUDE_CODE_SESSION_ID>.jsonl`.
+
 The three travel to the session as `SSF_HARNESS`, `SSF_MODEL` and `SSF_EFFORT`.
 `SSF_HARNESS` is the same variable the [OMP and Pi
 launcher](internals.md#per-harness-delivery) names the harness in for the

@@ -1094,6 +1094,7 @@ impl RepoConfig {
             harness: self.harness.clone(),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            context: None,
         }
     }
 

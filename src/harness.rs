@@ -51,6 +51,9 @@ pub struct Harness {
     /// dates a conversation (`sessions::last_activity`) and resumes one
     /// (`sessions::resume_command`).
     pub reads_transcript: bool,
+    /// How full the running session's context is (`12% of 1M`), read from
+    /// inside the session for its byline; `None` when ssf cannot tell.
+    pub context: Option<fn() -> Option<String>>,
     /// How an event reaches it while it runs: its own channel, or the
     /// terminal.
     pub channel: &'static dyn Channel,
@@ -119,6 +122,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["ANTHROPIC_API_KEY"],
         reads_transcript: true,
+        context: Some(crate::sessions::claude_context),
         channel: &Claude,
     },
     Harness {
@@ -157,6 +161,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["OPENAI_API_KEY"],
         reads_transcript: true,
+        context: None,
         channel: &Codex,
     },
     // Pi, Oh My Pi and OpenCode use their own `provider/model` identifiers.
@@ -182,6 +187,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: PI_LOGIN_PHRASES,
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        context: None,
         channel: &Mailbox,
     },
     Harness {
@@ -205,6 +211,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: PI_LOGIN_PHRASES,
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        context: None,
         channel: &Mailbox,
     },
     Harness {
@@ -227,6 +234,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: &["run /connect to add an ai provider"],
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        context: None,
         channel: &Terminal,
     },
     Harness {
@@ -258,6 +266,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         reads_transcript: false,
+        context: None,
         channel: &Terminal,
     },
     Harness {
@@ -280,6 +289,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: &["run /login"],
         api_key_vars: &["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"],
         reads_transcript: false,
+        context: None,
         channel: &Terminal,
     },
     Harness {
@@ -305,6 +315,7 @@ pub static HARNESSES: &[Harness] = &[
         ],
         api_key_vars: &["XAI_API_KEY"],
         reads_transcript: false,
+        context: None,
         channel: &Terminal,
     },
     Harness {
@@ -319,6 +330,7 @@ pub static HARNESSES: &[Harness] = &[
         login_phrases: &["let's choose a provider and model"],
         api_key_vars: PROVIDER_KEYS,
         reads_transcript: false,
+        context: None,
         channel: &Terminal,
     },
 ];

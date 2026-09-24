@@ -234,6 +234,9 @@ pub struct Stack {
     pub harness: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// How full the session's context was when it posted (`12% of 1M`),
+    /// when its harness adapter can tell (`harness::Harness::context`).
+    pub context: Option<String>,
 }
 
 impl Stack {
@@ -253,6 +256,7 @@ impl Stack {
             harness: part(harness)?,
             model: part(model),
             effort: part(effort),
+            context: None,
         })
     }
 
@@ -275,7 +279,7 @@ impl Stack {
         let effort = self.effort.as_deref().filter(|e| is_stack(e));
         let mut label = self.harness.clone();
         if model.is_none() && effort.is_none() {
-            return Some(label);
+            return Some(label + &self.context_suffix());
         }
         label.push('/');
         label.push_str(model.unwrap_or("-"));
@@ -283,7 +287,16 @@ impl Stack {
             label.push('/');
             label.push_str(effort);
         }
-        Some(label)
+        Some(label + &self.context_suffix())
+    }
+
+    /// ` (12% of 1M)`, when the context is known and in the shape
+    /// `is_context` reads back; nothing otherwise.
+    fn context_suffix(&self) -> String {
+        match self.context.as_deref() {
+            Some(c) if is_context(c) => format!(" ({c})"),
+            _ => String::new(),
+        }
     }
 }
 
@@ -585,6 +598,11 @@ fn is_byline(s: &str) -> bool {
     match rest.strip_suffix(SAYS) {
         Some(head) => {
             let head = head.trim_end();
+            // A stack may end with its context usage: `claude/opus (12% of 1M)`.
+            let head = match head.strip_suffix(')').and_then(|h| h.rsplit_once(" (")) {
+                Some((stack, context)) if is_context(context) => stack.trim_end(),
+                _ => head,
+            };
             head.is_empty() || (!head.contains(char::is_whitespace) && is_stack(head))
         }
         // Posts made before #42 carried no `says:` at all.
@@ -602,6 +620,16 @@ fn is_stack(word: &str) -> bool {
             c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '+' | ':' | '@' | '/' | '-' | '~')
         })
         && word.contains(|c: char| c.is_ascii_alphanumeric())
+}
+
+/// Is `s` a context usage as a byline writes it: `<percent>% of <size>`,
+/// the size digits with an optional `k` or `M`?
+fn is_context(s: &str) -> bool {
+    let Some((percent, size)) = s.split_once("% of ") else {
+        return false;
+    };
+    let digits = |d: &str| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit());
+    digits(percent) && digits(size.strip_suffix(['k', 'M']).unwrap_or(size))
 }
 
 /// Does the line containing byte offset `at` start with a markdown quote?
@@ -744,6 +772,7 @@ mod tests {
             harness: "claude".into(),
             model: Some("opus".into()),
             effort: Some("high".into()),
+            context: None,
         }
     }
 
@@ -829,6 +858,7 @@ mod tests {
             harness: harness.into(),
             model: model.map(str::to_string),
             effort: effort.map(str::to_string),
+            context: None,
         };
         let label = |harness: &str, model: Option<&str>, effort: Option<&str>| {
             stack(harness, model, effort).label()
@@ -901,6 +931,26 @@ mod tests {
 
     /// A byline that carries a stack is still just a byline: what the agent
     /// is shown keeps only the words the author wrote.
+    #[test]
+    fn a_byline_names_the_context_usage_and_strips_with_it() {
+        let mut stack = stack();
+        stack.context = Some("12% of 1M".into());
+        let first = o().first_line(Some("acme/widgets"), false, Some(&stack));
+        assert!(first.starts_with("🤖#12 claude/opus/high (12% of 1M) says: "));
+        assert_eq!(strip(&format!("{first}\n\nhi")), "hi");
+        // A context of any other shape is not written, and prose in
+        // parentheses is not read as one.
+        stack.context = Some("lots".into());
+        assert_eq!(stack.label().as_deref(), Some("claude/opus/high"));
+        assert_eq!(
+            strip(&format!(
+                "🤖#12 opus (nearly full) says: {}\n\nhi",
+                o().tag()
+            )),
+            "🤖#12 opus (nearly full) says: \n\nhi"
+        );
+    }
+
     #[test]
     fn a_stack_byline_is_stripped_like_any_other() {
         let stack = stack();

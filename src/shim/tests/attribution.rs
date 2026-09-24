@@ -379,6 +379,7 @@ fn the_byline_names_what_the_session_runs() {
         harness: "claude".into(),
         model: Some("opus".into()),
         effort: Some("high".into()),
+        context: None,
     };
     let mut s = shim(&origin);
     s.stack = Some(&stack);

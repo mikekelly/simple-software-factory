@@ -147,6 +147,68 @@ pub fn claude_project_dir(cwd: &str) -> PathBuf {
     home().join(".claude/projects").join(encoded)
 }
 
+/// How full a Claude Code session's context is, as its byline shows it
+/// (`12% of 1M`): the session is `CLAUDE_CODE_SESSION_ID` in the
+/// environment, which Claude Code gives the commands it runs, and the usage
+/// is its transcript's latest main-thread turn. `None` whenever any of that
+/// is missing, or the model's window is not known.
+pub fn claude_context() -> Option<String> {
+    let id = std::env::var("CLAUDE_CODE_SESSION_ID").ok()?;
+    context_of(&claude_transcript(&home().join(".claude/projects"), &id)?)
+}
+
+/// `<root>/<any project>/<id>.jsonl`: the session's cwd can differ from the
+/// command's, so every project directory is tried.
+fn claude_transcript(root: &Path, id: &str) -> Option<PathBuf> {
+    if id.is_empty() || id.contains(['/', '.']) {
+        return None;
+    }
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path().join(format!("{id}.jsonl")))
+        .find(|p| p.is_file())
+}
+
+/// The context usage of the last main-thread assistant turn in the
+/// transcript at `path`; only its tail is read, since a transcript grows
+/// with the conversation.
+fn context_of(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const TAIL: u64 = 4 << 20;
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    let tail = String::from_utf8_lossy(&tail);
+    tail.lines().rev().find_map(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).ok()?;
+        if v.get("type")?.as_str()? != "assistant" || v["isSidechain"].as_bool() == Some(true) {
+            return None;
+        }
+        let message = v.get("message")?;
+        let usage = message.get("usage")?;
+        let used: u64 = [
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        ]
+        .iter()
+        .filter_map(|k| usage.get(*k).and_then(serde_json::Value::as_u64))
+        .sum();
+        if used == 0 {
+            return None;
+        }
+        let window = crate::models::claude_context_window(message.get("model")?.as_str()?)?;
+        Some(format!(
+            "{}% of {}",
+            (used * 100 / window).min(100),
+            crate::models::token_size(window)
+        ))
+    })
+}
+
 fn capture_claude(cwd: &str, since: SystemTime, exclude: &[String]) -> Option<String> {
     newest_transcript(&claude_project_dir(cwd), since, exclude)
 }
@@ -288,6 +350,38 @@ mod tests {
             transcript_modified(root, "pi", "/work/tree", "session-2"),
             None
         );
+    }
+
+    #[test]
+    fn claude_context_is_the_last_main_thread_turn() {
+        let sandbox = crate::config::test_support::sandbox();
+        let project = sandbox.root().join("-a-b");
+        std::fs::create_dir(&project).unwrap();
+        let turn = |sidechain: bool, model: &str, read: u64| {
+            serde_json::json!({"type":"assistant","isSidechain":sidechain,"message":{"model":model,"usage":{"input_tokens":2,"cache_creation_input_tokens":98,"cache_read_input_tokens":read}}}).to_string()
+        };
+        let lines = [
+            turn(false, "claude-opus-5-5", 1_000),
+            turn(false, "claude-opus-5-5", 119_900),
+            turn(true, "claude-opus-5-5", 900_000),
+            r#"{"type":"user"}"#.to_string(),
+        ];
+        std::fs::write(project.join("abc-123.jsonl"), lines.join("\n")).unwrap();
+        let path = claude_transcript(sandbox.root(), "abc-123").unwrap();
+        assert_eq!(context_of(&path).as_deref(), Some("12% of 1M"));
+        assert!(claude_transcript(sandbox.root(), "missing").is_none());
+        assert!(claude_transcript(sandbox.root(), "../x").is_none());
+        std::fs::write(
+            project.join("h.jsonl"),
+            turn(false, "claude-haiku-4-5-20251001", 49_900),
+        )
+        .unwrap();
+        assert_eq!(
+            context_of(&project.join("h.jsonl")).as_deref(),
+            Some("25% of 200k")
+        );
+        std::fs::write(project.join("u.jsonl"), turn(false, "mystery", 10)).unwrap();
+        assert_eq!(context_of(&project.join("u.jsonl")), None);
     }
 
     #[test]

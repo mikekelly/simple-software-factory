@@ -955,6 +955,7 @@ mod launch_command_tests {
             harness: "claude".into(),
             model: Some("opus".into()),
             effort: Some("high".into()),
+            context: None,
         }
     }
 
@@ -1028,6 +1029,7 @@ mod launch_command_tests {
             harness: "omp".into(),
             model: None,
             effort: None,
+            context: None,
         };
         assert!(
             line(Some(&bare))
