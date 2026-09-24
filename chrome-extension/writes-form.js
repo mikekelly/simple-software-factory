@@ -91,6 +91,10 @@
 .ssf-writes button:hover:not(:disabled) { background: var(--bgColor-muted, #f6f8fa); }
 .ssf-writes button.primary { color: #ffffff; background: var(--fgColor-success, #1a7f37);
   border-color: transparent; font-weight: 600; }
+/* Keeps the white label readable: the plain hover would swap in a pale
+   background behind it (#485). */
+.ssf-writes button.primary:hover:not(:disabled) {
+  background: var(--fgColor-success, #1a7f37); filter: brightness(0.9); }
 .ssf-writes button.danger { color: var(--fgColor-danger, #cf222e);
   border-color: var(--borderColor-default, #d1d9e0); }
 .ssf-writes button:disabled { opacity: 0.5; cursor: default; }
