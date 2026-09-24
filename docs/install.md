@@ -28,7 +28,7 @@ Gather these before running anything. Probe what you can; ask for the rest.
 | CPU count, RAM, free disk | probe (section 2) |
 | Hardware virtualisation | probe: `/dev/kvm` on Linux, the backend on macOS |
 | A systemd user session | probe: `systemctl --user is-system-running` |
-| `gh` and `herdr` present | probe: `command -v gh herdr` |
+| `gh`, `herdr` and `tmux` present | probe: `command -v gh herdr tmux` |
 | Does a bot GitHub account exist, or may one be created | **ask** |
 | Which repository to watch | **ask** |
 | Who owns that repository, and can they grant the bot Write | **ask** |
@@ -60,7 +60,7 @@ free -g 2>/dev/null || sysctl -n hw.memsize
 df -h "$HOME"
 test -r /dev/kvm && test -w /dev/kvm && echo kvm-ok
 systemctl --user is-system-running
-command -v gh herdr
+command -v gh herdr tmux
 ```
 
 `free`, `/dev/kvm` and `systemctl --user` are Linux only; on macOS `sysctl -n hw.memsize` reports bytes and the VM runs through lima instead of KVM.
@@ -105,7 +105,7 @@ Download the matching asset from [GitHub Releases](https://github.com/mikekelly/
 
 One package holds both the `ssf` client and the `ssf-server` daemon. Packages are x86_64.
 
-Prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md).
+Prerequisites the package does not always bring: GitHub CLI 2.40 or newer, Git, jq, an OpenSSH client (`ssh-keygen` enrolls the bot's key), tmux (scratch sessions run in it; the packages depend on it), and, for host mode, herdr, which only Omarchy's repositories carry as a package. The VM installs its own herdr in the guest. Where to get herdr and the other distro-specific commands and quirks are in [platform-specifics.md](platform-specifics.md).
 
 ```sh
 ssf --version
@@ -119,7 +119,7 @@ brew install mikekelly/tap/ssf
 ssf --version
 ```
 
-The formula brings `gh` and `lima`. `ssf setup` (section 4) enables a launchd agent per target, so `brew services` is not used. The VM path needs nothing more; for host mode on the Mac, `brew install herdr` as well. Details in [platform-specifics.md](platform-specifics.md#macos).
+The formula brings `gh` and `lima`. `ssf setup` (section 4) enables a launchd agent per target, so `brew services` is not used. The VM path needs nothing more; for host mode on the Mac, `brew install herdr tmux` as well. Details in [platform-specifics.md](platform-specifics.md#macos).
 
 ### 3.3 Standalone binaries on a rented host
 
@@ -136,7 +136,7 @@ export PATH="$HOME/.local/bin:$PATH"
 ssf --version && ssf-server --version
 ```
 
-Persist that `PATH` line for future shells. Supply the prerequisites yourself with the host's package manager: CA certificates, curl, Git, jq, GitHub CLI 2.40 or newer, an OpenSSH client, herdr, and the harness. The bare binaries carry no service units, no VM scripts and no configuration examples, so skip `ssf setup` on this path and leave the server catalog empty, so that the client and the foreground daemon share one configuration and state directory.
+Persist that `PATH` line for future shells. Supply the prerequisites yourself with the host's package manager: CA certificates, curl, Git, jq, GitHub CLI 2.40 or newer, an OpenSSH client, tmux, herdr, and the harness. The bare binaries carry no service units, no VM scripts and no configuration examples, so skip `ssf setup` on this path and leave the server catalog empty, so that the client and the foreground daemon share one configuration and state directory.
 
 Run the two processes under the same Unix user, HOME and PATH, each in its own persistent terminal or under the host's process supervisor:
 

@@ -441,6 +441,7 @@ impl Snapshot {
                 }
             }
         }
+        workspaces.extend(tmux_workspaces(&cfg, &state).await);
         Ok(Self {
             cfg,
             state,
@@ -595,14 +596,84 @@ pub fn sessions_with(
             out.push(row);
         }
         for st in rs.scratch.values() {
-            let ws = workspaces.and_then(|list| {
+            // A scratch session in tmux (#491) does not wait on the driver.
+            let tmux = in_tmux(st);
+            let list = if tmux { Some(list) } else { workspaces };
+            // A tmux session's own row wins over a herdr row a legacy
+            // session's workspace still has under the same id.
+            let name = crate::tmux::session_name(&repo.name, &st.id);
+            let ws = list.and_then(|list| {
                 let id = st.worktree_id.as_deref()?;
-                list.iter().find(|w| w.worktree_id == id)
+                let same = |w: &&WorkspaceInfo| w.worktree_id == id;
+                if tmux {
+                    list.iter().filter(same).find(|w| w.display_name == name)
+                } else {
+                    list.iter().find(same)
+                }
             });
-            out.push(join_scratch(repo, st, ws, workspaces.is_some()));
+            out.push(join_scratch(repo, st, ws, list.is_some()));
         }
     }
     out
+}
+
+/// Whether a scratch session runs in tmux (#491) rather than in the herdr
+/// pane one started before that is left in.
+fn in_tmux(st: &ScratchState) -> bool {
+    st.terminal_handle
+        .as_deref()
+        .and_then(crate::tmux::name_of)
+        .is_some()
+        || st
+            .worktree_id
+            .as_deref()
+            .is_some_and(crate::driver::is_local_worktree)
+}
+
+/// The workspace rows of scratch sessions in tmux (#491): tmux says only
+/// whether the session is there, so a live one's agent state is `running`,
+/// and its last activity is read from the harness's transcript.
+async fn tmux_workspaces(cfg: &Config, state: &State) -> Vec<WorkspaceInfo> {
+    let tmux = crate::tmux::Tmux::new();
+    let mut rows = Vec::new();
+    for repo in &cfg.repos {
+        let Some(rs) = state.repos.get(&repo.name) else {
+            continue;
+        };
+        for st in rs.scratch.values().filter(|st| in_tmux(st)) {
+            let (Some(id), Some(path)) = (st.worktree_id.clone(), st.worktree_path.clone()) else {
+                continue;
+            };
+            let name = crate::tmux::session_name(&repo.name, &st.id);
+            let live = matches!(
+                tokio::time::timeout(DRIVER_TIMEOUT, tmux.has_session(&name)).await,
+                Ok(Ok(true))
+            );
+            let harness = repo.with_overrides(Some(&st.stack)).harness;
+            let last_activity_at = st
+                .agent_session_id
+                .as_deref()
+                .and_then(|c| crate::sessions::last_activity(&harness, &path, c));
+            rows.push(WorkspaceInfo {
+                worktree_id: id,
+                repo_id: st.repo_id.clone().unwrap_or_default(),
+                path,
+                display_name: name,
+                live_terminals: u64::from(live),
+                last_activity_at,
+                agents: live
+                    .then(|| crate::driver::AgentInfo {
+                        state: "running".into(),
+                        agent_type: Some(harness.clone()),
+                        ..Default::default()
+                    })
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            });
+        }
+    }
+    rows
 }
 
 /// A scratch session as a status row: the fields an item's session has, with
@@ -1677,5 +1748,46 @@ mod dashboard_tests {
         // empty rather than absent, so a client reads one shape.
         let older = dashboard_presentation(&json!({"sessions":[]})).unwrap();
         assert_eq!(older["repositories"], json!([]));
+    }
+}
+
+#[cfg(test)]
+mod tmux_row_tests {
+    use super::*;
+
+    /// A legacy scratch session moved to tmux keeps its herdr workspace id;
+    /// the tmux row, not the herdr one, is its state.
+    #[test]
+    fn a_scratch_session_in_tmux_takes_the_tmux_row() {
+        let cfg: Config =
+            toml::from_str("[[repo]]\nname = \"o/r\"\nharness = \"claude\"\n").unwrap();
+        let mut state = State::default();
+        state.repo_mut("o/r").scratch.insert(
+            "ab12".into(),
+            ScratchState {
+                id: "ab12".into(),
+                worktree_id: Some("w7@/p".into()),
+                terminal_handle: Some(crate::tmux::handle(&crate::tmux::session_name(
+                    "o/r", "ab12",
+                ))),
+                ..Default::default()
+            },
+        );
+        let herdr = WorkspaceInfo {
+            worktree_id: "w7@/p".into(),
+            ..Default::default()
+        };
+        let tmux = WorkspaceInfo {
+            worktree_id: "w7@/p".into(),
+            display_name: crate::tmux::session_name("o/r", "ab12"),
+            agents: vec![crate::driver::AgentInfo {
+                state: "running".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let rows = sessions_with(&cfg, &state, &[herdr, tmux], &[]);
+        let row = rows.iter().find(|s| s.id == "o/r~ab12").unwrap();
+        assert_eq!(row.agent_state, "running");
     }
 }

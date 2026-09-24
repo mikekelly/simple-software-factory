@@ -609,6 +609,12 @@ pub(super) enum PaneCommand {
         #[arg(long = "key", value_name = "KEY")]
         keys: Vec<String>,
     },
+    /// Attach this terminal to a scratch session's tmux session (the web
+    /// endpoint's `api/term` runs this in a PTY).
+    Attach {
+        /// The scratch session, as owner/repo~id.
+        session: String,
+    },
 }
 
 #[derive(Subcommand)]

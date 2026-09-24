@@ -41,8 +41,39 @@ const HISTORY_LINES: u32 = 1000;
 /// screen would otherwise keep it reading herdr forever.
 const HEARTBEAT: Duration = Duration::from_secs(5);
 
-/// Where a session's agent is: its driver, and the terminal it runs in.
-pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result<(Driver, String)> {
+/// Where a session's agent runs: a driver's terminal (an item's session,
+/// or a scratch session still in a herdr pane from before #491), or a
+/// scratch session's tmux session.
+pub(crate) enum Target {
+    Driver(Driver, String),
+    Tmux(crate::tmux::Tmux, String),
+}
+
+impl Target {
+    async fn screen_ansi(&self) -> Result<String> {
+        match self {
+            Target::Driver(driver, pane) => driver.screen_ansi(pane).await,
+            Target::Tmux(tmux, name) => tmux.capture(name, None).await,
+        }
+    }
+
+    async fn recent_ansi(&self, lines: u32) -> Result<String> {
+        match self {
+            Target::Driver(driver, pane) => driver.recent_ansi(pane, lines).await,
+            Target::Tmux(tmux, name) => tmux.capture(name, Some(lines)).await,
+        }
+    }
+
+    async fn type_input(&self, text: Option<&str>, keys: &[String]) -> Result<()> {
+        match self {
+            Target::Driver(driver, pane) => driver.type_input(pane, text, keys).await,
+            Target::Tmux(tmux, name) => tmux.type_input(name, text, keys).await,
+        }
+    }
+}
+
+/// Where a session's agent is.
+pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result<Target> {
     let (repo_name, worktree, handle) = if let Some(s) = Scratch::parse(session) {
         let repo = cfg
             .repos
@@ -54,6 +85,27 @@ pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result
             .get(&repo.name)
             .and_then(|rs| rs.scratch.get(&s.id))
             .with_context(|| format!("{session} is not a session ssf knows"))?;
+        // A scratch session runs in tmux (#491) unless it is still in the
+        // herdr pane it was started in before that.
+        let in_herdr = st
+            .terminal_handle
+            .as_deref()
+            .is_some_and(|h| crate::tmux::name_of(h).is_none())
+            && st
+                .worktree_id
+                .as_deref()
+                .is_some_and(|w| !crate::driver::is_local_worktree(w));
+        if !in_herdr {
+            let tmux = crate::tmux::Tmux::new();
+            let name = crate::tmux::session_name(&repo.name, &s.id);
+            if st.worktree_id.is_none() {
+                bail!("{session} has no workspace");
+            }
+            if !tmux.has_session(&name).await? {
+                bail!("no agent is running in {session}'s workspace");
+            }
+            return Ok(Target::Tmux(tmux, name));
+        }
         (
             repo.name.clone(),
             st.worktree_id.clone(),
@@ -95,7 +147,7 @@ pub(crate) async fn locate(cfg: &Config, state: &State, session: &str) -> Result
         .live_handle(&worktree, handle.as_deref())
         .await?
         .with_context(|| format!("no agent is running in {session}'s workspace"))?;
-    Ok((driver, pane))
+    Ok(Target::Driver(driver, pane))
 }
 
 /// The lines a watch prints, each only when it differs from the last one:
@@ -127,7 +179,7 @@ pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
     let cfg = Config::load()?;
     let mut changes = Changes::default();
     let mut history = Changes::default();
-    let mut target: Option<(Driver, String)> = None;
+    let mut target: Option<Target> = None;
     let mut reads = 0u32;
     let mut out = std::io::stdout();
     let mut written = std::time::Instant::now();
@@ -152,15 +204,15 @@ pub(crate) async fn watch(session: &str, interval: Duration) -> Result<()> {
             }
         }
         reads = reads.wrapping_add(1);
-        if let Some((driver, pane)) = &target {
-            let said = match driver.screen_ansi(pane).await {
+        if let Some(found) = &target {
+            let said = match found.screen_ansi().await {
                 Ok(screen) => {
                     // History first, so a viewer has it before the screen
                     // it sits above. One that cannot be read is left for
                     // the next time: the screen is what matters.
                     let mut said = false;
                     if reads % HISTORY_EVERY == 1
-                        && let Ok(recent) = driver.recent_ansi(pane, HISTORY_LINES).await
+                        && let Ok(recent) = found.recent_ansi(HISTORY_LINES).await
                     {
                         let above = redact_tokens(&history_above(&recent, &screen));
                         said = emit(&mut out, &mut history, json!({ "history": above }))?;
@@ -276,9 +328,29 @@ pub(crate) async fn send(
         return Ok(Some(why));
     }
     let state = State::load()?;
-    let (driver, pane) = locate(&cfg, &state, session).await?;
-    driver.type_input(&pane, text, keys).await?;
+    locate(&cfg, &state, session)
+        .await?
+        .type_input(text, keys)
+        .await?;
     Ok(None)
+}
+
+/// `ssf __pane attach`: attach this terminal to a scratch session's tmux
+/// session (#491), for the web dashboard's `api/term`, which runs this in a
+/// PTY. Only a scratch session in tmux can be attached to; an item's
+/// session is herdr's and stays behind the mirror.
+pub(crate) async fn attach(session: &str) -> Result<()> {
+    if Scratch::parse(session).is_none() {
+        bail!("{session}: only a scratch session (owner/repo~id) has a terminal to attach to");
+    }
+    let cfg = Config::load()?;
+    let state = State::load()?;
+    let Target::Tmux(tmux, name) = locate(&cfg, &state, session).await? else {
+        bail!("{session} still runs in a herdr pane; it moves to tmux when it is next started");
+    };
+    use std::os::unix::process::CommandExt;
+    let error = tmux.attach_command(&name).exec();
+    Err(anyhow::Error::new(error).context("running tmux attach"))
 }
 
 #[cfg(test)]

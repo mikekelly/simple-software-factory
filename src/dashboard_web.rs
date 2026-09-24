@@ -289,6 +289,19 @@ async fn handle(
             events(&mut stream, &mut latest, KEEPALIVE, REQUEST_TIMEOUT).await;
             return;
         }
+        Ok(Routed::Read(relative)) if relative.starts_with("api/term/") => {
+            let headers = request.as_ref().ok().and_then(|r| r.as_ref().ok());
+            match term_request(
+                headers.map_or("", String::as_str),
+                &relative["api/term/".len()..],
+            ) {
+                Ok((session, key)) => {
+                    crate::dashboard_term::serve(stream, &session, &key, client).await;
+                    return;
+                }
+                Err(answer) => answer,
+            }
+        }
         Ok(Routed::Read(relative)) if relative.starts_with("api/pane/") => {
             match pane_session(&relative["api/pane/".len()..]) {
                 Ok(session) => {
@@ -766,6 +779,50 @@ fn pane_session(encoded: &str) -> std::result::Result<String, (u16, &'static str
                 .or_else(|| crate::origin::Origin::parse(&session).map(|o| o.to_string()))
         })
         .ok_or_else(|| bad("the pane route takes a session, owner/repo#N or owner/repo~id"))
+}
+
+/// A terminal route's scratch session and its WebSocket key, or the answer
+/// that refuses it. `api/term` types at an agent, so it is held to a
+/// write's origin rule -- a Chrome extension's own -- on top of the
+/// capability every route has; and it is a WebSocket upgrade or nothing.
+fn term_request(
+    request: &str,
+    encoded: &str,
+) -> std::result::Result<(String, String), (u16, &'static str, String)> {
+    let session = percent_decode(encoded)
+        .filter(|session| session.len() <= MAX_SESSION)
+        .and_then(|session| crate::origin::Scratch::parse(&session))
+        .map(|s| s.to_string())
+        .ok_or_else(|| bad("the terminal route takes a scratch session, owner/repo~id"))?;
+    let header = |wanted: &str| {
+        request
+            .split("\r\n")
+            .skip(1)
+            .take_while(|line| !line.is_empty())
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.trim().eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| value.trim())
+    };
+    if !header("origin").is_some_and(|origin| origin.starts_with("chrome-extension://")) {
+        return Err((
+            403,
+            "application/json",
+            json!({"error": "the terminal takes typing, so only an extension's origin may open it"})
+                .to_string(),
+        ));
+    }
+    let upgrade = header("upgrade").is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+        && header("connection").is_some_and(|v| {
+            v.split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+        })
+        && header("sec-websocket-version") == Some("13");
+    match header("sec-websocket-key") {
+        Some(key) if upgrade && !key.is_empty() => Ok((session, key.to_string())),
+        _ => Err(bad(
+            "the terminal route is a WebSocket (version 13) upgrade",
+        )),
+    }
 }
 
 /// `%XX`-decoding of a path segment, or `None` for one that is not valid
@@ -1590,6 +1647,35 @@ fn presentation(payload: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `api/term` (#491): a scratch session only, a WebSocket upgrade only,
+    /// and only from an extension's origin, since it takes typing.
+    #[test]
+    fn the_terminal_route_takes_a_scratch_upgrade_from_an_extension() {
+        let upgrade = |origin: &str| {
+            format!(
+                "GET /t/api/term/o%2Fr~ab12 HTTP/1.1\r\nHost: h\r\nOrigin: {origin}\r\n\
+                 Upgrade: websocket\r\nConnection: keep-alive, Upgrade\r\n\
+                 Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n"
+            )
+        };
+        let ok = term_request(&upgrade("chrome-extension://abc"), "o%2Fr~ab12").unwrap();
+        assert_eq!(ok, ("o/r~ab12".into(), "dGhlIHNhbXBsZSBub25jZQ==".into()));
+        assert_eq!(
+            term_request(&upgrade("chrome-extension://abc"), "o%2Fr%2342")
+                .unwrap_err()
+                .0,
+            400
+        );
+        assert_eq!(
+            term_request(&upgrade("http://h"), "o%2Fr~ab12")
+                .unwrap_err()
+                .0,
+            403
+        );
+        let plain = "GET /t/api/term/o%2Fr~ab12 HTTP/1.1\r\nHost: h\r\nOrigin: chrome-extension://abc\r\n\r\n";
+        assert_eq!(term_request(plain, "o%2Fr~ab12").unwrap_err().0, 400);
+    }
     use std::os::unix::fs::PermissionsExt;
 
     async fn assert_listener_closed(address: std::net::SocketAddr) {

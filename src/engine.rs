@@ -135,6 +135,8 @@ pub struct Engine {
     cfg: Config,
     gh: GitHub,
     drivers: Drivers,
+    /// Where scratch sessions' terminals are (#491).
+    tmux: crate::tmux::Tmux,
     /// Drivers that did not answer at the start of this pass; their
     /// repositories are skipped until they do.
     down: Vec<DriverKind>,

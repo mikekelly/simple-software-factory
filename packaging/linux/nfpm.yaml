@@ -28,6 +28,8 @@ depends:
   - git
   - jq
   - systemd
+  # Scratch sessions run in tmux sessions.
+  - tmux
 # Version constraints are spelled differently per format, so gh goes in the
 # per-packager overrides (an override replaces the whole list).
 overrides:
@@ -37,6 +39,7 @@ overrides:
       - git
       - jq
       - systemd
+      - tmux
       # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
       - openssh-client
     recommends:
@@ -52,6 +55,7 @@ overrides:
       - git
       - jq
       - systemd
+      - tmux
       # `ssf auth login` makes the bot's key with ssh-keygen and the bot pushes over ssh.
       - openssh-clients
     recommends:

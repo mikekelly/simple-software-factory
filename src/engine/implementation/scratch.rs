@@ -7,7 +7,7 @@
 //! rules) reaches one: their records are in `RepoState::scratch`.
 
 use super::super::*;
-use crate::driver::{FirstPrompt, NO_ITEM, SCRATCH_PREFIX};
+use crate::driver::{FirstPrompt, SCRATCH_PREFIX, is_local_worktree};
 use crate::ipc::Refused;
 use crate::origin::Scratch;
 use crate::state::ScratchState;
@@ -72,6 +72,41 @@ impl Engine {
             id: s.id,
         };
         Ok((repo, s, st))
+    }
+
+    /// Whether a scratch session's agent is running: its tmux session is
+    /// there, or -- for one started in a herdr pane before #491, which is
+    /// left running until it stops -- herdr has an agent in its workspace.
+    async fn scratch_live(&self, repo: &RepoConfig, st: &ScratchState) -> Result<bool> {
+        if self
+            .tmux
+            .has_session(&crate::tmux::session_name(&repo.name, &st.id))
+            .await?
+        {
+            return Ok(true);
+        }
+        match st.worktree_id.as_deref() {
+            Some(wid) if Self::in_herdr_pane(st, wid) => {
+                self.driver(repo).has_live_agent(wid).await
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// Whether a scratch session is still recorded in a herdr pane (made
+    /// before #491, and not started again since).
+    fn in_herdr_pane(st: &ScratchState, wid: &str) -> bool {
+        !is_local_worktree(wid)
+            && st
+                .terminal_handle
+                .as_deref()
+                .and_then(crate::tmux::name_of)
+                .is_none()
+    }
+
+    /// How long a harness started in tmux gets to settle.
+    fn tmux_settle(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.cfg.herdr.tui_idle_timeout_ms)
     }
 
     fn scratch_entry(&mut self, repo: &RepoConfig, id: &str) -> &mut ScratchState {
@@ -159,12 +194,9 @@ impl Engine {
             .await?;
         let wt = self
             .driver(&repo)
-            .create_worktree(
+            .create_local_worktree(
                 &setup.repo_id,
-                &repo.name,
                 &format!("{SCRATCH_PREFIX}{id}"),
-                NO_ITEM,
-                &format!("ssf: scratch session {session}"),
                 repo.base_branch.as_deref(),
             )
             .await?;
@@ -194,17 +226,13 @@ impl Engine {
             &eff.stack(),
             tokens,
         );
-        let title = format!("{} · ~{id}", eff.harness);
         // No first prompt: the harness waits at its composer for the person
         // at the terminal (#487), where a preamble alone had the agent
-        // invent a task to answer.
-        let handle = self
-            .driver(&repo)
-            .start(&wt.id, &cmd, &title, &eff.harness, "")
-            .await?;
-        let _ = self.driver(&repo).set_status(&wt.id, "in-progress").await;
+        // invent a task to answer. The terminal is a tmux session (#491).
+        let name = crate::tmux::session_name(&repo.name, &id);
+        self.tmux.new_session(&name, &wt.path, &cmd).await?;
         let e = self.scratch_entry(&repo, &id);
-        e.terminal_handle = Some(handle);
+        e.terminal_handle = Some(crate::tmux::handle(&name));
         info!(session, harness = eff.harness, "started scratch session");
         Ok(serde_json::json!({
             "session": session,
@@ -265,31 +293,24 @@ once it has been"
             .and_then(|c| sessions::resume_command(&eff.harness, &inner, c))
             .map(|c| self.scratch_launch_command(repo, &session, &c, &stack, tokens));
         let relaunch = self.scratch_launch_command(repo, &session, &inner, &stack, tokens);
-        let title = format!("{} · ~{id}", eff.harness);
-        let channel = self.driver(repo).channel_at(
-            || crate::delivery_channel::scratch_mailbox(&repo.name, id),
-            &eff.harness,
-            st.prompts_sent + 1,
-        );
-        let d = self
-            .driver(repo)
-            .deliver(
-                &wid,
-                st.terminal_handle.as_deref(),
-                Relaunch {
-                    command: &relaunch,
-                    resume_command: resume.as_deref(),
-                    harness: &eff.harness,
-                    title: &title,
-                    text: fresh,
-                    first_prompt: FirstPrompt::No,
-                    channel: channel
-                        .as_ref()
-                        .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
-                },
+        let d = if Self::in_herdr_pane(&st, &wid) && self.driver(repo).has_live_agent(&wid).await? {
+            // Started in a herdr pane before #491 and still running there:
+            // it is told there until it stops, and starts in tmux after.
+            self.deliver_scratch_herdr(repo, id, &st, &wid, &relaunch, resume.as_deref(), text)
+                .await?
+        } else {
+            self.deliver_scratch_tmux(
+                repo,
+                &session,
+                &st,
+                &eff.harness,
+                &relaunch,
+                resume.as_deref(),
                 text,
+                fresh,
             )
-            .await?;
+            .await?
+        };
         let e = self.scratch_entry(repo, id);
         if d.relaunched {
             e.launched_at = Some(now_iso());
@@ -302,6 +323,112 @@ once it has been"
         e.last_prompt_at = Some(now_iso());
         e.prompts_sent += 1;
         Ok(d)
+    }
+
+    /// [`Engine::deliver_scratch`] to a session in its tmux session, which
+    /// is started (resuming the conversation when it can) if it is gone.
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_scratch_tmux(
+        &self,
+        repo: &RepoConfig,
+        session: &str,
+        st: &ScratchState,
+        harness: &str,
+        relaunch: &str,
+        resume: Option<&str>,
+        text: &str,
+        fresh: Option<&str>,
+    ) -> Result<Delivery> {
+        let name = crate::tmux::session_name(&repo.name, &st.id);
+        let handle = crate::tmux::handle(&name);
+        if self.tmux.has_session(&name).await? {
+            self.tmux.paste(&name, text).await?;
+            return Ok(Delivery {
+                handle,
+                relaunched: false,
+                resumed: false,
+            });
+        }
+        let path = st
+            .worktree_path
+            .clone()
+            .with_context(|| format!("{session}: no workspace path recorded"))?;
+        let mut resumed = false;
+        if let Some(cmd) = resume {
+            warn!(
+                session,
+                "no live agent; resuming the harness session in tmux"
+            );
+            self.tmux.new_session(&name, &path, cmd).await?;
+            resumed = self.tmux.settle(&name, harness, self.tmux_settle()).await?;
+            if !resumed {
+                // A harness that could not find its conversation exits, and
+                // its session with it; nothing is left to clear.
+                warn!(session, "the resume did not stay up; starting fresh");
+                let _ = self.tmux.kill_session(&name).await;
+            }
+        }
+        if !resumed {
+            warn!(
+                session,
+                command = crate::driver::redacted(relaunch),
+                "no live agent; starting the harness in tmux"
+            );
+            self.tmux.new_session(&name, &path, relaunch).await?;
+            if !self.tmux.settle(&name, harness, self.tmux_settle()).await? {
+                anyhow::bail!("{session}: {harness} exited as soon as it was started in tmux");
+            }
+        }
+        let body = match fresh {
+            Some(full) if !resumed => full,
+            _ => text,
+        };
+        self.tmux.paste(&name, body).await?;
+        Ok(Delivery {
+            handle,
+            relaunched: true,
+            resumed,
+        })
+    }
+
+    /// [`Engine::deliver_scratch`] to a session still live in a herdr pane
+    /// (one started before #491).
+    #[allow(clippy::too_many_arguments)]
+    async fn deliver_scratch_herdr(
+        &self,
+        repo: &RepoConfig,
+        id: &str,
+        st: &ScratchState,
+        wid: &str,
+        relaunch: &str,
+        resume: Option<&str>,
+        text: &str,
+    ) -> Result<Delivery> {
+        let eff = repo.with_overrides(Some(&st.stack));
+        let title = format!("{} · ~{id}", eff.harness);
+        let channel = self.driver(repo).channel_at(
+            || crate::delivery_channel::scratch_mailbox(&repo.name, id),
+            &eff.harness,
+            st.prompts_sent + 1,
+        );
+        self.driver(repo)
+            .deliver(
+                wid,
+                st.terminal_handle.as_deref(),
+                Relaunch {
+                    command: relaunch,
+                    resume_command: resume,
+                    harness: &eff.harness,
+                    title: &title,
+                    text: None,
+                    first_prompt: FirstPrompt::No,
+                    channel: channel
+                        .as_ref()
+                        .map(|(mailbox, sequence)| (mailbox.as_path(), *sequence)),
+                },
+                text,
+            )
+            .await
     }
 
     /// `ssf scratch resume`: bring a killed scratch session back. The
@@ -322,10 +449,7 @@ removed the workspace"
             Some(id) => self.driver(&repo).worktree_exists(id).await?,
             None => false,
         };
-        if alive
-            && let Some(id) = st.worktree_id.as_deref()
-            && self.driver(&repo).has_live_agent(id).await?
-        {
+        if alive && self.scratch_live(&repo, &st).await? {
             anyhow::bail!(Refused::conflict(format!(
                 "{session} is already running; nothing to resume"
             )));
@@ -367,14 +491,7 @@ removed the workspace"
             };
             let wt = self
                 .driver(&repo)
-                .create_worktree(
-                    &repo_id,
-                    &repo.name,
-                    &name,
-                    NO_ITEM,
-                    &format!("ssf: scratch session {session} (resumed)"),
-                    base.as_deref(),
-                )
+                .create_local_worktree(&repo_id, &name, base.as_deref())
                 .await?;
             info!(session, worktree = wt.id, "re-created scratch workspace");
             let e = self.scratch_entry(&repo, &s.id);
@@ -521,6 +638,17 @@ removed the workspace"
                     continue;
                 }
             }
+            // The harness goes first, then its workspace.
+            if let Err(e) = self
+                .tmux
+                .kill_session(&crate::tmux::session_name(&repo.name, &st.id))
+                .await
+            {
+                // The workspace stays while its harness may still run in
+                // it; the release stays pending and the next pass retries.
+                warn!(session, "ending the scratch tmux session failed: {e:#}");
+                continue;
+            }
             match self.driver(repo).remove_worktree(&wid).await {
                 Ok(()) => {
                     info!(
@@ -617,11 +745,14 @@ removed the workspace"
                     continue;
                 }
             }
-            match self.driver(repo).has_live_agent(wid).await {
+            match self.scratch_live(repo, &st).await {
                 Ok(false) => {}
                 Ok(true) => continue,
                 Err(e) => {
-                    warn!(session, "could not list the workspace's terminals: {e:#}");
+                    warn!(
+                        session,
+                        "could not tell whether its terminal is running: {e:#}"
+                    );
                     continue;
                 }
             }
