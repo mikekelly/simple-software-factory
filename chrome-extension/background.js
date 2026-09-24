@@ -316,10 +316,14 @@ async function scratchResume(message) {
   return writeTo(message, "scratch/resume", { session: message.session });
 }
 
-/// `api/pane/input`: what the pane mirror's terminal typed. A write like any
-/// other, so the factory's Writes switch applies to it too.
+/// `api/pane/input`: what the pane mirror's terminal typed -- herdr key names
+/// as keys, or a paste as text. A write like any other, so the factory's
+/// Writes switch applies to it too.
 async function paneInput(message) {
-  return writeTo(message, "pane/input", { session: message.session, text: message.text });
+  const body = { session: message.session };
+  if (typeof message.text === "string") body.text = message.text;
+  if (Array.isArray(message.keys)) body.keys = message.keys.map(String);
+  return writeTo(message, "pane/input", body);
 }
 
 /// The pane mirror's stream, `api/pane/<session>`, read here for the page on

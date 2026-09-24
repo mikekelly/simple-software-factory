@@ -59,7 +59,9 @@ in the [dashboard guide](../docs/dashboard.md).
 
 There is no build step, no npm dependency and no bundler: the extension is the
 plain JavaScript, HTML and CSS in this directory. It is not part of the Arch
-package; nothing here affects `makepkg`.
+package; nothing here affects `makepkg`. The terminal's renderer and key mapping
+have unit tests that need only Node (18 or later), no packages:
+`node --test chrome-extension/test/*.test.mjs`.
 
 ### Updating a loaded copy
 
@@ -387,24 +389,46 @@ anyway** (a second request, forced) removes it.
 
 **Open**, the terminal icon at the top of an item's card (on a factory whose
 Writes switch is on) and at the end of a scratch session's first line, shows
-the session's agent pane over the GitHub page: a terminal (xterm.js, vendored
-under `vendor/xterm/` since an MV3 extension loads no remote script) mirroring
-the pane from `api/pane/<session>`. The close button, a click outside the
-panel, or Esc closes it; in a pane that takes typing, Esc typed into the
-terminal is the agent's, so there it closes only from outside the terminal.
-The whole pane fits in the panel, in a smaller font where it has to be (down
-to 5px, below which a pane in a very small window is cut off at the bottom
-right), and the panel is as large as the terminal, up to 90% of the window's
-width and 85% of its height. While it is open the page underneath does not scroll: the wheel
-scrolls back through the pane's history (up to 1000 rows, as the factory
-sends it) and never types into the pane. Scrolled back, the view stays where
-it is as the agent works; back at the bottom, it follows the live screen.
+the session's agent pane over the GitHub page, mirrored from
+`api/pane/<session>`. The close button, a click outside the panel, or Esc
+closes it; while **Type** is on (below), Esc is a key the agent reads, so then
+it closes only from outside the terminal.
+
+The pane is drawn as styled text rather than by a terminal emulator — the
+approach, and much of the code, of [collie](https://github.com/AltanS/collie)
+(`pane-render.js`, `pane-keys.js`; see [Credits](#credits)). The factory sends
+the pane's screen as herdr renders it, with only colour sequences in it, so
+there is nothing to emulate: the text is drawn at a fixed 13px in a monospace
+stack, rows 1.25em apart, and wraps at the panel's width, which is 90% of the
+window's width and 85% of its height. The pane itself is never resized. A row
+that is a box's border or a rule is clipped at the right rather than wrapped,
+and a table — markdown, `+---+`, or box-drawn with crosses — keeps its columns
+and pans sideways in its own box (a trackpad, or Shift and the wheel). Block
+elements and Powerline caps are painted to their cell, so bars and prompt pills
+join up.
+
+The pane's history (up to 1000 rows, as the factory sends it) sits above its
+screen in the same scroller, and the wheel scrolls back through it without
+typing into the pane; while it is open the page underneath does not scroll.
+The view follows the live screen while it is at the bottom; scrolled back, it
+stays where it is as the agent works, and a history that changed meanwhile is
+drawn once you are back at the bottom. Text you have selected in the terminal
+is not redrawn under you until you let go of the selection.
+
 Where the snapshot says the session's pane takes typing (`pane_input`: always
 for a scratch session, for an item's only where the factory's
-`item_pane_input` is on), what you type goes through the service worker to
-`api/pane/input`; typing is a write, so a factory whose Writes switch is off
-shows the pane read-only. Otherwise the terminal is
-view-only: speak to an item's agent by commenting on the item.
+`item_pane_input` is on), the terminal has a **Type** button. Typing goes to the
+pane only while it is on: each character is a keystroke (herdr's `pane
+send-keys`, with Space, Tab and Enter by name), as are Esc, Tab, Shift+Tab, the
+arrows, Backspace, Enter and Ctrl with a letter; an input method's text is sent
+once it is committed; and a paste goes as one bracketed paste, its control
+characters dropped. It turns itself off when the tab is hidden, the stream
+stops, the factory refuses a keystroke, or after half an hour with nothing done
+in the terminal, and says so on its status line. What is typed goes through the
+service worker to `api/pane/input`; typing is a write, so a factory whose Writes
+switch is off shows the pane read-only. Otherwise the terminal is view-only:
+speak to an item's agent by commenting on the item.
+
 When the factory says the pane cannot be read, or the stream fails three times
 in a row, the terminal stops and offers **Reconnect**. The pane is read about
 four times a second only while a terminal is open on it.
@@ -489,3 +513,15 @@ forward, and keep tailnet ACLs restrictive.
   by the agent on #N*: that card is a pointer to the same session, and its own
   card carries the actions. A comment on the item still reaches the session that
   works it.
+- The terminal draws the pane's rows at the panel's width, not the pane's, so a
+  line longer than the panel wraps and the pane's own column layout is kept
+  only where it matters: in a clipped border row and a table's own box. A table
+  the pane had already wrapped at its own width cannot be put back together, and
+  a box's vertical strokes show small gaps between rows, which are 1.25em apart.
+
+## Credits
+
+The terminal's renderer and key mapping (`pane-render.js`, `pane-keys.js`, and
+the painted-glyph rules in `terminal.css`) are ported from
+[collie](https://github.com/AltanS/collie) by Altan Sarisin, under the MIT
+license; each file carries the notice.

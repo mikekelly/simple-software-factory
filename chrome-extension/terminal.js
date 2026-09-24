@@ -1,22 +1,26 @@
-// The pane mirror (#414): one session's agent pane, drawn with xterm.js and
-// typed into from the keyboard where the factory allows it: the snapshot's
-// `pane_input` for the session, passed in the page address. A scratch session
-// always takes typing; an item's only where the factory's `item_pane_input`
-// is on (#439: its agent is otherwise spoken to by commenting on the item).
-// The factory enforces the same rule on every request.
+// The pane mirror (#414): one session's agent pane, drawn as styled text
+// (pane-render.js, after collie) rather than by a terminal emulator, and typed
+// into where the factory allows it: the snapshot's `pane_input` for the
+// session, passed in the page address. A scratch session always takes typing;
+// an item's only where the factory's `item_pane_input` is on (#439: its agent
+// is otherwise spoken to by commenting on the item). The factory enforces the
+// same rule on every request.
 //
 // The factory reads the pane's visible screen a few times a second while
 // someone watches it and sends a frame only when it changed
 // (`api/pane/<session>`, docs/dashboard.md); each frame is the whole screen,
 // drawn over the last one. Every few seconds it also sends the history above
-// the screen, which is kept as the terminal's scrollback: the wheel scrolls
-// back through it, never typing into the pane. The whole pane is fitted into
-// the window, its font made smaller where it has to be, so none of it is cut
-// off; framed by Open, the window is the room the overlay says it has, and the
-// overlay is told the size drawn so its panel can fit around it
-// (pane-overlay.js). What is typed goes to the service worker, which
-// sends it as the write `api/pane/input` -- a write like assign, so the
-// factory's Writes switch applies to it -- one request at a time, in order.
+// the screen, drawn above it in the same scroller: the wheel scrolls back
+// through it. The text is drawn at a fixed size and wraps at the panel's
+// width, so the pane is never shrunk to fit and never resized.
+//
+// Typing is a mode the person turns on (Type) and that turns itself off when
+// the picture stops being one they are watching: the tab hidden, the stream
+// stopped, a write refused, or half an hour with nothing done here. What is
+// typed goes a keystroke at a time as herdr key names (pane-keys.js), and a
+// paste as text, to the service worker, which sends it as the write
+// `api/pane/input` -- a write like assign, so the factory's Writes switch
+// applies to it -- one request at a time, in order.
 //
 // This page is the extension's own, framed over the GitHub page by Open
 // (pane-overlay.js, #477), and it talks to no factory itself: a frame under
@@ -24,12 +28,14 @@
 // factory on a private or tailnet address. The service worker reads the stream
 // with the extension's permission and passes it on a port (`ssf-pane`), as it
 // sends what is typed.
-import { Terminal } from "./vendor/xterm/xterm.mjs";
 import { factoryUrl } from "./factory-url.js";
+import { render } from "./pane-render.js";
+import { keyForInputType, keyForKeyDown, pasteChunks, textToKeys } from "./pane-keys.js";
 
-/// The body bound of a write is 4096 bytes and a control character is six
-/// once it is JSON, so typed text goes in pieces well under it.
+/// The body bound of a write is 4096 bytes: a paste goes in pieces of this
+/// many characters, and typed keys in batches of at most this many keys.
 const CHUNK = 500;
+const MAX_KEYS = 200;
 
 /// Failures in a row, with no frame between them, before the page stops
 /// asking: a reader that cannot start is not asked again every few seconds.
@@ -42,86 +48,129 @@ const RETRY_MS = 3000;
 /// service worker holding it awake: the frames it sends do not.
 const PING_MS = 20000;
 
-/// The terminal's scrollback, in rows: the factory sends at most 1000 rows
-/// of history, the screen's own among them.
-const SCROLLBACK = 1000;
+/// How long typing stays on with nothing done in the terminal: collie's idle
+/// pause.
+const IDLE_MS = 30 * 60 * 1000;
 
-/// The font size the pane is drawn at when it fits, and the smallest it is
-/// made to fit: below that a pane is cut off rather than made unreadable.
-const MAX_FONT = 13;
-const MIN_FONT = 5;
-
-/// Room kept at the right for the terminal's scrollbar, in pixels.
-const SCROLLBAR = 14;
-
-/// The next piece of `text` to send: at most CHUNK characters, never ending
-/// inside an escape sequence, which the pane would read as two keys.
-function nextChunk(text) {
-  // Enter goes on its own: a harness reads a `\r` that arrives in the same
-  // write as text before it as part of a paste, and does not submit. A
-  // bracketed paste is kept whole, since its newlines are meant as text.
-  if (!text.startsWith("\x1b[200~")) {
-    const enter = text.indexOf("\r");
-    if (enter === 0) return "\r";
-    if (enter > 0) text = text.slice(0, enter);
-  } else {
-    const end = text.indexOf("\x1b[201~");
-    if (end >= 0) text = text.slice(0, end + 6);
-  }
-  if (text.length <= CHUNK) return text;
-  const esc = text.lastIndexOf("\x1b", CHUNK - 1);
-  // An escape sequence a terminal sends is short; one that began within
-  // the last 32 characters may run past the cut, so the cut goes before it.
-  return esc > 0 && CHUNK - esc < 32 ? text.slice(0, esc) : text.slice(0, CHUNK);
-}
+/// How close to the bottom, in pixels, still counts as at the bottom.
+const BOTTOM_SLACK = 4;
 
 const params = new URLSearchParams(location.search);
 const url = factoryUrl(params.get("factory"));
 const session = String(params.get("session") ?? "");
+const takesInput = params.get("input") === "1";
 const stateLine = document.getElementById("state");
+const typeButton = document.getElementById("type");
+const field = document.getElementById("keys");
+const scroller = document.getElementById("scroller");
+const historyBox = document.getElementById("history");
+const screenBox = document.getElementById("screen");
 document.getElementById("session").textContent = session;
 document.title = `${session} · ssf`;
 
+/// Whether what is typed goes to the pane: Type is on.
+let typing = false;
+
 // Esc closes the overlay this page is framed in, whose own keys the frame keeps
-// from it -- except in a pane that takes typing, where Esc is a key the agent
-// reads, and the overlay's close button is the way out.
-if (params.get("input") !== "1" && window.parent !== window) {
+// from it -- except while Type is on, where Esc is a key the agent reads, and
+// the overlay's close button is the way out.
+if (window.parent !== window) {
   addEventListener(
     "keydown",
     (event) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || typing) return;
       window.parent.postMessage({ type: "ssf:pane-close" }, "https://github.com");
     },
     true,
   );
 }
 
-/// The room the overlay has for this frame at most, once it has said, and
-/// what to do when it says again.
-let room = null;
-let refit = () => {};
-addEventListener("message", (event) => {
-  if (event.source !== window.parent || event.origin !== "https://github.com") return;
-  if (event.data?.type !== "ssf:pane-room") return;
-  const { width, height } = event.data;
-  if (![width, height].every((n) => Number.isFinite(n) && n > 0)) return;
-  room = { width, height };
-  refit();
-});
-
 function say(text, problem = false) {
   stateLine.textContent = text;
   stateLine.dataset.problem = String(problem);
 }
 
-/// The width a line takes on screen, its escape sequences aside.
-function visibleWidth(line) {
-  const bare = line
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\x1b[@-_]/g, "");
-  return [...bare].length;
+// The view follows the live screen while it is at the bottom, and stays where
+// the person put it once they scroll up.
+let pinned = true;
+/// Where following last put the view: the scroll event that says so is not
+/// the person scrolling, even if the layout moved the bottom meanwhile.
+let followed = -1;
+const atBottom = () =>
+  scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_SLACK;
+function follow() {
+  if (!pinned) return;
+  scroller.scrollTop = scroller.scrollHeight;
+  followed = scroller.scrollTop;
 }
+
+/// Whether the person has text selected in `box`: redrawing it would lose
+/// the selection, so it waits until they are done.
+function selecting(box) {
+  const selection = getSelection();
+  return (
+    selection !== null &&
+    !selection.isCollapsed &&
+    selection.rangeCount > 0 &&
+    selection.getRangeAt(0).intersectsNode(box)
+  );
+}
+
+/// Draw `text` into `box`, each table's box keeping how far it was panned.
+function paint(box, text) {
+  const panned = new Map();
+  for (const run of box.querySelectorAll(".table-run")) {
+    if (run.scrollLeft) panned.set(run.dataset.run, run.scrollLeft);
+  }
+  box.replaceChildren(render(document, text));
+  for (const run of box.querySelectorAll(".table-run")) {
+    const left = panned.get(run.dataset.run);
+    if (left) run.scrollLeft = left;
+  }
+}
+
+// What is waiting to be drawn: a history while the person is scrolled back
+// through the last one, so what they read does not move under them; and
+// either one while they have text selected in it.
+let pendingHistory = null;
+let pendingScreen = null;
+
+function drawHistory(text) {
+  if (!pinned || selecting(historyBox)) {
+    pendingHistory = text;
+    return;
+  }
+  pendingHistory = null;
+  paint(historyBox, text);
+  follow();
+}
+
+function drawScreen(text) {
+  if (selecting(screenBox)) {
+    pendingScreen = text;
+    return;
+  }
+  pendingScreen = null;
+  paint(screenBox, text);
+  follow();
+}
+
+function drawPending() {
+  if (pendingHistory !== null) drawHistory(pendingHistory);
+  if (pendingScreen !== null) drawScreen(pendingScreen);
+}
+
+scroller.addEventListener("scroll", () => {
+  if (scroller.scrollTop === followed) return;
+  followed = -1;
+  pinned = atBottom();
+  if (pinned) drawPending();
+});
+document.addEventListener("selectionchange", () => {
+  if (getSelection()?.isCollapsed) drawPending();
+});
+// A narrower or wider panel wraps the text anew.
+new ResizeObserver(follow).observe(scroller);
 
 async function start() {
   const stored = (await chrome.storage.local.get("factories")).factories ?? [];
@@ -131,100 +180,7 @@ async function start() {
     say("this terminal names no configured factory or no session", true);
     return;
   }
-  const term = new Terminal({
-    cols: 100,
-    rows: 30,
-    scrollback: SCROLLBACK,
-    cursorBlink: false,
-    fontFamily: 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace',
-    fontSize: MAX_FONT,
-  });
-  const box = document.getElementById("screen");
-  term.open(box);
-  term.focus();
 
-  /// The largest font size, up to MAX_FONT, at which the whole pane --
-  /// every one of its columns and rows -- fits in the window, or in the room
-  /// the overlay has said it has (the frame itself is then made as small as
-  /// what is drawn). A cell does not grow exactly with its font, so the first
-  /// guess is stepped down until it fits.
-  const header = document.querySelector("header");
-  let told = "";
-  function fit() {
-    const drawn = term.element?.querySelector(".xterm-screen");
-    if (!drawn?.offsetWidth || !drawn.offsetHeight) return;
-    const style = getComputedStyle(box);
-    const across = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight) + SCROLLBAR;
-    const down = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
-    const width = (room ? room.width : box.clientWidth) - across;
-    const height = (room ? room.height - header.offsetHeight : box.clientHeight) - down;
-    if (width <= 0 || height <= 0) return;
-    const now = term.options.fontSize;
-    const scale = Math.min(width / drawn.offsetWidth, height / drawn.offsetHeight);
-    let size = Math.max(MIN_FONT, Math.min(MAX_FONT, Math.floor(now * scale * 2) / 2));
-    if (size !== now) term.options.fontSize = size;
-    while (size > MIN_FONT && (drawn.offsetWidth > width || drawn.offsetHeight > height)) {
-      size -= 0.5;
-      term.options.fontSize = size;
-    }
-    const wanted = {
-      type: "ssf:pane-size",
-      width: drawn.offsetWidth + across,
-      height: header.offsetHeight + drawn.offsetHeight + down,
-    };
-    if (room && JSON.stringify(wanted) !== told) {
-      told = JSON.stringify(wanted);
-      window.parent.postMessage(wanted, "https://github.com");
-    }
-  }
-  refit = fit;
-  new ResizeObserver(fit).observe(box);
-
-  // What the pane shows, as lines: the history above the screen, and the
-  // screen. A history that has not been drawn waits while the person is
-  // scrolled back through the last one, so what they read does not move
-  // under them, and is drawn once they are back at the bottom.
-  let history = [];
-  let screen = [];
-  let stale = false;
-  const lines = (text) => (text ? text.replace(/\r?\n$/, "").split(/\r?\n/) : []);
-  const atBottom = () => term.buffer.active.viewportY >= term.buffer.active.baseY;
-
-  /// Draw the history and the screen afresh: a reset, then every line, the
-  /// history's scrolling off the top into the scrollback.
-  function redraw() {
-    stale = false;
-    term.write(
-      "\x1bc\x1b[?25l" + [...history, ...screen].map((line) => `${line}\x1b[0m`).join("\r\n"),
-    );
-  }
-
-  /// Draw one screen over the last: home, every line with the rest of it
-  /// cleared, and everything below the last line cleared. The scrollback is
-  /// left as it is, and so is the view of someone scrolled back through it.
-  /// The terminal takes the pane's own size, growing to its widest line.
-  function draw() {
-    const cols = Math.max(term.cols, ...screen.map(visibleWidth));
-    const rows = Math.max(1, screen.length);
-    if (cols !== term.cols || rows !== term.rows) {
-      term.resize(cols, rows);
-      fit();
-      // A resize moves rows between the screen and the scrollback.
-      stale = true;
-    }
-    if (stale && atBottom()) {
-      redraw();
-      return;
-    }
-    term.write(
-      "\x1b[?25l\x1b[H" + screen.map((line) => `${line}\x1b[0m\x1b[K`).join("\r\n") + "\x1b[0m\x1b[J",
-    );
-  }
-  term.onScroll(() => {
-    if (stale && atBottom()) redraw();
-  });
-
-  const typing = params.get("input") === "1";
   // An item's agent has somewhere else to be spoken to; a scratch session's
   // pane is view-only only where this factory takes no writes.
   const viewOnly = session.includes("~")
@@ -234,6 +190,24 @@ async function start() {
   let port = null;
   let retry = null;
   let failures = 0;
+  let live = false;
+  /// Why typing last turned itself off, said until it is turned on again.
+  let notice = "";
+
+  function showLive() {
+    live = true;
+    typeButton.hidden = !takesInput;
+    if (!takesInput) say(viewOnly);
+    else if (typing) say("live · typing into the pane");
+    else if (notice) say(`live · typing turned off: ${notice}`, true);
+    else say("live");
+  }
+
+  function notLive() {
+    live = false;
+    stopTyping();
+    typeButton.hidden = true;
+  }
 
   function hangUp() {
     clearTimeout(retry);
@@ -245,6 +219,7 @@ async function start() {
   /// Stop reading: the factory is not asked again until the person says so.
   function stop(text) {
     hangUp();
+    notLive();
     say(text, true);
     reconnect.hidden = false;
   }
@@ -252,6 +227,7 @@ async function start() {
   /// A read that failed or ended, asked for again a few times before the page
   /// gives up and offers Reconnect.
   function dropped(error) {
+    notLive();
     failures += 1;
     if (failures >= MAX_FAILURES) {
       stop(error ? `the stream stopped (${error})` : "the stream stopped");
@@ -267,15 +243,10 @@ async function start() {
       try {
         const frame = JSON.parse(message.data);
         if (message.type === "history") {
-          history = lines(frame.history ?? "");
-          stale = true;
-          // It comes before its screen; one that changed on its own is
-          // drawn with the screen already shown.
-          if (screen.length && atBottom()) redraw();
+          drawHistory(String(frame.history ?? ""));
         } else {
-          screen = lines(frame.screen ?? "");
-          draw();
-          say(typing ? "live" : viewOnly);
+          drawScreen(String(frame.screen ?? ""));
+          showLive();
         }
       } catch (error) {
         say(`the factory sent a frame that could not be read (${error})`, true);
@@ -322,35 +293,121 @@ async function start() {
     }
   }, PING_MS);
 
-  if (!typing) return;
-
-  // What is typed, in order: one request in the air at a time, and whatever
-  // was typed meanwhile goes in the next.
-  let queued = "";
+  // Typing. What is typed, in order: one request in the air at a time, and
+  // whatever was typed meanwhile goes in the next.
+  let queue = [];
   let sending = false;
+  let composing = false;
+  let lastActivity = Date.now();
+
+  function startTyping() {
+    if (!takesInput || !live) return;
+    typing = true;
+    notice = "";
+    lastActivity = Date.now();
+    typeButton.setAttribute("aria-pressed", "true");
+    field.value = "";
+    field.focus({ preventScroll: true });
+    showLive();
+  }
+
+  /// Turn typing off; `why`, when it was not the person who did, is said.
+  function stopTyping(why) {
+    if (!typing) return;
+    typing = false;
+    composing = false;
+    queue = [];
+    field.value = "";
+    field.blur();
+    typeButton.setAttribute("aria-pressed", "false");
+    notice = why ?? "";
+    if (live) showLive();
+  }
+
   async function flush() {
-    if (sending || !queued) return;
+    if (sending) return;
     sending = true;
-    while (queued) {
-      const text = nextChunk(queued);
-      queued = queued.slice(text.length);
+    while (queue.length) {
+      const input = queue.shift();
       let reply;
       try {
-        reply = await chrome.runtime.sendMessage({ type: "ssf:pane-input", url, session, text });
+        reply = await chrome.runtime.sendMessage({ type: "ssf:pane-input", url, session, ...input });
       } catch (error) {
         reply = { ok: false, error: `the extension's service worker did not answer (${error})` };
       }
       if (!reply?.ok) {
-        say(`not typed: ${reply?.error ?? "the factory did not answer"}`, true);
-        queued = "";
+        // Typing on into a pane that is not taking it would be typing blind.
+        stopTyping(`not typed (${reply?.error ?? "the factory did not answer"})`);
       }
     }
     sending = false;
   }
-  term.onData((data) => {
-    queued += data;
+
+  function sendKeys(keys) {
+    if (!typing || keys.length === 0) return;
+    lastActivity = Date.now();
+    for (const key of keys) {
+      const last = queue.at(-1);
+      if (last?.keys && last.keys.length < MAX_KEYS) last.keys.push(key);
+      else queue.push({ keys: [key] });
+    }
+    flush();
+  }
+
+  typeButton.addEventListener("click", () => (typing ? stopTyping() : startTyping()));
+  field.addEventListener("keydown", (event) => {
+    if (event.isComposing || event.keyCode === 229) return;
+    const key = keyForKeyDown(event);
+    if (key === undefined) return;
+    event.preventDefault();
+    sendKeys([key]);
+  });
+  field.addEventListener("beforeinput", (event) => {
+    const key = keyForInputType(event.inputType);
+    if (key === null) return;
+    // Backspace inside an IME edits the candidate, not the pane.
+    if (event.isComposing && key === "Backspace") return;
+    event.preventDefault();
+    sendKeys([key]);
+  });
+  field.addEventListener("input", (event) => {
+    if (event.isComposing || composing) return;
+    const text = field.value;
+    field.value = "";
+    sendKeys(textToKeys(text));
+  });
+  // An IME's composition is sent once, when it is committed.
+  field.addEventListener("compositionstart", () => {
+    composing = true;
+  });
+  field.addEventListener("compositionend", (event) => {
+    composing = false;
+    const text = field.value || event.data || "";
+    field.value = "";
+    sendKeys(textToKeys(text));
+  });
+  field.addEventListener("paste", (event) => {
+    event.preventDefault();
+    if (!typing) return;
+    lastActivity = Date.now();
+    const text = event.clipboardData?.getData("text/plain") ?? "";
+    for (const chunk of pasteChunks(text, CHUNK)) queue.push({ text: chunk });
     flush();
   });
+  // A click in the terminal gives typing its field back, unless it was to
+  // select text.
+  scroller.addEventListener("mouseup", () => {
+    if (typing && getSelection()?.isCollapsed) field.focus({ preventScroll: true });
+  });
+  for (const name of ["pointerdown", "wheel", "keydown"]) {
+    addEventListener(name, () => (lastActivity = Date.now()), { capture: true, passive: true });
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") stopTyping("the tab was hidden");
+  });
+  setInterval(() => {
+    if (typing && Date.now() - lastActivity >= IDLE_MS) stopTyping("nothing was typed for a while");
+  }, 30000);
 }
 
 start().catch((error) => say(String(error), true));

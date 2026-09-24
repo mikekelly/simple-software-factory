@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Simple Software Factory overlay",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Live ssf agent state on github.com issue and pull request pages.",
   "minimum_chrome_version": "116",
   "permissions": ["storage"],
@@ -25,8 +25,8 @@
         "terminal.js",
         "terminal.css",
         "factory-url.js",
-        "vendor/xterm/xterm.mjs",
-        "vendor/xterm/xterm.css"
+        "pane-render.js",
+        "pane-keys.js"
       ],
       "matches": ["https://github.com/*"],
       "use_dynamic_url": true
