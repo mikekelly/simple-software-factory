@@ -224,8 +224,6 @@
       /// A kill the checks refused: `{session, message}` until it is confirmed
       /// or cancelled.
       kill: null,
-      /// The scratch session whose Kill (×) is asking to be confirmed.
-      confirm: null,
       /// The scratch list's tab: `sessions` or `released`.
       tab: "sessions",
       /// The scratch session a kill or resume is in the air for.
@@ -937,7 +935,7 @@
   }
 
   /// One scratch session: its id, whose it is, its stack and state, and what
-  /// can be done to it -- Open while it is live and Kill (×, confirmed) while
+  /// can be done to it -- Open while it is live and Kill (×) while
   /// it has a workspace, at the end of its first line; Resume while it is off
   /// or once it is released.
   function scratchRow(state, one) {
@@ -959,42 +957,15 @@
       kill.title = "Kill this scratch session";
       kill.setAttribute("aria-label", `Kill ${short}`);
       kill.disabled = busy;
-      kill.onclick = () => {
-        state.confirm = id;
-        state.kill = null;
-        state.rowNote = null;
-        redraw();
-      };
+      // Unforced: a clean workspace just goes; one the checks refuse asks once,
+      // listing what would be lost.
+      kill.onclick = () => sendKill(state, id, false);
       title.append(kill);
     }
     row.append(
       title,
       element("p", "ssf-writes-note", [stack, one.stateLabel].filter(Boolean).join(" \u00b7 "), "state"),
     );
-    if (state.confirm === id && state.kill?.session !== id) {
-      row.append(
-        element(
-          "p",
-          "ssf-writes-error",
-          `Kill ${short}? Any work in this scratch session that hasn't been pushed will be lost.`,
-          "confirm",
-        ),
-      );
-      const actions = element("div", "ssf-writes-actions", undefined, "actions");
-      const go = element("button", "danger", busy ? "Killing\u2026" : "Kill");
-      go.type = "button";
-      go.disabled = busy;
-      go.onclick = () => sendKill(state, id, false);
-      const cancel = element("button", undefined, "Cancel");
-      cancel.type = "button";
-      cancel.onclick = () => {
-        state.confirm = null;
-        redraw();
-      };
-      actions.append(go, cancel);
-      row.append(actions);
-      return row;
-    }
     if (state.kill?.session === id) {
       row.append(
         element("p", "ssf-writes-error", state.kill.message, "check"),
@@ -1133,7 +1104,6 @@
     redraw();
     ask({ type: "ssf:scratch-release", url: state.url, session, force }).then((reply) => {
       state.rowBusy = null;
-      state.confirm = null;
       if (reply?.ok) {
         state.kill = null;
         state.rowNote = rowNote(

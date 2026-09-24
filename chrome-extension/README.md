@@ -403,10 +403,10 @@ started it. The list reads each session's `state` from the factory:
 - **Released** sessions (killed) are under their own **Released** tab, each
   with **Resume**, which recreates the workspace on the session's branch.
 
-The **×** asks first: any work in the scratch session that hasn't been pushed
-will be lost. When the factory's checks then find nothing to lose, the
-workspace goes; when they find uncommitted or unpushed work, the card shows what
-they found, and only **Kill anyway** (a second request, forced) removes it.
+The **×** asks only when there is something to lose. When the factory's checks
+find nothing uncommitted or unpushed, the session is killed at once; when they
+find work, the card shows what they found, warns that it will be lost, and only
+**Kill anyway** (a second request, forced) removes it.
 
 **Open** — **Show agent** at the head of an item's Actions row (on a factory
 whose Writes switch is on) and the terminal icon at the end of a scratch
