@@ -132,6 +132,19 @@
   background: var(--bgColor-danger-muted, #ffebe9); }
 .ssf-writes-menu-list hr { width: 100%; height: 1px; margin: 6px 0; border: 0;
   background: var(--borderColor-muted, #d1d9e0); }
+/* Kill, a small red cross at the end of a scratch row's first line. */
+.ssf-writes button.ssf-writes-kill { flex: none; padding: 0 5px; border: 0; background: none;
+  color: var(--fgColor-danger, #cf222e); font: 16px/18px sans-serif; }
+.ssf-writes button.ssf-writes-kill:hover:not(:disabled) {
+  background: var(--bgColor-danger-muted, #ffebe9); }
+/* Open and Kill share the end of the line. */
+.ssf-writes-title .ssf-writes-kill { margin-left: auto; }
+.ssf-writes-title .ssf-pane-open + .ssf-writes-kill { margin-left: 0; }
+/* The scratch list's tabs: sessions with a workspace, and released ones. */
+.ssf-writes-tabs { display: flex; gap: 4px; }
+.ssf-writes button.ssf-writes-tab { padding: 1px 8px; }
+.ssf-writes button.ssf-writes-tab[aria-selected="true"] {
+  background: var(--bgColor-neutral-muted, #afb8c133); font-weight: 600; }
 `;
 
   /// Renders again once a listing has arrived; content.js sets this to its own
@@ -211,6 +224,10 @@
       /// A kill the checks refused: `{session, message}` until it is confirmed
       /// or cancelled.
       kill: null,
+      /// The scratch session whose Kill (×) is asking to be confirmed.
+      confirm: null,
+      /// The scratch list's tab: `sessions` or `released`.
+      tab: "sessions",
       /// The scratch session a kill or resume is in the air for.
       rowBusy: null,
       /// What the factory said about the last scratch write.
@@ -871,10 +888,33 @@
   function scratchPanel(state) {
     const body = element("div", "ssf-writes");
     body.append(element("div", "ssf-writes-head", "Scratch sessions", "head"));
-    if (!state.sessions.length) {
+    const released = state.sessions.filter((one) => scratchPhase(one) === "released");
+    const current = state.sessions.filter((one) => scratchPhase(one) !== "released");
+    if (!released.length) state.tab = "sessions";
+    if (released.length) {
+      const tabs = element("div", "ssf-writes-tabs", undefined, "tabs");
+      tabs.setAttribute("role", "tablist");
+      for (const [tab, text] of [
+        ["sessions", `Sessions (${current.length})`],
+        ["released", `Released (${released.length})`],
+      ]) {
+        const pick = element("button", "ssf-writes-tab", text, `tab:${tab}`);
+        pick.type = "button";
+        pick.setAttribute("role", "tab");
+        pick.setAttribute("aria-selected", String(state.tab === tab));
+        pick.onclick = () => {
+          state.tab = tab;
+          redraw();
+        };
+        tabs.append(pick);
+      }
+      body.append(tabs);
+    }
+    const shown = state.tab === "released" ? released : current;
+    if (!shown.length) {
       body.append(element("p", "ssf-writes-note", "No scratch sessions on this repository.", "none"));
     }
-    for (const one of state.sessions) body.append(scratchRow(state, one));
+    for (const one of shown) body.append(scratchRow(state, one));
     if (state.rowNote) body.append(element("p", "ssf-writes-note", state.rowNote.text, "result"));
     if (state.open === "new") {
       body.append(scratchForm(state));
@@ -897,8 +937,9 @@
   }
 
   /// One scratch session: its id, whose it is, its stack and state, and what
-  /// can be done to it -- Open (at the end of its first line) and Kill while it
-  /// has a workspace, Resume once it is killed.
+  /// can be done to it -- Open while it is live and Kill (×, confirmed) while
+  /// it has a workspace, at the end of its first line; Resume while it is off
+  /// or once it is released.
   function scratchRow(state, one) {
     const row = element("div", "ssf-writes", undefined, `row:${one.id}`);
     const id = String(one.id ?? "");
@@ -907,13 +948,53 @@
     const stack = [one.harness, one.model, one.effort].filter(Boolean).join(" \u00b7 ");
     const title = element("p", "ssf-writes-stack ssf-writes-title", undefined, "id");
     title.append(`${short} \u00b7 ${whose}`);
-    const open = one.active && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
+    const phase = scratchPhase(one);
+    const busy = state.rowBusy === id;
+    // Open while its terminal runs; off, Resume starts it first.
+    const open = phase === "live" && globalThis.ssfPane?.button(state.url, id, one.pane_input === true);
     if (open) title.append(open);
+    if (phase === "live" || phase === "off") {
+      const kill = element("button", "ssf-writes-kill", "\u00d7", "kill");
+      kill.type = "button";
+      kill.title = "Kill this scratch session";
+      kill.setAttribute("aria-label", `Kill ${short}`);
+      kill.disabled = busy;
+      kill.onclick = () => {
+        state.confirm = id;
+        state.kill = null;
+        state.rowNote = null;
+        redraw();
+      };
+      title.append(kill);
+    }
     row.append(
       title,
       element("p", "ssf-writes-note", [stack, one.stateLabel].filter(Boolean).join(" \u00b7 "), "state"),
     );
-    const busy = state.rowBusy === id;
+    if (state.confirm === id && state.kill?.session !== id) {
+      row.append(
+        element(
+          "p",
+          "ssf-writes-error",
+          `Kill ${short}? Any work in this scratch session that hasn't been pushed will be lost.`,
+          "confirm",
+        ),
+      );
+      const actions = element("div", "ssf-writes-actions", undefined, "actions");
+      const go = element("button", "danger", busy ? "Killing\u2026" : "Kill");
+      go.type = "button";
+      go.disabled = busy;
+      go.onclick = () => sendKill(state, id, false);
+      const cancel = element("button", undefined, "Cancel");
+      cancel.type = "button";
+      cancel.onclick = () => {
+        state.confirm = null;
+        redraw();
+      };
+      actions.append(go, cancel);
+      row.append(actions);
+      return row;
+    }
     if (state.kill?.session === id) {
       row.append(
         element("p", "ssf-writes-error", state.kill.message, "check"),
@@ -939,20 +1020,14 @@
       row.append(actions);
       return row;
     }
+    if (phase === "live" || phase === "releasing") return row;
+    // Off or released: Resume starts it again, on its own workspace or a new one.
     const actions = element("div", "ssf-writes-actions", undefined, "actions");
-    if (one.active) {
-      const kill = element("button", "danger", busy ? "Killing\u2026" : "Kill");
-      kill.type = "button";
-      kill.disabled = busy;
-      kill.onclick = () => sendKill(state, id, false);
-      actions.append(kill);
-    } else {
-      const resume = element("button", undefined, busy ? "Resuming\u2026" : "Resume");
-      resume.type = "button";
-      resume.disabled = busy;
-      resume.onclick = () => sendResume(state, id);
-      actions.append(resume);
-    }
+    const resume = element("button", undefined, busy ? "Resuming\u2026" : "Resume");
+    resume.type = "button";
+    resume.disabled = busy;
+    resume.onclick = () => sendResume(state, id);
+    actions.append(resume);
     row.append(actions);
     return row;
   }
@@ -1033,7 +1108,10 @@
         return;
       }
       state.open = null;
+      state.tab = "sessions";
       const session = reply.result?.session ?? "the session";
+      // The new session's terminal, opened for the person who asked for it.
+      if (reply.result?.session) globalThis.ssfPane?.open(state.url, reply.result.session, true);
       state.rowNote = rowNote(
         state,
         `Started ${session}; it shows here once the factory reports it.`,
@@ -1055,13 +1133,14 @@
     redraw();
     ask({ type: "ssf:scratch-release", url: state.url, session, force }).then((reply) => {
       state.rowBusy = null;
+      state.confirm = null;
       if (reply?.ok) {
         state.kill = null;
         state.rowNote = rowNote(
           state,
           `Killed ${session}; the workspace is removed on the daemon's next pass.`,
           session,
-          (row) => !row?.active,
+          (row) => ["releasing", "released"].includes(scratchPhase(row)),
         );
       } else if (!force && reply?.body?.check) {
         state.kill = { session, message: reply.error };
@@ -1091,12 +1170,22 @@
     ask({ type: "ssf:scratch-resume", url: state.url, session }).then((reply) => {
       state.rowBusy = null;
       state.rowNote = reply?.ok
-        ? rowNote(state, `Resuming ${session} on the daemon's next pass.`, session, (row) =>
-            Boolean(row?.active),
-          )
+        ? rowNote(state, `Resumed ${session}.`, session, (row) => scratchPhase(row) === "live")
         : rowNote(state, reply?.error ?? "the factory did not answer", session);
       redraw();
     });
+  }
+
+  /// What a scratch row is: `live` (its terminal runs), `off` (its workspace
+  /// is there, its terminal is not -- the harness exited or the factory
+  /// restarted), `releasing` (killed; the workspace goes on the next pass) or
+  /// `released`. The factory says so in `state`; an older one that does not
+  /// is read from `active` and `agent_live`.
+  function scratchPhase(one) {
+    const said = String(one?.state ?? "");
+    if (["live", "off", "releasing", "released"].includes(said)) return said;
+    if (!one?.active) return "released";
+    return one.agent_live ? "live" : "off";
   }
 
   /// Stop remembering an item: its waits, if any are in flight, are the
@@ -1215,6 +1304,7 @@
 
   globalThis.ssfWrites = {
     STYLE,
+    scratchPhase,
     render,
     renderActions,
     renderScratch,

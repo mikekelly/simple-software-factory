@@ -16,7 +16,7 @@ const PING_MS = 20000;
 
 const encoder = new TextEncoder();
 
-export function run({ url, session, takesInput, say, box, reconnect }) {
+export function run({ url, session, takesInput, say, box, reconnect, resume }) {
   box.hidden = false;
   const term = new Terminal({
     cursorBlink: true,
@@ -45,19 +45,39 @@ export function run({ url, session, takesInput, say, box, reconnect }) {
     if (connected && takesInput && text) post({ type: "resize", data: text });
   };
 
+  /// The socket closed: the session ended (its harness exited, or it was
+  /// killed) or the factory went away. Reconnect attaches again to a session
+  /// that is still there; Resume (where this factory takes writes) starts
+  /// one that ended again on its workspace (`api/scratch/resume`).
   function closed(text) {
     connected = false;
     const held = port;
     port = null;
     held?.disconnect();
-    say(text, true);
+    say(`${text} · the session may have ended`, true);
     reconnect.hidden = false;
+    resume.hidden = !takesInput;
     term.write(`\r\n\x1b[2m[${text}]\x1b[0m\r\n`);
+  }
+
+  async function restart() {
+    resume.disabled = true;
+    say("resuming…");
+    let reply;
+    try {
+      reply = await chrome.runtime.sendMessage({ type: "ssf:scratch-resume", url, session });
+    } catch (error) {
+      reply = { ok: false, error: String(error) };
+    }
+    resume.disabled = false;
+    if (reply?.ok) connect();
+    else say(`not resumed (${reply?.error ?? "the factory did not answer"})`, true);
   }
 
   function connect() {
     port?.disconnect();
     reconnect.hidden = true;
+    resume.hidden = true;
     connected = false;
     say("connecting…");
     const opened = chrome.runtime.connect({ name: "ssf-term" });
@@ -111,5 +131,6 @@ export function run({ url, session, takesInput, say, box, reconnect }) {
   }
   setInterval(() => post({ type: "ping" }), PING_MS);
   reconnect.addEventListener("click", connect);
+  resume.addEventListener("click", restart);
   connect();
 }

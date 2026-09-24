@@ -391,11 +391,22 @@ model and effort pickers and whose session it is: **Shared**, or **Mine**
 (the login GitHub's page names in `<meta name="user-login">`). That login only
 labels the session; it is not access control.
 
-Each scratch session has **Open**, **Kill** and, once killed, **Resume**. Kill
-removes the workspace. When the factory's checks find nothing to lose it goes
-at once; when they find uncommitted or unpushed work the card shows what they
-found and says that all work in the workspace will be lost, and only **Kill
-anyway** (a second request, forced) removes it.
+**New scratch** opens the new session's terminal as soon as the factory has
+started it. The list reads each session's `state` from the factory:
+
+- **Live** sessions have **Open** (the terminal icon) and a red **×** that
+  kills the session.
+- **Off** sessions still have a workspace but their harness is not running:
+  it exited (Ctrl+C in the terminal, say), or the factory restarted and has
+  not started it again yet. They have **Resume**, which starts the harness
+  again in the same workspace, resuming its conversation, and the **×**.
+- **Released** sessions (killed) are under their own **Released** tab, each
+  with **Resume**, which recreates the workspace on the session's branch.
+
+The **×** asks first: any work in the scratch session that hasn't been pushed
+will be lost. When the factory's checks then find nothing to lose, the
+workspace goes; when they find uncommitted or unpushed work, the card shows what
+they found, and only **Kill anyway** (a second request, forced) removes it.
 
 **Open** — **Show agent** at the head of an item's Actions row (on a factory
 whose Writes switch is on) and the terminal icon at the end of a scratch
@@ -417,8 +428,11 @@ WebSocket (`ws://`, or `wss://` for an `https://` factory URL). It is sized to
 the window, and the tmux session follows its size; everything the terminal
 takes (keys, paste, mouse) goes straight to the session, so there is no Type
 button. On a factory whose Writes switch is off it is view-only. When the
-socket closes — the session ended, the factory went away, or the extension's
-service worker stopped — the terminal says so and offers **Reconnect**.
+socket closes — the session ended (its harness exited, or it was killed), the
+factory went away, or the extension's service worker stopped — the terminal
+says so and offers **Reconnect**, and **Resume** to start a session that ended
+again. The terminal never moves on to another session: ssf's tmux sessions
+detach their terminal when they end.
 
 An **item**'s window is a mirror of the agent's pane, from `api/pane/<session>`.
 The pane is drawn as styled text rather than by a terminal emulator — the

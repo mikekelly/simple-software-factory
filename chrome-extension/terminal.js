@@ -425,5 +425,6 @@ async function startTerm() {
     say,
     box: document.getElementById("xterm"),
     reconnect: document.getElementById("reconnect"),
+    resume: document.getElementById("resume"),
   });
 }

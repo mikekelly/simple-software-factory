@@ -1470,12 +1470,16 @@
   }
 
   /// The word a scratch session's row carries: its card's state while an agent
-  /// runs, No agent while it has a workspace and nothing in it, Killed once
-  /// its workspace is gone.
+  /// runs, Off while its workspace is there and its terminal is not, then
+  /// Releasing and Killed.
   function scratchState(factory, one) {
+    const phase = globalThis.ssfWrites?.scratchPhase(one) ?? (one.active ? "live" : "released");
+    if (phase === "off") return "Off";
+    if (phase === "releasing") return "Releasing";
+    if (phase === "released") return "Killed";
     const card = factory.cards.find((each) => each.origin?.id === one.id);
     if (card) return (PRESENTATION[String(card.agent_state ?? "").trim()] ?? PROBLEM).label;
-    return one.active ? NO_AGENT.label : "Killed";
+    return NO_AGENT.label;
   }
 
   /// Show a `more` toggle only where the trimmed message really is clipped, and

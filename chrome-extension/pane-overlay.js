@@ -293,5 +293,11 @@ button.ssf-pane-open.ssf-pane-show:hover:not(:disabled) {
     for (const win of windows.values()) place(win, win.rect);
   });
 
-  globalThis.ssfPane = { STYLE, button, close: closeAll };
+  /// Open (or bring forward) a session's window without a button: a scratch
+  /// session New scratch has just started.
+  function open(factoryUrl, session, input) {
+    show(factoryUrl, String(session ?? ""), input === true, null);
+  }
+
+  globalThis.ssfPane = { STYLE, button, open, close: closeAll };
 })();
