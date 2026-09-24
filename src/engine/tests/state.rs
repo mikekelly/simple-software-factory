@@ -405,7 +405,7 @@ async fn engine_constructor_refuses_a_second_owner_before_auth_or_state_access()
         Ok(_) => panic!("a second engine acquired the same state directory"),
         Err(err) => err,
     };
-    assert!(err.to_string().contains("another ssf daemon is listening"));
+    assert!(err.to_string().contains("holds the state lock"));
     assert!(stub.hits().is_empty(), "the rejected engine called GitHub");
     assert_eq!(
         std::fs::read(crate::state::state_path()).unwrap(),
@@ -414,6 +414,10 @@ async fn engine_constructor_refuses_a_second_owner_before_auth_or_state_access()
     );
 
     drop(first);
+    // Wait out a sibling test's fork still sharing the lock descriptor.
+    drop(crate::state::test_support::reacquire(
+        crate::state::state_path().parent().unwrap(),
+    ));
     let second = Engine::new(cfg).await.unwrap();
     assert_eq!(stub.hits(), vec!["/user"]);
     drop(second);

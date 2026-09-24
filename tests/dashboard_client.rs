@@ -350,7 +350,22 @@ fn errors_are_visible_and_quit_restores_terminal_while_request_is_pending() {
 #[test]
 fn non_terminal_is_rejected_with_a_scriptable_alternative() {
     let root = Temp::new("nonterminal");
-    let output = client(&root.0).arg("dashboard").output().unwrap();
+    let mut command = client(&root.0);
+    command.arg("dashboard");
+    // Another test's fork can briefly hold a write descriptor to the copied
+    // binary, as `Pty::spawn` also allows for.
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let output = loop {
+        match command.output() {
+            Ok(output) => break output,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY) && Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("could not run client: {error}"),
+        }
+    };
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("ssf status --json"));
 }
